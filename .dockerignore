@@ -1,0 +1,15 @@
+.git
+.dev
+**/.env
+**/.env.*
+**/target
+**/build
+**/dist
+**/node_modules
+**/.pnpm-store
+**/.astro
+**/.test-dist
+tests
+files
+scratch
+**/*.log

@@ -1,0 +1,9 @@
+# Optional packet capture for the normal all-in-one deployment. Add this file
+# last so it grants NET_RAW only to the process that owns capture and overrides
+# worker pure-remote mode's disabled capture default.
+services:
+  rsctf:
+    cap_add:
+      - NET_RAW
+    environment:
+      RSCTF_TRAFFIC_CAPTURE_ENABLED: "true"

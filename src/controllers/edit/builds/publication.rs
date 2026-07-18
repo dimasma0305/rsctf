@@ -1,0 +1,70 @@
+use super::*;
+
+pub(super) const BUILD_FINGERPRINT_SQL: &str = r#"SELECT container_image, original_archive_blob_path, build_context_subdir
+         FROM "GameChallenges"
+        WHERE id = $1"#;
+
+pub(super) const PUBLISH_BUILD_OUTCOME_SQL: &str = r#"UPDATE "GameChallenges"
+      SET build_status = $2,
+          last_build_log = $3,
+          build_image_digest = $4
+    WHERE id = $1
+      AND container_image IS NOT DISTINCT FROM $5
+      AND original_archive_blob_path IS NOT DISTINCT FROM $6
+      AND build_context_subdir IS NOT DISTINCT FROM $7"#;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BuildFingerprint {
+    pub(super) container_image: Option<String>,
+    pub(super) original_archive_blob_path: Option<String>,
+    pub(super) build_context_subdir: Option<String>,
+}
+
+impl BuildFingerprint {
+    pub(super) fn from_challenge(challenge: &game_challenge::Model) -> Self {
+        Self {
+            container_image: challenge.container_image.clone(),
+            original_archive_blob_path: challenge.original_archive_blob_path.clone(),
+            build_context_subdir: challenge.build_context_subdir.clone(),
+        }
+    }
+}
+
+pub(super) fn superseded_build_outcome(message: &str) -> BuildOutcome {
+    BuildOutcome {
+        status: ChallengeBuildStatus::Failed,
+        log: Some(message.to_string()),
+        image_digest: None,
+    }
+}
+
+/// Publish the result only while ordered against every runtime-definition
+/// writer. The slow Docker/blob work has already completed before this lock is
+/// acquired, so the advisory transaction remains short.
+pub(super) async fn publish_build_outcome(
+    st: &SharedState,
+    challenge: &game_challenge::Model,
+    requested: &BuildFingerprint,
+    outcome: &BuildOutcome,
+) -> AppResult<u64> {
+    let mut definition_lock = crate::services::challenge_workloads::acquire_definition_lock(
+        st.pg(),
+        challenge.game_id,
+        challenge.id,
+    )
+    .await?;
+    let result = sqlx::query(PUBLISH_BUILD_OUTCOME_SQL)
+        .bind(challenge.id)
+        .bind(outcome.status as i16)
+        .bind(outcome.log.clone())
+        .bind(outcome.image_digest.clone())
+        .bind(&requested.container_image)
+        .bind(&requested.original_archive_blob_path)
+        .bind(&requested.build_context_subdir)
+        .execute(&mut **definition_lock.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let rows_affected = result.rows_affected();
+    definition_lock.release().await?;
+    Ok(rows_affected)
+}

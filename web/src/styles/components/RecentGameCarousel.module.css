@@ -1,0 +1,71 @@
+.root {
+  min-width: 0;
+}
+
+.rotationButton {
+  min-height: 2.75rem;
+  padding-inline: 0.75rem;
+}
+
+.carousel {
+  padding-bottom: 2.75rem;
+}
+
+.carousel :global(.mantine-Carousel-indicators) {
+  bottom: 0;
+  height: 2.75rem;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.carousel :global(.mantine-Carousel-indicators::-webkit-scrollbar) {
+  display: none;
+}
+
+.carousel :global(.mantine-Carousel-indicator) {
+  position: relative;
+  width: 2.75rem;
+  height: 2.75rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  flex: 0 0 2.75rem;
+  border-radius: var(--mantine-radius-md);
+  background: transparent;
+  box-shadow: none;
+  opacity: 1;
+}
+
+.carousel :global(.mantine-Carousel-indicator)::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.35rem;
+  height: 0.32rem;
+  border-radius: 999px;
+  background: var(--app-border);
+  content: '';
+  transform: translate(-50%, -50%);
+  transition:
+    width 140ms ease,
+    background-color 140ms ease;
+}
+
+.carousel :global(.mantine-Carousel-indicator[data-active])::after {
+  width: 1.8rem;
+  background: var(--mantine-primary-color-filled);
+}
+
+.carousel :global(.mantine-Carousel-indicator:focus-visible) {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: -4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .carousel :global(.mantine-Carousel-indicator)::after {
+    transition: none;
+  }
+}

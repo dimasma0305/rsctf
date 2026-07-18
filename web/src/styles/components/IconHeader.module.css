@@ -1,0 +1,45 @@
+.group {
+  position: relative;
+  top: 0;
+  z-index: 50;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 var(--header-px);
+  justify-content: space-between;
+  border-bottom: 1px solid var(--app-border-subtle);
+  color: var(--app-text-muted);
+  background: var(--app-shell-surface-translucent);
+  backdrop-filter: blur(16px);
+}
+
+.group[data-sticky] {
+  position: sticky;
+  top: 0;
+}
+
+.statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mantine-primary-color-filled);
+  box-shadow: 0 0 0 4px var(--app-accent-surface);
+}
+
+.workspace {
+  color: var(--app-text-secondary);
+  letter-spacing: 0.08em;
+}
+
+.subtitle {
+  max-width: 50%;
+  overflow: hidden;
+  font-family: var(--mantine-font-family-monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media print {
+  .group {
+    display: none;
+  }
+}

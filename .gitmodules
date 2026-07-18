@@ -1,0 +1,3 @@
+[submodule "examples/challenge-repository"]
+	path = examples/challenge-repository
+	url = https://github.com/dimasma0305/rsctf-challenges.git

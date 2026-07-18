@@ -1,0 +1,76 @@
+{{- if ne .Values.runtimeRole "migrate" }}
+{{- $vpnOwner := and .Values.vpn.enabled (has .Values.runtimeRole (list "all" "control" "network")) }}
+{{- $workerOwner := and .Values.workerPlane.enabled (has .Values.runtimeRole (list "all" "control" "network")) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rsctf.fullname" . }}
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "rsctf.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.runtimeRole | quote }}
+{{- if $vpnOwner }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rsctf.fullname" . }}-vpn
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+  {{- with .Values.vpn.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.vpn.service.type }}
+  {{- if and (or (eq .Values.vpn.service.type "LoadBalancer") (eq .Values.vpn.service.type "NodePort")) .Values.vpn.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.vpn.service.externalTrafficPolicy }}
+  {{- end }}
+  ports:
+    - name: wireguard
+      port: {{ .Values.vpn.service.port }}
+      targetPort: wireguard
+      protocol: UDP
+  selector:
+    {{- include "rsctf.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.runtimeRole | quote }}
+{{- end }}
+{{- if $workerOwner }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rsctf.fullname" . }}-workers
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+  {{- with .Values.workerPlane.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.workerPlane.service.type }}
+  {{- if and (or (eq .Values.workerPlane.service.type "LoadBalancer") (eq .Values.workerPlane.service.type "NodePort")) .Values.workerPlane.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.workerPlane.service.externalTrafficPolicy }}
+  {{- end }}
+  ports:
+    - name: worker-tls
+      port: {{ .Values.workerPlane.service.port }}
+      targetPort: worker-tls
+      protocol: TCP
+  selector:
+    {{- include "rsctf.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.runtimeRole | quote }}
+{{- end }}
+{{- end }}

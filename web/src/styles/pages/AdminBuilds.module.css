@@ -1,0 +1,31 @@
+.pageContainer,
+.pageContent,
+.tabs,
+.panel,
+.tableFrame,
+.tableScroll {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pageContainer,
+.pageContent,
+.tabs,
+.panel,
+.tableScroll {
+  width: 100%;
+}
+
+.tableFrame {
+  overflow: hidden;
+}
+
+.tableScroll :global(.mantine-ScrollArea-viewport) {
+  max-width: 100%;
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .pageContainer {
+    padding-inline: 0;
+  }
+}

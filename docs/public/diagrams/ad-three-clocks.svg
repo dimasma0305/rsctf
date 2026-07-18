@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Rounds, flag windows, and epochs on one Attack and Defense timeline</title>
+  <desc id="desc">An illustrative timeline assuming scoring starts at round one, with eight rounds per epoch and a five-round flag lifetime. A flag issued in round eight remains valid through round twelve, a late capture in round eleven is credited to epoch one, and epoch one can settle when round thirteen opens.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#132735" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="900" fill="#f6f1e7"/>
+
+  <text x="120" y="76" fill="#132735" font-family="Georgia, serif" font-size="48" font-weight="700">Three clocks govern A&amp;D scoring</text>
+  <text x="120" y="116" fill="#5f6368" font-family="Lexend, system-ui, sans-serif" font-size="22">Illustrative defaults: assume startRound=1 · 8 rounds per epoch (n=8) · flag lifetime 5 rounds (L=5)</text>
+
+  <rect x="170" y="145" width="616" height="48" rx="18" fill="#dce8f5" stroke="#2f67a8" stroke-width="3"/>
+  <text x="478" y="176" text-anchor="middle" fill="#244f83" font-family="Lexend, system-ui, sans-serif" font-size="20" font-weight="700">EPOCH 1 · ROUNDS 1-8 · FULL WEIGHT 1</text>
+  <rect x="794" y="145" width="616" height="48" rx="18" fill="#f3e3b8" stroke="#996600" stroke-width="3"/>
+  <text x="1102" y="176" text-anchor="middle" fill="#7d5400" font-family="Lexend, system-ui, sans-serif" font-size="18" font-weight="700">EPOCH 2 · ROUNDS 9-16 · WEIGHT 1 WHEN COMPLETE</text>
+
+  <g font-family="Lexend, system-ui, sans-serif" font-size="18" font-weight="700" text-anchor="middle">
+    <g fill="#eaf1f8" stroke="#2f67a8" stroke-width="2">
+      <rect x="170" y="216" width="70" height="72" rx="12"/><rect x="248" y="216" width="70" height="72" rx="12"/>
+      <rect x="326" y="216" width="70" height="72" rx="12"/><rect x="404" y="216" width="70" height="72" rx="12"/>
+      <rect x="482" y="216" width="70" height="72" rx="12"/><rect x="560" y="216" width="70" height="72" rx="12"/>
+      <rect x="638" y="216" width="70" height="72" rx="12"/><rect x="716" y="216" width="70" height="72" rx="12"/>
+    </g>
+    <g fill="#fbf3da" stroke="#996600" stroke-width="2">
+      <rect x="794" y="216" width="70" height="72" rx="12"/><rect x="872" y="216" width="70" height="72" rx="12"/>
+      <rect x="950" y="216" width="70" height="72" rx="12"/><rect x="1028" y="216" width="70" height="72" rx="12"/>
+      <rect x="1106" y="216" width="70" height="72" rx="12"/><rect x="1184" y="216" width="70" height="72" rx="12"/>
+      <rect x="1262" y="216" width="70" height="72" rx="12"/><rect x="1340" y="216" width="70" height="72" rx="12"/>
+    </g>
+    <g fill="#244f83">
+      <text x="205" y="259">R1</text><text x="283" y="259">R2</text><text x="361" y="259">R3</text><text x="439" y="259">R4</text>
+      <text x="517" y="259">R5</text><text x="595" y="259">R6</text><text x="673" y="259">R7</text><text x="751" y="259">R8</text>
+    </g>
+    <g fill="#7d5400">
+      <text x="829" y="259">R9</text><text x="907" y="259">R10</text><text x="985" y="259">R11</text><text x="1063" y="259">R12</text>
+      <text x="1141" y="259">R13</text><text x="1219" y="259">R14</text><text x="1297" y="259">R15</text><text x="1375" y="259">R16</text>
+    </g>
+  </g>
+
+  <text x="120" y="357" fill="#9f2f25" font-family="Lexend, system-ui, sans-serif" font-size="18" font-weight="700">FLAG WINDOW</text>
+  <rect x="716" y="326" width="382" height="64" rx="18" fill="#f2cfc5" stroke="#b9362c" stroke-width="3" filter="url(#shadow)"/>
+  <circle cx="751" cy="358" r="18" fill="#b9362c"/>
+  <text x="751" y="365" text-anchor="middle" fill="#ffffff" font-family="Lexend, system-ui, sans-serif" font-size="16" font-weight="800">F</text>
+  <text x="786" y="352" fill="#8f281f" font-family="Lexend, system-ui, sans-serif" font-size="18" font-weight="700">Flag issued in R8</text>
+  <text x="786" y="376" fill="#6f332d" font-family="Lexend, system-ui, sans-serif" font-size="16">Valid in R8, R9, R10, R11, R12</text>
+
+  <line x1="985" y1="300" x2="985" y2="326" stroke="#08756f" stroke-width="4" marker-end="url(#arrow)"/>
+  <rect x="858" y="408" width="254" height="62" rx="14" fill="#d7ece8" stroke="#08756f" stroke-width="2"/>
+  <text x="985" y="433" text-anchor="middle" fill="#075e59" font-family="Lexend, system-ui, sans-serif" font-size="17" font-weight="700">Late capture in R11</text>
+  <text x="985" y="456" text-anchor="middle" fill="#315f5c" font-family="Lexend, system-ui, sans-serif" font-size="15">Still credited to Epoch 1</text>
+
+  <line x1="1102" y1="134" x2="1102" y2="490" stroke="#08756f" stroke-width="4" stroke-dasharray="9 8"/>
+  <rect x="1140" y="326" width="300" height="144" rx="18" fill="#d7ece8" stroke="#08756f" stroke-width="3" filter="url(#shadow)"/>
+  <text x="1170" y="358" fill="#075e59" font-family="Lexend, system-ui, sans-serif" font-size="19" font-weight="800">WHEN R13 OPENS</text>
+  <text x="1170" y="389" fill="#27484a" font-family="Lexend, system-ui, sans-serif" font-size="16">The last Epoch 1 flag window</text>
+  <text x="1170" y="414" fill="#27484a" font-family="Lexend, system-ui, sans-serif" font-size="16">closes. If checks are complete,</text>
+  <text x="1170" y="439" fill="#27484a" font-family="Lexend, system-ui, sans-serif" font-size="16">Epoch 1 can join Settled.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="120" y="540" width="410" height="205" rx="24" fill="#dce8f5" stroke="#2f67a8" stroke-width="3"/>
+    <rect x="595" y="540" width="410" height="205" rx="24" fill="#d7ece8" stroke="#08756f" stroke-width="3"/>
+    <rect x="1070" y="540" width="410" height="205" rx="24" fill="#f3e3b8" stroke="#996600" stroke-width="3"/>
+  </g>
+
+  <text x="155" y="584" fill="#244f83" font-family="Lexend, system-ui, sans-serif" font-size="22" font-weight="800">TICK / ROUND</text>
+  <text x="155" y="620" fill="#293f57" font-family="Lexend, system-ui, sans-serif" font-size="17">One live operational cycle.</text>
+  <text x="155" y="650" fill="#293f57" font-family="Lexend, system-ui, sans-serif" font-size="17">Fresh flag records are issued.</text>
+  <text x="155" y="680" fill="#293f57" font-family="Lexend, system-ui, sans-serif" font-size="17">Checks, captures, and SLA are recorded.</text>
+  <text x="155" y="718" fill="#244f83" font-family="Lexend, system-ui, sans-serif" font-size="15" font-weight="700">Smallest unit of live play</text>
+
+  <text x="630" y="584" fill="#075e59" font-family="Lexend, system-ui, sans-serif" font-size="22" font-weight="800">FLAG WINDOW</text>
+  <text x="630" y="620" fill="#27484a" font-family="Lexend, system-ui, sans-serif" font-size="17">How long one flag remains acceptable.</text>
+  <text x="630" y="650" fill="#27484a" font-family="Lexend, system-ui, sans-serif" font-size="17">Windows overlap later rounds. A valid late</text>
+  <text x="630" y="680" fill="#27484a" font-family="Lexend, system-ui, sans-serif" font-size="17">capture stays tied to its issue epoch.</text>
+  <text x="630" y="718" fill="#075e59" font-family="Lexend, system-ui, sans-serif" font-size="15" font-weight="700">Does not reset at each tick</text>
+
+  <text x="1105" y="584" fill="#7d5400" font-family="Lexend, system-ui, sans-serif" font-size="22" font-weight="800">EPOCH</text>
+  <text x="1105" y="620" fill="#584519" font-family="Lexend, system-ui, sans-serif" font-size="17">A fixed scoreboard group of n rounds.</text>
+  <text x="1105" y="650" fill="#584519" font-family="Lexend, system-ui, sans-serif" font-size="17">Complete weight is 1; a shortened final</text>
+  <text x="1105" y="680" fill="#584519" font-family="Lexend, system-ui, sans-serif" font-size="17">epoch with r rounds receives weight r/n.</text>
+  <text x="1105" y="718" fill="#7d5400" font-family="Lexend, system-ui, sans-serif" font-size="15" font-weight="700">Groups evidence; does not set flag lifetime</text>
+
+  <rect x="250" y="790" width="1100" height="64" rx="20" fill="#172b38"/>
+  <text x="800" y="830" text-anchor="middle" fill="#ffffff" font-family="Lexend, system-ui, sans-serif" font-size="20" font-weight="700">Full length does not mean settled: checks and the final flag windows must close first.</text>
+</svg>

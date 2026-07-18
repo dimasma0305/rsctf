@@ -1,0 +1,48 @@
+.statCard {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  background:
+    radial-gradient(
+      circle at 100% 0,
+      color-mix(in srgb, var(--mantine-primary-color-5) 10%, transparent),
+      transparent 9rem
+    ),
+    var(--app-raised-surface);
+  transition:
+    transform 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.statCard:hover {
+  border-color: var(--app-accent-border);
+  box-shadow: var(--mantine-shadow-md);
+  transform: translateY(-2px);
+}
+
+.statValue {
+  color: var(--app-text-primary);
+  font-family: var(--mantine-font-family-monospace);
+  letter-spacing: -0.04em;
+}
+
+.popularGamesCard,
+.popularGamesScroll {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.popularGamesScroll {
+  width: 100%;
+}
+
+.popularGamesScroll :global(.mantine-ScrollArea-viewport) {
+  max-width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statCard {
+    transition: none;
+  }
+}

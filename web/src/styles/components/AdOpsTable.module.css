@@ -1,0 +1,55 @@
+/* Sticky-layering for the AdOps team×challenge matrix. Mirrors the jeopardy
+ * ScoreboardTable.module.css pattern so the two boards behave the same way
+ * when the user scrolls horizontally + vertically. */
+
+.thead {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background-color: light-dark(var(--mantine-color-white), var(--mantine-color-dark-7));
+}
+
+.left {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  background-color: light-dark(var(--mantine-color-white), var(--mantine-color-dark-7));
+}
+
+/* The intersection cell sits above both — must layer above the other two. */
+.corner {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 6;
+  background-color: light-dark(var(--mantine-color-white), var(--mantine-color-dark-7));
+}
+
+.touchRow,
+.copyControl,
+.statusControl {
+  min-height: 44px;
+}
+
+.touchRow,
+.copyControl {
+  display: flex;
+  align-items: center;
+}
+
+.statusControl {
+  display: inline-grid;
+  min-width: 44px;
+  place-items: center;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.statusControl:not(:disabled):hover,
+.touchRow:hover,
+.copyControl:hover {
+  background: var(--app-hover-surface);
+}
+
+.statusControl:disabled {
+  cursor: default;
+}

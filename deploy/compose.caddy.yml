@@ -1,0 +1,38 @@
+# Optional automatic-HTTPS frontend. Point RSCTF_DOMAIN at this host before
+# starting the stack; Caddy obtains and renews its certificate automatically.
+services:
+  rsctf:
+    environment:
+      RSCTF_TRUSTED_PROXY_CIDRS: ${RSCTF_TRUSTED_PROXY_CIDRS:?Set this to RSCTF_PROXY_SUBNET in deploy/.env}
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    restart: unless-stopped
+    depends_on:
+      rsctf:
+        condition: service_healthy
+    environment:
+      RSCTF_DOMAIN: ${RSCTF_DOMAIN:?Set RSCTF_DOMAIN in deploy/.env}
+      RSCTF_NETWORK_UPSTREAM_HOST: ${RSCTF_NETWORK_UPSTREAM_HOST:-rsctf-network}
+      RSCTF_NETWORK_UPSTREAM_PORT: ${RSCTF_NETWORK_UPSTREAM_PORT:-8080}
+    ports:
+      - ${CADDY_HTTP_BIND_IP:-0.0.0.0}:80:80
+      - ${CADDY_HTTPS_BIND_IP:-0.0.0.0}:443:443
+      - ${CADDY_HTTPS_BIND_IP:-0.0.0.0}:443:443/udp
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      default:
+        ipv4_address: ${RSCTF_CADDY_IP:-172.31.252.2}
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${RSCTF_PROXY_SUBNET:-172.31.252.0/24}
+
+volumes:
+  caddy_data:
+  caddy_config:

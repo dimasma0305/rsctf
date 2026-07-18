@@ -1,0 +1,87 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    name: Build VitePress site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+          package_json_file: docs/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: docs/pnpm-lock.yaml
+
+      - name: Configure GitHub Pages
+        # Private repositories may intentionally have Pages disabled. Always
+        # build the docs, but only configure/deploy an existing Pages site.
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event.repository.has_pages
+        id: pages
+        uses: actions/configure-pages@v6
+
+      - name: Install documentation dependencies
+        run: pnpm --dir docs install --frozen-lockfile
+
+      - name: Generate journal PDFs
+        run: pnpm --dir docs pdf
+
+      - name: Build documentation
+        run: pnpm --dir docs build
+        env:
+          DOCS_BASE: ${{ steps.pages.outputs.base_path }}/
+          DOCS_HOSTNAME: ${{ steps.pages.outputs.base_url && format('{0}/', steps.pages.outputs.base_url) || '' }}
+
+      - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event.repository.has_pages
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    name: Deploy GitHub Pages
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event.repository.has_pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy documentation
+        id: deployment
+        uses: actions/deploy-pages@v5

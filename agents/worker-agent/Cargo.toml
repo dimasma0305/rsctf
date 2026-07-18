@@ -1,0 +1,40 @@
+[workspace]
+
+[package]
+name = "rsctf-worker-agent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Trusted Linux Docker worker for RSCTF"
+
+[[bin]]
+name = "rsctf-worker-agent"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = "0.1"
+bollard = "0.17"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+dashmap = "6"
+futures-util = "0.3"
+fs2 = "0.4"
+libc = "0.2"
+rand = "0.10"
+rcgen = { version = "0.14", features = ["pem"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rsctf-worker-protocol = { path = "../../lib/worker-protocol" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tar = "0.4"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+yamux = "0.14"

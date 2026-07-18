@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="920" viewBox="0 0 1600 920" role="img" aria-labelledby="title desc">
+  <title id="title">King of the Hill in one picture</title>
+  <desc id="desc">All teams attack the same running challenge. A team breaks in, writes its current team code to slash koth slash king, and keeps the challenge working. When RSCTF first sees an eligible code, the claim becomes provisional. Two consecutive healthy checks make the team king by default. Teams score for taking control, holding it, and keeping the challenge working. At the end of the short cycle, RSCTF saves the result, removes the old challenge, opens a clean copy, and gives teams new codes.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="920" fill="#f6f1e7"/>
+  <text x="70" y="66" fill="#132735" font-family="Georgia, 'DejaVu Serif', serif" font-size="48" font-weight="700">King of the Hill in one picture</text>
+  <text x="70" y="106" fill="#53606a" font-family="'DejaVu Sans', sans-serif" font-size="22">Every team attacks the same challenge. Take it, hold it, and keep it working.</text>
+
+  <rect x="70" y="138" width="1460" height="146" rx="22" fill="#172b38"/>
+  <g font-family="'DejaVu Sans', sans-serif">
+    <text x="108" y="174" fill="#5eead4" font-size="18" font-weight="800">ALL TEAMS</text>
+    <circle cx="140" cy="224" r="28" fill="#2f67a8"/>
+    <circle cx="210" cy="224" r="28" fill="#996600"/>
+    <circle cx="280" cy="224" r="28" fill="#b9362c"/>
+    <g fill="#ffffff" font-size="18" font-weight="800" text-anchor="middle">
+      <text x="140" y="231">A</text><text x="210" y="231">B</text><text x="280" y="231">C</text>
+    </g>
+
+    <rect x="470" y="170" width="610" height="88" rx="18" fill="#ffffff" stroke="#2dd4bf" stroke-width="3"/>
+    <text x="775" y="202" text-anchor="middle" fill="#075e59" font-size="18" font-weight="800">ONE CHALLENGE SHARED BY EVERY TEAM</text>
+    <text x="775" y="239" text-anchor="middle" fill="#132735" font-family="Georgia, 'DejaVu Serif', serif" font-size="29" font-weight="700">THE HILL</text>
+
+    <rect x="1200" y="170" width="290" height="88" rx="18" fill="#d7ece8" stroke="#2dd4bf" stroke-width="3"/>
+    <text x="1345" y="202" text-anchor="middle" fill="#075e59" font-size="18" font-weight="800">RSCTF CHECKS</text>
+    <text x="1345" y="228" text-anchor="middle" fill="#27484a" font-size="16">whose code is there?</text>
+    <text x="1345" y="249" text-anchor="middle" fill="#27484a" font-size="16">does the challenge work?</text>
+  </g>
+  <path d="M315 224 H455" fill="none" stroke="#dbe5ea" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M1090 224 H1185" fill="none" stroke="#dbe5ea" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <text x="70" y="328" fill="#132735" font-family="'DejaVu Sans', sans-serif" font-size="18" font-weight="800">HOW TO BECOME KING · DEFAULT: TWO SUCCESSFUL CHECKS</text>
+
+  <g font-family="'DejaVu Sans', sans-serif">
+    <rect x="70" y="352" width="335" height="248" rx="22" fill="#dce8f5" stroke="#2f67a8" stroke-width="3"/>
+    <circle cx="112" cy="394" r="24" fill="#2f67a8"/>
+    <text x="112" y="402" text-anchor="middle" fill="#ffffff" font-size="21" font-weight="800">1</text>
+    <text x="105" y="448" fill="#244f83" font-size="25" font-weight="800">ATTACK THE HILL</text>
+    <text x="105" y="492" fill="#293f57" font-size="20">Find a way into the hill.</text>
+    <text x="105" y="526" fill="#293f57" font-size="20">Reach its king marker.</text>
+
+    <rect x="445" y="352" width="335" height="248" rx="22" fill="#f3e3b8" stroke="#996600" stroke-width="3"/>
+    <circle cx="487" cy="394" r="24" fill="#996600"/>
+    <text x="487" y="402" text-anchor="middle" fill="#ffffff" font-size="21" font-weight="800">2</text>
+    <text x="480" y="448" fill="#7d5400" font-size="25" font-weight="800">PLACE YOUR CLAIM</text>
+    <text x="480" y="492" fill="#584519" font-size="20">Get your current team code.</text>
+    <text x="480" y="526" fill="#584519" font-size="20">Write it to /koth/king.</text>
+
+    <rect x="820" y="352" width="335" height="248" rx="22" fill="#d7ece8" stroke="#08756f" stroke-width="3"/>
+    <circle cx="862" cy="394" r="24" fill="#08756f"/>
+    <text x="862" y="402" text-anchor="middle" fill="#ffffff" font-size="21" font-weight="800">3</text>
+    <text x="855" y="448" fill="#075e59" font-size="25" font-weight="800">PASS TWO CHECKS</text>
+    <text x="855" y="492" fill="#27484a" font-size="20">Code seen: PROVISIONAL.</text>
+    <text x="855" y="526" fill="#27484a" font-size="20">2 healthy checks: KING.</text>
+    <text x="855" y="560" fill="#27484a" font-size="18">Same code. Challenge works.</text>
+
+    <rect x="1195" y="352" width="335" height="248" rx="22" fill="#f2cfc5" stroke="#b9362c" stroke-width="3"/>
+    <circle cx="1237" cy="394" r="24" fill="#b9362c"/>
+    <text x="1237" y="402" text-anchor="middle" fill="#ffffff" font-size="21" font-weight="800">4</text>
+    <text x="1230" y="448" fill="#8f281f" font-size="25" font-weight="800">HOLD + PROTECT</text>
+    <text x="1230" y="492" fill="#6f332d" font-size="20">Keep your code there.</text>
+    <text x="1230" y="526" fill="#6f332d" font-size="20">Keep the challenge working.</text>
+    <text x="1230" y="560" fill="#6f332d" font-size="18">Another team can take it.</text>
+  </g>
+  <g fill="none" stroke="#334155" stroke-width="4" marker-end="url(#arrow)">
+    <line x1="410" y1="476" x2="437" y2="476"/>
+    <line x1="785" y1="476" x2="812" y2="476"/>
+    <line x1="1160" y1="476" x2="1187" y2="476"/>
+  </g>
+
+  <rect x="70" y="636" width="1460" height="122" rx="22" fill="#172b38"/>
+  <text x="105" y="674" fill="#5eead4" font-family="'DejaVu Sans', sans-serif" font-size="19" font-weight="800">CYCLE ENDS: CLEAN RESET</text>
+  <text x="105" y="712" fill="#ffffff" font-family="'DejaVu Sans', sans-serif" font-size="20" font-weight="700">SAVE RESULT  →  REMOVE OLD HILL  →  OPEN CLEAN HILL + NEW CODES  →  REPEAT</text>
+  <text x="105" y="742" fill="#f3d786" font-family="'DejaVu Sans', sans-serif" font-size="17">Patches and old codes stop working. Previous-cycle leaders normally wait through the first check.</text>
+
+  <rect x="70" y="790" width="1460" height="104" rx="22" fill="#ffffff" stroke="#172b38" stroke-width="3"/>
+  <text x="105" y="828" fill="#132735" font-family="'DejaVu Sans', sans-serif" font-size="19" font-weight="800">YOUR SCORE GROWS WHEN YOU</text>
+  <text x="105" y="865" fill="#075e59" font-family="'DejaVu Sans', sans-serif" font-size="24" font-weight="800">TAKE THE HILL · HOLD IT LONGER · KEEP IT WORKING</text>
+  <text x="1495" y="850" text-anchor="end" fill="#8f281f" font-family="'DejaVu Sans', sans-serif" font-size="18" font-weight="800">PROJECTED CAN CHANGE · SETTLED IS OFFICIAL</text>
+</svg>

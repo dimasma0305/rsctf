@@ -1,0 +1,9475 @@
+/* eslint-disable */
+/* tslint:disable */
+// @ts-nocheck
+/*
+ * ---------------------------------------------------------------
+ * ## THIS FILE WAS GENERATED VIA SWAGGER-TYPESCRIPT-API        ##
+ * ##                                                           ##
+ * ## AUTHOR: acacode                                           ##
+ * ## SOURCE: https://github.com/acacode/swagger-typescript-api ##
+ * ---------------------------------------------------------------
+ */
+
+export enum CaptchaProvider {
+  None = "None",
+  HashPow = "HashPow",
+  CloudflareTurnstile = "CloudflareTurnstile",
+}
+
+export enum ContainerPortMappingType {
+  Default = "Default",
+  PlatformProxy = "PlatformProxy",
+}
+
+/** Judgement result */
+export enum AnswerResult {
+  FlagSubmitted = "FlagSubmitted",
+  Accepted = "Accepted",
+  WrongAnswer = "WrongAnswer",
+  CheatDetected = "CheatDetected",
+  NotFound = "NotFound",
+}
+
+/** Game event type */
+export enum EventType {
+  Normal = "Normal",
+  ContainerStart = "ContainerStart",
+  ContainerDestroy = "ContainerDestroy",
+  FlagSubmit = "FlagSubmit",
+  CheatDetected = "CheatDetected",
+  Download = "Download",
+  ChallengeOpened = "ChallengeOpened",
+}
+
+/** Submission type */
+export enum SubmissionType {
+  Unaccepted = "Unaccepted",
+  FirstBlood = "FirstBlood",
+  SecondBlood = "SecondBlood",
+  ThirdBlood = "ThirdBlood",
+  Normal = "Normal",
+}
+
+export enum ReviewRating {
+  None = 0,
+  Dislike = 1,
+  Like = 2,
+}
+
+/** Container network mode */
+export enum NetworkMode {
+  Open = "Open",
+  Isolated = "Isolated",
+  Custom = "Custom",
+}
+
+/** Dynamic-scoring decay curve shape */
+export enum ScoreCurve {
+  Standard = "Standard",
+  Linear = "Linear",
+  Logarithmic = "Logarithmic",
+}
+
+/** Container status */
+export enum ContainerStatus {
+  Pending = "Pending",
+  Running = "Running",
+  Destroyed = "Destroyed",
+}
+
+export enum FileType {
+  None = "None",
+  Local = "Local",
+  Remote = "Remote",
+}
+
+export enum ChallengeType {
+  StaticAttachment = "StaticAttachment",
+  StaticContainer = "StaticContainer",
+  DynamicAttachment = "DynamicAttachment",
+  DynamicContainer = "DynamicContainer",
+  AttackDefense = "AttackDefense",
+  KingOfTheHill = "KingOfTheHill",
+}
+
+/** Per-tick checker result for an A&D service. */
+export enum AdCheckStatus {
+  Ok = "Ok",
+  Mumble = "Mumble",
+  Offline = "Offline",
+  InternalError = "InternalError",
+}
+
+/** Game participant permission */
+export enum GamePermission {
+  JoinGame = 1,
+  RankOverall = 2,
+  RequireReview = 4,
+  ViewChallenge = 256,
+  SubmitFlags = 512,
+  GetScore = 1024,
+  GetBlood = 2048,
+  AffectDynamicScore = 4096,
+  All = 2147483647,
+}
+
+/** Game announcement type */
+export enum NoticeType {
+  Normal = "Normal",
+  FirstBlood = "FirstBlood",
+  SecondBlood = "SecondBlood",
+  ThirdBlood = "ThirdBlood",
+  NewHint = "NewHint",
+  NewChallenge = "NewChallenge",
+}
+
+/** Challenge category */
+export enum ChallengeCategory {
+  Misc = "Misc",
+  Crypto = "Crypto",
+  Pwn = "Pwn",
+  Web = "Web",
+  Reverse = "Reverse",
+  Blockchain = "Blockchain",
+  Forensics = "Forensics",
+  Hardware = "Hardware",
+  Mobile = "Mobile",
+  PPC = "PPC",
+  AI = "AI",
+  Pentest = "Pentest",
+  OSINT = "OSINT",
+}
+
+export enum ParticipationStatus {
+  Pending = "Pending",
+  Accepted = "Accepted",
+  Rejected = "Rejected",
+  Suspended = "Suspended",
+  Unsubmitted = "Unsubmitted",
+}
+
+/** Task execution status */
+export enum TaskStatus {
+  Success = "Success",
+  Failed = "Failed",
+  Duplicate = "Duplicate",
+  Denied = "Denied",
+  NotFound = "NotFound",
+  Exit = "Exit",
+  Unhealthy = "Unhealthy",
+  Degraded = "Degraded",
+  Pending = "Pending",
+}
+
+/** User role enumeration */
+export enum Role {
+  Banned = "Banned",
+  User = "User",
+  Monitor = "Monitor",
+  Admin = "Admin",
+}
+
+/** Login response status */
+export enum RegisterStatus {
+  LoggedIn = "LoggedIn",
+  AdminConfirmationRequired = "AdminConfirmationRequired",
+  EmailConfirmationRequired = "EmailConfirmationRequired",
+}
+
+/** Request response */
+export interface RequestResponseOfRegisterStatus {
+  /** Response message */
+  title?: string;
+  /** Data */
+  data?: RegisterStatus;
+  /**
+   * Status code
+   * @format int32
+   */
+  status?: number;
+}
+
+/** Browser fingerprint challenge payload */
+export interface BrowserFingerprintChallengeModel {
+  /** Challenge nonce */
+  nonce?: string;
+  /** Required probe keys */
+  requiredSignals?: string[] | null;
+  /**
+   * Challenge expiration in seconds
+   * @format int32
+   */
+  expiresInSeconds?: number;
+}
+
+/** Request response */
+export interface RequestResponseOfBrowserFingerprintChallengeModel {
+  /** Response message */
+  title?: string;
+  /** Data */
+  data?: BrowserFingerprintChallengeModel;
+  /**
+   * Status code
+   * @format int32
+   */
+  status?: number;
+}
+
+/** Request response */
+export interface RequestResponse {
+  /** Response message */
+  title?: string;
+  /**
+   * Status code
+   * @format int32
+   */
+  status?: number;
+}
+
+/** Account registration */
+export type RegisterModel = ModelWithCaptcha & {
+  /**
+   * Username
+   * @minLength 3
+   * @maxLength 255
+   */
+  userName: string;
+  /**
+   * Password
+   * @minLength 1
+   */
+  password: string;
+  /**
+   * Email
+   * @format email
+   * @minLength 1
+   */
+  email: string;
+  /** Browser fingerprint */
+  fingerprint?: string | null;
+  /** Browser fingerprint proof */
+  fingerprintProof?: string | null;
+};
+
+export interface ModelWithCaptcha {
+  /** Captcha Challenge */
+  challenge?: string | null;
+}
+
+/** Account recovery */
+export type RecoveryModel = ModelWithCaptcha & {
+  /**
+   * User email
+   * @format email
+   * @minLength 1
+   */
+  email: string;
+};
+
+/** Account password reset */
+export interface PasswordResetModel {
+  /**
+   * Password
+   * @minLength 1
+   */
+  password: string;
+  /**
+   * Email
+   * @minLength 1
+   */
+  email: string;
+  /**
+   * Base64 formatted token received via email
+   * @minLength 1
+   */
+  rToken: string;
+}
+
+/** Account verification */
+export interface AccountVerifyModel {
+  /**
+   * Base64 formatted token received via email
+   * @minLength 1
+   */
+  token: string;
+  /**
+   * Base64 formatted user email
+   * @minLength 1
+   */
+  email: string;
+}
+
+/** Login */
+export type LoginModel = ModelWithCaptcha & {
+  /**
+   * Username or email
+   * @minLength 1
+   */
+  userName: string;
+  /**
+   * Password
+   * @minLength 1
+   */
+  password: string;
+  /** Browser fingerprint */
+  fingerprint?: string | null;
+  /** Browser fingerprint proof */
+  fingerprintProof?: string | null;
+};
+
+/** Basic account information update */
+export interface ProfileUpdateModel {
+  /**
+   * Username
+   * @minLength 3
+   * @maxLength 255
+   */
+  userName?: string | null;
+  /**
+   * Description
+   * @maxLength 128
+   */
+  bio?: string | null;
+  /**
+   * Phone number
+   * @format phone
+   */
+  phone?: string | null;
+  /**
+   * Real name
+   * @maxLength 128
+   */
+  realName?: string | null;
+  /**
+   * Student ID
+   * @maxLength 64
+   */
+  stdNumber?: string | null;
+}
+
+/** Password change */
+export interface PasswordChangeModel {
+  /**
+   * Old password
+   * @minLength 6
+   */
+  old: string;
+  /**
+   * New password
+   * @minLength 6
+   */
+  new: string;
+}
+
+/** Request response */
+export interface RequestResponseOfBoolean {
+  /** Response message */
+  title?: string;
+  /** Data */
+  data?: boolean;
+  /**
+   * Status code
+   * @format int32
+   */
+  status?: number;
+}
+
+/** Email change */
+export interface MailChangeModel {
+  /**
+   * New email
+   * @format email
+   * @minLength 1
+   */
+  newMail: string;
+  /** Current password used to re-authenticate this security-sensitive change. */
+  password: string;
+}
+
+/** Basic account information */
+export interface ProfileUserInfoModel {
+  /**
+   * User ID
+   * @format guid
+   */
+  userId?: string;
+  /** User role */
+  role?: Role;
+  /** Username */
+  userName?: string | null;
+  /** Email */
+  email?: string | null;
+  /** Bio */
+  bio?: string | null;
+  /** Phone number */
+  phone?: string | null;
+  /** Real name */
+  realName?: string | null;
+  /** Student ID */
+  stdNumber?: string | null;
+  /** Avatar URL */
+  avatar?: string | null;
+  /** Has managed games */
+  hasManagedGames?: boolean;
+}
+
+/** Global configuration update */
+export interface ConfigEditModel {
+  /** User policy */
+  accountPolicy?: AccountPolicy | null;
+  /** Global configuration */
+  globalConfig?: GlobalConfig | null;
+  /** Game policy */
+  containerPolicy?: ContainerPolicy | null;
+  /** Auto-build image push destination */
+  buildRegistry?: BuildRegistryConfig | null;
+  /** SMTP relay for email verification + password reset. */
+  email?: EmailConfig | null;
+  /** Captcha provider for login / register flows. */
+  captcha?: CaptchaConfig | null;
+  /** External OAuth login providers (Google / Discord). Client secrets are
+   *  XOR-obfuscated at rest and blanked on read. Changes apply without a restart. */
+  oAuth?: OAuthConfig | null;
+  /** Pull credentials for a private image registry. */
+  registry?: RegistryConfig | null;
+  /** Read-only view of RSCTF_TRUSTED_PROXY_CIDRS. Ignored on update. */
+  proxyTrust?: ProxyTrustConfig | null;
+  /** Read-only view of the active container backend (Docker / Kubernetes).
+   *  Set at startup; populated on GET, ignored on PUT. */
+  containerProvider?: ContainerProviderInfoModel | null;
+}
+
+/** External OAuth login providers (Google, Discord). Admin-editable; client
+ *  secrets are XOR-obfuscated at rest and blanked on read (the hasX surrogates
+ *  surface presence). Changes apply without a restart. */
+export interface OAuthConfig {
+  /** Google OAuth client id */
+  googleClientId?: string | null;
+  /** Google OAuth client secret (XOR-obfuscated at rest) */
+  googleClientSecret?: string | null;
+  /** Discord OAuth client id */
+  discordClientId?: string | null;
+  /** Discord OAuth client secret (XOR-obfuscated at rest) */
+  discordClientSecret?: string | null;
+  /** Whether a Google client secret is stored */
+  hasGoogleClientSecret?: boolean;
+  /** Whether a Discord client secret is stored */
+  hasDiscordClientSecret?: boolean;
+}
+
+/** The active container backend. */
+export enum ContainerProviderType {
+  Docker = "Docker",
+  Kubernetes = "Kubernetes",
+}
+
+/** Read-only summary of the configured container provider, so an admin can
+ *  tell at a glance whether challenges run on Docker or Kubernetes. */
+export interface ContainerProviderInfoModel {
+  /** The active backend: Docker or Kubernetes. */
+  type?: ContainerProviderType;
+  /** How challenge ports are exposed (Default / PlatformProxy). */
+  portMappingType?: ContainerPortMappingType;
+  /** Whether per-challenge traffic capture is enabled. */
+  trafficCapture?: boolean;
+  /** K8s only: namespace challenge pods are created in. */
+  kubernetesNamespace?: string | null;
+  /** K8s only: imagePullPolicy applied to challenge / checker pods. */
+  imagePullPolicy?: string | null;
+}
+
+/** Read-only view of the environment-managed proxy trust boundary. */
+export interface ProxyTrustConfig {
+  /** True when RSCTF_TRUSTED_PROXY_CIDRS contains at least one CIDR. */
+  enabled?: boolean;
+  forwardXForwardedFor?: boolean;
+  forwardXForwardedHost?: boolean;
+  forwardXForwardedProto?: boolean;
+  /** Maximum hops to walk back through X-Forwarded-For. */
+  forwardLimit?: number;
+  /** Comma/newline-separated CIDR ranges trusted as upstream proxies. */
+  trustedNetworksCsv?: string;
+  /** Comma/newline-separated literal proxy IPs/hostnames. */
+  trustedProxiesCsv?: string;
+}
+
+/** SMTP relay used for email verification / password reset.
+ *  Password is stored XOR-obfuscated; empty string preserves existing. */
+export interface EmailConfig {
+  userName?: string;
+  /** Empty string = leave existing password unchanged. */
+  password?: string;
+  senderAddress?: string | null;
+  senderName?: string | null;
+  smtp?: SmtpConfig | null;
+  /** Read-only: a password is currently configured. */
+  hasPassword?: boolean;
+  /** Read-only: enough fields are filled to actually send mail. */
+  isConfigured?: boolean;
+}
+
+/** Body for POST /api/admin/email/test — drives the "Send test"
+ *  button on /admin/settings → Email. Nothing is persisted server-side. */
+export interface EmailTestModel {
+  config: EmailConfig;
+  recipient: string;
+}
+
+/** Body for POST /api/admin/captcha/test — drives the "Test" button
+ *  on /admin/settings → Captcha. Nothing is persisted server-side. */
+export interface CaptchaTestModel {
+  config: CaptchaConfig;
+}
+
+/** Body returned by GET /api/admin/MyIp — drives the "Check my IP"
+ *  diagnostic on /admin/settings → Diagnostics. */
+export interface MyIpInfoModel {
+  /** The IP RSCTF sees after forwarded-header processing. */
+  detectedIp: string;
+  /** Raw TCP source IP of the request (equals detectedIp when no
+   *  proxy rewrite happened). */
+  rawConnectionIp: string;
+  /** Verbatim X-Forwarded-For header value (empty if not sent). */
+  forwardedFor: string;
+  /** True iff the raw connection peer is configured as a trusted proxy. */
+  proxyTrusted: boolean;
+  /** Effective CIDRs from RSCTF_TRUSTED_PROXY_CIDRS. */
+  trustedNetworks: string[];
+}
+
+export interface SmtpConfig {
+  host?: string;
+  port?: number;
+  bypassCertVerify?: boolean;
+}
+
+/** Captcha provider config. SiteKey is public (served as-is);
+ *  SecretKey is XOR-obfuscated and empty-string-preserves. */
+export interface CaptchaConfig {
+  provider?: CaptchaProvider;
+  /** Public site key — served to the browser. */
+  siteKey?: string | null;
+  /** Empty string = leave existing secret unchanged. */
+  secretKey?: string | null;
+  hashPow?: HashPowConfig | null;
+  /** Read-only: a secret key is currently configured. */
+  hasSecretKey?: boolean;
+}
+
+export interface HashPowConfig {
+  /** Required leading zero bits (clamped 8–48 server-side). */
+  difficulty?: number;
+}
+
+/** Pull credentials for a private image registry. */
+export interface RegistryConfig {
+  serverAddress?: string | null;
+  userName?: string | null;
+  /** Empty string = leave existing password unchanged. */
+  password?: string | null;
+  /** Read-only: a password is currently configured. */
+  hasPassword?: boolean;
+  /** Read-only: serverAddress is set. */
+  isConfigured?: boolean;
+}
+
+/**
+ * Optional registry push target for the auto-build pipeline.
+ * Built images stay on the local daemon when pushOnBuild is false;
+ * otherwise they're retagged to {server}/{namespace?}/rsctf/...
+ * and pushed using the configured credentials.
+ */
+export interface BuildRegistryConfig {
+  /** Master switch. When false, built images stay local. */
+  pushOnBuild?: boolean;
+  /**
+   * Registry hostname (no scheme, no trailing slash).
+   * Examples: "ghcr.io", "docker.io", "registry.example.com:5000".
+   */
+  server?: string | null;
+  /** Optional namespace under the registry, e.g. "myorg". */
+  namespace?: string | null;
+  username?: string | null;
+  /**
+   * Plaintext password / PAT — sent only when the operator is setting
+   * or changing it. Empty string preserves the existing stored value.
+   */
+  password?: string | null;
+  /** Read-only flag indicating whether a password is currently configured. */
+  hasPassword?: boolean;
+  /** Read-only: pushOnBuild && server is set. */
+  isConfigured?: boolean;
+}
+
+/** Account policy */
+export interface AccountPolicy {
+  /** Allow user registration */
+  allowRegister?: boolean;
+  /** Activate account upon registration */
+  activeOnRegister?: boolean;
+  /** Use captcha verification */
+  useCaptcha?: boolean;
+  /** Email confirmation required for registration, email change, and password recovery */
+  emailConfirmationRequired?: boolean;
+  /** Email domain list, separated by commas */
+  emailDomainList?: string;
+  /** Enable browser fingerprinting in Login/Register */
+  enableBrowserFingerprint?: boolean;
+  /** Require each user on a team to log in from an IP not used by another teammate within the last 24 hours */
+  requireUniqueIpPerTeamUser?: boolean;
+  /** Require each user on a team to have a browser fingerprint not used by another teammate within the last 24 hours */
+  requireUniqueFingerprintPerTeamUser?: boolean;
+  /** Require each login IP to be globally unique: block login if ANY other user logged in from the same IP within the last 24 hours */
+  requireUniqueIpGlobal?: boolean;
+  /** Require each browser fingerprint to be globally unique: block login if ANY other user used the same fingerprint within the last 24 hours */
+  requireUniqueFingerprintGlobal?: boolean;
+}
+
+/** Global settings */
+export interface GlobalConfig {
+  /** Platform prefix name */
+  title?: string;
+  /** Platform slogan */
+  slogan?: string;
+  /** Site description information */
+  description?: string | null;
+  /** Footer information */
+  footerInfo?: string | null;
+  /** Custom theme color */
+  customTheme?: string | null;
+  /** Use asymmetric encryption for API requests */
+  apiEncryption?: boolean;
+  /** Platform logo hash */
+  logoHash?: string | null;
+  /** Platform favicon hash */
+  faviconHash?: string | null;
+}
+
+/** Container policy */
+export interface ContainerPolicy {
+  /** Automatically destroy the oldest container when the limit is reached */
+  autoDestroyOnLimitReached?: boolean;
+  /**
+   * User container limit, used to limit the number of exercise containers
+   * @format int32
+   */
+  maxExerciseContainerCountPerUser?: number;
+  /**
+   * Default container lifetime in minutes
+   * @format int32
+   * @min 1
+   * @max 7200
+   */
+  defaultLifetime?: number;
+  /**
+   * Extension duration for each renewal in minutes
+   * @format int32
+   * @min 1
+   * @max 7200
+   */
+  extensionDuration?: number;
+  /**
+   * Renewal window before container stops in minutes
+   * @format int32
+   * @min 1
+   * @max 360
+   */
+  renewalWindow?: number;
+}
+
+/** List response */
+export interface ArrayResponseOfUserInfoModel {
+  /** Data */
+  data: UserInfoModel[];
+  /**
+   * Data length
+   * @format int32
+   */
+  length: number;
+  /**
+   * Total length
+   * @format int32
+   */
+  total?: number;
+}
+
+/** User information (Admin) */
+export interface UserInfoModel {
+  /**
+   * User ID
+   * @format guid
+   */
+  id?: string | null;
+  /** Username */
+  userName?: string | null;
+  /** Real name */
+  realName?: string | null;
+  /** Student number */
+  stdNumber?: string | null;
+  /** Contact phone number */
+  phone?: string | null;
+  /** Bio */
+  bio?: string | null;
+  /**
+   * Registration time
+   * @format uint64
+   */
+  registerTimeUtc?: number;
+  /**
+   * Last visit time
+   * @format uint64
+   */
+  lastVisitedUtc?: number;
+  /** Last visit IP */
+  ip?: string;
+  /** Email */
+  email?: string | null;
+  /** Avatar URL */
+  avatar?: string | null;
+  /** User role */
+  role?: Role | null;
+  /** Is email confirmed (can log in) */
+  emailConfirmed?: boolean | null;
+}
+
+/** Batch user creation (Admin) */
+export interface UserCreateModel {
+  /**
+   * Username
+   * @minLength 3
+   * @maxLength 255
+   */
+  userName: string;
+  /**
+   * Password
+   * @minLength 1
+   */
+  password: string;
+  /**
+   * Email
+   * @format email
+   * @minLength 1
+   */
+  email: string;
+  /**
+   * Real name
+   * @maxLength 128
+   */
+  realName?: string | null;
+  /**
+   * Student number
+   * @maxLength 64
+   */
+  stdNumber?: string | null;
+  /**
+   * Contact phone number
+   * @format phone
+   */
+  phone?: string | null;
+  /**
+   * Team the user joins
+   * @maxLength 255
+   */
+  teamName?: string | null;
+}
+
+/** List response */
+export interface ArrayResponseOfTeamInfoModel {
+  /** Data */
+  data: TeamInfoModel[];
+  /**
+   * Data length
+   * @format int32
+   */
+  length: number;
+  /**
+   * Total length
+   * @format int32
+   */
+  total?: number;
+}
+
+/** Team information */
+export interface TeamInfoModel {
+  /**
+   * Team ID
+   * @format int32
+   */
+  id?: number;
+  /** Team name */
+  name?: string | null;
+  /** Team bio */
+  bio?: string | null;
+  /** Avatar URL */
+  avatar?: string | null;
+  /** Is locked */
+  locked?: boolean;
+  /** Team members */
+  members?: TeamUserInfoModel[] | null;
+}
+
+/** Team member information */
+export interface TeamUserInfoModel {
+  /**
+   * User ID
+   * @format guid
+   */
+  id?: string | null;
+  /** Username */
+  userName?: string | null;
+  /** Bio */
+  bio?: string | null;
+  /** Avatar URL */
+  avatar?: string | null;
+  /** Is Captain */
+  captain?: boolean;
+}
+
+/** Team information modification (Admin) */
+export interface AdminTeamModel {
+  /**
+   * Team name
+   * @maxLength 255
+   */
+  name?: string | null;
+  /**
+   * Team bio
+   * @maxLength 255
+   */
+  bio?: string | null;
+  /** Is locked */
+  locked?: boolean | null;
+}
+
+/** User information modification (Admin) */
+export interface AdminUserInfoModel {
+  /**
+   * Username
+   * @minLength 3
+   * @maxLength 255
+   */
+  userName?: string | null;
+  /**
+   * Email
+   * @format email
+   */
+  email?: string | null;
+  /**
+   * Signature
+   * @maxLength 128
+   */
+  bio?: string | null;
+  /**
+   * Phone number
+   * @format phone
+   */
+  phone?: string | null;
+  /**
+   * Real name
+   * @maxLength 128
+   */
+  realName?: string | null;
+  /**
+   * Student number
+   * @maxLength 64
+   */
+  stdNumber?: string | null;
+  /** Is email confirmed (can log in) */
+  emailConfirmed?: boolean | null;
+  /** User role */
+  role?: Role | null;
+}
+
+/** Log information (Admin) */
+export interface LogMessageModel {
+  /**
+   * Log time
+   * @format uint64
+   */
+  time?: number;
+  /** Username */
+  name?: string | null;
+  level?: string | null;
+  /** IP address */
+  ip?: string | null;
+  /** Log message */
+  msg?: string | null;
+  /** Task status */
+  status?: TaskStatus | null;
+  /** Browser fingerprint */
+  fingerprint?: string | null;
+}
+
+/** Modify the participation information */
+export interface ParticipationEditModel {
+  /** Participation Status */
+  status?: ParticipationStatus | null;
+  /**
+   * The division of the participated team
+   * @format int32
+   */
+  divisionId?: number | null;
+}
+
+/** Game writeup information */
+export interface WriteupInfoModel {
+  /** Division ID to Division Name mapping */
+  divisions?: Record<string, string>;
+  /** Writeups list */
+  writeups?: WriteupInfo[];
+}
+
+export interface WriteupInfo {
+  /**
+   * Participation ID
+   * @format int32
+   */
+  id?: number;
+  /** Team information */
+  team?: TeamInfoModel;
+  /** Game title */
+  gameTitle?: string;
+  /** File URL */
+  url?: string;
+  /**
+   * File upload time
+   * @format uint64
+   */
+  uploadTimeUtc?: number;
+  /**
+   * The division the team belongs to
+   * @format int32
+   */
+  divisionId?: number | null;
+}
+
+/** List response */
+export interface ArrayResponseOfContainerInstanceModel {
+  /** Data */
+  data: ContainerInstanceModel[];
+  /**
+   * Data length
+   * @format int32
+   */
+  length: number;
+  /**
+   * Total length
+   * @format int32
+   */
+  total?: number;
+}
+
+/** Container instance information (Admin) */
+export interface ContainerInstanceModel {
+  /** Team */
+  team?: TeamModel | null;
+  /** Challenge */
+  challenge?: ChallengeModel | null;
+  /** Container image */
+  image?: string;
+  /**
+   * Container database ID
+   * @format guid
+   */
+  containerGuid?: string;
+  /** Container ID */
+  containerId?: string;
+  /**
+   * Container creation time
+   * @format uint64
+   */
+  startedAt?: number;
+  /**
+   * Expected container stop time
+   * @format uint64
+   */
+  expectStopAt?: number;
+  /** Access IP */
+  ip?: string;
+  /**
+   * Access port
+   * @format int32
+   */
+  port?: number;
+}
+
+/** Team information */
+export interface TeamModel {
+  /**
+   * Team ID
+   * @format int32
+   */
+  id?: number;
+  /** Team name */
+  name?: string;
+  /** Team avatar */
+  avatar?: string | null;
+}
+
+/** Challenge information */
+export interface ChallengeModel {
+  /**
+   * Challenge ID
+   * @format int32
+   */
+  id?: number;
+  /** Challenge title */
+  title?: string;
+  /** Challenge category */
+  category?: ChallengeCategory;
+}
+
+/** List response */
+export interface ArrayResponseOfLocalFile {
+  /** Data */
+  data: LocalFile[];
+  /**
+   * Data length
+   * @format int32
+   */
+  length: number;
+  /**
+   * Total length
+   * @format int32
+   */
+  total?: number;
+}
+
+export interface LocalFile {
+  /**
+   * File hash
+   * @maxLength 64
+   */
+  hash?: string;
+  /**
+   * File name
+   * @minLength 1
+   */
+  name: string;
+}
+
+/** This record represents the response for an API token request. */
+export interface ApiTokenResponse {
+  token?: string;
+  /** Represents an API token for programmatic access. */
+  info?: ApiToken;
+}
+
+/** Represents an API token for programmatic access. */
+export interface ApiToken {
+  /**
+   * The unique identifier for the token, also used as the JWT ID (jti).
+   * @format guid
+   */
+  id?: string;
+  /**
+   * A user-friendly name for the token to identify its purpose.
+   * @minLength 1
+   * @maxLength 128
+   */
+  name: string;
+  /**
+   * The ID of the user who created the token.
+   * @format guid
+   * @minLength 1
+   */
+  creatorId: string;
+  /**
+   * The timestamp when the token was created.
+   * @format uint64
+   */
+  createdAt: number;
+  /**
+   * The timestamp when the token expires. A null value means it never expires.
+   * @format uint64
+   */
+  expiresAt?: number | null;
+  /**
+   * The timestamp when the token was last used.
+   * @format uint64
+   */
+  lastUsedAt?: number | null;
+  /** Indicates whether the token has been revoked. */
+  isRevoked: boolean;
+  /** The name of the user who created the token. */
+  creator?: string | null;
+}
+
+/** API token creation model. */
+export interface ApiTokenCreateModel {
+  /**
+   * The user-friendly name for the token to identify its purpose.
+   * @minLength 1
+   * @maxLength 128
+   */
+  name: string;
+  /** The duration for which the token will be valid, in days. */
+  expiresIn?: number | null;
+}
+
+export interface ProblemDetails {
+  type?: string | null;
+  title?: string | null;
+  /** @format int32 */
+  status?: number | null;
+  detail?: string | null;
+  instance?: string | null;
+  [key: string]: any;
+}
+
+export interface CollusionGroupResult {
+  teams?: CollusionTeamInfo[];
+  /** @format double */
+  averageRsi?: number;
+  commonSolves?: string[];
+  details?: string | null;
+  detailedSolves?: SequenceSuspectDetail[];
+}
+
+export interface CollusionTeamInfo {
+  /** @format int32 */
+  id: number;
+  name: string;
+  /** @format int32 */
+  participationId?: number;
+}
+
+export interface CollusionCompareResult {
+  /** @format double */
+  rsi: number;
+  details: SequenceSuspectDetail[];
+}
+
+export interface CheatReport {
+  /** @format uint64 */
+  generatedAt?: number;
+  ipAnalysis?: IpAnalysisResult[];
+  abnormalSolves?: AbnormalSolveResult[];
+
+  collusionGroups?: CollusionGroupResult[];
+  suspicionList?: SuspicionRecordResult[];
+  identityOverlaps?: IdentityOverlapResult[];
+}
+
+export interface SuspicionRecordResult {
+  /** @format int32 */
+  teamId?: number;
+  /** @format int32 */
+  participationId?: number;
+  status?: ParticipationStatus;
+  teamName?: string;
+  /** @format int32 */
+  score?: number;
+  /** evidenced | investigate | watch | context | clean */
+  band?: string;
+  /** @format int32 */
+  hard?: number;
+  /** @format int32 */
+  strong?: number;
+  /** @format int32 */
+  behavioral?: number;
+  /** @format int32 */
+  corroboration?: number;
+  events?: SuspicionEventResult[];
+}
+
+export interface SuspicionEventResult {
+  type?: string;
+  /** @format int32 */
+  scoreDelta?: number;
+  details?: string;
+  /** @format uint64 */
+  time?: number;
+  /** context | behavioral | strong | hard */
+  tier?: string;
+  counted?: boolean;
+}
+
+export interface IdentityOverlapResult {
+  /** "fingerprint" or "ip" */
+  kind?: string;
+  value?: string;
+  /** @format int32 */
+  teamCount?: number;
+  teamNames?: string[];
+  userNames?: string[];
+}
+
+export interface IpAnalysisResult {
+  /** @format int32 */
+  teamId?: number;
+  teamName?: string;
+  type?: string;
+  details?: string;
+  relatedTeams?: string[];
+  userNames?: string[];
+  relatedUsers?: string[];
+  ip?: string;
+  /** @format uint64 */
+  time?: number;
+}
+
+export interface AbnormalSolveResult {
+  /** @format int32 */
+  teamId?: number;
+  teamName?: string;
+  /** @format int32 */
+  challengeId?: number;
+  challengeName?: string;
+  type?: string;
+  details?: string;
+  /** @format uint64 */
+  solveTime?: number;
+}
+
+export interface SequenceSuspectDetail {
+  challengeName?: string | null;
+  /** @format date-time */
+  timeA?: string;
+  /** @format date-time */
+  timeB?: string;
+  /** @format double */
+  timeDiff?: number;
+}
+
+
+/** Post item (Edit) */
+export interface PostEditModel {
+  /**
+   * Post title
+   * @maxLength 50
+   */
+  title?: string | null;
+  /** Post summary */
+  summary?: string | null;
+  /** Post content */
+  content?: string | null;
+  /** Post tags */
+  tags?: string[] | null;
+  /** Is pinned */
+  isPinned?: boolean | null;
+}
+
+/** Post details */
+export interface PostDetailModel {
+  /**
+   * Post ID
+   * @minLength 1
+   */
+  id: string;
+  /**
+   * Post title
+   * @minLength 1
+   */
+  title: string;
+  /**
+   * Post summary
+   * @minLength 1
+   */
+  summary: string;
+  /**
+   * Post content
+   * @minLength 1
+   */
+  content: string;
+  /** Is pinned */
+  isPinned: boolean;
+  /** Post tags */
+  tags?: string[] | null;
+  /** Author avatar */
+  authorAvatar?: string | null;
+  /** Author name */
+  authorName?: string | null;
+  /**
+   * Publish time
+   * @format uint64
+   */
+  time: number;
+}
+
+/** Game information (Edit) */
+export interface GameInfoModel {
+  /**
+   * Game ID
+   * @format int32
+   */
+  id?: number;
+  /**
+   * Game title
+   * @minLength 1
+   */
+  title: string;
+  /** Is hidden */
+  hidden?: boolean;
+  /** Game summary */
+  summary?: string;
+  /** Game detailed description */
+  content?: string;
+  /** Accept teams without review */
+  acceptWithoutReview?: boolean;
+  /** Whether users may submit challenges (with admin review) for this game */
+  allowUserSubmissions?: boolean;
+  /** Is writeup required */
+  writeupRequired?: boolean;
+  /**
+   * Game invitation code
+   * @maxLength 32
+   */
+  inviteCode?: string | null;
+  /**
+   * Team member count limit, 0 means no limit
+   * @format int32
+   */
+  teamMemberCountLimit?: number;
+  /**
+   * Container count limit per team
+   * @format int32
+   */
+  containerCountLimit?: number;
+  /**
+   * Discord webhook URL
+   * @maxLength 255
+   */
+  discordWebhook?: string | null;
+  /** Game poster URL */
+  poster?: string | null;
+  /** Game public key */
+  publicKey?: string;
+  /** Is the game in practice mode (accessible even after the game ends) */
+  practiceMode?: boolean;
+  /**
+   * Start time
+   * @format uint64
+   */
+  start: number;
+  /**
+   * End time
+   * @format uint64
+   */
+  end: number;
+  /**
+   * Optional scoreboard freeze time. If set, must fall strictly between StartTimeUtc and EndTimeUtc.
+   * @format uint64
+   */
+  freeze?: number | null;
+  /**
+   * Writeup submission deadline
+   * @format uint64
+   */
+  writeupDeadline?: number;
+  /** Writeup additional notes */
+  writeupNote?: string;
+  /**
+   * Blood bonus points
+   * @format int64
+   */
+  bloodBonus?: number;
+  /**
+   * A&D — warmup seconds before round 1 starts (default 1800 = 30 min).
+   * @format int32
+   */
+  adWarmupSeconds?: number | null;
+  /**
+   * A&D — how long to retain per-team container snapshots after game end.
+   * @format int32
+   */
+  adSnapshotRetentionDays?: number | null;
+  /**
+   * A&D — seconds per tick (global scoring unit; default 120).
+   * @format int32
+   */
+  adTickSeconds?: number | null;
+  /**
+   * A&D — ticks a planted flag stays valid (attack window; default 5).
+   * @format int32
+   */
+  adFlagLifetimeTicks?: number | null;
+  /** Number of A&D ticks grouped into one equal-budget scoring epoch (1-64). */
+  adEpochTicks?: number | null;
+  /** Read-only: first official round, or null until a complete A&D roster and prepared exact custom checkers are ready. */
+  adScoringStartRound?: number | null;
+  /** Read-only: first official KotH scoring round, or null before the frozen roster/token boundary. */
+  kothScoringStartRound?: number | null;
+  /** KotH scoring epoch length snapshotted at the official scoring boundary (default 12). */
+  kothEpochTicks?: number | null;
+  /** Ticks in one pristine-container crown cycle (default 3). */
+  kothCycleTicks?: number | null;
+  /** Opening ticks the previous cycle champion cannot access this hill (default 1). */
+  kothChampionCooldownTicks?: number | null;
+  /** Consecutive healthy control ticks required to confirm a claim (default 2). */
+  kothClaimConfirmationTicks?: number | null;
+  /**
+   * A&D — minutes between a team's self-resets (default 5).
+   * @format int32
+   */
+  adResetCooldownMinutes?: number | null;
+  /** A&D — snapshot team containers at game end for download (default true). */
+  adAllowSnapshotDownload?: boolean | null;
+  /** A&D — getflag jitter window as a fraction of the tick (default 0.5). */
+  adGetflagWindowFraction?: number | null;
+  /**
+   * A&D — seconds after a round starts before getflag may fire (default 3).
+   * @format int32
+   */
+  adMinGracePeriodSeconds?: number | null;
+}
+
+/** List response */
+export interface ArrayResponseOfGameInfoModel {
+  /** Data */
+  data: GameInfoModel[];
+  /**
+   * Data length
+   * @format int32
+   */
+  length: number;
+  /**
+   * Total length
+   * @format int32
+   */
+  total?: number;
+}
+
+/**
+ * Game notice, which will be sent to the client.
+ * Information includes first, second, and third blood notifications, hint release notifications, challenging opening notifications, etc.
+ */
+export type GameNotice = FormattableDataOfNoticeType & {
+  /** @format int32 */
+  id: number;
+  /**
+   * Publish time
+   * @format uint64
+   */
+  time: number;
+};
+
+/** Formattable data */
+export interface FormattableDataOfNoticeType {
+  /** Data type */
+  type: NoticeType;
+  /** List of formatted values */
+  values: string[];
+}
+
+/** Game notice (Edit) */
+export interface GameNoticeModel {
+  /**
+   * Notice content
+   * @minLength 1
+   */
+  content: string;
+}
+
+export interface Division {
+  /** @format int32 */
+  id: number;
+  /**
+   * The name of the division.
+   * @minLength 1
+   * @maxLength 31
+   */
+  name: string;
+  /**
+   * Invitation code for joining the division.
+   * @maxLength 32
+   */
+  inviteCode?: string | null;
+  /** Permissions associated with the division. */
+  defaultPermissions?: GamePermission;
+  /** Challenge configs for this division. */
+  challengeConfigs?: DivisionChallengeConfig[];
+}
+
+export interface DivisionChallengeConfig {
+  /** @format int32 */
+  challengeId: number;
+  /** Challenge Specific Permissions */
+  permissions?: GamePermission;
+}
+
+export interface DivisionCreateModel {
+  /**
+   * The name of the division.
+   * @minLength 1
+   * @maxLength 31
+   */
+  name: string;
+  /**
+   * Invitation code for joining the division.
+   * @maxLength 32
+   */
+  inviteCode?: string | null;
+  /** Permissions associated with the division. */
+  defaultPermissions?: GamePermission | null;
+  /** Challenge configs for this division. */
+  challengeConfigs?: DivisionChallengeConfigModel[] | null;
+}
+
+export interface DivisionChallengeConfigModel {
+  /**
+   * Challenge ID
+   * @format int32
+   */
+  challengeId: number;
+  /** Challenge Specific Permissions */
+  permissions?: GamePermission;
+}
+
+export interface DivisionEditModel {
+  /**
+   * The name of the division.
+   * @maxLength 31
+   */
+  name?: string | null;
+  /**
+   * Invitation code for joining the division.
+   * @maxLength 32
+   */
+  inviteCode?: string | null;
+  /** Permissions associated with the division. */
+  defaultPermissions?: GamePermission | null;
+  /** Challenge configs for this division. */
+  challengeConfigs?: DivisionChallengeConfigModel[] | null;
+}
+
+/** Trusted-worker game-mode identifier (camelCase wire value). */
+export type WorkerGameKind = "jeopardy" | "attackDefense" | "kingOfTheHill";
+
+/** Operating system required by a trusted-worker workload. */
+export type WorkerOperatingSystem = "linux" | "windows";
+
+/** Currently supported trusted-worker service-port protocol. */
+export type WorkerPortProtocol = "tcp";
+
+/** Platform required by every service in one trusted-worker workload. */
+export interface WorkerPlatform {
+  operatingSystem: WorkerOperatingSystem;
+  architecture: string;
+  windowsBuild?: string | null;
+}
+
+/** Immutable OCI registry image identity. */
+export interface WorkerRegistryDigestImage {
+  type: "registryDigest";
+  repository: string;
+  digest: string;
+}
+
+/** Immutable image identity pinned to one exact enrolled worker. */
+export interface WorkerLocalImage {
+  type: "workerLocal";
+  workerId: string;
+  imageId: string;
+}
+
+export type WorkerImageIdentity = WorkerRegistryDigestImage | WorkerLocalImage;
+
+export interface WorkerResourceLimits {
+  /** CPU reservation in millicores. */
+  cpuMillis: number;
+  /** Memory reservation in bytes. */
+  memoryBytes: number;
+}
+
+export interface WorkerServicePort {
+  name: string;
+  containerPort: number;
+  protocol: WorkerPortProtocol;
+}
+
+export interface WorkerServiceSpec {
+  name: string;
+  image: WorkerImageIdentity;
+  resources: WorkerResourceLimits;
+  replicas: number;
+  /** Required for replicas greater than one; replicas are Jeopardy-only. */
+  stateless: boolean;
+  environment?: Record<string, string>;
+  ports: WorkerServicePort[];
+}
+
+export interface WorkerEndpointRef {
+  service: string;
+  port: string;
+}
+
+export interface WorkerFlagTarget {
+  service: string;
+  path: string;
+}
+
+/** Aggregate workload accepted by the trusted-worker protocol. */
+export interface WorkloadSpec {
+  gameKind: WorkerGameKind;
+  platform: WorkerPlatform;
+  services: WorkerServiceSpec[];
+  primaryEndpoint: WorkerEndpointRef;
+  flagTarget?: WorkerFlagTarget | null;
+}
+
+/** Result of applying the saved workload definition to active worker instances. */
+export interface WorkloadRolloutModel {
+  matched: number;
+  updated: number;
+  stale: number;
+  incompatible: number;
+  insufficientCapacity: number;
+  failed: number;
+}
+
+/** Challenge detailed information (Edit) */
+export interface ChallengeEditDetailModel {
+  /**
+   * Challenge ID
+   * @format int32
+   */
+  id?: number;
+  /**
+   * Challenge title
+   * @minLength 1
+   */
+  title: string;
+  /** Challenge content */
+  content?: string;
+  /** Challenge category */
+  category: ChallengeCategory;
+  /** Challenge type */
+  type: ChallengeType;
+  /** Challenge hints */
+  hints?: string[];
+  /**
+   * Flag template, used to generate Flag based on Token and challenge, game information
+   * @maxLength 120
+   */
+  flagTemplate?: string | null;
+  /** Is the challenge enabled */
+  isEnabled: boolean;
+  /**
+   * Number of people who passed
+   * @format int32
+   */
+  acceptedCount: number;
+  /** Unified file name (only for dynamic attachments) */
+  fileName?: string | null;
+  /** Challenge attachment (dynamic attachments are stored in FlagInfoModel) */
+  attachment?: Attachment | null;
+  /** Test container */
+  testContainer?: ContainerInfoModel | null;
+  /** Challenge Flag information */
+  flags: FlagInfoModel[];
+  /**
+   * Image name and tag
+   * @minLength 1
+   */
+  containerImage: string;
+  /**
+   * Memory limit (MB)
+   * @format int32
+   */
+  memoryLimit?: number | null;
+  /**
+   * CPU limit (0.1 CPUs)
+   * @format int32
+   */
+  cpuCount?: number | null;
+  /**
+   * Storage limit (MB)
+   * @format int32
+   */
+  storageLimit?: number | null;
+  /**
+   * Container exposed port
+   * @format int32
+   */
+  exposePort?: number | null;
+  /** Optional aggregate trusted-worker workload. Null means no aggregate workload is configured. */
+  workloadSpec?: WorkloadSpec | null;
+  /** Stable identity for fencing an explicit rollout to this saved workload. */
+  workloadIdentity?: string | null;
+  /** Container network mode */
+  networkMode?: NetworkMode | null;
+  /** Whether to record traffic */
+  enableTrafficCapture?: boolean | null;
+  /** Whether all teams share a single container (StaticContainer only) */
+  enableSharedContainer?: boolean | null;
+  /** Whether to disable blood bonus */
+  disableBloodBonus?: boolean | null;
+  /**
+   * The deadline of the challenge, null means no deadline
+   * @format uint64
+   */
+  deadlineUtc?: number | null;
+  /**
+   * Maximum number of submissions allowed per team (0 = no limit)
+   * @format int32
+   */
+  submissionLimit: number;
+  /**
+   * Initial score
+   * @format int32
+   */
+  originalScore: number;
+  /**
+   * Minimum score rate
+   * @format double
+   * @min 0
+   * @max 1
+   */
+  minScoreRate: number;
+  /**
+   * Difficulty coefficient
+   * @format double
+   */
+  difficulty: number;
+  /** Dynamic-scoring decay curve shape (Standard / Linear / Logarithmic). */
+  scoreCurve: ScoreCurve;
+  /** A&D — Docker image for the per-challenge checker container. */
+  adCheckerImage?: string | null;
+  /** A&D — When true, team containers can reach the public internet. */
+  adAllowEgress?: boolean | null;
+  /** A&D — When true, teams can self-reset to baseline. */
+  adAllowSelfReset?: boolean | null;
+  /** A&D: SSH to the service container requires a captured flag for this challenge. */
+  adSshRequiresFlag?: boolean | null;
+  /** A&D / KotH: the team self-hosts the service container (BYOC), connected via an RSCTF relay. */
+  adSelfHosted?: boolean | null;
+  /**
+   * A&D epoch service weight, normalized within the fixed 100-point cap.
+   * @format double
+   * @min 0.8
+   * @max 1.2
+   * @default 1
+   */
+  adScoringWeight: number;
+  /** Current build pipeline state */
+  buildStatus?: ChallengeBuildStatus;
+  /** Live-updated build log tail */
+  lastBuildLog?: string | null;
+}
+
+export interface Attachment {
+  /** @format int32 */
+  id: number;
+  /** Attachment type */
+  type: FileType;
+  /** Default file URL */
+  url?: string | null;
+  /**
+   * Get attachment size
+   * @format int64
+   */
+  fileSize?: number | null;
+}
+
+export interface ContainerInfoModel {
+  /** Container GUID — for the in-browser exec shell. */
+  id?: string;
+  /** Container status */
+  status?: ContainerStatus;
+  /**
+   * Container creation time
+   * @format uint64
+   */
+  startedAt?: number;
+  /**
+   * Expected container stop time
+   * @format uint64
+   */
+  expectStopAt?: number;
+  /** Challenge entry point */
+  entry?: string;
+}
+
+/** Flag information (Edit) */
+export interface FlagInfoModel {
+  /**
+   * Flag Id
+   * @format int32
+   */
+  id?: number;
+  /** Flag text */
+  flag?: string;
+  /** Attachment corresponding to the Flag */
+  attachment?: Attachment | null;
+}
+
+/** Basic challenge information (Edit) */
+export interface ChallengeInfoModel {
+  /**
+   * Challenge ID
+   * @format int32
+   */
+  id?: number;
+  /**
+   * Challenge title
+   * @minLength 1
+   */
+  title: string;
+  /** Challenge category */
+  category?: ChallengeCategory;
+  /** Challenge type */
+  type?: ChallengeType;
+  /** Is the challenge enabled */
+  isEnabled?: boolean;
+  /**
+   * Challenge score
+   * @format int32
+   */
+  score?: number;
+  /**
+   * Minimum score
+   * @format int32
+   */
+  minScore?: number;
+  /**
+   * Original score
+   * @format int32
+   */
+  originalScore?: number;
+  /**
+   * The deadline of the challenge, null means no deadline
+   * @format uint64
+   */
+  deadlineUtc?: number | null;
+  /** Review state — surfaced so the admin list can badge pending/rejected challenges */
+  reviewStatus?: ChallengeReviewStatus;
+  /** Most recent auto-build outcome (for challenges with a local Dockerfile) */
+  buildStatus?: ChallengeBuildStatus;
+  /** True iff an OriginalArchiveBlobPath is on file (i.e. Rebuild has something to rebuild from) */
+  hasOriginalArchive?: boolean;
+}
+
+/** Review state of a challenge */
+export type ChallengeReviewStatus = "Active" | "Pending" | "Rejected"
+
+/**
+ * Lifecycle of the challenge image build pipeline.
+ *
+ * - `None` — manual challenge, no build context known
+ * - `Success` / `Failed` — terminal states from the most recent attempt
+ * - `Building` — a worker is actively running `docker build`
+ * - `NotApplicable` — challenge ships a registry image, no build needed
+ * - `Queued` — enqueued, waiting for a worker
+ * - `MissingDockerfile` — local-style image declared but no Dockerfile
+ *   at the resolved path; surfaces clearly instead of staying silent
+ */
+export type ChallengeBuildStatus =
+  | "None"
+  | "Success"
+  | "Failed"
+  | "Building"
+  | "NotApplicable"
+  | "Queued"
+  | "MissingDockerfile"
+
+/** Why a build was enqueued — drives audit-log filters */
+export type BuildTrigger = "Import" | "Manual" | "AutoRetry" | "Bulk"
+
+/** One row of the /admin/builds history table */
+/** Which image a build attempt produced: the challenge's service image or its A&D/KotH checker image. */
+export type ChallengeBuildKind = "Challenge" | "Checker"
+
+export interface ChallengeBuildAuditModel {
+  id: number
+  challengeId: number
+  gameId: number
+  challengeTitle: string
+  enqueuedAtUtc: string
+  startedAtUtc?: string | null
+  finishedAtUtc?: string | null
+  trigger: BuildTrigger
+  /** Service-image build vs A&D/KotH checker-image build. */
+  kind: ChallengeBuildKind
+  attempt: number
+  status: ChallengeBuildStatus
+  digest?: string | null
+  /** The image ref this build produced (local autobuilt tag or pushed registry tag); null on failure. */
+  imageRef?: string | null
+  logTail?: string | null
+  errorMessage?: string | null
+  durationMs: number
+}
+
+/** One row of the live in-progress strip */
+export interface ChallengeBuildInProgressModel {
+  auditId: number
+  challengeId: number
+  gameId: number
+  slug: string
+  attempt: number
+  trigger: BuildTrigger
+  /** Service-image build vs A&D/KotH checker-image build. */
+  kind: ChallengeBuildKind
+  startedAtUtc: string
+}
+
+/** Result of a "Rebuild all failed" bulk action */
+export interface BulkRebuildResultModel {
+  enqueued: number
+  skipped: number
+  messages: string[]
+}
+
+/** Result of a prune action — either audit rows or local images. */
+export interface PruneResultModel {
+  removed: number
+  messages?: string[]
+}
+
+/** One rsctf/* image present on the local Docker daemon. */
+export interface BuildImageModel {
+  /** Docker image id (sha256:…) shared across this image's tags. */
+  id: string
+  /** The rsctf/* repository tags pointing at this image. */
+  tags: string[]
+  /** On-disk image size in bytes. */
+  sizeBytes: number
+  createdUtc?: string | null
+  /** True when a challenge's ContainerImage / AdCheckerImage still points here. */
+  referenced: boolean
+  /** Titles of the challenges referencing this image. */
+  referencedBy: string[]
+  /** True when this is an A&D/KotH checker image. */
+  isChecker: boolean
+}
+
+/** Challenge update information (Edit) */
+export interface ChallengeUpdateModel {
+  /**
+   * Challenge title
+   * @minLength 1
+   */
+  title?: string | null;
+  /** Challenge content */
+  content?: string | null;
+  /**
+   * Flag template, used to generate Flag based on Token and challenge/game information
+   * @maxLength 120
+   */
+  flagTemplate?: string | null;
+  /** Challenge category */
+  category?: ChallengeCategory | null;
+  /** Challenge hints */
+  hints?: string[] | null;
+  /** Is the challenge enabled */
+  isEnabled?: boolean | null;
+  /** Unified file name */
+  fileName?: string | null;
+  /**
+   * The deadline of the challenge, null means no deadline
+   * @format uint64
+   */
+  deadlineUtc?: number | null;
+  /**
+   * Maximum number of flag submissions allowed per team for this challenge (0 = no limit)
+   * @format int32
+   * @min 0
+   * @max 10000
+   */
+  submissionLimit?: number | null;
+  /** Container image name and tag */
+  containerImage?: string | null;
+  /**
+   * Memory limit (MB)
+   * @format int32
+   * @min 32
+   * @max 1048576
+   */
+  memoryLimit?: number | null;
+  /**
+   * CPU limit (0.1 CPUs)
+   * @format int32
+   * @min 1
+   * @max 1024
+   */
+  cpuCount?: number | null;
+  /**
+   * Storage limit (MB)
+   * @format int32
+   * @min 0
+   * @max 1048576
+   */
+  storageLimit?: number | null;
+  /**
+   * Container exposed port
+   * @format int32
+   */
+  exposePort?: number | null;
+  /** Missing preserves the aggregate workload; null clears it; an object replaces it. */
+  workloadSpec?: WorkloadSpec | null;
+  /** Container network mode */
+  networkMode?: NetworkMode | null;
+  /** Is traffic capture enabled (disabled by default) */
+  enableTrafficCapture?: boolean | null;
+  /** Whether all teams share a single container (StaticContainer only, disabled by default) */
+  enableSharedContainer?: boolean | null;
+  /** Is blood bonus disabled (enable by default) */
+  disableBloodBonus?: boolean | null;
+  /**
+   * Initial score
+   * @format int32
+   */
+  originalScore?: number | null;
+  /**
+   * Minimum score rate
+   * @format double
+   * @min 0
+   * @max 1
+   */
+  minScoreRate?: number | null;
+  /**
+   * Difficulty coefficient
+   * @format double
+   */
+  difficulty?: number | null;
+  /** Dynamic-scoring decay curve shape (Standard / Linear / Logarithmic). */
+  scoreCurve?: ScoreCurve | null;
+  /** A&D — Docker image for the per-challenge checker container. */
+  adCheckerImage?: string | null;
+  /** A&D — When true, team containers can reach the public internet. */
+  adAllowEgress?: boolean | null;
+  /** A&D — When true, teams can self-reset to baseline (default true). */
+  adAllowSelfReset?: boolean | null;
+  /** A&D: SSH to the service container requires a captured flag for this challenge. */
+  adSshRequiresFlag?: boolean | null;
+  /** A&D / KotH: the team self-hosts the service container (BYOC), connected via an RSCTF relay. */
+  adSelfHosted?: boolean | null;
+  /**
+   * A&D epoch service weight; locked after scoring starts.
+   * @format double
+   * @min 0.8
+   * @max 1.2
+   * @default 1
+   */
+  adScoringWeight?: number | null;
+}
+
+/**
+ * A&D — body for POST /api/Game/{id}/Ad/Submit. Batch shape: scripts capture
+ * many flags per tick and submit them together. Bounded server-side at 100.
+ */
+export interface AdBatchSubmitModel {
+  flags: string[];
+}
+
+/** A&D — per-flag result row (returned in input order for correlation). */
+export interface AdSubmitResultModel {
+  /** Echoed back so the caller can correlate result with submitted flag. */
+  flag: string;
+  /** accepted | duplicate | wrong | expired | self_attack | not_started | ended | paused | rejected */
+  status: string;
+  flagPlantedAtRound?: number | null;
+  message?: string | null;
+}
+
+/** A&D — POST /api/Game/{id}/Ad/Submit response. */
+export interface AdBatchSubmitResultModel {
+  acceptedCount: number;
+  results: AdSubmitResultModel[];
+}
+
+/** A&D — POST /api/Game/{id}/Ad/Token response. Plaintext shown once. */
+export interface AdTokenGenerateResultModel {
+  token: string;
+  hint: string;
+  rotatedAt: string;
+}
+
+/** A&D SSH key — body for POST /api/Game/{id}/Ad/Ssh/Key. */
+export interface AdSshKeyUploadModel {
+  publicKey: string;
+}
+
+/** A&D SSH key — GET response (no plaintext). */
+export interface AdSshKeyInfoModel {
+  exists: boolean;
+  algorithm: string;
+  fingerprint: string;
+  platformGenerated: boolean;
+  createdAt?: string | null;
+  lastUsedAt?: string | null;
+  /** Hostname:port the player ssh's to (Ad:Ssh:PublicHost/Port). */
+  jumpHost?: string | null;
+}
+
+/** A&D SSH key — server-generated keypair (private key shown once). */
+export interface AdSshKeyGeneratedModel {
+  algorithm: string;
+  publicKey: string;
+  privateKey: string;
+  fingerprint: string;
+  createdAt: string;
+}
+
+export interface AdEpochScoreModel {
+  epoch: number;
+  points: number;
+  /** Fractional contribution for a short tail epoch; full epochs have weight 1. */
+  epochWeight: number;
+  finalized: boolean;
+}
+
+/** Per-challenge contribution to a team's official A&D epoch score. */
+export interface AdServiceScoreModel {
+  challengeId: number;
+  /** Weighted average from finalized epochs; this is the ranked value. */
+  settledPoints: number;
+  /** Weighted average including the current, non-final epoch. */
+  projectedPoints: number;
+  offenseRate: number;
+  defenseRate: number;
+  slaRate: number;
+  captureCount: number;
+  lastCheckStatus?: string | null;
+}
+
+export interface AdTeamScoreModel {
+  rank: number;
+  participationId: number;
+  teamId: number;
+  teamName: string;
+  division?: string | null;
+  /** Weighted average of finalized epochs; a short tail contributes fractionally. */
+  settledTotal: number;
+  /** Weighted average including the live tail epoch; live and non-final. */
+  projectedTotal: number;
+  offenseRate: number;
+  defenseRate: number;
+  slaRate: number;
+  services: AdServiceScoreModel[];
+  epochs: AdEpochScoreModel[];
+}
+
+export interface AdEvidenceStatusModel {
+  eligibleFlags: number;
+  capturedFlags: number;
+  acceptedCaptures: number;
+  defenseOpportunities: number;
+  protectedOpportunities: number;
+}
+
+export interface AdScoreboardChallenge {
+  challengeId: number;
+  title: string;
+  category: ChallengeCategory;
+}
+
+/** Official A&D epoch scoreboard used for ranking and awards. */
+export interface AdScoreboardModel {
+  epochTicks: number;
+  startRound: number | null;
+  started: boolean;
+  /** Event ended and every official epoch has been durably settled. */
+  fullySettled: boolean;
+  currentEpoch: number;
+  latestRound: number;
+  /** Unix milliseconds. */
+  currentRoundEndsAt: number | null;
+  tickSeconds: number;
+  isFrozenView: boolean;
+  /** Unix milliseconds. */
+  freeze: number | null;
+  challenges: AdScoreboardChallenge[];
+  /** Maximum recent epoch detail rows returned per team; totals still use all epochs. */
+  detailEpochLimit: number;
+  evidence: AdEvidenceStatusModel;
+  teams: AdTeamScoreModel[];
+  /** Unix milliseconds. */
+  generatedAt: number;
+}
+
+/** A&D — GET /api/Game/{id}/Ad/Token response (hint only, never plaintext). */
+export interface AdTokenHintModel {
+  exists: boolean;
+  hint: string;
+  createdAt?: string | null;
+  lastRotatedAt?: string | null;
+  lastUsedAt?: string | null;
+  /** True iff caller is captain of the participating team. */
+  canManage: boolean;
+}
+
+/** A&D — per-service row in the player's state view. */
+export interface AdTeamServiceStateModel {
+  adTeamServiceId: number;
+  challengeId: number;
+  challengeTitle: string;
+  containerIp?: string | null;
+  containerPort?: number | null;
+  /** The flag the team should currently be defending (their own). */
+  currentFlag?: string | null;
+  lastCheckStatus?: string | null;
+  lastResetAt?: string | null;
+  canReset: boolean;
+  resetCooldownSecondsRemaining?: number | null;
+  /** True once a post-game snapshot exists for this service — team can download their own box. */
+  snapshotAvailable: boolean;
+  /** True when the challenge is self-hosted (BYOC): show the setup bundle instead of a hosted container. */
+  selfHosted?: boolean;
+}
+
+/** A&D — GET /api/Game/{id}/Ad/State response. */
+export interface AdStateModel {
+  currentRound: number;
+  /** Number of scoring rounds in one official A&D epoch. */
+  epochTicks: number;
+  /** First round included in official A&D scoring; null during warmup. */
+  startRound: number | null;
+  /** True after the platform's current-round flag propagation phase has settled. */
+  flagsReady: boolean;
+  /** Number of services that did not acknowledge the current round's flag. */
+  flagDeliveryFailures: number;
+  roundStartedAt?: string | null;
+  roundEndsAt?: string | null;
+  services: AdTeamServiceStateModel[];
+}
+
+/** A&D — one team's container for a given challenge (Targets endpoint). */
+export interface AdTeamTarget {
+  participationId: number;
+  teamName: string;
+  division?: string | null;
+  ip?: string | null;
+  port?: number | null;
+  /** Last check verdict — Ok / Mumble / Offline / null if not checked yet. */
+  lastCheckStatus?: string | null;
+}
+
+/** KotH — the currently published shared hill endpoint in Ad/Targets. */
+export interface AdHillTarget {
+  ip: string | null;
+  port: number | null;
+  /** Public crown-cycle generation; never a container-runtime identity. */
+  cycleNumber: number;
+  /** Latest exact-container functional verdict, or null when none is current. */
+  lastCheckStatus: string | null;
+  lastRefreshRound: number;
+}
+
+/** A&D — every team's container per enabled challenge. */
+export interface AdChallengeTargets {
+  challengeId: number;
+  title: string;
+  tickSeconds: number;
+  teams: AdTeamTarget[];
+  /** Populated only for King of the Hill challenges. */
+  hill?: AdHillTarget | null;
+}
+
+/** A&D — GET /api/Game/{id}/Ad/Targets response (excludes caller's own team). */
+export interface AdTargetsModel {
+  currentRound: number;
+  challenges: AdChallengeTargets[];
+}
+
+/** KotH — one point in a team's hold-score timeline. */
+export interface KothTimelinePoint {
+  round: number;
+  time: string;
+  score: number;
+}
+
+/** KotH — one team's normalized score history at epoch boundaries. */
+export interface KothTeamTimeline {
+  participationId: number;
+  teamId: number;
+  teamName: string;
+  division?: string | null;
+  items: KothTimelinePoint[];
+}
+
+/** KotH — GET /api/Game/{id}/Ad/Koth/Timeline response. */
+export interface KothScoreTimelineModel {
+  latestRound: number;
+  startedAt?: string | null;
+  endsAt?: string | null;
+  teams: KothTeamTimeline[];
+}
+
+/** A&D admin — POST /api/edit/games/{id}/ad/AdvanceRound response. */
+export interface AdAdvanceRoundResult {
+  roundNumber: number;
+  flagsPlanted: number;
+  startedAt: string;
+  endsAt: string;
+}
+
+/** A&D admin — per-challenge state in the admin console. */
+export interface AdChallengeStateModel {
+  challengeId: number;
+  title: string;
+  isEnabled: boolean;
+  tickSeconds: number;
+  flagLifetimeTicks: number;
+  teamsWithLiveContainer?: number | null;
+}
+
+/** A&D admin — per-cell (team × challenge) state in the admin grid. */
+export interface AdTeamCellModel {
+  adTeamServiceId: number;
+  challengeId: number;
+  containerIp?: string | null;
+  containerPort?: number | null;
+  /** Container GUID — target for the in-browser exec/shell terminal. */
+  containerGuid?: string | null;
+  lastCheckStatus?: string | null;
+  /** Id of the most recent check result — target of a judge override. */
+  lastCheckId?: number | null;
+  currentFlag?: string | null;
+  /** True iff a post-game snapshot tarball is stored for this team-service. */
+  snapshotAvailable: boolean;
+  /** Number of files the team changed vs the baseline image (docker diff), if captured. */
+  changedFileCount?: number | null;
+  /** True for self-hosted (BYOC) challenges — no RSCTF-hosted container to shell/snapshot/inspect; only SLA status is meaningful. */
+  selfHosted?: boolean;
+}
+
+/** A&D admin — one filesystem change in a team's container vs the baseline image. */
+export interface AdSnapshotChange {
+  /** Path inside the container. */
+  path: string;
+  /** 0 = modified, 1 = added, 2 = deleted (docker diff semantics). */
+  kind: number;
+}
+
+/** A&D admin — GET /api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot/Changes response. */
+export interface AdSnapshotChangesModel {
+  snapshotAvailable: boolean;
+  /** True when computed live from the running container (mid-game), not a stored snapshot. */
+  live?: boolean;
+  changes: AdSnapshotChange[];
+  /** Path categories filtered out of `changes` (runtime/churn blacklist), shown via the info button. */
+  filteredCategories?: string[];
+}
+
+/** One file's content, capped + binary-aware. */
+export interface AdFileBlob {
+  size: number;
+  truncated: boolean;
+  binary: boolean;
+  /** UTF-8 text (when not binary). */
+  text?: string | null;
+  /** Base64 (when binary). */
+  base64?: string | null;
+}
+
+/** Result of spawning a throwaway inspector container. */
+export interface AdInspectorModel {
+  /** GUID of the spawned container — feed to the in-browser shell. */
+  containerGuid: string;
+}
+
+/** One capture point in a service's file-change history. */
+export interface AdSnapshotPointModel {
+  id: number;
+  round: number;
+  capturedAt: string;
+  fileCount: number;
+}
+
+/** Diff between two capture points: files touched between them. */
+export interface AdSnapshotTimeDiffModel {
+  added: AdSnapshotChange[];
+  removed: AdSnapshotChange[];
+}
+
+/** Per-file inspection: current (running container) + baseline (image) + unified diff. */
+export interface AdFileViewModel {
+  path: string;
+  containerRunning: boolean;
+  current?: AdFileBlob | null;
+  baseline?: AdFileBlob | null;
+  /** Unified diff (baseline → current); present only when both sides are text within the line cap. */
+  unifiedDiff?: string | null;
+}
+
+/** A&D admin — per-team row in the admin grid. */
+export interface AdTeamRowModel {
+  participationId: number;
+  teamName: string;
+  services: AdTeamCellModel[];
+}
+
+/** A&D admin — GET /api/edit/games/{id}/ad/State response. */
+export interface AdGameStateModel {
+  currentRound?: number | null;
+  roundStartedAt?: string | null;
+  roundEndsAt?: string | null;
+  scoringPaused: boolean;
+  /** When scoring was paused (null if running) — the UI freezes the round timer at this instant. */
+  scoringPausedAt?: string | null;
+  challenges: AdChallengeStateModel[];
+  teams: AdTeamRowModel[];
+}
+
+/** A&D admin — body for POST /api/edit/games/{id}/ad/Checks/{checkId}/Override. */
+export interface AdOverrideCheckModel {
+  newStatus: AdCheckStatus;
+  note?: string | null;
+}
+
+/** New attachment information (Edit) */
+export interface AttachmentCreateModel {
+  /** Attachment type */
+  attachmentType?: FileType;
+  /** File hash (local file) */
+  fileHash?: string | null;
+  /** File URL (remote file) */
+  remoteUrl?: string | null;
+}
+
+/** New Flag information (Edit) */
+export interface FlagCreateModel {
+  /**
+   * Flag text
+   * @minLength 1
+   * @maxLength 127
+   */
+  flag: string;
+  /** Attachment type */
+  attachmentType?: FileType;
+  /** File hash (local file) */
+  fileHash?: string | null;
+  /** File URL (remote file) */
+  remoteUrl?: string | null;
+}
+
+/** List response */
+export interface ArrayResponseOfChallengeReviewDetailModel {
+  /** Data */
+  data: ChallengeReviewDetailModel[];
+  /**
+   * Data length
+   * @format int32
+   */
+  length: number;
+  /**
+   * Total length
+   * @format int32
+   */
+  total?: number;
+}
+
+export interface ChallengeReviewDetailModel {
+  /** @format int32 */
+  id?: number;
+  /** @format int32 */
+  challengeId?: number;
+  challengeName?: string;
+  gameTitle?: string;
+  /** @format guid */
+  userId?: string;
+  userName?: string;
+  rating?: ReviewRating;
+  comment?: string | null;
+  /** @format uint64 */
+  submitTimeUtc?: number;
+}
+
+export interface ReviewAnalyticsModel {
+  /** @format int32 */
+  total?: number;
+  /** @format int32 */
+  likes?: number;
+  /** @format int32 */
+  dislikes?: number;
+  topLiked?: TopChallengeModel[];
+  topDisliked?: TopChallengeModel[];
+}
+
+export interface TopChallengeModel {
+  /** @format int32 */
+  id?: number;
+  title?: string;
+  /** @format int32 */
+  count?: number;
+}
+
+/** Basic game information, excluding detailed description and current team registration status */
+export interface SystemStatsModel {
+  userCount: number;
+  teamCount: number;
+  activeContainerCount: number;
+}
+
+export interface SubmissionTrendModel {
+  time: string;
+  count: number;
+}
+
+export interface AdminDashboardModel {
+  systemStats: SystemStatsModel;
+  topGames: BasicGameInfoModel[];
+}
+
+export interface BasicGameInfoModel {
+  /** @format int32 */
+  id: number;
+  /** Game title */
+  title?: string;
+  /** Game summary */
+  summary?: string;
+  /** Poster image URL */
+  poster?: string | null;
+  /**
+   * Team member limit
+   * @format int32
+   */
+  limit?: number;
+  /** @format int32 */
+  teamCount?: number;
+  /** @format int32 */
+  userCount?: number;
+  /** @format double */
+  averageRating?: number;
+  /** @format int32 */
+  reviewCount?: number;
+  /**
+   * Start time
+   * @format uint64
+   */
+  start: number;
+  /**
+   * End time
+   * @format uint64
+   */
+  end: number;
+}
+
+/** List response */
+export interface ArrayResponseOfBasicGameInfoModel {
+  /** Data */
+  data: BasicGameInfoModel[];
+  /**
+   * Data length
+   * @format int32
+   */
+  length: number;
+  /**
+   * Total length
+   * @format int32
+   */
+  total?: number;
+}
+
+/** Detailed game information, including detailed introduction and current team registration status */
+export interface DetailedGameInfoModel {
+  /** @format int32 */
+  id?: number;
+  /** Game title */
+  title?: string;
+  /** Game description */
+  summary?: string;
+  /** Detailed introduction of the game */
+  content?: string;
+  /** Whether the game is hidden */
+  hidden?: boolean;
+  /** List of participation divisions */
+  divisions?: DivisionInfo[] | null;
+  /** Whether an invitation code is required */
+  inviteCodeRequired?: boolean;
+  /** Whether writeup submission is required */
+  writeupRequired?: boolean;
+  /** Game poster URL */
+  poster?: string | null;
+  /**
+   * Team member count limit
+   * @format int32
+   */
+  limit?: number;
+  /**
+   * Number of teams registered for participation
+   * @format int32
+   */
+  teamCount?: number;
+  /**
+   * Current registered division
+   * @format int32
+   */
+  division?: number | null;
+  /** Team name for participation */
+  teamName?: string | null;
+  /** Whether the game is in practice mode (can still be accessed after the game ends) */
+  practiceMode?: boolean;
+  /** Whether users may submit challenges (with admin review) for this game */
+  allowUserSubmissions?: boolean;
+  /** Team participation status */
+  status?: ParticipationStatus;
+  /**
+   * Start time
+   * @format uint64
+   */
+  start?: number;
+  /**
+   * End time
+   * @format uint64
+   */
+  end?: number;
+}
+
+export interface DivisionInfo {
+  /**
+   * Division ID
+   * @format int32
+   */
+  id?: number;
+  /** Division name */
+  name?: string;
+  /** Is the division invite code required */
+  inviteCodeRequired?: boolean;
+}
+
+export interface GameJoinCheckInfoModel {
+  /** The teams that the current user has joined and participated in the game */
+  joinedTeams?: JoinedTeam[];
+  /** IDs of divisions that can be joined */
+  joinableDivisions?: number[];
+}
+
+export interface JoinedTeam {
+  /**
+   * Team ID
+   * @format int32
+   */
+  id: number;
+  /**
+   * The division ID the team has joined
+   * @format int32
+   */
+  division: number;
+}
+
+export interface GameJoinModel {
+  /**
+   * Team ID for participation
+   * @format int32
+   */
+  teamId: number;
+  /**
+   * Division for participation
+   * @format int32
+   */
+  divisionId?: number | null;
+  /** Invitation code for participation */
+  inviteCode?: string | null;
+}
+
+/** Scoreboard */
+export interface ScoreboardModel {
+  /**
+   * Update time
+   * @format uint64
+   */
+  updateTimeUtc: number;
+  /**
+   * Blood bonus coefficient
+   * @format int64
+   */
+  bloodBonus: number;
+  /** List of top ten timelines */
+  timelines: TimeLineItem[];
+  /** List of team information */
+  items: ScoreboardItem[];
+  /** List of division information */
+  divisions: DivisionItem[];
+  /** Challenge information */
+  challenges: Record<string, ChallengeInfo[]>;
+  /**
+   * Number of challenges
+   * @format int32
+   */
+  challengeCount: number;
+  /**
+   * Game freeze time (UTC). Null if scoreboard freeze is not configured.
+   * @format uint64
+   */
+  freeze?: number | null;
+  /** True iff this response was built with the freeze cutoff applied for the current viewer. */
+  isFrozenView?: boolean;
+}
+
+export interface TimeLineItem {
+  /** @format int32 */
+  divisionId?: number;
+  teams?: TopTimeLine[];
+}
+
+export interface TopTimeLine {
+  /**
+   * Team ID
+   * @format int32
+   */
+  id: number;
+  /**
+   * Team name
+   * @minLength 1
+   */
+  name: string;
+  /** Timeline */
+  items: TimeLine[];
+}
+
+export interface TimeLine {
+  /**
+   * Time
+   * @format uint64
+   */
+  time: number;
+  /**
+   * Score
+   * @format int32
+   */
+  score: number;
+}
+
+export interface ScoreboardItem {
+  /**
+   * Team ID
+   * @format int32
+   */
+  id: number;
+  /**
+   * Team name
+   * @minLength 1
+   */
+  name: string;
+  /** Team Bio */
+  bio?: string | null;
+  /**
+   * Division of participation
+   * @format int32
+   */
+  divisionId?: number | null;
+  /** Team avatar */
+  avatar?: string | null;
+  /**
+   * Score
+   * @format int32
+   */
+  score: number;
+  /**
+   * Rank
+   * @format int32
+   */
+  rank: number;
+  /**
+   * Division rank
+   * @format int32
+   */
+  divisionRank?: number | null;
+  /**
+   * Last submission time
+   * @format uint64
+   */
+  lastSubmissionTime: number;
+  /** List of solved challenges */
+  solvedChallenges: ChallengeItem[];
+  /**
+   * Number of solved challenges
+   * @format int32
+   */
+  solvedCount: number;
+}
+
+export interface ChallengeItem {
+  /**
+   * Challenge ID
+   * @format int32
+   */
+  id: number;
+  /**
+   * Challenge score
+   * @format int32
+   */
+  score: number;
+  /** Submission type (unsolved, first blood, second blood, third blood, or others) */
+  type: SubmissionType;
+  /** Username of the solver */
+  userName?: string | null;
+  /**
+   * Submission time for the challenge, used to calculate the timeline
+   * @format uint64
+   */
+  time: number;
+}
+
+export interface DivisionItem {
+  /**
+   * Division ID
+   * @format int32
+   */
+  id: number;
+  /**
+   * The name of the division.
+   * @minLength 1
+   */
+  name: string;
+  /** Permissions associated with the division. */
+  defaultPermissions: GamePermission;
+  /** Challenge configs for this division. */
+  challengeConfigs: Record<string, DivisionChallengeItem>;
+}
+
+export interface DivisionChallengeItem {
+  /**
+   * Challenge ID
+   * @format int32
+   */
+  challengeId: number;
+  /** Permissions for a specific challenge. */
+  permissions: GamePermission;
+}
+
+export interface ChallengeInfo {
+  /**
+   * Challenge ID
+   * @format int32
+   */
+  id: number;
+  /**
+   * Challenge title
+   * @minLength 1
+   */
+  title: string;
+  /** Challenge category */
+  category: ChallengeCategory;
+  /** Challenge type — frontend branches on AttackDefense. */
+  type: ChallengeType;
+  /**
+   * Challenge score
+   * @format int32
+   */
+  score: number;
+  /**
+   * Number of teams that solved the challenge
+   * @format int32
+   */
+  solved: number;
+  /**
+   * The deadline of the challenge, null means no deadline
+   * @format uint64
+   */
+  deadline?: number | null;
+  /** Bloods for the challenge */
+  bloods: Blood[];
+  /** Whether to disable blood bonus */
+  disableBloodBonus: boolean;
+}
+
+export interface Blood {
+  /**
+   * Team ID
+   * @format int32
+   */
+  id: number;
+  /**
+   * Team name
+   * @minLength 1
+   */
+  name: string;
+  /** Team avatar */
+  avatar?: string | null;
+  /**
+   * Time when the blood was obtained
+   * @format uint64
+   */
+  submitTimeUtc?: number | null;
+}
+
+/**
+ * Game event, recorded but not sent to the client.
+ * Information includes flag submission, container start/stop, cheating, and score changes.
+ */
+export type GameEvent = FormattableDataOfEventType & {
+  /**
+   * Publish time
+   * @format uint64
+   */
+  time: number;
+  /** Related username */
+  user?: string;
+  /** Related team name */
+  team?: string;
+};
+
+/** Formattable data */
+export interface FormattableDataOfEventType {
+  /** Data type */
+  type: EventType;
+  /** List of formatted values */
+  values: string[];
+}
+
+export interface Submission {
+  /**
+   * Submitted answer string
+   * @maxLength 127
+   */
+  answer?: string;
+  /** Status of the submitted answer */
+  status?: AnswerResult;
+  /**
+   * Time the answer was submitted
+   * @format uint64
+   */
+  time?: number;
+  /** User who submitted */
+  user?: string;
+  /** Team that submitted */
+  team?: string;
+  /** Challenge that was submitted */
+  challenge?: string;
+}
+
+/** Cheat behavior information */
+export interface CheatInfoModel {
+  /** Team owning the flag */
+  ownedTeam?: ParticipationModel;
+  /** Team submitting the flag */
+  submitTeam?: ParticipationModel;
+  /** Submission corresponding to this cheating behavior */
+  submission?: Submission;
+}
+
+/** Team participation information */
+export interface ParticipationModel {
+  /**
+   * Participation ID
+   * @format int32
+   */
+  id?: number;
+  /** Team information */
+  team?: TeamModel;
+  /** Team participation status */
+  status?: ParticipationStatus;
+  /** Team division */
+  division?: string | null;
+  /**
+   * Team division ID
+   * @format int32
+   */
+  divisionId?: number | null;
+}
+
+export interface ChallengeTrafficModel {
+  /**
+   * Challenge ID
+   * @format int32
+   */
+  id?: number;
+  /**
+   * Challenge title
+   * @minLength 1
+   */
+  title: string;
+  /** Challenge category */
+  category?: ChallengeCategory;
+  /** Challenge type */
+  type?: ChallengeType;
+  /** Is the challenge enabled */
+  isEnabled?: boolean;
+  /**
+   * Number of team traffic captured by the challenge
+   * @format int32
+   */
+  count?: number;
+}
+
+/** Team traffic information */
+export interface TeamTrafficModel {
+  /**
+   * Participation ID
+   * @format int32
+   */
+  id?: number;
+  /**
+   * Team Id
+   * @format int32
+   */
+  teamId?: number;
+  /** Team name */
+  name?: string | null;
+  /** Division of participation */
+  division?: string | null;
+  /** Avatar URL */
+  avatar?: string | null;
+  /**
+   * Number of traffic captured by the challenge
+   * @format int32
+   */
+  count?: number;
+}
+
+/** File record */
+/** Direction of a captured payload chunk relative to the proxied container */
+export type TrafficFlowDirection = "ContainerToTeam" | "TeamToContainer"
+
+/** Compact summary of a single proxied TCP session in a pcap */
+export interface TrafficFlowSummary {
+  connectionPort: number
+  firstSeenUtc: string
+  lastSeenUtc: string
+  peerIp: string
+  packetsIn: number
+  packetsOut: number
+  bytesIn: number
+  bytesOut: number
+  flagHits: number
+}
+
+/** One contiguous payload chunk in a flow */
+export interface TrafficFlowChunk {
+  direction: TrafficFlowDirection
+  timestampUtc: string
+  /** Base64-encoded raw bytes */
+  payloadBase64: string
+  /** Byte offsets within the decoded payload where a known flag begins */
+  flagOffsets: number[]
+}
+
+/** Full payload detail of a single flow */
+export interface TrafficFlowDetail extends TrafficFlowSummary {
+  chunks: TrafficFlowChunk[]
+}
+
+/** Filter parameters for the flow-list endpoint */
+export interface FlowFilter {
+  regexPattern?: string
+  peerIpContains?: string
+  startUtc?: string
+  endUtc?: string
+  direction?: TrafficFlowDirection
+  flagsOnly?: boolean
+}
+
+/** Result of a challenge import (tarball or github) */
+export interface ChallengeImportResult {
+  imported: number
+  updated: number
+  skipped: number
+  failed: number
+  messages: string[]
+}
+
+/** Body for POST /api/Edit/Games/{id}/Challenges/ImportFromGitHub */
+export interface ImportFromGitHubModel {
+  repoUrl: string
+  ref?: string | null
+  subpath?: string | null
+  /** Optional GitHub PAT for private repos. Admin/event-manager only; ignored for user submissions. */
+  githubToken?: string | null
+}
+
+/** Body for POST .../Reject */
+export interface RejectChallengeModel {
+  note?: string | null
+}
+
+/** Point-in-time stats for a running container instance */
+export interface ContainerStatsModel {
+  cpuPercent: number
+  memoryUsedBytes: number
+  memoryLimitBytes: number
+  netRxBytes: number
+  netTxBytes: number
+  sampledAt: string
+}
+
+/** Compact summary of a game discovered by a repo binding */
+export interface RepoBindingGameSummary {
+  id: number
+  title: string
+  eventManifestPath?: string | null
+}
+
+/** Row returned by GET /api/Admin/RepoBindings */
+export interface RepoBindingInfoModel {
+  id: number
+  repoUrl: string
+  ref?: string | null
+  createdAtUtc: string
+  lastScanUtc?: string | null
+  nextScanUtc?: string | null
+  intervalSeconds: number
+  status: RepoWatchStatus
+  lastCommitSha?: string | null
+  lastScanMessage?: string | null
+  hasGitHubToken?: boolean
+  tokenStatus?: TokenStatus
+  /** Live progress message from the scanner — non-null while a scan is running. */
+  currentActivity?: string | null
+  /**
+   * When true, admin edits to challenges owned by this binding get
+   * serialized back to challenge.yml and pushed upstream as commits.
+   * Requires a PAT with Contents:write scope.
+   */
+  pushOnEdit?: boolean
+  games: RepoBindingGameSummary[]
+}
+
+/** Body for POST /api/Admin/RepoBindings */
+export interface RepoBindingCreateModel {
+  repoUrl: string
+  ref?: string | null
+  githubToken?: string | null
+  intervalSeconds?: number
+  runImmediately?: boolean
+}
+
+/** Body for PUT /api/Admin/RepoBindings/{id} */
+export interface RepoBindingUpdateModel {
+  ref?: string | null
+  intervalSeconds?: number | null
+  status?: RepoWatchStatus | null
+  /** null = keep existing; "" = clear; non-empty = replace. */
+  githubToken?: string | null
+  /** Opt in to pushing admin edits back to the source repo. */
+  pushOnEdit?: boolean | null
+}
+
+/** Response from POST /api/Admin/RepoBindings or .../Scan */
+export interface RepoBindingScanResultModel {
+  gamesCreated: number
+  gamesUpdated: number
+  challengesImported: number
+  challengesUpdated: number
+  failures: number
+  messages: string[]
+}
+
+/** One row from the append-only binding scan history (GET .../{id}/Scans) */
+export interface RepoBindingScanHistoryModel {
+  id: number
+  ranAtUtc: string
+  commitSha?: string | null
+  gamesCreated: number
+  gamesUpdated: number
+  challengesImported: number
+  challengesUpdated: number
+  failures: number
+  messages?: string | null
+}
+
+/** One file inside the audit archive */
+export interface ChallengeAuditFile {
+  path: string
+  size: number
+}
+
+/** Parsed audit metadata for a pending/imported challenge */
+export interface ChallengeAuditModel {
+  yamlText?: string | null
+  files: ChallengeAuditFile[]
+  previews: Record<string, string>
+  archiveAvailable: boolean
+  buildStatus?: ChallengeBuildStatus
+  lastBuildLog?: string | null
+}
+
+/** Row returned by GET .../PendingChallenges (includes Pending + Rejected) */
+export interface PendingChallengeModel {
+  id: number
+  title: string
+  category: ChallengeCategory
+  type: ChallengeType
+  /** Either "Pending" or "Rejected" — "Active" rows are filtered out server-side. */
+  reviewStatus: ChallengeReviewStatus
+  reviewNote?: string | null
+  submittedAtUtc?: string | null
+  reviewedAtUtc?: string | null
+  submittedByUserId?: string | null
+  submittedByUserName?: string | null
+}
+
+/** Lifecycle state of a repo binding (Active / Paused). */
+export type RepoWatchStatus = "Active" | "Paused"
+
+/** Health of the encrypted GitHub access token for a binding / watch */
+export type TokenStatus = "NotConfigured" | "Ok" | "DecryptFailed"
+
+/** Anti-cheat block kind: which dimension fired the block */
+export type AntiCheatBlockKind = "Ip" | "Fingerprint"
+
+/** Row in the anti-cheat block log (GET /api/admin/AntiCheatBlocks) */
+export interface AntiCheatBlockModel {
+  id: number
+  userId: string
+  userName?: string | null
+  conflictUserId?: string | null
+  conflictUserName?: string | null
+  kind: AntiCheatBlockKind
+  conflictingValue?: string | null
+  occurredAtUtc: string
+}
+
+
+export interface FileRecord {
+  /** File name */
+  fileName?: string;
+  /**
+   * File size
+   * @format int64
+   */
+  size?: number;
+  /**
+   * File modification date
+   * @format uint64
+   */
+  updateTime?: number;
+}
+
+export interface GameDetailModel {
+  /** Challenge information */
+  challenges?: Record<string, ChallengeInfo[]>;
+  /**
+   * Number of challenges
+   * @format int32
+   */
+  challengeCount?: number;
+  /** Scoreboard information */
+  rank?: ScoreboardItem | null;
+  /**
+   * Team token
+   * @minLength 1
+   */
+  teamToken: string;
+  /** Whether writeup submission is required */
+  writeupRequired: boolean;
+  /**
+   * Writeup submission deadline
+   * @format uint64
+   */
+  writeupDeadline: number;
+}
+
+/** Participation for review (Admin) */
+export interface ParticipationInfoModel {
+  /**
+   * Participation ID
+   * @format int32
+   */
+  id: number;
+  /** Participating team */
+  team: TeamWithDetailedUserInfo;
+  /** Registered members */
+  registeredMembers: string[];
+  /**
+   * Division of the game
+   * @format int32
+   */
+  divisionId?: number | null;
+  /** Participation status */
+  status: ParticipationStatus;
+}
+
+/** Detailed team information for review (Admin) */
+export interface TeamWithDetailedUserInfo {
+  /**
+   * Team ID
+   * @format int32
+   */
+  id?: number;
+  /** Is locked */
+  locked?: boolean;
+  /**
+   * Captain ID
+   * @format guid
+   */
+  captainId?: string;
+  /** Team name */
+  name?: string | null;
+  /** Team bio */
+  bio?: string | null;
+  /** Avatar URL */
+  avatar?: string | null;
+  /** Team members */
+  members?: ProfileUserInfoModel[];
+}
+
+/** Challenge detailed information */
+export interface ChallengeDetailModel {
+  /**
+   * Challenge ID
+   * @format int32
+   */
+  id?: number;
+  /** Challenge title */
+  title?: string;
+  /** Challenge content */
+  content?: string;
+  /** Challenge category */
+  category?: ChallengeCategory;
+  /** Challenge hints */
+  hints?: string[] | null;
+  /**
+   * Current score of the challenge
+   * @format int32
+   */
+  score?: number;
+  /** Challenge type */
+  type?: ChallengeType;
+  /** Flag context */
+  context?: ClientFlagContext;
+  /**
+   * Maximum number of attempts allowed (0 = no limit)
+   * @format int32
+   */
+  limit?: number;
+  /**
+   * Current attempt count
+   * @format int32
+   */
+  attempts?: number;
+  /**
+   * Deadline of the challenge, null means no deadline
+   * @format uint64
+   */
+  deadline?: number | null;
+  /** User's rating */
+  userRating?: ReviewRating;
+  /** User's comment */
+  userComment?: string | null;
+}
+
+export interface ClientFlagContext {
+  /**
+   * Close time of the challenge instance
+   * @format uint64
+   */
+  closeTime?: number | null;
+  /** Connection method of the challenge instance */
+  instanceEntry?: string | null;
+  /** Whether this challenge serves one container shared by all teams (read-only for players) */
+  isSharedInstance?: boolean;
+  /** Attachment URL */
+  url?: string | null;
+  /**
+   * Attachment file size
+   * @format int64
+   */
+  fileSize?: number | null;
+}
+
+export interface ChallengeReviewModel {
+  rating: ReviewRating;
+  /** @maxLength 1000 */
+  comment?: string | null;
+}
+
+/** Flag submission */
+export interface FlagSubmitModel {
+  /**
+   * Flag content
+   * @minLength 1
+   */
+  flag: string;
+}
+
+/** Game writeup submission information */
+export interface BasicWriteupInfoModel {
+  /** Whether it has been submitted */
+  submitted?: boolean;
+  /** File name */
+  name?: string;
+  /**
+   * File size
+   * @format int64
+   */
+  fileSize?: number;
+  /** Writeup additional notes */
+  note?: string;
+}
+
+/** Post information */
+export interface PostInfoModel {
+  /**
+   * Post ID
+   * @minLength 1
+   */
+  id: string;
+  /**
+   * Post title
+   * @minLength 1
+   */
+  title: string;
+  /**
+   * Post summary
+   * @minLength 1
+   */
+  summary: string;
+  /** Is pinned */
+  isPinned: boolean;
+  /** Post tags */
+  tags?: string[] | null;
+  /** Author avatar */
+  authorAvatar?: string | null;
+  /** Author name */
+  authorName?: string | null;
+  /**
+   * Update time
+   * @format uint64
+   */
+  time: number;
+}
+
+/** Client configuration */
+export interface ClientConfig {
+  /** Platform prefix name */
+  title?: string;
+  /** Platform slogan */
+  slogan?: string;
+  /** Footer information */
+  footerInfo?: string | null;
+  /** Custom theme color */
+  customTheme?: string | null;
+  /** The public key used for API requests */
+  apiPublicKey?: string | null;
+  /** Platform logo URL */
+  logoUrl?: string | null;
+  /** Container port mapping type */
+  portMapping?: ContainerPortMappingType;
+  /**
+   * Default container lifetime in minutes
+   * @format int32
+   */
+  defaultLifetime?: number;
+  /**
+   * Extension duration for each renewal in minutes
+   * @format int32
+   */
+  extensionDuration?: number;
+  /**
+   * Renewal window before container stops in minutes
+   * @format int32
+   */
+  renewalWindow?: number;
+  /** Enable browser fingerprinting in Login/Register */
+  enableBrowserFingerprint?: boolean;
+  /** Whether Google OAuth sign-in is configured and available */
+  enableGoogleAuth?: boolean;
+  /** Whether Discord OAuth sign-in is configured and available */
+  enableDiscordAuth?: boolean;
+}
+
+/** Client CAPTCHA information */
+export interface ClientCaptchaInfoModel {
+  /** Captcha Provider Type */
+  type?: CaptchaProvider;
+  /** Site Key */
+  siteKey?: string;
+}
+
+/** Hash Pow verification */
+export interface HashPowChallenge {
+  /** Challenge ID */
+  id?: string;
+  /** Verification challenge */
+  challenge?: string;
+  /**
+   * Difficulty coefficient
+   * @format int32
+   */
+  difficulty?: number;
+}
+
+/** Team information update */
+export interface TeamUpdateModel {
+  /**
+   * Team name
+   * @maxLength 255
+   */
+  name?: string | null;
+  /**
+   * Team bio
+   * @maxLength 255
+   */
+  bio?: string | null;
+}
+
+export interface TeamTransferModel {
+  /**
+   * New captain ID
+   * @format guid
+   * @minLength 1
+   */
+  newCaptainId: string;
+}
+
+/** Signature verification */
+export interface SignatureVerifyModel {
+  /**
+   * Team token
+   * @minLength 1
+   */
+  teamToken: string;
+  /**
+   * Game public key, Base64 encoded
+   * @minLength 1
+   */
+  publicKey: string;
+}
+
+import { apiLanguage } from "@Utils/I18n";
+import type {
+  AxiosInstance,
+  AxiosRequestConfig,
+  AxiosResponse,
+  HeadersDefaults,
+  ResponseType,
+} from "axios";
+import axios from "axios";
+
+export type QueryParamsType = Record<string | number, any>;
+
+export interface FullRequestParams
+  extends Omit<AxiosRequestConfig, "data" | "params" | "url" | "responseType"> {
+  /** set parameter to `true` for call `securityWorker` for this request */
+  secure?: boolean;
+  /** request path */
+  path: string;
+  /** content type of request body */
+  type?: ContentType;
+  /** query params */
+  query?: QueryParamsType;
+  /** format of response (i.e. response.json() -> format: "json") */
+  format?: ResponseType;
+  /** request body */
+  body?: unknown;
+}
+
+export type RequestParams = Omit<
+  FullRequestParams,
+  "body" | "method" | "query" | "path"
+>;
+
+export interface ApiConfig<SecurityDataType = unknown>
+  extends Omit<AxiosRequestConfig, "data" | "cancelToken"> {
+  securityWorker?: (
+    securityData: SecurityDataType | null,
+  ) => Promise<AxiosRequestConfig | void> | AxiosRequestConfig | void;
+  secure?: boolean;
+  format?: ResponseType;
+}
+
+export enum ContentType {
+  Json = "application/json",
+  FormData = "multipart/form-data",
+  UrlEncoded = "application/x-www-form-urlencoded",
+  Text = "text/plain",
+}
+
+export class HttpClient<SecurityDataType = unknown> {
+  public instance: AxiosInstance;
+  private securityData: SecurityDataType | null = null;
+  private securityWorker?: ApiConfig<SecurityDataType>["securityWorker"];
+  private secure?: boolean;
+  private format?: ResponseType;
+
+  constructor({
+    securityWorker,
+    secure,
+    format,
+    ...axiosConfig
+  }: ApiConfig<SecurityDataType> = {}) {
+    this.instance = axios.create({
+      ...axiosConfig,
+      baseURL: axiosConfig.baseURL || "",
+    });
+    this.secure = secure;
+    this.format = format;
+    this.securityWorker = securityWorker;
+  }
+
+  public setSecurityData = (data: SecurityDataType | null) => {
+    this.securityData = data;
+  };
+
+  protected mergeRequestParams(
+    params1: AxiosRequestConfig,
+    params2?: AxiosRequestConfig,
+  ): AxiosRequestConfig {
+    const method = params1.method || (params2 && params2.method);
+
+    return {
+      ...this.instance.defaults,
+      ...params1,
+      ...params2,
+      headers: {
+        ...(method &&
+          this.instance.defaults.headers[
+          method.toLowerCase() as keyof HeadersDefaults
+          ]),
+        ...params1.headers,
+        ...(params2 && params2.headers),
+      },
+    };
+  }
+
+  protected stringifyFormItem(formItem: unknown) {
+    if (typeof formItem === "object" && formItem !== null) {
+      return JSON.stringify(formItem);
+    } else {
+      return `${formItem}`;
+    }
+  }
+
+  protected createFormData(input: Record<string, unknown>): FormData {
+    return Object.keys(input || {}).reduce((formData, key) => {
+      const property = input[key];
+      const propertyContent: any[] =
+        property instanceof Array ? property : [property];
+
+      for (const formItem of propertyContent) {
+        const isFileType = formItem instanceof Blob || formItem instanceof File;
+        formData.append(
+          key,
+          isFileType ? formItem : this.stringifyFormItem(formItem),
+        );
+      }
+
+      return formData;
+    }, new FormData());
+  }
+
+  public request = async <T = any, _E = any>({
+    secure,
+    path,
+    type,
+    query,
+    format,
+    body,
+    ...params
+  }: FullRequestParams): Promise<AxiosResponse<T>> => {
+    const secureParams =
+      ((typeof secure === "boolean" ? secure : this.secure) &&
+        this.securityWorker &&
+        (await this.securityWorker(this.securityData))) ||
+      {};
+    const requestParams = this.mergeRequestParams(params, secureParams);
+    const responseFormat = format || this.format || undefined;
+
+    if (
+      type === ContentType.FormData &&
+      body &&
+      body !== null &&
+      typeof body === "object"
+    ) {
+      body = this.createFormData(body as Record<string, unknown>);
+    }
+
+    if (
+      type === ContentType.Text &&
+      body &&
+      body !== null &&
+      typeof body !== "string"
+    ) {
+      body = JSON.stringify(body);
+    }
+
+    return this.instance.request({
+      ...requestParams,
+      headers: {
+        ...requestParams.headers,
+        ...(type && type !== ContentType.FormData
+          ? { "Content-Type": type }
+          : {}),
+        "Accept-Language": apiLanguage,
+      },
+      params: query,
+      responseType: responseFormat,
+      data: body,
+      url: path,
+    });
+  };
+}
+
+import useSWR, { MutatorOptions, SWRConfiguration, mutate } from "swr";
+
+/**
+ * @title RSCTF Server API
+ * @version v1
+ *
+ * RSCTF Server API Document
+ */
+export class Api<
+  SecurityDataType extends unknown,
+> extends HttpClient<SecurityDataType> {
+  account = {
+    /**
+     * @description Use this API to update user's avatar. User permissions required.
+     *
+     * @tags Account
+     * @name AccountAvatar
+     * @summary Update user avatar
+     * @request PUT:/api/account/avatar
+     */
+    accountAvatar: (
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<string, RequestResponse>({
+        path: `/api/account/avatar`,
+        method: "PUT",
+        body: data,
+        type: ContentType.FormData,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to change user's email. User permissions required. Email URL: /confirm
+     *
+     * @tags Account
+     * @name AccountChangeEmail
+     * @summary User email change
+     * @request PUT:/api/account/changeemail
+     */
+    accountChangeEmail: (data: MailChangeModel, params: RequestParams = {}) =>
+      this.request<RequestResponseOfBoolean, RequestResponse>({
+        path: `/api/account/changeemail`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to change user's password. User permissions required.
+     *
+     * @tags Account
+     * @name AccountChangePassword
+     * @summary User password change
+     * @request PUT:/api/account/changepassword
+     */
+    accountChangePassword: (
+      data: PasswordChangeModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/account/changepassword`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to get one-time browser fingerprint challenge.
+     *
+     * @tags Account
+     * @name AccountFingerprintChallenge
+     * @summary Get browser fingerprint challenge
+     * @request GET:/api/account/fingerprintchallenge
+     */
+    accountFingerprintChallenge: (params: RequestParams = {}) =>
+      this.request<RequestResponseOfBrowserFingerprintChallengeModel, RequestResponse>({
+        path: `/api/account/fingerprintchallenge`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to log in to the account.
+     *
+     * @tags Account
+     * @name AccountLogIn
+     * @summary User login
+     * @request POST:/api/account/login
+     */
+    accountLogIn: (data: LoginModel, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/account/login`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to log out of the account. User permissions required.
+     *
+     * @tags Account
+     * @name AccountLogOut
+     * @summary User logout
+     * @request POST:/api/account/logout
+     */
+    accountLogOut: (params: RequestParams = {}) =>
+      this.request<void, any>({
+        path: `/api/account/logout`,
+        method: "POST",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to confirm email change. Email verification code required. User permissions required.
+     *
+     * @tags Account
+     * @name AccountMailChangeConfirm
+     * @summary User email change confirmation
+     * @request POST:/api/account/mailchangeconfirm
+     */
+    accountMailChangeConfirm: (
+      data: AccountVerifyModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/account/mailchangeconfirm`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to reset the password. Email verification code is required.
+     *
+     * @tags Account
+     * @name AccountPasswordReset
+     * @summary User password reset
+     * @request POST:/api/account/passwordreset
+     */
+    accountPasswordReset: (
+      data: PasswordResetModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/account/passwordreset`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to get user information. User permissions required.
+     *
+     * @tags Account
+     * @name AccountProfile
+     * @summary Get user information
+     * @request GET:/api/account/profile
+     */
+    accountProfile: (params: RequestParams = {}) =>
+      this.request<ProfileUserInfoModel, RequestResponse>({
+        path: `/api/account/profile`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Use this API to get user information. User permissions required.
+     *
+     * @tags Account
+     * @name AccountProfile
+     * @summary Get user information
+     * @request GET:/api/account/profile
+     */
+    useAccountProfile: (options?: SWRConfiguration, doFetch: boolean = true) =>
+      useSWR<ProfileUserInfoModel, RequestResponse>(
+        doFetch ? `/api/account/profile` : null,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get user information. User permissions required.
+     *
+     * @tags Account
+     * @name AccountProfile
+     * @summary Get user information
+     * @request GET:/api/account/profile
+     */
+    mutateAccountProfile: (
+      data?: ProfileUserInfoModel | Promise<ProfileUserInfoModel>,
+      options?: MutatorOptions,
+    ) => mutate<ProfileUserInfoModel>(`/api/account/profile`, data, options),
+
+    /**
+     * @description Use this API to request password recovery. Sends an email to the user. Email URL: /reset
+     *
+     * @tags Account
+     * @name AccountRecovery
+     * @summary User password recovery request
+     * @request POST:/api/account/recovery
+     */
+    accountRecovery: (data: RecoveryModel, params: RequestParams = {}) =>
+      this.request<RequestResponse, RequestResponse>({
+        path: `/api/account/recovery`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to register a new user. In development environment, no verification. Email URL: /verify
+     *
+     * @tags Account
+     * @name AccountRegister
+     * @summary User registration
+     * @request POST:/api/account/register
+     */
+    accountRegister: (data: RegisterModel, params: RequestParams = {}) =>
+      this.request<RequestResponseOfRegisterStatus, RequestResponse>({
+        path: `/api/account/register`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to update username and description. User permissions required.
+     *
+     * @tags Account
+     * @name AccountUpdate
+     * @summary User data update
+     * @request PUT:/api/account/update
+     */
+    accountUpdate: (data: ProfileUpdateModel, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/account/update`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to confirm email using the verification code.
+     *
+     * @tags Account
+     * @name AccountVerify
+     * @summary User email confirmation
+     * @request POST:/api/account/verify
+     */
+    accountVerify: (data: AccountVerifyModel, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/account/verify`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+  };
+  admin = {
+    /**
+     * @description Get admin dashboard stats
+     *
+     * @tags Admin
+     * @name AdminGetDashboard
+     * @summary Get dashboard
+     * @request GET:/api/admin/dashboard
+     */
+    adminGetDashboard: (params: RequestParams = {}) =>
+      this.request<AdminDashboardModel, RequestResponse>({
+        path: `/api/admin/dashboard`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Get submission trend
+     *
+     * @tags Admin
+     * @name AdminGetSubmissionTrend
+     * @summary Get submission trend
+     * @request GET:/api/admin/submissiontrend
+     */
+    adminGetSubmissionTrend: (query: { range?: string }, params: RequestParams = {}) =>
+      this.request<SubmissionTrendModel[], RequestResponse>({
+        path: `/api/admin/submissiontrend`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Get recent reviews
+     *
+     * @tags Admin
+     * @name AdminGetReviews
+     * @summary Get reviews
+     * @request GET:/api/admin/reviews
+     */
+    adminGetReviews: (
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeReview[], RequestResponse>({
+        path: `/api/admin/reviews`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Get recent cheat reports
+     *
+     * @tags Admin
+     * @name AdminGetCheatReports
+     * @summary Get cheat reports
+     * @request GET:/api/admin/cheat-reports
+     */
+    adminGetCheatReports: (
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<CheatInfo[], RequestResponse>({
+        path: `/api/admin/cheat-reports`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Get all writeups
+     *
+     * @tags Admin
+     * @name AdminGetAllWriteups
+     * @summary Get all writeups
+     * @request GET:/api/admin/writeups
+     */
+    adminGetAllWriteups: (
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<WriteupInfo[], RequestResponse>({
+        path: `/api/admin/writeups`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Get all users
+     *
+     * @tags Admin
+     * @name AdminGetUsers
+     * @summary Get all users
+     * @request GET:/api/admin/users
+     */
+    adminGetUsers: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 500
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+        /** Search query */
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<UserInfoModel[], any>({
+        path: `/api/admin/users`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to add users in batch, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminAddUsers
+     * @summary Add users in batch
+     * @request POST:/api/admin/users
+     */
+    adminAddUsers: (data: UserCreateModel[], params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/users`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to delete team, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminDeleteTeam
+     * @summary Delete team
+     * @request DELETE:/api/admin/teams/{id}
+     */
+    adminDeleteTeam: (id: number, params: RequestParams = {}) =>
+      this.request<string, RequestResponse>({
+        path: `/api/admin/teams/${id}`,
+        method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to delete user, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminDeleteUser
+     * @summary Delete user
+     * @request DELETE:/api/admin/users/{userid}
+     */
+    adminDeleteUser: (userid: string, params: RequestParams = {}) =>
+      this.request<string, RequestResponse>({
+        path: `/api/admin/users/${userid}`,
+        method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to forcibly delete container instance, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminDestroyInstance
+     * @summary Delete container instance
+     * @request DELETE:/api/admin/instances/{id}
+     */
+    adminDestroyInstance: (id: string, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/instances/${id}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Sample CPU/memory/network stats for a running container.
+     * @tags Admin
+     * @name AdminGetInstanceStats
+     * @request GET:/api/admin/instances/{id}/stats
+     */
+    adminGetInstanceStats: (id: string, params: RequestParams = {}) =>
+      this.request<ContainerStatsModel, RequestResponse>({
+        path: `/api/admin/instances/${id}/stats`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useAdminGetInstanceStats: (id: string, options?: SWRConfiguration, doFetch: boolean = true) =>
+      useSWR<ContainerStatsModel, RequestResponse>(
+        doFetch ? `/api/admin/instances/${id}/stats` : null,
+        options,
+      ),
+
+    /**
+     * @description Use this API to download all Writeups, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminDownloadAllWriteups
+     * @summary Download all Writeups
+     * @request GET:/api/admin/writeups/{id}/all
+     */
+    adminDownloadAllWriteups: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/writeups/${id}/all`,
+        method: "GET",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to get all files, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminFiles
+     * @summary Get all files
+     * @request GET:/api/admin/files
+     */
+    adminFiles: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 500
+         * @default 50
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfLocalFile, RequestResponse>({
+        path: `/api/admin/files`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Use this API to get all files, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminFiles
+     * @summary Get all files
+     * @request GET:/api/admin/files
+     */
+    useAdminFiles: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 500
+         * @default 50
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfLocalFile, RequestResponse>(
+        doFetch ? [`/api/admin/files`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get all files, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminFiles
+     * @summary Get all files
+     * @request GET:/api/admin/files
+     */
+    mutateAdminFiles: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 500
+         * @default 50
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      data?: ArrayResponseOfLocalFile | Promise<ArrayResponseOfLocalFile>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfLocalFile>(
+        [`/api/admin/files`, query],
+        data,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get global settings, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminGetConfigs
+     * @summary Get configuration
+     * @request GET:/api/admin/config
+     */
+    adminGetConfigs: (params: RequestParams = {}) =>
+      this.request<ConfigEditModel, RequestResponse>({
+        path: `/api/admin/config`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Use this API to get global settings, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminGetConfigs
+     * @summary Get configuration
+     * @request GET:/api/admin/config
+     */
+    useAdminGetConfigs: (options?: SWRConfiguration, doFetch: boolean = true) =>
+      useSWR<ConfigEditModel, RequestResponse>(
+        doFetch ? `/api/admin/config` : null,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get global settings, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminGetConfigs
+     * @summary Get configuration
+     * @request GET:/api/admin/config
+     */
+    mutateAdminGetConfigs: (
+      data?: ConfigEditModel | Promise<ConfigEditModel>,
+      options?: MutatorOptions,
+    ) => mutate<ConfigEditModel>(`/api/admin/config`, data, options),
+
+    /**
+     * @description Use this API to get all container instances, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminInstances
+     * @summary Get all container instances
+     * @request GET:/api/admin/instances
+     */
+    adminInstances: (params: RequestParams = {}) =>
+      this.request<ArrayResponseOfContainerInstanceModel, RequestResponse>({
+        path: `/api/admin/instances`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Use this API to get all container instances, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminInstances
+     * @summary Get all container instances
+     * @request GET:/api/admin/instances
+     */
+    useAdminInstances: (options?: SWRConfiguration, doFetch: boolean = true) =>
+      useSWR<ArrayResponseOfContainerInstanceModel, RequestResponse>(
+        doFetch ? `/api/admin/instances` : null,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get all container instances, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminInstances
+     * @summary Get all container instances
+     * @request GET:/api/admin/instances
+     */
+    mutateAdminInstances: (
+      data?:
+        | ArrayResponseOfContainerInstanceModel
+        | Promise<ArrayResponseOfContainerInstanceModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfContainerInstanceModel>(
+        `/api/admin/instances`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get all logs, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminLogs
+     * @summary Get all logs
+     * @request GET:/api/admin/logs
+     */
+    adminLogs: (
+      query?: {
+        /** @default "All" */
+        level?: string | null;
+        /**
+         * @format int32
+         * @min 0
+         * @max 1000
+         * @default 50
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+        /** Search query */
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<LogMessageModel[], RequestResponse>({
+        path: `/api/admin/logs`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Use this API to get all logs, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminLogs
+     * @summary Get all logs
+     * @request GET:/api/admin/logs
+     */
+    useAdminLogs: (
+      query?: {
+        /** @default "All" */
+        level?: string | null;
+        /**
+         * @format int32
+         * @min 0
+         * @max 1000
+         * @default 50
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+        /** Search query */
+        search?: string | null;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<LogMessageModel[], RequestResponse>(
+        doFetch ? [`/api/admin/logs`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get all logs, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminLogs
+     * @summary Get all logs
+     * @request GET:/api/admin/logs
+     */
+    mutateAdminLogs: (
+      query?: {
+        /** @default "All" */
+        level?: string | null;
+        /**
+         * @format int32
+         * @min 0
+         * @max 1000
+         * @default 50
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+        /** Search query */
+        search?: string | null;
+      },
+      data?: LogMessageModel[] | Promise<LogMessageModel[]>,
+      options?: MutatorOptions,
+    ) => mutate<LogMessageModel[]>([`/api/admin/logs`, query], data, options),
+
+    /**
+     * @description Use this API to update team participation status, review application, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminParticipation
+     * @summary Update participation status
+     * @request PUT:/api/admin/participation/{id}
+     */
+    adminParticipation: (
+      id: number,
+      data: ParticipationEditModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/participation/${id}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to reset the platform Logo, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminResetLogo
+     * @summary Reset platform Logo
+     * @request DELETE:/api/admin/config/logo
+     */
+    adminResetLogo: (params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/config/logo`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to reset user password, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminResetPassword
+     * @summary Reset user password
+     * @request DELETE:/api/admin/users/{userid}/password
+     */
+    adminResetPassword: (userid: string, params: RequestParams = {}) =>
+      this.request<string, RequestResponse>({
+        path: `/api/admin/users/${userid}/password`,
+        method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to search teams, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminSearchTeams
+     * @summary Search teams
+     * @request POST:/api/admin/teams/search
+     */
+    adminSearchTeams: (
+      query?: {
+        hint?: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfTeamInfoModel, RequestResponse>({
+        path: `/api/admin/teams/search`,
+        method: "POST",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to search users, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminSearchUsers
+     * @summary Search users
+     * @request POST:/api/admin/users/search
+     */
+    adminSearchUsers: (
+      query?: {
+        hint?: string;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfUserInfoModel, RequestResponse>({
+        path: `/api/admin/users/search`,
+        method: "POST",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to get all teams, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminTeams
+     * @summary Get all team information
+     * @request GET:/api/admin/teams
+     */
+    adminTeams: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 500
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfTeamInfoModel, RequestResponse>({
+        path: `/api/admin/teams`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Use this API to get all teams, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminTeams
+     * @summary Get all team information
+     * @request GET:/api/admin/teams
+     */
+    useAdminTeams: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 500
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfTeamInfoModel, RequestResponse>(
+        doFetch ? [`/api/admin/teams`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get all teams, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminTeams
+     * @summary Get all team information
+     * @request GET:/api/admin/teams
+     */
+    mutateAdminTeams: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 500
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      data?:
+        | ArrayResponseOfTeamInfoModel
+        | Promise<ArrayResponseOfTeamInfoModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfTeamInfoModel>(
+        [`/api/admin/teams`, query],
+        data,
+        options,
+      ),
+
+    /**
+     * @description Use this API to change global settings, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminUpdateConfigs
+     * @summary Change configuration
+     * @request PUT:/api/admin/config
+     */
+    adminUpdateConfigs: (data: ConfigEditModel, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/config`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Send a test email using the supplied SMTP config (does not persist anything). Used by the "Send test" button on /admin/settings → Email.
+     *
+     * @tags Admin
+     * @name AdminTestEmail
+     * @summary Send a test email to verify SMTP configuration
+     * @request POST:/api/admin/email/test
+     */
+    adminTestEmail: (data: EmailTestModel, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/email/test`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Verify captcha config without persisting it. Probes Cloudflare siteverify for Turnstile, range-checks difficulty for HashPow, refuses for None.
+     *
+     * @tags Admin
+     * @name AdminTestCaptcha
+     * @summary Verify captcha configuration
+     * @request POST:/api/admin/captcha/test
+     */
+    adminTestCaptcha: (data: CaptchaTestModel, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/captcha/test`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Diagnose how RSCTF is detecting the caller's IP. Returns detected IP, raw conn IP, X-Forwarded-For header, and the active TrustedNetworks list — lets operator verify the upstream proxy is configured correctly.
+     *
+     * @tags Admin
+     * @name AdminMyIp
+     * @summary Diagnose client-IP detection
+     * @request GET:/api/admin/MyIp
+     */
+    adminMyIp: (params: RequestParams = {}) =>
+      this.request<MyIpInfoModel, RequestResponse>({
+        path: `/api/admin/MyIp`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to change the platform Logo, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminUpdateLogo
+     * @summary Change platform Logo
+     * @request POST:/api/admin/config/logo
+     */
+    adminUpdateLogo: (
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/config/logo`,
+        method: "POST",
+        body: data,
+        type: ContentType.FormData,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to modify team information, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminUpdateTeam
+     * @summary Modify team information
+     * @request PUT:/api/admin/teams/{id}
+     */
+    adminUpdateTeam: (
+      id: number,
+      data: AdminTeamModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/teams/${id}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to modify user information, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminUpdateUserInfo
+     * @summary Modify user information
+     * @request PUT:/api/admin/users/{userid}
+     */
+    adminUpdateUserInfo: (
+      userid: string,
+      data: AdminUserInfoModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/users/${userid}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to get user information, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminUserInfo
+     * @summary Get user information
+     * @request GET:/api/admin/users/{userid}
+     */
+    adminUserInfo: (userid: string, params: RequestParams = {}) =>
+      this.request<ProfileUserInfoModel, RequestResponse>({
+        path: `/api/admin/users/${userid}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Use this API to get user information, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminUserInfo
+     * @summary Get user information
+     * @request GET:/api/admin/users/{userid}
+     */
+    useAdminUserInfo: (
+      userid: string,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ProfileUserInfoModel, RequestResponse>(
+        doFetch ? `/api/admin/users/${userid}` : null,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get user information, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminUserInfo
+     * @summary Get user information
+     * @request GET:/api/admin/users/{userid}
+     */
+    mutateAdminUserInfo: (
+      userid: string,
+      data?: ProfileUserInfoModel | Promise<ProfileUserInfoModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ProfileUserInfoModel>(`/api/admin/users/${userid}`, data, options),
+
+    /**
+     * @description Use this API to get all users, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminUsers
+     * @summary Get all users
+     * @request GET:/api/admin/users
+     */
+    adminUsers: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 500
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfUserInfoModel, RequestResponse>({
+        path: `/api/admin/users`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Use this API to get all users, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminUsers
+     * @summary Get all users
+     * @request GET:/api/admin/users
+     */
+    useAdminUsers: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 500
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfUserInfoModel, RequestResponse>(
+        doFetch ? [`/api/admin/users`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get all users, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminUsers
+     * @summary Get all users
+     * @request GET:/api/admin/users
+     */
+    mutateAdminUsers: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 500
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      data?:
+        | ArrayResponseOfUserInfoModel
+        | Promise<ArrayResponseOfUserInfoModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfUserInfoModel>(
+        [`/api/admin/users`, query],
+        data,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get Writeup basic information, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminWriteups
+     * @summary Get all Writeup basic information
+     * @request GET:/api/admin/writeups/{id}
+     */
+    adminWriteups: (id: number, params: RequestParams = {}) =>
+      this.request<WriteupInfoModel, RequestResponse>({
+        path: `/api/admin/writeups/${id}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Use this API to get Writeup basic information, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminWriteups
+     * @summary Get all Writeup basic information
+     * @request GET:/api/admin/writeups/{id}
+     */
+    useAdminWriteups: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<WriteupInfoModel, RequestResponse>(
+        doFetch ? `/api/admin/writeups/${id}` : null,
+        options,
+      ),
+
+    /**
+     * @description Use this API to get Writeup basic information, requires Admin permission
+     *
+     * @tags Admin
+     * @name AdminWriteups
+     * @summary Get all Writeup basic information
+     * @request GET:/api/admin/writeups/{id}
+     */
+    mutateAdminWriteups: (
+      id: number,
+      data?: WriteupInfoModel | Promise<WriteupInfoModel>,
+      options?: MutatorOptions,
+    ) => mutate<WriteupInfoModel>(`/api/admin/writeups/${id}`, data, options),
+
+    /**
+     * @description List configured repo bindings
+     * @tags Admin
+     * @name AdminListRepoBindings
+     * @request GET:/api/admin/repobindings
+     */
+    adminListRepoBindings: (params: RequestParams = {}) =>
+      this.request<RepoBindingInfoModel[], RequestResponse>({
+        path: `/api/admin/repobindings`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useAdminListRepoBindings: (options?: SWRConfiguration, doFetch: boolean = true) =>
+      useSWR<RepoBindingInfoModel[], RequestResponse>(
+        doFetch ? `/api/admin/repobindings` : null,
+        options,
+      ),
+
+    mutateAdminListRepoBindings: (
+      data?: RepoBindingInfoModel[] | Promise<RepoBindingInfoModel[]>,
+      options?: MutatorOptions,
+    ) => mutate<RepoBindingInfoModel[]>(`/api/admin/repobindings`, data, options),
+
+    /**
+     * @description Register a new repo binding (immediately scans for .gzevent manifests)
+     * @tags Admin
+     * @name AdminCreateRepoBinding
+     * @request POST:/api/admin/repobindings
+     */
+    adminCreateRepoBinding: (
+      data: RepoBindingCreateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<RepoBindingScanResultModel, RequestResponse>({
+        path: `/api/admin/repobindings`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Trigger a re-scan of a repo binding now
+     * @tags Admin
+     * @name AdminScanRepoBinding
+     * @request POST:/api/admin/repobindings/{id}/scan
+     */
+    adminScanRepoBinding: (id: number, params: RequestParams = {}) =>
+      this.request<RepoBindingScanResultModel, RequestResponse>({
+        path: `/api/admin/repobindings/${id}/scan`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Recent scan history for a binding (newest first, max 20 rows).
+     * @tags Admin
+     * @name AdminGetRepoBindingScans
+     * @request GET:/api/admin/repobindings/{id}/scans
+     */
+    adminGetRepoBindingScans: (id: number, params: RequestParams = {}) =>
+      this.request<RepoBindingScanHistoryModel[], RequestResponse>({
+        path: `/api/admin/repobindings/${id}/scans`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Update a repo binding (ref, interval, status, token)
+     * @tags Admin
+     * @name AdminUpdateRepoBinding
+     * @request PUT:/api/admin/repobindings/{id}
+     */
+    adminUpdateRepoBinding: (
+      id: number,
+      data: RepoBindingUpdateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<RepoBindingInfoModel, RequestResponse>({
+        path: `/api/admin/repobindings/${id}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Delete a repo binding. When cascade=true, also removes every imported game + its challenges. Default false detaches the games (sets RepoBindingId=null) so a re-bind can adopt them by title.
+     * @tags Admin
+     * @name AdminDeleteRepoBinding
+     * @request DELETE:/api/admin/repobindings/{id}
+     */
+    adminDeleteRepoBinding: (id: number, query?: { cascade?: boolean }, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/repobindings/${id}`,
+        method: "DELETE",
+        query,
+        ...params,
+      }),
+
+    /**
+     * @description List recent anti-cheat block events. Newest first; max 500 per page.
+     * @tags Admin
+     * @name AdminListAntiCheatBlocks
+     * @request GET:/api/admin/anticheatblocks
+     */
+    adminListAntiCheatBlocks: (
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<AntiCheatBlockModel[], RequestResponse>({
+        path: `/api/admin/anticheatblocks`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    useAdminListAntiCheatBlocks: (
+      query?: { count?: number; skip?: number },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) => {
+      const params = new URLSearchParams()
+      if (query?.count != null) params.append('count', String(query.count))
+      if (query?.skip != null) params.append('skip', String(query.skip))
+      const qs = params.toString()
+      const path = `/api/admin/anticheatblocks${qs ? `?${qs}` : ''}`
+      return useSWR<AntiCheatBlockModel[], RequestResponse>(doFetch ? path : null, options)
+    },
+
+    /**
+     * @description Delete an anti-cheat block row (false-positive clearance).
+     * @tags Admin
+     * @name AdminClearAntiCheatBlock
+     * @request DELETE:/api/admin/anticheatblocks/{id}
+     */
+    adminClearAntiCheatBlock: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/anticheatblocks/${id}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Paginated history of challenge image builds. Newest first.
+     * @tags Admin
+     * @name AdminListBuilds
+     * @request GET:/api/admin/builds
+     */
+    adminListBuilds: (
+      query?: {
+        count?: number
+        skip?: number
+        status?: ChallengeBuildStatus
+        gameId?: number
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeBuildAuditModel[], RequestResponse>({
+        path: `/api/admin/builds`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    useAdminListBuilds: (
+      query?: {
+        count?: number
+        skip?: number
+        status?: ChallengeBuildStatus
+        gameId?: number
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) => {
+      const params = new URLSearchParams()
+      if (query?.count != null) params.append('count', String(query.count))
+      if (query?.skip != null) params.append('skip', String(query.skip))
+      if (query?.status != null) params.append('status', query.status)
+      if (query?.gameId != null) params.append('gameId', String(query.gameId))
+      const qs = params.toString()
+      const path = `/api/admin/builds${qs ? `?${qs}` : ''}`
+      return useSWR<ChallengeBuildAuditModel[], RequestResponse>(doFetch ? path : null, options)
+    },
+
+    /**
+     * @description Live snapshot of builds currently being processed.
+     * @tags Admin
+     * @name AdminListBuildsInProgress
+     * @request GET:/api/admin/builds/inprogress
+     */
+    adminListBuildsInProgress: (params: RequestParams = {}) =>
+      this.request<ChallengeBuildInProgressModel[], RequestResponse>({
+        path: `/api/admin/builds/inprogress`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useAdminListBuildsInProgress: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeBuildInProgressModel[], RequestResponse>(
+        doFetch ? `/api/admin/builds/inprogress` : null,
+        options,
+      ),
+
+    /**
+     * @description Enqueue a rebuild for every Failed / MissingDockerfile challenge in a game.
+     * @tags Admin
+     * @name AdminBulkRebuildFailed
+     * @request POST:/api/admin/games/{gameId}/bulkrebuild
+     */
+    adminBulkRebuildFailed: (gameId: number, params: RequestParams = {}) =>
+      this.request<BulkRebuildResultModel, RequestResponse>({
+        path: `/api/admin/games/${gameId}/bulkrebuild`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Delete a single ChallengeBuildAudit row.
+     * @tags Admin
+     * @name AdminDeleteBuildAudit
+     * @request DELETE:/api/admin/builds/{auditId}
+     */
+    adminDeleteBuildAudit: (auditId: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/builds/${auditId}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Bulk-delete every Failed audit row.
+     * @tags Admin
+     * @name AdminPruneFailedBuildAudits
+     * @request POST:/api/admin/builds/prunefailed
+     */
+    adminPruneFailedBuildAudits: (params: RequestParams = {}) =>
+      this.request<PruneResultModel, RequestResponse>({
+        path: `/api/admin/builds/prunefailed`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Bulk-delete an explicit list of audit row ids.
+     * @tags Admin
+     * @name AdminBulkDeleteBuildAudits
+     * @request POST:/api/admin/builds/bulkdelete
+     */
+    adminBulkDeleteBuildAudits: (ids: number[], params: RequestParams = {}) =>
+      this.request<PruneResultModel, RequestResponse>({
+        path: `/api/admin/builds/bulkdelete`,
+        method: "POST",
+        body: ids,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Garbage-collect orphaned rsctf/* images on the local Docker daemon.
+     * @tags Admin
+     * @name AdminPruneOrphanBuildImages
+     * @request POST:/api/admin/builds/pruneimages
+     */
+    adminPruneOrphanBuildImages: (params: RequestParams = {}) =>
+      this.request<PruneResultModel, RequestResponse>({
+        path: `/api/admin/builds/pruneimages`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description List rsctf/* images on the local Docker daemon (size, age, referenced-by).
+     * @tags Admin
+     * @name AdminListBuildImages
+     * @request GET:/api/admin/builds/images
+     */
+    adminListBuildImages: (params: RequestParams = {}) =>
+      this.request<BuildImageModel[], RequestResponse>({
+        path: `/api/admin/builds/images`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useAdminListBuildImages: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<BuildImageModel[], RequestResponse>(
+        doFetch ? `/api/admin/builds/images` : null,
+        options,
+      ),
+
+    /**
+     * @description Delete a single rsctf/* image from the local Docker daemon by tag.
+     * @tags Admin
+     * @name AdminDeleteBuildImage
+     * @request DELETE:/api/admin/builds/images
+     */
+    adminDeleteBuildImage: (
+      query: { tag: string; force?: boolean },
+      params: RequestParams = {},
+    ) =>
+      this.request<PruneResultModel, RequestResponse>({
+        path: `/api/admin/builds/images`,
+        method: "DELETE",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Re-enqueue the build for the challenge owning this audit row.
+     * @tags Admin
+     * @name AdminReenqueueBuild
+     * @request POST:/api/admin/builds/{auditId}/reenqueue
+     */
+    adminReenqueueBuild: (auditId: number, params: RequestParams = {}) =>
+      this.request<ChallengeAuditModel, RequestResponse>({
+        path: `/api/admin/builds/${auditId}/reenqueue`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+  };
+  apiToken = {
+    /**
+     * No description
+     *
+     * @tags ApiToken
+     * @name ApiTokenGenerateToken
+     * @summary Generates a new API token.
+     * @request POST:/api/tokens
+     */
+    apiTokenGenerateToken: (
+      data: ApiTokenCreateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<ApiTokenResponse, RequestResponse>({
+        path: `/api/tokens`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags ApiToken
+     * @name ApiTokenListTokens
+     * @summary Lists all API tokens.
+     * @request GET:/api/tokens
+     */
+    apiTokenListTokens: (params: RequestParams = {}) =>
+      this.request<ApiToken[], RequestResponse>({
+        path: `/api/tokens`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * No description
+     *
+     * @tags ApiToken
+     * @name ApiTokenListTokens
+     * @summary Lists all API tokens.
+     * @request GET:/api/tokens
+     */
+    useApiTokenListTokens: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ApiToken[], RequestResponse>(
+        doFetch ? `/api/tokens` : null,
+        options,
+      ),
+
+    /**
+     * No description
+     *
+     * @tags ApiToken
+     * @name ApiTokenListTokens
+     * @summary Lists all API tokens.
+     * @request GET:/api/tokens
+     */
+    mutateApiTokenListTokens: (
+      data?: ApiToken[] | Promise<ApiToken[]>,
+      options?: MutatorOptions,
+    ) => mutate<ApiToken[]>(`/api/tokens`, data, options),
+
+    /**
+     * No description
+     *
+     * @tags ApiToken
+     * @name ApiTokenRestoreToken
+     * @summary Restores an API token.
+     * @request POST:/api/tokens/{id}/restore
+     */
+    apiTokenRestoreToken: (id: string, params: RequestParams = {}) =>
+      this.request<void, RequestResponse | ProblemDetails>({
+        path: `/api/tokens/${id}/restore`,
+        method: "POST",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags ApiToken
+     * @name ApiTokenRevokeToken
+     * @summary Revokes an API token.
+     * @request DELETE:/api/tokens/{id}
+     */
+    apiTokenRevokeToken: (
+      id: string,
+      query?: {
+        /**
+         * If true, the token will be deleted instead of just revoked.
+         * @default false
+         */
+        delete?: boolean;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse | ProblemDetails>({
+        path: `/api/tokens/${id}`,
+        method: "DELETE",
+        query: query,
+        ...params,
+      }),
+  };
+  assets = {
+    /**
+     * @description Delete a file by hash
+     *
+     * @tags Assets
+     * @name AssetsDelete
+     * @summary File deletion interface
+     * @request DELETE:/api/assets/{hash}
+     */
+    assetsDelete: (hash: string, params: RequestParams = {}) =>
+      this.request<void, RequestResponse | ProblemDetails>({
+        path: `/api/assets/${hash}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieve a file by hash, filename is not matched
+     *
+     * @tags Assets
+     * @name AssetsGetFile
+     * @summary File retrieval interface
+     * @request GET:/assets/{hash}/{filename}
+     */
+    assetsGetFile: (
+      hash: string,
+      filename: string,
+      query?: {
+        token?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/assets/${hash}/${filename}`,
+        method: "GET",
+        query: query,
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Assets
+     * @name AssetsGetFileWithToken
+     * @summary File retrieval interface with secure path token
+     * @request GET:/assets/{hash}/s/{token}/{filename}
+     */
+    assetsGetFileWithToken: (
+      hash: string,
+      token: string,
+      filename: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/assets/${hash}/s/${token}/${filename}`,
+        method: "GET",
+        ...params,
+      }),
+
+    /**
+     * @description Upload one or more files
+     *
+     * @tags Assets
+     * @name AssetsUpload
+     * @summary File upload interface
+     * @request POST:/api/assets
+     */
+    assetsUpload: (
+      data: {
+        files?: File[] | null;
+      },
+      query?: {
+        /** Unified filename */
+        filename?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<LocalFile[], RequestResponse>({
+        path: `/api/assets`,
+        method: "POST",
+        query: query,
+        body: data,
+        type: ContentType.FormData,
+        format: "json",
+        ...params,
+      }),
+  };
+  cheatReport = {
+    /**
+     * No description
+     *
+     * @tags CheatReport
+     * @name CheatReportGet
+     * @request GET:/api/game/{id}/cheatreport
+     */
+    cheatReportGet: (id: number, params: RequestParams = {}) =>
+      this.request<CheatReport, any>({
+        path: `/api/game/${id}/cheatreport`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @request GET:/api/game/{id}/cheatreport/compare
+     */
+    cheatReportCompare: (
+      id: number,
+      participationA: number,
+      participationB: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<CollusionCompareResult, any>({
+        path: `/api/game/${id}/cheatreport/compare`,
+        method: "GET",
+        query: { participationA, participationB },
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @request GET:/api/game/{id}/cheatreport/compare
+     */
+    useCheatReportCompare: (
+      id: number,
+      participationA: number | null,
+      participationB: number | null,
+      options?: SWRConfiguration,
+    ) =>
+      useSWR<CollusionCompareResult, any>(
+        participationA !== null && participationB !== null
+          ? `/api/game/${id}/cheatreport/compare?participationA=${participationA}&participationB=${participationB}`
+          : null,
+        options,
+      ),
+
+    /**
+     * No description
+     *
+     * @tags CheatReport
+     * @name CheatReportGet
+     * @request GET:/api/game/{id}/cheatreport
+     */
+    useCheatReportGet: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<CheatReport, any>(
+        doFetch ? `/api/game/${id}/cheatreport` : null,
+        options,
+      ),
+
+    /**
+     * No description
+     *
+     * @tags CheatReport
+     * @name CheatReportGet
+     * @request GET:/api/game/{id}/cheatreport
+     */
+    mutateCheatReportGet: (
+      id: number,
+      data?: CheatReport | Promise<CheatReport>,
+      options?: MutatorOptions,
+    ) => mutate<CheatReport>(`/api/game/${id}/cheatreport`, data, options),
+  };
+  edit = {
+    /**
+     * @description Get game admins
+     *
+     * @tags Edit
+     * @name EditGetGameAdmins
+     * @summary Get game admins
+     * @request GET:/api/edit/games/{id}/admins
+     */
+    editGetGameAdmins: (id: number, params: RequestParams = {}) =>
+      this.request<ProfileUserInfoModel[], any>({
+        path: `/api/edit/games/${id}/admins`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Add game admin
+     *
+     * @tags Edit
+     * @name EditAddGameAdmin
+     * @summary Add game admin
+     * @request POST:/api/edit/games/{id}/admins/{userId}
+     */
+    editAddGameAdmin: (id: number, userId: string, params: RequestParams = {}) =>
+      this.request<void, any>({
+        path: `/api/edit/games/${id}/admins/${userId}`,
+        method: "POST",
+        ...params,
+      }),
+
+    /**
+     * @description Remove game admin
+     *
+     * @tags Edit
+     * @name EditRemoveGameAdmin
+     * @summary Remove game admin
+     * @request DELETE:/api/edit/games/{id}/admins/{userId}
+     */
+    editRemoveGameAdmin: (
+      id: number,
+      userId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, any>({
+        path: `/api/edit/games/${id}/admins/${userId}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Adding a game challenge flag requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditAddFlags
+     * @summary Add Game Challenge Flag
+     * @request POST:/api/edit/games/{id}/challenges/{cId}/flags
+     */
+    editAddFlags: (
+      id: number,
+      cId: number,
+      data: FlagCreateModel[],
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/flags`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Adding a game requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditAddGame
+     * @summary Add Game
+     * @request POST:/api/edit/games
+     */
+    editAddGame: (data: GameInfoModel, params: RequestParams = {}) =>
+      this.request<GameInfoModel, RequestResponse>({
+        path: `/api/edit/games`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Adding a game challenge requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditAddGameChallenge
+     * @summary Add Game Challenge
+     * @request POST:/api/edit/games/{id}/challenges
+     */
+    editAddGameChallenge: (
+      id: number,
+      data: ChallengeInfoModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeEditDetailModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Adding a game notice requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditAddGameNotice
+     * @summary Add Game Notice
+     * @request POST:/api/edit/games/{id}/notices
+     */
+    editAddGameNotice: (
+      id: number,
+      data: GameNoticeModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<GameNotice, RequestResponse>({
+        path: `/api/edit/games/${id}/notices`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Adding a post requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditAddPost
+     * @summary Add Post
+     * @request POST:/api/edit/posts
+     */
+    editAddPost: (data: PostEditModel, params: RequestParams = {}) =>
+      this.request<string, RequestResponse>({
+        path: `/api/edit/posts`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Add a new division for a game; requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditCreateDivision
+     * @summary Create Division
+     * @request POST:/api/edit/games/{id}/divisions
+     */
+    editCreateDivision: (
+      id: number,
+      data: DivisionCreateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<Division, RequestResponse>({
+        path: `/api/edit/games/${id}/divisions`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Testing a game challenge container requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditCreateTestContainer
+     * @summary Test Game Challenge Container
+     * @request POST:/api/edit/games/{id}/challenges/{cId}/container
+     */
+    editCreateTestContainer: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ContainerInfoModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/container`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Save-time workload edits affect future launches. This explicit action applies the saved definition to active trusted-worker instances.
+     *
+     * @tags Edit
+     * @name EditRolloutChallengeWorkloads
+     * @summary Roll Out Challenge Workloads
+     * @request POST:/api/edit/games/{id}/challenges/{cId}/workload/rollout
+     */
+    editRolloutChallengeWorkloads: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<WorkloadRolloutModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/workload/rollout`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Delete a division for a game; requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditDeleteDivision
+     * @summary Delete Division
+     * @request DELETE:/api/edit/games/{id}/divisions/{divisionId}
+     */
+    editDeleteDivision: (
+      id: number,
+      divisionId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/divisions/${divisionId}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Deleting a game requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditDeleteGame
+     * @summary Delete Game
+     * @request DELETE:/api/edit/games/{id}
+     */
+    editDeleteGame: (id: number, params: RequestParams = {}) =>
+      this.request<GameInfoModel, RequestResponse>({
+        path: `/api/edit/games/${id}`,
+        method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Deleting a game notice requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditDeleteGameNotice
+     * @summary Delete Game Notice
+     * @request DELETE:/api/edit/games/{id}/notices/{noticeId}
+     */
+    editDeleteGameNotice: (
+      id: number,
+      noticeId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/notices/${noticeId}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Deleting all WriteUps for a game requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditDeleteGameWriteUps
+     * @summary Delete All WriteUps
+     * @request DELETE:/api/edit/games/{id}/writeups
+     */
+    editDeleteGameWriteUps: (id: number, params: RequestParams = {}) =>
+      this.request<GameInfoModel, RequestResponse>({
+        path: `/api/edit/games/${id}/writeups`,
+        method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Deleting a post requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditDeletePost
+     * @summary Delete Post
+     * @request DELETE:/api/edit/posts/{id}
+     */
+    editDeletePost: (id: string, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/posts/${id}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Destroying a test game challenge container requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditDestroyTestContainer
+     * @summary Destroy Test Game Challenge Container
+     * @request DELETE:/api/edit/games/{id}/challenges/{cId}/container
+     */
+    editDestroyTestContainer: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/container`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Export game with all challenges, divisions, and attachments as a ZIP file; requires Admin permission
+     *
+     * @tags Edit
+     * @name EditExportGame
+     * @summary Export game package
+     * @request POST:/api/edit/games/{id}/export
+     */
+    editExportGame: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/export`,
+        method: "POST",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Edit
+     * @name EditFlushScoreboardCache
+     * @summary Flush Scoreboard Cache
+     * @request POST:/api/edit/games/{id}/scoreboard/flush
+     */
+    editFlushScoreboardCache: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/scoreboard/flush`,
+        method: "POST",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieve all divisions for a game; requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetDivisions
+     * @summary Get Divisions
+     * @request GET:/api/edit/games/{id}/divisions
+     */
+    editGetDivisions: (id: number, params: RequestParams = {}) =>
+      this.request<Division[], RequestResponse>({
+        path: `/api/edit/games/${id}/divisions`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieve all divisions for a game; requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetDivisions
+     * @summary Get Divisions
+     * @request GET:/api/edit/games/{id}/divisions
+     */
+    useEditGetDivisions: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<Division[], RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/divisions` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieve all divisions for a game; requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetDivisions
+     * @summary Get Divisions
+     * @request GET:/api/edit/games/{id}/divisions
+     */
+    mutateEditGetDivisions: (
+      id: number,
+      data?: Division[] | Promise<Division[]>,
+      options?: MutatorOptions,
+    ) => mutate<Division[]>(`/api/edit/games/${id}/divisions`, data, options),
+
+    /**
+     * @description Retrieving a game requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGame
+     * @summary Get Game
+     * @request GET:/api/edit/games/{id}
+     */
+    editGetGame: (id: number, params: RequestParams = {}) =>
+      this.request<GameInfoModel, RequestResponse>({
+        path: `/api/edit/games/${id}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieving a game requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGame
+     * @summary Get Game
+     * @request GET:/api/edit/games/{id}
+     */
+    useEditGetGame: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<GameInfoModel, RequestResponse>(
+        doFetch ? `/api/edit/games/${id}` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieving a game requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGame
+     * @summary Get Game
+     * @request GET:/api/edit/games/{id}
+     */
+    mutateEditGetGame: (
+      id: number,
+      data?: GameInfoModel | Promise<GameInfoModel>,
+      options?: MutatorOptions,
+    ) => mutate<GameInfoModel>(`/api/edit/games/${id}`, data, options),
+
+    /**
+     * @description Retrieving a game challenge requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGameChallenge
+     * @summary Get Game Challenge
+     * @request GET:/api/edit/games/{id}/challenges/{cId}
+     */
+    editGetGameChallenge: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeEditDetailModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieving a game challenge requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGameChallenge
+     * @summary Get Game Challenge
+     * @request GET:/api/edit/games/{id}/challenges/{cId}
+     */
+    useEditGetGameChallenge: (
+      id: number,
+      cId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeEditDetailModel, RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/challenges/${cId}` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieving a game challenge requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGameChallenge
+     * @summary Get Game Challenge
+     * @request GET:/api/edit/games/{id}/challenges/{cId}
+     */
+    mutateEditGetGameChallenge: (
+      id: number,
+      cId: number,
+      data?: ChallengeEditDetailModel | Promise<ChallengeEditDetailModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ChallengeEditDetailModel>(
+        `/api/edit/games/${id}/challenges/${cId}`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieving all game challenges requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGameChallenges
+     * @summary Get All Game Challenges
+     * @request GET:/api/edit/games/{id}/challenges
+     */
+    editGetGameChallenges: (id: number, params: RequestParams = {}) =>
+      this.request<ChallengeInfoModel[], RequestResponse>({
+        path: `/api/edit/games/${id}/challenges`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieving all game challenges requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGameChallenges
+     * @summary Get All Game Challenges
+     * @request GET:/api/edit/games/{id}/challenges
+     */
+    useEditGetGameChallenges: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeInfoModel[], RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/challenges` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieving all game challenges requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGameChallenges
+     * @summary Get All Game Challenges
+     * @request GET:/api/edit/games/{id}/challenges
+     */
+    mutateEditGetGameChallenges: (
+      id: number,
+      data?: ChallengeInfoModel[] | Promise<ChallengeInfoModel[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ChallengeInfoModel[]>(
+        `/api/edit/games/${id}/challenges`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieving game notices requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGameNotices
+     * @summary Get Game Notices
+     * @request GET:/api/edit/games/{id}/notices
+     */
+    editGetGameNotices: (id: number, params: RequestParams = {}) =>
+      this.request<GameNotice[], RequestResponse>({
+        path: `/api/edit/games/${id}/notices`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieving game notices requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGameNotices
+     * @summary Get Game Notices
+     * @request GET:/api/edit/games/{id}/notices
+     */
+    useEditGetGameNotices: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<GameNotice[], RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/notices` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieving game notices requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGameNotices
+     * @summary Get Game Notices
+     * @request GET:/api/edit/games/{id}/notices
+     */
+    mutateEditGetGameNotices: (
+      id: number,
+      data?: GameNotice[] | Promise<GameNotice[]>,
+      options?: MutatorOptions,
+    ) => mutate<GameNotice[]>(`/api/edit/games/${id}/notices`, data, options),
+
+    /**
+     * @description Retrieving the game list requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGames
+     * @summary Get Game List
+     * @request GET:/api/edit/games
+     */
+    editGetGames: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfGameInfoModel, RequestResponse>({
+        path: `/api/edit/games`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieving the game list requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGames
+     * @summary Get Game List
+     * @request GET:/api/edit/games
+     */
+    useEditGetGames: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfGameInfoModel, RequestResponse>(
+        doFetch ? [`/api/edit/games`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieving the game list requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetGames
+     * @summary Get Game List
+     * @request GET:/api/edit/games
+     */
+    mutateEditGetGames: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+      },
+      data?:
+        | ArrayResponseOfGameInfoModel
+        | Promise<ArrayResponseOfGameInfoModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfGameInfoModel>(
+        [`/api/edit/games`, query],
+        data,
+        options,
+      ),
+
+    /**
+     * No description
+     *
+     * @tags Edit
+     * @name EditGetReviewAnalytics
+     * @summary Get Challenge Review Analytics
+     * @request GET:/api/edit/games/{id}/reviews/analytics
+     */
+    editGetReviewAnalytics: (id: number, params: RequestParams = {}) =>
+      this.request<ReviewAnalyticsModel, RequestResponse>({
+        path: `/api/edit/games/${id}/reviews/analytics`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * No description
+     *
+     * @tags Edit
+     * @name EditGetReviewAnalytics
+     * @summary Get Challenge Review Analytics
+     * @request GET:/api/edit/games/{id}/reviews/analytics
+     */
+    useEditGetReviewAnalytics: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ReviewAnalyticsModel, RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/reviews/analytics` : null,
+        options,
+      ),
+
+    /**
+     * No description
+     *
+     * @tags Edit
+     * @name EditGetReviewAnalytics
+     * @summary Get Challenge Review Analytics
+     * @request GET:/api/edit/games/{id}/reviews/analytics
+     */
+    mutateEditGetReviewAnalytics: (
+      id: number,
+      data?: ReviewAnalyticsModel | Promise<ReviewAnalyticsModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ReviewAnalyticsModel>(
+        `/api/edit/games/${id}/reviews/analytics`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieving challenge reviews requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetReviews
+     * @summary Get Challenge Reviews
+     * @request GET:/api/edit/games/{id}/reviews
+     */
+    editGetReviews: (
+      id: number,
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        search?: string | null;
+        rating?: ReviewRating | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfChallengeReviewDetailModel, RequestResponse>({
+        path: `/api/edit/games/${id}/reviews`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieving challenge reviews requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetReviews
+     * @summary Get Challenge Reviews
+     * @request GET:/api/edit/games/{id}/reviews
+     */
+    useEditGetReviews: (
+      id: number,
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        search?: string | null;
+        rating?: ReviewRating | null;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfChallengeReviewDetailModel, RequestResponse>(
+        doFetch ? [`/api/edit/games/${id}/reviews`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieving challenge reviews requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditGetReviews
+     * @summary Get Challenge Reviews
+     * @request GET:/api/edit/games/{id}/reviews
+     */
+    mutateEditGetReviews: (
+      id: number,
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        search?: string | null;
+        rating?: ReviewRating | null;
+      },
+      data?:
+        | ArrayResponseOfChallengeReviewDetailModel
+        | Promise<ArrayResponseOfChallengeReviewDetailModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfChallengeReviewDetailModel>(
+        [`/api/edit/games/${id}/reviews`, query],
+        data,
+        options,
+      ),
+
+    /**
+     * @description Import game from a ZIP package; requires Admin permission
+     *
+     * @tags Edit
+     * @name EditImportGame
+     * @summary Import game package
+     * @request POST:/api/edit/games/import
+     */
+    editImportGame: (
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<number, RequestResponse>({
+        path: `/api/edit/games/import`,
+        method: "POST",
+        body: data,
+        type: ContentType.FormData,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Deleting a game challenge flag requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditRemoveFlag
+     * @summary Delete Game Challenge Flag
+     * @request DELETE:/api/edit/games/{id}/challenges/{cId}/flags/{fId}
+     */
+    editRemoveFlag: (
+      id: number,
+      cId: number,
+      fId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<TaskStatus, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/flags/${fId}`,
+        method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Deleting a game challenge requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditRemoveGameChallenge
+     * @summary Delete Game Challenge
+     * @request DELETE:/api/edit/games/{id}/challenges/{cId}
+     */
+    editRemoveGameChallenge: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Updating a game challenge attachment requires administrator privileges; only for non-dynamic attachment challenges
+     *
+     * @tags Edit
+     * @name EditUpdateAttachment
+     * @summary Update Game Challenge Attachment
+     * @request POST:/api/edit/games/{id}/challenges/{cId}/attachment
+     */
+    editUpdateAttachment: (
+      id: number,
+      cId: number,
+      data: AttachmentCreateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<number, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/attachment`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Update a division for a game; requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditUpdateDivision
+     * @summary Update Division
+     * @request PUT:/api/edit/games/{id}/divisions/{divisionId}
+     */
+    editUpdateDivision: (
+      id: number,
+      divisionId: number,
+      data: DivisionEditModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<Division, RequestResponse>({
+        path: `/api/edit/games/${id}/divisions/${divisionId}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Updating a game requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditUpdateGame
+     * @summary Update Game
+     * @request PUT:/api/edit/games/{id}
+     */
+    editUpdateGame: (
+      id: number,
+      data: GameInfoModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<GameInfoModel, RequestResponse>({
+        path: `/api/edit/games/${id}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Updating a game challenge, requires administrator privileges. Flags are not affected; use Flag-related APIs to modify
+     *
+     * @tags Edit
+     * @name EditUpdateGameChallenge
+     * @summary Update Game Challenge Information
+     * @request PUT:/api/edit/games/{id}/challenges/{cId}
+     */
+    editUpdateGameChallenge: (
+      id: number,
+      cId: number,
+      data: ChallengeUpdateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeEditDetailModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — disabled compatibility route; official rounds advance automatically.
+     * @tags Edit
+     * @name EditAdvanceRound
+     * @request POST:/api/edit/games/{id}/ad/AdvanceRound
+     */
+    editAdvanceRound: (id: number, params: RequestParams = {}) =>
+      this.request<AdAdvanceRoundResult, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/AdvanceRound`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — operator dashboard state (current round + per-team grid).
+     * @tags Edit
+     * @name EditAdState
+     * @request GET:/api/edit/games/{id}/ad/State
+     */
+    editAdState: (id: number, params: RequestParams = {}) =>
+      this.request<AdGameStateModel, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/State`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — SWR variant of editAdState.
+     * @tags Edit
+     * @name EditAdState
+     * @request GET:/api/edit/games/{id}/ad/State
+     */
+    useEditAdState: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AdGameStateModel, RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/ad/State` : null,
+        options,
+      ),
+
+    /**
+     * @description A&D — refresh helper for editAdState.
+     * @tags Edit
+     * @name EditAdState
+     * @request GET:/api/edit/games/{id}/ad/State
+     */
+    mutateEditAdState: (
+      id: number,
+      data?: AdGameStateModel | Promise<AdGameStateModel>,
+      options?: MutatorOptions,
+    ) => mutate<AdGameStateModel>(`/api/edit/games/${id}/ad/State`, data, options),
+
+    /**
+     * @description A&D — toggle a challenge enabled/disabled mid-event.
+     * @tags Edit
+     * @name EditAdToggleChallenge
+     * @request POST:/api/edit/games/{id}/ad/Challenges/{challengeId}/Toggle
+     */
+    editAdToggleChallenge: (id: number, challengeId: number, params: RequestParams = {}) =>
+      this.request<{ isEnabled: boolean }, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/Challenges/${challengeId}/Toggle`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — operator force-restart of a stuck team container.
+     * @tags Edit
+     * @name EditAdForceRestart
+     * @request POST:/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Restart
+     */
+    editAdForceRestart: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/Restart`,
+        method: "POST",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — judge override of a recorded check result.
+     * @tags Edit
+     * @name EditAdOverrideCheck
+     * @request POST:/api/edit/games/{id}/ad/Checks/{checkId}/Override
+     */
+    editAdOverrideCheck: (
+      id: number,
+      checkId: number,
+      data: AdOverrideCheckModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/Checks/${checkId}/Override`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description A&D — one-shot ensure containers for late-join no-wait.
+     * @tags Edit
+     * @name EditAdEnsureContainers
+     * @request POST:/api/edit/games/{id}/ad/EnsureContainers
+     */
+    editAdEnsureContainers: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/EnsureContainers`,
+        method: "POST",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — pause/resume scoring for the whole game (freezes round advance + checks).
+     * @tags Edit
+     * @name EditAdToggleScoringPause
+     * @request POST:/api/edit/games/{id}/ad/ScoringPause
+     */
+    editAdToggleScoringPause: (id: number, params: RequestParams = {}) =>
+      this.request<{ scoringPaused: boolean }, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/ScoringPause`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — direct download URL for any team's post-game container snapshot tarball (admin forensics).
+     * @tags Edit
+     * @name EditAdSnapshotUrl
+     */
+    editAdSnapshotUrl: (id: number, adTeamServiceId: number) =>
+      `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/Snapshot`,
+
+    /**
+     * @description A&D — the filesystem diff (docker diff) of a team's container vs the baseline image.
+     * @tags Edit
+     * @name EditAdSnapshotChanges
+     * @request GET:/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot/Changes
+     */
+    editAdSnapshotChanges: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
+      this.request<AdSnapshotChangesModel, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/Snapshot/Changes`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Inspect one changed file: current content (running container),
+     * baseline content (challenge image), and a unified diff. Requires game admin.
+     *
+     * @tags Edit
+     * @name EditAdFile
+     * @request GET:/api/edit/games/{id}/ad/Services/{adTeamServiceId}/File
+     */
+    editAdFile: (
+      id: number,
+      adTeamServiceId: number,
+      query: { path: string },
+      params: RequestParams = {},
+    ) =>
+      this.request<AdFileViewModel, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/File`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Capture points in a service's file-change history. Requires game admin.
+     *
+     * @tags Edit
+     * @name EditAdServiceSnapshots
+     * @request GET:/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshots
+     */
+    editAdServiceSnapshots: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
+      this.request<AdSnapshotPointModel[], RequestResponse>({
+        path: `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/Snapshots`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Diff a service between two capture points. Requires game admin.
+     *
+     * @tags Edit
+     * @name EditAdSnapshotTimeDiff
+     * @request GET:/api/edit/games/{id}/ad/Services/{adTeamServiceId}/SnapshotDiff
+     */
+    editAdSnapshotTimeDiff: (
+      id: number,
+      adTeamServiceId: number,
+      query: { fromId: number; toId: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<AdSnapshotTimeDiffModel, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/SnapshotDiff`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Spawn a short-lived inspector container from the challenge image
+     * so an admin can shell in. Requires game admin.
+     *
+     * @tags Edit
+     * @name EditAdSpawnInspector
+     * @request POST:/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Inspector
+     */
+    editAdSpawnInspector: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
+      this.request<AdInspectorModel, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/Inspector`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Destroy an inspector container. Requires game admin.
+     *
+     * @tags Edit
+     * @name EditAdDestroyInspector
+     * @request DELETE:/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Inspector/{containerGuid}
+     */
+    editAdDestroyInspector: (
+      id: number,
+      adTeamServiceId: number,
+      containerGuid: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/ad/Services/${adTeamServiceId}/Inspector/${containerGuid}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Updating a game notice requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditUpdateGameNotice
+     * @summary Update Game Notice
+     * @request PUT:/api/edit/games/{id}/notices/{noticeId}
+     */
+    editUpdateGameNotice: (
+      id: number,
+      noticeId: number,
+      data: GameNoticeModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<GameNotice, RequestResponse>({
+        path: `/api/edit/games/${id}/notices/${noticeId}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Use this endpoint to update the game poster; administrator privileges required
+     *
+     * @tags Edit
+     * @name EditUpdateGamePoster
+     * @summary Update Game Poster
+     * @request PUT:/api/edit/games/{id}/poster
+     */
+    editUpdateGamePoster: (
+      id: number,
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<string, RequestResponse>({
+        path: `/api/edit/games/${id}/poster`,
+        method: "PUT",
+        body: data,
+        type: ContentType.FormData,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Updating a post requires administrator privileges
+     *
+     * @tags Edit
+     * @name EditUpdatePost
+     * @summary Update Post
+     * @request PUT:/api/edit/posts/{id}
+     */
+    editUpdatePost: (
+      id: string,
+      data: PostEditModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<PostDetailModel, RequestResponse>({
+        path: `/api/edit/posts/${id}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Submit a single-challenge tarball for admin review; requires User permission.
+     *
+     * @tags Edit
+     * @name EditSubmitChallenge
+     * @request POST:/api/edit/games/{id}/challenges/submit
+     */
+    editSubmitChallenge: (
+      id: number,
+      archive: File,
+      params: RequestParams = {},
+    ) => {
+      const fd = new FormData()
+      fd.append("archive", archive)
+      return this.request<ChallengeImportResult, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/submit`,
+        method: "POST",
+        body: fd,
+        format: "json",
+        ...params,
+      })
+    },
+
+    /**
+     * @description Admin/game-admin tarball import (auto-approves).
+     *
+     * @tags Edit
+     * @name EditImportChallenge
+     * @request POST:/api/edit/games/{id}/challenges/import
+     */
+    editImportChallenge: (
+      id: number,
+      archive: File,
+      params: RequestParams = {},
+    ) => {
+      const fd = new FormData()
+      fd.append("archive", archive)
+      return this.request<ChallengeImportResult, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/import`,
+        method: "POST",
+        body: fd,
+        format: "json",
+        ...params,
+      })
+    },
+
+    /**
+     * @description Bulk import from a public github repo. Auto-approves when caller is admin/event-manager.
+     *
+     * @tags Edit
+     * @name EditImportChallengeFromGitHub
+     * @request POST:/api/edit/games/{id}/challenges/importfromgithub
+     */
+    editImportChallengeFromGitHub: (
+      id: number,
+      data: ImportFromGitHubModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeImportResult, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/importfromgithub`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description List challenges awaiting admin review.
+     *
+     * @tags Edit
+     * @name EditListPendingChallenges
+     * @request GET:/api/edit/games/{id}/pendingchallenges
+     */
+    editListPendingChallenges: (
+      id: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<PendingChallengeModel[], RequestResponse>({
+        path: `/api/edit/games/${id}/pendingchallenges`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useEditListPendingChallenges: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<PendingChallengeModel[], RequestResponse>(
+        doFetch ? `/api/edit/games/${id}/pendingchallenges` : null,
+        options,
+      ),
+
+    mutateEditListPendingChallenges: (
+      id: number,
+      data?: PendingChallengeModel[] | Promise<PendingChallengeModel[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<PendingChallengeModel[]>(
+        `/api/edit/games/${id}/pendingchallenges`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Get parsed audit metadata (YAML, file tree, previews) for a pending challenge.
+     *
+     * @tags Edit
+     * @name EditGetChallengeAuditMeta
+     * @request GET:/api/edit/games/{id}/challenges/{cId}/auditmeta
+     */
+    editGetChallengeAuditMeta: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeAuditModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/auditmeta`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Re-run the auto-build pipeline against a challenge's persisted archive.
+     * @tags Edit
+     * @name EditRebuildChallengeImage
+     * @request POST:/api/edit/games/{id}/challenges/{cId}/rebuild
+     */
+    editRebuildChallengeImage: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeAuditModel, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/rebuild`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Approve a pending challenge.
+     *
+     * @tags Edit
+     * @name EditApproveChallenge
+     * @request POST:/api/edit/games/{id}/challenges/{cId}/approve
+     */
+    editApproveChallenge: (
+      id: number,
+      cId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/approve`,
+        method: "POST",
+        ...params,
+      }),
+
+    /**
+     * @description Reject a pending challenge with an optional note.
+     *
+     * @tags Edit
+     * @name EditRejectChallenge
+     * @request POST:/api/edit/games/{id}/challenges/{cId}/reject
+     */
+    editRejectChallenge: (
+      id: number,
+      cId: number,
+      data: RejectChallengeModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/edit/games/${id}/challenges/${cId}/reject`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+  };
+  game = {
+    /**
+     * @description Retrieves all challenges of the game; requires User permission and active team participation
+     *
+     * @tags Game
+     * @name GameChallengesWithTeamInfo
+     * @summary Get team details in a game
+     * @request GET:/api/game/{id}/details
+     */
+    gameChallengesWithTeamInfo: (id: number, params: RequestParams = {}) =>
+      this.request<GameDetailModel, RequestResponse>({
+        path: `/api/game/${id}/details`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves all challenges of the game; requires User permission and active team participation
+     *
+     * @tags Game
+     * @name GameChallengesWithTeamInfo
+     * @summary Get team details in a game
+     * @request GET:/api/game/{id}/details
+     */
+    useGameChallengesWithTeamInfo: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<GameDetailModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/details` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves all challenges of the game; requires User permission and active team participation
+     *
+     * @tags Game
+     * @name GameChallengesWithTeamInfo
+     * @summary Get team details in a game
+     * @request GET:/api/game/{id}/details
+     */
+    mutateGameChallengesWithTeamInfo: (
+      id: number,
+      data?: GameDetailModel | Promise<GameDetailModel>,
+      options?: MutatorOptions,
+    ) => mutate<GameDetailModel>(`/api/game/${id}/details`, data, options),
+
+    /**
+     * @description Retrieves game cheat data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameCheatInfo
+     * @summary Get game cheat information
+     * @request GET:/api/game/{id}/cheatinfo
+     */
+    gameCheatInfo: (id: number, params: RequestParams = {}) =>
+      this.request<CheatInfoModel[], RequestResponse>({
+        path: `/api/game/${id}/cheatinfo`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves game cheat data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameCheatInfo
+     * @summary Get game cheat information
+     * @request GET:/api/game/{id}/cheatinfo
+     */
+    useGameCheatInfo: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<CheatInfoModel[], RequestResponse>(
+        doFetch ? `/api/game/${id}/cheatinfo` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves game cheat data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameCheatInfo
+     * @summary Get game cheat information
+     * @request GET:/api/game/{id}/cheatinfo
+     */
+    mutateGameCheatInfo: (
+      id: number,
+      data?: CheatInfoModel[] | Promise<CheatInfoModel[]>,
+      options?: MutatorOptions,
+    ) => mutate<CheatInfoModel[]>(`/api/game/${id}/cheatinfo`, data, options),
+
+    /**
+     * @description Creates a container; requires User permission
+     *
+     * @tags Game
+     * @name GameCreateContainer
+     * @summary Creates a container
+     * @request POST:/api/game/{id}/container/{challengeId}
+     */
+    gameCreateContainer: (
+      id: number,
+      challengeId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ContainerInfoModel, RequestResponse>({
+        path: `/api/game/${id}/container/${challengeId}`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Deletes a team's traffic packet files for a challenge; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameDeleteAllTeamTraffic
+     * @summary Deletes all traffic files
+     * @request DELETE:/api/game/captures/{challengeId}/{partId}/all
+     */
+    gameDeleteAllTeamTraffic: (
+      challengeId: number,
+      partId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/game/captures/${challengeId}/${partId}/all`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Deletes a container; requires User permission
+     *
+     * @tags Game
+     * @name GameDeleteContainer
+     * @summary Deletes a container
+     * @request DELETE:/api/game/{id}/container/{challengeId}
+     */
+    gameDeleteContainer: (
+      id: number,
+      challengeId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/game/${id}/container/${challengeId}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Deletes a traffic packet file; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameDeleteTeamTraffic
+     * @summary Deletes a traffic file
+     * @request DELETE:/api/game/captures/{challengeId}/{partId}/{filename}
+     */
+    gameDeleteTeamTraffic: (
+      challengeId: number,
+      partId: number,
+      filename: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/game/captures/${challengeId}/${partId}/${filename}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieves game event data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameEvents
+     * @summary Get game events
+     * @request GET:/api/game/{id}/events
+     */
+    gameEvents: (
+      id: number,
+      query?: {
+        /**
+         * Hide container events
+         * @default false
+         */
+        hideContainer?: boolean;
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+        /** Search query */
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<GameEvent[], RequestResponse>({
+        path: `/api/game/${id}/events`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves game event data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameEvents
+     * @summary Get game events
+     * @request GET:/api/game/{id}/events
+     */
+    useGameEvents: (
+      id: number,
+      query?: {
+        /**
+         * Hide container events
+         * @default false
+         */
+        hideContainer?: boolean;
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+        /** Search query */
+        search?: string | null;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<GameEvent[], RequestResponse>(
+        doFetch ? [`/api/game/${id}/events`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves game event data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameEvents
+     * @summary Get game events
+     * @request GET:/api/game/{id}/events
+     */
+    mutateGameEvents: (
+      id: number,
+      query?: {
+        /**
+         * Hide container events
+         * @default false
+         */
+        hideContainer?: boolean;
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+        /** Search query */
+        search?: string | null;
+      },
+      data?: GameEvent[] | Promise<GameEvent[]>,
+      options?: MutatorOptions,
+    ) => mutate<GameEvent[]>([`/api/game/${id}/events`, query], data, options),
+
+    /**
+     * @description Extends container lifetime; requires User permission and can only be extended two hours within ten minutes before expiration
+     *
+     * @tags Game
+     * @name GameExtendContainerLifetime
+     * @summary Extends container lifetime
+     * @request POST:/api/game/{id}/container/{challengeId}/extend
+     */
+    gameExtendContainerLifetime: (
+      id: number,
+      challengeId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ContainerInfoModel, RequestResponse>({
+        path: `/api/game/${id}/container/${challengeId}/extend`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieves detailed information about the game
+     *
+     * @tags Game
+     * @name GameGame
+     * @summary Get detailed game information
+     * @request GET:/api/game/{id}
+     */
+    gameGame: (id: number, params: RequestParams = {}) =>
+      this.request<DetailedGameInfoModel, RequestResponse>({
+        path: `/api/game/${id}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Log challenge open event
+     *
+     * @tags Game
+     * @name GameLogChallengeOpen
+     * @summary Log challenge open
+     * @request POST:/api/game/{id}/challenge/{challengeId}/open
+     */
+    gameLogChallengeOpen: (id: number, challengeId: number, params: RequestParams = {}) =>
+      this.request<void, any>({
+        path: `/api/game/${id}/challenge/${challengeId}/open`,
+        method: "POST",
+        ...params,
+      }),
+    /**
+     * @description Retrieves detailed information about the game
+     *
+     * @tags Game
+     * @name GameGame
+     * @summary Get detailed game information
+     * @request GET:/api/game/{id}
+     */
+    useGameGame: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<DetailedGameInfoModel, RequestResponse>(
+        doFetch ? `/api/game/${id}` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves detailed information about the game
+     *
+     * @tags Game
+     * @name GameGame
+     * @summary Get detailed game information
+     * @request GET:/api/game/{id}
+     */
+    mutateGameGame: (
+      id: number,
+      data?: DetailedGameInfoModel | Promise<DetailedGameInfoModel>,
+      options?: MutatorOptions,
+    ) => mutate<DetailedGameInfoModel>(`/api/game/${id}`, data, options),
+
+    /**
+     * @description Retrieves game information in specified range
+     *
+     * @tags Game
+     * @name GameGames
+     * @summary Get games
+     * @request GET:/api/game
+     */
+    gameGames: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 50
+         * @default 10
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfBasicGameInfoModel, RequestResponse>({
+        path: `/api/game`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves game information in specified range
+     *
+     * @tags Game
+     * @name GameGames
+     * @summary Get games
+     * @request GET:/api/game
+     */
+    useGameGames: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 50
+         * @default 10
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfBasicGameInfoModel, RequestResponse>(
+        doFetch ? [`/api/game`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves game information in specified range
+     *
+     * @tags Game
+     * @name GameGames
+     * @summary Get games
+     * @request GET:/api/game
+     */
+    mutateGameGames: (
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 50
+         * @default 10
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+      },
+      data?:
+        | ArrayResponseOfBasicGameInfoModel
+        | Promise<ArrayResponseOfBasicGameInfoModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfBasicGameInfoModel>(
+        [`/api/game`, query],
+        data,
+        options,
+      ),
+
+    /**
+     * @description Downloads all traffic packet files for a team and challenge; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetAllTeamTraffic
+     * @summary Download all traffic files
+     * @request GET:/api/game/captures/{challengeId}/{partId}/all
+     */
+    gameGetAllTeamTraffic: (
+      challengeId: number,
+      partId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/game/captures/${challengeId}/${partId}/all`,
+        method: "GET",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieves challenge information; requires User permission and active team participation
+     *
+     * @tags Game
+     * @name GameGetChallenge
+     * @summary Get challenge information
+     * @request GET:/api/game/{id}/challenges/{challengeId}
+     */
+    gameGetChallenge: (
+      id: number,
+      challengeId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeDetailModel, RequestResponse>({
+        path: `/api/game/${id}/challenges/${challengeId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves challenge information; requires User permission and active team participation
+     *
+     * @tags Game
+     * @name GameGetChallenge
+     * @summary Get challenge information
+     * @request GET:/api/game/{id}/challenges/{challengeId}
+     */
+    useGameGetChallenge: (
+      id: number,
+      challengeId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeDetailModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/challenges/${challengeId}` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves challenge information; requires User permission and active team participation
+     *
+     * @tags Game
+     * @name GameGetChallenge
+     * @summary Get challenge information
+     * @request GET:/api/game/{id}/challenges/{challengeId}
+     */
+    mutateGameGetChallenge: (
+      id: number,
+      challengeId: number,
+      data?: ChallengeDetailModel | Promise<ChallengeDetailModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ChallengeDetailModel>(
+        `/api/game/${id}/challenges/${challengeId}`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieves challenges with traffic capturing enabled; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetChallengesWithTrafficCapturing
+     * @summary Get challenges with traffic capturing enabled
+     * @request GET:/api/game/games/{id}/captures
+     */
+    gameGetChallengesWithTrafficCapturing: (
+      id: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeTrafficModel[], RequestResponse>({
+        path: `/api/game/games/${id}/captures`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves challenges with traffic capturing enabled; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetChallengesWithTrafficCapturing
+     * @summary Get challenges with traffic capturing enabled
+     * @request GET:/api/game/games/{id}/captures
+     */
+    useGameGetChallengesWithTrafficCapturing: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ChallengeTrafficModel[], RequestResponse>(
+        doFetch ? `/api/game/games/${id}/captures` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves challenges with traffic capturing enabled; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetChallengesWithTrafficCapturing
+     * @summary Get challenges with traffic capturing enabled
+     * @request GET:/api/game/games/{id}/captures
+     */
+    mutateGameGetChallengesWithTrafficCapturing: (
+      id: number,
+      data?: ChallengeTrafficModel[] | Promise<ChallengeTrafficModel[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ChallengeTrafficModel[]>(
+        `/api/game/games/${id}/captures`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieves the list of captured teams for a game challenge; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetChallengeTraffic
+     * @summary Get team captures in a challenge
+     * @request GET:/api/game/captures/{challengeId}
+     */
+    gameGetChallengeTraffic: (
+      challengeId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<TeamTrafficModel[], RequestResponse>({
+        path: `/api/game/captures/${challengeId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves the list of captured teams for a game challenge; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetChallengeTraffic
+     * @summary Get team captures in a challenge
+     * @request GET:/api/game/captures/{challengeId}
+     */
+    useGameGetChallengeTraffic: (
+      challengeId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<TeamTrafficModel[], RequestResponse>(
+        doFetch ? `/api/game/captures/${challengeId}` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves the list of captured teams for a game challenge; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetChallengeTraffic
+     * @summary Get team captures in a challenge
+     * @request GET:/api/game/captures/{challengeId}
+     */
+    mutateGameGetChallengeTraffic: (
+      challengeId: number,
+      data?: TeamTrafficModel[] | Promise<TeamTrafficModel[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<TeamTrafficModel[]>(
+        `/api/game/captures/${challengeId}`,
+        data,
+        options,
+      ),
+
+    /**
+     * No description
+     *
+     * @tags Game
+     * @name GameGetGameJoinCheckInfo
+     * @summary Get check info for joining a game
+     * @request GET:/api/game/{id}/check
+     */
+    gameGetGameJoinCheckInfo: (id: number, params: RequestParams = {}) =>
+      this.request<GameJoinCheckInfoModel, RequestResponse>({
+        path: `/api/game/${id}/check`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * No description
+     *
+     * @tags Game
+     * @name GameGetGameJoinCheckInfo
+     * @summary Get check info for joining a game
+     * @request GET:/api/game/{id}/check
+     */
+    useGameGetGameJoinCheckInfo: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<GameJoinCheckInfoModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/check` : null,
+        options,
+      ),
+
+    /**
+     * No description
+     *
+     * @tags Game
+     * @name GameGetGameJoinCheckInfo
+     * @summary Get check info for joining a game
+     * @request GET:/api/game/{id}/check
+     */
+    mutateGameGetGameJoinCheckInfo: (
+      id: number,
+      data?: GameJoinCheckInfoModel | Promise<GameJoinCheckInfoModel>,
+      options?: MutatorOptions,
+    ) => mutate<GameJoinCheckInfoModel>(`/api/game/${id}/check`, data, options),
+
+    /**
+     * @description Retrieves a traffic packet file; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetTeamTraffic
+     * @summary Get a traffic file
+     * @request GET:/api/game/captures/{challengeId}/{partId}/{filename}
+     */
+    gameGetTeamTraffic: (
+      challengeId: number,
+      partId: number,
+      filename: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/game/captures/${challengeId}/${partId}/${filename}`,
+        method: "GET",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieves traffic packet files for a team and challenge; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetTeamTrafficAll
+     * @summary Get traffic files
+     * @request GET:/api/game/captures/{challengeId}/{partId}
+     */
+    gameGetTeamTrafficAll: (
+      challengeId: number,
+      partId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<FileRecord[], RequestResponse>({
+        path: `/api/game/captures/${challengeId}/${partId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves traffic packet files for a team and challenge; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetTeamTrafficAll
+     * @summary Get traffic files
+     * @request GET:/api/game/captures/{challengeId}/{partId}
+     */
+    useGameGetTeamTrafficAll: (
+      challengeId: number,
+      partId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<FileRecord[], RequestResponse>(
+        doFetch ? `/api/game/captures/${challengeId}/${partId}` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves traffic packet files for a team and challenge; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetTeamTrafficAll
+     * @summary Get traffic files
+     * @request GET:/api/game/captures/{challengeId}/{partId}
+     */
+    mutateGameGetTeamTrafficAll: (
+      challengeId: number,
+      partId: number,
+      data?: FileRecord[] | Promise<FileRecord[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<FileRecord[]>(
+        `/api/game/captures/${challengeId}/${partId}`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Reassemble captured pcap into per-TCP-session flow summaries; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetTrafficFlows
+     * @summary Get reassembled flows from a traffic file
+     * @request GET:/api/game/captures/{challengeId}/{partId}/{filename}/flows
+     */
+    gameGetTrafficFlows: (
+      challengeId: number,
+      partId: number,
+      filename: string,
+      filter: FlowFilter = {},
+      params: RequestParams = {},
+    ) =>
+      this.request<TrafficFlowSummary[], RequestResponse>({
+        path: `/api/game/captures/${challengeId}/${partId}/${filename}/flows`,
+        method: "GET",
+        query: filter,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Get full payload of a single flow in a traffic file; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameGetTrafficFlowDetail
+     * @summary Get one flow's chunked payload
+     * @request GET:/api/game/captures/{challengeId}/{partId}/{filename}/flow/{connectionPort}
+     */
+    gameGetTrafficFlowDetail: (
+      challengeId: number,
+      partId: number,
+      filename: string,
+      connectionPort: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<TrafficFlowDetail, RequestResponse>({
+        path: `/api/game/captures/${challengeId}/${partId}/${filename}/flow/${connectionPort}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieves post-game writeup submission information; requires User permission
+     *
+     * @tags Game
+     * @name GameGetWriteup
+     * @summary Get writeup information
+     * @request GET:/api/game/{id}/writeup
+     */
+    gameGetWriteup: (id: number, params: RequestParams = {}) =>
+      this.request<BasicWriteupInfoModel, RequestResponse>({
+        path: `/api/game/${id}/writeup`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves post-game writeup submission information; requires User permission
+     *
+     * @tags Game
+     * @name GameGetWriteup
+     * @summary Get writeup information
+     * @request GET:/api/game/{id}/writeup
+     */
+    useGameGetWriteup: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<BasicWriteupInfoModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/writeup` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves post-game writeup submission information; requires User permission
+     *
+     * @tags Game
+     * @name GameGetWriteup
+     * @summary Get writeup information
+     * @request GET:/api/game/{id}/writeup
+     */
+    mutateGameGetWriteup: (
+      id: number,
+      data?: BasicWriteupInfoModel | Promise<BasicWriteupInfoModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<BasicWriteupInfoModel>(`/api/game/${id}/writeup`, data, options),
+
+    /**
+     * @description Join a game; requires User permission
+     *
+     * @tags Game
+     * @name GameJoinGame
+     * @summary Join a game
+     * @request POST:/api/game/{id}
+     */
+    gameJoinGame: (
+      id: number,
+      data: GameJoinModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/game/${id}`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Leave a game; requires User permission
+     *
+     * @tags Game
+     * @name GameLeaveGame
+     * @summary Leave a game
+     * @request DELETE:/api/game/{id}
+     */
+    gameLeaveGame: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/game/${id}`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieves game notice data
+     *
+     * @tags Game
+     * @name GameNotices
+     * @summary Get game notices
+     * @request GET:/api/game/{id}/notices
+     */
+    gameNotices: (
+      id: number,
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @min 0
+         * @max 300
+         * @default 0
+         */
+        skip?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<GameNotice[], RequestResponse>({
+        path: `/api/game/${id}/notices`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves game notice data
+     *
+     * @tags Game
+     * @name GameNotices
+     * @summary Get game notices
+     * @request GET:/api/game/{id}/notices
+     */
+    useGameNotices: (
+      id: number,
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @min 0
+         * @max 300
+         * @default 0
+         */
+        skip?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<GameNotice[], RequestResponse>(
+        doFetch ? [`/api/game/${id}/notices`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves game notice data
+     *
+     * @tags Game
+     * @name GameNotices
+     * @summary Get game notices
+     * @request GET:/api/game/{id}/notices
+     */
+    mutateGameNotices: (
+      id: number,
+      query?: {
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @min 0
+         * @max 300
+         * @default 0
+         */
+        skip?: number;
+      },
+      data?: GameNotice[] | Promise<GameNotice[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<GameNotice[]>([`/api/game/${id}/notices`, query], data, options),
+
+    /**
+     * @description Retrieves all participation information of the game; requires Admin permission
+     *
+     * @tags Game
+     * @name GameParticipations
+     * @summary Get all game participations
+     * @request GET:/api/game/{id}/participations
+     */
+    gameParticipations: (id: number, params: RequestParams = {}) =>
+      this.request<ParticipationInfoModel[], RequestResponse>({
+        path: `/api/game/${id}/participations`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves all participation information of the game; requires Admin permission
+     *
+     * @tags Game
+     * @name GameParticipations
+     * @summary Get all game participations
+     * @request GET:/api/game/{id}/participations
+     */
+    useGameParticipations: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ParticipationInfoModel[], RequestResponse>(
+        doFetch ? `/api/game/${id}/participations` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves all participation information of the game; requires Admin permission
+     *
+     * @tags Game
+     * @name GameParticipations
+     * @summary Get all game participations
+     * @request GET:/api/game/{id}/participations
+     */
+    mutateGameParticipations: (
+      id: number,
+      data?: ParticipationInfoModel[] | Promise<ParticipationInfoModel[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ParticipationInfoModel[]>(
+        `/api/game/${id}/participations`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieves recent game in three weeks
+     *
+     * @tags Game
+     * @name GameRecentGames
+     * @summary Get the recent games
+     * @request GET:/api/game/recent
+     */
+    gameRecentGames: (
+      query?: {
+        /**
+         * Limit of the number of games
+         * @format int32
+         * @min 0
+         * @max 50
+         */
+        limit?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<BasicGameInfoModel[], RequestResponse>({
+        path: `/api/game/recent`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves recent game in three weeks
+     *
+     * @tags Game
+     * @name GameRecentGames
+     * @summary Get the recent games
+     * @request GET:/api/game/recent
+     */
+    useGameRecentGames: (
+      query?: {
+        /**
+         * Limit of the number of games
+         * @format int32
+         * @min 0
+         * @max 50
+         */
+        limit?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<BasicGameInfoModel[], RequestResponse>(
+        doFetch ? [`/api/game/recent`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves recent game in three weeks
+     *
+     * @tags Game
+     * @name GameRecentGames
+     * @summary Get the recent games
+     * @request GET:/api/game/recent
+     */
+    mutateGameRecentGames: (
+      query?: {
+        /**
+         * Limit of the number of games
+         * @format int32
+         * @min 0
+         * @max 50
+         */
+        limit?: number;
+      },
+      data?: BasicGameInfoModel[] | Promise<BasicGameInfoModel[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<BasicGameInfoModel[]>([`/api/game/recent`, query], data, options),
+
+    /**
+     * @description Submits a review (rating/comment) for a solved challenge
+     *
+     * @tags Game
+     * @name GameReviewChallenge
+     * @summary Submit challenge review
+     * @request POST:/api/game/{id}/challenges/{challengeId}/review
+     */
+    gameReviewChallenge: (
+      id: number,
+      challengeId: number,
+      data: ChallengeReviewModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<RequestResponse, RequestResponse>({
+        path: `/api/game/${id}/challenges/${challengeId}/review`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieves the scoreboard data
+     *
+     * @tags Game
+     * @name GameScoreboard
+     * @summary Get the scoreboard
+     * @request GET:/api/game/{id}/scoreboard
+     */
+    gameScoreboard: (id: number, params: RequestParams = {}) =>
+      this.request<ScoreboardModel, RequestResponse>({
+        path: `/api/game/${id}/scoreboard`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves the scoreboard data
+     *
+     * @tags Game
+     * @name GameScoreboard
+     * @summary Get the scoreboard
+     * @request GET:/api/game/{id}/scoreboard
+     */
+    useGameScoreboard: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ScoreboardModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/scoreboard` : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves the scoreboard data
+     *
+     * @tags Game
+     * @name GameScoreboard
+     * @summary Get the scoreboard
+     * @request GET:/api/game/{id}/scoreboard
+     */
+    mutateGameScoreboard: (
+      id: number,
+      data?: ScoreboardModel | Promise<ScoreboardModel>,
+      options?: MutatorOptions,
+    ) => mutate<ScoreboardModel>(`/api/game/${id}/scoreboard`, data, options),
+
+    /**
+     * @description A&D — submit one or more captured flags (batch). Accepts
+     *   cookie session OR `Authorization: Bearer ad_...`.
+     * @tags Game
+     * @name GameAdSubmit
+     * @request POST:/api/Game/{id}/Ad/Submit
+     */
+    gameAdSubmit: (id: number, data: AdBatchSubmitModel, params: RequestParams = {}) =>
+      this.request<AdBatchSubmitResultModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Submit`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — self-reset a team service container.
+     * @tags Game
+     * @name GameAdResetService
+     * @request POST:/api/Game/{id}/Ad/Services/{adTeamServiceId}/Reset
+     */
+    gameAdResetService: (id: number, adTeamServiceId: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Services/${adTeamServiceId}/Reset`,
+        method: "POST",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — list every other team's container IP per challenge.
+     *   Excludes the caller's own team; respects warmup (currentRound==0
+     *   returns empty teams[]). Dual auth: cookie session OR Bearer ad_…
+     * @tags Game
+     * @name GameAdTargets
+     * @request GET:/api/Game/{id}/Ad/Targets
+     */
+    gameAdTargets: (id: number, params: RequestParams = {}) =>
+      this.request<AdTargetsModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Targets`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — SWR variant of gameAdTargets.
+     * @tags Game
+     * @name GameAdTargets
+     */
+    useGameAdTargets: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AdTargetsModel, RequestResponse>(
+        doFetch ? `/api/Game/${id}/Ad/Targets` : null,
+        options,
+      ),
+
+    /**
+     * @description A&D — URL to download the per-user WireGuard config (.conf).
+     *   The endpoint generates / fetches the user's peer on demand. Use
+     *   <a href={url} download> rather than fetch() so the browser writes the
+     *   file straight to disk.
+     */
+    gameAdVpnConfigUrl: (id: number) => `/api/Game/${id}/Ad/Vpn/Config`,
+
+    /**
+     * @description A&D — generate or rotate the team API token. Captain only.
+     *   Plaintext returned exactly once.
+     * @tags Game
+     * @name GameAdRotateToken
+     * @request POST:/api/Game/{id}/Ad/Token
+     */
+    gameAdRotateToken: (id: number, params: RequestParams = {}) =>
+      this.request<AdTokenGenerateResultModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Token`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — read the team API token hint (never the plaintext).
+     * @tags Game
+     * @name GameAdTokenHint
+     * @request GET:/api/Game/{id}/Ad/Token
+     */
+    gameAdTokenHint: (id: number, params: RequestParams = {}) =>
+      this.request<AdTokenHintModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Token`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — SWR variant of gameAdTokenHint.
+     * @tags Game
+     * @name GameAdTokenHint
+     * @request GET:/api/Game/{id}/Ad/Token
+     */
+    useGameAdTokenHint: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AdTokenHintModel, RequestResponse>(
+        doFetch ? `/api/Game/${id}/Ad/Token` : null,
+        options,
+      ),
+
+    /**
+     * @description A&D — refresh helper for gameAdTokenHint.
+     * @tags Game
+     * @name GameAdTokenHint
+     */
+    mutateGameAdTokenHint: (
+      id: number,
+      data?: AdTokenHintModel | Promise<AdTokenHintModel>,
+      options?: MutatorOptions,
+    ) => mutate<AdTokenHintModel>(`/api/Game/${id}/Ad/Token`, data, options),
+
+    /**
+     * @description A&D — revoke the team API token. Captain only.
+     * @tags Game
+     * @name GameAdRevokeToken
+     * @request DELETE:/api/Game/{id}/Ad/Token
+     */
+    gameAdRevokeToken: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Token`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description A&D SSH — upload an OpenSSH public key. Private half never leaves the client.
+     * @tags Game
+     * @name AdGameUploadSshKey
+     * @request POST:/api/Game/{id}/Ad/Ssh/Key
+     */
+    adGameUploadSshKey: (id: number, data: AdSshKeyUploadModel, params: RequestParams = {}) =>
+      this.request<AdSshKeyInfoModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Ssh/Key`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D SSH — server-generate an ed25519 keypair. Private key returned ONCE.
+     * @tags Game
+     * @name AdGameGenerateSshKey
+     * @request POST:/api/Game/{id}/Ad/Ssh/Key/Generate
+     */
+    adGameGenerateSshKey: (id: number, params: RequestParams = {}) =>
+      this.request<AdSshKeyGeneratedModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Ssh/Key/Generate`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D SSH — caller's installed key metadata (no plaintext).
+     * @tags Game
+     * @name AdGameGetSshKey
+     * @request GET:/api/Game/{id}/Ad/Ssh/Key
+     */
+    adGameGetSshKey: (id: number, params: RequestParams = {}) =>
+      this.request<AdSshKeyInfoModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Ssh/Key`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D SSH — caller's installed key metadata, SWR-friendly hook.
+     * @tags Game
+     * @name AdGameGetSshKey
+     * @request GET:/api/Game/{id}/Ad/Ssh/Key
+     */
+    useAdGameGetSshKey: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AdSshKeyInfoModel, RequestResponse>(
+        doFetch ? `/api/Game/${id}/Ad/Ssh/Key` : null,
+        options,
+      ),
+
+    /**
+     * @description A&D SSH — revoke caller's installed key.
+     * @tags Game
+     * @name AdGameRevokeSshKey
+     * @request DELETE:/api/Game/{id}/Ad/Ssh/Key
+     */
+    adGameRevokeSshKey: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Ssh/Key`,
+        method: "DELETE",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — player view of own team's A&D state.
+     * @tags Game
+     * @name GameAdState
+     * @request GET:/api/Game/{id}/Ad/State
+     */
+    gameAdState: (id: number, params: RequestParams = {}) =>
+      this.request<AdStateModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/State`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — SWR variant of gameAdState.
+     * @tags Game
+     * @name GameAdState
+     * @request GET:/api/Game/{id}/Ad/State
+     */
+    useGameAdState: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AdStateModel, RequestResponse>(
+        doFetch ? `/api/Game/${id}/Ad/State` : null,
+        options,
+      ),
+
+    /**
+     * @description A&D — refresh helper for gameAdState.
+     * @tags Game
+     * @name GameAdState
+     * @request GET:/api/Game/{id}/Ad/State
+     */
+    mutateGameAdState: (
+      id: number,
+      data?: AdStateModel | Promise<AdStateModel>,
+      options?: MutatorOptions,
+    ) => mutate<AdStateModel>(`/api/Game/${id}/Ad/State`, data, options),
+
+    /**
+     * @description Official A&D epoch scoreboard used for ranking and awards.
+     * @tags Game
+     * @name GameAdScoreboard
+     * @request GET:/api/Game/{id}/Ad/Scoreboard
+     */
+    gameAdScoreboard: (id: number, params: RequestParams = {}) =>
+      this.request<AdScoreboardModel, RequestResponse>({
+        path: `/api/Game/${id}/Ad/Scoreboard`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description A&D — SWR variant of gameAdScoreboard.
+     * @tags Game
+     * @name GameAdScoreboard
+     * @request GET:/api/Game/{id}/Ad/Scoreboard
+     */
+    useGameAdScoreboard: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AdScoreboardModel, RequestResponse>(
+        doFetch ? `/api/Game/${id}/Ad/Scoreboard` : null,
+        options,
+      ),
+
+    /**
+     * @description A&D — download URL helper for the post-game container snapshot tarball.
+     * @tags Game
+     * @name GameAdDownloadSnapshot
+     * @request GET:/api/Game/{id}/Ad/Services/{adTeamServiceId}/Snapshot
+     */
+    gameAdDownloadSnapshotUrl: (id: number, adTeamServiceId: number) =>
+      `/api/Game/${id}/Ad/Services/${adTeamServiceId}/Snapshot`,
+
+    /**
+     * @description Downloads the game scoreboard; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameScoreboardSheet
+     * @summary Downloads the scoreboard
+     * @request GET:/api/game/{id}/scoreboardsheet
+     */
+    gameScoreboardSheet: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/game/${id}/scoreboardsheet`,
+        method: "GET",
+        ...params,
+      }),
+
+    /**
+     * @description Queries flag status; requires User permission
+     *
+     * @tags Game
+     * @name GameStatus
+     * @summary Queries flag status
+     * @request GET:/api/game/{id}/challenges/{challengeId}/status/{submitId}
+     */
+    gameStatus: (
+      id: number,
+      challengeId: number,
+      submitId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<AnswerResult, RequestResponse>({
+        path: `/api/game/${id}/challenges/${challengeId}/status/${submitId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Queries flag status; requires User permission
+     *
+     * @tags Game
+     * @name GameStatus
+     * @summary Queries flag status
+     * @request GET:/api/game/{id}/challenges/{challengeId}/status/{submitId}
+     */
+    useGameStatus: (
+      id: number,
+      challengeId: number,
+      submitId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<AnswerResult, RequestResponse>(
+        doFetch
+          ? `/api/game/${id}/challenges/${challengeId}/status/${submitId}`
+          : null,
+        options,
+      ),
+
+    /**
+     * @description Queries flag status; requires User permission
+     *
+     * @tags Game
+     * @name GameStatus
+     * @summary Queries flag status
+     * @request GET:/api/game/{id}/challenges/{challengeId}/status/{submitId}
+     */
+    mutateGameStatus: (
+      id: number,
+      challengeId: number,
+      submitId: number,
+      data?: AnswerResult | Promise<AnswerResult>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<AnswerResult>(
+        `/api/game/${id}/challenges/${challengeId}/status/${submitId}`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieves game submission data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameSubmissions
+     * @summary Get game submissions
+     * @request GET:/api/game/{id}/submissions
+     */
+    gameSubmissions: (
+      id: number,
+      query?: {
+        /** Submission type */
+        type?: AnswerResult | null;
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+        /** Search query */
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<Submission[], RequestResponse>({
+        path: `/api/game/${id}/submissions`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves game submission data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameSubmissions
+     * @summary Get game submissions
+     * @request GET:/api/game/{id}/submissions
+     */
+    useGameSubmissions: (
+      id: number,
+      query?: {
+        /** Submission type */
+        type?: AnswerResult | null;
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+        /** Search query */
+        search?: string | null;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<Submission[], RequestResponse>(
+        doFetch ? [`/api/game/${id}/submissions`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Retrieves game submission data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameSubmissions
+     * @summary Get game submissions
+     * @request GET:/api/game/{id}/submissions
+     */
+    mutateGameSubmissions: (
+      id: number,
+      query?: {
+        /** Submission type */
+        type?: AnswerResult | null;
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         */
+        count?: number;
+        /**
+         * @format int32
+         * @default 0
+         */
+        skip?: number;
+        /** Search query */
+        search?: string | null;
+      },
+      data?: Submission[] | Promise<Submission[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<Submission[]>(
+        [`/api/game/${id}/submissions`, query],
+        data,
+        options,
+      ),
+
+    /**
+     * @description Downloads all submissions of the game; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameSubmissionSheet
+     * @summary Downloads all submissions
+     * @request GET:/api/game/{id}/submissionsheet
+     */
+    gameSubmissionSheet: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/game/${id}/submissionsheet`,
+        method: "GET",
+        ...params,
+      }),
+
+    /**
+     * @description Submits a flag; requires User permission and active team participation
+     *
+     * @tags Game
+     * @name GameSubmit
+     * @summary Submits a flag
+     * @request POST:/api/game/{id}/challenges/{challengeId}
+     */
+    gameSubmit: (
+      id: number,
+      challengeId: number,
+      data: FlagSubmitModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<number, RequestResponse>({
+        path: `/api/game/${id}/challenges/${challengeId}`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Submits a post-game writeup; requires User permission
+     *
+     * @tags Game
+     * @name GameSubmitWriteup
+     * @summary Submits a writeup
+     * @request POST:/api/game/{id}/writeup
+     */
+    gameSubmitWriteup: (
+      id: number,
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/game/${id}/writeup`,
+        method: "POST",
+        body: data,
+        type: ContentType.FormData,
+        ...params,
+      }),
+  };
+  info = {
+    /**
+     * @description Get Captcha configuration
+     *
+     * @tags Info
+     * @name InfoGetClientCaptchaInfo
+     * @summary Get Captcha configuration
+     * @request GET:/api/captcha
+     */
+    infoGetClientCaptchaInfo: (params: RequestParams = {}) =>
+      this.request<ClientCaptchaInfoModel, any>({
+        path: `/api/captcha`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Get Captcha configuration
+     *
+     * @tags Info
+     * @name InfoGetClientCaptchaInfo
+     * @summary Get Captcha configuration
+     * @request GET:/api/captcha
+     */
+    useInfoGetClientCaptchaInfo: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ClientCaptchaInfoModel, any>(
+        doFetch ? `/api/captcha` : null,
+        options,
+      ),
+
+    /**
+     * @description Get Captcha configuration
+     *
+     * @tags Info
+     * @name InfoGetClientCaptchaInfo
+     * @summary Get Captcha configuration
+     * @request GET:/api/captcha
+     */
+    mutateInfoGetClientCaptchaInfo: (
+      data?: ClientCaptchaInfoModel | Promise<ClientCaptchaInfoModel>,
+      options?: MutatorOptions,
+    ) => mutate<ClientCaptchaInfoModel>(`/api/captcha`, data, options),
+
+    /**
+     * @description Get client configuration
+     *
+     * @tags Info
+     * @name InfoGetClientConfig
+     * @summary Get client configuration
+     * @request GET:/api/config
+     */
+    infoGetClientConfig: (params: RequestParams = {}) =>
+      this.request<ClientConfig, any>({
+        path: `/api/config`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Get client configuration
+     *
+     * @tags Info
+     * @name InfoGetClientConfig
+     * @summary Get client configuration
+     * @request GET:/api/config
+     */
+    useInfoGetClientConfig: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) => useSWR<ClientConfig, any>(doFetch ? `/api/config` : null, options),
+
+    /**
+     * @description Get client configuration
+     *
+     * @tags Info
+     * @name InfoGetClientConfig
+     * @summary Get client configuration
+     * @request GET:/api/config
+     */
+    mutateInfoGetClientConfig: (
+      data?: ClientConfig | Promise<ClientConfig>,
+      options?: MutatorOptions,
+    ) => mutate<ClientConfig>(`/api/config`, data, options),
+
+    /**
+     * @description Get the latest posts
+     *
+     * @tags Info
+     * @name InfoGetLatestPosts
+     * @summary Get the latest posts
+     * @request GET:/api/posts/latest
+     */
+    infoGetLatestPosts: (params: RequestParams = {}) =>
+      this.request<PostInfoModel[], any>({
+        path: `/api/posts/latest`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Get the latest posts
+     *
+     * @tags Info
+     * @name InfoGetLatestPosts
+     * @summary Get the latest posts
+     * @request GET:/api/posts/latest
+     */
+    useInfoGetLatestPosts: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<PostInfoModel[], any>(
+        doFetch ? `/api/posts/latest` : null,
+        options,
+      ),
+
+    /**
+     * @description Get the latest posts
+     *
+     * @tags Info
+     * @name InfoGetLatestPosts
+     * @summary Get the latest posts
+     * @request GET:/api/posts/latest
+     */
+    mutateInfoGetLatestPosts: (
+      data?: PostInfoModel[] | Promise<PostInfoModel[]>,
+      options?: MutatorOptions,
+    ) => mutate<PostInfoModel[]>(`/api/posts/latest`, data, options),
+
+    /**
+     * @description Get post details
+     *
+     * @tags Info
+     * @name InfoGetPost
+     * @summary Get post details
+     * @request GET:/api/posts/{id}
+     */
+    infoGetPost: (id: string, params: RequestParams = {}) =>
+      this.request<PostDetailModel, RequestResponse>({
+        path: `/api/posts/${id}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Get post details
+     *
+     * @tags Info
+     * @name InfoGetPost
+     * @summary Get post details
+     * @request GET:/api/posts/{id}
+     */
+    useInfoGetPost: (
+      id: string,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<PostDetailModel, RequestResponse>(
+        doFetch ? `/api/posts/${id}` : null,
+        options,
+      ),
+
+    /**
+     * @description Get post details
+     *
+     * @tags Info
+     * @name InfoGetPost
+     * @summary Get post details
+     * @request GET:/api/posts/{id}
+     */
+    mutateInfoGetPost: (
+      id: string,
+      data?: PostDetailModel | Promise<PostDetailModel>,
+      options?: MutatorOptions,
+    ) => mutate<PostDetailModel>(`/api/posts/${id}`, data, options),
+
+    /**
+     * @description Get all posts
+     *
+     * @tags Info
+     * @name InfoGetPosts
+     * @summary Get all posts
+     * @request GET:/api/posts
+     */
+    infoGetPosts: (params: RequestParams = {}) =>
+      this.request<PostInfoModel[], any>({
+        path: `/api/posts`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Get all posts
+     *
+     * @tags Info
+     * @name InfoGetPosts
+     * @summary Get all posts
+     * @request GET:/api/posts
+     */
+    useInfoGetPosts: (options?: SWRConfiguration, doFetch: boolean = true) =>
+      useSWR<PostInfoModel[], any>(doFetch ? `/api/posts` : null, options),
+
+    /**
+     * @description Get all posts
+     *
+     * @tags Info
+     * @name InfoGetPosts
+     * @summary Get all posts
+     * @request GET:/api/posts
+     */
+    mutateInfoGetPosts: (
+      data?: PostInfoModel[] | Promise<PostInfoModel[]>,
+      options?: MutatorOptions,
+    ) => mutate<PostInfoModel[]>(`/api/posts`, data, options),
+
+    /**
+     * @description Create Pow Captcha, valid for 5 minutes
+     *
+     * @tags Info
+     * @name InfoPowChallenge
+     * @summary Create Pow Captcha
+     * @request GET:/api/captcha/powchallenge
+     */
+    infoPowChallenge: (params: RequestParams = {}) =>
+      this.request<HashPowChallenge, RequestResponse>({
+        path: `/api/captcha/powchallenge`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Create Pow Captcha, valid for 5 minutes
+     *
+     * @tags Info
+     * @name InfoPowChallenge
+     * @summary Create Pow Captcha
+     * @request GET:/api/captcha/powchallenge
+     */
+    useInfoPowChallenge: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<HashPowChallenge, RequestResponse>(
+        doFetch ? `/api/captcha/powchallenge` : null,
+        options,
+      ),
+
+    /**
+     * @description Create Pow Captcha, valid for 5 minutes
+     *
+     * @tags Info
+     * @name InfoPowChallenge
+     * @summary Create Pow Captcha
+     * @request GET:/api/captcha/powchallenge
+     */
+    mutateInfoPowChallenge: (
+      data?: HashPowChallenge | Promise<HashPowChallenge>,
+      options?: MutatorOptions,
+    ) => mutate<HashPowChallenge>(`/api/captcha/powchallenge`, data, options),
+  };
+  proxy = {
+    /**
+     * No description
+     *
+     * @tags Proxy
+     * @name ProxyProxyForInstance
+     * @summary Proxy TCP over websocket
+     * @request GET:/api/proxy/{id}
+     */
+    proxyProxyForInstance: (id: string, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/proxy/${id}`,
+        method: "GET",
+        ...params,
+      }),
+
+    /**
+     * No description
+     *
+     * @tags Proxy
+     * @name ProxyProxyForNoInstance
+     * @summary Proxy TCP over websocket for admins
+     * @request GET:/api/proxy/noinst/{id}
+     */
+    proxyProxyForNoInstance: (id: string, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/proxy/noinst/${id}`,
+        method: "GET",
+        ...params,
+      }),
+  };
+  team = {
+    /**
+     * @description Interface to accept invitation, requires User permission and not being in team
+     *
+     * @tags Team
+     * @name TeamAccept
+     * @summary Accept invitation
+     * @request POST:/api/team/accept
+     */
+    teamAccept: (data: string, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/team/accept`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    /**
+     * @description Use this API to update team avatar, requires User permission and team membership
+     *
+     * @tags Team
+     * @name TeamAvatar
+     * @summary Update team avatar
+     * @request PUT:/api/team/{id}/avatar
+     */
+    teamAvatar: (
+      id: number,
+      data: {
+        /** @format binary */
+        file?: File | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<string, RequestResponse>({
+        path: `/api/team/${id}/avatar`,
+        method: "PUT",
+        body: data,
+        type: ContentType.FormData,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description User API for creating teams, each user can only create one team
+     *
+     * @tags Team
+     * @name TeamCreateTeam
+     * @summary Create team
+     * @request POST:/api/team
+     */
+    teamCreateTeam: (data: TeamUpdateModel, params: RequestParams = {}) =>
+      this.request<TeamInfoModel, RequestResponse>({
+        path: `/api/team`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description User API for deleting team, requires User permission and team captain status
+     *
+     * @tags Team
+     * @name TeamDeleteTeam
+     * @summary Delete team
+     * @request DELETE:/api/team/{id}
+     */
+    teamDeleteTeam: (id: number, params: RequestParams = {}) =>
+      this.request<TeamInfoModel, RequestResponse>({
+        path: `/api/team/${id}`,
+        method: "DELETE",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Get basic information of a team by ID
+     *
+     * @tags Team
+     * @name TeamGetBasicInfo
+     * @summary Get team information
+     * @request GET:/api/team/{id}
+     */
+    teamGetBasicInfo: (id: number, params: RequestParams = {}) =>
+      this.request<TeamInfoModel, RequestResponse>({
+        path: `/api/team/${id}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Get basic information of a team by ID
+     *
+     * @tags Team
+     * @name TeamGetBasicInfo
+     * @summary Get team information
+     * @request GET:/api/team/{id}
+     */
+    useTeamGetBasicInfo: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<TeamInfoModel, RequestResponse>(
+        doFetch ? `/api/team/${id}` : null,
+        options,
+      ),
+
+    /**
+     * @description Get basic information of a team by ID
+     *
+     * @tags Team
+     * @name TeamGetBasicInfo
+     * @summary Get team information
+     * @request GET:/api/team/{id}
+     */
+    mutateTeamGetBasicInfo: (
+      id: number,
+      data?: TeamInfoModel | Promise<TeamInfoModel>,
+      options?: MutatorOptions,
+    ) => mutate<TeamInfoModel>(`/api/team/${id}`, data, options),
+
+    /**
+     * @description Get basic information of a team based on user
+     *
+     * @tags Team
+     * @name TeamGetTeamsInfo
+     * @summary Get current team information
+     * @request GET:/api/team
+     */
+    teamGetTeamsInfo: (params: RequestParams = {}) =>
+      this.request<TeamInfoModel[], RequestResponse>({
+        path: `/api/team`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Get basic information of a team based on user
+     *
+     * @tags Team
+     * @name TeamGetTeamsInfo
+     * @summary Get current team information
+     * @request GET:/api/team
+     */
+    useTeamGetTeamsInfo: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<TeamInfoModel[], RequestResponse>(
+        doFetch ? `/api/team` : null,
+        options,
+      ),
+
+    /**
+     * @description Get basic information of a team based on user
+     *
+     * @tags Team
+     * @name TeamGetTeamsInfo
+     * @summary Get current team information
+     * @request GET:/api/team
+     */
+    mutateTeamGetTeamsInfo: (
+      data?: TeamInfoModel[] | Promise<TeamInfoModel[]>,
+      options?: MutatorOptions,
+    ) => mutate<TeamInfoModel[]>(`/api/team`, data, options),
+
+    /**
+     * @description Get team invitation information, must be team creator
+     *
+     * @tags Team
+     * @name TeamInviteCode
+     * @summary Get invitation information
+     * @request GET:/api/team/{id}/invite
+     */
+    teamInviteCode: (id: number, params: RequestParams = {}) =>
+      this.request<string, RequestResponse>({
+        path: `/api/team/${id}/invite`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Get team invitation information, must be team creator
+     *
+     * @tags Team
+     * @name TeamInviteCode
+     * @summary Get invitation information
+     * @request GET:/api/team/{id}/invite
+     */
+    useTeamInviteCode: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<string, RequestResponse>(
+        doFetch ? `/api/team/${id}/invite` : null,
+        options,
+      ),
+
+    /**
+     * @description Get team invitation information, must be team creator
+     *
+     * @tags Team
+     * @name TeamInviteCode
+     * @summary Get invitation information
+     * @request GET:/api/team/{id}/invite
+     */
+    mutateTeamInviteCode: (
+      id: number,
+      data?: string | Promise<string>,
+      options?: MutatorOptions,
+    ) => mutate<string>(`/api/team/${id}/invite`, data, options),
+
+    /**
+     * @description User kick API, kick user with corresponding ID, requires team creator permission
+     *
+     * @tags Team
+     * @name TeamKickUser
+     * @summary Kick user
+     * @request POST:/api/team/{id}/kick/{userId}
+     */
+    teamKickUser: (id: number, userId: string, params: RequestParams = {}) =>
+      this.request<TeamInfoModel, RequestResponse>({
+        path: `/api/team/${id}/kick/${userId}`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Interface to leave team, requires User permission and being in team
+     *
+     * @tags Team
+     * @name TeamLeave
+     * @summary Leave team
+     * @request POST:/api/team/{id}/leave
+     */
+    teamLeave: (id: number, params: RequestParams = {}) =>
+      this.request<void, RequestResponse>({
+        path: `/api/team/${id}/leave`,
+        method: "POST",
+        ...params,
+      }),
+
+    /**
+     * @description Team ownership transfer API, must be team creator
+     *
+     * @tags Team
+     * @name TeamTransfer
+     * @summary Transfer team ownership
+     * @request PUT:/api/team/{id}/transfer
+     */
+    teamTransfer: (
+      id: number,
+      data: TeamTransferModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<TeamInfoModel, RequestResponse>({
+        path: `/api/team/${id}/transfer`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Interface to update invitation token, must be team creator
+     *
+     * @tags Team
+     * @name TeamUpdateInviteToken
+     * @summary Update invitation token
+     * @request PUT:/api/team/{id}/invite
+     */
+    teamUpdateInviteToken: (id: number, params: RequestParams = {}) =>
+      this.request<string, RequestResponse>({
+        path: `/api/team/${id}/invite`,
+        method: "PUT",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Team information update API, must be team creator
+     *
+     * @tags Team
+     * @name TeamUpdateTeam
+     * @summary Update team information
+     * @request PUT:/api/team/{id}
+     */
+    teamUpdateTeam: (
+      id: number,
+      data: TeamUpdateModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<TeamInfoModel, RequestResponse>({
+        path: `/api/team/${id}`,
+        method: "PUT",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Perform signature verification
+     *
+     * @tags Team
+     * @name TeamVerifySignature
+     * @summary Verify signature
+     * @request POST:/api/team/verify
+     */
+    teamVerifySignature: (
+      data: SignatureVerifyModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/team/verify`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+  };
+}
+
+const api = new Api();
+export default api;
+
+export const fetcher = async (
+  args: string | [string, Record<string, unknown>],
+) => {
+  if (typeof args === "string") {
+    const response = await api.request({ path: args });
+    return response.data;
+  } else {
+    const [path, query] = args;
+    const response = await api.request({ path, query });
+    return response.data;
+  }
+};

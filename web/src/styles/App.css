@@ -1,0 +1,349 @@
+/*
+ * RSCTF application foundation
+ *
+ * The shell and every Mantine surface consume the semantic tokens below so
+ * managed/custom accent colors can change without weakening the information
+ * hierarchy or text contrast.
+ */
+
+:root {
+  color-scheme: light dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --app-focus-ring: #0f766e;
+
+  /* Keep the persistent shell below Mantine's modal layer (200). */
+  --app-z-shell: var(--mantine-z-index-app, 100);
+  --app-z-modal: var(--mantine-z-index-modal, 200);
+}
+
+[data-mantine-color-scheme='light'] {
+  color-scheme: light;
+  --app-background: #f5f7fb;
+  --app-background-strong: #eef2f7;
+  --app-shell-surface: #ffffff;
+  --app-shell-surface-translucent: rgba(255, 255, 255, 0.9);
+  --app-raised-surface: #ffffff;
+  --app-subtle-surface: #f8fafc;
+  --app-hover-surface: #f1f5f9;
+  --app-icon-surface: #eef2f7;
+  --app-border: #d7dee8;
+  --app-border-subtle: #e2e8f0;
+  --app-surface-border: transparent;
+  --app-control-border: #7c899b;
+  --app-text-primary: #0f172a;
+  --app-text-secondary: #334155;
+  --app-text-muted: #526176;
+  --app-accent-text: var(--mantine-color-semanticAccent-0);
+  --app-accent-surface-text: #0f172a;
+  --app-accent-surface: color-mix(in srgb, var(--mantine-primary-color-1) 76%, white);
+  --app-accent-icon-surface: color-mix(in srgb, var(--mantine-primary-color-2) 72%, white);
+  --app-accent-border: var(--mantine-color-semanticAccent-2);
+  --app-grid-line: rgba(15, 23, 42, 0.027);
+  --app-focus-ring: #0f766e;
+}
+
+[data-mantine-color-scheme='dark'] {
+  color-scheme: dark;
+  --app-background: #080d17;
+  --app-background-strong: #060a12;
+  --app-shell-surface: #0d1421;
+  --app-shell-surface-translucent: rgba(13, 20, 33, 0.91);
+  --app-raised-surface: #111a29;
+  --app-subtle-surface: #0e1726;
+  --app-hover-surface: #172235;
+  --app-icon-surface: #1a2638;
+  --app-border: #29364a;
+  --app-border-subtle: #202d40;
+  --app-surface-border: transparent;
+  --app-control-border: #66758d;
+  --app-text-primary: #f1f5f9;
+  --app-text-secondary: #d7dee8;
+  --app-text-muted: #a9b5c5;
+  --app-accent-text: var(--mantine-color-semanticAccent-1);
+  --app-accent-surface-text: #f8fafc;
+  --app-accent-surface: color-mix(in srgb, var(--mantine-primary-color-9) 34%, #111a29);
+  --app-accent-icon-surface: color-mix(in srgb, var(--mantine-primary-color-8) 42%, #172235);
+  --app-accent-border: var(--mantine-color-semanticAccent-3);
+  --app-grid-line: rgba(148, 163, 184, 0.027);
+  --app-focus-ring: #5eead4;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--app-background);
+}
+
+body {
+  min-width: 320px;
+  min-height: 100dvh;
+  padding: 0;
+  margin: 0;
+  color: var(--app-text-primary);
+  background-color: var(--app-background);
+  background-image:
+    radial-gradient(
+      circle at 12% -8%,
+      color-mix(in srgb, var(--mantine-primary-color-7) 10%, transparent) 0,
+      transparent 30rem
+    ),
+    linear-gradient(var(--app-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--app-grid-line) 1px, transparent 1px);
+  background-attachment: fixed;
+  background-size:
+    auto,
+    32px 32px,
+    32px 32px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100dvh;
+  isolation: isolate;
+}
+
+::selection {
+  color: var(--app-text-primary);
+  background: color-mix(in srgb, var(--mantine-primary-color-4) 38%, transparent);
+}
+
+:where(a, button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 3px solid var(--app-focus-ring);
+  outline-offset: 2px;
+}
+
+:where(a) {
+  text-underline-offset: 0.18em;
+}
+
+:where(button, [role='button']):not(:disabled) {
+  touch-action: manipulation;
+}
+
+.app-sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+/* Shared Mantine surfaces */
+
+.mantine-Card-root,
+.mantine-Paper-root {
+  border-color: var(--app-surface-border);
+  background-color: var(--app-raised-surface);
+  box-shadow: var(--mantine-shadow-xs);
+}
+
+.mantine-Modal-content,
+.mantine-Drawer-content,
+.mantine-Popover-dropdown,
+.mantine-Menu-dropdown {
+  border: 1px solid var(--app-surface-border);
+  background: var(--app-raised-surface);
+  box-shadow: var(--mantine-shadow-lg);
+}
+
+.mantine-Modal-header,
+.mantine-Drawer-header {
+  background: var(--app-raised-surface);
+}
+
+.mantine-Input-input {
+  border-color: var(--app-control-border);
+  color: var(--app-text-primary);
+  background: var(--app-subtle-surface);
+  transition:
+    border-color 130ms ease,
+    box-shadow 130ms ease,
+    background-color 130ms ease;
+}
+
+.mantine-Input-input:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--app-control-border) 58%, var(--app-text-primary));
+}
+
+.mantine-Checkbox-input,
+.mantine-Radio-radio,
+.mantine-Switch-track {
+  border-color: var(--app-control-border);
+}
+
+.mantine-Input-input:focus,
+.mantine-Input-input:focus-within {
+  border-color: var(--app-focus-ring);
+  background: var(--app-raised-surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-focus-ring) 22%, transparent);
+}
+
+.mantine-Input-input::placeholder {
+  color: var(--app-text-muted);
+  opacity: 0.88;
+}
+
+.mantine-InputWrapper-label {
+  margin-bottom: 5px;
+  color: var(--app-text-secondary);
+  font-weight: 650;
+}
+
+.mantine-InputWrapper-description {
+  color: var(--app-text-muted);
+}
+
+.mantine-Button-root,
+.mantine-ActionIcon-root,
+.mantine-UnstyledButton-root {
+  transition:
+    transform 120ms ease,
+    background-color 130ms ease,
+    border-color 130ms ease,
+    color 130ms ease,
+    box-shadow 130ms ease;
+}
+
+.mantine-Button-root:not(:disabled):active,
+.mantine-ActionIcon-root:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+.mantine-Button-root[data-variant='filled'] {
+  box-shadow: 0 1px 2px rgba(8, 15, 30, 0.16);
+}
+
+.mantine-Table-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.mantine-Table-th {
+  color: var(--app-text-secondary);
+  background: var(--app-subtle-surface);
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 720;
+  letter-spacing: 0.025em;
+}
+
+.mantine-Table-tr {
+  border-color: var(--app-border-subtle);
+  transition: background-color 110ms ease;
+}
+
+.mantine-Table-td,
+.mantine-Table-th {
+  border-color: var(--app-border-subtle);
+}
+
+.mantine-Tabs-list {
+  border-color: var(--app-border);
+}
+
+.mantine-Tabs-tab {
+  color: var(--app-text-secondary);
+}
+
+.mantine-Tabs-tab[data-active] {
+  color: var(--app-accent-text);
+}
+
+.mantine-Pagination-control {
+  border-color: transparent;
+}
+
+.mantine-Pagination-control[data-active] {
+  border-color: var(--app-accent-border);
+}
+
+.mantine-Notification-root {
+  border: 1px solid var(--app-surface-border);
+  background: var(--app-raised-surface);
+  box-shadow: var(--mantine-shadow-lg);
+}
+
+.mantine-Skeleton-root::before,
+.mantine-Skeleton-root::after {
+  background: var(--app-hover-surface);
+}
+
+.mantine-Divider-root {
+  border-color: var(--app-border);
+}
+
+/* Scrollbars remain visible so horizontally scrollable scoreboards/tables are discoverable. */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--app-text-muted) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--app-text-muted);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  border-width: 2px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+@media (max-width: 48em) {
+  body {
+    background-size:
+      auto,
+      24px 24px,
+      24px 24px;
+  }
+
+  .mantine-Modal-content {
+    max-height: calc(100dvh - 20px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  body {
+    color: #000;
+    background: #fff;
+  }
+
+  .mantine-Card-root,
+  .mantine-Paper-root {
+    box-shadow: none;
+  }
+}

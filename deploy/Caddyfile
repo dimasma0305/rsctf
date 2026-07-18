@@ -1,0 +1,41 @@
+{
+	admin off
+}
+
+{$RSCTF_DOMAIN} {
+	encode zstd gzip
+
+	# BYOC agents and BYOC admin terminals depend on process-local tunnel state.
+	# The rsctf-network alias belongs to rsctf in single-role mode and is moved
+	# to rsctf-control by compose.roles.yml. Resolve it for every request so a
+	# recreated singleton cannot leave Caddy pinned to a stale container address.
+	@network path_regexp network ^(?:/api/(?:stateful/)?Game/[0-9]+/Ad/Byoc/(?:Agent|Image)/.*|/api/proxy(?:/.*)?|/api/workers/enroll|/api/admin/workers(?:/.*)?|/hub/containerExec(?:/negotiate)?)$
+	handle @network {
+		reverse_proxy {
+			dynamic a {$RSCTF_NETWORK_UPSTREAM_HOST:rsctf-network} {$RSCTF_NETWORK_UPSTREAM_PORT:8080}
+			lb_try_duration 3s
+		}
+	}
+	handle {
+		# Resolve the Compose service on every proxy selection. A static hostname
+		# may be resolved only when Caddy loads its config, which would pin a
+		# scaled service to one container and retain stale addresses after a
+		# scale-down. Docker DNS returns every live `rsctf` replica here.
+		reverse_proxy {
+			dynamic a rsctf 8080
+			lb_policy random_choose 2
+			lb_try_duration 3s
+		}
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

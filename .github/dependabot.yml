@@ -1,0 +1,140 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    groups:
+      kubernetes-client:
+        patterns: ["kube", "k8s-openapi"]
+      cargo-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # Bollard 0.21 removes APIs used by both container runtimes. Upgrade it
+      # only with a dedicated Docker migration and lifecycle stress test.
+      - dependency-name: bollard
+        update-types: ["version-update:semver-major"]
+      # SQLx 0.9 cannot share SeaORM's SQLx 0.8 pool. Revisit after SeaORM is
+      # removed from the remaining data-access paths.
+      - dependency-name: sqlx
+        update-types: ["version-update:semver-major"]
+      # kube 4 supports Kubernetes 1.32+, while the Helm chart supports 1.25+,
+      # and it enables automatic retries for non-idempotent challenge creates.
+      # Move this pair only in a dedicated backend compatibility migration.
+      - dependency-name: kube
+        update-types: ["version-update:semver-major"]
+      - dependency-name: k8s-openapi
+        versions: [">= 0.24"]
+
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:30"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    # Keep routine web updates outside the package release's first week. This
+    # is enforced before Dependabot invokes pnpm and does not delay security PRs.
+    cooldown:
+      default-days: 7
+    groups:
+      web-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # react-pdf currently requires pdfjs-dist 5.4.296 exactly. Move both
+      # together through a future react-pdf upgrade so its API and worker stay
+      # byte-for-byte aligned.
+      - dependency-name: pdfjs-dist
+      # Keep compiler and Node declarations aligned with supported peers and
+      # the Node 22 CI/runtime image.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: cargo
+    directory: "/lib/worker-protocol"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:10"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    groups:
+      worker-protocol-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: "/agents/worker-agent"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:20"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    groups:
+      worker-agent-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # Bollard 0.21 requires a coordinated runtime API migration and Docker
+      # lifecycle validation, not an isolated manifest bump.
+      - dependency-name: bollard
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: cargo
+    directory: "/agents/byoc-agent"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:25"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    groups:
+      byoc-agent-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # Keep the BYOC tunnel on the same validated Docker API as the server and
+      # worker until the coordinated Bollard migration is ready.
+      - dependency-name: bollard
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: npm
+    directory: "/docs"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    groups:
+      docs-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # VitePress 1.6 peers markdown-it-mathjax3 ^4; v5 belongs with a future
+      # VitePress compatibility upgrade.
+      - dependency-name: markdown-it-mathjax3
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:30"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    groups:
+      github-actions:
+        patterns: ["*"]

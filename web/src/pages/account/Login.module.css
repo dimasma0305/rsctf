@@ -1,0 +1,11 @@
+.passwordField,
+.passwordInnerInput,
+.passwordVisibilityToggle {
+  min-height: 2.75rem;
+}
+
+.passwordVisibilityToggle {
+  width: 2.75rem;
+  height: 2.75rem;
+  min-width: 2.75rem;
+}

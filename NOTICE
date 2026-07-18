@@ -1,0 +1,12 @@
+The RS::CTF Platform
+
+Copyright (C) 2022-2026 RSCTF contributors
+
+License: MIT License
+
+See: LICENSE.txt
+
+Third-party component: The vendored CreepJS subset is distributed under the
+MIT License included at web/src/lib/creepjs/LICENSE.
+
+This NOTICE file is informational and does not modify the terms of any license.

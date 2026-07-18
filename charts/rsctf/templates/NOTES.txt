@@ -1,0 +1,126 @@
+{{- include "rsctf.validateValues" . }}
+{{- $localBackend := include "rsctf.localContainerBackend" . | trim }}
+rsctf has been installed as {{ include "rsctf.fullname" . }}.
+Runtime role: {{ .Values.runtimeRole }} ({{ .Values.replicaCount }} replica(s)).
+
+{{- if eq .Values.runtimeRole "migrate" }}
+The migration hook completed before this release was installed/upgraded. This
+role does not run a long-lived Deployment. Install or upgrade the web/control
+or web/engine/network releases only after this command succeeds.
+{{- else if ne .Values.runtimeRole "all" }}
+SPLIT-ROLE NOTICE: this release uses externally managed PostgreSQL and Redis,
+the pre-created Secret, and the same pinned rsctf build, JWT secret, storage
+root, and object-store configuration as every other role.{{ if eq $localBackend "kubernetes" }} Kubernetes-backed
+splits also use one externally owned challenge namespace.{{ end }}
+Do not combine a control release with engine/network releases; use either
+control (1) or engine (N) plus network (1).
+{{- end }}
+
+{{- if ne .Values.runtimeRole "migrate" }}
+{{- if .Values.ingress.enabled }}
+Open:
+{{- range .Values.ingress.hosts }}
+  {{- if $.Values.ingress.tls }}https{{ else }}http{{ end }}://{{ .host }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+Find a node address and the assigned port:
+  kubectl -n {{ .Release.Namespace }} get service {{ include "rsctf.fullname" . }}
+{{- else if contains "LoadBalancer" .Values.service.type }}
+Wait for the external address:
+  kubectl -n {{ .Release.Namespace }} get service {{ include "rsctf.fullname" . }} --watch
+{{- else }}
+For a local connection:
+  kubectl -n {{ .Release.Namespace }} port-forward service/{{ include "rsctf.fullname" . }} 8080:{{ .Values.service.port }}
+Then open http://127.0.0.1:8080
+{{- end }}
+
+Check rollout and health:
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "rsctf.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} get pods
+
+Database connection budget for this release:
+  {{ .Values.replicaCount }} x {{ .Values.config.dbMaxConnections }} = {{ mul .Values.replicaCount .Values.config.dbMaxConnections }} maximum application connections
+Budget all role releases together and leave headroom for migrations, operators,
+and PostgreSQL maintenance; use PgBouncer when direct pools would exceed it.
+{{- if .Values.workerPlane.enabled }}
+
+Trusted worker listener:
+  Service: {{ include "rsctf.fullname" . }}-workers
+  Public endpoint advertised at enrollment: {{ .Values.workerPlane.publicEndpoint }}
+This is raw mutually authenticated TLS, not HTTP. If another load balancer is
+in front, configure TCP/TLS passthrough so rsctf verifies worker certificates.
+{{- end }}
+{{- if has .Values.runtimeRole (list "all" "control" "engine" "network") }}
+SECURITY NOTICE: this round-engine role receives NET_ADMIN only to install the
+process checker's uid-scoped default-deny egress firewall. Startup fails if the
+firewall cannot be installed or a real child cannot prove Landlock ABI v3 and
+seccomp confinement. Web-only releases receive no such capability.
+{{- end }}
+{{- end }}
+
+{{- if .Values.postgresql.enabled }}
+NOTE: The bundled single-node PostgreSQL service is enabled. It is convenient
+for evaluation and small events, but it is not highly available. Back up its
+PVC before every upgrade and use an external database for critical events.
+
+POSTGRESQL 18 MAJOR-UPGRADE WARNING: a PVC created by an older version of this
+chart stores PostgreSQL 16/17 below a different directory. The chart now stops
+before PostgreSQL can initialize beside that legacy cluster. Migrate with a
+logical dump/restore or pg_upgrade, or deliberately select a new empty PVC;
+changing only the image/chart version is not a database upgrade.
+{{- end }}
+
+{{- if eq .Values.containerBackend "worker" }}
+Jeopardy challenge workloads use durable placement on enrolled outbound Docker
+workers.
+{{- if eq $localBackend "none" }}
+This is a pure remote deployment: the control-plane Pod mounts no local runtime,
+and local A&D/KotH containers, live packet capture, and the VPN data plane are
+unavailable.
+{{- else }}
+A&D/KotH and local maintenance operations continue through the local
+{{ $localBackend }} backend (workerBackend.localBackend={{ $localBackend }}).
+{{- end }}
+{{- else if eq .Values.containerBackend "none" }}
+Dynamic challenge containers are disabled (containerBackend=none).
+{{- end }}
+
+{{- if eq $localBackend "kubernetes" }}
+Kubernetes-managed workloads are isolated in namespace {{ include "rsctf.challengeNamespace" . }}.
+The rsctf ServiceAccount has only get/create/delete access to Pods, Services,
+and NetworkPolicies there{{ if .Values.kubernetes.metrics.enabled }}, plus get-only Pod metrics{{ end }}.
+{{- end }}
+
+{{- if eq $localBackend "docker" }}
+ADVANCED SECURITY NOTICE: Docker challenge mode mounts the host Docker socket.
+Access to that socket is effectively root access to the Kubernetes node. Prefer
+the Kubernetes local backend when possible and dedicate any Docker-mode node.
+{{- if and .Values.trafficCapture.enabled (has .Values.runtimeRole (list "all" "control" "network")) }}
+This singleton also receives NET_RAW for Docker service packet capture on
+device {{ .Values.trafficCapture.device }}. Disable trafficCapture.enabled if
+the event does not use live captures.
+{{- end }}
+{{- end }}
+
+{{- if and .Values.vpn.enabled (has .Values.runtimeRole (list "all" "control" "network")) }}
+ADVANCED SECURITY NOTICE: WireGuard VPN mode is enabled. The rsctf container
+has NET_ADMIN, /dev/net/tun, and net.ipv4.ip_forward. Confirm your node's
+WireGuard support and firewall rules, then verify the public UDP endpoint:
+  {{ .Values.vpn.serverEndpoint }}
+{{- else if .Values.vpn.enabled }}
+VPN policy coordination is enabled for this role. Kernel privileges remain
+confined to the matching all/control/network owner release.
+{{- end }}
+
+{{- if eq .Values.storage.backend "s3" }}
+Blob assets use shared S3 bucket {{ .Values.storage.s3.bucket }}. Split roles also
+mount the required existing RWX claim for repository worktrees, captures,
+checker files, and snapshots.
+{{- else if and (gt (int .Values.replicaCount) 1) (not (has "ReadWriteMany" .Values.persistence.accessModes)) }}
+WARNING: multiple replicas are configured without ReadWriteMany file storage.
+Use an RWX claim (or constrain all Pods to one node only as a temporary measure)
+before writing repository, capture, checker, or snapshot files.
+{{- end }}
+
+Secrets are never printed here. For production, prefer existingSecret.name
+backed by External Secrets, Sealed Secrets, or SOPS instead of Helm values.

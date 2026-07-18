@@ -1,0 +1,91 @@
+{{- include "rsctf.validateValues" . }}
+{{- if ne .Values.runtimeRole "migrate" }}
+{{- $localBackend := include "rsctf.localContainerBackend" . | trim }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rsctf.fullname" . }}
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+data:
+  RSCTF_ROLE: {{ .Values.runtimeRole | quote }}
+  RSCTF_BIND: "0.0.0.0:8080"
+  RSCTF_STORAGE_ROOT: {{ .Values.persistence.mountPath | quote }}
+  RSCTF_STORAGE_BACKEND: {{ .Values.storage.backend | quote }}
+  {{- if and (ne .Values.runtimeRole "all") (ne .Values.runtimeRole "migrate") }}
+  # The chart's split-role validation requires one existing RWX claim. This
+  # acknowledgement prevents the binary from silently accepting local storage
+  # when it is launched outside that validated topology.
+  RSCTF_SHARED_STORAGE: "true"
+  {{- end }}
+  {{- if eq .Values.storage.backend "s3" }}
+  RSCTF_S3_BUCKET: {{ .Values.storage.s3.bucket | quote }}
+  RSCTF_S3_PREFIX: {{ .Values.storage.s3.prefix | quote }}
+  {{- with .Values.storage.s3.region }}
+  RSCTF_S3_REGION: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.storage.s3.endpoint }}
+  RSCTF_S3_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  HOME: "/tmp"
+  TMPDIR: "/tmp"
+  RSCTF_STATIC_DIR: "/app/web/build"
+  RSCTF_JWT_TTL_SECS: {{ .Values.config.jwtTtlSeconds | quote }}
+  RSCTF_COOKIE_SECURE: {{ .Values.config.cookieSecure | quote }}
+  RSCTF_TRUSTED_PROXY_CIDRS: {{ .Values.config.trustedProxyCidrs | quote }}
+  RSCTF_ALLOW_REGISTER: {{ .Values.config.allowRegister | quote }}
+  RSCTF_EMAIL_CONFIRM: {{ .Values.config.emailConfirm | quote }}
+  RSCTF_ADMIN_CONFIRM: {{ .Values.config.adminConfirm | quote }}
+  RSCTF_ACTIVE_ON_REGISTER: {{ .Values.config.activeOnRegister | quote }}
+  RSCTF_USE_CAPTCHA: {{ .Values.config.useCaptcha | quote }}
+  {{- if eq .Values.runtimeRole "all" }}
+  RSCTF_MIGRATE: {{ ternary "1" "0" .Values.config.migrate | quote }}
+  {{- end }}
+  RSCTF_PROVISIONING_CONCURRENCY: {{ .Values.config.provisioningConcurrency | quote }}
+  RSCTF_REPO_SCAN_CONCURRENCY: {{ .Values.config.repoScanConcurrency | quote }}
+  RSCTF_DB_MAX_CONNECTIONS: {{ .Values.config.dbMaxConnections | quote }}
+  RSCTF_CHECKER_UID_BASE: {{ .Values.config.checkerUidBase | quote }}
+  RSCTF_CHECKER_PROCESS_BUDGET: {{ .Values.config.checkerProcessBudget | quote }}
+  RSCTF_DISTRIBUTED_RATELIMIT: {{ ternary "false" "true" (eq .Values.runtimeRole "all") | quote }}
+  RSCTF_CONTAINER_MAX_MEMORY_MB: {{ .Values.config.containerMaxMemoryMb | quote }}
+  RSCTF_CONTAINER_MAX_CPU_COUNT: {{ .Values.config.containerMaxCpuCount | quote }}
+  RSCTF_CONTAINER_BACKEND: {{ .Values.containerBackend | quote }}
+  {{- if eq .Values.containerBackend "worker" }}
+  RSCTF_WORKER_LOCAL_BACKEND: {{ .Values.workerBackend.localBackend | quote }}
+  RSCTF_WORKER_DEFAULT_OS: {{ .Values.workerBackend.defaultOs | quote }}
+  RSCTF_WORKER_DEFAULT_ARCH: {{ .Values.workerBackend.defaultArchitecture | quote }}
+  {{- end }}
+  RSCTF_TRAFFIC_CAPTURE_ENABLED: {{ .Values.trafficCapture.enabled | quote }}
+  RSCTF_CAPTURE_DEVICE: {{ .Values.trafficCapture.device | quote }}
+  RSCTF_CAPTURE_RECONCILE_SECONDS: {{ .Values.trafficCapture.reconcileSeconds | quote }}
+  RUST_LOG: {{ .Values.config.logLevel | quote }}
+  {{- with .Values.config.publicUrl }}
+  RSCTF_PUBLIC_URL: {{ . | quote }}
+  {{- end }}
+  {{- if eq $localBackend "kubernetes" }}
+  RSCTF_K8S_NAMESPACE: {{ include "rsctf.challengeNamespace" . | quote }}
+  RSCTF_K8S_CHALLENGE_UID: {{ .Values.kubernetes.challengeUid | quote }}
+  RSCTF_K8S_CONTROL_NAMESPACE: {{ .Release.Namespace | quote }}
+  RSCTF_K8S_CONTROL_POD_LABEL: {{ printf "app.kubernetes.io/name=%s" (include "rsctf.name" .) | quote }}
+  RSCTF_K8S_ISOLATED_POD_NETNS: {{ .Values.kubernetes.isolatedPodNetns | quote }}
+  {{- with .Values.kubernetes.publicEntry }}
+  RSCTF_K8S_PUBLIC_ENTRY: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.kubernetes.adServiceCidr }}
+  RSCTF_K8S_AD_SERVICE_CIDR: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if .Values.vpn.enabled }}
+  RSCTF_AD_VPN_ENABLED: "true"
+  RSCTF_AD_VPN_REQUIRED: {{ .Values.vpn.required | quote }}
+  RSCTF_AD_VPN_LISTEN_PORT: {{ .Values.vpn.listenPort | quote }}
+  RSCTF_AD_VPN_SERVER_ENDPOINT: {{ .Values.vpn.serverEndpoint | quote }}
+  RSCTF_AD_VPN_CLIENT_CIDR: {{ .Values.vpn.clientCidr | quote }}
+  RSCTF_AD_VPN_SERVICES_CIDR: {{ .Values.vpn.servicesCidr | quote }}
+  RSCTF_AD_VPN_DNS: {{ .Values.vpn.dns | quote }}
+  {{- with .Values.vpn.allowedIps }}
+  RSCTF_AD_VPN_ALLOWED_IPS: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+{{- end }}

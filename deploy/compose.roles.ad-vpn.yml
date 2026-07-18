@@ -1,0 +1,55 @@
+# Add after compose.roles.yml and compose.docker.yml for a direct split Docker
+# deployment. Do not combine this with compose.roles.workers.yml: policy-only
+# web coordination for a hybrid split is not implemented and startup must fail
+# closed instead of granting the web tier a Docker socket.
+services:
+  # Web replicas do not receive TUN/NET_ADMIN, but they must know that VPN
+  # policy is enabled so mutations enqueue a durable reconcile request and wait
+  # for the control owner to acknowledge the kernel update.
+  rsctf:
+    environment:
+      RSCTF_AD_VPN_ENABLED: "true"
+      RSCTF_AD_VPN_REQUIRED: "true"
+      RSCTF_AD_VPN_CLIENT_CIDR: ${RSCTF_AD_VPN_CLIENT_CIDR:-10.13.0.0/19}
+      RSCTF_AD_VPN_SERVICES_CIDR: ${RSCTF_AD_VPN_SERVICES_CIDR:-10.13.40.0/24}
+      RSCTF_AD_VPN_SERVICES_NETWORK: ${RSCTF_AD_VPN_SERVICES_NETWORK:-rsctf-ad}
+      RSCTF_AD_VPN_SERVER_ENDPOINT: ${RSCTF_AD_VPN_SERVER_ENDPOINT:?Set the public WireGuard host:port}
+      RSCTF_AD_VPN_LISTEN_PORT: ${RSCTF_AD_VPN_PORT:-51820}
+
+  rsctf-control:
+    user: "0:0"
+    environment:
+      RSCTF_CONTAINER_BACKEND: docker
+      RSCTF_DOCKER_PUBLIC_ENTRY: ${RSCTF_DOCKER_PUBLIC_ENTRY:?Set a public host or IP}
+      RSCTF_AD_SSH_PUBLIC_HOST: ${RSCTF_DOCKER_PUBLIC_ENTRY:?Set a public host or IP}
+      RSCTF_AD_VPN_ENABLED: "true"
+      RSCTF_AD_VPN_REQUIRED: "true"
+      RSCTF_AD_VPN_CLIENT_CIDR: ${RSCTF_AD_VPN_CLIENT_CIDR:-10.13.0.0/19}
+      RSCTF_AD_VPN_SERVICES_CIDR: ${RSCTF_AD_VPN_SERVICES_CIDR:-10.13.40.0/24}
+      RSCTF_AD_VPN_SERVICES_NETWORK: ${RSCTF_AD_VPN_SERVICES_NETWORK:-rsctf-ad}
+      RSCTF_AD_VPN_SERVER_ENDPOINT: ${RSCTF_AD_VPN_SERVER_ENDPOINT:?Set the public WireGuard host:port}
+      RSCTF_AD_VPN_LISTEN_PORT: ${RSCTF_AD_VPN_PORT:-51820}
+      RSCTF_AD_SSH_PORT: ${RSCTF_AD_SSH_PORT:-2222}
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    ports:
+      - ${RSCTF_AD_VPN_BIND_IP:-0.0.0.0}:${RSCTF_AD_VPN_PORT:-51820}:${RSCTF_AD_VPN_PORT:-51820}/udp
+      - ${RSCTF_AD_SSH_BIND_IP:-0.0.0.0}:${RSCTF_AD_SSH_PORT:-2222}:${RSCTF_AD_SSH_PORT:-2222}/tcp
+    networks:
+      - rsctf-ad
+
+networks:
+  rsctf-ad:
+    name: ${RSCTF_AD_VPN_SERVICES_NETWORK:-rsctf-ad}
+    internal: true
+    ipam:
+      config:
+        - subnet: ${RSCTF_AD_VPN_SERVICES_CIDR:-10.13.40.0/24}

@@ -1,0 +1,460 @@
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 22mm 15mm 20mm;
+  }
+
+  :root {
+    color-scheme: light;
+    --vp-c-bg: #ffffff;
+    --vp-c-bg-alt: #ffffff;
+    --vp-c-bg-soft: #f4f4f4;
+    --vp-c-text-1: #000000;
+    --vp-c-text-2: #202020;
+    --vp-c-text-3: #333333;
+  }
+
+  html,
+  body {
+    color: #000000 !important;
+    background: #ffffff !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .VPNav,
+  .VPSidebar,
+  .VPLocalNav,
+  .VPDoc .aside,
+  .VPDocFooter,
+  .VPFooter,
+  .VPBackToTop,
+  .VPSkipLink {
+    display: none !important;
+  }
+
+  .VPContent,
+  .VPContent.has-sidebar,
+  .VPDoc,
+  .VPDoc.has-aside,
+  .VPDoc .container,
+  .VPDoc .content,
+  .VPDoc .content-container {
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .ad-handbook .vp-doc {
+    column-count: 2;
+    column-gap: 7mm;
+    color: #000000;
+    font-family: "Times New Roman", Times, Georgia, serif;
+    font-size: 9.5pt;
+    line-height: 1.28;
+    text-align: justify;
+  }
+
+  /* Leave room for italic and justified glyph ink that extends past its text box. */
+  .ad-handbook .vp-doc,
+  .koth-handbook .vp-doc {
+    box-sizing: border-box;
+    padding-inline-end: 0.6mm !important;
+  }
+
+  .pdf-download {
+    display: none !important;
+  }
+
+  .journal-title-block,
+  .vp-doc h2#abstract,
+  .journal-abstract,
+  .journal-keywords,
+  .journal-status,
+  .journal-wide,
+  .vp-doc > p:has(> img),
+  .vp-doc > .journal-figure-caption,
+  .vp-doc > .journal-table-caption,
+  .vp-doc > table,
+  .vp-doc div[class*="language-"],
+  .vp-doc > .custom-block {
+    column-span: all;
+  }
+
+  .journal-title-block {
+    margin: 0 0 4mm;
+    padding: 0 0 4mm;
+    border: 0;
+    border-bottom: 0.75pt solid #000000;
+    text-align: center;
+  }
+
+  .journal-series {
+    margin: 0 0 4mm !important;
+    font-size: 8.5pt;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .vp-doc .journal-title-block h1 {
+    max-width: 175mm;
+    margin: 0 auto 5mm;
+    padding: 0;
+    border: 0;
+    font-family: "Times New Roman", Times, Georgia, serif;
+    font-size: 15.5pt;
+    line-height: 1.16;
+    letter-spacing: 0;
+    text-align: center;
+    text-transform: uppercase;
+  }
+
+  .journal-authors {
+    margin: 0 0 1mm !important;
+    font-size: 11.5pt;
+    font-weight: 700;
+    line-height: 1.2 !important;
+    text-align: center !important;
+    text-indent: 0 !important;
+  }
+
+  .journal-affiliation,
+  .journal-correspondence,
+  .journal-policy {
+    margin: 0.4mm 0 0 !important;
+    color: #000000;
+    font-size: 8.8pt;
+    line-height: 1.25 !important;
+    text-align: center !important;
+    text-indent: 0 !important;
+  }
+
+  .vp-doc h2#abstract {
+    margin: 4mm 0 1.5mm;
+    font-size: 10pt;
+    font-style: italic;
+    text-align: center;
+  }
+
+  .journal-abstract {
+    margin: 0;
+    font-size: 9.3pt;
+    font-style: italic;
+    line-height: 1.28;
+    text-align: justify;
+  }
+
+  .journal-abstract p {
+    margin: 0 !important;
+    line-height: inherit !important;
+    text-indent: 0 !important;
+  }
+
+  .journal-keywords {
+    margin: 1mm 0 0 !important;
+    padding: 0 0 2.5mm;
+    border-bottom: 0.75pt solid #000000;
+    font-size: 9.3pt;
+    font-style: italic;
+    line-height: 1.25 !important;
+    text-indent: 0 !important;
+  }
+
+  .journal-status {
+    margin: 1.5mm 0 4mm !important;
+    font-size: 7.8pt;
+    line-height: 1.2 !important;
+    text-align: center !important;
+    text-indent: 0 !important;
+  }
+
+  .vp-doc h2,
+  .vp-doc h3,
+  .vp-doc h4 {
+    color: #000000;
+    font-family: "Times New Roman", Times, Georgia, serif;
+    break-after: avoid-page;
+  }
+
+  .vp-doc h2 {
+    margin: 3mm 0 1mm;
+    padding: 0;
+    border: 0;
+    font-size: 10.5pt;
+    line-height: 1.15;
+    text-transform: uppercase;
+  }
+
+  .vp-doc h3 {
+    margin: 2.5mm 0 0.7mm;
+    font-size: 9.8pt;
+    line-height: 1.15;
+  }
+
+  .vp-doc h4 {
+    margin: 2mm 0 0.6mm;
+    font-size: 9.4pt;
+    line-height: 1.15;
+  }
+
+  .vp-doc > p:not(.journal-figure-caption, .journal-table-caption, .journal-keywords, .journal-status),
+  .vp-doc > div > p {
+    margin: 0 0 1.4mm;
+    line-height: 1.28;
+    orphans: 3;
+    widows: 3;
+  }
+
+  .vp-doc > p:not(.journal-figure-caption, .journal-table-caption, .journal-keywords, .journal-status) {
+    text-indent: 5mm;
+  }
+
+  .vp-doc ul,
+  .vp-doc ol {
+    margin: 1mm 0 2mm;
+    padding-left: 5mm;
+  }
+
+  .vp-doc li {
+    margin: 0 0 0.7mm;
+    line-height: 1.25;
+    orphans: 2;
+    widows: 2;
+  }
+
+  .ad-handbook .vp-doc h2,
+  .ad-handbook .vp-doc h3,
+  .ad-handbook .vp-doc h4 {
+    break-after: avoid;
+    page-break-after: avoid;
+    -webkit-column-break-after: avoid;
+    text-align: left;
+  }
+
+  .ad-handbook .vp-doc #system-model,
+  .ad-handbook .vp-doc #_2-1-round-flag-window-and-epoch {
+    column-span: all;
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  .ad-handbook .vp-doc li {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+  }
+
+  .ad-handbook .journal-table.ad-keep-table,
+  .ad-handbook .journal-table.ad-keep-table table {
+    break-inside: avoid-page !important;
+    page-break-inside: avoid !important;
+  }
+
+  .vp-doc a {
+    color: #000000;
+    text-decoration: underline;
+    text-underline-offset: 1px;
+  }
+
+  .vp-doc .header-anchor {
+    display: none;
+  }
+
+  .journal-figure,
+  .vp-doc img,
+  .vp-doc div[class*="language-"],
+  .vp-doc pre,
+  .vp-doc blockquote,
+  .vp-doc .custom-block {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    -webkit-column-break-inside: avoid;
+  }
+
+  .journal-figure,
+  .journal-table {
+    column-span: all;
+    margin: 3mm 0 4mm;
+  }
+
+  .vp-doc img {
+    display: block;
+    max-width: 100%;
+    max-height: 103mm;
+    margin: 2mm auto 0;
+    object-fit: contain;
+  }
+
+  .ad-handbook .vp-doc img[src*="ad-scoreboard-journal"] {
+    max-height: 90mm;
+    border: 0.5pt solid #777777;
+    border-radius: 0;
+    background: #171717;
+    box-shadow: none;
+  }
+
+  .journal-figure-caption,
+  .journal-table-caption,
+  .journal-figure figcaption,
+  .journal-table caption {
+    margin: 1mm auto 2mm !important;
+    color: #000000;
+    font-size: 8.5pt;
+    font-weight: 400;
+    line-height: 1.18 !important;
+    text-align: center;
+    text-indent: 0 !important;
+  }
+
+  .vp-doc table {
+    display: table !important;
+    width: 100%;
+    margin: 0;
+    border-collapse: collapse;
+    font-size: 7.6pt;
+    line-height: 1.15;
+  }
+
+  .vp-doc thead {
+    display: table-header-group;
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+
+  .vp-doc th,
+  .vp-doc td {
+    padding: 1.2mm 1.4mm;
+    border: 0.5pt solid #555555;
+  }
+
+  .vp-doc th {
+    color: #000000;
+    background: #eeeeee;
+    font-weight: 700;
+  }
+
+  .vp-doc tr {
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+  }
+
+  .ad-handbook .journal-math {
+    box-sizing: border-box;
+    max-width: 100%;
+    margin: 0.8mm 0 1.4mm;
+    padding: 0;
+    overflow: visible !important;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    text-align: center;
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  .ad-handbook .journal-math mjx-container[display="true"] {
+    max-width: 100%;
+    margin: 0 !important;
+    overflow: visible !important;
+    font-size: 9pt;
+  }
+
+  .ad-handbook .journal-math > math[display="block"] {
+    max-width: 100%;
+    margin: 0 auto;
+    font-size: 8.8pt;
+  }
+
+  .ad-handbook .journal-worked-example .journal-math {
+    margin: 0.6mm 0 1mm;
+  }
+
+  .ad-handbook .journal-math mjx-container[display="true"] > svg {
+    max-width: 100%;
+    height: auto;
+  }
+
+  .ad-handbook .journal-worked-example {
+    column-span: all;
+  }
+
+  .ad-handbook .journal-worked-example > p:has(+ .journal-math) {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  .ad-handbook .vp-doc #c-2-reproducibility-and-data-availability + p + div[class*="language-"] {
+    column-span: none;
+  }
+
+  .ad-handbook .vp-doc div[class*="language-"] {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    margin: 2mm 0 3mm !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: transparent !important;
+    border: 0.5pt solid #888888;
+    border-radius: 0 !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    -webkit-column-break-inside: avoid;
+  }
+
+  .ad-handbook .vp-doc .line-numbers-wrapper,
+  .ad-handbook .vp-doc [class*="language-"] > button.copy,
+  .ad-handbook .vp-doc [class*="language-"] > span.lang {
+    display: none !important;
+  }
+
+  .ad-handbook .vp-doc div[class*="language-"].line-numbers-mode {
+    padding-left: 0 !important;
+  }
+
+  .ad-handbook .vp-doc [class*="language-"] pre {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    margin: 0 !important;
+    padding: 2.5mm 3mm !important;
+    border: 0;
+    border-radius: 0 !important;
+    font-size: 7.5pt;
+    line-height: 1.2;
+    white-space: pre-wrap !important;
+    overflow: visible !important;
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+  }
+
+  .ad-handbook .vp-doc [class*="language-"] code {
+    box-sizing: border-box;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    white-space: inherit !important;
+    overflow-wrap: inherit !important;
+    word-break: inherit !important;
+  }
+
+  .ad-handbook .vp-doc #references + ol > li {
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+  }
+
+  .ad-handbook .vp-doc #sla-and-infrastructure-failures + p + .journal-table caption {
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+
+  .vp-doc .custom-block {
+    color: #000000;
+    background: #f4f4f4;
+    border-color: #555555;
+  }
+}

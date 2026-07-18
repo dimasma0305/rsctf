@@ -1,0 +1,168 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rsctf.postgresqlName" . }}
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  clusterIP: None
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+  selector:
+    {{- include "rsctf.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rsctf.postgresqlName" . }}-init
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+data:
+  00-pg-stat-statements.sql: |
+    CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "rsctf.postgresqlName" . }}
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  serviceName: {{ include "rsctf.postgresqlName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "rsctf.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgresql
+  template:
+    metadata:
+      labels:
+        {{- include "rsctf.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgresql
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.postgresql.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.postgresql.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.postgresql.securityContext.runAsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: postgresql-major-upgrade-guard
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          command: ["sh", "-ec"]
+          args:
+            - |
+              current="${PGDATA:-/var/lib/postgresql/18/docker}/PG_VERSION"
+              legacy="/var/lib/postgresql/pgdata/PG_VERSION"
+              if [ -f "$legacy" ] && [ ! -f "$current" ]; then
+                echo >&2 "legacy PostgreSQL data detected at $legacy"
+                echo >&2 "a major upgrade requires dump/restore, pg_upgrade, or an explicitly new PVC"
+                exit 1
+              fi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+      containers:
+        - name: postgresql
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          args:
+            - -c
+            - shared_preload_libraries=pg_stat_statements
+            - -c
+            - compute_query_id=on
+            - -c
+            - pg_stat_statements.max=2000
+            - -c
+            - pg_stat_statements.track_utility=off
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgresql.auth.username | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgresql.auth.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.postgresqlPasswordKey }}
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["sh", "-ec", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["sh", "-ec", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: tmp
+              mountPath: /tmp
+            - name: run-postgresql
+              mountPath: /var/run/postgresql
+            - name: postgresql-init
+              mountPath: /docker-entrypoint-initdb.d/00-pg-stat-statements.sql
+              subPath: 00-pg-stat-statements.sql
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: run-postgresql
+          emptyDir: {}
+        - name: postgresql-init
+          configMap:
+            name: {{ include "rsctf.postgresqlName" . }}-init
+        {{- if not .Values.postgresql.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.postgresql.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "rsctf.labels" . | nindent 10 }}
+          app.kubernetes.io/component: postgresql
+      spec:
+        accessModes:
+          {{- toYaml .Values.postgresql.persistence.accessModes | nindent 10 }}
+        {{- with .Values.postgresql.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.persistence.size }}
+  {{- end }}
+{{- end }}

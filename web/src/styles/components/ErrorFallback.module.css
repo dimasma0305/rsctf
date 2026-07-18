@@ -1,0 +1,8 @@
+.shell {
+  background: radial-gradient(circle at 50% 0, var(--app-accent-surface), transparent 32rem), var(--app-background);
+}
+
+.card {
+  border-color: var(--app-border);
+  box-shadow: var(--mantine-shadow-lg);
+}

@@ -1,0 +1,21 @@
+{
+  "name": "rsctf-load-tests",
+  "private": true,
+  "type": "module",
+  "description": "rsctf load / stress tests — k6 HTTP scenarios (k6/) driven by Node orchestrators (*.mjs)",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "player": "node player.mjs",
+    "byoc": "node byoc.mjs",
+    "busy": "node byoc-busy.mjs",
+    "scale": "node scale-curve.mjs",
+    "worst-case": "node worst-case.mjs",
+    "worker": "node worker-plane.mjs",
+    "worker-local": "node worker-plane-local.mjs",
+    "provision": "node provision.mjs",
+    "cheat": "node cheat-event.mjs",
+    "lifecycle": "node lifecycle.mjs",
+    "observe": "node observe.mjs",
+    "teardown": "node provision.mjs -- --down"
+  }
+}

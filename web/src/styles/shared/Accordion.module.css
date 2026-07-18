@@ -1,0 +1,28 @@
+.root {
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--app-subtle-surface);
+}
+
+.item {
+  border: 1px solid var(--app-surface-border);
+  position: relative;
+  background-color: var(--app-raised-surface);
+
+  &[data-active] {
+    box-shadow: var(--mantine-shadows-md);
+    background-color: var(--app-raised-surface);
+  }
+}
+
+.label {
+  padding: 0;
+}
+
+.control {
+  padding: 8px 4px;
+
+  &:hover {
+    cursor: pointer;
+    background: transparent;
+  }
+}

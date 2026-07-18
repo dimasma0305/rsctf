@@ -1,0 +1,18 @@
+{
+  "name": "rsctf",
+  "short_name": "RSCTF",
+  "description": "rsctf is a high-performance open source CTF platform.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0c0d0e",
+  "theme_color": "#0c0d0e",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

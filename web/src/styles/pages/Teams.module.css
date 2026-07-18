@@ -1,0 +1,73 @@
+.stateSection {
+  width: 100%;
+  min-height: clamp(18rem, 48vh, 30rem);
+  padding: clamp(var(--mantine-spacing-lg), 4vw, calc(var(--mantine-spacing-xl) * 1.5));
+}
+
+.errorCard,
+.emptyCard {
+  width: min(100%, 34rem);
+}
+
+.errorCard {
+  padding: clamp(var(--mantine-spacing-xl), 4vw, 2.5rem);
+  border: 1px solid color-mix(in srgb, var(--mantine-color-red-7) 42%, var(--app-border));
+  border-radius: var(--mantine-radius-xl);
+  background: color-mix(in srgb, var(--mantine-color-red-0) 58%, var(--app-raised-surface));
+}
+
+.errorIcon {
+  display: grid;
+  width: 3.5rem;
+  height: 3.5rem;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--mantine-color-red-7) 36%, transparent);
+  border-radius: var(--mantine-radius-lg);
+  color: var(--mantine-color-red-8);
+  background: color-mix(in srgb, var(--mantine-color-red-1) 68%, var(--app-raised-surface));
+}
+
+.headerActions,
+.emptyActions {
+  justify-content: center;
+}
+
+.headerActions :global(.mantine-Button-root),
+.emptyActions :global(.mantine-Button-root) {
+  min-height: 44px;
+}
+
+@media (max-width: $mantine-breakpoint-xs) {
+  .stateSection {
+    min-height: 18rem;
+    padding: var(--mantine-spacing-md) 0;
+  }
+
+  .headerActions,
+  .emptyActions {
+    width: 100%;
+  }
+
+  .headerActions :global(.mantine-Button-root),
+  .emptyActions :global(.mantine-Button-root) {
+    flex: 1 1 0;
+  }
+
+  .emptyActions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .emptyActions :global(.mantine-Button-root) {
+    width: 100%;
+  }
+}
+
+[data-mantine-color-scheme='dark'] .errorCard {
+  background: color-mix(in srgb, var(--mantine-color-red-9) 20%, var(--app-raised-surface));
+}
+
+[data-mantine-color-scheme='dark'] .errorIcon {
+  color: var(--mantine-color-red-3);
+  background: color-mix(in srgb, var(--mantine-color-red-9) 28%, var(--app-raised-surface));
+}

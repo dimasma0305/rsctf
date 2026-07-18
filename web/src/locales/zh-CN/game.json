@@ -1,0 +1,573 @@
+{
+  "button": {
+    "ad": {
+      "reset": "重置",
+      "submit": "提交攻击",
+      "snapshot": "下载快照",
+      "download_snapshot": "下载 .tar.gz",
+      "rotate_token": "重置 Token",
+      "generate_token": "生成 Token",
+      "copy_curl": "复制 curl",
+      "copy_token": "复制 Token",
+      "download_vpn": "下载 .conf",
+      "open_toolkit": "攻防工具箱"
+    },
+    "challenges": "进入比赛",
+    "delete": {
+      "all_traffic": "删除全部列出流量"
+    },
+    "download": {
+      "all_traffic": "下载全部列出流量",
+      "scoreboard": "下载积分榜",
+      "submissionsheet": "下载全部提交"
+    },
+    "finished": "比赛结束",
+    "hide_solved": "隐藏已解出",
+    "join": "报名参赛",
+    "kind": {
+      "all": "全部",
+      "jeopardy": "解题",
+      "ad": "攻防"
+    },
+    "leave": "取消报名",
+    "login_required": "请先登录",
+    "scoreboard": "查看榜单",
+    "submit_writeup": "提交 Writeup",
+    "writeup": {
+      "upload": "上传 Writeup",
+      "uploading": "正在上传"
+    },
+    "attack": "攻击实况",
+    "find_my_team": "找我的队伍"
+  },
+  "content": {
+    "scoreboard": {
+      "tab": {
+        "jeopardy": "解题",
+        "ad": "攻防对抗"
+      },
+      "ad": {
+        "column": {
+          "captures": "捕获",
+          "team": "队伍",
+          "status": "状态"
+        },
+        "epoch": {
+          "title": "攻防计分板",
+          "compact_description": "已结算分是主要排名依据；完全同分时依次比较实时预测分、进攻率、防守率、SLA 和参赛 ID。",
+          "score_label": "攻防得分",
+          "current_epoch": "Epoch {{epoch}}",
+          "awaiting_roster": "预热中",
+          "not_started": "计分正在等待完整参赛名单和准备就绪的精确 Checker。",
+          "load_error": "无法加载攻防计分板。",
+          "captures_value": "捕获 {{count}} 次",
+          "live_value": "实时 {{score}}",
+          "service_breakdown": "各题得分",
+          "mobile_table": "攻防排名",
+          "mobile_hint": "选择队伍可查看每道题的得分。",
+          "footer_hint": "防守为正向得分，单元格底色表示最新服务健康状态。更新时间 {{time}}。",
+          "score_info": {
+            "button": "攻防计分方式",
+            "title": "计分方式",
+            "tick_title": "Tick / 回合",
+            "tick_badge": "{{seconds}} 秒",
+            "tick_body": "Tick 与回合是同一个实时周期：系统植入新 Flag、运行 Checker，并记录捕获与 SLA 证据。",
+            "epoch_title": "Epoch",
+            "epoch_badge": "{{count}} 回合",
+            "epoch_current_body": "当前 Epoch {{epoch}} 覆盖计分回合 {{start}}-{{end}}。进行中时计入实时分；所有 Checker 完成且相关 Flag 提交窗口关闭后，才会计入已结算分。",
+            "epoch_body": "每个 Epoch 包含 {{count}} 个计分回合。进行中时计入实时分；所有 Checker 完成且相关 Flag 提交窗口关闭后，才会计入已结算分。",
+            "epoch_weight": "旧 Flag 在后续回合内仍可能有效；有效捕获计入该 Flag 植入时所属的 Epoch。完整 Epoch 权重相同，若比赛在 Epoch 中途结束，则按已完成回合比例计权。",
+            "intro": "各题贡献分相加得到队伍总分，其中已包含题目与 Epoch 权重。",
+            "offense": "进攻分衡量已接受 Flag 的捕获覆盖率，并对较少队伍捕获的 Flag 提供小幅且有上限的稀缺性加成。",
+            "defense": "防守分衡量符合条件且未被捕获的「对手—Flag」组合比例。",
+            "sla": "SLA 是 Checker 测得的服务可靠性，并会乘算整个题目局部得分。",
+            "formula": "局部得分 = 100 × SLA ×（40% 进攻 + 40% 防守 + 20% √(进攻 × 防守)）",
+            "settlement": "排名按已结算分排序。已结算分相同时，依次比较实时预测分、进攻率、防守率、SLA 和参赛 ID。实时预测分包含当前未结算 Epoch，在结算前仍会变化。"
+          },
+          "column": {
+            "contribution": "贡献分",
+            "settled": "已结算",
+            "projected": "实时预测",
+            "offense": "进攻",
+            "defense": "防守",
+            "sla": "SLA"
+          },
+          "detail": {
+            "current_warning": "Epoch {{epoch}} 仍在进行。橙色数值为暂定预测；队伍的实时预测总分会在已结算分完全相同时作为第一项平局判定依据。",
+            "recent_only": "显示最近 {{limit}} 个 Epoch；总分包含全部 Epoch。",
+            "settled_hint": "各题已结算贡献分相加得到队伍总分；下方橙色数值为实时预测。"
+          },
+          "evidence": {
+            "sparse": "目前没有符合条件的 Flag 证据，实时数值仍为暂定。",
+            "no_defense": "目前没有符合条件的防守机会；必须通过精确健康检查。"
+          }
+        },
+        "no_teams": "暂无排名",
+        "no_service_cell": "未部署服务",
+        "not_checked": "尚未检测",
+        "filter_division": "按组别筛选计分板",
+        "round_label": "第 {{round}} 回合",
+        "round_status": "第 {{round}} 回合，距离下一回合 {{time}}",
+        "round_frozen_status": "第 {{round}} 回合，计分板已冻结",
+        "next_tick": "下一回合 {{time}}",
+        "next_tick_now": "下一回合…",
+        "next_tick_tip": "距离下一回合（tick）的时间 —— 每 {{seconds}} 秒检测一次服务并轮换 flag。",
+        "frozen_short": "已冻结"
+      }
+    },
+    "ad": {
+      "round": "回合",
+      "round_ends": "回合结束于",
+      "no_round_yet": "尚未进入回合 — 预热阶段",
+      "warmup_pill": "预热中 — 暂未开始计分",
+      "epoch_number": "Epoch {{epoch}}",
+      "epoch_tick": "Tick {{tick}}/{{total}}",
+      "no_checks_yet": "尚未检测",
+      "target": "目标",
+      "flag_to_defend": "需防守",
+      "snapshot": "赛后快照",
+      "defend_target": "你的服务",
+      "flags_syncing": {
+        "label": "Flag 正在同步 — 请稍后再进攻",
+        "description": "本回合的 Flag 仍在同步。请等待同步完成后再进攻或更新防守 Flag。"
+      },
+      "flag_delivery_failed": {
+        "label": "{{count}} 个 Flag 分发需要处理",
+        "description": "本回合有 {{count}} 个服务未确认收到 Flag。管理员已收到提示；健康检查结果会标明受影响的服务。"
+      },
+      "no_service": {
+        "title": "你的队伍尚未分配服务",
+        "description": "如果你预期看到容器，可能是尚未配置完成。请管理员在 A&D Ops 控制台中点击 \"Ensure containers\"。"
+      },
+      "submit_via_api": "通过 API 提交 flag",
+      "no_token_yet": "尚未生成 Token",
+      "token_captain_only": "只有队长可以生成 API Token。请联系你的队长打开此面板并点击\"生成 Token\"。",
+      "api_note": "仅支持批量提交 — 一次请求可包含多个捕获的 flag（最多 100 个），返回结果按提交顺序排列。",
+      "last_used": "最近使用",
+      "never_used": "从未",
+      "token_modal": {
+        "title": "新的 A&D API Token",
+        "warning": "请立即保存此 Token — 它不会再次显示。之前的 Token（如有）已失效。"
+      },
+      "empty": {
+        "title": "本场比赛没有 A&D 题目",
+        "description": "如果你预期看到服务，可能是管理员尚未创建 A&D 题目，或你的队伍容器还未就绪。"
+      },
+      "defend": {
+        "title": "防守",
+        "description": "你的队伍服务。保持其正常运行并修补漏洞。点击 IP 或 Flag 即可复制。"
+      },
+      "attack": {
+        "title": "进攻",
+        "description": "提交你从其他队伍捕获的 Flag。",
+        "placeholder": "flag{...}",
+        "recent": "最近提交"
+      },
+      "submit_status": {
+        "accepted": "已接受",
+        "duplicate": "已经提交过",
+        "wrong": "Flag 不被识别",
+        "expired": "Flag 已过期",
+        "self_attack": "这是你自己的 Flag",
+        "not_started": "回合尚未开始"
+      },
+      "guide": {
+        "title": "攻防对抗 — 工具箱",
+        "intro": "玩攻防所需的一切：你的个人 API Token、VPN 配置、API 协议、规则说明。前两部分是可操作项 — Token 重置与 VPN 配置下载。",
+        "footer": "接口前缀：",
+        "token": {
+          "title": "你的 API Token",
+          "intro": "范围为你 + 本场比赛的个人 Bearer Token。利用脚本通过 Authorization: Bearer <token> 提交捕获的 flag。每个队员管理各自的 Token — 重置你的不会影响其他成员，被踢出队伍后你的 Token 会立即失效。",
+          "current": "你当前的 Token"
+        },
+        "vpn": {
+          "title": "VPN 配置",
+          "intro": "单用户 WireGuard 配置。首次下载会生成新的密钥对，并从比赛子网为你分配 IP；后续下载返回同一文件。将 .conf 加载到 wg-quick（或 wireguard-tools / WireGuard 客户端）即可加入 A&D 网络。",
+          "operator_note": "如果下载的文件中包含 <unconfigured-server:...> 占位符，说明管理员尚未完成 WireGuard 服务端配置。.conf 中的密钥对与分配 IP 仍然有效，仅需管理员补上服务端 endpoint 与 pubkey。",
+          "linux_hint": "Linux：sudo wg-quick up ./ad-game-….conf。macOS / Windows：使用官方 WireGuard 客户端导入。"
+        },
+        "rounds": {
+          "title": "回合与 flag",
+          "tick": "回合（tick）是计分单位。长度按「整场比赛」设置 —— 所有 A&D 服务共用同一个 tick（由管理员设定，通常 60–180 秒）。",
+          "plant": "每个 tick 平台会在你的容器写入新的 flag（即「当前 flag」）。在题目弹窗中可见 — 请保护好它。",
+          "lifetime": "旧 flag 在 N 个 tick 内仍可被提交（默认 5）。过期后不能再作为计分证据被接受。",
+          "warmup": "Round 0 为预热阶段 — 不计分，请确保你的服务可以正常响应。"
+        },
+        "scoring": {
+          "title": "计分方式",
+          "intro": "官方计分板会在等预算 epoch 内，按服务结算已接受的结果：",
+          "attack_label": "进攻",
+          "attack": "C 是你在冻结对手名单上的已接受捕获覆盖率，H 是有上限的捕获队伍数量稀有度。提交被接受后会立即记录为证据，但不会单独获得即时分值；所有结果会在 epoch 内统一结算。",
+          "defense_label": "防守",
+          "defense": "每个通过精确健康自定义检测的 flag，会为冻结名单中的每个对手建立一对防守机会。每个不同的捕获者只移除自己对应的一对。未被捕获只是可观察结果，不能证明对手曾尝试利用。",
+          "sla_label": "SLA",
+          "sla": "正常通过得 1.0，恢复状态得 0.5，失败或缺失检测得 0。InternalError 会沿用 startRound 之后最近一次已计分的非基础设施结果。单个服务的首次错误得 0；只有全部服务都在首次检测时报错时，才会把该题该回合作为全场 checker 故障作废。",
+          "total_formula": "服务分 = 100 × R × (0.40A + 0.40D + 0.20√(A×D))；归一化服务权重形成 epoch 分数，已终结 epoch 决定官方排名。"
+        },
+        "targets": {
+          "title": "查找攻击目标",
+          "intro": "A&D 以攻为先 — 你需要知道其他每支队伍每个服务的容器 IP。本接口是攻击目标的唯一来源。返回结果会排除你自己的队伍，并在预热回合（currentRound > 0）结束后才返回。",
+          "request": "查询请求",
+          "response": "响应结构",
+          "poll_note": "建议每个回合（约 tickSeconds 秒）轮询一次。容器 IP 在跨回合时保持稳定，除非有队伍触发 Reset 或管理员 Stop — 之后新的 IP 会在约 15s 内出现在此处。",
+          "tip": "lastCheckStatus 表明目标的健康状态：Ok / Mumble / Offline。优先攻击 Ok 的目标 — Offline 的容器不会接受你的 exploit，Mumble 通常意味着服务以无法返回 flag 的方式损坏。"
+        },
+        "submit": {
+          "title": "如何提交捕获到的 flag",
+          "api_only": "A&D 仅支持 API 提交 — 没有网页表单。利用脚本批量将捕获的 flag 一次性 POST 提交。",
+          "token": "获取你的 Token",
+          "token_steps": "打开题目列表中任一 A&D 题目。如果你是队长，点击「生成 Token」/「重置 Token」— 明文仅显示一次，请妥善保存。",
+          "request": "提交请求",
+          "batch_note": "每次请求可包含 1 至 100 个 flag 字符串。结果按提交顺序返回，便于对应。",
+          "response": "响应结构",
+          "statuses": "每个 flag 的状态为：accepted | duplicate | wrong | expired | self_attack | not_started。accepted 会成为 epoch 证据；提交响应不会分配即时分值。"
+        },
+        "container": {
+          "title": "你的容器",
+          "ip": "题目弹窗显示你的容器 IP:端口 — 这是检测器访问的地址，也是对手攻击的目标。",
+          "flag_file": "实时 flag 每回合都会被改写，路径见 RSCTF_FLAG_FILE 环境变量。请每次请求都从 $RSCTF_FLAG_FILE 重新读取（不要缓存）。",
+          "flag_env": "切勿硬编码平台路径。容器启动时可能存在兼容用的 RSCTF_FLAG，但轮换后它会过期——请始终读取 $RSCTF_FLAG_FILE。",
+          "patch": "你可以在容器内直接修补服务 — 平台不会自行重新部署。你的改动只存在于运行中的容器里，没有持久化磁盘。",
+          "supervisor": "你的服务由 supervisor（PID 1）托管。服务进程崩溃或被你重启后会自动拉起，补丁保留。重启服务是安全的；但不要杀掉 PID 1（supervisor）：那会让容器回退到基础镜像。",
+          "reset": "重置会用初始镜像重建容器 —— 会清除你的所有改动（包括补丁），重建期间损失 SLA，且有冷却。仅在容器卡死或被攻陷时使用，之后请重新打补丁。"
+        },
+        "do_dont": {
+          "title": "建议 / 禁忌",
+          "do": "建议",
+          "do_patch": "在首次攻击到达之前修补你的服务。",
+          "do_automate": "自动化提交 flag — 循环从每个目标抓取当前 flag 并批量 POST。",
+          "do_monitor": "关注检测状态徽章 — 一旦出现 Mumble / Offline，每个 tick 都会损失 SLA。",
+          "do_reapply": "任何一次重置后都要重新打补丁 —— 重置会回退到原始的有漏洞镜像。",
+          "dont": "禁忌",
+          "dont_share": "与其他队伍共享你的 flag 或 Token — 管理员会检测并处罚。",
+          "dont_dos": "对其他队伍服务或检测器基础设施进行 DoS — 立即取消资格。",
+          "dont_break": "以破坏合法检测的方式修补（向检测器返回 500）— 损失等同于服务下线。",
+          "dont_hardcode": "硬编码路径或缓存 flag — 请每次请求都重新读取 $RSCTF_FLAG_FILE，否则会返回过期 flag 并导致检测失败。",
+          "dont_kill_pid1": "杀掉容器内的 PID 1（supervisor）— 这会把你重置回基础镜像并清除补丁。"
+        }
+      }
+    },
+    "all_solved": {
+      "comment": "或许还有更难的挑战在等着你……",
+      "title": "题目都被解出啦！"
+    },
+    "duration": "{{hours}} 小时",
+    "end_at": "结束于",
+    "end_time": "结束时间",
+    "frozen_banner": "积分榜已于 {{time}} 封榜，最终排名将在比赛结束时揭晓。",
+    "game_ended": "比赛已结束",
+    "game_lasts_long": "比赛还会很久",
+    "hide_container_events": {
+      "description": "隐藏容器启动/销毁事件",
+      "label": "隐藏容器事件"
+    },
+    "join": {
+      "confirm": "确认报名",
+      "content": [
+        "你确定要报名此比赛吗？",
+        "报名参赛并审核通过后，参赛队伍将被锁定，<strong>不能再踢出队员</strong>，队伍将在比赛结束后或驳回请求时解锁。",
+        "比赛队伍人数要求以选择队伍的成员数为准，<strong>不论队员是否以此队伍身份参加比赛。</strong>"
+      ],
+      "division": {
+        "description": "本场比赛具有多个参赛分组，请选择你的参赛分组",
+        "label": "选择参赛分组"
+      },
+      "invite_code": {
+        "description": "本场比赛开启了邀请参赛，报名参赛需提供邀请码",
+        "label": "请输入邀请码"
+      },
+      "team": {
+        "description": "请选择一个队伍参与比赛，选定后不可更改",
+        "label": "选择参赛队伍"
+      },
+      "title": "补全报名信息"
+    },
+    "joined_status": "<strong>{{count}}</strong>支队伍已报名",
+    "leave": {
+      "confirm": "确认取消报名",
+      "content": [
+        "你确定要退出此比赛吗？",
+        "退出后如果队伍报名人数为空，队伍参与信息将被删除。"
+      ]
+    },
+    "no_challenge": "Ouch! 这个比赛还没有可用题目呢……",
+    "no_cheat": {
+      "comment": "看起来大家都很老实呢",
+      "title": "暂时没有队伍作弊信息"
+    },
+    "no_notice": "暂无通知",
+    "no_traffic": {
+      "comment": "需要平台配置和题目双重启用",
+      "title": "暂时没有启用流量捕获的题目"
+    },
+    "remaining_duration": "剩余 {{hours}} 小时",
+    "remaining_time": "剩余时间",
+    "scoreboard_not_ready": {
+      "comment": "坐和放宽，稍作等待……",
+      "title": "正在加载题目信息"
+    },
+    "scoreboard_note": "注：同分队伍以得分时间先后排名",
+    "scoreboard_tip": "Tip: 可以按左右方向键滚动题目列表哦~",
+    "start_at": "开始于",
+    "start_time": "开始时间",
+    "team_view": {
+      "description": "使用队伍视图展示作弊信息",
+      "label": "队伍视图"
+    },
+    "total_duration": "共 {{hours}} 小时",
+    "total_time": "持续时间",
+    "traffic": {
+      "delete_confirm": "确认删除此流量文件？",
+      "deleted_all_confirm": "确认删除全部列出流量？"
+    },
+    "writeup": {
+      "current": "当前提交",
+      "deadline_exceeded": "提交截止时间已过",
+      "instructions": {
+        "additional": "附加说明",
+        "deadline": "请在<1>{{datetime}}</1>前提交 Writeup，逾期提交或不提交视为放弃本次参赛记录。",
+        "file_format": "请将全部解出题目整理为<1>一份小于 20MB 的标准 PDF 文档</1>。",
+        "title": "提交说明"
+      },
+      "submitted": "已成功提交",
+      "title": "管理 Writeup",
+      "unsubmitted": "尚未提交",
+      "unsubmitted_note": "你的队伍尚未提交 Writeup"
+    }
+  },
+  "event": {
+    "answer": {
+      "accepted": "答案正确",
+      "cheat": "作弊行为",
+      "not_found": "未知实例",
+      "submitted": "成功提交",
+      "wrong": "错误的 Flag"
+    },
+    "challenge_opened": "开启了题目 {{chal}}",
+    "cheat_detected": "在题目 {{chal}} 中检测到作弊，队伍 {{team}} 使用了 {{steam}} 的 Flag。",
+    "container": {
+      "destroy": "{{chal}}#{{id}} 销毁题目实例",
+      "start": "{{chal}}#{{id}} 开启题目实例"
+    },
+    "flag_submit": "[{{status}}] {{flag}} [{{chal}}#{{id}}]"
+  },
+  "label": {
+    "cheat_info": {
+      "owned_team": "原始队伍",
+      "submit_team": "提交队伍",
+      "submit_user": "提交用户"
+    },
+    "notice_type": {
+      "all": "全部",
+      "challenge": "题目",
+      "events": "动态",
+      "game": "通知"
+    },
+    "score": "分数",
+    "score_formatter": "{value} 分",
+    "score_table": {
+      "all_teams": "所有队伍",
+      "rank_division": "排名",
+      "rank_total": "总排名",
+      "score": "得分",
+      "score_total": "总分",
+      "solved_count": "解题数",
+      "team": "战队",
+      "type": "类型"
+    },
+    "traffic": "流量",
+    "flow": {
+      "title": "流量检视",
+      "empty": "没有匹配的流。",
+      "inspect_action": "检视流",
+      "column": {
+        "time": "时间",
+        "peer": "对端 IP",
+        "duration": "时长",
+        "flag_hits": "Flag 命中"
+      },
+      "filter": {
+        "regex": "正则...",
+        "peer_ip": "对端 IP...",
+        "flags_only": "仅含 Flag",
+        "direction": {
+          "both": "全部",
+          "in": "↓ 入",
+          "out": "↑ 出"
+        }
+      },
+      "detail": {
+        "empty": "选择一个流以检视。",
+        "ascii": "ASCII",
+        "hex": "十六进制"
+      }
+    }
+  },
+  "notice": {
+    "blood": "恭喜 {{team}} 获得 [{{chal}}] {{blood}}",
+    "new_challenge": "题目 [{{title}}] 已开放",
+    "new_hint": "题目 [{{title}}] 更新了提示"
+  },
+  "tooltip": {
+    "ad": {
+      "reset": "将此容器重建为初始镜像（重建期间会损失 SLA）",
+      "reset_cooldown": "冷却中 — 剩余 {{seconds}} 秒",
+      "snapshot": "将你的容器下载为可加载的 Docker 镜像（docker load -i …）"
+    },
+    "copy": {
+      "copied": "已复制",
+      "ip_port": "复制 IP:端口",
+      "flag": "复制 flag"
+    }
+  },
+  "notification": {
+    "ad": {
+      "attack_accepted": "攻击已接受（已记录为 epoch 证据）",
+      "reset_queued": {
+        "title": "重置已排队",
+        "message": "容器将在数秒后重建。"
+      }
+    },
+    "connected": {
+      "event": "实时事件连接成功",
+      "submission": "实时提交连接成功"
+    },
+    "ended": "比赛已经结束",
+    "fetch_failed": {
+      "event": "获取事件失败",
+      "notice": "获取通知失败",
+      "submission": "获取提交失败"
+    },
+    "joined": "报名成功",
+    "left": "取消报名成功",
+    "no_division": "请选择参赛分组",
+    "no_invite_code": "邀请码不能为空",
+    "no_team": "请选择参赛队伍",
+    "not_joined": "你还没有加入这个比赛",
+    "not_started": "比赛尚未开始",
+    "select_chal_and_part": "请先选择题目和队伍",
+    "suspended": "您已被禁赛",
+    "traffic": {
+      "deleted": "流量文件已删除"
+    },
+    "writeup": {
+      "submitted": "Writeup 已成功提交"
+    }
+  },
+  "participation": {
+    "actions": {
+      "accepted": "审核通过",
+      "pending": "等待审核",
+      "rejected": "重新报名",
+      "suspended": "禁赛中",
+      "unsubmitted": "报名参赛"
+    },
+    "alert": {
+      "not_started": {
+        "content": "你已经以队伍 {{team}} 成员身份成功报名并通过审核，请在比赛开始后进入比赛页面。",
+        "mobile": "请使用电脑端参与比赛及查看比赛详情。",
+        "title": "比赛尚未开始"
+      },
+      "pending": {
+        "content": "请耐心等待审核结果",
+        "title": "你已经以队伍 {{team}} 成员身份成功报名"
+      },
+      "rejected": {
+        "content": "请确保具备参赛资格和满足参赛要求后重新报名",
+        "title": "你的参赛申请未通过"
+      },
+      "suspended": {
+        "content": "如有异议，请联系管理员进行申诉",
+        "title": "您的队伍 {{team}} 已被禁赛"
+      },
+      "team_required": {
+        "content": "你没有加入任何队伍，请在<1>队伍管理</1>页面创建、加入队伍。",
+        "title": "当前无法报名"
+      }
+    },
+    "status": {
+      "accepted": "审核通过",
+      "pending": "待审核",
+      "rejected": "审核未通过",
+      "suspended": "禁赛中"
+    }
+  },
+  "placeholder": {
+    "no_solved": "Ouch! 这支队伍还没有解出题目呢……",
+    "search_team": "搜索队伍"
+  },
+  "tab": {
+    "challenge": "比赛题目",
+    "monitor": {
+      "cheat": "作弊检测",
+      "cheatinfo": "作弊信息",
+      "events": "事件监控",
+      "index": "比赛监控",
+      "submissions": "提交记录",
+      "traffic": "流量捕获"
+    },
+    "scoreboard": "积分总榜",
+    "submit": "提交题目",
+    "ad": "攻防对抗"
+  },
+  "tag": {
+    "hidden": "比赛已隐藏",
+    "individual": "个人赛",
+    "limited": "{{count}}人赛",
+    "multiplayer": "团队赛"
+  },
+  "title": {
+    "index": "赛事"
+  },
+  "submit": {
+    "title": "提交题目",
+    "subtitle": "向比赛管理员提交题目以供审核。",
+    "review_notice": "题目在管理员审核通过前对参赛者不可见。",
+    "disabled_notice": "本场比赛已关闭用户题目提交。",
+    "github_tab": "从 GitHub",
+    "tarball_tab": "从压缩包",
+    "repo_url": "仓库 URL",
+    "ref": "分支 / 标签（可选）",
+    "subpath": "子路径（可选）",
+    "tarball_help": "上传一个包含 challenge.yaml 和 attachments/ 的 .tar.gz。",
+    "archive_help": "上传一个包含 challenge.yaml 和 attachments/ 的 .tar.gz 或 .zip。",
+    "result": "提交结果",
+    "no_file": "请先选择压缩包。",
+    "no_url": "请先填写仓库 URL。",
+    "button": {
+      "submit": "提交",
+      "pick_file": "选择压缩包",
+      "clear": "清除"
+    },
+    "dropzone": {
+      "title": "拖入压缩包，或点击选择文件",
+      "hint": "支持 .tar.gz 或 .zip，最大 64 MB。压缩包根目录需包含 challenge.yaml。",
+      "rejected": "文件类型或大小不符合要求。"
+    },
+    "example": {
+      "title": "题目模板",
+      "intro": "选择匹配的题目类型并下载模板。编辑文件后压缩文件夹再上传。",
+      "static_attachment_title": "Static Attachment（附件题）",
+      "static_attachment_desc": "纯附件题：参赛者下载 dist/ 中的文件，flag 由服务端按 flags: 列表校验。适合 crypto、reverse、misc 等无需启动服务的题型。",
+      "dynamic_container_title": "Dynamic Container（动态容器）",
+      "dynamic_container_desc": "每个队伍一个独立容器，flag 通过 RSCTF_FLAG 环境变量注入。可防止 flag 共享。",
+      "attack_defense_title": "Attack & Defense（攻防）",
+      "attack_defense_desc": "每队一个持续运行的服务 + 一个 checker。平台每个 tick 向 /flag 写入新 flag 并轮换 —— 无需 flags: 或 flagTemplate:。防守方修补漏洞，攻击方利用其他队伍的实例。",
+      "download_template": "下载模板",
+      "tips_title": "说明",
+      "tips": {
+        "value_ignored": "YAML 中的 value 会被忽略，分值由管理员审核后设置。",
+        "visible_ignored": "YAML 中的 visible 会被忽略，由管理员决定何时启用。",
+        "review_queue": "提交会进入管理员审核队列，审核通过前不会上线。",
+        "template_image": "容器题可省略 containerImage —— 平台会自动从 ./src/Dockerfile 构建。仅在需要覆盖时填写（例如 \"ghcr.io/...\" 表示已发布镜像）。",
+        "dynamic_flag_env": "Dynamic Container 中，平台会在每个队伍的容器内设置 RSCTF_FLAG 环境变量，请在 src/run.sh 中引用（模板 run.sh 已示范），绝对不要硬编码 flag。",
+        "solver_folder": "将可运行的 solver 放在 solver/ 目录下，方便管理员（以及未来的自己）在题目修改后验证仍然可解。",
+        "size_cap": "压缩包不超过 64 MB，每个压缩包仅包含一个题目。"
+      }
+    },
+    "notification": {
+      "submitted": "已提交",
+      "under_review": "等待管理员审核。"
+    }
+  }
+}

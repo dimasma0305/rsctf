@@ -1,0 +1,99 @@
+{{- if .Values.redis.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rsctf.redisName" . }}
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+  selector:
+    {{- include "rsctf.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rsctf.redisName" . }}
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "rsctf.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "rsctf.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.redis.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.redis.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.redis.securityContext.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          imagePullPolicy: {{ .Values.redis.image.pullPolicy }}
+          command: ["sh", "-ec"]
+          args:
+            - exec redis-server --save "" --appendonly no --maxmemory "{{ .Values.redis.maxmemory }}" --maxmemory-policy allkeys-lru --requirepass "$REDIS_PASSWORD"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.redisPasswordKey }}
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.redisPasswordKey }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

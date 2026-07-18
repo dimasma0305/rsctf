@@ -1,0 +1,134 @@
+.card {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      circle at 100% 0,
+      color-mix(in srgb, var(--mantine-primary-color-5) 9%, transparent),
+      transparent 18rem
+    ),
+    var(--app-raised-surface);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.card:hover {
+  border-color: var(--app-surface-border);
+  box-shadow: var(--mantine-shadow-md);
+  transform: translateY(-2px);
+}
+
+.accent {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--mantine-primary-color-4), var(--mantine-primary-color-8));
+}
+
+.content {
+  position: relative;
+}
+
+.headingGroup,
+.headingCopy,
+.author {
+  min-width: 0;
+}
+
+.headingGroup {
+  flex: 1;
+}
+
+.quote {
+  flex: 0 0 auto;
+  color: var(--app-accent-surface-text);
+  border: 1px solid var(--app-accent-border);
+  background: var(--app-accent-surface);
+}
+
+.title {
+  color: var(--app-text-primary);
+  font-size: clamp(1.1rem, 1.5vw, 1.35rem);
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+}
+
+.pinnedBadge,
+.tag {
+  width: fit-content;
+  text-transform: none;
+}
+
+.summary {
+  color: var(--app-text-secondary);
+  line-height: 1.65;
+}
+
+.summary > :first-child {
+  margin-top: 0;
+}
+
+.summary > :last-child {
+  margin-bottom: 0;
+}
+
+.footer {
+  padding-top: var(--mantine-spacing-sm);
+  border-top: 1px solid var(--app-border-subtle);
+}
+
+.author {
+  flex: 1 1 18rem;
+}
+
+.details {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 0.4rem;
+  padding-inline: 0.35rem;
+  color: var(--app-accent-text);
+  text-decoration: none;
+}
+
+.details svg {
+  transition: transform 150ms ease;
+}
+
+.details:hover svg {
+  transform: translateX(3px);
+}
+
+.adminActions {
+  flex: 0 0 auto;
+}
+
+@media (max-width: $mantine-breakpoint-xs) {
+  .card:hover {
+    transform: none;
+  }
+
+  .quote {
+    width: 40px;
+    height: 40px;
+  }
+
+  .footer {
+    align-items: flex-start;
+  }
+
+  .details {
+    width: 100%;
+    justify-content: space-between;
+    padding-inline: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .details svg {
+    transition: none;
+  }
+}

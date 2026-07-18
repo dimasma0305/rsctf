@@ -1,0 +1,457 @@
+import {
+  Accordion,
+  ActionIcon,
+  Avatar,
+  Badge,
+  Box,
+  Center,
+  Grid,
+  Group,
+  Input,
+  Pagination,
+  ScrollArea,
+  Select,
+  Stack,
+  Text,
+  TextInput,
+  Title,
+  useMantineTheme,
+} from '@mantine/core'
+import { useInputState } from '@mantine/hooks'
+import { showNotification } from '@mantine/notifications'
+import {
+  mdiAccountGroupOutline,
+  mdiAccountOutline,
+  mdiBadgeAccountHorizontalOutline,
+  mdiCheck,
+  mdiClose,
+  mdiEmailOutline,
+  mdiIdentifier,
+  mdiPencil,
+  mdiPhoneOutline,
+  mdiStar,
+} from '@mdi/js'
+import { Icon } from '@mdi/react'
+import cx from 'clsx'
+import { FC, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useNavigate, useParams } from 'react-router'
+import { ScrollingText } from '@Components/ScrollingText'
+import { ParticipationDivisionEditModal } from '@Components/admin/ParticipationDivisionEditModal'
+import { ParticipationStatusControl } from '@Components/admin/ParticipationStatusControl'
+import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { showErrorMsg } from '@Utils/Shared'
+import { useParticipationStatusMap } from '@Utils/Shared'
+import { OnceSWRConfig } from '@Hooks/useConfig'
+import api, { ParticipationEditModel, ParticipationInfoModel, ParticipationStatus, ProfileUserInfoModel } from '@Api'
+import classes from '@Styles/Accordion.module.css'
+import misc from '@Styles/Misc.module.css'
+import reviewClasses from '@Styles/Review.module.css'
+
+interface MemberItemProps {
+  user: ProfileUserInfoModel
+  isRegistered: boolean
+  isCaptain: boolean
+}
+
+const iconProps = {
+  size: 0.9,
+  color: 'gray',
+}
+
+const MemberItem: FC<MemberItemProps> = (props) => {
+  const { user, isCaptain, isRegistered } = props
+  const theme = useMantineTheme()
+
+  const { t } = useTranslation()
+
+  return (
+    <Group wrap="nowrap" gap="xl" justify="space-between" className={reviewClasses.memberRow}>
+      <Group wrap="nowrap" className={reviewClasses.memberDetails}>
+        <Avatar
+          alt={t('account.content.avatar_alt', '{{user}} avatar', { user: user.userName ?? '' })}
+          src={user.avatar}
+        >
+          {user.userName?.slice(0, 1) ?? 'U'}
+        </Avatar>
+        <Grid className={reviewClasses.root}>
+          <Grid.Col span={{ base: 12, xs: 6, md: 3 }} className={reviewClasses.col}>
+            <Icon path={mdiIdentifier} {...iconProps} />
+            <Text fw="bold" lineClamp={1}>
+              {user.userName}
+            </Text>
+          </Grid.Col>
+          <Grid.Col span={{ base: 12, xs: 6, md: 3 }} className={reviewClasses.col}>
+            <Icon path={mdiBadgeAccountHorizontalOutline} {...iconProps} />
+            <Input
+              aria-label={t('account.label.student_number', 'Student number')}
+              variant="unstyled"
+              value={user.stdNumber || t('admin.placeholder.empty')}
+              readOnly
+              classNames={{ input: reviewClasses.input }}
+            />
+          </Grid.Col>
+          <Grid.Col span={{ base: 12, xs: 6 }} className={reviewClasses.col}>
+            <Icon path={mdiEmailOutline} {...iconProps} />
+            <Text>{user.email || t('admin.placeholder.empty')}</Text>
+          </Grid.Col>
+          <Grid.Col span={{ base: 12, xs: 6 }} className={reviewClasses.col}>
+            <Icon path={mdiAccountOutline} {...iconProps} />
+            <Input
+              aria-label={t('account.label.real_name', 'Real name')}
+              variant="unstyled"
+              value={user.realName || t('admin.placeholder.empty')}
+              readOnly
+              classNames={{ input: reviewClasses.input }}
+            />
+          </Grid.Col>
+          <Grid.Col span={{ base: 12, xs: 6 }} className={reviewClasses.col}>
+            <Icon path={mdiPhoneOutline} {...iconProps} />
+            <Text>{user.phone || t('admin.placeholder.empty')}</Text>
+          </Grid.Col>
+        </Grid>
+      </Group>
+      <Group wrap="nowrap" justify="right" className={reviewClasses.memberStatus}>
+        {isCaptain && (
+          <Group gap={0}>
+            <Icon path={mdiStar} color={theme.colors.yellow[4]} size={0.9} />
+            <Text size="sm" fw={500} c="yellow">
+              {t('team.content.role.captain')}
+            </Text>
+          </Group>
+        )}
+        <Text size="sm" fw="bold" c={isRegistered ? 'teal' : 'orange'}>
+          {isRegistered
+            ? t('admin.content.games.review.participation.joined')
+            : t('admin.content.games.review.participation.not_joined')}
+        </Text>
+      </Group>
+    </Group>
+  )
+}
+
+interface ParticipationItemProps {
+  participation: ParticipationInfoModel
+  disabled: boolean
+  onEditDiv: () => void
+  setParticipation: (id: number, model: ParticipationEditModel) => Promise<void>
+  hasDivisions: boolean
+  divisionName?: string | null
+}
+
+const ParticipationItem: FC<ParticipationItemProps> = (props) => {
+  const { participation, disabled, onEditDiv, setParticipation, hasDivisions, divisionName } = props
+  const part = useParticipationStatusMap().get(participation.status!)!
+
+  const { t } = useTranslation()
+
+  return (
+    <Accordion.Item value={participation.id!.toString()}>
+      <Box className={reviewClasses.participationHeader}>
+        <Accordion.Control className={reviewClasses.participationControl}>
+          <Group justify="space-between" wrap="nowrap" className={reviewClasses.participationRow}>
+            <Group wrap="nowrap" miw={0}>
+              <Avatar alt="avatar" src={participation.team?.avatar}>
+                {!participation.team?.name ? 'T' : participation.team.name.slice(0, 1)}
+              </Avatar>
+              <Box miw={0} style={{ flex: 1, minWidth: 0 }}>
+                <ScrollingText
+                  text={
+                    !participation.team?.name
+                      ? t('admin.placeholder.games.participation.team')
+                      : participation.team.name
+                  }
+                  fw={500}
+                  maw={320}
+                />
+                <ScrollingText
+                  text={
+                    !participation.team?.bio ? t('admin.placeholder.games.participation.bio') : participation.team.bio
+                  }
+                  size="sm"
+                  c="dimmed"
+                  maw={320}
+                />
+              </Box>
+            </Group>
+            <Group wrap="nowrap" justify="space-between" className={reviewClasses.participationMeta}>
+              <Box w="10em">
+                {hasDivisions && participation.status !== ParticipationStatus.Rejected && (
+                  <Text fz="sm" fw="bold" truncate>
+                    {divisionName ?? t('admin.content.games.review.participation.no_division')}
+                  </Text>
+                )}
+                <Text size="sm" c="dimmed" fw="bold">
+                  {t('admin.content.games.review.participation.stats', {
+                    count: participation.registeredMembers?.length ?? 0,
+                    total: participation.team?.members?.length ?? 0,
+                  })}
+                </Text>
+              </Box>
+              <Center miw="5.5em">
+                <Badge color={part.color}>{part.title}</Badge>
+              </Center>
+            </Group>
+          </Group>
+        </Accordion.Control>
+        <Group gap={4} wrap="nowrap" className={reviewClasses.participationActions}>
+          {hasDivisions && participation.status !== ParticipationStatus.Rejected && (
+            <ActionIcon
+              size="sm"
+              onClick={onEditDiv}
+              disabled={disabled}
+              aria-label={t('admin.button.games.review.edit_division', 'Edit division')}
+            >
+              <Icon path={mdiPencil} size={0.6} />
+            </ActionIcon>
+          )}
+          <ParticipationStatusControl
+            disabled={disabled}
+            participation={participation}
+            setParticipation={setParticipation}
+          />
+        </Group>
+      </Box>
+      <Accordion.Panel>
+        <Stack>
+          {participation.team?.members?.map((user) => (
+            <MemberItem
+              key={user.userId}
+              user={user}
+              isRegistered={participation.registeredMembers?.some((u) => u === user.userId) ?? false}
+              isCaptain={participation.team?.captainId === user.userId}
+            />
+          ))}
+        </Stack>
+      </Accordion.Panel>
+    </Accordion.Item>
+  )
+}
+
+const PART_NUM_PER_PAGE = 10
+
+const GameTeamReview: FC = () => {
+  const navigate = useNavigate()
+  const { id } = useParams()
+  const numId = parseInt(id ?? '-1', 10)
+
+  const [disabled, setDisabled] = useState(false)
+  const [selectedStatus, setSelectedStatus] = useState<ParticipationStatus | null>(null)
+  const [selectedDivisionId, setSelectedDivisionId] = useState<string | null>(null)
+  const [participations, setParticipations] = useState<ParticipationInfoModel[]>()
+  const [search, setSearch] = useInputState('')
+  const participationStatusMap = useParticipationStatusMap()
+
+  const [divModalOpened, setDivModalOpened] = useState(false)
+  const [curParticipation, setCurParticipation] = useState<ParticipationInfoModel | null>(null)
+
+  const { t } = useTranslation()
+  const [activePage, setPage] = useState(1)
+
+  const { data: divisions } = api.edit.useEditGetDivisions(numId, OnceSWRConfig, numId > 0)
+
+  const divisionNameMap = useMemo(() => {
+    const map = new Map<number, string>()
+    divisions?.forEach((division) => {
+      map.set(division.id, division.name && division.name.trim().length > 0 ? division.name : `#${division.id}`)
+    })
+    return map
+  }, [divisions])
+
+  const divisionSelectOptions = useMemo(() => {
+    const optionMap = new Map<string, { value: string; label: string }>()
+
+    divisions?.forEach((division) => {
+      const value = division.id.toString()
+      optionMap.set(value, { value, label: divisionNameMap.get(division.id) ?? `#${division.id}` })
+    })
+
+    participations?.forEach((participation) => {
+      if (participation.divisionId !== undefined && participation.divisionId !== null) {
+        const value = participation.divisionId.toString()
+        if (!optionMap.has(value)) {
+          optionMap.set(value, { value, label: `#${participation.divisionId}` })
+        }
+      }
+    })
+
+    return Array.from(optionMap.values()).sort((a, b) => a.label.localeCompare(b.label))
+  }, [divisions, divisionNameMap, participations])
+
+  const hasDivisions = (divisions?.length ?? 0) > 0
+
+  const setParticipation = async (id: number, model: ParticipationEditModel) => {
+    setDisabled(true)
+    try {
+      await api.admin.adminParticipation(id, model)
+      setParticipations((prev) =>
+        prev?.map((value) => {
+          if (value.id !== id) return value
+
+          const next: ParticipationInfoModel = { ...value }
+
+          if (model.status) {
+            next.status = model.status
+          }
+
+          if (model.divisionId !== undefined) {
+            next.divisionId = model.divisionId
+          }
+
+          if (model.status === ParticipationStatus.Rejected) {
+            next.divisionId = null
+          }
+
+          return next
+        })
+      )
+      showNotification({
+        color: 'teal',
+        message: t('admin.notification.games.participation.updated'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+    } catch (err: any) {
+      showErrorMsg(err, t)
+    } finally {
+      setDisabled(false)
+    }
+  }
+
+  useEffect(() => {
+    setPage(1)
+  }, [selectedStatus, selectedDivisionId, search])
+
+  useEffect(() => {
+    if (numId < 0) {
+      showNotification({
+        color: 'red',
+        message: t('common.error.param_error'),
+        icon: <Icon path={mdiClose} size={1} />,
+      })
+      navigate('/admin/games')
+      return
+    }
+
+    const fetchData = async () => {
+      try {
+        const res = await api.game.gameParticipations(numId)
+        setParticipations(res.data)
+      } catch (err: any) {
+        showErrorMsg(err, t)
+      }
+    }
+
+    fetchData()
+  }, [navigate, numId, t])
+
+  const filteredParticipations = participations?.filter((participation) => {
+    const matchesStatus = selectedStatus === null || participation.status === selectedStatus
+    const matchesDivision =
+      selectedDivisionId === null ||
+      (participation.divisionId !== undefined &&
+        participation.divisionId !== null &&
+        participation.divisionId.toString() === selectedDivisionId)
+    const matchesSearch = search === '' || participation.team?.name?.toLowerCase().includes(search.toLowerCase())
+
+    return matchesStatus && matchesDivision && matchesSearch
+  })
+
+  const pagedParticipations = filteredParticipations?.slice(
+    (activePage - 1) * PART_NUM_PER_PAGE,
+    activePage * PART_NUM_PER_PAGE
+  )
+
+  return (
+    <WithGameEditTab
+      headProps={{ justify: 'space-between' }}
+      isLoading={participations === undefined || (numId > 0 && divisions === undefined)}
+      head={
+        <Group justify="space-between" wrap="wrap" w="100%">
+          <TextInput
+            w={{ base: '100%', sm: '20rem' }}
+            aria-label={t('admin.placeholder.teams.search')}
+            placeholder={t('admin.placeholder.teams.search')}
+            value={search}
+            onChange={setSearch}
+            rightSection={<Icon path={mdiAccountGroupOutline} size={1} />}
+          />
+          <Group justify="right" wrap="wrap">
+            {divisionSelectOptions.length > 0 && (
+              <Select
+                aria-label={t('admin.label.games.review.division_filter', 'Filter by division')}
+                placeholder={t('admin.content.show_all')}
+                clearable
+                data={divisionSelectOptions}
+                value={selectedDivisionId}
+                onChange={(value) => setSelectedDivisionId(value)}
+              />
+            )}
+            <Select
+              aria-label={t('admin.label.games.review.status_filter', 'Filter by participation status')}
+              placeholder={t('admin.content.show_all')}
+              clearable
+              data={Array.from(participationStatusMap, (v) => ({ value: v[0], label: v[1].title }))}
+              value={selectedStatus}
+              onChange={(value) => setSelectedStatus(value as ParticipationStatus | null)}
+            />
+          </Group>
+        </Group>
+      }
+    >
+      <ScrollArea type="auto" pos="relative" h="calc(100vh - 250px)">
+        {participations && participations.length === 0 ? (
+          <Center h="calc(100vh - 200px)">
+            <Stack gap={0}>
+              <Title order={2}>{t('admin.content.games.review.empty.title')}</Title>
+              <Text>{t('admin.content.games.review.empty.description')}</Text>
+            </Stack>
+          </Center>
+        ) : (
+          <Accordion variant="contained" chevronPosition="left" classNames={classes} className={classes.root}>
+            {pagedParticipations?.map((participation) => (
+              <ParticipationItem
+                key={participation.id}
+                participation={participation}
+                disabled={disabled}
+                onEditDiv={() => {
+                  if (!hasDivisions) {
+                    return
+                  }
+                  setCurParticipation(participation)
+                  setDivModalOpened(true)
+                }}
+                setParticipation={setParticipation}
+                hasDivisions={hasDivisions}
+                divisionName={participation.divisionId ? divisionNameMap.get(participation.divisionId) : null}
+              />
+            ))}
+          </Accordion>
+        )}
+      </ScrollArea>
+      <Pagination
+        value={activePage}
+        onChange={setPage}
+        total={Math.ceil((filteredParticipations?.length ?? 1) / PART_NUM_PER_PAGE)}
+        classNames={{
+          root: cx(misc.flex, misc.flexRow, misc.justifyEnd),
+        }}
+      />
+      {hasDivisions && curParticipation && (
+        <ParticipationDivisionEditModal
+          title={t('admin.content.games.review.edit_division')}
+          opened={divModalOpened}
+          divisions={divisions ?? []}
+          participateId={curParticipation?.id ?? -1}
+          currentDivisionId={curParticipation?.divisionId ?? null}
+          setParticipation={setParticipation}
+          onClose={() => {
+            setDivModalOpened(false)
+            setCurParticipation(null)
+          }}
+        />
+      )}
+    </WithGameEditTab>
+  )
+}
+
+export default GameTeamReview

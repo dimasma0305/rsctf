@@ -1,0 +1,317 @@
+:global(:root) {
+  /* The mobile dock is 62px tall and floats at least 8px above the viewport.
+   * Keep one shared clearance token so page endings, sticky actions and focus
+   * scrolling all agree on the space it occupies. */
+  --app-mobile-dock-clearance: calc(82px + env(safe-area-inset-bottom, 0px));
+}
+
+.navbar {
+  padding: var(--mantine-spacing-md);
+  border-inline-end: 1px solid var(--app-border);
+  background: var(--app-shell-surface);
+  box-shadow: 12px 0 40px rgba(8, 15, 30, 0.05);
+  transition-property: width, transform, top, height;
+}
+
+.brandSection {
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-xs) var(--mantine-spacing-md);
+}
+
+.brandLink {
+  display: block;
+  min-width: 0;
+  flex: 1;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--mantine-radius-md);
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+}
+
+.railToggle {
+  flex: 0 0 44px;
+  color: var(--app-text-secondary);
+  border: 1px solid transparent;
+}
+
+.railToggle:hover {
+  color: var(--app-text-primary);
+  border-color: var(--app-border-subtle);
+  background: var(--app-hover-surface);
+}
+
+.brandLink :global(.mantine-Title-root) {
+  font-size: var(--mantine-font-size-xl);
+}
+
+.brandLink :global(.mantine-Group-root) {
+  gap: var(--mantine-spacing-xs);
+}
+
+.brandLink :global(.mantine-Box-root) {
+  width: 42px !important;
+  height: 42px !important;
+}
+
+.workspaceLabel {
+  display: block;
+  margin-top: 2px;
+  padding-inline-start: 50px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.navigationSection {
+  padding: var(--mantine-spacing-lg) 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.utilitySection {
+  padding-top: var(--mantine-spacing-md);
+  border-top: 1px solid var(--app-border);
+}
+
+.sectionLabel {
+  display: block;
+  padding: 0 var(--mantine-spacing-sm) var(--mantine-spacing-xs);
+  color: var(--app-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.link,
+.accountButton {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  gap: var(--mantine-spacing-sm);
+  padding: 7px var(--mantine-spacing-sm);
+  border: 1px solid transparent;
+  border-radius: var(--mantine-radius-md);
+  color: var(--app-text-secondary);
+  text-decoration: none;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
+}
+
+.link:hover,
+.accountButton:hover {
+  color: var(--app-text-primary);
+  background: var(--app-hover-surface);
+  border-color: var(--app-border-subtle);
+}
+
+.link:active,
+.accountButton:active {
+  transform: translateY(1px);
+}
+
+.link[data-active] {
+  color: var(--app-accent-surface-text);
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-surface);
+}
+
+.link[data-active]::before {
+  content: '';
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  inset-inline-start: -1px;
+  width: 3px;
+  border-radius: 0 4px 4px 0;
+  background: var(--mantine-primary-color-filled);
+}
+
+.linkIcon {
+  display: grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 8px;
+  color: inherit;
+  background: var(--app-icon-surface);
+}
+
+.link[data-active] .linkIcon {
+  background: var(--app-accent-icon-surface);
+}
+
+.linkText {
+  min-width: 0;
+  flex: 1;
+}
+
+.accountButton {
+  min-height: 52px;
+  margin-top: var(--mantine-spacing-xs);
+  background: var(--app-raised-surface);
+  border-color: var(--app-surface-border);
+}
+
+.navbar[data-compact] {
+  padding-inline: 8px;
+}
+
+.navbar[data-compact] .brandSection {
+  padding: 4px 0 var(--mantine-spacing-sm);
+}
+
+.navbar[data-compact] .brandRow {
+  flex-direction: column;
+  gap: 4px;
+}
+
+.navbar[data-compact] .brandLink {
+  display: grid;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+}
+
+.navbar[data-compact] .navigationSection {
+  padding: var(--mantine-spacing-sm) 0;
+}
+
+.navbar[data-compact] .utilitySection {
+  padding-top: var(--mantine-spacing-xs);
+}
+
+.navbar[data-compact] .link,
+.navbar[data-compact] .accountButton {
+  justify-content: center;
+  gap: 0;
+  padding-inline: 6px;
+}
+
+.navbar[data-compact] .accountButton {
+  min-height: 48px;
+  margin-top: 4px;
+}
+
+.navbar[data-compact] .linkIcon {
+  flex-basis: 32px;
+  width: 32px;
+  height: 32px;
+}
+
+.main {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  min-height: 100dvh;
+  align-items: center;
+  background: transparent;
+}
+
+.shellMain {
+  min-width: 0;
+}
+
+.main[data-mobile] {
+  min-height: calc(100dvh - 68px);
+  padding-bottom: var(--mantine-spacing-md);
+}
+
+.main[data-pb]:not([data-mobile]) {
+  padding-bottom: var(--mantine-spacing-xl);
+}
+
+.content {
+  width: min(calc(100% - 48px), var(--page-content-width));
+  padding-bottom: var(--mantine-spacing-xl);
+}
+
+.skipLink {
+  position: fixed;
+  top: var(--mantine-spacing-sm);
+  inset-inline-start: var(--mantine-spacing-sm);
+  z-index: 10000;
+  padding: 10px 14px;
+  border-radius: var(--mantine-radius-md);
+  color: var(--mantine-color-white);
+  background: var(--mantine-primary-color-filled);
+  box-shadow: var(--mantine-shadow-lg);
+  text-decoration: none;
+  transform: translateY(calc(-100% - var(--mantine-spacing-xl)));
+  transition: transform 120ms ease;
+}
+
+.skipLink:focus {
+  transform: translateY(0);
+}
+
+@media screen and (max-width: $mantine-breakpoint-sm) {
+  :global(html) {
+    scroll-padding-bottom: var(--app-mobile-dock-clearance);
+  }
+
+  .navbar {
+    display: none;
+  }
+
+  .shellMain {
+    height: calc(100dvh - var(--app-mobile-dock-clearance));
+    min-height: 0 !important;
+    overflow-x: clip;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+  }
+
+  .main[data-mobile] {
+    min-height: calc(100dvh - var(--app-mobile-dock-clearance) - 68px);
+  }
+
+  .shellMain :where(a, button, input, select, textarea, [tabindex]:not([tabindex='-1'])) {
+    scroll-margin-block-end: var(--app-mobile-dock-clearance);
+  }
+
+  .content {
+    width: min(calc(100% - 24px), var(--page-content-width));
+    padding-bottom: var(--mantine-spacing-lg);
+  }
+
+  .main[data-mobile][data-pb] {
+    padding-bottom: var(--mantine-spacing-md);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navbar,
+  .shellMain,
+  .link,
+  .accountButton,
+  .skipLink {
+    transition-duration: 0ms !important;
+  }
+}
+
+@media print {
+  .navbar,
+  .skipLink {
+    display: none;
+  }
+
+  .content {
+    width: 100%;
+  }
+
+  .shellMain {
+    padding-inline-start: 0 !important;
+  }
+}

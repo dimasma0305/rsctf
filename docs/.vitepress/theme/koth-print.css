@@ -1,0 +1,207 @@
+.koth-handbook math {
+  font-family: "STIX Two Math", "Cambria Math", "DejaVu Math TeX Gyre", math;
+  font-size: inherit;
+}
+
+@media print {
+  .koth-handbook .vp-doc {
+    column-count: 2;
+    column-gap: 7mm;
+    color: #000000;
+    font-family: "Times New Roman", Times, Georgia, serif;
+    font-size: 9.5pt;
+    line-height: 1.28;
+    text-align: justify;
+    hyphens: auto;
+  }
+
+  .koth-handbook .vp-doc h2,
+  .koth-handbook .vp-doc h3,
+  .koth-handbook .vp-doc h4 {
+    break-after: avoid;
+    page-break-after: avoid;
+    -webkit-column-break-after: avoid;
+    text-align: left;
+  }
+
+  .koth-handbook .journal-title-block,
+  .koth-handbook .vp-doc h2#abstract,
+  .koth-handbook .journal-abstract,
+  .koth-handbook .journal-keywords,
+  .koth-handbook .journal-status,
+  .koth-handbook .journal-wide,
+  .koth-handbook .journal-worked-example,
+  .koth-handbook .journal-figure,
+  .koth-handbook .journal-table {
+    column-span: all;
+  }
+
+  .koth-handbook .journal-figure {
+    margin: 2.5mm 0 3.5mm;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    -webkit-column-break-inside: avoid;
+  }
+
+  .koth-handbook .journal-figure img,
+  .koth-handbook .vp-doc > p > img {
+    display: block;
+    max-width: 100%;
+    max-height: 92mm;
+    margin: 1.5mm auto 0;
+    object-fit: contain;
+  }
+
+  .koth-handbook .journal-figure img[src*="koth-scoreboard-journal"] {
+    max-height: 90mm;
+    border: 0.5pt solid #777777;
+    border-radius: 0;
+    background: #171717;
+    box-shadow: none;
+  }
+
+  .koth-handbook .journal-figure figcaption,
+  .koth-handbook .journal-table caption {
+    break-before: avoid;
+    page-break-before: avoid;
+  }
+
+  .koth-handbook .journal-table {
+    margin: 2.5mm 0 3.5mm;
+  }
+
+  .koth-handbook .journal-table table {
+    width: 100%;
+    max-width: 100%;
+    table-layout: fixed;
+    font-size: 7.7pt;
+    line-height: 1.15;
+  }
+
+  .koth-handbook .journal-table thead {
+    display: table-header-group;
+  }
+
+  .koth-handbook .journal-table tr {
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  .koth-handbook .journal-table.koth-keep-table,
+  .koth-handbook .journal-table.koth-keep-table table {
+    break-inside: avoid-page !important;
+    page-break-inside: avoid !important;
+  }
+
+  .koth-handbook .journal-table.koth-traceability-table table code {
+    overflow-wrap: break-word;
+    word-break: normal;
+    font-size: 6.7pt;
+  }
+
+  .koth-handbook .journal-table th,
+  .koth-handbook .journal-table td {
+    overflow-wrap: anywhere;
+  }
+
+  .koth-handbook .journal-math {
+    box-sizing: border-box;
+    max-width: 100%;
+    margin: 0.8mm 0 1.4mm;
+    padding: 0;
+    overflow: visible !important;
+    border: 0;
+    background: transparent;
+    text-align: center;
+    break-inside: avoid-page;
+    page-break-inside: avoid;
+  }
+
+  .koth-handbook .journal-math > math[display="block"] {
+    max-width: 100%;
+    margin: 0 auto;
+    font-size: 8.7pt;
+  }
+
+  .koth-handbook .journal-worked-example {
+    break-inside: auto;
+    page-break-inside: auto;
+  }
+
+  .koth-handbook .journal-worked-example > p:has(+ .journal-math) {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  .koth-handbook .vp-doc div[class*="language-"] {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    margin: 2mm 0 3mm !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    border: 0.5pt solid #777777;
+    border-radius: 0 !important;
+    background: transparent !important;
+    column-span: none;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    -webkit-column-break-inside: avoid;
+  }
+
+  .koth-handbook .vp-doc .journal-wide div[class*="language-"] {
+    column-span: all;
+  }
+
+  .koth-handbook .vp-doc .line-numbers-wrapper,
+  .koth-handbook .vp-doc [class*="language-"] > button.copy,
+  .koth-handbook .vp-doc [class*="language-"] > span.lang {
+    display: none !important;
+  }
+
+  .koth-handbook .vp-doc div[class*="language-"].line-numbers-mode {
+    padding-left: 0 !important;
+  }
+
+  .koth-handbook .vp-doc [class*="language-"] pre {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    margin: 0 !important;
+    padding: 2.5mm 3mm !important;
+    overflow: visible !important;
+    border: 0;
+    border-radius: 0 !important;
+    font-size: 7.5pt;
+    line-height: 1.2;
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+  }
+
+  .koth-handbook .vp-doc [class*="language-"] code,
+  .koth-handbook .vp-doc :not(pre) > code {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .koth-handbook .vp-doc :not(pre) > code {
+    color: #000000 !important;
+    background: #eeeeee !important;
+  }
+
+  .koth-handbook .journal-break-column {
+    break-before: column;
+  }
+
+  .koth-handbook .journal-break-page {
+    column-span: all;
+    break-before: page;
+    page-break-before: always;
+  }
+
+  .koth-handbook .journal-keep-next {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+}

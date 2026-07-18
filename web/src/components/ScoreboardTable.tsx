@@ -1,0 +1,496 @@
+import {
+  alpha,
+  Avatar,
+  Box,
+  Button,
+  Center,
+  Grid,
+  Group,
+  Paper,
+  Select,
+  Stack,
+  Table,
+  Text,
+  TextInput,
+  Tooltip,
+  UnstyledButton,
+  useMantineColorScheme,
+  useMantineTheme,
+} from '@mantine/core'
+import { useDebouncedValue } from '@mantine/hooks'
+import { mdiAccountGroup, mdiCrosshairsGps, mdiMagnify, mdiFlagOutline } from '@mdi/js'
+import { Icon } from '@mdi/react'
+import cx from 'clsx'
+import dayjs from 'dayjs'
+import React, { FC, useEffect, useState, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useParams } from 'react-router'
+import { ScoreboardItemModal } from '@Components/ScoreboardItemModal'
+import { ScoreboardPagination } from '@Components/ScoreboardPagination'
+import { ScrollingText } from '@Components/ScrollingText'
+import { useLanguage } from '@Utils/I18n'
+import {
+  BloodBonus,
+  BloodsTypes,
+  useChallengeCategoryLabelMap,
+  SubmissionTypeIconMap,
+  useBonusLabels,
+  PartialIconProps,
+} from '@Utils/Shared'
+import { filterJeopardyChallenges } from '@Utils/scoreboard'
+import { useGame, useGameScoreboard } from '@Hooks/useGame'
+import { ChallengeInfo, ChallengeCategory, ScoreboardItem, SubmissionType } from '@Api'
+import misc from '@Styles/Misc.module.css'
+import classes from '@Styles/ScoreboardTable.module.css'
+
+const Widths = [60, 60, 175, 60, 70, 60]
+const Lefts = Widths.reduce(
+  (acc, cur) => {
+    acc.push(acc[acc.length - 1] + cur)
+    return acc
+  },
+  [0]
+)
+
+const TableHeader = React.memo((table: Record<string, ChallengeInfo[]>) => {
+  const theme = useMantineTheme()
+  const { colorScheme } = useMantineColorScheme()
+  const { t } = useTranslation()
+  const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
+
+  const hiddenCol = [...Array(5).keys()].map((i) => (
+    <Table.Th
+      key={i}
+      className={classes.left}
+      style={{
+        left: Lefts[i],
+        width: Widths[i],
+        minWidth: Widths[i],
+        maxWidth: Widths[i],
+      }}
+    >
+      &nbsp;
+    </Table.Th>
+  ))
+
+  return (
+    <Table.Thead className={classes.thead}>
+      <Table.Tr className={misc.noBorder}>
+        {hiddenCol}
+        {Object.keys(table).map((key) => {
+          const cate = challengeCategoryLabelMap.get(key as ChallengeCategory)!
+          return (
+            <Table.Th
+              key={key}
+              colSpan={table[key].length}
+              scope="colgroup"
+              h="3rem"
+              style={{
+                backgroundColor: alpha(
+                  theme.colors[cate.color][colorScheme === 'dark' ? 8 : 6],
+                  colorScheme === 'dark' ? 0.15 : 0.2
+                ),
+              }}
+            >
+              <Group gap={4} wrap="nowrap" justify="center" w="100%">
+                <Icon path={cate.icon} size={1} color={theme.colors[cate.color][colorScheme === 'dark' ? 8 : 6]} />
+                <Text c={cate.color} className={classes.text} ff="text" fz="sm">
+                  {key}
+                </Text>
+              </Group>
+            </Table.Th>
+          )
+        })}
+      </Table.Tr>
+      {/* Challenge Name */}
+      <Table.Tr>
+        {hiddenCol}
+        {Object.keys(table).map((key) =>
+          table[key].map((item) => (
+            <Table.Th key={item.id} scope="col">
+              {item.title}
+            </Table.Th>
+          ))
+        )}
+      </Table.Tr>
+      {/* Headers & Score */}
+      <Table.Tr>
+        {[
+          t('game.label.score_table.rank_total'),
+          t('game.label.score_table.rank_division'),
+          t('common.label.team'),
+          t('game.label.score_table.solved_count'),
+          t('game.label.score_table.score_total'),
+        ].map((header, idx) => (
+          <Table.Th key={idx} scope="col" className={cx(classes.left, classes.header)} style={{ left: Lefts[idx] }}>
+            {header}
+          </Table.Th>
+        ))}
+        {Object.keys(table).map((key) =>
+          table[key].map((item) => (
+            <Table.Th key={item.id} scope="col" className={classes.mono}>
+              {item.score}
+            </Table.Th>
+          ))
+        )}
+      </Table.Tr>
+    </Table.Thead>
+  )
+})
+
+const TableRow: FC<{
+  item: ScoreboardItem
+  allRank: boolean
+  tableRank: number
+  onOpenDetail: () => void
+  iconMap: Map<SubmissionType, PartialIconProps | undefined>
+  challenges?: Record<string, ChallengeInfo[]>
+  highlighted?: boolean
+}> = React.memo(({ item, challenges, onOpenDetail, iconMap, tableRank, allRank, highlighted }) => {
+  const { t } = useTranslation()
+  const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
+  const solved = item.solvedChallenges
+  const theme = useMantineTheme()
+  const { colorScheme } = useMantineColorScheme()
+  const { locale } = useLanguage()
+  const zeroScoreIcon = useMemo(() => {
+    const normalIcon = iconMap.get(SubmissionType.Normal)
+    const color = colorScheme === 'dark' ? theme.colors.gray[4] : theme.colors.gray[6]
+
+    return {
+      path: mdiFlagOutline,
+      size: normalIcon?.size ?? 1,
+      color,
+    }
+  }, [iconMap, theme, colorScheme])
+
+  const totalScore = useMemo(() => {
+    return solved?.reduce((acc, cur) => acc + (cur?.score ?? 0), 0) ?? 0
+  }, [solved])
+
+  return (
+    <Table.Tr
+      data-team-name={item.name ?? ''}
+      style={
+        highlighted
+          ? {
+              outline: `2px solid ${theme.colors[theme.primaryColor][4]}`,
+              outlineOffset: -2,
+              background: alpha(theme.colors[theme.primaryColor][4], 0.12),
+              transition: 'background .3s ease, outline .3s ease',
+            }
+          : undefined
+      }
+    >
+      <Table.Td className={cx(classes.mono, classes.left)} style={{ left: Lefts[0] }}>
+        {item.rank || '-'}
+      </Table.Td>
+      <Table.Td className={cx(classes.mono, classes.left)} style={{ left: Lefts[1] }}>
+        {allRank ? item.rank : (item.divisionRank ?? tableRank)}
+      </Table.Td>
+      <Table.Th scope="row" className={classes.left} style={{ left: Lefts[2] }}>
+        <UnstyledButton
+          onClick={onOpenDetail}
+          title={t('game.label.score_table.open_team_detail', {
+            defaultValue: 'Open details for {{team}}',
+            team: item.name || '',
+          })}
+          className={classes.teamDetailButton}
+        >
+          <Group justify="left" gap={5} wrap="nowrap" maw={Widths[2] - 10}>
+            <Avatar
+              imageProps={{ loading: 'lazy' }}
+              alt=""
+              aria-hidden="true"
+              src={item.avatar}
+              radius="xl"
+              size={30}
+              color={theme.primaryColor}
+            >
+              {item.name?.slice(0, 1) ?? 'T'}
+            </Avatar>
+            <Stack gap={0} justify="center" w={Widths[2] - 45}>
+              <ScrollingText size="sm" text={item.name || ''} />
+            </Stack>
+          </Group>
+        </UnstyledButton>
+      </Table.Th>
+      <Table.Td className={cx(classes.mono, classes.left)} style={{ left: Lefts[3] }}>
+        {solved?.length}
+      </Table.Td>
+      <Table.Td className={cx(classes.mono, classes.left)} style={{ left: Lefts[4] }}>
+        {totalScore}
+      </Table.Td>
+      {challenges &&
+        Object.keys(challenges).map((key) =>
+          challenges[key].map((item) => {
+            const chal = solved?.find((c) => c.id === item.id)
+            const isZeroScore = chal && chal.type === SubmissionType.Normal && (chal.score ?? 0) === 0
+            const icon = isZeroScore ? zeroScoreIcon : iconMap.get(chal?.type ?? SubmissionType.Unaccepted)
+
+            if (!icon) return <Table.Td key={item.id} className={classes.mono} />
+
+            const cate = challengeCategoryLabelMap.get(item.category as ChallengeCategory)!
+
+            return (
+              <Table.Td key={item.id} className={classes.mono}>
+                <Tooltip
+                  transitionProps={{ transition: 'pop' }}
+                  label={
+                    <Stack align="flex-start" gap={0} maw="20rem">
+                      <Text lineClamp={3} fz="xs" className={classes.text}>
+                        {item.title}
+                      </Text>
+                      <Text c={cate.color} fz="xs" className={cx(classes.text, classes.mono)}>
+                        + {chal?.score} pts
+                      </Text>
+                      <Text c="dimmed" fz="xs" className={cx(classes.text, classes.mono)}>
+                        # {dayjs(chal?.time).locale(locale).format('L LTS')}
+                      </Text>
+                    </Stack>
+                  }
+                >
+                  <Center>
+                    <Icon {...icon} />
+                  </Center>
+                </Tooltip>
+              </Table.Td>
+            )
+          })
+        )}
+    </Table.Tr>
+  )
+})
+
+const ITEM_COUNT_PER_PAGE = 30
+
+export interface ScoreboardProps {
+  divisionId: number | null
+  setDivisionId: (div: number | null) => void
+}
+
+export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId }) => {
+  const { id } = useParams()
+  const numId = parseInt(id ?? '-1')
+  const { iconMap } = SubmissionTypeIconMap(1)
+  const [activePage, setPage] = useState(1)
+  const [bloodBonus, setBloodBonus] = useState(BloodBonus.default)
+
+  const [keyword, setKeyword] = useState('')
+  const [debouncedKeyword] = useDebouncedValue(keyword, 400)
+
+  const { scoreboard } = useGameScoreboard(numId)
+  // A&D / KotH challenges live on their own boards — keep them out of the jeopardy
+  // columns (the shared payload includes them so the challenge list still works).
+  const jeopardyChallenges = useMemo(() => filterJeopardyChallenges(scoreboard?.challenges), [scoreboard?.challenges])
+  const { game } = useGame(numId)
+  const myTeamName = game?.teamName ?? null
+  // When a "find my team" click lands on a row we highlight it for 2.5s.
+  const [highlightedTeam, setHighlightedTeam] = useState<string | null>(null)
+  const divisionMap = useMemo(() => {
+    const map = new Map<number, string>()
+    scoreboard?.divisions?.forEach((div) => {
+      map.set(div.id, div.name.trim())
+    })
+    return map
+  }, [scoreboard?.divisions])
+
+  const divisionOptions = useMemo(
+    () =>
+      (scoreboard?.divisions ?? []).map((div) => ({
+        value: div.id.toString(),
+        label: div.name.trim(),
+      })),
+    [scoreboard?.divisions]
+  )
+
+  const selectValue = useMemo(() => (divisionId === null ? 'all' : divisionId.toString()), [divisionId])
+
+  useEffect(() => {
+    if (divisionId !== null && !divisionMap.has(divisionId)) {
+      setDivisionId(null)
+    }
+  }, [divisionMap, divisionId, setDivisionId])
+
+  const filteredList = useMemo(() => {
+    if (!scoreboard?.items) return []
+
+    const ranked =
+      divisionId !== null
+        ? scoreboard.items.filter((item) => (item.divisionId ?? null) === divisionId)
+        : scoreboard.items.filter((item) => item.rank > 0)
+    if (!!debouncedKeyword && debouncedKeyword.length > 0) {
+      const keyword = debouncedKeyword.toLowerCase()
+      return ranked.filter((item) => item.name?.toLowerCase().includes(keyword))
+    }
+    return ranked
+  }, [scoreboard, debouncedKeyword, divisionId])
+
+  useEffect(() => {
+    setPage(1)
+    setDivisionId(null)
+    setKeyword('')
+  }, [id, setDivisionId])
+
+  const base = (activePage - 1) * ITEM_COUNT_PER_PAGE
+  const currentItems = filteredList?.slice(base, base + ITEM_COUNT_PER_PAGE)
+
+  const [currentItem, setCurrentItem] = useState<ScoreboardItem | null>(null)
+  const [itemDetailOpened, setItemDetailOpened] = useState(false)
+
+  const { t } = useTranslation()
+
+  useEffect(() => {
+    if (scoreboard) {
+      setBloodBonus(new BloodBonus(scoreboard.bloodBonus))
+    }
+  }, [scoreboard])
+
+  const bloodData = useBonusLabels(bloodBonus)
+  const hasDivisionFilter = divisionOptions.length > 0
+
+  return (
+    <Paper shadow="md" p="md">
+      <Stack gap="xs">
+        <Grid>
+          <Grid.Col span={3}>
+            <Select
+              aria-label={t('game.content.scoreboard.filter_division', 'Filter scoreboard by division')}
+              defaultValue="all"
+              data={[{ value: 'all', label: t('game.label.score_table.all_teams') }, ...divisionOptions]}
+              value={selectValue}
+              readOnly={!hasDivisionFilter}
+              onChange={(div) => {
+                if (!div || div === 'all') {
+                  setDivisionId(null)
+                } else {
+                  const parsed = Number(div)
+                  setDivisionId(Number.isNaN(parsed) ? null : parsed)
+                }
+                setPage(1)
+              }}
+              leftSection={<Icon path={mdiAccountGroup} size={1} />}
+              styles={{ input: { minHeight: 44 } }}
+            />
+          </Grid.Col>
+          <Grid.Col span={4}>
+            {myTeamName && (
+              <Button
+                variant="light"
+                h={44}
+                leftSection={<Icon path={mdiCrosshairsGps} size={0.9} />}
+                onClick={() => {
+                  // Find my team in the filtered list; jump to its page
+                  // and flash the row briefly.
+                  const idx = filteredList.findIndex((it) => it.name === myTeamName)
+                  if (idx < 0) return
+                  const page = Math.floor(idx / ITEM_COUNT_PER_PAGE) + 1
+                  setPage(page)
+                  setHighlightedTeam(myTeamName)
+                  // Scroll the highlighted row into view after render.
+                  requestAnimationFrame(() => {
+                    const el = document.querySelector(`[data-team-name="${CSS.escape(myTeamName)}"]`)
+                    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  })
+                  setTimeout(() => setHighlightedTeam(null), 2500)
+                }}
+              >
+                {t('game.button.find_my_team')}
+              </Button>
+            )}
+          </Grid.Col>
+          <Grid.Col span={2} />
+          <Grid.Col span={3}>
+            <TextInput
+              aria-label={t('game.placeholder.search_team')}
+              placeholder={t('game.placeholder.search_team')}
+              value={keyword}
+              onChange={(e) => setKeyword(e.currentTarget.value)}
+              leftSection={<Icon path={mdiMagnify} size={1} />}
+              styles={{ input: { minHeight: 44 } }}
+            />
+          </Grid.Col>
+        </Grid>
+        <Box className={classes.legend}>
+          <Stack gap="xs">
+            <Tooltip.Group>
+              <Group gap="lg" wrap="wrap">
+                {BloodsTypes.map((type, idx) => (
+                  <Tooltip key={idx} label={bloodData.get(type)?.name} transitionProps={{ transition: 'pop' }}>
+                    <Group justify="left" gap={2}>
+                      <Icon {...iconMap.get(type)!} />
+                      <Text>{bloodData.get(type)?.descr}</Text>
+                    </Group>
+                  </Tooltip>
+                ))}
+              </Group>
+            </Tooltip.Group>
+            <Text size="sm" c="dimmed">
+              {t('game.content.scoreboard_note')}
+            </Text>
+          </Stack>
+        </Box>
+        <Box pos="relative">
+          <Table.ScrollContainer
+            minWidth="100%"
+            tabIndex={0}
+            aria-label={t('game.label.score_table.scroll_region', 'Scrollable team rankings and challenge scores')}
+          >
+            <Table
+              className={classes.table}
+              aria-label={t('game.label.score_table.caption', 'Team rankings and challenge scores')}
+            >
+              <TableHeader {...jeopardyChallenges} />
+              <Table.Tbody>
+                {scoreboard &&
+                  currentItems?.map((item, idx) => (
+                    <TableRow
+                      key={base + idx}
+                      allRank={divisionId === null}
+                      tableRank={base + idx + 1}
+                      item={item}
+                      onOpenDetail={() => {
+                        setCurrentItem(item)
+                        setItemDetailOpened(true)
+                      }}
+                      challenges={jeopardyChallenges}
+                      iconMap={iconMap}
+                      highlighted={highlightedTeam === item.name}
+                    />
+                  ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
+          {scoreboard && filteredList.length === 0 && (
+            <Center mih="6rem">
+              <Text size="sm" c="dimmed">
+                {t('game.content.scoreboard.no_teams', 'No teams ranked yet.')}
+              </Text>
+            </Center>
+          )}
+        </Box>
+        <Group justify="space-between">
+          <Text size="sm" c="dimmed">
+            {t('game.content.scoreboard_tip')}
+          </Text>
+          <ScoreboardPagination
+            value={activePage}
+            onChange={setPage}
+            total={Math.ceil((filteredList?.length ?? 1) / ITEM_COUNT_PER_PAGE)}
+            boundaries={2}
+          />
+        </Group>
+      </Stack>
+      <ScoreboardItemModal
+        scoreboard={scoreboard}
+        divisionMap={divisionMap}
+        bloodBonusMap={bloodData}
+        opened={itemDetailOpened}
+        withCloseButton
+        size="45rem"
+        onClose={() => setItemDetailOpened(false)}
+        item={currentItem}
+      />
+    </Paper>
+  )
+}

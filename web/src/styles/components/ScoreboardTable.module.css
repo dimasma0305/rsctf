@@ -1,0 +1,101 @@
+.table {
+  table-layout: fixed;
+  width: auto;
+  min-width: 100%;
+
+  & thead tr th,
+  & tbody tr :is(td, th) {
+    text-align: center;
+    padding: 6px 4px;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+}
+
+.thead {
+  z-index: 5;
+}
+
+.left {
+  position: sticky;
+  background-color: light-dark(var(--mantine-color-white), var(--mantine-color-dark-7));
+}
+
+.header {
+  font-weight: bold;
+}
+
+.mono {
+  font-weight: bold;
+  font-family: var(--mantine-font-family-monospace);
+}
+
+/* Vertical divider at the left edge of a challenge's service-column group on
+   the A&D board, so each challenge's 4 sub-columns (attack/SLA/defense/status)
+   read as one unit, separated from the next challenge (and from the pinned
+   team block at the first group). */
+.groupStart {
+  border-left: 2px solid var(--mantine-color-default-border);
+}
+
+.teamCell {
+  max-width: 0;
+  width: auto;
+  overflow: hidden;
+}
+
+.legend {
+  padding: var(--mantine-spacing-xs) 0 var(--mantine-spacing-sm);
+}
+
+.text {
+  font-size: 0.9em;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.pointer {
+  &:hover {
+    cursor: pointer;
+  }
+}
+
+.teamDetailButton {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  border-radius: var(--mantine-radius-sm);
+
+  &:hover {
+    cursor: pointer;
+    background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--mantine-primary-color-filled);
+    outline-offset: -2px;
+  }
+}
+
+.scoringModalBody {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.scoringFormula {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.wrapper {
+  width: 100%;
+  height: var(--mantine-line-height-sm);
+}
+
+.input {
+  user-select: none;
+  font-weight: 600;
+  line-height: var(--mantine-line-height-sm);
+  height: var(--mantine-line-height-sm);
+}

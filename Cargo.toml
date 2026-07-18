@@ -1,0 +1,127 @@
+[package]
+name = "rsctf"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["rsctf contributors"]
+description = "A high-performance Capture-the-Flag competition platform written in Rust"
+repository = "https://github.com/dimasma0305/rsctf"
+default-run = "rsctf"
+
+[[bin]]
+name = "rsctf"
+path = "src/main.rs"
+
+[dependencies]
+# mimalloc returns large freed allocations to the OS; glibc malloc retains argon2's
+# ~19 MiB/hash chunks, ratcheting RSS up under a register/login flood.
+mimalloc = "0.1"
+# web / async
+axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "fs", "limit", "compression-gzip"] }
+futures = "0.3"
+flate2 = "1"
+brotli = "8"
+
+# database
+sea-orm = { version = "1.1", features = [
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "macros",
+    "with-chrono",
+    "with-uuid",
+    "with-json",
+] }
+sea-orm-migration = { version = "1.1", features = [
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "with-chrono",
+    "with-uuid",
+] }
+
+# serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_repr = "0.1"
+
+# auth / crypto
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
+argon2 = "0.5"
+rand = "0.10"
+sha2 = "0.11"
+hex = "0.4"
+base64 = "0.22"
+ipnet = "2.12"
+
+# types
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# infra
+redis = { version = "1.4", features = ["tokio-comp", "connection-manager", "aio"] }
+dashmap = "6"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+async-trait = "0.1"
+
+# subsystems: email, outbound HTTP (webhooks/captcha), Docker orchestration
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "hostname"] }
+ed25519-dalek = "2"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+rust_xlsxwriter = "0.96"
+bollard = "0.17"
+# Upstream 0.14.0 plus its quick-xml >=0.41 security bump, pending the next
+# crates.io patch release (RUSTSEC-2026-0194 / RUSTSEC-2026-0195).
+object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "18102f35d2c81dfbc9aefbb5797c33b39f2641d5", features = ["aws"] }
+kube = { version = "0.95", default-features = false, features = ["client", "rustls-tls", "runtime", "ws"] }
+k8s-openapi = { version = "0.23", features = ["latest"] }
+pcap-file = "2"
+pcap = "2"
+defguard_wireguard_rs = "0.10.0"
+russh = { version = "0.62.2", default-features = false, features = ["aws-lc-rs", "flate2"] }
+yamux = "0.14.0"
+tokio-util = { version = "0.7.18", features = ["compat"] }
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+bytes = "1.12.0"
+tokio-stream = { version = "0.1.18", features = ["time"] }
+landlock = "0.4.5"
+nix = { version = "0.31.3", features = ["user", "resource", "process", "fs"] }
+seccompiler = "0.5.0"
+libc = "0.2.186"
+# Raw-SQL escape hatch for the few hot/heavy queries where skipping the ORM's
+# over-fetch + entity mapping is worth it — runs on the PgPool sea-orm already owns.
+sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "derive"] }
+serde_norway = "0.9.42"
+rcgen = { version = "0.14.8", default-features = false, features = ["pem", "x509-parser", "aws_lc_rs"] }
+time = "0.3"
+rsctf-worker-protocol = { path = "lib/worker-protocol" }
+
+[build-dependencies]
+sha2 = "0.11"
+hex = "0.4"
+
+[profile.dev]
+opt-level = 0
+debug = 1
+
+# Optimize DEPENDENCIES (not our own crate) in dev/test — deps compile once, so this
+# speeds the runtime of dev + test binaries (argon2, image, compression, hashing) without
+# slowing the edit→compile loop on rsctf itself.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Production release: maximize runtime speed + shrink the binary.
+# NOTE: intentionally NOT panic = "abort". rsctf is a long-running multi-tenant server
+# with no CatchPanic layer; under unwind (the default) a handler panic aborts only that
+# request's task (tokio isolates it) and the server keeps serving everyone else. With
+# panic = "abort" a single panic anywhere would take the whole process down for all users.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true

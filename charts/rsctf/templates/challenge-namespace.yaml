@@ -1,0 +1,13 @@
+{{- $localBackend := include "rsctf.localContainerBackend" . | trim }}
+{{- if and (ne .Values.runtimeRole "migrate") (eq $localBackend "kubernetes") .Values.kubernetes.createChallengeNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "rsctf.challengeNamespace" . }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    rsctf.io/challenge-namespace: "true"
+    {{- with .Values.kubernetes.challengeNamespaceLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

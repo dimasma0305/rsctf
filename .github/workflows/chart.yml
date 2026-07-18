@@ -1,0 +1,93 @@
+name: Helm chart
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic chart version, for example 1.2.3"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Package and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.16.4
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="${INPUT_VERSION:-$REF_NAME}"
+          version="${version#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Expected a semantic version such as 1.2.3 or 1.2.3-rc.1"
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate chart
+        run: ./scripts/validate-helm-chart.sh
+
+      - name: Package chart
+        run: |
+          mkdir -p dist
+          helm package charts/rsctf \
+            --destination dist \
+            --version "${{ steps.version.outputs.value }}" \
+            --app-version "${{ steps.version.outputs.value }}"
+
+      - name: Normalize registry namespace
+        id: registry
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "owner=${OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        shell: bash
+        env:
+          HELM_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          printf '%s' "$HELM_PASSWORD" |
+          helm registry login ghcr.io
+          --username "${{ github.actor }}"
+          --password-stdin
+
+      - name: Publish OCI chart
+        run: >-
+          helm push
+          "dist/rsctf-${{ steps.version.outputs.value }}.tgz"
+          "oci://ghcr.io/${{ steps.registry.outputs.owner }}/charts"
+
+      - name: Upload packaged chart
+        uses: actions/upload-artifact@v7
+        with:
+          name: rsctf-helm-${{ steps.version.outputs.value }}
+          path: dist/*.tgz
+          if-no-files-found: error
+          retention-days: 14

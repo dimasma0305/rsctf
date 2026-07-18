@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4800 4800" role="img" aria-labelledby="title desc">
+  <title id="title">rsctf continuous RS monogram</title>
+  <desc id="desc">The Rust foundation flows into the CTF solve path as one connected R and S</desc>
+  <style>
+    .r { stroke: #475569; }
+    @media (prefers-color-scheme: dark) { .r { stroke: #f8fafc; } }
+  </style>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="520">
+    <path class="r" d="M900 3980V840h720c570 0 900 285 900 730 0 450-330 730-900 730h-540l1440 1680"/>
+    <path stroke="#14b8a6" d="M2520 3980c430 260 1070 190 1400-190 330-390 150-930-330-1140l-560-245c-430-190-570-560-370-930 210-390 690-560 1120-415 200 65 360 170 480 315"/>
+  </g>
+</svg>

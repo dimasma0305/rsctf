@@ -1,0 +1,99 @@
+name: Linux worker agent
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-agent-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  verify:
+    name: Verify release commit
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  linux:
+    name: Build Linux x86_64 (static)
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install static-linker toolchain
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools
+
+      - name: Restore worker build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agents/worker-agent -> target
+          shared-key: worker-agent-release-linux
+
+      - name: Build release binary
+        run: >-
+          cargo build --manifest-path agents/worker-agent/Cargo.toml
+          --release --target x86_64-unknown-linux-musl --locked
+
+      - name: Package release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="rsctf-worker-agent-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl"
+          mkdir "$stage"
+          install -m 0755 agents/worker-agent/target/x86_64-unknown-linux-musl/release/rsctf-worker-agent "$stage/"
+          cp LICENSE.txt NOTICE "$stage/"
+          tar -czf "$stage.tar.gz" "$stage"
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: worker-agent-linux-x86_64
+          path: rsctf-worker-agent-*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Attach Linux binary to release
+    needs: [linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: worker-agent-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum rsctf-worker-agent-* > SHA256SUMS
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          files: |
+            dist/rsctf-worker-agent-*
+            dist/SHA256SUMS

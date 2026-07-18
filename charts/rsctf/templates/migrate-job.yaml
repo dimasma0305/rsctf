@@ -1,0 +1,54 @@
+{{- if eq .Values.runtimeRole "migrate" }}
+{{- include "rsctf.validateValues" . }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "rsctf.fullname" . }}-migrate
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        {{- include "rsctf.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10000
+            runAsGroup: 10000
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: RSCTF_ROLE
+              value: migrate
+            - name: RSCTF_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.databaseUrlKey }}
+            - name: RSCTF_DB_MAX_CONNECTIONS
+              value: {{ .Values.config.dbMaxConnections | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+{{- end }}

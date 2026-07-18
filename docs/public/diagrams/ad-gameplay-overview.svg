@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Attack and Defense in one picture</title>
+  <desc id="desc">For one Attack and Defense challenge, every team runs its own service copy. During each round, a team protects its copy and keeps it working while attacking assigned opponents, stealing their current flags, and submitting those flags before they expire. The score rewards stealing flags, protecting flags, and keeping the service working. New flags begin the next round.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="900" fill="#f6f1e7"/>
+  <text x="70" y="66" fill="#132735" font-family="Georgia, 'DejaVu Serif', serif" font-size="48" font-weight="700">Attack &amp; Defense in one picture</text>
+  <text x="70" y="106" fill="#53606a" font-family="'DejaVu Sans', sans-serif" font-size="22">Every team gets its own copy. Protect yours while attacking assigned opponents.</text>
+
+  <rect x="70" y="138" width="1460" height="146" rx="22" fill="#172b38"/>
+  <text x="105" y="174" fill="#5eead4" font-family="'DejaVu Sans', sans-serif" font-size="18" font-weight="800">SAME CHALLENGE · SEPARATE COPIES</text>
+  <g font-family="'DejaVu Sans', sans-serif" text-anchor="middle">
+    <rect x="110" y="194" width="330" height="64" rx="16" fill="#f3e3b8" stroke="#996600" stroke-width="3"/>
+    <text x="275" y="220" fill="#7d5400" font-size="19" font-weight="800">OPPONENT COPY</text>
+    <text x="275" y="246" fill="#584519" font-size="17">attack this target</text>
+
+    <rect x="635" y="194" width="330" height="64" rx="16" fill="#d7ece8" stroke="#08756f" stroke-width="3"/>
+    <text x="800" y="220" fill="#075e59" font-size="19" font-weight="800">YOUR SERVICE COPY</text>
+    <text x="800" y="246" fill="#27484a" font-size="17">protect this one</text>
+
+    <rect x="1160" y="194" width="330" height="64" rx="16" fill="#f3e3b8" stroke="#996600" stroke-width="3"/>
+    <text x="1325" y="220" fill="#7d5400" font-size="19" font-weight="800">ANOTHER OPPONENT</text>
+    <text x="1325" y="246" fill="#584519" font-size="17">attack this target</text>
+  </g>
+  <path d="M625 226 H450" fill="none" stroke="#dbe5ea" stroke-width="4" marker-end="url(#arrow)"/>
+  <path d="M970 226 H1150" fill="none" stroke="#dbe5ea" stroke-width="4" marker-end="url(#arrow)"/>
+
+  <text x="70" y="328" fill="#132735" font-family="'DejaVu Sans', sans-serif" font-size="18" font-weight="800">PLAY IN FOUR STEPS · PROTECT AND ATTACK AT THE SAME TIME</text>
+
+  <g font-family="'DejaVu Sans', sans-serif">
+    <rect x="70" y="352" width="335" height="248" rx="22" fill="#d7ece8" stroke="#08756f" stroke-width="3"/>
+    <circle cx="112" cy="394" r="24" fill="#08756f"/>
+    <text x="112" y="402" text-anchor="middle" fill="#ffffff" font-size="21" font-weight="800">1</text>
+    <text x="105" y="448" fill="#075e59" font-size="25" font-weight="800">PROTECT YOURS</text>
+    <text x="105" y="492" fill="#27484a" font-size="20">Fix the weakness.</text>
+    <text x="105" y="526" fill="#27484a" font-size="20">Keep the service working.</text>
+    <text x="105" y="560" fill="#27484a" font-size="20">Keep your flags safe.</text>
+
+    <rect x="445" y="352" width="335" height="248" rx="22" fill="#f3e3b8" stroke="#996600" stroke-width="3"/>
+    <circle cx="487" cy="394" r="24" fill="#996600"/>
+    <text x="487" y="402" text-anchor="middle" fill="#ffffff" font-size="21" font-weight="800">2</text>
+    <text x="480" y="448" fill="#7d5400" font-size="25" font-weight="800">ATTACK THEIRS</text>
+    <text x="480" y="492" fill="#584519" font-size="20">Use the same weakness.</text>
+    <text x="480" y="526" fill="#584519" font-size="20">Follow your target list.</text>
+    <text x="480" y="560" fill="#584519" font-size="20">Steal the current flag.</text>
+
+    <rect x="820" y="352" width="335" height="248" rx="22" fill="#dce8f5" stroke="#2f67a8" stroke-width="3"/>
+    <circle cx="862" cy="394" r="24" fill="#2f67a8"/>
+    <text x="862" y="402" text-anchor="middle" fill="#ffffff" font-size="21" font-weight="800">3</text>
+    <text x="855" y="448" fill="#244f83" font-size="25" font-weight="800">SUBMIT FLAGS</text>
+    <text x="855" y="492" fill="#293f57" font-size="20">Send stolen flags to RSCTF.</text>
+    <text x="855" y="526" fill="#293f57" font-size="20">Submit before they expire.</text>
+    <text x="855" y="560" fill="#293f57" font-size="20">Valid flags grow your score.</text>
+
+    <rect x="1195" y="352" width="335" height="248" rx="22" fill="#f2cfc5" stroke="#b9362c" stroke-width="3"/>
+    <circle cx="1237" cy="394" r="24" fill="#b9362c"/>
+    <text x="1237" y="402" text-anchor="middle" fill="#ffffff" font-size="21" font-weight="800">4</text>
+    <text x="1230" y="448" fill="#8f281f" font-size="25" font-weight="800">NEW ROUND</text>
+    <text x="1230" y="492" fill="#6f332d" font-size="20">New flags appear.</text>
+    <text x="1230" y="526" fill="#6f332d" font-size="20">Your service keeps running.</text>
+    <text x="1230" y="560" fill="#6f332d" font-size="20">Protect, attack, repeat.</text>
+  </g>
+  <g fill="none" stroke="#334155" stroke-width="4" marker-end="url(#arrow)">
+    <line x1="410" y1="476" x2="437" y2="476"/>
+    <line x1="785" y1="476" x2="812" y2="476"/>
+    <line x1="1160" y1="476" x2="1187" y2="476"/>
+  </g>
+
+  <rect x="70" y="636" width="1460" height="160" rx="22" fill="#ffffff" stroke="#172b38" stroke-width="3"/>
+  <text x="105" y="674" fill="#132735" font-family="'DejaVu Sans', sans-serif" font-size="19" font-weight="800">YOUR SCORE GROWS WHEN YOU DO ALL THREE</text>
+  <g font-family="'DejaVu Sans', sans-serif" font-size="22" font-weight="800" text-anchor="middle">
+    <rect x="105" y="704" width="400" height="58" rx="29" fill="#f3e3b8"/>
+    <text x="305" y="740" fill="#7d5400">STEAL + SUBMIT FLAGS</text>
+    <rect x="600" y="704" width="400" height="58" rx="29" fill="#d7ece8"/>
+    <text x="800" y="740" fill="#075e59">PROTECT YOUR FLAGS</text>
+    <rect x="1095" y="704" width="400" height="58" rx="29" fill="#dce8f5"/>
+    <text x="1295" y="740" fill="#244f83">KEEP SERVICE WORKING</text>
+  </g>
+
+  <rect x="70" y="824" width="1460" height="52" rx="26" fill="#172b38"/>
+  <text x="800" y="857" text-anchor="middle" fill="#ffffff" font-family="'DejaVu Sans', sans-serif" font-size="19" font-weight="800">LIVE CAN CHANGE · SETTLED IS OFFICIAL</text>
+</svg>

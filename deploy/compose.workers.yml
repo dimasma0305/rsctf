@@ -1,0 +1,42 @@
+# Optional trusted worker plane for the normal all-in-one deployment.
+#
+# Add this file after compose.yml. The four host files are required and remain
+# read-only inside the container. Port 9443 carries raw TLS, not HTTP; publish it
+# directly or place only a TCP/TLS-passthrough load balancer in front.
+# For hybrid local Docker A&D/KotH, merge compose.docker.yml (and optionally
+# compose.ad-vpn.yml) before this file, then set RSCTF_WORKER_LOCAL_BACKEND=docker.
+services:
+  rsctf:
+    environment:
+      RSCTF_CONTAINER_BACKEND: worker
+      RSCTF_WORKER_LOCAL_BACKEND: ${RSCTF_WORKER_LOCAL_BACKEND:-none}
+      # compose.capture.yml may override this only when NET_RAW is also granted.
+      RSCTF_TRAFFIC_CAPTURE_ENABLED: "false"
+      RSCTF_WORKER_DEFAULT_OS: ${RSCTF_WORKER_DEFAULT_OS:-linux}
+      RSCTF_WORKER_DEFAULT_ARCH: ${RSCTF_WORKER_DEFAULT_ARCH:-amd64}
+      RSCTF_WORKER_LISTEN: 0.0.0.0:9443
+      RSCTF_WORKER_PUBLIC_ENDPOINT: ${RSCTF_WORKER_PUBLIC_ENDPOINT:?Set RSCTF_WORKER_PUBLIC_ENDPOINT to the worker-reachable host:port}
+      RSCTF_WORKER_SERVER_NAME: ${RSCTF_WORKER_SERVER_NAME:?Set RSCTF_WORKER_SERVER_NAME to the server certificate DNS name}
+      RSCTF_WORKER_CA_CERT: /run/secrets/rsctf-worker/worker-ca.crt
+      RSCTF_WORKER_CA_KEY: /run/secrets/rsctf-worker/worker-ca.key
+      RSCTF_WORKER_SERVER_CERT: /run/secrets/rsctf-worker/worker-server.crt
+      RSCTF_WORKER_SERVER_KEY: /run/secrets/rsctf-worker/worker-server.key
+    volumes:
+      - type: bind
+        source: ${RSCTF_WORKER_CA_CERT_HOST:?Set RSCTF_WORKER_CA_CERT_HOST}
+        target: /run/secrets/rsctf-worker/worker-ca.crt
+        read_only: true
+      - type: bind
+        source: ${RSCTF_WORKER_CA_KEY_HOST:?Set RSCTF_WORKER_CA_KEY_HOST}
+        target: /run/secrets/rsctf-worker/worker-ca.key
+        read_only: true
+      - type: bind
+        source: ${RSCTF_WORKER_SERVER_CERT_HOST:?Set RSCTF_WORKER_SERVER_CERT_HOST}
+        target: /run/secrets/rsctf-worker/worker-server.crt
+        read_only: true
+      - type: bind
+        source: ${RSCTF_WORKER_SERVER_KEY_HOST:?Set RSCTF_WORKER_SERVER_KEY_HOST}
+        target: /run/secrets/rsctf-worker/worker-server.key
+        read_only: true
+    ports:
+      - ${RSCTF_WORKER_BIND_IP:-0.0.0.0}:${RSCTF_WORKER_PORT:-9443}:9443

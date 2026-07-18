@@ -1,0 +1,27 @@
+.wrapper {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  margin-top: var(--mantine-spacing-xl);
+  border-top: 1px solid var(--app-border);
+  background: var(--app-shell-surface);
+}
+
+.inner {
+  width: min(calc(100% - 48px), 1440px);
+  margin: 0 auto;
+  padding: calc(var(--mantine-spacing-xl) * 1.4) 0;
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .inner {
+    width: min(calc(100% - 24px), 1440px);
+    padding: var(--mantine-spacing-xl) 0;
+  }
+}
+
+@media print {
+  .wrapper {
+    display: none;
+  }
+}

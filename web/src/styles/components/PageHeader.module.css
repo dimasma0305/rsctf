@@ -1,0 +1,127 @@
+.root {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  min-height: clamp(10rem, 18vw, 13rem);
+  margin-top: clamp(var(--mantine-spacing-md), 2vw, var(--mantine-spacing-xl));
+  padding: clamp(var(--mantine-spacing-lg), 3.5vw, calc(var(--mantine-spacing-xl) * 1.65));
+  overflow: hidden;
+  border: 1px solid var(--app-surface-border);
+  border-radius: var(--mantine-radius-xl);
+  background:
+    radial-gradient(
+      circle at 88% 18%,
+      color-mix(in srgb, var(--mantine-primary-color-5) 17%, transparent),
+      transparent 18rem
+    ),
+    linear-gradient(135deg, color-mix(in srgb, var(--app-raised-surface) 96%, transparent), var(--app-subtle-surface));
+  box-shadow:
+    0 22px 58px rgba(5, 11, 24, 0.08),
+    inset 0 1px 0 color-mix(in srgb, var(--app-text-primary) 5%, transparent);
+}
+
+.root::before,
+.root::after {
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  content: '';
+}
+
+.root::before {
+  top: -5rem;
+  right: -4rem;
+  width: 15rem;
+  height: 15rem;
+  border: 1px solid color-mix(in srgb, var(--mantine-primary-color-4) 25%, transparent);
+  border-radius: 48% 52% 60% 40% / 42% 38% 62% 58%;
+  rotate: 14deg;
+  box-shadow:
+    0 0 0 2.2rem color-mix(in srgb, var(--mantine-primary-color-6) 3.5%, transparent),
+    0 0 0 4.4rem color-mix(in srgb, var(--mantine-primary-color-6) 2.5%, transparent);
+}
+
+.root::after {
+  inset: auto 0 0 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    var(--mantine-primary-color-filled),
+    color-mix(in srgb, var(--mantine-primary-color-4) 30%, transparent) 38%,
+    transparent 72%
+  );
+}
+
+.copy {
+  position: relative;
+  min-width: 0;
+}
+
+.eyebrow {
+  color: var(--app-accent-text);
+  font-size: 0.6875rem;
+  font-weight: 760;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.title {
+  color: var(--app-text-primary);
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+
+.description {
+  max-width: 66ch;
+  line-height: 1.65;
+}
+
+.actions {
+  position: relative;
+  justify-content: flex-end;
+}
+
+.actions :global(.mantine-Button-root) {
+  min-height: 46px;
+  padding-inline: 1.25rem;
+  border-radius: 999px;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--mantine-primary-color-filled) 18%, transparent);
+}
+
+@media (max-width: $mantine-breakpoint-xs) {
+  .root {
+    min-height: auto;
+    margin-top: var(--mantine-spacing-md);
+    padding: var(--mantine-spacing-lg);
+    border-radius: var(--mantine-radius-lg);
+  }
+
+  .actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .actions > * {
+    flex: 1;
+  }
+
+  .root::before {
+    top: -7rem;
+    right: -7rem;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .root::before {
+    animation: header-orbit 14s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes header-orbit {
+  from {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  to {
+    transform: translate3d(-0.75rem, 0.55rem, 0) rotate(5deg);
+  }
+}

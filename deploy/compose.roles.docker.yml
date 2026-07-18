@@ -1,0 +1,16 @@
+# Add after compose.roles.yml when the control owner needs Docker in a direct
+# split Docker deployment. Also use compose.docker.yml so synchronous web
+# operations share the same daemon. Do not combine this with the worker overlay:
+# split hybrid lifecycle delegation is not implemented.
+services:
+  rsctf-control:
+    # Access to the root-owned daemon socket is deliberate and root-equivalent.
+    user: "0:0"
+    environment:
+      RSCTF_CONTAINER_BACKEND: docker
+      RSCTF_DOCKER_PUBLIC_ENTRY: ${RSCTF_DOCKER_PUBLIC_ENTRY:?Set the public host or IP for challenge ports}
+      RSCTF_SHARED_DOCKER_DAEMON: "true"
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock

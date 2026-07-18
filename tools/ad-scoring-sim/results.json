@@ -1,0 +1,3274 @@
+{
+  "metadata": {
+    "resultsSchemaVersion": 5,
+    "seed": 96510374,
+    "trials": 1000,
+    "teamCount": 20,
+    "fieldTeamCount": 17,
+    "massDiffusionCapturerThreshold": 10,
+    "epochs": 6,
+    "ticksPerEpoch": 8,
+    "maturityDistinctVictimThreshold": 2,
+    "maturityDistinctTickThreshold": 2,
+    "maturityRampStart": 4,
+    "maturityRampEnd": 8,
+    "positiveDefenseAttackWeight": 0.3,
+    "positiveDefenseRatio": 0.5,
+    "positiveDefenseSlaWeight": 1,
+    "manualEpochBudget": 100,
+    "manualArithmeticWeights": {
+      "attack": 0.5,
+      "defense": 0.5,
+      "balance": 0
+    },
+    "manualBalancedWeights": {
+      "attack": 0.4,
+      "defense": 0.4,
+      "balance": 0.2
+    },
+    "deployedOfficialFormula": "manual-equal-balanced",
+    "officialScoringMode": "EpochBalanced",
+    "officialBoardDeterminesRankAndAwards": true,
+    "manualRarityCoefficient": 0.25,
+    "manualRarityMinOpponents": 4,
+    "serviceWeightBounds": [
+      0.8,
+      1.2
+    ],
+    "simulatedServiceWeight": 1,
+    "serviceWeightIsPrecommittedAndSnapshotted": true,
+    "scoringRosterFrozenAtStartRound": true,
+    "outsideFrozenRosterCapturesExcluded": true,
+    "attackDenominatorSharedByFrozenRoster": true,
+    "acceptedCaptureQualifiesOffenseFlag": true,
+    "defenseRequiresExactHealthyCustomCheck": true,
+    "missingCheckCredit": 0,
+    "internalErrorPolicy": "carry prior; isolated first error is zero; all-services first error voids challenge-round",
+    "manualScoringStartRound": 1,
+    "midGameEnablementStartsNextRound": true,
+    "manualDefenseIsPairwise": true,
+    "manualDefenseIsObservational": true,
+    "manualSlaMultipliesWholeScore": true,
+    "defenseEligibilityRequiresHealthyCustomChecker": true,
+    "fallbackTcpProbeQualifiesDefense": false,
+    "liveTotals": {
+      "settled": "finalized epochs only",
+      "projected": "all current epoch evidence",
+      "gameEndFinalizesPartialTail": true,
+      "fullEpochWeight": 1,
+      "partialTailWeight": "observed ticks / configured ticks"
+    },
+    "epochDetailRowsRetainedInListUi": 3,
+    "totalsUseAllEpochs": true,
+    "exploitPathsPerTrial": 5,
+    "syntheticGeneratorFreshCaptureRequiresOkStatus": true,
+    "delayedSubmissionsModeled": false,
+    "historicalFieldSizes": [
+      5,
+      8,
+      60,
+      250,
+      300
+    ],
+    "evaluatedFieldSizes": [
+      5,
+      8,
+      20,
+      60,
+      250,
+      300
+    ],
+    "binomialMarginPct": 3.1
+  },
+  "historicalEvidence": {
+    "auditSnapshotUtc": "2026-07-10T22:45:34Z",
+    "auditQuery": "tools/ad-scoring-sim/historical-audit.sql",
+    "survivingGameAttacks": 0,
+    "deletedGameCohorts": 36,
+    "attackedDeletedGameCohorts": 24,
+    "historicalAttacks": 1351,
+    "capturerMultiplicity": {
+      "one": 1351,
+      "twoOrMore": 0
+    },
+    "deletedGameCheckerRows": 15814,
+    "deletedGameInternalErrorRows": 15528,
+    "deletedGameInternalErrorFraction": 0.98191,
+    "attackedCohortCheckerRows": 14986,
+    "attackedCohortPositiveSlaRows": 0,
+    "burstCohortsAtMostOneSecond": {
+      "count": 23,
+      "total": 24
+    },
+    "historicalAttackRowsWithAttackerParticipation": 0,
+    "consumesRawDatabaseRows": false,
+    "note": "Deleted-game topology and burst signatures are consistent with lifecycle load traffic, not player evidence."
+  },
+  "formulaDefinitions": {
+    "current": "Retired fixed rarity pot: each capturer gets P/k; victim loses P.",
+    "sqrt": "Conserved coverage transfer X=P*sqrt(k/M), split X across k capturers.",
+    "flat": "No-rarity conserved transfer X=P*k/M, so every capturer gets P/M.",
+    "normalized": "No-rarity conserved coverage: ATK=0.45*targets/M, DEF=-0.45*capturers/M, SLA=q.",
+    "scarcity": "Bounded scarcity transfer X=0.45*(k/M)*(2-k/M), split across k capturers; victim loses X.",
+    "maturity": "Maturity-gated scarcity share=(0.45/M)*[1+w(A)*(1-k/A)], A=|C union Q_v|; victim loses k*share.",
+    "positiveDefense": "Maturity ATK uses weight 0.30 with no victim debit; each active attacker funds up to 0.5*ATK across healthy missed targets, and uptime scales DEF.",
+    "ictf": "iCTF-like fixed service pot comparison.",
+    "matrix": "Active-attacker pair pots; non-capture is not proof of an attempted block.",
+    "bounded": "40% normalized coverage + 35% remaining defense coverage + 25% SLA credit.",
+    "boundedOffenseHeavy": "45% normalized coverage + 30% remaining defense coverage + 25% SLA credit.",
+    "manualArithmetic": "Offline governance control: Core=0.5*A+0.5*D; accepted flags set A, pairwise protected opportunities set D, and local SLA R multiplies the whole fixed-budget score.",
+    "manualBalanced": "Deployed official EpochBalanced policy: Core=0.4*A+0.4*D+0.2*sqrt(A*D); accepted flags set A, pairwise protected opportunities set D, and local SLA R multiplies the whole fixed-budget score."
+  },
+  "scenarioDefinitions": {
+    "commonAiExploit": "One flag moves from one capturer to every eligible capturer.",
+    "lateExclusiveProxy": "A sole late capturer is compared with a field-wide common path without asserting patch causality.",
+    "earlyFarmerVsLateAdapter": "Identical exclusive sweeps occur in the first two versus last two epochs.",
+    "defenseSla": "An active attacker captures peers while one healthy target remains uncaptured; this is observational, not proof of an attempt.",
+    "collusionControl": "One valid capture is compared with the same flag submitted by the full eligible field."
+  },
+  "maturityControls": [
+    {
+      "activeAttackers": 1,
+      "maturityWeight": 0,
+      "soleCaptureAttack": 0.023684,
+      "normalizedMultiplier": 1,
+      "victimDebit": -0.023684
+    },
+    {
+      "activeAttackers": 4,
+      "maturityWeight": 0,
+      "soleCaptureAttack": 0.023684,
+      "normalizedMultiplier": 1,
+      "victimDebit": -0.023684
+    },
+    {
+      "activeAttackers": 5,
+      "maturityWeight": 0.1563,
+      "soleCaptureAttack": 0.026645,
+      "normalizedMultiplier": 1.125,
+      "victimDebit": -0.026645
+    },
+    {
+      "activeAttackers": 6,
+      "maturityWeight": 0.5,
+      "soleCaptureAttack": 0.033553,
+      "normalizedMultiplier": 1.4167,
+      "victimDebit": -0.033553
+    },
+    {
+      "activeAttackers": 7,
+      "maturityWeight": 0.8438,
+      "soleCaptureAttack": 0.040813,
+      "normalizedMultiplier": 1.7232,
+      "victimDebit": -0.040813
+    },
+    {
+      "activeAttackers": 8,
+      "maturityWeight": 1,
+      "soleCaptureAttack": 0.044408,
+      "normalizedMultiplier": 1.875,
+      "victimDebit": -0.044408
+    },
+    {
+      "activeAttackers": 19,
+      "maturityWeight": 1,
+      "soleCaptureAttack": 0.046122,
+      "normalizedMultiplier": 1.9474,
+      "victimDebit": -0.046122
+    }
+  ],
+  "collusionFunnelControl": {
+    "teamCount": 20,
+    "directedMisses": 19,
+    "observationalDefense": 2.842105,
+    "observationalTotal": 3.842105,
+    "manualArithmeticDefense": 50,
+    "manualArithmeticTotal": 50,
+    "manualBalancedDefense": 40,
+    "manualBalancedTotal": 40
+  },
+  "deterministic": [
+    {
+      "formula": "rsctf-legacy-gamma-0",
+      "secondCopyRetentionPct": 50,
+      "massCopyRetentionPct": 5.26,
+      "exclusiveToCommodityRatio": 19,
+      "coalitionGainMultiple": 1,
+      "victimDamageAmplification": 1,
+      "marginalVictimDamageToAttack": 1,
+      "exclusiveSweepAttack": 19,
+      "exclusiveSweepQuality": 4.4721,
+      "downtimePenaltySameAttack": 4.4721,
+      "uncapturedTargetDefense": 0,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "sqrt-transfer-gamma-0.5",
+      "secondCopyRetentionPct": 70.71,
+      "massCopyRetentionPct": 22.94,
+      "exclusiveToCommodityRatio": 4.359,
+      "coalitionGainMultiple": 4.359,
+      "victimDamageAmplification": 4.359,
+      "marginalVictimDamageToAttack": 1,
+      "exclusiveSweepAttack": 4.3589,
+      "exclusiveSweepQuality": 4.4721,
+      "downtimePenaltySameAttack": 4.4721,
+      "uncapturedTargetDefense": 0,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "flat-transfer-gamma-1",
+      "secondCopyRetentionPct": 100,
+      "massCopyRetentionPct": 100,
+      "exclusiveToCommodityRatio": 1,
+      "coalitionGainMultiple": 19,
+      "victimDamageAmplification": 19,
+      "marginalVictimDamageToAttack": 1,
+      "exclusiveSweepAttack": 1,
+      "exclusiveSweepQuality": 4.4721,
+      "downtimePenaltySameAttack": 4.4721,
+      "uncapturedTargetDefense": 0,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "normalized-coverage-conserved",
+      "secondCopyRetentionPct": 100,
+      "massCopyRetentionPct": 100,
+      "exclusiveToCommodityRatio": 1,
+      "coalitionGainMultiple": 19,
+      "victimDamageAmplification": 19,
+      "marginalVictimDamageToAttack": 1,
+      "exclusiveSweepAttack": 0.45,
+      "exclusiveSweepQuality": 1,
+      "downtimePenaltySameAttack": 1,
+      "uncapturedTargetDefense": 0,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "bounded-scarcity-conserved",
+      "secondCopyRetentionPct": 97.3,
+      "massCopyRetentionPct": 51.35,
+      "exclusiveToCommodityRatio": 1.947,
+      "coalitionGainMultiple": 9.757,
+      "victimDamageAmplification": 9.757,
+      "marginalVictimDamageToAttack": 1,
+      "exclusiveSweepAttack": 0.8763,
+      "exclusiveSweepQuality": 1,
+      "downtimePenaltySameAttack": 1,
+      "uncapturedTargetDefense": 0,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "maturity-gated-scarcity-conserved",
+      "secondCopyRetentionPct": 97.3,
+      "massCopyRetentionPct": 51.35,
+      "exclusiveToCommodityRatio": 1.947,
+      "coalitionGainMultiple": 9.757,
+      "victimDamageAmplification": 9.757,
+      "marginalVictimDamageToAttack": 1,
+      "exclusiveSweepAttack": 0.8763,
+      "exclusiveSweepQuality": 1,
+      "downtimePenaltySameAttack": 1,
+      "uncapturedTargetDefense": 0,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "maturity-positive-defense",
+      "secondCopyRetentionPct": 97.3,
+      "massCopyRetentionPct": 51.35,
+      "exclusiveToCommodityRatio": 1.947,
+      "coalitionGainMultiple": 9.757,
+      "victimDamageAmplification": null,
+      "marginalVictimDamageToAttack": null,
+      "exclusiveSweepAttack": 0.5842,
+      "exclusiveSweepQuality": 1,
+      "downtimePenaltySameAttack": 1,
+      "uncapturedTargetDefense": 0.2767,
+      "positiveDefendedTargetAdvantage": 0.2767,
+      "positiveDefenseIssuance": 0.2767,
+      "competitiveIssuance": 0.8302,
+      "competitiveIssuancePctOfOld": 100
+    },
+    {
+      "formula": "manual-equal-arithmetic",
+      "secondCopyRetentionPct": 98.94,
+      "massCopyRetentionPct": 80.85,
+      "exclusiveToCommodityRatio": 1.237,
+      "coalitionGainMultiple": 15.362,
+      "victimDamageAmplification": 19,
+      "marginalVictimDamageToAttack": 0.809,
+      "exclusiveSweepAttack": 50,
+      "exclusiveSweepQuality": 0,
+      "downtimePenaltySameAttack": 100,
+      "uncapturedTargetDefense": 50,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "manual-equal-balanced",
+      "secondCopyRetentionPct": 98.94,
+      "massCopyRetentionPct": 80.85,
+      "exclusiveToCommodityRatio": 1.237,
+      "coalitionGainMultiple": 15.362,
+      "victimDamageAmplification": 19,
+      "marginalVictimDamageToAttack": 0.809,
+      "exclusiveSweepAttack": 40,
+      "exclusiveSweepQuality": 0,
+      "downtimePenaltySameAttack": 100,
+      "uncapturedTargetDefense": 40,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "ictf-fixed-pot",
+      "secondCopyRetentionPct": 50,
+      "massCopyRetentionPct": 5.26,
+      "exclusiveToCommodityRatio": 19,
+      "coalitionGainMultiple": 1,
+      "victimDamageAmplification": 1,
+      "marginalVictimDamageToAttack": 1,
+      "exclusiveSweepAttack": 19,
+      "exclusiveSweepQuality": 0,
+      "downtimePenaltySameAttack": 1,
+      "uncapturedTargetDefense": 1,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "active-attacker-matrix",
+      "secondCopyRetentionPct": 100,
+      "massCopyRetentionPct": 100,
+      "exclusiveToCommodityRatio": 1,
+      "coalitionGainMultiple": 19,
+      "victimDamageAmplification": 19,
+      "marginalVictimDamageToAttack": 1,
+      "exclusiveSweepAttack": 4.4721,
+      "exclusiveSweepQuality": 4.4721,
+      "downtimePenaltySameAttack": 4.4721,
+      "uncapturedTargetDefense": 0.2354,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "bounded-coverage-normalized",
+      "secondCopyRetentionPct": 100,
+      "massCopyRetentionPct": 100,
+      "exclusiveToCommodityRatio": 1,
+      "coalitionGainMultiple": 19,
+      "victimDamageAmplification": 19,
+      "marginalVictimDamageToAttack": 0.875,
+      "exclusiveSweepAttack": 40,
+      "exclusiveSweepQuality": 25,
+      "downtimePenaltySameAttack": 60,
+      "uncapturedTargetDefense": 35,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    },
+    {
+      "formula": "bounded-coverage-normalized-45-30-25",
+      "secondCopyRetentionPct": 100,
+      "massCopyRetentionPct": 100,
+      "exclusiveToCommodityRatio": 1,
+      "coalitionGainMultiple": 19,
+      "victimDamageAmplification": 19,
+      "marginalVictimDamageToAttack": 0.667,
+      "exclusiveSweepAttack": 45,
+      "exclusiveSweepQuality": 25,
+      "downtimePenaltySameAttack": 55,
+      "uncapturedTargetDefense": 30,
+      "positiveDefendedTargetAdvantage": null,
+      "positiveDefenseIssuance": null,
+      "competitiveIssuance": null,
+      "competitiveIssuancePctOfOld": null
+    }
+  ],
+  "fieldScaling": [
+    {
+      "teamCount": 5,
+      "formulas": {
+        "rsctf-legacy-gamma-0": {
+          "attack": 4,
+          "quality": 2.2361,
+          "attackToQuality": 1.7889
+        },
+        "sqrt-transfer-gamma-0.5": {
+          "attack": 2,
+          "quality": 2.2361,
+          "attackToQuality": 0.8944
+        },
+        "flat-transfer-gamma-1": {
+          "attack": 1,
+          "quality": 2.2361,
+          "attackToQuality": 0.4472
+        },
+        "normalized-coverage-conserved": {
+          "attack": 0.45,
+          "quality": 1,
+          "attackToQuality": 0.45
+        },
+        "bounded-scarcity-conserved": {
+          "attack": 0.7875,
+          "quality": 1,
+          "attackToQuality": 0.7875
+        },
+        "maturity-gated-scarcity-conserved": {
+          "attack": 0.45,
+          "quality": 1,
+          "attackToQuality": 0.45
+        },
+        "maturity-positive-defense": {
+          "attack": 0.3,
+          "quality": 1,
+          "attackToQuality": 0.3
+        },
+        "active-attacker-matrix": {
+          "attack": 2.2361,
+          "quality": 2.2361,
+          "attackToQuality": 1
+        },
+        "bounded-coverage-normalized": {
+          "attack": 40,
+          "quality": 25,
+          "attackToQuality": 1.6
+        }
+      }
+    },
+    {
+      "teamCount": 8,
+      "formulas": {
+        "rsctf-legacy-gamma-0": {
+          "attack": 7,
+          "quality": 2.8284,
+          "attackToQuality": 2.4749
+        },
+        "sqrt-transfer-gamma-0.5": {
+          "attack": 2.6458,
+          "quality": 2.8284,
+          "attackToQuality": 0.9354
+        },
+        "flat-transfer-gamma-1": {
+          "attack": 1,
+          "quality": 2.8284,
+          "attackToQuality": 0.3536
+        },
+        "normalized-coverage-conserved": {
+          "attack": 0.45,
+          "quality": 1,
+          "attackToQuality": 0.45
+        },
+        "bounded-scarcity-conserved": {
+          "attack": 0.8357,
+          "quality": 1,
+          "attackToQuality": 0.8357
+        },
+        "maturity-gated-scarcity-conserved": {
+          "attack": 0.7754,
+          "quality": 1,
+          "attackToQuality": 0.7754
+        },
+        "maturity-positive-defense": {
+          "attack": 0.517,
+          "quality": 1,
+          "attackToQuality": 0.517
+        },
+        "active-attacker-matrix": {
+          "attack": 2.8284,
+          "quality": 2.8284,
+          "attackToQuality": 1
+        },
+        "bounded-coverage-normalized": {
+          "attack": 40,
+          "quality": 25,
+          "attackToQuality": 1.6
+        }
+      }
+    },
+    {
+      "teamCount": 20,
+      "formulas": {
+        "rsctf-legacy-gamma-0": {
+          "attack": 19,
+          "quality": 4.4721,
+          "attackToQuality": 4.2485
+        },
+        "sqrt-transfer-gamma-0.5": {
+          "attack": 4.3589,
+          "quality": 4.4721,
+          "attackToQuality": 0.9747
+        },
+        "flat-transfer-gamma-1": {
+          "attack": 1,
+          "quality": 4.4721,
+          "attackToQuality": 0.2236
+        },
+        "normalized-coverage-conserved": {
+          "attack": 0.45,
+          "quality": 1,
+          "attackToQuality": 0.45
+        },
+        "bounded-scarcity-conserved": {
+          "attack": 0.8763,
+          "quality": 1,
+          "attackToQuality": 0.8763
+        },
+        "maturity-gated-scarcity-conserved": {
+          "attack": 0.8763,
+          "quality": 1,
+          "attackToQuality": 0.8763
+        },
+        "maturity-positive-defense": {
+          "attack": 0.5842,
+          "quality": 1,
+          "attackToQuality": 0.5842
+        },
+        "active-attacker-matrix": {
+          "attack": 4.4721,
+          "quality": 4.4721,
+          "attackToQuality": 1
+        },
+        "bounded-coverage-normalized": {
+          "attack": 40,
+          "quality": 25,
+          "attackToQuality": 1.6
+        }
+      }
+    },
+    {
+      "teamCount": 60,
+      "formulas": {
+        "rsctf-legacy-gamma-0": {
+          "attack": 59,
+          "quality": 7.746,
+          "attackToQuality": 7.6169
+        },
+        "sqrt-transfer-gamma-0.5": {
+          "attack": 7.6811,
+          "quality": 7.746,
+          "attackToQuality": 0.9916
+        },
+        "flat-transfer-gamma-1": {
+          "attack": 1,
+          "quality": 7.746,
+          "attackToQuality": 0.1291
+        },
+        "normalized-coverage-conserved": {
+          "attack": 0.45,
+          "quality": 1,
+          "attackToQuality": 0.45
+        },
+        "bounded-scarcity-conserved": {
+          "attack": 0.8924,
+          "quality": 1,
+          "attackToQuality": 0.8924
+        },
+        "maturity-gated-scarcity-conserved": {
+          "attack": 0.8924,
+          "quality": 1,
+          "attackToQuality": 0.8924
+        },
+        "maturity-positive-defense": {
+          "attack": 0.5949,
+          "quality": 1,
+          "attackToQuality": 0.5949
+        },
+        "active-attacker-matrix": {
+          "attack": 7.746,
+          "quality": 7.746,
+          "attackToQuality": 1
+        },
+        "bounded-coverage-normalized": {
+          "attack": 40,
+          "quality": 25,
+          "attackToQuality": 1.6
+        }
+      }
+    },
+    {
+      "teamCount": 250,
+      "formulas": {
+        "rsctf-legacy-gamma-0": {
+          "attack": 249,
+          "quality": 15.8114,
+          "attackToQuality": 15.7481
+        },
+        "sqrt-transfer-gamma-0.5": {
+          "attack": 15.7797,
+          "quality": 15.8114,
+          "attackToQuality": 0.998
+        },
+        "flat-transfer-gamma-1": {
+          "attack": 1,
+          "quality": 15.8114,
+          "attackToQuality": 0.0632
+        },
+        "normalized-coverage-conserved": {
+          "attack": 0.45,
+          "quality": 1,
+          "attackToQuality": 0.45
+        },
+        "bounded-scarcity-conserved": {
+          "attack": 0.8982,
+          "quality": 1,
+          "attackToQuality": 0.8982
+        },
+        "maturity-gated-scarcity-conserved": {
+          "attack": 0.8982,
+          "quality": 1,
+          "attackToQuality": 0.8982
+        },
+        "maturity-positive-defense": {
+          "attack": 0.5988,
+          "quality": 1,
+          "attackToQuality": 0.5988
+        },
+        "active-attacker-matrix": {
+          "attack": 15.8114,
+          "quality": 15.8114,
+          "attackToQuality": 1
+        },
+        "bounded-coverage-normalized": {
+          "attack": 40,
+          "quality": 25,
+          "attackToQuality": 1.6
+        }
+      }
+    },
+    {
+      "teamCount": 300,
+      "formulas": {
+        "rsctf-legacy-gamma-0": {
+          "attack": 299,
+          "quality": 17.3205,
+          "attackToQuality": 17.2628
+        },
+        "sqrt-transfer-gamma-0.5": {
+          "attack": 17.2916,
+          "quality": 17.3205,
+          "attackToQuality": 0.9983
+        },
+        "flat-transfer-gamma-1": {
+          "attack": 1,
+          "quality": 17.3205,
+          "attackToQuality": 0.0577
+        },
+        "normalized-coverage-conserved": {
+          "attack": 0.45,
+          "quality": 1,
+          "attackToQuality": 0.45
+        },
+        "bounded-scarcity-conserved": {
+          "attack": 0.8985,
+          "quality": 1,
+          "attackToQuality": 0.8985
+        },
+        "maturity-gated-scarcity-conserved": {
+          "attack": 0.8985,
+          "quality": 1,
+          "attackToQuality": 0.8985
+        },
+        "maturity-positive-defense": {
+          "attack": 0.599,
+          "quality": 1,
+          "attackToQuality": 0.599
+        },
+        "active-attacker-matrix": {
+          "attack": 17.3205,
+          "quality": 17.3205,
+          "attackToQuality": 1
+        },
+        "bounded-coverage-normalized": {
+          "attack": 40,
+          "quality": 25,
+          "attackToQuality": 1.6
+        }
+      }
+    }
+  ],
+  "campaigns": [
+    {
+      "formula": "rsctf-legacy-gamma-0",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 4,
+      "earlyVsLateHeavyDelta": 8,
+      "uncapturedVsBreachedAdvantage": 3,
+      "recoveringAttackerVsHealthyDelta": 47.2918
+    },
+    {
+      "formula": "sqrt-transfer-gamma-0.5",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 0.9177,
+      "earlyVsLateHeavyDelta": 1.8353,
+      "uncapturedVsBreachedAdvantage": 0.6882,
+      "recoveringAttackerVsHealthyDelta": 5.6802
+    },
+    {
+      "formula": "flat-transfer-gamma-1",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 0.2105,
+      "earlyVsLateHeavyDelta": 0.4211,
+      "uncapturedVsBreachedAdvantage": 0.1579,
+      "recoveringAttackerVsHealthyDelta": -3.8661
+    },
+    {
+      "formula": "normalized-coverage-conserved",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 0.0947,
+      "earlyVsLateHeavyDelta": 0.1895,
+      "uncapturedVsBreachedAdvantage": 0.0711,
+      "recoveringAttackerVsHealthyDelta": -0.2211
+    },
+    {
+      "formula": "bounded-scarcity-conserved",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 0.1845,
+      "earlyVsLateHeavyDelta": 0.369,
+      "uncapturedVsBreachedAdvantage": 0.1384,
+      "recoveringAttackerVsHealthyDelta": 0.9906
+    },
+    {
+      "formula": "maturity-gated-scarcity-conserved",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 0.0947,
+      "earlyVsLateHeavyDelta": 0.1895,
+      "uncapturedVsBreachedAdvantage": 0.0711,
+      "recoveringAttackerVsHealthyDelta": -0.2211
+    },
+    {
+      "formula": "maturity-positive-defense",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 0.06,
+      "earlyVsLateHeavyDelta": 0.12,
+      "uncapturedVsBreachedAdvantage": 0.4263,
+      "recoveringAttackerVsHealthyDelta": -1.0737
+    },
+    {
+      "formula": "manual-equal-arithmetic",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 10.5263,
+      "earlyVsLateHeavyDelta": 21.0526,
+      "uncapturedVsBreachedAdvantage": 1.9737,
+      "recoveringAttackerVsHealthyDelta": 8.7128
+    },
+    {
+      "formula": "manual-equal-balanced",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 12.4211,
+      "earlyVsLateHeavyDelta": 24.8421,
+      "uncapturedVsBreachedAdvantage": 1.5789,
+      "recoveringAttackerVsHealthyDelta": 18.6883
+    },
+    {
+      "formula": "ictf-fixed-pot",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 4,
+      "earlyVsLateHeavyDelta": 8,
+      "uncapturedVsBreachedAdvantage": 3,
+      "recoveringAttackerVsHealthyDelta": 52.9474
+    },
+    {
+      "formula": "active-attacker-matrix",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 0.8944,
+      "earlyVsLateHeavyDelta": 1.7889,
+      "uncapturedVsBreachedAdvantage": 0.7061,
+      "recoveringAttackerVsHealthyDelta": 5.296
+    },
+    {
+      "formula": "bounded-coverage-normalized",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 8.3684,
+      "earlyVsLateHeavyDelta": 16.7368,
+      "uncapturedVsBreachedAdvantage": 5.5263,
+      "recoveringAttackerVsHealthyDelta": 23.6842
+    },
+    {
+      "formula": "bounded-coverage-normalized-45-30-25",
+      "earlyVsLateEqualDelta": 0,
+      "earlyVsLateModerateDelta": 9.3158,
+      "earlyVsLateHeavyDelta": 18.6316,
+      "uncapturedVsBreachedAdvantage": 4.7368,
+      "recoveringAttackerVsHealthyDelta": 45.3947
+    }
+  ],
+  "sampleStandings": {
+    "seed": 96510342,
+    "formula": "manual-equal-balanced",
+    "epochMode": "equal",
+    "teams": [
+      {
+        "team": 20,
+        "profile": "field-20",
+        "epochOneRank": 1,
+        "finalRank": 1,
+        "epochRanks": [
+          1,
+          4,
+          1,
+          3,
+          5,
+          12
+        ],
+        "epochScores": [
+          73.1781,
+          48.3538,
+          72.0227,
+          55.9559,
+          48.4527,
+          43.2296
+        ],
+        "settledTotal": 56.8655,
+        "projectedTotal": 56.8655
+      },
+      {
+        "team": 13,
+        "profile": "field-13",
+        "epochOneRank": 4.5,
+        "finalRank": 2,
+        "epochRanks": [
+          4.5,
+          11,
+          2,
+          1,
+          4,
+          6
+        ],
+        "epochScores": [
+          39.7368,
+          38.9474,
+          71.5012,
+          80.9528,
+          54.4718,
+          48.8821
+        ],
+        "settledTotal": 55.7487,
+        "projectedTotal": 55.7487
+      },
+      {
+        "team": 8,
+        "profile": "field-08",
+        "epochOneRank": 2,
+        "finalRank": 3,
+        "epochRanks": [
+          2,
+          6,
+          10,
+          4,
+          15,
+          4
+        ],
+        "epochScores": [
+          53.666,
+          44.3355,
+          43.1706,
+          54.552,
+          40,
+          54.8028
+        ],
+        "settledTotal": 48.4211,
+        "projectedTotal": 48.4211
+      },
+      {
+        "team": 2,
+        "profile": "adaptive-human-ai",
+        "epochOneRank": 4.5,
+        "finalRank": 4,
+        "epochRanks": [
+          4.5,
+          8.5,
+          5,
+          8,
+          2,
+          3
+        ],
+        "epochScores": [
+          39.7368,
+          39.7368,
+          48.8964,
+          44.2663,
+          55.9918,
+          58.5453
+        ],
+        "settledTotal": 47.8622,
+        "projectedTotal": 47.8622
+      },
+      {
+        "team": 3,
+        "profile": "defense-specialist",
+        "epochOneRank": 11.5,
+        "finalRank": 5,
+        "epochRanks": [
+          11.5,
+          15,
+          9,
+          14,
+          1,
+          1
+        ],
+        "epochScores": [
+          37.1053,
+          36.0526,
+          43.4468,
+          39.1825,
+          55.9974,
+          65.0576
+        ],
+        "settledTotal": 46.1404,
+        "projectedTotal": 46.1404
+      },
+      {
+        "team": 5,
+        "profile": "field-05",
+        "epochOneRank": 4.5,
+        "finalRank": 6,
+        "epochRanks": [
+          4.5,
+          18,
+          4,
+          2,
+          6,
+          9.5
+        ],
+        "epochScores": [
+          39.7368,
+          32.0113,
+          52.4181,
+          58.7552,
+          48.3298,
+          43.9187
+        ],
+        "settledTotal": 45.8617,
+        "projectedTotal": 45.8617
+      },
+      {
+        "team": 4,
+        "profile": "field-04",
+        "epochOneRank": 7.5,
+        "finalRank": 7,
+        "epochRanks": [
+          7.5,
+          1,
+          7,
+          10,
+          12,
+          17
+        ],
+        "epochScores": [
+          39.4737,
+          63.2517,
+          43.6195,
+          42.4615,
+          44.4671,
+          35.6051
+        ],
+        "settledTotal": 44.8131,
+        "projectedTotal": 44.8131
+      },
+      {
+        "team": 9,
+        "profile": "field-09",
+        "epochOneRank": 9,
+        "finalRank": 8,
+        "epochRanks": [
+          9,
+          17,
+          3,
+          5,
+          8,
+          14
+        ],
+        "epochScores": [
+          39.2544,
+          32.7275,
+          54.9025,
+          54.1388,
+          46.192,
+          38.8168
+        ],
+        "settledTotal": 44.3387,
+        "projectedTotal": 44.3387
+      },
+      {
+        "team": 7,
+        "profile": "field-07",
+        "epochOneRank": 10,
+        "finalRank": 9,
+        "epochRanks": [
+          10,
+          12.5,
+          16,
+          6,
+          14,
+          2
+        ],
+        "epochScores": [
+          39.2105,
+          38.6842,
+          31.4525,
+          48.8264,
+          40.4985,
+          58.6047
+        ],
+        "settledTotal": 42.8795,
+        "projectedTotal": 42.8795
+      },
+      {
+        "team": 15,
+        "profile": "field-15",
+        "epochOneRank": 18,
+        "finalRank": 10,
+        "epochRanks": [
+          18,
+          2,
+          6,
+          11,
+          12,
+          9.5
+        ],
+        "epochScores": [
+          24.5614,
+          52.016,
+          47.1749,
+          42.1884,
+          44.4671,
+          43.9187
+        ],
+        "settledTotal": 42.3878,
+        "projectedTotal": 42.3878
+      },
+      {
+        "team": 1,
+        "profile": "fast-agent",
+        "epochOneRank": 13,
+        "finalRank": 11,
+        "epochRanks": [
+          13,
+          3,
+          11,
+          18,
+          10,
+          7
+        ],
+        "epochScores": [
+          32.2704,
+          48.4889,
+          42.1787,
+          36.6965,
+          44.7368,
+          47.7504
+        ],
+        "settledTotal": 42.0203,
+        "projectedTotal": 42.0203
+      },
+      {
+        "team": 12,
+        "profile": "field-12",
+        "epochOneRank": 14,
+        "finalRank": 12,
+        "epochRanks": [
+          14,
+          10,
+          12,
+          13,
+          7,
+          8
+        ],
+        "epochScores": [
+          30.5451,
+          39.2105,
+          40.9295,
+          41.0349,
+          47.7193,
+          47.4252
+        ],
+        "settledTotal": 41.1441,
+        "projectedTotal": 41.1441
+      },
+      {
+        "team": 17,
+        "profile": "field-17",
+        "epochOneRank": 15,
+        "finalRank": 13,
+        "epochRanks": [
+          15,
+          16,
+          15,
+          7,
+          3,
+          13
+        ],
+        "epochScores": [
+          29.812,
+          34.4418,
+          37.6316,
+          46.2635,
+          55.4041,
+          43.1908
+        ],
+        "settledTotal": 41.124,
+        "projectedTotal": 41.124
+      },
+      {
+        "team": 16,
+        "profile": "field-16",
+        "epochOneRank": 18,
+        "finalRank": 14,
+        "epochRanks": [
+          18,
+          7,
+          8,
+          12,
+          17,
+          5
+        ],
+        "epochScores": [
+          24.5614,
+          42.2652,
+          43.4581,
+          41.3099,
+          36.1139,
+          51.4437
+        ],
+        "settledTotal": 39.8587,
+        "projectedTotal": 39.8587
+      },
+      {
+        "team": 11,
+        "profile": "field-11",
+        "epochOneRank": 4.5,
+        "finalRank": 15,
+        "epochRanks": [
+          4.5,
+          8.5,
+          18,
+          15,
+          9,
+          15
+        ],
+        "epochScores": [
+          39.7368,
+          39.7368,
+          30.5451,
+          38.909,
+          45.8307,
+          38.3311
+        ],
+        "settledTotal": 38.8483,
+        "projectedTotal": 38.8483
+      },
+      {
+        "team": 18,
+        "profile": "field-18",
+        "epochOneRank": 11.5,
+        "finalRank": 16,
+        "epochRanks": [
+          11.5,
+          20,
+          13,
+          19,
+          12,
+          11
+        ],
+        "epochScores": [
+          37.1053,
+          29.5091,
+          38.1579,
+          29.9092,
+          44.4671,
+          43.4636
+        ],
+        "settledTotal": 37.102,
+        "projectedTotal": 37.102
+      },
+      {
+        "team": 19,
+        "profile": "field-19",
+        "epochOneRank": 7.5,
+        "finalRank": 17,
+        "epochRanks": [
+          7.5,
+          5,
+          14,
+          9,
+          19,
+          20
+        ],
+        "epochScores": [
+          39.4737,
+          45.5035,
+          37.8947,
+          42.7567,
+          25.7978,
+          25.2658
+        ],
+        "settledTotal": 36.1154,
+        "projectedTotal": 36.1154
+      },
+      {
+        "team": 10,
+        "profile": "field-10",
+        "epochOneRank": 18,
+        "finalRank": 18,
+        "epochRanks": [
+          18,
+          12.5,
+          20,
+          17,
+          16,
+          16
+        ],
+        "epochScores": [
+          24.5614,
+          38.6842,
+          21.0526,
+          37.3684,
+          37.2168,
+          35.8597
+        ],
+        "settledTotal": 32.4572,
+        "projectedTotal": 32.4572
+      },
+      {
+        "team": 6,
+        "profile": "field-06",
+        "epochOneRank": 20,
+        "finalRank": 19,
+        "epochRanks": [
+          20,
+          19,
+          19,
+          16,
+          18,
+          18
+        ],
+        "epochScores": [
+          23.9035,
+          30.7609,
+          28.6466,
+          37.8947,
+          31.0338,
+          32.2556
+        ],
+        "settledTotal": 30.7492,
+        "projectedTotal": 30.7492
+      },
+      {
+        "team": 14,
+        "profile": "field-14",
+        "epochOneRank": 16,
+        "finalRank": 20,
+        "epochRanks": [
+          16,
+          14,
+          17,
+          20,
+          20,
+          19
+        ],
+        "epochScores": [
+          29.5677,
+          36.5601,
+          31.058,
+          23.4211,
+          19.047,
+          30.9972
+        ],
+        "settledTotal": 28.4418,
+        "projectedTotal": 28.4418
+      }
+    ]
+  },
+  "sampleComparisons": {
+    "seed": 96510342,
+    "formulas": {
+      "manual-equal-balanced": {
+        "teams": [
+          {
+            "team": 20,
+            "profile": "field-20",
+            "epochRanks": [
+              1,
+              4,
+              1,
+              3,
+              5,
+              12
+            ],
+            "finalRank": 1
+          },
+          {
+            "team": 13,
+            "profile": "field-13",
+            "epochRanks": [
+              4.5,
+              11,
+              2,
+              1,
+              4,
+              6
+            ],
+            "finalRank": 2
+          },
+          {
+            "team": 8,
+            "profile": "field-08",
+            "epochRanks": [
+              2,
+              6,
+              10,
+              4,
+              15,
+              4
+            ],
+            "finalRank": 3
+          },
+          {
+            "team": 2,
+            "profile": "adaptive-human-ai",
+            "epochRanks": [
+              4.5,
+              8.5,
+              5,
+              8,
+              2,
+              3
+            ],
+            "finalRank": 4
+          },
+          {
+            "team": 3,
+            "profile": "defense-specialist",
+            "epochRanks": [
+              11.5,
+              15,
+              9,
+              14,
+              1,
+              1
+            ],
+            "finalRank": 5
+          },
+          {
+            "team": 5,
+            "profile": "field-05",
+            "epochRanks": [
+              4.5,
+              18,
+              4,
+              2,
+              6,
+              9.5
+            ],
+            "finalRank": 6
+          },
+          {
+            "team": 4,
+            "profile": "field-04",
+            "epochRanks": [
+              7.5,
+              1,
+              7,
+              10,
+              12,
+              17
+            ],
+            "finalRank": 7
+          },
+          {
+            "team": 9,
+            "profile": "field-09",
+            "epochRanks": [
+              9,
+              17,
+              3,
+              5,
+              8,
+              14
+            ],
+            "finalRank": 8
+          },
+          {
+            "team": 7,
+            "profile": "field-07",
+            "epochRanks": [
+              10,
+              12.5,
+              16,
+              6,
+              14,
+              2
+            ],
+            "finalRank": 9
+          },
+          {
+            "team": 15,
+            "profile": "field-15",
+            "epochRanks": [
+              18,
+              2,
+              6,
+              11,
+              12,
+              9.5
+            ],
+            "finalRank": 10
+          },
+          {
+            "team": 1,
+            "profile": "fast-agent",
+            "epochRanks": [
+              13,
+              3,
+              11,
+              18,
+              10,
+              7
+            ],
+            "finalRank": 11
+          },
+          {
+            "team": 12,
+            "profile": "field-12",
+            "epochRanks": [
+              14,
+              10,
+              12,
+              13,
+              7,
+              8
+            ],
+            "finalRank": 12
+          },
+          {
+            "team": 17,
+            "profile": "field-17",
+            "epochRanks": [
+              15,
+              16,
+              15,
+              7,
+              3,
+              13
+            ],
+            "finalRank": 13
+          },
+          {
+            "team": 16,
+            "profile": "field-16",
+            "epochRanks": [
+              18,
+              7,
+              8,
+              12,
+              17,
+              5
+            ],
+            "finalRank": 14
+          },
+          {
+            "team": 11,
+            "profile": "field-11",
+            "epochRanks": [
+              4.5,
+              8.5,
+              18,
+              15,
+              9,
+              15
+            ],
+            "finalRank": 15
+          },
+          {
+            "team": 18,
+            "profile": "field-18",
+            "epochRanks": [
+              11.5,
+              20,
+              13,
+              19,
+              12,
+              11
+            ],
+            "finalRank": 16
+          },
+          {
+            "team": 19,
+            "profile": "field-19",
+            "epochRanks": [
+              7.5,
+              5,
+              14,
+              9,
+              19,
+              20
+            ],
+            "finalRank": 17
+          },
+          {
+            "team": 10,
+            "profile": "field-10",
+            "epochRanks": [
+              18,
+              12.5,
+              20,
+              17,
+              16,
+              16
+            ],
+            "finalRank": 18
+          },
+          {
+            "team": 6,
+            "profile": "field-06",
+            "epochRanks": [
+              20,
+              19,
+              19,
+              16,
+              18,
+              18
+            ],
+            "finalRank": 19
+          },
+          {
+            "team": 14,
+            "profile": "field-14",
+            "epochRanks": [
+              16,
+              14,
+              17,
+              20,
+              20,
+              19
+            ],
+            "finalRank": 20
+          }
+        ]
+      },
+      "manual-equal-arithmetic": {
+        "teams": [
+          {
+            "team": 13,
+            "profile": "field-13",
+            "epochRanks": [
+              4.5,
+              10,
+              2,
+              1,
+              4,
+              6
+            ],
+            "finalRank": 1
+          },
+          {
+            "team": 20,
+            "profile": "field-20",
+            "epochRanks": [
+              1,
+              3,
+              1,
+              3,
+              5,
+              13
+            ],
+            "finalRank": 2
+          },
+          {
+            "team": 2,
+            "profile": "adaptive-human-ai",
+            "epochRanks": [
+              4.5,
+              7.5,
+              5,
+              14,
+              2,
+              3
+            ],
+            "finalRank": 3
+          },
+          {
+            "team": 8,
+            "profile": "field-08",
+            "epochRanks": [
+              2,
+              13,
+              8,
+              4,
+              12,
+              4
+            ],
+            "finalRank": 4
+          },
+          {
+            "team": 3,
+            "profile": "defense-specialist",
+            "epochRanks": [
+              10.5,
+              14,
+              7,
+              16,
+              1,
+              1
+            ],
+            "finalRank": 5
+          },
+          {
+            "team": 5,
+            "profile": "field-05",
+            "epochRanks": [
+              4.5,
+              17,
+              4,
+              2,
+              6,
+              9.5
+            ],
+            "finalRank": 6
+          },
+          {
+            "team": 4,
+            "profile": "field-04",
+            "epochRanks": [
+              7.5,
+              1,
+              12,
+              8,
+              10,
+              16
+            ],
+            "finalRank": 7
+          },
+          {
+            "team": 15,
+            "profile": "field-15",
+            "epochRanks": [
+              18,
+              2,
+              6,
+              9,
+              10,
+              9.5
+            ],
+            "finalRank": 8
+          },
+          {
+            "team": 7,
+            "profile": "field-07",
+            "epochRanks": [
+              9,
+              11.5,
+              18,
+              7,
+              15,
+              2
+            ],
+            "finalRank": 9
+          },
+          {
+            "team": 17,
+            "profile": "field-17",
+            "epochRanks": [
+              14,
+              16,
+              11,
+              6,
+              3,
+              12
+            ],
+            "finalRank": 10
+          },
+          {
+            "team": 12,
+            "profile": "field-12",
+            "epochRanks": [
+              13,
+              9,
+              15,
+              13,
+              7,
+              7
+            ],
+            "finalRank": 11
+          },
+          {
+            "team": 9,
+            "profile": "field-09",
+            "epochRanks": [
+              12,
+              18,
+              3,
+              5,
+              14,
+              15
+            ],
+            "finalRank": 12
+          },
+          {
+            "team": 1,
+            "profile": "fast-agent",
+            "epochRanks": [
+              16,
+              4,
+              14,
+              18,
+              13,
+              8
+            ],
+            "finalRank": 13
+          },
+          {
+            "team": 11,
+            "profile": "field-11",
+            "epochRanks": [
+              4.5,
+              7.5,
+              16,
+              17,
+              8,
+              17
+            ],
+            "finalRank": 14
+          },
+          {
+            "team": 16,
+            "profile": "field-16",
+            "epochRanks": [
+              18,
+              6,
+              13,
+              11,
+              17,
+              5
+            ],
+            "finalRank": 15
+          },
+          {
+            "team": 18,
+            "profile": "field-18",
+            "epochRanks": [
+              10.5,
+              20,
+              9,
+              19,
+              10,
+              11
+            ],
+            "finalRank": 16
+          },
+          {
+            "team": 19,
+            "profile": "field-19",
+            "epochRanks": [
+              7.5,
+              5,
+              10,
+              10,
+              19,
+              20
+            ],
+            "finalRank": 17
+          },
+          {
+            "team": 10,
+            "profile": "field-10",
+            "epochRanks": [
+              18,
+              11.5,
+              20,
+              15,
+              16,
+              14
+            ],
+            "finalRank": 18
+          },
+          {
+            "team": 6,
+            "profile": "field-06",
+            "epochRanks": [
+              20,
+              19,
+              17,
+              12,
+              18,
+              18
+            ],
+            "finalRank": 19
+          },
+          {
+            "team": 14,
+            "profile": "field-14",
+            "epochRanks": [
+              15,
+              15,
+              19,
+              20,
+              20,
+              19
+            ],
+            "finalRank": 20
+          }
+        ]
+      },
+      "maturity-positive-defense": {
+        "teams": [
+          {
+            "team": 13,
+            "profile": "field-13",
+            "epochRanks": [
+              5,
+              10,
+              2,
+              1,
+              4,
+              10
+            ],
+            "finalRank": 1
+          },
+          {
+            "team": 20,
+            "profile": "field-20",
+            "epochRanks": [
+              1,
+              3,
+              1,
+              5,
+              5,
+              14
+            ],
+            "finalRank": 2
+          },
+          {
+            "team": 3,
+            "profile": "defense-specialist",
+            "epochRanks": [
+              7,
+              15,
+              10,
+              16,
+              1,
+              1
+            ],
+            "finalRank": 3
+          },
+          {
+            "team": 8,
+            "profile": "field-08",
+            "epochRanks": [
+              2,
+              4,
+              12,
+              3,
+              14,
+              4
+            ],
+            "finalRank": 4
+          },
+          {
+            "team": 2,
+            "profile": "adaptive-human-ai",
+            "epochRanks": [
+              5,
+              6.5,
+              7,
+              9,
+              2,
+              3
+            ],
+            "finalRank": 5
+          },
+          {
+            "team": 19,
+            "profile": "field-19",
+            "epochRanks": [
+              8.5,
+              5,
+              13,
+              12,
+              12,
+              16
+            ],
+            "finalRank": 6
+          },
+          {
+            "team": 7,
+            "profile": "field-07",
+            "epochRanks": [
+              10,
+              11.5,
+              11,
+              6,
+              18,
+              2
+            ],
+            "finalRank": 7
+          },
+          {
+            "team": 5,
+            "profile": "field-05",
+            "epochRanks": [
+              3,
+              18,
+              4,
+              4,
+              6,
+              12.5
+            ],
+            "finalRank": 8
+          },
+          {
+            "team": 11,
+            "profile": "field-11",
+            "epochRanks": [
+              5,
+              6.5,
+              18,
+              17,
+              8,
+              9
+            ],
+            "finalRank": 9
+          },
+          {
+            "team": 18,
+            "profile": "field-18",
+            "epochRanks": [
+              11,
+              13,
+              8,
+              20,
+              10,
+              11
+            ],
+            "finalRank": 10
+          },
+          {
+            "team": 4,
+            "profile": "field-04",
+            "epochRanks": [
+              8.5,
+              2,
+              15,
+              11,
+              10,
+              19
+            ],
+            "finalRank": 11
+          },
+          {
+            "team": 12,
+            "profile": "field-12",
+            "epochRanks": [
+              13,
+              9,
+              17,
+              7,
+              7,
+              8
+            ],
+            "finalRank": 12
+          },
+          {
+            "team": 17,
+            "profile": "field-17",
+            "epochRanks": [
+              14.5,
+              17,
+              14,
+              8,
+              3,
+              15
+            ],
+            "finalRank": 13
+          },
+          {
+            "team": 15,
+            "profile": "field-15",
+            "epochRanks": [
+              19,
+              1,
+              9,
+              13,
+              10,
+              12.5
+            ],
+            "finalRank": 14
+          },
+          {
+            "team": 14,
+            "profile": "field-14",
+            "epochRanks": [
+              14.5,
+              14,
+              6,
+              19,
+              16,
+              6
+            ],
+            "finalRank": 15
+          },
+          {
+            "team": 1,
+            "profile": "fast-agent",
+            "epochRanks": [
+              16,
+              16,
+              5,
+              18,
+              15,
+              7
+            ],
+            "finalRank": 16
+          },
+          {
+            "team": 16,
+            "profile": "field-16",
+            "epochRanks": [
+              17,
+              8,
+              16,
+              14,
+              13,
+              5
+            ],
+            "finalRank": 17
+          },
+          {
+            "team": 9,
+            "profile": "field-09",
+            "epochRanks": [
+              12,
+              20,
+              3,
+              2,
+              17,
+              17
+            ],
+            "finalRank": 18
+          },
+          {
+            "team": 10,
+            "profile": "field-10",
+            "epochRanks": [
+              18,
+              11.5,
+              20,
+              15,
+              19,
+              18
+            ],
+            "finalRank": 19
+          },
+          {
+            "team": 6,
+            "profile": "field-06",
+            "epochRanks": [
+              20,
+              19,
+              19,
+              10,
+              20,
+              20
+            ],
+            "finalRank": 20
+          }
+        ]
+      }
+    }
+  },
+  "lastToFirstControl": {
+    "team": 20,
+    "epochOneRank": 20,
+    "finalRank": 1,
+    "epochScores": [
+      0,
+      100,
+      100,
+      100,
+      100,
+      100
+    ],
+    "settledTotal": 83.3333,
+    "projectedTotal": 83.3333,
+    "bestOpponentSettledTotal": 39.3612
+  },
+  "liveEpochTotalControl": {
+    "epochValues": [
+      80,
+      20
+    ],
+    "configuredTicksPerEpoch": 8,
+    "epochTickCounts": [
+      8,
+      1
+    ],
+    "duringPlay": {
+      "settledTotal": 80,
+      "projectedTotal": 73.3333,
+      "finalizedEpochCount": 1,
+      "epochCount": 2,
+      "configuredTicksPerEpoch": 8,
+      "epochTickCounts": [
+        8,
+        1
+      ],
+      "epochWeights": [
+        1,
+        0.125
+      ]
+    },
+    "atGameEnd": {
+      "settledTotal": 73.3333,
+      "projectedTotal": 73.3333,
+      "finalizedEpochCount": 2,
+      "epochCount": 2,
+      "configuredTicksPerEpoch": 8,
+      "epochTickCounts": [
+        8,
+        1
+      ],
+      "epochWeights": [
+        1,
+        0.125
+      ]
+    }
+  },
+  "slaResponse": {
+    "rows": [
+      {
+        "formula": "manual-equal-balanced",
+        "scenario": "exclusive-attacker",
+        "uptime": 0,
+        "nativeScore": 0,
+        "retentionPct": 0
+      },
+      {
+        "formula": "manual-equal-balanced",
+        "scenario": "exclusive-attacker",
+        "uptime": 0.25,
+        "nativeScore": 25,
+        "retentionPct": 25
+      },
+      {
+        "formula": "manual-equal-balanced",
+        "scenario": "exclusive-attacker",
+        "uptime": 0.5,
+        "nativeScore": 50,
+        "retentionPct": 50
+      },
+      {
+        "formula": "manual-equal-balanced",
+        "scenario": "exclusive-attacker",
+        "uptime": 0.75,
+        "nativeScore": 75,
+        "retentionPct": 75
+      },
+      {
+        "formula": "manual-equal-balanced",
+        "scenario": "exclusive-attacker",
+        "uptime": 1,
+        "nativeScore": 100,
+        "retentionPct": 100
+      },
+      {
+        "formula": "manual-equal-balanced",
+        "scenario": "uncaptured-defender",
+        "uptime": 0,
+        "nativeScore": 0,
+        "retentionPct": 0
+      },
+      {
+        "formula": "manual-equal-balanced",
+        "scenario": "uncaptured-defender",
+        "uptime": 0.25,
+        "nativeScore": 10,
+        "retentionPct": 25
+      },
+      {
+        "formula": "manual-equal-balanced",
+        "scenario": "uncaptured-defender",
+        "uptime": 0.5,
+        "nativeScore": 20,
+        "retentionPct": 50
+      },
+      {
+        "formula": "manual-equal-balanced",
+        "scenario": "uncaptured-defender",
+        "uptime": 0.75,
+        "nativeScore": 30,
+        "retentionPct": 75
+      },
+      {
+        "formula": "manual-equal-balanced",
+        "scenario": "uncaptured-defender",
+        "uptime": 1,
+        "nativeScore": 40,
+        "retentionPct": 100
+      },
+      {
+        "formula": "manual-equal-arithmetic",
+        "scenario": "exclusive-attacker",
+        "uptime": 0,
+        "nativeScore": 0,
+        "retentionPct": 0
+      },
+      {
+        "formula": "manual-equal-arithmetic",
+        "scenario": "exclusive-attacker",
+        "uptime": 0.25,
+        "nativeScore": 25,
+        "retentionPct": 25
+      },
+      {
+        "formula": "manual-equal-arithmetic",
+        "scenario": "exclusive-attacker",
+        "uptime": 0.5,
+        "nativeScore": 50,
+        "retentionPct": 50
+      },
+      {
+        "formula": "manual-equal-arithmetic",
+        "scenario": "exclusive-attacker",
+        "uptime": 0.75,
+        "nativeScore": 75,
+        "retentionPct": 75
+      },
+      {
+        "formula": "manual-equal-arithmetic",
+        "scenario": "exclusive-attacker",
+        "uptime": 1,
+        "nativeScore": 100,
+        "retentionPct": 100
+      },
+      {
+        "formula": "manual-equal-arithmetic",
+        "scenario": "uncaptured-defender",
+        "uptime": 0,
+        "nativeScore": 0,
+        "retentionPct": 0
+      },
+      {
+        "formula": "manual-equal-arithmetic",
+        "scenario": "uncaptured-defender",
+        "uptime": 0.25,
+        "nativeScore": 12.5,
+        "retentionPct": 25
+      },
+      {
+        "formula": "manual-equal-arithmetic",
+        "scenario": "uncaptured-defender",
+        "uptime": 0.5,
+        "nativeScore": 25,
+        "retentionPct": 50
+      },
+      {
+        "formula": "manual-equal-arithmetic",
+        "scenario": "uncaptured-defender",
+        "uptime": 0.75,
+        "nativeScore": 37.5,
+        "retentionPct": 75
+      },
+      {
+        "formula": "manual-equal-arithmetic",
+        "scenario": "uncaptured-defender",
+        "uptime": 1,
+        "nativeScore": 50,
+        "retentionPct": 100
+      },
+      {
+        "formula": "maturity-positive-defense",
+        "scenario": "exclusive-attacker",
+        "uptime": 0,
+        "nativeScore": 0.584211,
+        "retentionPct": 36.88
+      },
+      {
+        "formula": "maturity-positive-defense",
+        "scenario": "exclusive-attacker",
+        "uptime": 0.25,
+        "nativeScore": 0.834211,
+        "retentionPct": 52.66
+      },
+      {
+        "formula": "maturity-positive-defense",
+        "scenario": "exclusive-attacker",
+        "uptime": 0.5,
+        "nativeScore": 1.084211,
+        "retentionPct": 68.44
+      },
+      {
+        "formula": "maturity-positive-defense",
+        "scenario": "exclusive-attacker",
+        "uptime": 0.75,
+        "nativeScore": 1.334211,
+        "retentionPct": 84.22
+      },
+      {
+        "formula": "maturity-positive-defense",
+        "scenario": "exclusive-attacker",
+        "uptime": 1,
+        "nativeScore": 1.584211,
+        "retentionPct": 100
+      },
+      {
+        "formula": "maturity-positive-defense",
+        "scenario": "uncaptured-defender",
+        "uptime": 0,
+        "nativeScore": 0,
+        "retentionPct": 0
+      },
+      {
+        "formula": "maturity-positive-defense",
+        "scenario": "uncaptured-defender",
+        "uptime": 0.25,
+        "nativeScore": 0.251708,
+        "retentionPct": 25
+      },
+      {
+        "formula": "maturity-positive-defense",
+        "scenario": "uncaptured-defender",
+        "uptime": 0.5,
+        "nativeScore": 0.503416,
+        "retentionPct": 50
+      },
+      {
+        "formula": "maturity-positive-defense",
+        "scenario": "uncaptured-defender",
+        "uptime": 0.75,
+        "nativeScore": 0.755125,
+        "retentionPct": 75
+      },
+      {
+        "formula": "maturity-positive-defense",
+        "scenario": "uncaptured-defender",
+        "uptime": 1,
+        "nativeScore": 1.006833,
+        "retentionPct": 100
+      }
+    ]
+  },
+  "stakeholderExamples": [
+    {
+      "label": "Balanced team",
+      "attack": 0.6,
+      "defense": 0.6,
+      "arithmeticScore": 60,
+      "balancedScore": 60
+    },
+    {
+      "label": "Attack-heavy team",
+      "attack": 0.9,
+      "defense": 0.1,
+      "arithmeticScore": 50,
+      "balancedScore": 46
+    },
+    {
+      "label": "Attack only",
+      "attack": 1,
+      "defense": 0,
+      "arithmeticScore": 50,
+      "balancedScore": 40
+    }
+  ],
+  "pairedComparisons": {
+    "manual-equal-balanced": {
+      "referenceFormula": "maturity-positive-defense",
+      "trials": 1000,
+      "meanAbsoluteRankShift": 3.49,
+      "winnerFlipRate": 0.506,
+      "meanSpearmanRho": 0.68,
+      "meanTop3Overlap": 0.579
+    },
+    "manual-equal-arithmetic": {
+      "referenceFormula": "maturity-positive-defense",
+      "trials": 1000,
+      "meanAbsoluteRankShift": 3.05,
+      "winnerFlipRate": 0.426,
+      "meanSpearmanRho": 0.74,
+      "meanTop3Overlap": 0.639
+    }
+  },
+  "monteCarlo": {
+    "scores": {
+      "rsctf-legacy-gamma-0": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.13,
+            "adaptiveHumanAi": 0.1,
+            "defenseSpecialist": 0.02,
+            "field": 0.75,
+            "perFieldTeam": 0.044
+          },
+          "averageRank": {
+            "fastAgent": 8.83,
+            "adaptiveHumanAi": 6.48,
+            "defenseSpecialist": 7.71
+          },
+          "earlyFastLeads": 605,
+          "adaptiveComebacks": 259,
+          "adaptiveRankScore": 71.2,
+          "adaptiveComebackRate": 0.43
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.09,
+            "adaptiveHumanAi": 0.14,
+            "defenseSpecialist": 0.03,
+            "field": 0.74,
+            "perFieldTeam": 0.044
+          },
+          "averageRank": {
+            "fastAgent": 9.68,
+            "adaptiveHumanAi": 6.03,
+            "defenseSpecialist": 7.53
+          },
+          "earlyFastLeads": 605,
+          "adaptiveComebacks": 344,
+          "adaptiveRankScore": 73.5,
+          "adaptiveComebackRate": 0.57
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.06,
+            "adaptiveHumanAi": 0.17,
+            "defenseSpecialist": 0.03,
+            "field": 0.74,
+            "perFieldTeam": 0.044
+          },
+          "averageRank": {
+            "fastAgent": 10.73,
+            "adaptiveHumanAi": 5.7,
+            "defenseSpecialist": 7.4
+          },
+          "earlyFastLeads": 605,
+          "adaptiveComebacks": 421,
+          "adaptiveRankScore": 75.3,
+          "adaptiveComebackRate": 0.7
+        }
+      },
+      "sqrt-transfer-gamma-0.5": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.04,
+            "adaptiveHumanAi": 0.19,
+            "defenseSpecialist": 0.08,
+            "field": 0.7,
+            "perFieldTeam": 0.041
+          },
+          "averageRank": {
+            "fastAgent": 12.3,
+            "adaptiveHumanAi": 5.14,
+            "defenseSpecialist": 5.17
+          },
+          "earlyFastLeads": 432,
+          "adaptiveComebacks": 301,
+          "adaptiveRankScore": 78.2,
+          "adaptiveComebackRate": 0.7
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.03,
+            "adaptiveHumanAi": 0.23,
+            "defenseSpecialist": 0.08,
+            "field": 0.66,
+            "perFieldTeam": 0.039
+          },
+          "averageRank": {
+            "fastAgent": 12.83,
+            "adaptiveHumanAi": 4.83,
+            "defenseSpecialist": 5.25
+          },
+          "earlyFastLeads": 432,
+          "adaptiveComebacks": 348,
+          "adaptiveRankScore": 79.8,
+          "adaptiveComebackRate": 0.81
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.02,
+            "adaptiveHumanAi": 0.24,
+            "defenseSpecialist": 0.07,
+            "field": 0.66,
+            "perFieldTeam": 0.039
+          },
+          "averageRank": {
+            "fastAgent": 13.13,
+            "adaptiveHumanAi": 4.82,
+            "defenseSpecialist": 5.51
+          },
+          "earlyFastLeads": 432,
+          "adaptiveComebacks": 369,
+          "adaptiveRankScore": 79.9,
+          "adaptiveComebackRate": 0.85
+        }
+      },
+      "flat-transfer-gamma-1": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.01,
+            "adaptiveHumanAi": 0.2,
+            "defenseSpecialist": 0.15,
+            "field": 0.63,
+            "perFieldTeam": 0.037
+          },
+          "averageRank": {
+            "fastAgent": 14.28,
+            "adaptiveHumanAi": 4.84,
+            "defenseSpecialist": 4
+          },
+          "earlyFastLeads": 279,
+          "adaptiveComebacks": 221,
+          "adaptiveRankScore": 79.8,
+          "adaptiveComebackRate": 0.79
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.01,
+            "adaptiveHumanAi": 0.22,
+            "defenseSpecialist": 0.14,
+            "field": 0.63,
+            "perFieldTeam": 0.037
+          },
+          "averageRank": {
+            "fastAgent": 14.34,
+            "adaptiveHumanAi": 4.71,
+            "defenseSpecialist": 4.12
+          },
+          "earlyFastLeads": 279,
+          "adaptiveComebacks": 239,
+          "adaptiveRankScore": 80.5,
+          "adaptiveComebackRate": 0.86
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.01,
+            "adaptiveHumanAi": 0.25,
+            "defenseSpecialist": 0.13,
+            "field": 0.62,
+            "perFieldTeam": 0.036
+          },
+          "averageRank": {
+            "fastAgent": 14.23,
+            "adaptiveHumanAi": 4.79,
+            "defenseSpecialist": 4.53
+          },
+          "earlyFastLeads": 279,
+          "adaptiveComebacks": 246,
+          "adaptiveRankScore": 80.1,
+          "adaptiveComebackRate": 0.88
+        }
+      },
+      "normalized-coverage-conserved": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.02,
+            "adaptiveHumanAi": 0.2,
+            "defenseSpecialist": 0.12,
+            "field": 0.66,
+            "perFieldTeam": 0.039
+          },
+          "averageRank": {
+            "fastAgent": 13.22,
+            "adaptiveHumanAi": 5.17,
+            "defenseSpecialist": 4.78
+          },
+          "earlyFastLeads": 360,
+          "adaptiveComebacks": 259,
+          "adaptiveRankScore": 78.1,
+          "adaptiveComebackRate": 0.72
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.01,
+            "adaptiveHumanAi": 0.24,
+            "defenseSpecialist": 0.1,
+            "field": 0.65,
+            "perFieldTeam": 0.038
+          },
+          "averageRank": {
+            "fastAgent": 13.54,
+            "adaptiveHumanAi": 4.91,
+            "defenseSpecialist": 4.88
+          },
+          "earlyFastLeads": 360,
+          "adaptiveComebacks": 289,
+          "adaptiveRankScore": 79.4,
+          "adaptiveComebackRate": 0.8
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.01,
+            "adaptiveHumanAi": 0.26,
+            "defenseSpecialist": 0.09,
+            "field": 0.64,
+            "perFieldTeam": 0.038
+          },
+          "averageRank": {
+            "fastAgent": 13.62,
+            "adaptiveHumanAi": 4.85,
+            "defenseSpecialist": 5.25
+          },
+          "earlyFastLeads": 360,
+          "adaptiveComebacks": 307,
+          "adaptiveRankScore": 79.7,
+          "adaptiveComebackRate": 0.85
+        }
+      },
+      "bounded-scarcity-conserved": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.04,
+            "adaptiveHumanAi": 0.19,
+            "defenseSpecialist": 0.07,
+            "field": 0.69,
+            "perFieldTeam": 0.041
+          },
+          "averageRank": {
+            "fastAgent": 11.86,
+            "adaptiveHumanAi": 5.62,
+            "defenseSpecialist": 5.85
+          },
+          "earlyFastLeads": 485,
+          "adaptiveComebacks": 317,
+          "adaptiveRankScore": 75.7,
+          "adaptiveComebackRate": 0.65
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.03,
+            "adaptiveHumanAi": 0.22,
+            "defenseSpecialist": 0.08,
+            "field": 0.67,
+            "perFieldTeam": 0.039
+          },
+          "averageRank": {
+            "fastAgent": 12.33,
+            "adaptiveHumanAi": 5.22,
+            "defenseSpecialist": 5.89
+          },
+          "earlyFastLeads": 485,
+          "adaptiveComebacks": 359,
+          "adaptiveRankScore": 77.8,
+          "adaptiveComebackRate": 0.74
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.02,
+            "adaptiveHumanAi": 0.23,
+            "defenseSpecialist": 0.07,
+            "field": 0.68,
+            "perFieldTeam": 0.04
+          },
+          "averageRank": {
+            "fastAgent": 12.68,
+            "adaptiveHumanAi": 5.09,
+            "defenseSpecialist": 6.16
+          },
+          "earlyFastLeads": 485,
+          "adaptiveComebacks": 394,
+          "adaptiveRankScore": 78.5,
+          "adaptiveComebackRate": 0.81
+        }
+      },
+      "maturity-gated-scarcity-conserved": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.03,
+            "adaptiveHumanAi": 0.2,
+            "defenseSpecialist": 0.09,
+            "field": 0.69,
+            "perFieldTeam": 0.041
+          },
+          "averageRank": {
+            "fastAgent": 12.35,
+            "adaptiveHumanAi": 5.35,
+            "defenseSpecialist": 5.48
+          },
+          "earlyFastLeads": 404,
+          "adaptiveComebacks": 270,
+          "adaptiveRankScore": 77.1,
+          "adaptiveComebackRate": 0.67
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.02,
+            "adaptiveHumanAi": 0.24,
+            "defenseSpecialist": 0.09,
+            "field": 0.65,
+            "perFieldTeam": 0.038
+          },
+          "averageRank": {
+            "fastAgent": 12.77,
+            "adaptiveHumanAi": 5.04,
+            "defenseSpecialist": 5.6
+          },
+          "earlyFastLeads": 404,
+          "adaptiveComebacks": 303,
+          "adaptiveRankScore": 78.7,
+          "adaptiveComebackRate": 0.75
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.03,
+            "adaptiveHumanAi": 0.23,
+            "defenseSpecialist": 0.08,
+            "field": 0.67,
+            "perFieldTeam": 0.039
+          },
+          "averageRank": {
+            "fastAgent": 12.96,
+            "adaptiveHumanAi": 4.96,
+            "defenseSpecialist": 5.89
+          },
+          "earlyFastLeads": 404,
+          "adaptiveComebacks": 328,
+          "adaptiveRankScore": 79.2,
+          "adaptiveComebackRate": 0.81
+        }
+      },
+      "maturity-positive-defense": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.02,
+            "adaptiveHumanAi": 0.21,
+            "defenseSpecialist": 0.08,
+            "field": 0.69,
+            "perFieldTeam": 0.041
+          },
+          "averageRank": {
+            "fastAgent": 12.88,
+            "adaptiveHumanAi": 4.85,
+            "defenseSpecialist": 5.23
+          },
+          "earlyFastLeads": 365,
+          "adaptiveComebacks": 274,
+          "adaptiveRankScore": 79.7,
+          "adaptiveComebackRate": 0.75
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.02,
+            "adaptiveHumanAi": 0.26,
+            "defenseSpecialist": 0.07,
+            "field": 0.65,
+            "perFieldTeam": 0.038
+          },
+          "averageRank": {
+            "fastAgent": 13.19,
+            "adaptiveHumanAi": 4.68,
+            "defenseSpecialist": 5.3
+          },
+          "earlyFastLeads": 365,
+          "adaptiveComebacks": 304,
+          "adaptiveRankScore": 80.6,
+          "adaptiveComebackRate": 0.83
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.02,
+            "adaptiveHumanAi": 0.26,
+            "defenseSpecialist": 0.07,
+            "field": 0.64,
+            "perFieldTeam": 0.038
+          },
+          "averageRank": {
+            "fastAgent": 13.26,
+            "adaptiveHumanAi": 4.71,
+            "defenseSpecialist": 5.64
+          },
+          "earlyFastLeads": 365,
+          "adaptiveComebacks": 310,
+          "adaptiveRankScore": 80.5,
+          "adaptiveComebackRate": 0.85
+        }
+      },
+      "manual-equal-arithmetic": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.05,
+            "adaptiveHumanAi": 0.18,
+            "defenseSpecialist": 0.05,
+            "field": 0.71,
+            "perFieldTeam": 0.042
+          },
+          "averageRank": {
+            "fastAgent": 11.32,
+            "adaptiveHumanAi": 5.97,
+            "defenseSpecialist": 6.78
+          },
+          "earlyFastLeads": 522,
+          "adaptiveComebacks": 319,
+          "adaptiveRankScore": 73.8,
+          "adaptiveComebackRate": 0.61
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.04,
+            "adaptiveHumanAi": 0.2,
+            "defenseSpecialist": 0.06,
+            "field": 0.7,
+            "perFieldTeam": 0.041
+          },
+          "averageRank": {
+            "fastAgent": 11.83,
+            "adaptiveHumanAi": 5.59,
+            "defenseSpecialist": 6.78
+          },
+          "earlyFastLeads": 522,
+          "adaptiveComebacks": 364,
+          "adaptiveRankScore": 75.8,
+          "adaptiveComebackRate": 0.7
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.03,
+            "adaptiveHumanAi": 0.21,
+            "defenseSpecialist": 0.07,
+            "field": 0.7,
+            "perFieldTeam": 0.041
+          },
+          "averageRank": {
+            "fastAgent": 12.24,
+            "adaptiveHumanAi": 5.37,
+            "defenseSpecialist": 6.92
+          },
+          "earlyFastLeads": 522,
+          "adaptiveComebacks": 410,
+          "adaptiveRankScore": 77,
+          "adaptiveComebackRate": 0.79
+        }
+      },
+      "manual-equal-balanced": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.07,
+            "adaptiveHumanAi": 0.15,
+            "defenseSpecialist": 0.03,
+            "field": 0.74,
+            "perFieldTeam": 0.044
+          },
+          "averageRank": {
+            "fastAgent": 9.83,
+            "adaptiveHumanAi": 6.43,
+            "defenseSpecialist": 8.59
+          },
+          "earlyFastLeads": 602,
+          "adaptiveComebacks": 322,
+          "adaptiveRankScore": 71.4,
+          "adaptiveComebackRate": 0.53
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.06,
+            "adaptiveHumanAi": 0.18,
+            "defenseSpecialist": 0.04,
+            "field": 0.72,
+            "perFieldTeam": 0.042
+          },
+          "averageRank": {
+            "fastAgent": 10.54,
+            "adaptiveHumanAi": 5.84,
+            "defenseSpecialist": 8.44
+          },
+          "earlyFastLeads": 602,
+          "adaptiveComebacks": 391,
+          "adaptiveRankScore": 74.5,
+          "adaptiveComebackRate": 0.65
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.04,
+            "adaptiveHumanAi": 0.21,
+            "defenseSpecialist": 0.05,
+            "field": 0.7,
+            "perFieldTeam": 0.041
+          },
+          "averageRank": {
+            "fastAgent": 11.13,
+            "adaptiveHumanAi": 5.55,
+            "defenseSpecialist": 8.4
+          },
+          "earlyFastLeads": 602,
+          "adaptiveComebacks": 444,
+          "adaptiveRankScore": 76.1,
+          "adaptiveComebackRate": 0.74
+        }
+      },
+      "ictf-fixed-pot": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.2,
+            "adaptiveHumanAi": 0.06,
+            "defenseSpecialist": 0.02,
+            "field": 0.73,
+            "perFieldTeam": 0.043
+          },
+          "averageRank": {
+            "fastAgent": 7.07,
+            "adaptiveHumanAi": 8.16,
+            "defenseSpecialist": 10.68
+          },
+          "earlyFastLeads": 703,
+          "adaptiveComebacks": 205,
+          "adaptiveRankScore": 62.3,
+          "adaptiveComebackRate": 0.29
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.13,
+            "adaptiveHumanAi": 0.11,
+            "defenseSpecialist": 0.02,
+            "field": 0.75,
+            "perFieldTeam": 0.044
+          },
+          "averageRank": {
+            "fastAgent": 7.62,
+            "adaptiveHumanAi": 7.56,
+            "defenseSpecialist": 10.53
+          },
+          "earlyFastLeads": 703,
+          "adaptiveComebacks": 280,
+          "adaptiveRankScore": 65.5,
+          "adaptiveComebackRate": 0.4
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.09,
+            "adaptiveHumanAi": 0.13,
+            "defenseSpecialist": 0.02,
+            "field": 0.76,
+            "perFieldTeam": 0.045
+          },
+          "averageRank": {
+            "fastAgent": 8.54,
+            "adaptiveHumanAi": 7.05,
+            "defenseSpecialist": 10.26
+          },
+          "earlyFastLeads": 703,
+          "adaptiveComebacks": 367,
+          "adaptiveRankScore": 68.2,
+          "adaptiveComebackRate": 0.52
+        }
+      },
+      "active-attacker-matrix": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.03,
+            "adaptiveHumanAi": 0.19,
+            "defenseSpecialist": 0.1,
+            "field": 0.68,
+            "perFieldTeam": 0.04
+          },
+          "averageRank": {
+            "fastAgent": 12.66,
+            "adaptiveHumanAi": 5.53,
+            "defenseSpecialist": 5.21
+          },
+          "earlyFastLeads": 453,
+          "adaptiveComebacks": 319,
+          "adaptiveRankScore": 76.2,
+          "adaptiveComebackRate": 0.7
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.02,
+            "adaptiveHumanAi": 0.23,
+            "defenseSpecialist": 0.09,
+            "field": 0.66,
+            "perFieldTeam": 0.039
+          },
+          "averageRank": {
+            "fastAgent": 12.98,
+            "adaptiveHumanAi": 5.23,
+            "defenseSpecialist": 5.28
+          },
+          "earlyFastLeads": 453,
+          "adaptiveComebacks": 353,
+          "adaptiveRankScore": 77.7,
+          "adaptiveComebackRate": 0.78
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.02,
+            "adaptiveHumanAi": 0.23,
+            "defenseSpecialist": 0.09,
+            "field": 0.66,
+            "perFieldTeam": 0.039
+          },
+          "averageRank": {
+            "fastAgent": 13.18,
+            "adaptiveHumanAi": 5.13,
+            "defenseSpecialist": 5.56
+          },
+          "earlyFastLeads": 453,
+          "adaptiveComebacks": 371,
+          "adaptiveRankScore": 78.3,
+          "adaptiveComebackRate": 0.82
+        }
+      },
+      "bounded-coverage-normalized": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.04,
+            "adaptiveHumanAi": 0.19,
+            "defenseSpecialist": 0.09,
+            "field": 0.69,
+            "perFieldTeam": 0.041
+          },
+          "averageRank": {
+            "fastAgent": 12.28,
+            "adaptiveHumanAi": 5.46,
+            "defenseSpecialist": 5.61
+          },
+          "earlyFastLeads": 443,
+          "adaptiveComebacks": 301,
+          "adaptiveRankScore": 76.5,
+          "adaptiveComebackRate": 0.68
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.03,
+            "adaptiveHumanAi": 0.23,
+            "defenseSpecialist": 0.08,
+            "field": 0.66,
+            "perFieldTeam": 0.039
+          },
+          "averageRank": {
+            "fastAgent": 12.71,
+            "adaptiveHumanAi": 5.09,
+            "defenseSpecialist": 5.7
+          },
+          "earlyFastLeads": 443,
+          "adaptiveComebacks": 345,
+          "adaptiveRankScore": 78.5,
+          "adaptiveComebackRate": 0.78
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.02,
+            "adaptiveHumanAi": 0.24,
+            "defenseSpecialist": 0.07,
+            "field": 0.66,
+            "perFieldTeam": 0.039
+          },
+          "averageRank": {
+            "fastAgent": 12.93,
+            "adaptiveHumanAi": 5.01,
+            "defenseSpecialist": 5.94
+          },
+          "earlyFastLeads": 443,
+          "adaptiveComebacks": 366,
+          "adaptiveRankScore": 78.9,
+          "adaptiveComebackRate": 0.83
+        }
+      },
+      "bounded-coverage-normalized-45-30-25": {
+        "equal": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.05,
+            "adaptiveHumanAi": 0.19,
+            "defenseSpecialist": 0.06,
+            "field": 0.7,
+            "perFieldTeam": 0.041
+          },
+          "averageRank": {
+            "fastAgent": 11.55,
+            "adaptiveHumanAi": 5.59,
+            "defenseSpecialist": 6.28
+          },
+          "earlyFastLeads": 485,
+          "adaptiveComebacks": 315,
+          "adaptiveRankScore": 75.8,
+          "adaptiveComebackRate": 0.65
+        },
+        "moderate-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.03,
+            "adaptiveHumanAi": 0.23,
+            "defenseSpecialist": 0.07,
+            "field": 0.67,
+            "perFieldTeam": 0.039
+          },
+          "averageRank": {
+            "fastAgent": 12.06,
+            "adaptiveHumanAi": 5.19,
+            "defenseSpecialist": 6.23
+          },
+          "earlyFastLeads": 485,
+          "adaptiveComebacks": 359,
+          "adaptiveRankScore": 77.9,
+          "adaptiveComebackRate": 0.74
+        },
+        "heavy-recency": {
+          "trials": 1000,
+          "winnerShare": {
+            "fastAgent": 0.03,
+            "adaptiveHumanAi": 0.23,
+            "defenseSpecialist": 0.07,
+            "field": 0.68,
+            "perFieldTeam": 0.04
+          },
+          "averageRank": {
+            "fastAgent": 12.45,
+            "adaptiveHumanAi": 5.07,
+            "defenseSpecialist": 6.46
+          },
+          "earlyFastLeads": 485,
+          "adaptiveComebacks": 393,
+          "adaptiveRankScore": 78.6,
+          "adaptiveComebackRate": 0.81
+        }
+      }
+    },
+    "diagnostics": {
+      "exploitPaths": 5000,
+      "discoveredPathFraction": 0.999,
+      "meanDiscoveryDelayTicks": 1.65,
+      "capturedFlags": 383895,
+      "meanCapturersPerCapturedFlag": 4.27,
+      "multiCapturerFlagFraction": 0.694,
+      "massDiffusionFlagFraction": 0.126,
+      "attackEligibleFlags": 914159,
+      "defenseEligibleFlags": 914159,
+      "attackOpportunities": 17369021,
+      "acceptedCaptureOpportunities": 1639602,
+      "attackCoverage": 0.094,
+      "defenseOpportunities": 17369021,
+      "protectedDefenseOpportunities": 15729419,
+      "protectedDefenseFraction": 0.906,
+      "meanRarityFractionPerAcceptedCapture": 0.574,
+      "maturityByEpoch": [
+        {
+          "epoch": 1,
+          "meanQualifiedAttackersPerVictim": 3.67,
+          "meanActiveAttackersPerCapturedFlag": 4.41,
+          "meanMaturityWeight": 0.265,
+          "defaultWeightFlagFraction": 0.553,
+          "fullWeightFlagFraction": 0.106
+        },
+        {
+          "epoch": 2,
+          "meanQualifiedAttackersPerVictim": 11.44,
+          "meanActiveAttackersPerCapturedFlag": 11.67,
+          "meanMaturityWeight": 0.931,
+          "defaultWeightFlagFraction": 0.035,
+          "fullWeightFlagFraction": 0.884
+        },
+        {
+          "epoch": 3,
+          "meanQualifiedAttackersPerVictim": 12.81,
+          "meanActiveAttackersPerCapturedFlag": 13.15,
+          "meanMaturityWeight": 0.957,
+          "defaultWeightFlagFraction": 0.02,
+          "fullWeightFlagFraction": 0.92
+        },
+        {
+          "epoch": 4,
+          "meanQualifiedAttackersPerVictim": 12.76,
+          "meanActiveAttackersPerCapturedFlag": 13.25,
+          "meanMaturityWeight": 0.946,
+          "defaultWeightFlagFraction": 0.021,
+          "fullWeightFlagFraction": 0.901
+        },
+        {
+          "epoch": 5,
+          "meanQualifiedAttackersPerVictim": 11.77,
+          "meanActiveAttackersPerCapturedFlag": 12.14,
+          "meanMaturityWeight": 0.89,
+          "defaultWeightFlagFraction": 0.053,
+          "fullWeightFlagFraction": 0.821
+        },
+        {
+          "epoch": 6,
+          "meanQualifiedAttackersPerVictim": 11.29,
+          "meanActiveAttackersPerCapturedFlag": 11.73,
+          "meanMaturityWeight": 0.867,
+          "defaultWeightFlagFraction": 0.063,
+          "fullWeightFlagFraction": 0.787
+        }
+      ]
+    },
+    "pairedComparisons": {
+      "manual-equal-balanced": {
+        "referenceFormula": "maturity-positive-defense",
+        "trials": 1000,
+        "meanAbsoluteRankShift": 3.49,
+        "winnerFlipRate": 0.506,
+        "meanSpearmanRho": 0.68,
+        "meanTop3Overlap": 0.579
+      },
+      "manual-equal-arithmetic": {
+        "referenceFormula": "maturity-positive-defense",
+        "trials": 1000,
+        "meanAbsoluteRankShift": 3.05,
+        "winnerFlipRate": 0.426,
+        "meanSpearmanRho": 0.74,
+        "meanTop3Overlap": 0.639
+      }
+    }
+  }
+}

@@ -1,0 +1,178 @@
+.shell {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.85fr) minmax(480px, 1.15fr);
+  min-height: 100dvh;
+  background: var(--app-background);
+}
+
+.context {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  overflow: hidden;
+  padding: clamp(2rem, 5vw, 5rem);
+  color: #f8fafc;
+  background:
+    radial-gradient(
+      circle at 15% 15%,
+      color-mix(in srgb, var(--mantine-primary-color-4) 26%, transparent),
+      transparent 23rem
+    ),
+    radial-gradient(
+      circle at 90% 90%,
+      color-mix(in srgb, var(--mantine-primary-color-7) 25%, transparent),
+      transparent 26rem
+    ),
+    #0a1220;
+  isolation: isolate;
+}
+
+.context::before,
+.context::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.context::before {
+  inset: 0;
+  opacity: 0.17;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.22) 1px, transparent 1px);
+  background-size: 34px 34px;
+  mask-image: linear-gradient(to bottom right, black, transparent 72%);
+}
+
+.context::after {
+  right: -8rem;
+  bottom: -8rem;
+  width: 24rem;
+  height: 24rem;
+  border: 1px solid rgba(94, 234, 212, 0.22);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 3rem rgba(94, 234, 212, 0.025),
+    0 0 0 6rem rgba(94, 234, 212, 0.02);
+}
+
+.brandLink {
+  align-self: flex-start;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--mantine-radius-md);
+}
+
+.brandLink :global(.mantine-Title-root) {
+  color: #f8fafc;
+}
+
+.contextCopy {
+  width: min(100%, 34rem);
+  margin: auto 0;
+}
+
+.eyebrow {
+  color: #99f6e4;
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.statement {
+  max-width: 13ch;
+  color: #f8fafc;
+  font-size: clamp(2.25rem, 5vw, 4.75rem);
+  font-weight: 760;
+  line-height: 1.02;
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+
+.contextDescription {
+  max-width: 34rem;
+  color: #cbd5e1;
+  line-height: 1.7;
+}
+
+.contextFooter {
+  color: #94a3b8;
+  font-family: var(--mantine-font-family-monospace);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.formPanel {
+  display: grid;
+  min-width: 0;
+  padding: clamp(1rem, 4vw, 4rem);
+  place-items: center;
+}
+
+.card {
+  width: min(100%, 31rem);
+  border-color: var(--app-surface-border);
+  box-shadow: var(--mantine-shadow-lg);
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--mantine-spacing-xl);
+  color: var(--app-text-muted);
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.backLink:hover {
+  color: var(--app-accent-text);
+}
+
+.mobileBrand {
+  display: none;
+}
+
+.title {
+  color: var(--app-text-primary);
+  letter-spacing: -0.025em;
+}
+
+.form {
+  width: 100%;
+}
+
+@media (max-width: $mantine-breakpoint-md) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .context {
+    display: none;
+  }
+
+  .formPanel {
+    min-height: 100dvh;
+  }
+
+  .mobileBrand {
+    display: block;
+    margin-bottom: var(--mantine-spacing-lg);
+  }
+}
+
+@media (max-width: $mantine-breakpoint-xs) {
+  .formPanel {
+    align-items: start;
+    padding: var(--mantine-spacing-sm);
+  }
+
+  .card {
+    margin-top: var(--mantine-spacing-sm);
+    box-shadow: none;
+  }
+}

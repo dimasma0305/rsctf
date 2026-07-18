@@ -1,0 +1,142 @@
+.nav {
+  display: flex;
+  max-width: 100%;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  margin-inline-start: auto;
+}
+
+.pagination {
+  max-width: 100%;
+}
+
+.track {
+  position: relative;
+  isolation: isolate;
+  max-width: 100%;
+  padding: 0.32rem;
+  border: 1px solid var(--app-surface-border);
+  border-radius: 999px;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--app-raised-surface) 82%, transparent),
+    var(--app-subtle-surface)
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--app-text-primary) 7%, transparent),
+    0 8px 24px rgba(3, 8, 18, 0.12);
+}
+
+.track::before {
+  position: absolute;
+  z-index: -1;
+  top: -1px;
+  right: 18%;
+  left: 18%;
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--app-accent-border), transparent);
+  content: '';
+  opacity: 0.75;
+}
+
+.pagination :global(.mantine-Pagination-control) {
+  position: relative;
+  min-width: 2.75rem;
+  height: 2.75rem;
+  padding: 0 0.65rem;
+  color: var(--app-text-secondary);
+  border-color: transparent;
+  border-radius: 999px;
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  transition:
+    color 130ms ease,
+    border-color 130ms ease,
+    background-color 130ms ease,
+    box-shadow 130ms ease,
+    transform 130ms ease;
+}
+
+.pagination :global(.mantine-Pagination-control[data-active]) {
+  color: var(--app-accent-surface-text);
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-surface);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 24%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--app-accent-border) 14%, transparent);
+}
+
+.pagination :global(.mantine-Pagination-control[data-active])::after {
+  position: absolute;
+  right: 30%;
+  bottom: 0.34rem;
+  left: 30%;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--app-accent-border);
+  content: '';
+}
+
+.pagination :global(.mantine-Pagination-control:disabled),
+.pagination :global(.mantine-Pagination-control[data-disabled]) {
+  color: var(--app-text-muted);
+  opacity: 0.38;
+}
+
+.pagination :global(.mantine-Pagination-dots) {
+  min-width: 1.5rem;
+  height: 2.75rem;
+  color: var(--app-text-muted);
+}
+
+.status {
+  display: flex;
+  min-width: 5rem;
+  height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.42rem;
+  padding-inline: 0.8rem;
+  color: var(--app-text-secondary);
+  border: 1px solid var(--app-surface-border);
+  border-radius: 999px;
+  background: var(--app-raised-surface);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.currentPage {
+  color: var(--app-accent-text);
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.separator {
+  color: var(--app-text-muted);
+  font-weight: 500;
+}
+
+@media (hover: hover) {
+  .pagination :global(.mantine-Pagination-control:not([data-active]):not(:disabled, [data-disabled]):hover) {
+    color: var(--app-text-primary);
+    border-color: var(--app-border);
+    background: var(--app-hover-surface);
+    transform: translateY(-1px);
+  }
+}
+
+@media (max-width: 47.99em) {
+  .nav {
+    width: 100%;
+    justify-content: center;
+    margin-inline: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pagination :global(.mantine-Pagination-control) {
+    transition: none;
+  }
+}

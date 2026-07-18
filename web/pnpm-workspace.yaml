@@ -1,0 +1,24 @@
+packages:
+  - "."
+
+blockExoticSubdeps: true
+minimumReleaseAge: 10080
+# Dependabot updates lockfiles with --no-save and cannot answer pnpm's strict
+# approval prompt. Its seven-day cooldown above enforces the same delay for
+# routine version PRs; loose mode also leaves security updates unblocked.
+minimumReleaseAgeStrict: false
+trustPolicy: no-downgrade
+trustPolicyExclude:
+  # Babel still requires this mature release; pin the one reviewed exception.
+  - "semver@6.3.1"
+  # Node 22 declarations require this official undici type release, which was
+  # published without the provenance attached to the prior patch.
+  - "undici-types@6.20.0"
+
+allowBuilds:
+  esbuild: true
+
+overrides:
+  canvas: "npm:dry-uninstall"
+  # Force-patch the transitive form-data CRLF-injection advisory (<4.0.6).
+  form-data: ">=4.0.6"

@@ -1,0 +1,44 @@
+{{- $localBackend := include "rsctf.localContainerBackend" . | trim }}
+{{- if and (ne .Values.runtimeRole "migrate") (eq $localBackend "kubernetes") }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "rsctf.fullname" . }}-challenge-manager
+  namespace: {{ include "rsctf.challengeNamespace" . }}
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "delete"]
+  {{- if .Values.kubernetes.metrics.enabled }}
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "rsctf.fullname" . }}-challenge-manager
+  namespace: {{ include "rsctf.challengeNamespace" . }}
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "rsctf.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "rsctf.fullname" . }}-challenge-manager
+{{- end }}

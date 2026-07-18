@@ -1,0 +1,64 @@
+@keyframes fade {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.fade {
+  animation: fade 0.5s linear;
+}
+
+.table {
+  & thead {
+    position: sticky;
+    top: 0;
+    z-index: 195;
+
+    background-color: light-dark(var(--mantine-color-white), var(--mantine-color-dark-7));
+
+    & tr::after {
+      content: '';
+      display: block;
+      position: absolute;
+      bottom: -1px;
+      left: 0px;
+      width: 100%;
+      height: rem(2px);
+      background-color: var(--table-border-color);
+    }
+  }
+
+  & tbody tr td {
+    white-space: nowrap;
+
+    /*
+     * Mantine 9 adds `text-wrap: wrap` to the Text component, which overrides
+     * the inherited `white-space: nowrap` and lets cell content expand to
+     * multiple lines. Reset it so single-line cells stay single-line.
+     */
+    & :where(p) {
+      text-wrap: nowrap;
+    }
+  }
+}
+
+.fixed {
+  table-layout: fixed;
+
+  & tbody tr td {
+    padding: 0.5rem 0.3rem;
+  }
+}
+
+.clickable {
+  cursor: pointer;
+}
+
+.overflow {
+  scrollbar-width: thin;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}

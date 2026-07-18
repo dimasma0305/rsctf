@@ -1,0 +1,341 @@
+# rsctf Helm values
+#
+# The bundled PostgreSQL and Redis instances make a small, single-node install
+# easy to evaluate. For a production event, use managed/external services and
+# an existing Kubernetes Secret. See the chart NOTES after installation.
+
+replicaCount: 1
+
+# Every role uses the same rsctf image and binary. `all` is the safe default and
+# preserves the historical single-Pod deployment. For split installations, use
+# separate Helm releases sharing PostgreSQL, Redis, storage, JWT secret, and
+# challenge namespace: web (N), plus either control (1) or engine (N)+network (1).
+runtimeRole: all
+
+image:
+  # The GitHub workflow publishes this Docker Hub image and mirrors GHCR.
+  # Override repository/tag to use the GHCR package for your GitHub owner. The
+  # convenient monolith default may track latest; every split role must select
+  # the same reviewed, non-latest release tag.
+  repository: docker.io/dimasmaualana/rsctf
+  pullPolicy: IfNotPresent
+  tag: latest
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Use a pre-created Secret instead of asking Helm to create one. It must be in
+# the release namespace and contain the keys configured below. Every split role
+# requires this path for shared PostgreSQL, Redis, and JWT configuration.
+existingSecret:
+  name: ""
+  databaseUrlKey: database-url
+  jwtSecretKey: jwt-secret
+  redisUrlKey: redis-url
+  postgresqlPasswordKey: postgresql-password
+  redisPasswordKey: redis-password
+
+secrets:
+  # Required when existingSecret.name is empty. Generate at least 32 random
+  # bytes, for example: openssl rand -hex 32
+  jwtSecret: ""
+
+# Blob storage selection. Local storage remains the default and uses the PVC
+# below. S3 stores content-addressed blobs, but repositories, packet captures,
+# and checker working files still use persistence.mountPath; replicas therefore
+# still need one RWX claim or another shared filesystem.
+storage:
+  backend: local # local or s3
+  s3:
+    bucket: ""
+    region: ""
+    endpoint: ""
+    prefix: assets
+    accessKey: ""
+    secretKey: ""
+    existingSecret:
+      name: ""
+      accessKeyKey: access-key
+      secretKeyKey: secret-key
+
+database:
+  # Required when postgresql.enabled=false and existingSecret.name is empty.
+  # Example: postgres://rsctf:password@postgres.example:5432/rsctf
+  url: ""
+
+# Bundled PostgreSQL is deliberately single-node. It is convenient for a
+# monolith trial, but split roles require this disabled and use the database URL
+# from existingSecret.
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    # The bundled chart's data-layout guard supports PostgreSQL 18 images.
+    # Use an external database for another major version.
+    tag: 18.4-alpine3.24
+    pullPolicy: IfNotPresent
+  auth:
+    username: rsctf
+    password: "" # generated and retained on install when empty
+    database: rsctf
+  securityContext:
+    # postgres:alpine uses the Alpine postgres account (UID/GID 70).
+    runAsUser: 70
+    runAsGroup: 70
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 8Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+# Redis is a disposable, bounded LRU cache. A monolith can use this bundled
+# instance or disable Redis. Split roles require it disabled here and obtain one
+# shared external Redis URL from existingSecret.
+redis:
+  enabled: true
+  url: ""
+  image:
+    repository: redis
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+  password: "" # generated and retained on install when empty
+  maxmemory: 256mb
+  securityContext:
+    # redis:alpine uses UID 999 and GID 1000.
+    runAsUser: 999
+    runAsGroup: 1000
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 320Mi
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+# Optional trusted worker plane. Enable this only on the singleton `all`,
+# `control`, or `network` release. Workers connect outbound over raw TLS; this
+# is not an HTTP/Ingress endpoint and TLS must terminate in rsctf so client
+# certificates can be verified there.
+workerPlane:
+  enabled: false
+  listenPort: 9443
+  # Address returned during enrollment. This may differ from listenPort when a
+  # TCP load balancer forwards another public port (for example 443).
+  publicEndpoint: ""
+  # TLS name workers verify against the server certificate SAN.
+  serverName: ""
+  existingSecret:
+    # Pre-create this Secret in the release namespace. The CA private key is
+    # required because the singleton signs short-lived worker certificates.
+    name: ""
+    caCertKey: worker-ca.crt
+    caKeyKey: worker-ca.key
+    serverCertKey: worker-server.crt
+    serverKeyKey: worker-server.key
+  service:
+    type: LoadBalancer
+    port: 9443
+    annotations: {}
+    externalTrafficPolicy: Local
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # A split web release must name its control/network Service when it exposes
+  # an Ingress. Standard Prefix paths route the narrow /api/stateful BYOC
+  # namespace, container proxy, and container-exec hub to the API-capable singleton,
+  # leaving polled game APIs on the scalable web pool.
+  statefulRoutes:
+    enabled: false
+    serviceName: ""
+    servicePort: 8080
+  hosts:
+    - host: ctf.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # - secretName: rsctf-tls
+  #   hosts:
+  #     - ctf.example.com
+
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+  mountPath: /data/files
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 2Gi
+
+strategy:
+  # all/control/network require Recreate: a RollingUpdate replacement cannot
+  # become ready while the old Pod owns the singleton network lease. Scalable
+  # web/engine releases may use RollingUpdate with shared RWX/S3 storage.
+  type: Recreate
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+# Allows an in-flight A&D/KotH pipeline (bounded at 240s) to finish after the
+# Pod leaves readiness during a scale-down.
+terminationGracePeriodSeconds: 300
+
+probes:
+  # Startup covers database/schema validation and role-specific initialization.
+  # Liveness is process-only so a dependency outage does not restart every Pod.
+  startup:
+    initialDelaySeconds: 0
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 120
+  liveness:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+  readiness:
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 3
+    # A draining replica deliberately returns 503 and must leave Service
+    # endpoints on the first probe; dependency checks already retain a bounded
+    # stale-success grace for transient timeouts.
+    failureThreshold: 1
+
+config:
+  publicUrl: ""
+  cookieSecure: true
+  trustedProxyCidrs: ""
+  jwtTtlSeconds: 604800
+  allowRegister: true
+  emailConfirm: false
+  adminConfirm: false
+  activeOnRegister: true
+  useCaptcha: false
+  migrate: true
+  logLevel: info
+  # Pool floor: 2 for migrate, 4R+2P+1 for web/engine, 4R+2P+3 for a non-VPN
+  # all/control/network owner, or 4R+2P+6 for a VPN owner.
+  provisioningConcurrency: 4
+  repoScanConcurrency: 1
+  dbMaxConnections: 32
+  # Reserve this otherwise-unused numeric UID range for simultaneous process
+  # checkers. The budget is also the per-rsctf-process custom-checker cap.
+  checkerUidBase: 60000
+  checkerProcessBudget: 32
+  containerMaxMemoryMb: 4096
+  containerMaxCpuCount: 8
+
+# Docker-only live A&D packet capture is an explicit capability opt-in. The
+# chart grants NET_RAW only to the singleton all/control/network owner when this
+# is enabled. Kubernetes-backed capture is not currently supported.
+trafficCapture:
+  enabled: false
+  device: any
+  reconcileSeconds: 2
+
+# none keeps a web-only role non-root. Every round-engine role receives the
+# narrow CHOWN/KILL/SETUID/SETGID + NET_ADMIN set needed by the process checker and
+# its fail-closed uid-scoped egress firewall. docker is an advanced option that
+# also runs as root and mounts the host Docker socket. worker schedules through
+# the durable outbound worker plane; enable workerPlane only on its singleton
+# network owner release.
+containerBackend: none
+
+# Platform selected by the legacy one-container API when a portable image can
+# run on more than one worker. Worker-local image references select their exact
+# owner's platform instead. Explicit multi-service workload specs carry their
+# own platform and do not use this fallback.
+workerBackend:
+  # Keep none for a pure remote-worker deployment. docker or kubernetes keeps
+  # Jeopardy workloads on enrolled workers while routing the existing local
+  # A&D/KotH data plane through that backend. Hybrid local runtimes currently
+  # require runtimeRole=all: split roles do not yet delegate local lifecycle
+  # requests from the web API to the singleton runtime owner.
+  localBackend: none # none, docker, or kubernetes
+  # V1 ships only the Linux workload runtime. Windows protocol fields are
+  # reserved for a future implementation and are rejected by the chart schema.
+  defaultOs: linux
+  defaultArchitecture: amd64
+
+kubernetes:
+  challengeNamespace: "" # defaults to <release fullname>-challenges
+  # Kubernetes split releases require an explicitly named namespace that was
+  # pre-created outside Helm, with this false, so uninstalling one role cannot
+  # delete live workloads. The monolith convenience default may create its own.
+  createChallengeNamespace: true
+  challengeNamespaceLabels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  publicEntry: ""
+  challengeUid: 10000
+  metrics:
+    enabled: true
+  # Required on every non-migration Kubernetes role, with or without VPN. This
+  # is the cluster Service CIDR used by provisioning and checker isolation,
+  # not a CIDR selected by this chart.
+  adServiceCidr: ""
+  isolatedPodNetns: true
+
+docker:
+  socket:
+    enabled: false
+    path: /var/run/docker.sock
+
+# ADVANCED: enabling VPN intent on an all/control/network release grants that
+# singleton owner mounts /dev/net/tun, enables forwarding, and publishes UDP.
+# Engine releases already receive NET_ADMIN for their checker firewall only;
+# they never mount TUN or own WireGuard. Web releases receive no capabilities.
+vpn:
+  enabled: false
+  required: true
+  listenPort: 51820
+  serverEndpoint: ""
+  clientCidr: 10.13.0.0/19
+  servicesCidr: 10.13.40.0/24
+  dns: 1.1.1.1
+  allowedIps: ""
+  devicePath: /dev/net/tun
+  service:
+    type: LoadBalancer
+    port: 51820
+    annotations: {}
+    externalTrafficPolicy: Local
+
+# Appended directly to the rsctf container. Use secretKeyRef/valueFrom for any
+# additional credentials; do not place credentials in config.extraEnv values.
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []

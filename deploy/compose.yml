@@ -1,0 +1,150 @@
+name: ${COMPOSE_PROJECT_NAME:-rsctf}
+
+services:
+  db:
+    # POSTGRES_IMAGE overrides must remain on PostgreSQL 18.x. A different
+    # major requires dump/restore or pg_upgrade plus a fresh data directory.
+    image: ${POSTGRES_IMAGE:-postgres:18.4-alpine3.24}
+    restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - compute_query_id=on
+      - -c
+      - pg_stat_statements.max=2000
+      - -c
+      - pg_stat_statements.track_utility=off
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rsctf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-rsctf}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./postgres/init/00-pg-stat-statements.sql:/docker-entrypoint-initdb.d/00-pg-stat-statements.sql:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    stop_grace_period: 30s
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
+    # Redis is a disposable cache. Keep it bounded and evict least-recently-used
+    # keys instead of allowing the host to run out of memory.
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - allkeys-lru
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rsctf:
+    image: ${RSCTF_IMAGE:-dimasmaualana/rsctf:latest}
+    restart: unless-stopped
+    init: true
+    pids_limit: ${RSCTF_APP_PIDS_LIMIT:-1024}
+    # The all-in-one role runs process-sandboxed A&D/KotH checkers. Drop
+    # Docker's broad default set, then grant only checker/firewall cleanup and
+    # firewall cleanup capabilities. Packet capture is a separate opt-in via
+    # compose.capture.yml because NET_RAW is unnecessary otherwise.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - KILL
+      - SETGID
+      - SETUID
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+      - /run:rw,nosuid,nodev,size=16m
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # `all` preserves the original one-process deployment. Advanced split-role
+      # deployments override this to `web` and add compose.roles.yml.
+      RSCTF_ROLE: ${RSCTF_ROLE:-all}
+      RSCTF_BIND: 0.0.0.0:8080
+      RSCTF_DATABASE_URL: postgresql://${POSTGRES_USER:-rsctf}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/.env}@db:5432/${POSTGRES_DB:-rsctf}
+      RSCTF_REDIS_URL: redis://redis:6379
+      RSCTF_DISTRIBUTED_RATELIMIT: ${RSCTF_DISTRIBUTED_RATELIMIT:-false}
+      RSCTF_JWT_SECRET: ${RSCTF_JWT_SECRET:?Set RSCTF_JWT_SECRET in deploy/.env}
+      RSCTF_JWT_TTL_SECS: ${RSCTF_JWT_TTL_SECS:-604800}
+      RSCTF_PUBLIC_URL: ${RSCTF_PUBLIC_URL:?Set RSCTF_PUBLIC_URL in deploy/.env}
+      RSCTF_COOKIE_SECURE: ${RSCTF_COOKIE_SECURE:-true}
+      RSCTF_TRUSTED_PROXY_CIDRS: ${RSCTF_TRUSTED_PROXY_CIDRS:-}
+      RSCTF_STORAGE_ROOT: /data/files
+      RSCTF_CHECKER_UID_BASE: ${RSCTF_CHECKER_UID_BASE:-60000}
+      RSCTF_CHECKER_PROCESS_BUDGET: ${RSCTF_CHECKER_PROCESS_BUDGET:-32}
+      RSCTF_STORAGE_BACKEND: ${RSCTF_STORAGE_BACKEND:-local}
+      RSCTF_S3_BUCKET: ${RSCTF_S3_BUCKET:-}
+      RSCTF_S3_REGION: ${RSCTF_S3_REGION:-}
+      RSCTF_S3_ENDPOINT: ${RSCTF_S3_ENDPOINT:-}
+      RSCTF_S3_PREFIX: ${RSCTF_S3_PREFIX:-assets}
+      RSCTF_S3_ACCESS_KEY: ${RSCTF_S3_ACCESS_KEY:-}
+      RSCTF_S3_SECRET_KEY: ${RSCTF_S3_SECRET_KEY:-}
+      RSCTF_MIGRATE: ${RSCTF_MIGRATE:-1}
+      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_DB_MAX_CONNECTIONS:-32}
+      RSCTF_PROVISIONING_CONCURRENCY: ${RSCTF_PROVISIONING_CONCURRENCY:-4}
+      RSCTF_REPO_SCAN_CONCURRENCY: ${RSCTF_REPO_SCAN_CONCURRENCY:-1}
+      RSCTF_CONTAINER_BACKEND: ${RSCTF_CONTAINER_BACKEND:-none}
+      RSCTF_CONTAINER_MAX_MEMORY_MB: ${RSCTF_CONTAINER_MAX_MEMORY_MB:-4096}
+      RSCTF_CONTAINER_MAX_CPU_COUNT: ${RSCTF_CONTAINER_MAX_CPU_COUNT:-8}
+      RSCTF_TRAFFIC_CAPTURE_ENABLED: ${RSCTF_TRAFFIC_CAPTURE_ENABLED:-false}
+      RSCTF_CAPTURE_DEVICE: ${RSCTF_CAPTURE_DEVICE:-any}
+      RSCTF_CAPTURE_RECONCILE_SECONDS: ${RSCTF_CAPTURE_RECONCILE_SECONDS:-2}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - files_data:/data/files
+    networks:
+      default:
+        # Stable singleton discovery for Caddy. The split-role override moves
+        # this alias from the web pool to rsctf-control.
+        aliases:
+          - rsctf-network
+      backend: {}
+    ports:
+      - ${RSCTF_HTTP_BIND_IP:-127.0.0.1}:${RSCTF_HTTP_PORT:-8080}:8080
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    stop_grace_period: 5m
+
+networks:
+  backend:
+    internal: true
+
+volumes:
+  postgres_data:
+  files_data:

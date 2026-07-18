@@ -1,0 +1,135 @@
+/* ── Sort control button ─────────────────────────────── */
+.control {
+  width: 100%;
+  padding: var(--mantine-spacing-xs);
+  border-radius: var(--mantine-radius-sm);
+}
+
+.control:hover {
+  background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
+}
+
+.icon {
+  width: 21px;
+  height: 21px;
+  border-radius: 21px;
+}
+
+/* ── Summary stat cards ──────────────────────────────── */
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--mantine-spacing-md);
+}
+
+@container (max-width: 56rem) {
+  .summaryGrid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .summaryGrid > * {
+    grid-column: span 2;
+  }
+
+  .summaryGrid > :nth-last-child(-n + 2) {
+    grid-column: span 3;
+  }
+}
+
+@container (max-width: 42rem) {
+  .summaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .summaryGrid > *,
+  .summaryGrid > :nth-last-child(-n + 2) {
+    grid-column: span 1;
+  }
+
+  .summaryGrid > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@container (max-width: 28rem) {
+  .summaryGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .summaryGrid > *,
+  .summaryGrid > :last-child {
+    grid-column: auto;
+  }
+}
+
+/* Selection chrome reads as brand teal (matches ScoreboardTable's active row),
+   never red — so "this is selected" stops colliding with "this is dangerous". */
+.summaryCard {
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    border-color 160ms ease;
+  cursor: pointer;
+  height: 100%;
+}
+
+.summaryCard:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--mantine-shadow-md);
+  border-color: light-dark(var(--mantine-color-brand-4), var(--mantine-color-brand-7));
+}
+
+.summaryCardActive {
+  border-color: var(--mantine-color-brand-5);
+  background-color: var(--mantine-color-brand-light);
+}
+
+/* ── Details readable box ────────────────────────────── */
+.detailsBox {
+  width: 100%;
+  overflow: hidden;
+  padding-left: 6px;
+  border-left: 2px solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+  transition: border-left-color 200ms ease;
+}
+
+.detailsBox:hover {
+  border-left-color: var(--mantine-color-brand-5);
+}
+
+/* ── User badge wrap ─────────────────────────────────── */
+.userWrap {
+  max-width: 14rem;
+}
+
+/* ── One-line truncation (was repeated inline) ───────── */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── SmartSearch filter option row ──────────────────────*/
+.filterOption {
+  border-radius: 4px;
+  width: 100%;
+  transition: background 120ms ease;
+}
+
+.filterOption:hover {
+  background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-6));
+}
+
+/* ── Empty / all-clear state ─────────────────────────── */
+.emptyState {
+  padding: 2.5rem 1rem;
+  border-radius: var(--mantine-radius-md);
+  background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-7));
+  border: 1px solid var(--app-surface-border);
+  text-align: center;
+}
+
+/* ── Inner tab list styling ──────────────────────────── */
+.innerTabList {
+  border-bottom: 2px solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+}

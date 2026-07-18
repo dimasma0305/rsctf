@@ -1,0 +1,74 @@
+{{- if and .Values.ingress.enabled (has .Values.runtimeRole (list "all" "web")) }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "rsctf.fullname" . }}
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- if and (eq $.Values.runtimeRole "web") $.Values.ingress.statefulRoutes.enabled }}
+          # The narrow fixed prefix keeps hot /api/Game scoreboard/state/submit
+          # traffic on the scalable web pool while BYOC stays on its owner.
+          - path: /api/stateful
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $.Values.ingress.statefulRoutes.serviceName | quote }}
+                port:
+                  number: {{ $.Values.ingress.statefulRoutes.servicePort }}
+          - path: /hub/containerExec
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $.Values.ingress.statefulRoutes.serviceName | quote }}
+                port:
+                  number: {{ $.Values.ingress.statefulRoutes.servicePort }}
+          - path: /api/proxy
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $.Values.ingress.statefulRoutes.serviceName | quote }}
+                port:
+                  number: {{ $.Values.ingress.statefulRoutes.servicePort }}
+          - path: /api/workers/enroll
+            pathType: Exact
+            backend:
+              service:
+                name: {{ $.Values.ingress.statefulRoutes.serviceName | quote }}
+                port:
+                  number: {{ $.Values.ingress.statefulRoutes.servicePort }}
+          - path: /api/admin/workers
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $.Values.ingress.statefulRoutes.serviceName | quote }}
+                port:
+                  number: {{ $.Values.ingress.statefulRoutes.servicePort }}
+          {{- end }}
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "rsctf.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

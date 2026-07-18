@@ -1,0 +1,9 @@
+# Optional packet capture for compose.roles.yml. Add this file last so only the
+# singleton control owner receives NET_RAW; public web replicas remain without
+# Linux capabilities.
+services:
+  rsctf-control:
+    cap_add:
+      - NET_RAW
+    environment:
+      RSCTF_TRAFFIC_CAPTURE_ENABLED: "true"

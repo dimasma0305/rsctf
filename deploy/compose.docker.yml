@@ -1,0 +1,18 @@
+# Optional challenge-container backend.
+#
+# Security note: access to the Docker socket is effectively host-root access.
+# Enable this file only on a dedicated, trusted rsctf host.
+services:
+  rsctf:
+    # Access to the root-owned daemon socket is deliberate and root-equivalent.
+    user: "0:0"
+    environment:
+      RSCTF_CONTAINER_BACKEND: docker
+      # The role overlay scales only on this Compose host, so every replica
+      # mounted below addresses the same daemon and may publish archive builds.
+      RSCTF_SHARED_DOCKER_DAEMON: "true"
+      RSCTF_DOCKER_PUBLIC_ENTRY: ${RSCTF_DOCKER_PUBLIC_ENTRY:?Set the public host or IP for challenge ports}
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock

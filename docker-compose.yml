@@ -1,0 +1,207 @@
+x-core-logging: &core-logging
+  driver: json-file
+  options:
+    max-size: "${RSCTF_CORE_LOG_MAX_SIZE:-10m}"
+    max-file: "${RSCTF_CORE_LOG_MAX_FILES:-5}"
+
+services:
+  db:
+    image: postgres:18.4-alpine3.24
+    restart: unless-stopped
+    cpus: "${RSCTF_DB_CPUS:-4.0}"
+    mem_limit: "${RSCTF_DB_MEMORY_LIMIT:-2g}"
+    pids_limit: "${RSCTF_DB_PIDS_LIMIT:-512}"
+    logging: *core-logging
+    # PostgreSQL 18 uses worker-based asynchronous I/O by default. Keep query
+    # telemetry bounded and leave planning tracking off to avoid hot-entry
+    # contention under the event polling workload.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - compute_query_id=on
+      - -c
+      - pg_stat_statements.max=2000
+      - -c
+      - pg_stat_statements.track_utility=off
+      - -c
+      - track_io_timing=on
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rsctf
+    volumes:
+      # PostgreSQL 18's official image moved PGDATA below this major-version
+      # parent. Mounting the old /data path creates an anonymous volume.
+      - db-data:/var/lib/postgresql
+      - ./deploy/postgres/init/00-pg-stat-statements.sql:/docker-entrypoint-initdb.d/00-pg-stat-statements.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    cpus: "${RSCTF_REDIS_CPUS:-1.0}"
+    mem_limit: "${RSCTF_REDIS_MEMORY_LIMIT:-384m}"
+    pids_limit: "${RSCTF_REDIS_PIDS_LIMIT:-256}"
+    logging: *core-logging
+    # Pure cache (no persistence). Bound it as an LRU so cached blobs/boards can't grow
+    # unbounded — the default (maxmemory 0 + noeviction) would OOM and then FAIL writes
+    # instead of evicting. 256 MB is well above the observed ~5 MB working set.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rsctf:
+    build: .
+    restart: unless-stopped
+    cpus: "${RSCTF_APP_CPUS:-4.0}"
+    mem_limit: "${RSCTF_APP_MEMORY_LIMIT:-2g}"
+    pids_limit: "${RSCTF_APP_PIDS_LIMIT:-1024}"
+    logging: *core-logging
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      RSCTF_ROLE: "${RSCTF_ROLE:-all}"
+      RSCTF_BIND: 0.0.0.0:8080
+      RSCTF_DATABASE_URL: postgres://postgres:postgres@db:5432/rsctf
+      RSCTF_REDIS_URL: redis://redis:6379
+      RSCTF_DISTRIBUTED_RATELIMIT: "${RSCTF_DISTRIBUTED_RATELIMIT:-false}"
+      # Bound the per-replica gameplay pool while keeping the documented Compose
+      # override effective. Provisioning reserves additional connections through
+      # its own semaphore instead of letting runtime operations drain the pool.
+      RSCTF_DB_MAX_CONNECTIONS: "${RSCTF_DB_MAX_CONNECTIONS:-32}"
+      RSCTF_PROVISIONING_CONCURRENCY: "${RSCTF_PROVISIONING_CONCURRENCY:-4}"
+      RSCTF_REPO_SCAN_CONCURRENCY: "${RSCTF_REPO_SCAN_CONCURRENCY:-1}"
+      # Fail closed: trust no forwarded client-IP headers unless an exact proxy
+      # IP or a dedicated proxy-only network is configured explicitly in .env.
+      RSCTF_TRUSTED_PROXY_CIDRS: "${RSCTF_TRUSTED_PROXY_CIDRS:-}"
+      RSCTF_JWT_SECRET: "${RSCTF_JWT_SECRET:?Set RSCTF_JWT_SECRET in .env to a random 32-byte value}"
+      RSCTF_PUBLIC_URL: "https://${PUBLIC_ENTRY:-tcp.1pc.tf}"
+      RSCTF_STORAGE_ROOT: /data/files
+      RSCTF_STORAGE_BACKEND: "${RSCTF_STORAGE_BACKEND:-local}"
+      RSCTF_S3_BUCKET: "${RSCTF_S3_BUCKET:-}"
+      RSCTF_S3_REGION: "${RSCTF_S3_REGION:-}"
+      RSCTF_S3_ENDPOINT: "${RSCTF_S3_ENDPOINT:-}"
+      RSCTF_S3_PREFIX: "${RSCTF_S3_PREFIX:-assets}"
+      RSCTF_S3_ACCESS_KEY: "${RSCTF_S3_ACCESS_KEY:-}"
+      RSCTF_S3_SECRET_KEY: "${RSCTF_S3_SECRET_KEY:-}"
+      RUST_LOG: info
+      # Public host that spawned challenge/A&D container ports advertise to players.
+      # Without this, services are published on 127.0.0.1 (only reachable on the
+      # server) and remote teams can't attack each other in A&D. Set it to the host
+      # that resolves to this server AND has the ephemeral Docker port range exposed.
+      RSCTF_DOCKER_PUBLIC_ENTRY: "${PUBLIC_ENTRY:-tcp.1pc.tf}"
+      # A&D-over-VPN: the public UDP endpoint teams dial for the WireGuard hub.
+      # Defaults to the public entry host on port 51820.
+      RSCTF_AD_VPN_SERVER_ENDPOINT: "${PUBLIC_ENTRY:-tcp.1pc.tf}:51820"
+      # Keep peer addresses disjoint from the 10.13.40.0/24 services bridge.
+      RSCTF_AD_VPN_CLIENT_CIDR: "10.13.0.0/19"
+      RSCTF_CONTAINER_BACKEND: "docker"
+      RSCTF_TRAFFIC_CAPTURE_ENABLED: "${RSCTF_TRAFFIC_CAPTURE_ENABLED:-true}"
+      RSCTF_CAPTURE_DEVICE: "${RSCTF_CAPTURE_DEVICE:-any}"
+      RSCTF_CAPTURE_RECONCILE_SECONDS: "${RSCTF_CAPTURE_RECONCILE_SECONDS:-2}"
+      RSCTF_AD_VPN_ENABLED: "true"
+      RSCTF_AD_VPN_REQUIRED: "true"
+      # This deployment's event checkers are expected to answer well inside ten
+      # seconds. Keep the binary's compatibility default (30s) for other installs.
+      RSCTF_AD_CHECKER_TIMEOUT_SECONDS: "${RSCTF_AD_CHECKER_TIMEOUT_SECONDS:-10}"
+      RSCTF_AD_CHECKER_CONCURRENCY: "${RSCTF_AD_CHECKER_CONCURRENCY:-64}"
+      RSCTF_CHECKER_UID_BASE: "${RSCTF_CHECKER_UID_BASE:-60000}"
+      RSCTF_CHECKER_PROCESS_BUDGET: "${RSCTF_CHECKER_PROCESS_BUDGET:-32}"
+      RSCTF_AD_FLAG_PUSH_CONCURRENCY: "${RSCTF_AD_FLAG_PUSH_CONCURRENCY:-64}"
+      RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE: "${RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE:-120000}"
+      RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE: "${RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE:-30000}"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys,urllib.request; sys.exit(urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).read()!=b'ok')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 5m
+    # The in-process A&D WireGuard hub creates + configures a kernel `wg0` and
+    # masquerades VPN traffic — needs NET_ADMIN, /dev/net/tun, and the host's
+    # `wireguard` kernel module loaded (`modprobe wireguard` on the host).
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - KILL
+      - SETGID
+      - SETUID
+      - NET_ADMIN
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+      - /run:rw,nosuid,nodev,size=16m
+    devices:
+      - "/dev/net/tun:/dev/net/tun"
+    sysctls:
+      - net.ipv4.ip_forward=1
+    volumes:
+      - files-data:/data/files
+      # Mount the host Docker socket so dynamic-container challenges can be
+      # spawned by rsctf's Docker backend. Remove if you don't run containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # default net (db/redis) + external `traefik` (routing) + `rsctf-ad` (the A&D
+    # services network the WireGuard hub bridges VPN clients onto).
+    networks:
+      - default
+      - traefik
+      - rsctf-ad
+    ports:
+      # Local-only debug port; public access is via Traefik on https://<domain>.
+      - "127.0.0.1:8080:8080"
+      # WireGuard hub — teams dial this UDP port to join the A&D VPN.
+      - "51820:51820/udp"
+      # A&D SSH bastion — `ssh <challengeId>@<host> -p 2222` into your container.
+      - "2222:2222"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
+      # Route the platform domain to this container. Override the domain by setting
+      # PUBLIC_ENTRY (e.g. in a .env file next to this compose): PUBLIC_ENTRY=ctf.example.com
+      - "traefik.http.routers.rsctf.rule=Host(`${PUBLIC_ENTRY:-tcp.1pc.tf}`)"
+      - "traefik.http.routers.rsctf.entrypoints=websecure"
+      - "traefik.http.routers.rsctf.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.rsctf.service=rsctf"
+      # rsctf listens on 8080 inside the container (RSCTF_BIND above).
+      - "traefik.http.services.rsctf.loadbalancer.server.port=8080"
+
+# The `traefik` network is created by your homelab Traefik stack (external),
+# so both stacks share it and Traefik can discover this service. `rsctf-ad` is the
+# isolated A&D services network — service containers join it (no host ports) and
+# the WireGuard hub bridges VPN clients onto it. Fixed name so the app can attach
+# spawned service/checker containers to it by name via the Docker API.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
+  traefik:
+    external: true
+  rsctf-ad:
+    name: rsctf-ad
+    # Existing deployments must stop rsctf, remove the old rsctf-ad network, and
+    # recreate rsctf once; Docker cannot change Internal on an existing bridge.
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.13.40.0/24
+
+volumes:
+  db-data:
+  files-data:

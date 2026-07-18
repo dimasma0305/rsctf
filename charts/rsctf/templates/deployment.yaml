@@ -1,0 +1,260 @@
+{{- include "rsctf.validateValues" . }}
+{{- if ne .Values.runtimeRole "migrate" }}
+{{- $localBackend := include "rsctf.localContainerBackend" . | trim }}
+{{- $vpnOwner := and .Values.vpn.enabled (has .Values.runtimeRole (list "all" "control" "network")) }}
+{{- $captureOwner := and .Values.trafficCapture.enabled (eq $localBackend "docker") (has .Values.runtimeRole (list "all" "control" "network")) }}
+{{- $checkerOwner := has .Values.runtimeRole (list "all" "control" "engine" "network") }}
+{{- $workerOwner := and .Values.workerPlane.enabled (has .Values.runtimeRole (list "all" "control" "network")) }}
+{{- $splitRole := and (ne .Values.runtimeRole "all") (ne .Values.runtimeRole "migrate") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rsctf.fullname" . }}
+  labels:
+    {{- include "rsctf.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: {{ .Values.strategy.type }}
+  selector:
+    matchLabels:
+      {{- include "rsctf.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "rsctf.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: {{ .Values.runtimeRole | quote }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "rsctf.serviceAccountName" . }}
+      automountServiceAccountToken: {{ eq $localBackend "kubernetes" }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        fsGroup: 10000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+        {{- if $vpnOwner }}
+        sysctls:
+          - name: net.ipv4.ip_forward
+            value: "1"
+        {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: rsctf
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            {{- $needsRoot := or $checkerOwner (eq $localBackend "docker") }}
+            runAsNonRoot: {{ not $needsRoot }}
+            runAsUser: {{ ternary 0 10000 $needsRoot }}
+            runAsGroup: {{ ternary 0 10000 $needsRoot }}
+            capabilities:
+              drop: ["ALL"]
+              {{- if or $checkerOwner $captureOwner }}
+              add:
+                {{- if $checkerOwner }}
+                # The fail-closed checker launcher creates a scratch directory,
+                # then permanently drops to its sandbox UID. NET_ADMIN manages
+                # its default-deny chain and one exact per-run target rule.
+                - CHOWN
+                # Required for the privileged parent to reap/kill a checker
+                # after that child has permanently switched to its leased UID.
+                - KILL
+                - SETGID
+                - SETUID
+                - NET_ADMIN
+                {{- end }}
+                {{- if $captureOwner }}
+                # The singleton Docker capture owner opens a libpcap device.
+                - NET_RAW
+                {{- end }}
+              {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "rsctf.fullname" . }}
+          env:
+            - name: RSCTF_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.databaseUrlKey }}
+            - name: RSCTF_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.jwtSecretKey }}
+            {{- if or .Values.redis.enabled (not (empty .Values.redis.url)) (not (empty .Values.existingSecret.name)) }}
+            - name: RSCTF_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.redisUrlKey }}
+                  optional: {{ and (not $splitRole) (not .Values.redis.enabled) (empty .Values.redis.url) }}
+            {{- end }}
+            {{- if eq .Values.storage.backend "s3" }}
+            - name: RSCTF_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.storageSecretName" . }}
+                  key: {{ .Values.storage.s3.existingSecret.accessKeyKey }}
+            - name: RSCTF_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.storageSecretName" . }}
+                  key: {{ .Values.storage.s3.existingSecret.secretKeyKey }}
+            {{- end }}
+            {{- if $workerOwner }}
+            - name: RSCTF_WORKER_LISTEN
+              value: {{ printf "0.0.0.0:%v" .Values.workerPlane.listenPort | quote }}
+            - name: RSCTF_WORKER_PUBLIC_ENDPOINT
+              value: {{ .Values.workerPlane.publicEndpoint | quote }}
+            - name: RSCTF_WORKER_SERVER_NAME
+              value: {{ .Values.workerPlane.serverName | quote }}
+            - name: RSCTF_WORKER_CA_CERT
+              value: /run/secrets/rsctf-worker/worker-ca.crt
+            - name: RSCTF_WORKER_CA_KEY
+              value: /run/secrets/rsctf-worker/worker-ca.key
+            - name: RSCTF_WORKER_SERVER_CERT
+              value: /run/secrets/rsctf-worker/worker-server.crt
+            - name: RSCTF_WORKER_SERVER_KEY
+              value: /run/secrets/rsctf-worker/worker-server.key
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            {{- if $workerOwner }}
+            - name: worker-tls
+              containerPort: {{ .Values.workerPlane.listenPort }}
+              protocol: TCP
+            {{- end }}
+            {{- if $vpnOwner }}
+            - name: wireguard
+              containerPort: {{ .Values.vpn.listenPort }}
+              protocol: UDP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: files
+              mountPath: {{ .Values.persistence.mountPath }}
+            - name: tmp
+              mountPath: /tmp
+            - name: run
+              mountPath: /run
+            {{- if $vpnOwner }}
+            - name: tun
+              mountPath: {{ .Values.vpn.devicePath }}
+            {{- end }}
+            {{- if eq $localBackend "docker" }}
+            - name: docker-socket
+              mountPath: /var/run/docker.sock
+            {{- end }}
+            {{- if $workerOwner }}
+            - name: worker-tls
+              mountPath: /run/secrets/rsctf-worker
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: files
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-files" (include "rsctf.fullname" .)) .Values.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        {{- if $vpnOwner }}
+        - name: tun
+          hostPath:
+            path: {{ .Values.vpn.devicePath }}
+            type: CharDevice
+        {{- end }}
+        {{- if eq $localBackend "docker" }}
+        - name: docker-socket
+          hostPath:
+            path: {{ .Values.docker.socket.path }}
+            type: Socket
+        {{- end }}
+        {{- if $workerOwner }}
+        - name: worker-tls
+          secret:
+            secretName: {{ .Values.workerPlane.existingSecret.name | quote }}
+            defaultMode: 0400
+            items:
+              - key: {{ .Values.workerPlane.existingSecret.caCertKey | quote }}
+                path: worker-ca.crt
+              - key: {{ .Values.workerPlane.existingSecret.caKeyKey | quote }}
+                path: worker-ca.key
+              - key: {{ .Values.workerPlane.existingSecret.serverCertKey | quote }}
+                path: worker-server.crt
+              - key: {{ .Values.workerPlane.existingSecret.serverKeyKey | quote }}
+                path: worker-server.key
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

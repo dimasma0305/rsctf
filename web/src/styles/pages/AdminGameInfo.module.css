@@ -1,0 +1,77 @@
+.formContent {
+  min-width: 0;
+}
+
+.saveAffix {
+  z-index: 220;
+  max-width: calc(100vw - 32px);
+  transform: translateX(-50%);
+}
+
+.saveBar {
+  background: var(--app-shell-surface-translucent);
+  backdrop-filter: blur(18px) saturate(1.2);
+}
+
+.formContent :global(.mantine-NumberInput-wrapper) {
+  --input-height: 48px !important;
+  --section-y: 0;
+}
+
+.formContent :global(.mantine-NumberInput-controls) {
+  height: 48px;
+}
+
+.formContent :global(.mantine-NumberInput-control) {
+  min-width: 24px;
+  min-height: 24px;
+  height: 24px;
+  flex-basis: 24px;
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .formContent :global(.mantine-NumberInput-wrapper) {
+    --input-height: 44px !important;
+    --input-right-section-width: 88px !important;
+    --section-y: 0;
+  }
+
+  .formContent :global(.mantine-NumberInput-controls) {
+    width: 88px;
+    max-width: none;
+    height: 44px;
+    flex-direction: row-reverse;
+  }
+
+  .formContent :global(.mantine-NumberInput-control) {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+  }
+
+  .formContent :global(.mantine-NumberInput-control:first-of-type) {
+    border-radius: 0;
+    border-start-end-radius: var(--control-radius);
+    border-end-end-radius: var(--control-radius);
+  }
+
+  .formContent :global(.mantine-NumberInput-control:last-of-type) {
+    border-radius: 0;
+  }
+
+  .saveAffix {
+    right: 12px !important;
+    bottom: var(--app-mobile-dock-clearance) !important;
+    left: 12px !important;
+    max-width: none;
+    transform: none;
+  }
+
+  .saveBar {
+    width: 100%;
+  }
+
+  .saveBar > :global(.mantine-Group-root) {
+    justify-content: space-between;
+  }
+}

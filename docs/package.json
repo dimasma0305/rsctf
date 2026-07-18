@@ -1,0 +1,20 @@
+{
+  "name": "rsctf-docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.8.0",
+  "scripts": {
+    "dev": "vitepress dev .",
+    "build": "vitepress build .",
+    "pdf": "node scripts/build-attack-defense-pdf.mjs ad koth",
+    "pdf:ad": "node scripts/build-attack-defense-pdf.mjs",
+    "pdf:koth": "node scripts/build-attack-defense-pdf.mjs koth",
+    "preview": "vitepress preview .",
+    "check": "vitepress build ."
+  },
+  "devDependencies": {
+    "markdown-it-mathjax3": "4.3.2",
+    "vitepress": "1.6.4"
+  }
+}

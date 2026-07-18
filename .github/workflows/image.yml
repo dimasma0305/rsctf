@@ -1,0 +1,280 @@
+name: Container image
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+    paths:
+      - ".dockerignore"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "Dockerfile"
+      - "agents/byoc-agent/**"
+      - "lib/worker-protocol/**"
+      - "LICENSE.txt"
+      - "LICENSING.md"
+      - "NOTICE"
+      - "rust-toolchain.toml"
+      - "src/**"
+      - "web/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/image.yml"
+  pull_request:
+    paths:
+      - ".dockerignore"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "Dockerfile"
+      - "agents/byoc-agent/**"
+      - "lib/worker-protocol/**"
+      - "LICENSE.txt"
+      - "LICENSING.md"
+      - "NOTICE"
+      - "rust-toolchain.toml"
+      - "src/**"
+      - "web/**"
+      - ".github/workflows/image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOCKERHUB_IMAGE: docker.io/dimasmaualana/rsctf
+  DOCKERHUB_AGENT_IMAGE: docker.io/dimasmaualana/rsctf-byoc-agent
+  GHCR_REGISTRY: ghcr.io
+
+jobs:
+  quality:
+    name: Test before publishing
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/ci.yml
+
+  pull-request:
+    name: Build pull request (amd64)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image without pushing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          cache-from: type=gha,scope=rsctf-image
+          cache-to: type=gha,mode=max,scope=rsctf-image
+
+      - name: Build BYOC agent image without pushing
+        uses: docker/build-push-action@v7
+        with:
+          context: ./agents/byoc-agent
+          file: ./agents/byoc-agent/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: rsctf-byoc-agent:ci
+          cache-from: type=gha,scope=rsctf-byoc-agent
+          cache-to: type=gha,mode=max,scope=rsctf-byoc-agent
+
+      - name: Smoke test BYOC agent image
+        shell: bash
+        run: |
+          set +e
+          docker run --rm \
+            --env RSCTF_BYOC_MODE=invalid \
+            rsctf-byoc-agent:ci
+          status=$?
+          set -e
+          if [[ "$status" -ne 2 ]]; then
+            echo "::error::Expected the BYOC agent to reject an invalid mode with exit code 2; got $status"
+            exit 1
+          fi
+
+  publish:
+    name: Publish image
+    if: github.event_name != 'pull_request'
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Normalize image name
+        id: image
+        shell: bash
+        env:
+          GHCR_IMAGE: ${{ env.GHCR_REGISTRY }}/${{ github.repository }}
+        run: |
+          echo "ghcr=${GHCR_IMAGE,,}" >> "$GITHUB_OUTPUT"
+          echo "ghcr_agent=${GHCR_IMAGE,,}-byoc-agent" >> "$GITHUB_OUTPUT"
+
+      - name: Detect Docker Hub credentials
+        id: registries
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
+            echo "dockerhub_enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dockerhub_enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU for release images
+        if: github.ref_type == 'tag'
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        if: steps.registries.outputs.dockerhub_enabled == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            name=${{ env.DOCKERHUB_IMAGE }},enable=${{ steps.registries.outputs.dockerhub_enabled }}
+            name=${{ steps.image.outputs.ghcr }}
+          flavor: latest=auto
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=long,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern={{major}},enable=${{ github.ref_type == 'tag' }}
+          labels: |
+            org.opencontainers.image.title=rsctf
+            org.opencontainers.image.description=A high-performance Capture-the-Flag competition platform written in Rust
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.rsctf.licensing=/app/web/build/legal/LICENSING.md
+            org.opencontainers.image.rsctf.notice=/app/web/build/legal/NOTICE
+            org.opencontainers.image.rsctf.creepjs-license=/app/web/build/legal/third-party/CreepJS-LICENSE.txt
+
+      - name: Generate BYOC agent image metadata
+        id: agent-metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            name=${{ env.DOCKERHUB_AGENT_IMAGE }},enable=${{ steps.registries.outputs.dockerhub_enabled }}
+            name=${{ steps.image.outputs.ghcr_agent }}
+          flavor: latest=auto
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=long,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern={{major}},enable=${{ github.ref_type == 'tag' }}
+          labels: |
+            org.opencontainers.image.title=rsctf-byoc-agent
+            org.opencontainers.image.description=Team-side tunnel agent for RSCTF self-hosted Attack & Defense services
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ github.ref_type == 'tag' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=rsctf-image
+          cache-to: type=gha,mode=max,scope=rsctf-image
+          provenance: mode=max
+          sbom: true
+
+      - name: Build and push BYOC agent image
+        id: agent-build
+        uses: docker/build-push-action@v7
+        with:
+          context: ./agents/byoc-agent
+          file: ./agents/byoc-agent/Dockerfile
+          platforms: ${{ github.ref_type == 'tag' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: true
+          tags: ${{ steps.agent-metadata.outputs.tags }}
+          labels: ${{ steps.agent-metadata.outputs.labels }}
+          cache-from: type=gha,scope=rsctf-byoc-agent
+          cache-to: type=gha,mode=max,scope=rsctf-byoc-agent
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest Docker Hub image
+        if: steps.registries.outputs.dockerhub_enabled == 'true'
+        uses: actions/attest@v4
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        with:
+          subject-name: ${{ env.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest Docker Hub BYOC agent image
+        if: steps.registries.outputs.dockerhub_enabled == 'true'
+        uses: actions/attest@v4
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        with:
+          subject-name: ${{ env.DOCKERHUB_AGENT_IMAGE }}
+          subject-digest: ${{ steps.agent-build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest GitHub Container Registry image
+        uses: actions/attest@v4
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        with:
+          subject-name: ${{ steps.image.outputs.ghcr }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest GitHub Container Registry BYOC agent image
+        uses: actions/attest@v4
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        with:
+          subject-name: ${{ steps.image.outputs.ghcr_agent }}
+          subject-digest: ${{ steps.agent-build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false

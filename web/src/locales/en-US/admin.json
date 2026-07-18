@@ -1,0 +1,1329 @@
+{
+  "button": {
+    "back": "Go Back",
+    "ad_ops": {
+      "refresh": "Refresh",
+      "ensure_containers": "Ensure containers",
+      "advance_round": "Advance round",
+      "pause_scoring": "Pause scoring",
+      "resume_scoring": "Resume scoring",
+      "restart": "Reset",
+      "snapshot": {
+        "label": "Snapshot",
+        "with_count": "Snapshot ({{count}})",
+        "download": "Download .tar.gz"
+      }
+    },
+    "challenges": {
+      "attachment": {
+        "save_url": "Save Link",
+        "upload": "Upload",
+        "uploading": "Uploading..."
+      },
+      "bonus": "Triple Blood Bonus",
+      "delete": "Delete",
+      "disable": "Disable",
+      "edit": "Edit Challenge",
+      "edit_more": "Edit Flags",
+      "enable": "Enable",
+      "flag": {
+        "add": {
+          "dynamic": "Upload Attachments",
+          "normal": "Add Flag",
+          "remote": "Add Remote"
+        },
+        "delete": "Delete",
+        "save": "Save Template"
+      },
+      "flush_scoreboard": "Refresh Scoreboard",
+      "hint": {
+        "add": "Add Hint"
+      },
+      "import": "Import",
+      "new": "New Challenge",
+      "pending": "Pending Review",
+      "bulk_rebuild": "Rebuild failed",
+      "select": "Select challenge",
+      "select_all": "Select all",
+      "delete_selected": "Delete selected",
+      "activate_selected": "Activate selected",
+      "deactivate_selected": "Deactivate selected",
+      "clear_selection": "Clear",
+      "build_now": "Build image",
+      "build_in_flight": "Build in progress…",
+      "next": "Next",
+      "preview": "Preview",
+      "previous": "Previous",
+      "test_container": {
+        "create": "Create",
+        "destroy": "Destroy",
+        "shell": "Shell"
+      }
+    },
+    "divisions": {
+      "edit": "Edit Division",
+      "new": "New Division"
+    },
+    "games": {
+      "challenges": {
+        "attachment": {
+          "batch_add": "Batch Add"
+        }
+      },
+      "copy_public_key": "Copy Public Key",
+      "delete": "Delete",
+      "export": "Export Game",
+      "import": "Import Game",
+      "new": "New Game"
+    },
+    "notices": {
+      "delete": "Delete",
+      "edit": "Edit Notice",
+      "new": "New Notice"
+    },
+    "save": "Save Changes",
+    "teams": {
+      "do_lock": "Lock",
+      "do_unlock": "Unlock",
+      "edit": "Edit Team"
+    },
+    "users": {
+      "edit": "Edit User"
+    },
+    "writeups": {
+      "download_all": "Download All"
+    },
+    "import": {
+      "run": "Import",
+      "submit": "Submit",
+      "pick_file": "Choose archive"
+    },
+    "review": {
+      "approve": "Approve",
+      "reject": "Reject",
+      "audit": "Audit",
+      "delete": "Delete"
+    },
+    "exec": {
+      "open": "Open shell"
+    },
+    "audit": {
+      "download": "Download archive",
+      "rebuild": "Rebuild"
+    },
+    "repo_binding": {
+      "add": "Add repository",
+      "scan": "Scan now",
+      "delete": "Remove",
+      "delete_cascade": "Remove + delete games",
+      "history": "Scan history",
+      "pause": "Pause polling",
+      "resume": "Resume polling"
+    },
+    "anti_cheat": {
+      "clear": "Clear this block"
+    },
+    "builds": {
+      "view_log": "View full build log",
+      "reenqueue": "Re-run this build",
+      "delete": "Delete this audit row",
+      "delete_selected": "Delete selected",
+      "prune_failed": "Clear failed",
+      "prune_images": "Prune images",
+      "copy": "Copy log",
+      "copied": "Copied"
+    }
+  },
+  "content": {
+    "exec": {
+      "title": "Container console"
+    },
+    "ad_ops": {
+      "current_round": "Round",
+      "round_ends": "Round ends",
+      "round_ended": "Round ended",
+      "round_ended_short": "end",
+      "scoring_paused": "Scoring paused",
+      "live": "Live",
+      "service_health": "Service health",
+      "override_label": "Override SLA verdict",
+      "health_unchecked": "Unchecked",
+      "flag_cycle": "Flag cycle",
+      "challenge_off": "off",
+      "challenges_active": "Challenges",
+      "teams_with_container_one": "{{count}} live",
+      "teams_with_container_other": "{{count}} live",
+      "teams_count_one": "{{count}} team",
+      "teams_count_other": "{{count}} teams",
+      "no_team_match": "No teams match the filter.",
+      "tick_summary": "tick {{tick}}s · lifetime {{lifetime}} ticks",
+      "grid_title": "Team status",
+      "grid_legend": "Click a cell IP to copy. Reset bypasses the player cooldown.",
+      "reset_confirm": {
+        "title": "Reset container to base image?",
+        "message": "Destroys the running container and recreates it from the challenge image. The team's current filesystem changes — including any patches — are wiped, and a fresh flag is delivered. This can't be undone.",
+        "ok": "Reset to base image",
+        "cancel": "Cancel"
+      },
+      "column_team": "Team",
+      "no_teams": "No accepted teams yet. Once you accept teams from the participations page, their containers will spin up automatically.",
+      "empty": {
+        "title": "No A&D or KotH challenges in this game",
+        "description": "Add a challenge with type Attack & Defense or King of the Hill to use this console."
+      },
+      "snapshot": {
+        "title": "Snapshot — {{team}} · {{challenge}}",
+        "changed_count_one": "{{count}} file changed vs original image",
+        "changed_count_other": "{{count}} files changed vs original image",
+        "diff_label": "Filesystem changes (docker diff)",
+        "no_changes": "No filesystem changes were recorded (snapshot may predate diff capture, or nothing changed).",
+        "inspect_label": "Inspect locally"
+      }
+    },
+    "games": {
+      "challenges": {
+        "attachment": {
+          "clear": {
+            "description": "Are you sure you want to remove the attachment of this challenge?",
+            "title": "Clear Attachment"
+          },
+          "instruction": {
+            "amount_double": "It is recommended to upload dynamic attachments that are twice the expected number of participating teams.",
+            "dynamic": {
+              "content": "Batch upload dynamic attachments, all of which will be distributed with the same file name.",
+              "format": "Please use each flag as the file name for the corresponding attachment."
+            },
+            "remote": {
+              "content": "Batch set remote attachments and corresponding flags, with one group per line.",
+              "format": "Please separate the flag and the URL with a space."
+            }
+          },
+          "link": "Attachment Link",
+          "title": "Attachment Management",
+          "type": "Attachment Type"
+        },
+        "attachment_name": {
+          "description": "All dynamic attachments will be downloaded under this filename",
+          "label": "Global Attachment Name"
+        },
+        "blood_bonus": {
+          "description": "Enable blood bonus for this challenge",
+          "label": "Blood Bonus"
+        },
+        "bonus": {
+          "description": "The Triple Blood Bonus refers to the additional points awarded when a challenge is solved by the first three teams. Each team can receive a scoring bonus based on the current points of the challenge. The bonus will be added to the team's score in the form of a fixed percentage.",
+          "first_blood": "First Blood Reward (%)",
+          "second_blood": "Second Blood Reward (%)",
+          "third_blood": "Third Blood Reward (%)"
+        },
+        "category": "Category",
+        "container_image": "Container Image",
+        "cpu_limit": {
+          "description": "Multiplication of 0.1 CPU core",
+          "label": "CPU Limit (0.1 CPUs)"
+        },
+        "deadline": {
+          "label": "Deadline",
+          "placeholder": "No deadline"
+        },
+        "delete": "Are you sure you want to delete challenge {{name}}?",
+        "description": "Description",
+        "difficulty": "Difficulty Factor",
+        "disable": "Are you sure you want to disable challenge {{name}}?",
+        "empty": {
+          "description": "Click the top right to create the first challenge",
+          "title": "Ouch! This game has no challenge yet."
+        },
+        "enable": "Are you sure you want to enable challenge {{name}}?",
+        "bulk_rebuild_confirm": "Enqueue rebuilds for the {{count}} challenge(s) with a Failed or Missing-Dockerfile status?",
+        "delete_selected_confirm": "Delete {{count}} selected challenge(s)? This permanently removes them and their flags/instances and cannot be undone.",
+        "activate_selected_confirm": "Activate {{count}} selected challenge(s)? Any without a flag set will be skipped.",
+        "deactivate_selected_confirm": "Deactivate {{count}} selected challenge(s)? Scoring stops for them until re-activated.",
+        "delete_type_to_confirm": "Type \"delete\" below to confirm.",
+        "flag": {
+          "create": "Create flags. Multiple flags should be separated by lines, one flag per line.<br/> Each challenge can have multiple flags. Any configured flags can be accepted.",
+          "delete": "Are you sure you want to delete this flag?",
+          "empty": {
+            "description": "Please add flag via top right corner",
+            "title": "The flag list is empty"
+          },
+          "instructions": {
+            "both": "If you need to enable leet flag with <1>[TEAM_HASH]</1>, add the <2>[LEET]</2> tag <strong> before </strong> the flag template string. The entropy of the flag template string will not be checked.",
+            "complex": "If you need to enable special characters in flag generation, use <1>[CLEET]</1> instead of <2>[LEET]</2> at the beginning of the string. This may cause injection issues.",
+            "description": "Please enter flag template string, leave it blank to generate random GUID as flag",
+            "example": "Examples",
+            "guid": "Specify <1>[GUID]</1> to replace only placeholder here with random GUID",
+            "leave_empty": "Leave it blank",
+            "leet": "Leet will be enabled if <1>[TEAM_HASH]</1> is not specified and will change strings in braces based on the template. Please make sure the entropy of flag template is high enough.",
+            "team_hash": "If <1>[TEAM_HASH]</1> is specified, it will be automatically replaced with the hash generated by team token and contest's information",
+            "will_generate": "will generate"
+          },
+          "template": "Flag Template",
+          "title": "Flag Management",
+          "ad_engine": {
+            "title": "Flags are managed automatically",
+            "attachment_note": "Attack & Defense and King of the Hill generate per-team flags through the engine, so there is no static flag editor. You can still attach a file below (e.g. the service source) for players to download."
+          }
+        },
+        "hints": "Hints",
+        "memory_limit": {
+          "description": "RAM limitation of containers",
+          "label": "Memory Limit (MB)"
+        },
+        "min_score_radio": {
+          "description": "Min score: {{min_score}}pts",
+          "label": "Minimum Score Ratio"
+        },
+        "score_curve": {
+          "description": "How the score decays as more teams solve",
+          "label": "Score Curve",
+          "standard": "Standard (exponential)",
+          "linear": "Linear",
+          "logarithmic": "Logarithmic (gentle)"
+        },
+        "network_mode": {
+          "description": "Public network access",
+          "label": "Network Mode",
+          "modes": {
+            "custom": "Custom",
+            "isolated": "Isolated",
+            "open": "Open"
+          }
+        },
+        "score": "Score",
+        "service_port": {
+          "description": "Port of container services",
+          "label": "Service Port"
+        },
+        "solve_count": "Solves",
+        "storage_limit": {
+          "description": "Storage (including image)",
+          "label": "Storage Limit (MB)"
+        },
+        "submission_limit": {
+          "description": "0 = unlimited",
+          "label": "Max Attempts Allowed",
+          "placeholder": "Unlimited"
+        },
+        "title": "Title",
+        "traffic_capture": {
+          "description": "Capturing the traffic when the team solves challenges. Platform proxy needs to be enabled",
+          "label": "Enable Traffic Capture"
+        },
+        "workload_spec": {
+          "title": "Aggregate worker workload",
+          "section_help": "Optionally define one or more trusted-worker services and replicas. While enabled, the workload's image, primary port, CPU, and memory settings replace the legacy fields above.",
+          "enable_label": "Use aggregate workload",
+          "editor_label": "Workload specification (JSON)",
+          "editor_description": "Enter camelCase JSON. Registry images require immutable sha256 digests; replace the example digest. Static and dynamic container workloads require flagTarget. V1 injects RSCTF_FLAG only into flagTarget.service; flagTarget.path is validated and reserved but is not written. The server validates the specification again before saving.",
+          "save_and_rollout": "Save and roll out",
+          "rollout_requires_stateless": "Live rollout is unavailable because these services are stateful: {{services}}. Save the definition for future launches, then drain and recreate existing instances deliberately.",
+          "rollout_result": "Rollout matched {{matched}} workload(s): {{updated}} updated, {{stale}} stale, {{incompatible}} incompatible, {{insufficientCapacity}} without capacity, {{failed}} failed.",
+          "load_example": "Load Linux example",
+          "clear": "Clear workload",
+          "invalid": "Workload JSON is invalid: {{message}}"
+        },
+        "type": {
+          "description": "Cannot be changed after creation",
+          "label": "Type"
+        },
+        "ad": {
+          "title": "Attack & Defense",
+          "description": "Per-challenge A&D configuration. Container image + port + resource caps above are reused; the fields here drive the checker, flag rotation, and player-facing options.",
+          "checker_image": {
+            "label": "Checker image",
+            "description": "Docker image speaking the enochecker3 HTTP contract (PUT /putflag, /getflag, /havoc). Phase 1 stores this for later — the auto-checker scheduler ships in Phase 2."
+          },
+          "tick_seconds": {
+            "label": "Tick seconds",
+            "description": "Seconds per round. 60–180s is the industry norm."
+          },
+          "flag_lifetime_ticks": {
+            "label": "Flag lifetime (ticks)",
+            "description": "How many ticks a planted flag remains valid for attack submission. Default 5."
+          },
+          "reset_cooldown_minutes": {
+            "label": "Reset cooldown (min)",
+            "description": "Minimum minutes between consecutive self-resets per team."
+          },
+          "allow_egress": {
+            "label": "Allow external internet",
+            "description": "Default on — the service can reach the public internet (private and link-local ranges, incl. cloud metadata, stay blocked). Turn off to fully sandbox a service that needs no outbound access."
+          },
+          "allow_self_reset": {
+            "label": "Allow self-reset",
+            "description": "Lets the team rebuild their own container to baseline (e.g. when fully owned). Subject to the cooldown above."
+          },
+          "allow_snapshot_download": {
+            "label": "Snapshot at game end",
+            "description": "Commit + save the team's container as a tarball at end-of-game; teams download for post-mortem study (Docker provider only)."
+          },
+          "ssh_requires_flag": {
+            "label": "SSH requires a captured flag",
+            "description": "Teams can only SSH into their service container after submitting at least one accepted captured flag for this challenge."
+          }
+        },
+        "engine": {
+          "all": "All",
+          "jeopardy": "Jeopardy",
+          "ad": "A&D",
+          "koth": "KotH"
+        },
+        "build_summary": {
+          "built": "Image built",
+          "built_n": "{{count}} built",
+          "building": "Building or queued",
+          "building_n": "{{count}} building",
+          "failed": "Build failed — needs attention",
+          "failed_n": "{{count}} failed"
+        }
+      },
+      "divisions": {
+        "default_permission_label": "Default Permissions",
+        "delete_confirm": "Delete division {{name}}?",
+        "empty": {
+          "description": "Click New Division to create the first division",
+          "title": "No divisions yet"
+        },
+        "form": {
+          "challenge_overrides": {
+            "description": "Select challenges to customize permissions",
+            "label": "Challenge Overrides",
+            "placeholder": "Search challenges to override permissions"
+          },
+          "default_permissions": {
+            "description": "The default permissions for teams in this division",
+            "label": "Default Permissions"
+          },
+          "invite_code": {
+            "description": "Override the game-level invitation code",
+            "label": "Invitation Code"
+          },
+          "name": {
+            "description": "The name of the division.",
+            "label": "Division Name"
+          }
+        },
+        "no_permission": "No permissions assigned",
+        "override_label": "Challenge Overrides",
+        "permissions": {
+          "affect_dynamic_score": {
+            "description": "Affect dynamic score calculation",
+            "label": "Affect Dynamic Score"
+          },
+          "all": "All permissions",
+          "get_blood": {
+            "description": "Allows receiving bonus points for blood rewards",
+            "label": "Blood Rewards"
+          },
+          "get_score": {
+            "description": "Allows earning points for challenges",
+            "label": "Earn Scores"
+          },
+          "join_game": {
+            "description": "Allows users in this division to join the game",
+            "label": "Join Game"
+          },
+          "rank_overall": {
+            "description": "Allows appearing on the overall scoreboard",
+            "label": "Overall Rankings"
+          },
+          "require_review": {
+            "description": "Team enrollments require manual approval",
+            "label": "Require Review"
+          },
+          "submit_flags": {
+            "description": "Allows submitting flags",
+            "label": "Submit Flags"
+          },
+          "view_challenge": {
+            "description": "Allows viewing challenge descriptions",
+            "label": "View Challenges"
+          }
+        },
+        "unknown_challenge": "Challenge #{{id}}"
+      },
+      "info": {
+        "accept_without_review": {
+          "description": "Overridden by divisions",
+          "label": "Accept Without Review"
+        },
+        "container_limit": {
+          "description": "Containers shared by one team (0 = unlimited)",
+          "label": "Team Container Limit"
+        },
+        "content": "Game Details",
+        "delete": "Are you sure you want to delete game {{name}}?",
+        "discord_webhook": {
+          "description": "Send notifications to this webhook",
+          "label": "Discord Webhook",
+          "placeholder": "https://discord.com/api/webhooks/..."
+        },
+        "divisions": {
+          "description": "Add divisions to enable grouped scoreboard, leave empty to disable",
+          "label": "List of Participating Divisions"
+        },
+        "end_date": "End Date",
+        "end_time": "End Time",
+        "freeze_time": "Freeze Time",
+        "invite_code": {
+          "description": "Can be overwritten by divisions",
+          "label": "Invitation Code",
+          "placeholder": "Leave empty to disable"
+        },
+        "member_limit": {
+          "description": "0 means unlimited members of team",
+          "label": "Maximum Team Member"
+        },
+        "poster": "Poster",
+        "practice_mode": {
+          "description": "View challenges after the game ends",
+          "label": "Practice Mode"
+        },
+        "allow_user_submissions": {
+          "description": "Let logged-in users submit challenges (admin reviews before they go live)",
+          "label": "Allow User Submissions"
+        },
+        "start_date": "Start Date",
+        "start_time": "Start Time",
+        "summary": {
+          "description": "Will be displayed in the game list",
+          "label": "Summary"
+        },
+        "title": {
+          "description": "Excessive length may affect the display effect",
+          "label": "Title"
+        },
+        "writeup_deadline": {
+          "description": "Hours to submit writeups after game ends",
+          "label": "Writeup Deadline"
+        },
+        "writeup_instruction": "Writeup Instructions",
+        "writeup_required": {
+          "description": "Enable writeup submission",
+          "label": "Writeup Required"
+        },
+        "ad_warmup_seconds": {
+          "label": "A&D warmup (seconds)",
+          "description": "Seconds between game start and round 1. Teams use this gap to SSH in + write initial patches (default 1800 = 30 min). Only applies to games with A&D challenges."
+        },
+        "ad_snapshot_retention_days": {
+          "label": "A&D snapshot retention (days)",
+          "description": "How long the per-team container snapshots stay available for download after game end. Leave empty to keep forever (the default).",
+          "placeholder": "∞ (keep forever)"
+        },
+        "ad_tick_seconds": {
+          "label": "A&D tick (seconds)",
+          "description": "Length of one scoring tick. Every A&D service in the game shares this — flags rotate and the checker runs once per tick (default 60)."
+        },
+        "ad_flag_lifetime_ticks": {
+          "label": "A&D flag lifetime (ticks)",
+          "description": "How many ticks a planted flag stays submittable — the attack window (default 5)."
+        },
+        "ad_reset_cooldown_minutes": {
+          "label": "A&D reset cooldown (minutes)",
+          "description": "Minimum minutes between a team's container self-resets (default 5). Whether a service can be reset at all is per-challenge."
+        },
+        "ad_getflag_window_fraction": {
+          "label": "A&D getflag jitter window",
+          "description": "Fraction of the tick within which the SLA check (getflag) may fire, after the grace period (default 0.5). Event-wide; each team's check still gets an independent random offset, so the check time can't be predicted."
+        },
+        "ad_min_grace_period_seconds": {
+          "label": "A&D min grace period (s)",
+          "description": "Seconds after a round starts (flags planted) before getflag may fire — lets services commit the flag first (default 3)."
+        },
+        "ad_allow_snapshot_download": {
+          "label": "A&D snapshot download",
+          "description": "Snapshot each team's container at game end and offer the tarball for download."
+        }
+      },
+      "managers": {
+        "delete_confirm": "Are you sure you want to remove {{name}}?",
+        "delete_title": "Remove Manager",
+        "empty": "No managers assigned to this game yet",
+        "search_placeholder": "Search by username or email",
+        "select_user": "Select User"
+      },
+      "notices": {
+        "delete": "Are you sure you want to delete this notice?",
+        "empty": {
+          "description": "Click on the top right button to create a new notice",
+          "title": "No notice yet"
+        }
+      },
+      "review": {
+        "edit_division": "Edit Team Division",
+        "empty": {
+          "description": "On the way... Don't worry!",
+          "title": "Ouch! No teams have joined this game yet"
+        },
+        "participation": {
+          "joined": "Joined",
+          "no_division": "No division",
+          "not_joined": "Not Registered",
+          "stats": "{{count}}/{{total}} joined",
+          "update": "Set this team's status to: \"{{status}}\"?"
+        }
+      },
+      "stats": "<1>{{current}}</1> out of <1>{{total}}</1> games displayed",
+      "writeups": {
+        "empty": {
+          "description": "New writeups will appear here",
+          "title": "Ouch! No writeup yet"
+        },
+        "pdf_fallback": "Failed to load PDF"
+      }
+    },
+    "instances": {
+      "destroy": "Are you sure you want to destroy instance {{name}}?",
+      "note": "Note: Container statistics do not include admin test container and destroyed container",
+      "stats": " <1>{{count}}</1> distributed instances in total"
+    },
+    "markdown_inline_support": "Styling with inline Markdown is supported",
+    "markdown_support": "Styling with Markdown is supported",
+    "nothing_found": "Nothing found",
+    "settings": {
+      "status": {
+        "configured": "configured",
+        "inactive": "off",
+        "attention": "attention"
+      },
+      "save_bar": {
+        "unsaved": "Unsaved changes",
+        "saved": "All changes saved"
+      },
+      "nav": {
+        "platform": "Platform",
+        "account": "Users",
+        "container": "Containers",
+        "email": "Email",
+        "captcha": "Captcha",
+        "oauth": "OAuth",
+        "registry_pull": "Pull creds",
+        "build_registry": "Build push",
+        "diagnostics": "Diagnostics"
+      },
+      "account": {
+        "allow_register": {
+          "description": "Allow users to register new accounts",
+          "label": "Allow Register"
+        },
+        "auto_active": {
+          "description": "Whether to activate users after registered",
+          "label": "Auto-activate"
+        },
+        "email_confirmation_required": {
+          "description": "Whether user verification email is required",
+          "label": "Email Verification Required"
+        },
+        "email_domain_list": {
+          "description": "List of allowed email domains to register. Separate multiple domains with commas, leave empty to disable.",
+          "label": "Email Domain Whitelist"
+        },
+        "browser_fingerprint": {
+          "label": "Browser Fingerprinting",
+          "description": "Collect browser fingerprint during login/registration for risk analysis.",
+          "warning": "Enabling this feature collects additional user device information. Please ensure this complies with your local privacy regulations and update your privacy policy accordingly."
+        },
+        "unique_ip_per_team_user": {
+          "label": "Require Unique IP per Team Member",
+          "description": "Block login when another teammate has logged in from the same IP within the last 24 hours."
+        },
+        "unique_fingerprint_per_team_user": {
+          "label": "Require Unique Fingerprint per Team Member",
+          "description": "Block login when another teammate has logged in with the same browser fingerprint within the last 24 hours. Requires Browser Fingerprinting to be enabled."
+        },
+        "unique_per_team_user": {
+          "warning": "These policies block legitimate logins from shared NAT (dorm/office), shared lab machines, or CGNAT exit IPs. Use only when each teammate is expected to log in from a distinct device and network."
+        },
+        "title": "Account Policy",
+        "use_captcha": {
+          "description": "Verify on login, registration and recovery",
+          "label": "Enable CAPTCHA"
+        }
+      },
+      "container": {
+        "auto_destroy": {
+          "description": "Whether to auto-destroy the old instance when meets the limit",
+          "label": "Auto-destroy Old Instances"
+        },
+        "default_lifetime": {
+          "description": "The default lifetime of the container",
+          "label": "Default Lifetime (min)"
+        },
+        "extension_duration": {
+          "description": "The duration of each renewal of the container",
+          "label": "Renewal Duration (min)"
+        },
+        "renewal_window": {
+          "description": "Time window before the container expires to renew",
+          "label": "Renewal Window (min)"
+        },
+        "provider": {
+          "label": "Container backend",
+          "description": "Where challenge containers run. Set at startup (ContainerProvider:Type) — not editable here.",
+          "traffic_capture": "Traffic capture",
+          "namespace": "Namespace",
+          "pull_policy": "Image pull policy"
+        },
+        "title": "Container Policy"
+      },
+      "build_registry": {
+        "title": "Build registry",
+        "description": "Where the auto-build pipeline pushes images after a successful docker build. Leave the toggle off to keep built images on the local daemon only.",
+        "push_on_build": {
+          "label": "Push built images to a registry",
+          "description": "When on, every successful auto-build is retagged with the configured server + namespace and pushed."
+        },
+        "server": {
+          "label": "Server",
+          "description": "Hostname (no scheme). e.g. ghcr.io, registry.example.com:5000"
+        },
+        "namespace": {
+          "label": "Namespace",
+          "description": "Optional prefix under the server. e.g. myorg → ghcr.io/myorg/rsctf/..."
+        },
+        "username": {
+          "label": "Username",
+          "description": "Registry user. Leave blank for anonymous push."
+        },
+        "password": {
+          "label": "Password / PAT",
+          "description": "Stored XOR-obfuscated. Leave blank to keep the current value.",
+          "configured": "(configured — leave blank to keep)"
+        }
+      },
+      "email": {
+        "title": "Email (SMTP)",
+        "description": "SMTP relay for email verification + password reset. Changes take effect on next send — no restart needed.",
+        "smtp_host": {
+          "label": "SMTP host",
+          "description": "Hostname of the SMTP relay. e.g. smtp.gmail.com"
+        },
+        "smtp_port": {
+          "label": "SMTP port",
+          "description": "Usually 587 (STARTTLS) or 465 (TLS)."
+        },
+        "sender_address": {
+          "label": "From address",
+          "description": "Address shown in the From: header. Must be allowed by the relay."
+        },
+        "sender_name": {
+          "label": "From name",
+          "description": "Display name shown next to the address. Falls back to the platform name."
+        },
+        "username": {
+          "label": "Username",
+          "description": "Auth user for the SMTP relay. Often equal to the From address."
+        },
+        "password": {
+          "label": "Password",
+          "description": "Stored XOR-obfuscated. Leave blank to keep the current value.",
+          "configured": "(configured — leave blank to keep)"
+        },
+        "bypass_cert": {
+          "label": "Bypass TLS certificate verification",
+          "description": "Only enable for testing against self-signed SMTP servers."
+        },
+        "test_recipient": {
+          "label": "Send test email to",
+          "description": "Verifies the SMTP credentials above without saving them. Uses the values currently in the form; if you left the password blank, the currently-stored password is used."
+        },
+        "test_button": "Send test",
+        "test_success": "Test email sent to {{recipient}}. Check the inbox (and the spam folder)."
+      },
+      "captcha": {
+        "title": "Captcha",
+        "description": "Bot protection on login + registration. None disables the check entirely.",
+        "provider": {
+          "label": "Provider",
+          "description": "Pick the verification mechanism for login + registration forms.",
+          "none": "None (disabled)"
+        },
+        "site_key": {
+          "label": "Site key",
+          "description": "Public key served to the browser."
+        },
+        "secret_key": {
+          "label": "Secret key",
+          "description": "Server-side verification key. Stored XOR-obfuscated. Leave blank to keep.",
+          "configured": "(configured — leave blank to keep)"
+        },
+        "difficulty": {
+          "label": "PoW difficulty (leading zero bits)",
+          "description": "Higher = more browser CPU on form submit. Clamped 8–48."
+        },
+        "test_button": "Test",
+        "test_success": "Captcha configuration verified.",
+        "test_description": "Probes Cloudflare's siteverify with the configured SecretKey to confirm it's accepted (the SiteKey is browser-side and isn't checked). HashPow has no remote endpoint — the test just confirms the difficulty value is in range."
+      },
+      "registry_pull": {
+        "title": "Private registry pull credentials",
+        "description": "Single set of credentials used by the platform to pull challenge images from a private registry (separate from the Build Registry above, which is for pushing built images).",
+        "server": {
+          "label": "Server",
+          "description": "Hostname (no scheme). e.g. ghcr.io"
+        },
+        "username": {
+          "label": "Username",
+          "description": "Registry user (or empty for anonymous pulls)."
+        },
+        "password": {
+          "label": "Password / PAT",
+          "description": "Stored XOR-obfuscated. Leave blank to keep.",
+          "configured": "(configured — leave blank to keep)"
+        }
+      },
+      "proxy_trust": {
+        "title": "Proxy trust (advanced)",
+        "description": "Read-only runtime view of RSCTF_TRUSTED_PROXY_CIDRS. Forwarded client IP headers are accepted only from these CIDRs. Leave it empty to trust no proxy; use an exact proxy /32 or a dedicated proxy-only network.",
+        "restart_required": "Set RSCTF_TRUSTED_PROXY_CIDRS in the deployment environment and restart rsctf. This page cannot change request-boundary trust.",
+        "enabled": {
+          "label": "Override appsettings.json",
+          "description": "When off, the ForwardedOptions section of appsettings.json governs. Switch this on to make the values below take precedence."
+        },
+        "x_forwarded_for": {
+          "label": "Honour X-Forwarded-For",
+          "description": "Rewrite the client IP from this header (the usual choice)."
+        },
+        "x_forwarded_host": {
+          "label": "Honour X-Forwarded-Host",
+          "description": "Rewrite the request Host header from this proxy header."
+        },
+        "x_forwarded_proto": {
+          "label": "Honour X-Forwarded-Proto",
+          "description": "Rewrite the URL scheme (http/https) from this proxy header."
+        },
+        "forward_limit": {
+          "label": "Forward limit",
+          "description": "Maximum hops to walk back through the X-Forwarded-For chain. 1 means trust only the immediate upstream."
+        },
+        "trusted_networks": {
+          "label": "Trusted networks",
+          "description": "Effective CIDRs allowed to set forwarded client IP headers. An empty value means no proxy is trusted."
+        },
+        "trusted_proxies": {
+          "label": "Trusted proxies",
+          "description": "Literal IPs or hostnames of upstream proxies (resolved at startup). Usually unnecessary if Trusted networks covers the proxy's subnet."
+        }
+      },
+      "diagnostics": {
+        "title": "Diagnostics",
+        "description": "Verify RSCTF is detecting your real client IP. If the detected IP is the proxy's own container IP, X-Forwarded-For is being ignored — every team will appear to share one IP and rate-limits + the 'unique IP per team user' rule will break.",
+        "check_button": "Check my IP",
+        "detected_ip": "Detected client IP",
+        "raw_connection_ip": "Raw connection IP",
+        "forwarded_for": "X-Forwarded-For header",
+        "proxy_trusted_yes": "Connection peer is trusted; valid forwarded IP headers are honoured",
+        "proxy_trusted_no": "Connection peer is not trusted; forwarded IP headers are ignored. Check RSCTF_TRUSTED_PROXY_CIDRS.",
+        "trusted_networks": "Currently trusted networks",
+        "no_header": "(no X-Forwarded-For header sent)"
+      },
+      "platform": {
+        "api_encryption": {
+          "description": "Encrypt sensitive data in some APIs",
+          "label": "Enable API Encryption",
+          "not_available": "Web Crypto API is not available"
+        },
+        "color": {
+          "description": "Custom color for the platform",
+          "label": "Platform Color"
+        },
+        "color_palette": {
+          "description": "Color palette generated from the custom color",
+          "label": "Color Palette"
+        },
+        "description": {
+          "description": "Site description provided for SEO",
+          "label": "Site Description"
+        },
+        "footer": {
+          "description": "Supports Markdown syntax, <mbr/> will be replaced with <br/> on mobile device",
+          "label": "Footer"
+        },
+        "logo": {
+          "description": "Used for favicon and the logo on pages",
+          "label": "Platform Logo"
+        },
+        "name": {
+          "description": "Platform name will be displayed with ::CTF",
+          "label": "Platform Name"
+        },
+        "slogan": {
+          "description": "Will be displayed at the top of the page",
+          "label": "Platform Slogan"
+        },
+        "title": "Platform Settings"
+      }
+    },
+    "show_all": "Show All",
+    "teams": {
+      "delete": "Are you sure you want to delete team {{name}} ?",
+      "lock": "Are you sure you want to {{action}} team {{name}} ?",
+      "locked": "Locked",
+      "stats": "<1>{{current}}</1> out of <1>{{total}}</1> teams displayed",
+      "unlocked": "Unlocked"
+    },
+    "users": {
+      "delete": "Are you sure you want to delete user {{name}} ?",
+      "reset": {
+        "content": "The user password has been reset, <strong>this password will only show up once</strong>, please save it properly.",
+        "message": "Are you sure you want to reset the password for {{name}}?",
+        "title": "Reset password for {{name}}"
+      },
+      "stats": "<1>{{current}}</1> out of <1>{{total}}</1> users displayed"
+    },
+    "import": {
+      "github_tab": "From GitHub",
+      "tarball_tab": "From tarball",
+      "repo_url": "Repo URL",
+      "ref": "Branch / tag (optional)",
+      "subpath": "Subpath (optional)",
+      "token": "GitHub token (optional)",
+      "token_help": "Required only for private repos. Use a fine-grained PAT with 'Contents: read'. Not stored.",
+      "tarball_help": "Upload a .tar.gz or .zip of one challenge directory (challenge.yaml + attachments).",
+      "result": "Import result",
+      "imported": "imported",
+      "updated": "updated",
+      "skipped": "skipped",
+      "failed": "failed",
+      "no_file": "Pick an archive first.",
+      "no_url": "Enter a repo URL first."
+    },
+    "audit": {
+      "title": "Audit challenge",
+      "archive_available": "Original archive captured at upload time.",
+      "no_archive": "No original archive on file (admin-created or github-sourced).",
+      "unavailable": "Audit unavailable.",
+      "yaml": "challenge.yaml",
+      "no_yaml": "No challenge.yaml found in the archive.",
+      "files": "Files",
+      "previews": "Reviewer files",
+      "build_log": "Build log",
+      "no_build_log": "No build log captured yet."
+    },
+    "builds": {
+      "title": "Image builds",
+      "subtitle": "History of every challenge image build attempt — auto-fired by imports and scans, plus operator-triggered rebuilds.",
+      "tab": {
+        "log": "Build log",
+        "images": "Images on disk"
+      },
+      "empty_title": "No build history yet",
+      "empty": "Builds will appear here once a challenge with a local Dockerfile is imported.",
+      "no_match_title": "No matching builds",
+      "no_match": "No builds match this filter.",
+      "clear_filter": "Clear filter",
+      "in_progress_title": "In progress",
+      "no_in_progress": "No builds currently running.",
+      "attempt": "attempt {{n}}",
+      "log_modal_title": "Build log",
+      "no_log": "No log captured for this attempt.",
+      "confirm_delete": "Delete the audit row for {{challenge}}? The challenge itself and its built image are not affected.",
+      "confirm_bulk_delete": "Delete the {{count}} selected audit row(s)? The challenges and their built images are not affected.",
+      "confirm_prune_failed": "Delete {{count}} Failed audit row(s)? Successful builds, in-progress builds, and the challenges themselves are preserved.",
+      "select_all": "Select all rows on this page",
+      "confirm_prune_images": {
+        "line1": "Untag every rsctf/* image on the local Docker daemon that no current challenge references.",
+        "line2": "Pushed registry copies are not touched. Active challenges keep their images. Useful for reclaiming disk on the RSCTF host."
+      },
+      "filter": {
+        "all": "All statuses",
+        "placeholder": "Filter by status"
+      },
+      "column": {
+        "when": "When",
+        "challenge": "Challenge",
+        "trigger": "Trigger",
+        "attempt": "Attempt",
+        "status": "Status",
+        "image": "Image",
+        "duration": "Duration",
+        "detail": "Result"
+      },
+      "summary": {
+        "built": "built",
+        "building": "building",
+        "failed": "failed",
+        "not_applicable": "registry"
+      },
+      "kind": {
+        "checker": "checker",
+        "service": "service",
+        "checker_help": "A&D/KotH functional checker image (built from ./checker)",
+        "challenge_help": "The challenge's own service image"
+      },
+      "images": {
+        "title": "Images on disk",
+        "summary_one": "{{count}} image · {{size}}",
+        "summary_other": "{{count}} images · {{size}}",
+        "refresh": "Refresh",
+        "empty": "No build images on disk.",
+        "deleted": "Image deleted",
+        "in_use": "in use ({{count}})",
+        "orphan": "orphan",
+        "delete_title": "Delete image",
+        "delete_referenced": "Still referenced by: {{titles}}. Deleting it will break the next launch/check until rebuilt.",
+        "delete_orphan": "No challenge references this image — safe to remove.",
+        "in_use_title": "Image in use",
+        "in_use_body": "This image is in use by a running container. Force-delete it anyway? The container may break until rebuilt.",
+        "force_delete": "Force delete",
+        "column": {
+          "image": "Image",
+          "kind": "Kind",
+          "size": "Size",
+          "created": "Created",
+          "usage": "Usage"
+        }
+      }
+    },
+    "review": {
+      "badge": {
+        "pending": "Pending review",
+        "rejected": "Rejected",
+        "queued": "Queued",
+        "building": "Building",
+        "built": "Built",
+        "build_failed": "Build failed",
+        "build_failed_help": "The most recent docker build for this challenge failed. Open Audit to see the log.",
+        "not_applicable": "Registry",
+        "not_applicable_help": "This challenge ships a published registry image — no auto-build runs.",
+        "missing_dockerfile": "Dockerfile missing",
+        "missing_dockerfile_help": "The challenge.yaml pointed at a local Dockerfile path that didn't exist in the archive. Open Audit for the resolved path, fix the source, and trigger a rebuild.",
+        "attack_defense": "A&D",
+        "attack_defense_help": "Attack & Defense challenge — each team gets a persistent container; players attack other teams and defend their own.",
+        "koth": "KotH",
+        "koth_help": "King of the Hill challenge — one shared hill; teams race to plant their token in /koth/king and hold it for points."
+      },
+      "title": "Challenges awaiting review",
+      "empty": {
+        "title": "No pending challenges",
+        "description": "User-submitted challenges will appear here."
+      },
+      "reject_title": "Reject \"{{name}}\"?",
+      "reject_note_placeholder": "Reason (optional, visible to admins only).",
+      "delete_title": "Delete \"{{name}}\" permanently?",
+      "delete_warning": "This removes the challenge row, its flags, the persisted archive, and any attachments. There is no undo.",
+      "column": {
+        "status": "Status",
+        "submitted": "Submitted",
+        "submitter": "Submitter",
+        "title": "Title",
+        "category": "Category",
+        "type": "Type",
+        "actions": "Actions"
+      }
+    },
+    "repo_binding": {
+      "title": "Repository bindings",
+      "subtitle": "Register github repositories and the platform discovers events from any .gzevent files inside, then imports each event's challenges. Re-scans run on the configured cadence.",
+      "add": "Add a repository",
+      "repo_url": "Repo URL",
+      "ref": "Branch / tag (optional)",
+      "token": "GitHub token (optional)",
+      "token_help": "Required for private repos. Encrypted at rest. Use a fine-grained PAT with Contents: read.",
+      "interval": "Polling interval (seconds)",
+      "interval_help": "How often the background scanner re-fetches the repo. Min 60, max 86400 (24h).",
+      "run_immediately": "Run first scan immediately",
+      "empty": "Register one to start auto-discovering events from .gzevent manifests.",
+      "empty_title": "No repository bindings yet",
+      "no_games": "No .gzevent manifests found in this repo yet.",
+      "has_token": "Token configured",
+      "token_decrypt_failed": "Stored token can't be decrypted. The DataProtection key may have rotated. Update the token to fix.",
+      "paused_short": "Paused",
+      "due_now": "due now",
+      "history_title": "Scan history",
+      "history_loading": "Loading…",
+      "history_empty": "No scans recorded yet.",
+      "push_on_edit_label": "Push on edit",
+      "push_on_edit_help": "When on, admin edits to challenges from this binding are committed back as a fresh challenge.yml and pushed upstream. Requires a PAT with Contents:write scope.",
+      "card": {
+        "ref_label": "ref",
+        "events_count_one": "{{count}} event discovered",
+        "events_count_other": "{{count}} events discovered",
+        "last_scan": "Last scan",
+        "next_scan": "Next scan",
+        "never_scanned": "Never scanned",
+        "commit": "Commit"
+      },
+      "delete_title": "Delete binding to {{repo}}?",
+      "delete_warning": "By default the imported games are KEPT (detached from this binding). When you re-bind the same repo, the scanner auto-adopts the detached games by title so you don't get duplicates.",
+      "delete_cascade": {
+        "label": "Also delete imported games",
+        "description": "Permanently removes every game discovered by this binding, plus their challenges, flags, and build history. Useful for full cleanup."
+      },
+      "column": {
+        "repo": "Repository",
+        "ref": "Ref",
+        "status": "Status",
+        "games": "Events discovered",
+        "last_scan": "Last scan",
+        "next_scan": "Next scan",
+        "commit": "Commit",
+        "actions": "Actions"
+      }
+    },
+    "anti_cheat": {
+      "title": "Anti-cheat blocks",
+      "subtitle": "Logins blocked by the per-team-user IP / fingerprint policy. Clear a row when a block is a false positive (e.g., teammates sharing a NAT'd public IP).",
+      "empty_title": "No blocks recorded",
+      "empty": "When the policy fires it'll show up here. Configure it under Settings → Account.",
+      "column": {
+        "when": "When",
+        "user": "Blocked user",
+        "kind": "Kind",
+        "conflict_with": "Conflict with",
+        "value": "Value"
+      }
+    }
+  },
+  "label": {
+    "games": {
+      "hide": "Hide",
+      "summary": "Summary",
+      "notices": {
+        "schedule": "Schedule for later",
+        "publish_at": "Publish at",
+        "scheduled_badge": "Scheduled"
+      }
+    },
+    "instances": {
+      "container_id": "Container ID",
+      "entry": "Instance Entry",
+      "life_cycle": "Lifecycle",
+      "cpu": "CPU",
+      "memory": "Memory",
+      "network": "Network",
+      "live_stats": "Live stats"
+    },
+    "logs": {
+      "message": "Message",
+      "status": "Status"
+    },
+    "teams": {
+      "bio": "Bio",
+      "members": "Members"
+    },
+    "users": {
+      "active": "Activate",
+      "last_visit": "Last Visit",
+      "role": "User Roles"
+    }
+  },
+  "tooltip": {
+    "ad_ops": {
+      "enable_challenge": "Re-enable scoring + flag rotation",
+      "disable_challenge": "Disable scoring + flag rotation",
+      "copy_flag": "Copy current flag",
+      "shell": "Open a shell in this container",
+      "restart": "Reset to base image — wipes the team's changes (bypasses player cooldown)",
+      "snapshot": "Inspect post-game snapshot",
+      "challenge_off": "Disabled on the Challenges page — no scoring or flag rotation"
+    }
+  },
+  "notification": {
+    "ad_ops": {
+      "round_advanced": {
+        "title": "Round advanced",
+        "message": "Round {{round}} started — {{flags}} flags planted."
+      },
+      "ensure_queued": {
+        "title": "Container reconcile queued",
+        "message": "Missing A&D containers will spin up shortly."
+      },
+      "restart_queued": {
+        "title": "Reset queued",
+        "message": "Container will be recreated from the base image in seconds."
+      },
+      "scoring_paused": "Scoring paused — rounds + checks frozen.",
+      "scoring_resumed": "Scoring resumed.",
+      "check_overridden": "Check overridden to {{status}}."
+    },
+    "games": {
+      "challenges": {
+        "attachment": {
+          "no_selected": "Please select at least one file",
+          "updated": "Attachment updated"
+        },
+        "created": "Challenge created",
+        "deleted": "Challenge deleted",
+        "flag": {
+          "copied": "Flag copied to clipboard",
+          "created": "Flag created",
+          "deleted": "Flag deleted"
+        },
+        "flag_template": {
+          "updated": "Flag template updated"
+        },
+        "preview": {
+          "attachment_downloaded": "Pretend the attachment has been downloaded!",
+          "flag_submitted": "Flag submitted!"
+        },
+        "updated": "Challenge updated",
+        "batch_deleted": "Deleted {{count}} challenge(s)",
+        "batch_deleted_partial": "Deleted {{ok}}, {{failed}} failed",
+        "batch_enabled": "Activated {{count}} challenge(s)",
+        "batch_enabled_partial": "Activated {{ok}}, {{failed}} skipped (e.g. no flag set)",
+        "batch_disabled": "Deactivated {{count}} challenge(s)",
+        "batch_disabled_partial": "Deactivated {{ok}}, {{failed}} failed"
+      },
+      "created": "Game created",
+      "divisions": {
+        "created": "Division created",
+        "deleted": "Division deleted",
+        "invite_copied": "Invite code copied to clipboard",
+        "updated": "Division updated"
+      },
+      "export": {
+        "exported": "Game exported successfully",
+        "exporting": "Exporting game..."
+      },
+      "import": {
+        "imported": "Game imported successfully",
+        "importing": "Importing game..."
+      },
+      "info": {
+        "deleted": "Game deleted",
+        "info_updated": "Game updated",
+        "poster": {
+          "upload_failed": "Post upload failed",
+          "uploaded": "Poster successfully uploaded",
+          "uploading": "Uploading poster..."
+        },
+        "public_key_copied": "Public key copied to clipboard",
+        "scoreboard_flushed": "Scoreboard cache flushed"
+      },
+      "instances": {
+        "created": "Instance created",
+        "deleted": "Instances destroyed"
+      },
+      "managers": {
+        "added": "Manager added successfully",
+        "removed": "Manager removed successfully"
+      },
+      "no_title_time": "Please enter title and time of the game",
+      "notices": {
+        "created": "Notice created",
+        "deleted": "Notice deleted",
+        "updated": "Notice updated",
+        "scheduled": "Notice scheduled"
+      },
+      "participation": {
+        "updated": "Team status has been updated"
+      }
+    },
+    "instances": {
+      "destroyed": "Instances destroyed",
+      "entry_copied": "Instance entry copied to clipboard",
+      "url_copied": {
+        "message": "Please use client to access",
+        "title": "Proxy URL copied to clipboard"
+      }
+    },
+    "logs": {
+      "connected": "Real-time log connected",
+      "fetch_failed": "Failed to fetch logs"
+    },
+    "teams": {
+      "deleted": "{{name}} has been deleted"
+    },
+    "users": {
+      "deleted": "{{name}} has been deleted",
+      "password_copied": "Password copied to clipboard",
+      "updated": "User profile updated"
+    },
+    "import": {
+      "complete": "Import complete"
+    },
+    "review": {
+      "approved": "Challenge approved",
+      "rejected": "Challenge rejected",
+      "deleted": "{{name}} deleted"
+    },
+    "anti_cheat": {
+      "cleared": "Block cleared"
+    },
+    "repo_binding": {
+      "scanned": "Scan complete",
+      "summary": "{{games}} games, {{challenges}} challenges, {{failures}} failures"
+    },
+    "builds": {
+      "bulk_enqueued": "Enqueued {{count}} build(s)",
+      "enqueued": "Build triggered",
+      "pruned": "Cleared {{count}} audit row(s)",
+      "images_pruned": "Removed {{count}} orphaned image tag(s)"
+    }
+  },
+  "placeholder": {
+    "empty": "Empty",
+    "ad_ops": {
+      "search_team": "Filter teams…"
+    },
+    "games": {
+      "challenges": {
+        "attachment": {
+          "no_file_selected": {
+            "comment": "The selected file will be displayed here",
+            "title": "You haven't selected any file"
+          }
+        }
+      },
+      "divisions": "Enter division name",
+      "participation": {
+        "bio": "(no bio)",
+        "team": "(no name)"
+      },
+      "notices": {
+        "publish_at": "Select publish date/time"
+      }
+    },
+    "instances": {
+      "challenges": {
+        "not_found": "No challenge found",
+        "select": "All challenges"
+      },
+      "teams": {
+        "not_found": "Team not found",
+        "select": "All Teams"
+      }
+    },
+    "settings": {
+      "email_domain_list": "No restrictions",
+      "footer": "`Test` <mbr/> Something...",
+      "logo": {
+        "custom": "Custom Logo",
+        "default": "Use RSCTF Icon"
+      }
+    },
+    "teams": {
+      "search": "Search by name"
+    },
+    "users": {
+      "real_name": "Empty",
+      "search": "Search by ID/username/email/student ID/real name",
+      "student_id": "00000000"
+    }
+  },
+  "tab": {
+    "games": {
+      "challenges": "Challenges",
+      "divisions": "Divisions",
+      "index": "Games",
+      "info": "Information",
+      "managers": "Managers",
+      "notices": "Notices",
+      "review": "Teams",
+      "writeups": "Writeups",
+      "health": "Health",
+      "ad_ops": "A&D · KotH Ops"
+    },
+    "instances": "Instances",
+    "logs": "Logs",
+    "repo_bindings": "Repo bindings",
+    "anti_cheat": "Anti-cheat",
+    "builds": "Builds",
+    "settings": "Settings",
+    "teams": "Teams",
+    "users": "Users"
+  }
+}

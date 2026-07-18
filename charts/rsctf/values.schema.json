@@ -1,0 +1,592 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "rsctf Helm values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "replicaCount",
+    "runtimeRole",
+    "image",
+    "existingSecret",
+    "secrets",
+    "storage",
+    "database",
+    "postgresql",
+    "redis",
+    "serviceAccount",
+    "service",
+    "workerPlane",
+    "ingress",
+    "persistence",
+    "config",
+    "trafficCapture",
+    "containerBackend",
+    "workerBackend",
+    "kubernetes",
+    "docker",
+    "vpn"
+  ],
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of replicas for this role. all, control, network, and migrate require exactly one; web and engine may scale horizontally."
+    },
+    "runtimeRole": {
+      "type": "string",
+      "enum": ["all", "web", "control", "engine", "network", "migrate"],
+      "description": "Responsibility set for this copy of the single rsctf binary."
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "pullPolicy", "tag"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]},
+        "tag": {"type": "string"}
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string", "minLength": 1}}
+      }
+    },
+    "nameOverride": {"type": "string"},
+    "fullnameOverride": {"type": "string"},
+    "existingSecret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "databaseUrlKey", "jwtSecretKey", "redisUrlKey", "postgresqlPasswordKey", "redisPasswordKey"],
+      "properties": {
+        "name": {"type": "string"},
+        "databaseUrlKey": {"$ref": "#/definitions/secretKey"},
+        "jwtSecretKey": {"$ref": "#/definitions/secretKey"},
+        "redisUrlKey": {"$ref": "#/definitions/secretKey"},
+        "postgresqlPasswordKey": {"$ref": "#/definitions/secretKey"},
+        "redisPasswordKey": {"$ref": "#/definitions/secretKey"}
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jwtSecret"],
+      "properties": {"jwtSecret": {"type": "string", "description": "At least 32 random characters unless existingSecret.name is used."}}
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "s3"],
+      "properties": {
+        "backend": {"type": "string", "enum": ["local", "s3"]},
+        "s3": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bucket", "region", "endpoint", "prefix", "accessKey", "secretKey", "existingSecret"],
+          "properties": {
+            "bucket": {"type": "string"},
+            "region": {"type": "string"},
+            "endpoint": {"type": "string"},
+            "prefix": {"type": "string", "minLength": 1},
+            "accessKey": {"type": "string"},
+            "secretKey": {"type": "string"},
+            "existingSecret": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "accessKeyKey", "secretKeyKey"],
+              "properties": {
+                "name": {"type": "string"},
+                "accessKeyKey": {"$ref": "#/definitions/secretKey"},
+                "secretKeyKey": {"$ref": "#/definitions/secretKey"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {"url": {"type": "string"}}
+    },
+    "postgresql": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "image", "auth", "securityContext", "persistence", "resources"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "image": {"$ref": "#/definitions/postgresImage"},
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["username", "password", "database"],
+          "properties": {
+            "username": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"},
+            "password": {"type": "string"},
+            "database": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"}
+          }
+        },
+        "securityContext": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runAsUser", "runAsGroup"],
+          "properties": {
+            "runAsUser": {"type": "integer", "minimum": 1},
+            "runAsGroup": {"type": "integer", "minimum": 1}
+          }
+        },
+        "persistence": {"$ref": "#/definitions/persistence"},
+        "resources": {"type": "object"}
+      }
+    },
+    "redis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "url", "image", "password", "maxmemory", "securityContext", "resources"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "url": {"type": "string"},
+        "image": {"$ref": "#/definitions/taggedImage"},
+        "password": {"type": "string"},
+        "maxmemory": {"type": "string", "pattern": "^[1-9][0-9]*(kb|mb|gb)$"},
+        "securityContext": {"$ref": "#/definitions/runAsContext"},
+        "resources": {"type": "object"}
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "annotations", "name"],
+      "properties": {
+        "create": {"type": "boolean"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+        "name": {"type": "string"}
+      }
+    },
+    "podAnnotations": {"type": "object", "additionalProperties": {"type": "string"}},
+    "podLabels": {"type": "object", "additionalProperties": {"type": "string"}},
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "port", "annotations"],
+      "properties": {
+        "type": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"]},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "workerPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "listenPort", "publicEndpoint", "serverName", "existingSecret", "service"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "listenPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "publicEndpoint": {"type": "string"},
+        "serverName": {"type": "string"},
+        "existingSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "caCertKey", "caKeyKey", "serverCertKey", "serverKeyKey"],
+          "properties": {
+            "name": {"type": "string"},
+            "caCertKey": {"$ref": "#/definitions/secretKey"},
+            "caKeyKey": {"$ref": "#/definitions/secretKey"},
+            "serverCertKey": {"$ref": "#/definitions/secretKey"},
+            "serverKeyKey": {"$ref": "#/definitions/secretKey"}
+          }
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "port", "annotations", "externalTrafficPolicy"],
+          "properties": {
+            "type": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"]},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+            "externalTrafficPolicy": {"type": "string", "enum": ["", "Cluster", "Local"]}
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "className", "annotations", "statefulRoutes", "hosts", "tls"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "className": {"type": "string"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+        "statefulRoutes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "serviceName", "servicePort"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "serviceName": {"type": "string"},
+            "servicePort": {"type": "integer", "minimum": 1, "maximum": 65535}
+          }
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["host", "paths"],
+            "properties": {
+              "host": {"type": "string", "minLength": 1},
+              "paths": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["path", "pathType"],
+                  "properties": {
+                    "path": {"type": "string", "pattern": "^/"},
+                    "pathType": {"type": "string", "enum": ["Prefix", "Exact", "ImplementationSpecific"]}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["secretName", "hosts"],
+            "properties": {
+              "secretName": {"type": "string", "minLength": 1},
+              "hosts": {"type": "array", "items": {"type": "string", "minLength": 1}}
+            }
+          }
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "existingClaim", "storageClass", "accessModes", "size", "mountPath"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "existingClaim": {"type": "string"},
+        "storageClass": {"type": "string"},
+        "accessModes": {"$ref": "#/definitions/accessModes"},
+        "size": {"type": "string", "minLength": 1},
+        "mountPath": {"type": "string", "pattern": "^/"}
+      }
+    },
+    "resources": {"type": "object"},
+    "strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {"type": {"type": "string", "enum": ["Recreate", "RollingUpdate"], "description": "Deployment rollout strategy. all/control/network require Recreate; web/engine may use RollingUpdate when their storage supports overlap."}}
+    },
+    "nodeSelector": {"type": "object"},
+    "tolerations": {"type": "array", "items": {"type": "object"}},
+    "affinity": {"type": "object"},
+    "topologySpreadConstraints": {"type": "array", "items": {"type": "object"}},
+    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 1},
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startup", "liveness", "readiness"],
+      "properties": {
+        "startup": {"$ref": "#/definitions/probe"},
+        "liveness": {"$ref": "#/definitions/probe"},
+        "readiness": {"$ref": "#/definitions/probe"}
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publicUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "containerMaxMemoryMb", "containerMaxCpuCount"],
+      "properties": {
+        "publicUrl": {"type": "string", "pattern": "^(|https?://[^[:space:]]+)$"},
+        "cookieSecure": {"type": "boolean"},
+        "trustedProxyCidrs": {"type": "string"},
+        "jwtTtlSeconds": {"type": "integer", "minimum": 1},
+        "allowRegister": {"type": "boolean"},
+        "emailConfirm": {"type": "boolean"},
+        "adminConfirm": {"type": "boolean"},
+        "activeOnRegister": {"type": "boolean"},
+        "useCaptcha": {"type": "boolean"},
+        "migrate": {"type": "boolean"},
+        "logLevel": {"type": "string", "minLength": 1},
+        "provisioningConcurrency": {"type": "integer", "minimum": 1, "description": "P in the database pool floor; each concurrent provisioning operation may retain two connections."},
+        "repoScanConcurrency": {"type": "integer", "minimum": 1, "maximum": 4, "description": "R in the database pool floor; a checker-bearing repository scan may briefly retain four connections."},
+        "dbMaxConnections": {"type": "integer", "minimum": 2, "description": "Per-process pool cap. Required minimum is 2 for migrate, 4R+2P+1 for web/engine, 4R+2P+3 for a non-VPN all/control/network owner, or 4R+2P+6 for a VPN owner."},
+        "checkerUidBase": {"type": "integer", "minimum": 1, "maximum": 65534, "description": "First otherwise-unused numeric UID reserved for process checker isolation."},
+        "checkerProcessBudget": {"type": "integer", "minimum": 1, "maximum": 256, "description": "Reserved UID count and per-process custom-checker concurrency bound."},
+        "containerMaxMemoryMb": {"type": "integer", "minimum": 1},
+        "containerMaxCpuCount": {"type": "integer", "minimum": 1}
+      }
+    },
+    "trafficCapture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "device", "reconcileSeconds"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "device": {"type": "string", "minLength": 1},
+        "reconcileSeconds": {"type": "integer", "minimum": 1, "maximum": 60}
+      }
+    },
+    "containerBackend": {"type": "string", "enum": ["none", "kubernetes", "docker", "worker"]},
+    "workerBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["localBackend", "defaultOs", "defaultArchitecture"],
+      "properties": {
+        "localBackend": {"type": "string", "enum": ["none", "docker", "kubernetes"], "description": "All-in-one local A&D/KotH runtime retained while Jeopardy uses enrolled workers."},
+        "defaultOs": {"type": "string", "enum": ["linux"], "description": "V1 worker workloads are Linux-only; Windows protocol fields are reserved for a future isolated runtime."},
+        "defaultArchitecture": {"type": "string", "minLength": 1}
+      }
+    },
+    "kubernetes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "metrics", "adServiceCidr", "isolatedPodNetns"],
+      "properties": {
+        "challengeNamespace": {"type": "string"},
+        "createChallengeNamespace": {"type": "boolean"},
+        "challengeNamespaceLabels": {"type": "object", "additionalProperties": {"type": "string"}},
+        "publicEntry": {"type": "string"},
+        "challengeUid": {"type": "integer", "minimum": 1},
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {"enabled": {"type": "boolean"}}
+        },
+        "adServiceCidr": {"type": "string"},
+        "isolatedPodNetns": {"type": "boolean"}
+      }
+    },
+    "docker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["socket"],
+      "properties": {
+        "socket": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "path"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "path": {"type": "string", "pattern": "^/"}
+          }
+        }
+      }
+    },
+    "vpn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "required", "listenPort", "serverEndpoint", "clientCidr", "servicesCidr", "dns", "allowedIps", "devicePath", "service"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "required": {"type": "boolean"},
+        "listenPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "serverEndpoint": {"type": "string"},
+        "clientCidr": {"type": "string", "minLength": 1},
+        "servicesCidr": {"type": "string", "minLength": 1},
+        "dns": {"type": "string", "minLength": 1},
+        "allowedIps": {"type": "string"},
+        "devicePath": {"type": "string", "pattern": "^/"},
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "port", "annotations", "externalTrafficPolicy"],
+          "properties": {
+            "type": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"]},
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
+            "externalTrafficPolicy": {"type": "string", "enum": ["", "Cluster", "Local"]}
+          }
+        }
+      }
+    },
+    "extraEnv": {"type": "array", "items": {"type": "object"}},
+    "extraVolumes": {"type": "array", "items": {"type": "object"}},
+    "extraVolumeMounts": {"type": "array", "items": {"type": "object"}}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "containerBackend": {"not": {"const": "worker"}}
+        }
+      },
+      "then": {
+        "properties": {
+          "workerBackend": {
+            "properties": {
+              "localBackend": {"const": "none"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtimeRole": {"not": {"const": "all"}},
+          "containerBackend": {"const": "worker"},
+          "workerBackend": {
+            "properties": {
+              "localBackend": {"not": {"const": "none"}}
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "workerBackend": {
+            "properties": {
+              "localBackend": {"const": "none"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "containerBackend": {"const": "worker"},
+          "vpn": {
+            "properties": {
+              "enabled": {"const": true}
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "runtimeRole": {"const": "all"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtimeRole": {"enum": ["web", "control", "engine", "network"]}
+        }
+      },
+      "then": {
+        "properties": {
+          "existingSecret": {
+            "properties": {"name": {"type": "string", "minLength": 1}}
+          },
+          "postgresql": {
+            "properties": {"enabled": {"const": false}}
+          },
+          "redis": {
+            "properties": {"enabled": {"const": false}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtimeRole": {"enum": ["web", "control", "engine", "network"]}
+        },
+        "anyOf": [
+          {
+            "properties": {
+              "containerBackend": {"const": "kubernetes"}
+            }
+          },
+          {
+            "properties": {
+              "containerBackend": {"const": "worker"},
+              "workerBackend": {
+                "properties": {
+                  "localBackend": {"const": "kubernetes"}
+                }
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "kubernetes": {
+            "properties": {
+              "challengeNamespace": {"type": "string", "minLength": 1},
+              "createChallengeNamespace": {"const": false}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "secretKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "taggedImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "minLength": 1},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "postgresImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "pattern": "^18(?:[.-].*)?$"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "runAsContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runAsUser", "runAsGroup"],
+      "properties": {
+        "runAsUser": {"type": "integer", "minimum": 1},
+        "runAsGroup": {"type": "integer", "minimum": 1}
+      }
+    },
+    "accessModes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "enum": ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"]}
+    },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "storageClass", "accessModes", "size"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "storageClass": {"type": "string"},
+        "accessModes": {"$ref": "#/definitions/accessModes"},
+        "size": {"type": "string", "minLength": 1}
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initialDelaySeconds", "periodSeconds", "timeoutSeconds", "failureThreshold"],
+      "properties": {
+        "initialDelaySeconds": {"type": "integer", "minimum": 0},
+        "periodSeconds": {"type": "integer", "minimum": 1},
+        "timeoutSeconds": {"type": "integer", "minimum": 1},
+        "failureThreshold": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

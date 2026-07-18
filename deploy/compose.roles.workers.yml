@@ -1,0 +1,62 @@
+# Optional trusted worker plane for compose.roles.yml.
+#
+# Use this instead of compose.workers.yml in a split deployment. It attaches
+# the listener and CA signing key only to the singleton control owner. Split
+# worker deployments are pure remote mode: local A&D/KotH lifecycle calls are
+# still served by web and cannot yet be delegated safely to control. Do not
+# combine this file with a Docker, Kubernetes, or VPN local-runtime overlay.
+services:
+  rsctf:
+    # Clear any local-runtime mounts/capabilities supplied by an incompatible
+    # earlier overlay. The split worker web tier must remain socket-free.
+    cap_add: !reset []
+    devices: !reset []
+    sysctls: !reset {}
+    ports: !reset []
+    environment:
+      RSCTF_CONTAINER_BACKEND: worker
+      RSCTF_WORKER_LOCAL_BACKEND: none
+      RSCTF_TRAFFIC_CAPTURE_ENABLED: "false"
+      RSCTF_WORKER_DEFAULT_OS: ${RSCTF_WORKER_DEFAULT_OS:-linux}
+      RSCTF_WORKER_DEFAULT_ARCH: ${RSCTF_WORKER_DEFAULT_ARCH:-amd64}
+    volumes: !override
+      - files_data:/data/files
+
+  rsctf-control:
+    # Likewise discard a mistakenly merged Docker socket or TUN device. The
+    # only singleton material retained here is the worker listener and PKI.
+    devices: !reset []
+    sysctls: !reset {}
+    environment:
+      RSCTF_CONTAINER_BACKEND: worker
+      RSCTF_WORKER_LOCAL_BACKEND: none
+      RSCTF_TRAFFIC_CAPTURE_ENABLED: "false"
+      RSCTF_WORKER_DEFAULT_OS: ${RSCTF_WORKER_DEFAULT_OS:-linux}
+      RSCTF_WORKER_DEFAULT_ARCH: ${RSCTF_WORKER_DEFAULT_ARCH:-amd64}
+      RSCTF_WORKER_LISTEN: 0.0.0.0:9443
+      RSCTF_WORKER_PUBLIC_ENDPOINT: ${RSCTF_WORKER_PUBLIC_ENDPOINT:?Set RSCTF_WORKER_PUBLIC_ENDPOINT to the worker-reachable host:port}
+      RSCTF_WORKER_SERVER_NAME: ${RSCTF_WORKER_SERVER_NAME:?Set RSCTF_WORKER_SERVER_NAME to the server certificate DNS name}
+      RSCTF_WORKER_CA_CERT: /run/secrets/rsctf-worker/worker-ca.crt
+      RSCTF_WORKER_CA_KEY: /run/secrets/rsctf-worker/worker-ca.key
+      RSCTF_WORKER_SERVER_CERT: /run/secrets/rsctf-worker/worker-server.crt
+      RSCTF_WORKER_SERVER_KEY: /run/secrets/rsctf-worker/worker-server.key
+    volumes: !override
+      - files_data:/data/files
+      - type: bind
+        source: ${RSCTF_WORKER_CA_CERT_HOST:?Set RSCTF_WORKER_CA_CERT_HOST}
+        target: /run/secrets/rsctf-worker/worker-ca.crt
+        read_only: true
+      - type: bind
+        source: ${RSCTF_WORKER_CA_KEY_HOST:?Set RSCTF_WORKER_CA_KEY_HOST}
+        target: /run/secrets/rsctf-worker/worker-ca.key
+        read_only: true
+      - type: bind
+        source: ${RSCTF_WORKER_SERVER_CERT_HOST:?Set RSCTF_WORKER_SERVER_CERT_HOST}
+        target: /run/secrets/rsctf-worker/worker-server.crt
+        read_only: true
+      - type: bind
+        source: ${RSCTF_WORKER_SERVER_KEY_HOST:?Set RSCTF_WORKER_SERVER_KEY_HOST}
+        target: /run/secrets/rsctf-worker/worker-server.key
+        read_only: true
+    ports: !override
+      - ${RSCTF_WORKER_BIND_IP:-0.0.0.0}:${RSCTF_WORKER_PORT:-9443}:9443

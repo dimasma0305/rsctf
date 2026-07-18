@@ -1,0 +1,88 @@
+import react from '@vitejs/plugin-react'
+import path from 'node:path'
+import process from 'node:process'
+import { fileURLToPath } from 'node:url'
+import { defineConfig, loadEnv } from 'vite'
+import banner from 'vite-plugin-banner'
+import { optimizeCssModules } from 'vite-plugin-optimize-css-modules'
+import Pages from 'vite-plugin-pages'
+import webfontDownload from 'vite-plugin-webfont-dl'
+import tsconfigPaths from 'vite-tsconfig-paths'
+import { fetchContributors } from './plugins/vite-fetch-contributors'
+import { i18nVirtualManifest } from './plugins/vite-i18n-virtual-manifest'
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd())
+  const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+  const TARGET = env.VITE_BACKEND_URL ?? 'http://localhost:8080'
+  const current = new Date()
+
+  const BANNER =
+    `/* RS::CTF Web @${env.VITE_APP_GIT_NAME ?? 'source'}\n * \n` +
+    ` * Source    : https://github.com/dimasma0305/rsctf\n` +
+    ` * Licensing : See /legal/LICENSING.md and /legal/third-party/CreepJS-LICENSE.txt\n` +
+    ` * Commit    : ${env.VITE_APP_GIT_SHA ?? 'Source build'}\n` +
+    ` * Build     : ${env.VITE_APP_BUILD_TIMESTAMP ?? current.toISOString()}\n` +
+    ` * Copyright (C) ${current.getFullYear()} RSCTF contributors.\n */`
+
+  console.log(`Using backend URL: ${TARGET}`)
+
+  return {
+    resolve: {
+      alias: {
+        '@creepjs': path.resolve(__dirname, 'src/lib/creepjs/src'),
+      },
+    },
+    server: {
+      port: 63000,
+      // Allow tunneling via cloudflared/ngrok/etc for remote preview.
+      allowedHosts: true,
+      proxy: {
+        '/api': TARGET,
+        '/swagger': TARGET,
+        '/assets': TARGET,
+        '/hub': { target: TARGET.replace('http', 'ws'), ws: true },
+        '/favicon.webp': TARGET,
+      },
+    },
+    preview: { port: 64000 },
+    worker: {
+      format: 'es',
+    },
+    build: {
+      outDir: 'build',
+      assetsDir: 'static',
+      cssMinify: 'esbuild',
+      cssCodeSplit: false,
+      chunkSizeWarningLimit: 2400,
+      reportCompressedSize: true,
+      rolldownOptions: {
+        output: {
+          hashCharacters: 'base36',
+          chunkFileNames: 'static/[hash].js',
+          assetFileNames: 'static/[hash].[ext]',
+          entryFileNames: 'static/[name].[hash].js',
+        },
+      },
+    },
+    plugins: [
+      tsconfigPaths(),
+      react(),
+      banner(BANNER),
+      webfontDownload(
+        [
+          'https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Lexend:wght@100..900&display=swap',
+        ],
+        {
+          injectAsStyleTag: false,
+          async: false,
+        }
+      ),
+      Pages({ dirs: [{ dir: './src/pages', baseRoute: '', filePattern: '**/*.tsx' }] }),
+      i18nVirtualManifest(),
+      fetchContributors(),
+      optimizeCssModules(),
+    ],
+  }
+})

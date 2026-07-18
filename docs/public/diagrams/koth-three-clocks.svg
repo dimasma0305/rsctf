@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="820" viewBox="0 0 1600 820" role="img" aria-labelledby="title desc">
+  <title id="title">RSCTF crown cycles inside a scoring epoch</title>
+  <desc id="desc">The default twelve-tick epoch contains four three-tick crown cycles. Each cycle begins after the previous container is destroyed and one pristine same-image replacement passes readiness. The previous champion is blocked for the first active tick when a challenger remains. Reset and readiness time is not scored.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#242424"/>
+    </marker>
+    <pattern id="hatch" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="10" stroke="#c8c8c8" stroke-width="3"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="820" fill="#ffffff"/>
+  <text x="70" y="64" fill="#111111" font-family="Georgia, 'DejaVu Serif', serif" font-size="43" font-weight="700">Crown cycles keep one shared hill contestable</text>
+  <text x="70" y="104" fill="#444444" font-family="'DejaVu Sans', sans-serif" font-size="21">Default: 12 scorable ticks per epoch · 3 ticks per cycle · 1 champion cooldown tick · 2 healthy ticks to confirm</text>
+
+  <g font-family="'DejaVu Sans', sans-serif">
+    <text x="70" y="166" fill="#222222" font-size="19" font-weight="700">SCORABLE TICKS</text>
+    <g stroke="#222222" stroke-width="2">
+      <rect x="70" y="188" width="112" height="92" rx="8" fill="#eeeeee"/>
+      <rect x="190" y="188" width="112" height="92" rx="8" fill="#eeeeee"/>
+      <rect x="310" y="188" width="112" height="92" rx="8" fill="#eeeeee"/>
+      <rect x="446" y="188" width="112" height="92" rx="8" fill="#f6f6f6"/>
+      <rect x="566" y="188" width="112" height="92" rx="8" fill="#f6f6f6"/>
+      <rect x="686" y="188" width="112" height="92" rx="8" fill="#f6f6f6"/>
+      <rect x="822" y="188" width="112" height="92" rx="8" fill="#eeeeee"/>
+      <rect x="942" y="188" width="112" height="92" rx="8" fill="#eeeeee"/>
+      <rect x="1062" y="188" width="112" height="92" rx="8" fill="#eeeeee"/>
+      <rect x="1198" y="188" width="112" height="92" rx="8" fill="#f6f6f6"/>
+      <rect x="1318" y="188" width="112" height="92" rx="8" fill="#f6f6f6"/>
+      <rect x="1438" y="188" width="92" height="92" rx="8" fill="#f6f6f6"/>
+    </g>
+    <g fill="#111111" font-size="19" font-weight="700" text-anchor="middle">
+      <text x="126" y="226">1</text><text x="246" y="226">2</text><text x="366" y="226">3</text>
+      <text x="502" y="226">4</text><text x="622" y="226">5</text><text x="742" y="226">6</text>
+      <text x="878" y="226">7</text><text x="998" y="226">8</text><text x="1118" y="226">9</text>
+      <text x="1254" y="226">10</text><text x="1374" y="226">11</text><text x="1484" y="226">12</text>
+    </g>
+    <g fill="#555555" font-size="14" text-anchor="middle">
+      <text x="502" y="258">cooldown*</text><text x="878" y="258">cooldown*</text>
+      <text x="1254" y="258">cooldown*</text>
+    </g>
+
+    <text x="70" y="340" fill="#222222" font-size="19" font-weight="700">CROWN CYCLES</text>
+    <g stroke="#222222" stroke-width="3">
+      <rect x="70" y="362" width="352" height="116" rx="10" fill="#e8e8e8"/>
+      <rect x="446" y="362" width="352" height="116" rx="10" fill="url(#hatch)"/>
+      <rect x="822" y="362" width="352" height="116" rx="10" fill="#e8e8e8"/>
+      <rect x="1198" y="362" width="332" height="116" rx="10" fill="url(#hatch)"/>
+    </g>
+    <g fill="#111111" font-size="22" font-weight="700" text-anchor="middle">
+      <text x="246" y="405">CYCLE 1</text><text x="622" y="405">CYCLE 2</text>
+      <text x="998" y="405">CYCLE 3</text><text x="1364" y="405">CYCLE 4</text>
+    </g>
+    <g fill="#444444" font-size="16" text-anchor="middle">
+      <text x="246" y="438">one clean hill + fresh team codes</text>
+      <text x="622" y="438">one clean hill + fresh team codes</text>
+      <text x="998" y="438">one clean hill + fresh team codes</text>
+      <text x="1364" y="438">one clean hill + fresh team codes</text>
+    </g>
+
+    <g stroke="#242424" stroke-width="3" marker-end="url(#arrow)">
+      <line x1="430" y1="330" x2="442" y2="330"/>
+      <line x1="806" y1="330" x2="818" y2="330"/>
+      <line x1="1182" y1="330" x2="1194" y2="330"/>
+    </g>
+    <g fill="#ffffff" stroke="#242424" stroke-width="2">
+      <rect x="351" y="298" width="160" height="42" rx="21"/>
+      <rect x="727" y="298" width="160" height="42" rx="21"/>
+      <rect x="1103" y="298" width="160" height="42" rx="21"/>
+    </g>
+    <g fill="#222222" font-size="13" font-weight="700" text-anchor="middle">
+      <text x="431" y="324">CLEAN RESET</text>
+      <text x="807" y="324">CLEAN RESET</text>
+      <text x="1183" y="324">CLEAN RESET</text>
+    </g>
+
+    <text x="70" y="540" fill="#222222" font-size="19" font-weight="700">OFFICIAL EPOCH</text>
+    <rect x="70" y="562" width="1460" height="104" rx="12" fill="#222222"/>
+    <text x="800" y="604" fill="#ffffff" font-size="25" font-weight="700" text-anchor="middle">EPOCH 1 · TICKS 1-12 · FIXED 100-POINT BUDGET</text>
+    <text x="800" y="638" fill="#e8e8e8" font-size="17" text-anchor="middle">Complete epochs with scored checks have equal weight; a short final epoch uses played checks / 12</text>
+
+    <rect x="70" y="710" width="460" height="72" rx="10" fill="#f5f5f5" stroke="#555555" stroke-width="2"/>
+    <text x="94" y="739" fill="#111111" font-size="16" font-weight="700">RESET / READINESS</text>
+    <text x="94" y="764" fill="#444444" font-size="15">not counted as a chance for any team</text>
+
+    <rect x="570" y="710" width="460" height="72" rx="10" fill="#f5f5f5" stroke="#555555" stroke-width="2"/>
+    <text x="594" y="739" fill="#111111" font-size="16" font-weight="700">QUALIFIED CAPTURE</text>
+    <text x="594" y="764" fill="#444444" font-size="15">same team code + two healthy checks by default</text>
+
+    <rect x="1070" y="710" width="460" height="72" rx="10" fill="#f5f5f5" stroke="#555555" stroke-width="2"/>
+    <text x="1094" y="739" fill="#111111" font-size="16" font-weight="700">* CHAMPION COOLDOWN</text>
+    <text x="1094" y="764" fill="#444444" font-size="15">requires a prior champion and an eligible challenger</text>
+  </g>
+</svg>

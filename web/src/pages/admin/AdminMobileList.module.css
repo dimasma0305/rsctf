@@ -1,0 +1,155 @@
+.mobileList {
+  padding: 2px;
+}
+
+.card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--app-surface-border);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--mantine-primary-color-5) 7%, transparent), transparent 48%),
+    var(--app-raised-surface);
+  box-shadow: var(--mantine-shadow-xs);
+}
+
+.card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  content: '';
+  background: var(--mantine-primary-color-filled);
+}
+
+.identity {
+  min-width: 0;
+  flex: 1;
+}
+
+.recordTitle {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--app-text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.publicLink .recordTitle {
+  flex: 1;
+}
+
+.publicLink {
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  border-radius: var(--mantine-radius-md);
+  color: inherit;
+  text-decoration: none;
+}
+
+.publicLink:hover {
+  color: var(--app-accent-text);
+}
+
+.stateRow {
+  min-height: 58px;
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  border: 1px solid var(--app-surface-border);
+  border-radius: var(--mantine-radius-md);
+  background: var(--app-subtle-surface);
+}
+
+.details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--mantine-spacing-xs);
+  padding: 0;
+  margin: 0;
+}
+
+.detail {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--app-surface-border);
+  border-radius: var(--mantine-radius-md);
+  background: var(--app-subtle-surface);
+}
+
+.detailWide {
+  grid-column: 1 / -1;
+}
+
+.detailLabel {
+  margin: 0 0 3px;
+  color: var(--app-text-muted);
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.055em;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.detailValue {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--app-text-primary);
+  line-height: 1.45;
+}
+
+.actionGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--mantine-spacing-xs);
+}
+
+.actionCell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  color: var(--app-text-secondary);
+  text-align: center;
+}
+
+.actionCell :where(button, a) {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.actionLabel {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--app-text-muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gameActions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: var(--mantine-spacing-xs);
+}
+
+.gameActions :where(button, a) {
+  min-height: 44px;
+}
+
+@media (max-width: 25rem) {
+  .details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detailWide {
+    grid-column: auto;
+  }
+
+  .actionLabel {
+    font-size: 0.64rem;
+  }
+}

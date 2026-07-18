@@ -1,0 +1,14 @@
+.statCard {
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.statCard:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--mantine-shadow-md);
+}
+
+.clickRow {
+  cursor: pointer;
+}

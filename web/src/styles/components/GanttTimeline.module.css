@@ -1,0 +1,404 @@
+.root {
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--app-surface-border);
+  border-radius: var(--mantine-radius-lg);
+  background: var(--app-raised-surface);
+  box-shadow: 0 10px 34px rgba(8, 15, 30, 0.07);
+}
+
+.header {
+  min-height: 5.25rem;
+  padding: 1rem 1.15rem;
+  border-bottom: 1px solid var(--app-border);
+  background:
+    radial-gradient(
+      circle at 100% 0,
+      color-mix(in srgb, var(--mantine-primary-color-5) 12%, transparent),
+      transparent 18rem
+    ),
+    var(--app-raised-surface);
+}
+
+.eyebrow {
+  color: var(--app-accent-text);
+  font-size: 0.65rem;
+  font-weight: 780;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.heading {
+  color: var(--app-text-primary);
+  letter-spacing: -0.025em;
+}
+
+.range {
+  color: var(--app-text-secondary);
+}
+
+.range > svg {
+  color: var(--app-accent-text);
+}
+
+.empty {
+  padding: 1.4rem 1.15rem;
+  color: var(--app-text-muted);
+}
+
+.scrollArea {
+  width: 100%;
+  max-width: 100%;
+}
+
+.scrollArea :global(.mantine-ScrollArea-viewport) {
+  max-width: 100%;
+  overscroll-behavior-x: contain;
+  scroll-behavior: smooth;
+}
+
+.canvas {
+  --day-width: 2.5rem;
+  --label-width: 13.5rem;
+  --timeline-width: 122.5rem;
+  --six-day-width: 15rem;
+  --week-width: 17.5rem;
+  --row-height: 3.5rem;
+  --today-position: 50%;
+  --weekend-surface: color-mix(in srgb, var(--app-hover-surface) 70%, transparent);
+
+  position: relative;
+  width: calc(var(--label-width) + var(--timeline-width));
+  min-width: 100%;
+  color: var(--app-text-primary);
+}
+
+.calendarHeader,
+.row {
+  display: grid;
+  grid-template-columns: var(--label-width) var(--timeline-width);
+}
+
+.calendarHeader {
+  position: relative;
+  height: 4.25rem;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-subtle-surface);
+}
+
+.cornerLabel {
+  position: sticky;
+  z-index: 8;
+  left: 0;
+  display: flex;
+  width: var(--label-width);
+  height: 4.25rem;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0.55rem 0.9rem;
+  border-right: 1px solid var(--app-border);
+  background: var(--app-subtle-surface);
+  box-shadow: 8px 0 18px rgba(8, 15, 30, 0.05);
+}
+
+.calendarScale {
+  position: relative;
+  width: var(--timeline-width);
+  overflow: hidden;
+}
+
+.monthRow {
+  position: relative;
+  height: 1.75rem;
+  border-bottom: 1px solid var(--app-border-subtle);
+}
+
+.monthRow > span {
+  position: absolute;
+  top: 0;
+  display: flex;
+  height: 100%;
+  align-items: center;
+  padding-left: 0.5rem;
+  color: var(--app-text-secondary);
+  font-size: 0.68rem;
+  font-weight: 720;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.dayRow {
+  display: grid;
+  width: var(--timeline-width);
+  height: 2.5rem;
+  grid-template-columns: repeat(49, var(--day-width));
+}
+
+.dayCell {
+  display: flex;
+  width: var(--day-width);
+  align-items: center;
+  justify-content: center;
+  gap: 0.22rem;
+  color: var(--app-text-muted);
+  border-right: 1px solid var(--app-border-subtle);
+  font-size: 0.7rem;
+}
+
+.dayCell small {
+  font-size: 0.57rem;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.dayCell strong {
+  font-size: 0.7rem;
+  font-weight: 720;
+}
+
+.dayCell[data-weekend] {
+  background: var(--weekend-surface);
+}
+
+.dayCell[data-today] {
+  color: var(--mantine-color-white);
+  background: var(--mantine-primary-color-filled);
+}
+
+.todayHeaderMarker,
+.todayLine {
+  position: absolute;
+  z-index: 3;
+  left: var(--today-position);
+  width: 2px;
+  pointer-events: none;
+  background: var(--mantine-primary-color-filled);
+}
+
+.todayHeaderMarker {
+  top: 0;
+  bottom: 0;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--mantine-primary-color-filled) 20%, transparent);
+}
+
+.rows {
+  position: relative;
+}
+
+.row {
+  min-height: var(--row-height);
+  border-bottom: 1px solid var(--app-border-subtle);
+}
+
+.row:last-child {
+  border-bottom: 0;
+}
+
+.eventCell {
+  position: sticky;
+  z-index: 7;
+  left: 0;
+  display: flex;
+  width: var(--label-width);
+  min-width: 0;
+  min-height: var(--row-height);
+  align-items: stretch;
+  border-right: 1px solid var(--app-border);
+  background: var(--app-raised-surface);
+  box-shadow: 8px 0 18px rgba(8, 15, 30, 0.045);
+}
+
+.eventLabel {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.75rem;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0.45rem 0.8rem;
+  color: inherit;
+  text-align: left;
+  text-decoration: none;
+  transition: background-color 130ms ease;
+
+  @mixin hover {
+    background: var(--app-hover-surface);
+  }
+}
+
+.title {
+  display: block;
+  overflow: hidden;
+  color: var(--app-text-primary);
+  font-size: 0.78rem;
+  font-weight: 720;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eventMeta {
+  display: block;
+  overflow: hidden;
+  margin-top: 0.12rem;
+  color: var(--app-text-muted);
+  font-size: 0.65rem;
+  font-weight: 570;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track {
+  position: relative;
+  width: var(--timeline-width);
+  min-height: var(--row-height);
+  overflow: hidden;
+  background-image:
+    linear-gradient(to right, var(--app-border-subtle) 1px, transparent 1px),
+    repeating-linear-gradient(
+      to right,
+      var(--weekend-surface) 0,
+      var(--weekend-surface) var(--day-width),
+      transparent var(--day-width),
+      transparent var(--six-day-width),
+      var(--weekend-surface) var(--six-day-width),
+      var(--weekend-surface) var(--week-width)
+    );
+  background-size:
+    var(--day-width) 100%,
+    var(--week-width) 100%;
+}
+
+.todayLine {
+  top: 0;
+  bottom: 0;
+  opacity: 0.72;
+}
+
+.eventBar {
+  --event-color: var(--mantine-primary-color-6);
+
+  position: absolute;
+  z-index: 4;
+  top: 0.38rem;
+  bottom: 0.38rem;
+  left: var(--event-left);
+  display: flex;
+  width: var(--event-width);
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.65rem;
+  overflow: hidden;
+  color: var(--app-text-primary);
+  border: 1px solid color-mix(in srgb, var(--event-color) 68%, var(--app-border));
+  border-left: 4px solid var(--event-color);
+  border-radius: var(--mantine-radius-md);
+  background: color-mix(in srgb, var(--event-color) 17%, var(--app-raised-surface));
+  box-shadow: 0 3px 10px rgba(8, 15, 30, 0.1);
+  text-decoration: none;
+  transition:
+    filter 130ms ease,
+    transform 130ms ease,
+    box-shadow 130ms ease;
+
+  @mixin hover {
+    z-index: 5;
+    filter: saturate(1.1);
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(8, 15, 30, 0.15);
+  }
+}
+
+.eventBarTitle {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.72rem;
+  font-weight: 740;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eventBarStatus {
+  flex: 0 0 auto;
+  font-size: 0.63rem;
+  font-weight: 650;
+  opacity: 0.76;
+  white-space: nowrap;
+}
+
+.outsideRange {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  padding-inline: 0.75rem;
+  color: var(--app-text-muted);
+}
+
+.mobileHint {
+  display: none;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 0.8rem;
+  color: var(--app-text-muted);
+  border-top: 1px solid var(--app-border-subtle);
+  background: var(--app-subtle-surface);
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .header {
+    align-items: flex-start;
+    min-height: auto;
+    padding: 0.9rem;
+  }
+
+  .range {
+    width: 100%;
+  }
+
+  .canvas {
+    --day-width: 2.25rem;
+    --label-width: 8.75rem;
+    --timeline-width: 110.25rem;
+    --six-day-width: 13.5rem;
+    --week-width: 15.75rem;
+    --row-height: 3.5rem;
+  }
+
+  .cornerLabel {
+    padding-inline: 0.65rem;
+  }
+
+  .eventLabel {
+    min-height: 3.5rem;
+    padding-inline: 0.65rem;
+  }
+
+  .eventBarStatus {
+    display: none;
+  }
+
+  .mobileHint {
+    display: flex;
+  }
+}
+
+@media (max-width: 25rem) {
+  .canvas {
+    --label-width: 8rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scrollArea :global(.mantine-ScrollArea-viewport) {
+    scroll-behavior: auto;
+  }
+
+  .eventLabel,
+  .eventBar {
+    transition: none;
+  }
+}

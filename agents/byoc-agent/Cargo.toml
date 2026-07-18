@@ -1,0 +1,22 @@
+[workspace]
+
+[package]
+name = "rsctf-byoc-agent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "RSCTF Attack & Defense bring-your-own-container tunnel agent"
+
+[[bin]]
+name = "rsctf-byoc-agent"
+path = "src/main.rs"
+
+[dependencies]
+bollard = "0.17"
+futures = "0.3"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.30", features = ["connect", "rustls-tls-webpki-roots"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+yamux = "0.14"

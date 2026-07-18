@@ -1,0 +1,575 @@
+{
+  "button": {
+    "ad": {
+      "reset": "Reset",
+      "submit": "Submit attack",
+      "snapshot": "Snapshot",
+      "download_snapshot": "Download .tar.gz",
+      "rotate_token": "Rotate token",
+      "generate_token": "Generate token",
+      "copy_curl": "Copy curl",
+      "copy_token": "Copy token",
+      "download_vpn": "Download .conf",
+      "open_toolkit": "A&D Toolkit"
+    },
+    "challenges": "Challenges",
+    "delete": {
+      "all_traffic": "Delete all listed traffic"
+    },
+    "download": {
+      "all_traffic": "Download all listed traffic",
+      "scoreboard": "Scoreboard",
+      "submissionsheet": "Submissions"
+    },
+    "finished": "Game Ended",
+    "hide_solved": "Hide Solved",
+    "join": "Join",
+    "kind": {
+      "all": "All",
+      "jeopardy": "CTF",
+      "ad": "A&D"
+    },
+    "leave": "Leave Game",
+    "login_required": "Please Login",
+    "scoreboard": "Scoreboard",
+    "submit_writeup": "Submit Writeup",
+    "writeup": {
+      "upload": "Submit Writeup",
+      "uploading": "Uploading..."
+    },
+    "attack": "Attack Feed",
+    "find_my_team": "Find My Team"
+  },
+  "content": {
+    "scoreboard": {
+      "tab": {
+        "jeopardy": "Jeopardy",
+        "ad": "Attack & Defense"
+      },
+      "ad": {
+        "column": {
+          "captures": "Captures",
+          "team": "Team",
+          "status": "Status"
+        },
+        "epoch": {
+          "title": "Attack & Defense scoreboard",
+          "compact_description": "Settled is the primary rank value; exact ties use Live, offense, defense, SLA, then participation ID.",
+          "score_label": "A&D score",
+          "current_epoch": "Epoch {{epoch}}",
+          "awaiting_roster": "Warmup",
+          "not_started": "Scoring is waiting for a complete roster and prepared exact checkers.",
+          "load_error": "The A&D scoreboard could not be loaded.",
+          "captures_value": "{{count}} captures",
+          "live_value": "Live {{score}}",
+          "service_breakdown": "Per-challenge score",
+          "mobile_table": "A&D rankings",
+          "mobile_hint": "Select a team to see every challenge score.",
+          "footer_hint": "Defense is positive. Cell tint shows latest health. Updated {{time}}.",
+          "score_info": {
+            "button": "How A&D scoring works",
+            "title": "How scoring works",
+            "tick_title": "Tick / Round",
+            "tick_badge": "{{seconds}}s",
+            "tick_body": "A tick and a round are the same live cycle. Fresh flags are planted, checkers run, and captures plus SLA evidence are recorded.",
+            "epoch_title": "Epoch",
+            "epoch_badge": "{{count}} rounds",
+            "epoch_current_body": "Current Epoch {{epoch}} covers scoring rounds {{start}}-{{end}}. It appears in Live while open and joins Settled only after its checks finish and flag submission windows close.",
+            "epoch_body": "An epoch groups {{count}} scoring rounds. It appears in Live while open and joins Settled only after its checks finish and flag submission windows close.",
+            "epoch_weight": "Old flags may remain valid in later rounds; a capture counts in the epoch where its flag was planted. Complete epochs have equal weight, while a shortened final epoch is weighted by rounds completed.",
+            "intro": "Challenge contributions add up to the team total and already include challenge and epoch weighting.",
+            "offense": "Offense measures accepted capture coverage, with a small bounded rarity bonus for uncommon captures.",
+            "defense": "Defense measures the share of eligible opponent-flag pairs that remain uncaptured.",
+            "sla": "SLA is checker-measured reliability and multiplies the whole local score.",
+            "formula": "Local score = 100 × SLA × (40% offense + 40% defense + 20% √(offense × defense))",
+            "settlement": "Rank is ordered by Settled score. Exact ties use Live, offense, defense, SLA, then participation ID. Live includes the open epoch and can change until it settles."
+          },
+          "column": {
+            "contribution": "Contribution",
+            "settled": "Settled",
+            "projected": "Live",
+            "offense": "Offense",
+            "defense": "Defense",
+            "sla": "SLA"
+          },
+          "detail": {
+            "current_warning": "Epoch {{epoch}} is still live. Orange values are provisional; the team Live total is the first tie-break when Settled scores are exactly equal.",
+            "recent_only": "Latest {{limit}} epochs; totals include every epoch.",
+            "settled_hint": "Finalized challenge contribution. Challenge contributions add up to the team total; orange text is the live projection."
+          },
+          "evidence": {
+            "sparse": "No eligible flag evidence is available yet. Live values remain provisional.",
+            "no_defense": "No defense opportunities are qualified yet; exact healthy checks are required."
+          }
+        },
+        "no_teams": "No teams ranked yet.",
+        "no_service_cell": "No service",
+        "not_checked": "Not checked",
+        "filter_division": "Filter scoreboard by division",
+        "team_detail_error": "Could not load team members.",
+        "team_detail_empty": "No members to show.",
+        "round_label": "Round {{round}}",
+        "round_status": "Round {{round}}, next tick in {{time}}",
+        "round_frozen_status": "Round {{round}}, scoreboard frozen",
+        "next_tick": "next tick {{time}}",
+        "next_tick_now": "next tick…",
+        "next_tick_tip": "Time until the next tick — services are re-checked and flags rotate every {{seconds}}s.",
+        "frozen_short": "frozen"
+      }
+    },
+    "ad": {
+      "round": "Round",
+      "round_ends": "Round ends",
+      "no_round_yet": "No round yet — warmup",
+      "warmup_pill": "Warmup — scoring not yet active",
+      "epoch_number": "Epoch {{epoch}}",
+      "epoch_tick": "Tick {{tick}}/{{total}}",
+      "no_checks_yet": "no checks yet",
+      "target": "Target",
+      "flag_to_defend": "Defending",
+      "snapshot": "Post-game snapshot",
+      "defend_target": "Your service",
+      "flags_syncing": {
+        "label": "Flags syncing — wait before attacking",
+        "description": "This round’s flags are still syncing. Wait before attacking or updating your defended flag."
+      },
+      "flag_delivery_failed": {
+        "label": "{{count}} flag deliveries need attention",
+        "description": "{{count}} service did not acknowledge this round’s flag. The operator has been notified; health evidence will identify affected services."
+      },
+      "no_service": {
+        "title": "No service for your team yet",
+        "description": "If you expected a container here, it hasn't been provisioned yet. Ask the operator to run \"Ensure containers\" from the A&D Ops console."
+      },
+      "submit_via_api": "Submit flags via API",
+      "no_token_yet": "No token yet",
+      "token_captain_only": "Only your team captain can generate the API token. Ask them to open this panel and click Generate token.",
+      "api_note": "Batch submission only — pass one or more captured flags in a single request (max 100). Per-flag results are returned in input order.",
+      "last_used": "Last used",
+      "never_used": "never",
+      "token_modal": {
+        "title": "Your new A&D API token",
+        "warning": "Save this token now — it will not be shown again. The previous token (if any) has been invalidated."
+      },
+      "empty": {
+        "title": "No A&D challenges in this game",
+        "description": "If you expected to see services here, the operator hasn't created any A&D challenges or your team's containers haven't been provisioned yet."
+      },
+      "defend": {
+        "title": "Defend",
+        "description": "Your team's services. Keep them healthy + patched. Click any IP or flag to copy."
+      },
+      "attack": {
+        "title": "Attack",
+        "description": "Submit a flag you captured from another team.",
+        "placeholder": "flag{...}",
+        "recent": "Recent submissions"
+      },
+      "submit_status": {
+        "accepted": "Accepted",
+        "duplicate": "Already submitted",
+        "wrong": "Flag not recognized",
+        "expired": "Flag expired",
+        "self_attack": "That's your own flag",
+        "not_started": "Game hasn't started rounds yet"
+      },
+      "guide": {
+        "title": "Attack & Defense — Toolkit",
+        "intro": "Everything you need to play A&D: your personal API token, your VPN config, the API contract, and the rules. The first two sections are actionable — token rotation and VPN config download.",
+        "footer": "Endpoint base: ",
+        "token": {
+          "title": "Your API token",
+          "intro": "A personal Bearer token scoped to you + this game. Your exploit scripts pass it as Authorization: Bearer <token> when submitting captured flags. Every team member manages their own — rotating yours does not affect anyone else, and if you get kicked from the team your token stops working immediately.",
+          "current": "Your current token"
+        },
+        "vpn": {
+          "title": "VPN config",
+          "intro": "Per-user WireGuard config. The first download generates a fresh keypair + assigns you an IP from the game subnet; subsequent downloads return the same file. Drop the .conf into wg-quick (or wireguard-tools / the WireGuard app) to join the A&D network.",
+          "operator_note": "If the downloaded file contains <unconfigured-server:...> placeholders, your operator has not finished provisioning the WireGuard server. The keypair + assigned IP in your .conf are still valid; the operator just needs to set the server endpoint + server pubkey for the connection to come up.",
+          "linux_hint": "Linux: sudo wg-quick up ./ad-game-….conf. macOS / Windows: import via the official WireGuard app."
+        },
+        "rounds": {
+          "title": "Rounds & flags",
+          "tick": "A round (tick) is the scoring unit. Length is set per game — every A&D service shares one tick (the operator picks it, typically 60–180s).",
+          "plant": "At each tick the platform writes a fresh flag into your container (the \"current flag\"). You can see it in the challenge modal — protect it.",
+          "lifetime": "Old flags stay valid for N ticks (default 5). After that they expire and cannot be accepted as scoring evidence.",
+          "warmup": "Round 0 is warmup — no scoring yet, just make sure your service is up."
+        },
+        "scoring": {
+          "title": "How scoring works",
+          "intro": "The official scoreboard settles accepted outcomes per service inside equal-budget epochs:",
+          "attack_label": "Attack",
+          "attack": "C is your accepted-capture coverage over the frozen opponent roster. H adds a bounded capturer-count rarity fraction. An accepted submission records evidence immediately, but it has no standalone point value; the epoch settles all outcomes together.",
+          "defense_label": "Defense",
+          "defense": "Every exact healthy custom-check flag creates one pair per frozen opponent. Each distinct capturer removes only its own protected pair. An unstolen pair is observable non-capture, not proof that an exploit was attempted.",
+          "sla_label": "SLA",
+          "sla": "A clean passing check earns 1.0, recovery earns 0.5, and a failed or missing check earns 0. InternalError carries the last scored non-infrastructure result after startRound. An isolated first error earns 0; only an all-service first-error outage voids the challenge-round sample for the full roster.",
+          "total_formula": "Service = 100 × R × (0.40A + 0.40D + 0.20√(A×D)); normalized service weights form the epoch score, and finalized epochs determine official rank."
+        },
+        "targets": {
+          "title": "Find your targets",
+          "intro": "A&D is attack-first — you need to know every other team's container IP per service. This endpoint is the canonical list. Excludes your own team and waits until the warmup round has elapsed (currentRound > 0).",
+          "request": "List request",
+          "response": "Response shape",
+          "poll_note": "Poll once per round (~tickSeconds). Container IPs are stable across rounds unless a team Resets or an admin Stops the container — then a fresh IP shows up here within ~15s.",
+          "tip": "lastCheckStatus tells you which targets are healthy: Ok / Mumble / Offline. Prioritize Ok ones — Offline containers won't accept your exploit, and Mumble usually means the service is broken in a way that won't expose the flag."
+        },
+        "submit": {
+          "title": "How to submit captured flags",
+          "api_only": "Flag submission is API-only — there is no web form for A&D. Your exploit scripts batch the flags they collected and POST them in one request.",
+          "token": "Get your token",
+          "token_steps": "Open any A&D challenge in the challenges grid. If you are the team captain, click \"Generate token\" / \"Rotate token\" — the plaintext appears exactly once. Save it somewhere your exploit scripts can read.",
+          "request": "Submit request",
+          "batch_note": "Pass 1 to 100 flag strings per request. Results return in input order so you can correlate.",
+          "response": "Response shape",
+          "statuses": "Per-flag status is one of: accepted | duplicate | wrong | expired | self_attack | not_started. Accepted flags become epoch evidence; the submit response does not assign immediate points."
+        },
+        "container": {
+          "title": "Your container",
+          "ip": "The challenge modal shows your container IP:port — that's where checks run and where attackers point their exploits.",
+          "flag_file": "The live flag is rewritten every round at the path in the RSCTF_FLAG_FILE environment variable. Read it fresh from $RSCTF_FLAG_FILE on every request (don't cache it).",
+          "flag_env": "Never hard-code a platform-specific path. A creation-time RSCTF_FLAG compatibility value may exist, but it becomes stale after rotation — always read $RSCTF_FLAG_FILE.",
+          "patch": "Patch your service live inside the container — the platform does not redeploy on its own. Your changes live ONLY in the running container; there is no persistent disk.",
+          "supervisor": "Your service runs under a supervisor (PID 1). If the service process crashes — or you restart it — it comes back automatically and your patches stay. Restarting the service is safe; but don't kill PID 1 (the supervisor): that drops the box back to the base image.",
+          "reset": "Reset rebuilds the box from the original image — it WIPES all your changes (patches included), costs SLA during the rebuild, and has a cooldown. Use it only if your box is wedged or compromised, then re-apply your patches."
+        },
+        "do_dont": {
+          "title": "Do / Don't",
+          "do": "Do",
+          "do_patch": "Patch your service before the first attack lands.",
+          "do_automate": "Automate flag submission — paste into a loop that fetches the current flag from each target and POSTs the batch.",
+          "do_monitor": "Watch your check status badge — if it goes Mumble/Offline you are losing SLA every tick.",
+          "do_reapply": "Re-apply your patches after any reset — a reset reverts to the pristine, vulnerable image.",
+          "dont": "Don't",
+          "dont_share": "Share your flags or your token with other teams — operators detect it and apply penalties.",
+          "dont_dos": "DoS another team's service or the checker infrastructure — instant DQ.",
+          "dont_break": "Patch in a way that breaks the legit check (returns 500 to the checker) — you lose SLA equivalent to being offline.",
+          "dont_hardcode": "Hard-code the path or cache the flag — read $RSCTF_FLAG_FILE fresh each request, or you'll serve a stale flag and fail the check.",
+          "dont_kill_pid1": "Kill PID 1 (the supervisor) in your box — it resets you to the base image and wipes your patches."
+        }
+      }
+    },
+    "all_solved": {
+      "comment": "Perhaps more difficult challenges are waiting for you...",
+      "title": "All challenges were solved!"
+    },
+    "duration": "{{hours}} hour(s)",
+    "end_at": "Ends at",
+    "end_time": "End Time",
+    "frozen_banner": "Scoreboard frozen since {{time}}. Final standings will be revealed at game end.",
+    "game_ended": "Ended",
+    "game_lasts_long": "The game will last for a long time",
+    "hide_container_events": {
+      "description": "Hide container creation/destroying events",
+      "label": "Hide container events"
+    },
+    "join": {
+      "confirm": "Confirm Registration",
+      "content": [
+        "Are you sure you want to register for this game?",
+        "After successfully registering for the game and passing the review, the team will be locked and <strong>you will no longer be able to remove any member from the team.</strong> The team will be unlocked after the game ends or when the participation request is rejected.",
+        "The limit on the number of players refers to the number of members that have decided to participate as part of the specific team, <strong>regardless of which team you choose to play with.</strong>"
+      ],
+      "division": {
+        "description": "This game has multiple division available. Please select your division.",
+        "label": "Select Division"
+      },
+      "invite_code": {
+        "description": "This game is invitation-only. To participate in, please enter an invitation code.",
+        "label": "Please enter the invitation code"
+      },
+      "team": {
+        "description": "Please select a team you want to participate with in this game. This cannot be changed after participation request approval.",
+        "label": "Select your team"
+      },
+      "title": "Registration Information"
+    },
+    "joined_status": "<strong>{{count}}</strong> teams have already joined",
+    "leave": {
+      "confirm": "Confirm quitting",
+      "content": [
+        "Are you sure you want to quit this game?",
+        "If the number of team members is zero after you quit, the team's participation data will be deleted."
+      ]
+    },
+    "no_challenge": "Ouch! No challenges available for this game.",
+    "no_cheat": {
+      "comment": "It looks like everyone played fair!",
+      "title": "No cheating detected yet"
+    },
+    "no_notice": "Nothing here.",
+    "no_traffic": {
+      "comment": "Both platform and challenge need to be set up to enable capture",
+      "title": "No challenge has traffic capture enabled"
+    },
+    "remaining_duration": "{{hours}}h left",
+    "remaining_time": "Remaining time",
+    "scoreboard_not_ready": {
+      "comment": "Patience is a virtue, please hold on…",
+      "title": "Loading challenges"
+    },
+    "scoreboard_note": "Teams with same score are ranked by submission time.",
+    "scoreboard_tip": "Tip: Scroll through the list of challenges with left and right arrow!",
+    "start_at": "Starts at",
+    "start_time": "Start Time",
+    "team_view": {
+      "description": "Display cheating information by teams",
+      "label": "View as Team"
+    },
+    "total_duration": "{{hours}}h in total",
+    "total_time": "Duration",
+    "traffic": {
+      "delete_confirm": "Delete this traffic file?",
+      "deleted_all_confirm": "Delete all listed traffic?"
+    },
+    "writeup": {
+      "current": "Current Writeup",
+      "deadline_exceeded": "Submission deadline has passed",
+      "instructions": {
+        "additional": "Additional Notes",
+        "deadline": "Please submit the writeup before <1>{{datetime}}</1>, overdue or non-submissions will be considered as giving up the results of this game.",
+        "file_format": "Please organize the writeup of all solved challenges into <1>a standard PDF document less than 20MB</1>.",
+        "title": "Submission Instructions"
+      },
+      "submitted": "Successfully submitted",
+      "title": "Writeup Management",
+      "unsubmitted": "Not yet submitted",
+      "unsubmitted_note": "Your team has not submitted yet"
+    }
+  },
+  "event": {
+    "answer": {
+      "accepted": "Flag accepted",
+      "cheat": "Cheating",
+      "not_found": "Unknown",
+      "submitted": "Successfully submitted",
+      "wrong": "Incorrect flag"
+    },
+    "challenge_opened": "Opened challenge {{chal}}",
+    "cheat_detected": "Cheat detected in challenge {{chal}}, team {{team}} used {{steam}}'s flag.",
+    "container": {
+      "destroy": "Destroyed challenge instance for {{chal}}#{{id}}",
+      "start": "Created challenge instance for {{chal}}#{{id}}"
+    },
+    "flag_submit": "[{{status}}] {{flag}} [{{chal}}#{{id}}]"
+  },
+  "label": {
+    "cheat_info": {
+      "owned_team": "Source Team",
+      "submit_team": "Submit Team",
+      "submit_user": "Submit User"
+    },
+    "notice_type": {
+      "all": "All",
+      "challenge": "Challenge",
+      "events": "News",
+      "game": "Notice"
+    },
+    "score": "Score",
+    "score_formatter": "{value} pts",
+    "score_table": {
+      "all_teams": "All Teams",
+      "rank_division": "Rank",
+      "rank_total": "Overall",
+      "score": "Score",
+      "score_total": "Score",
+      "solved_count": "Solved",
+      "team": "Team",
+      "type": "Type"
+    },
+    "traffic": "Traffic",
+    "flow": {
+      "title": "Flow Inspector",
+      "empty": "No flows match the filter.",
+      "inspect_action": "Inspect flows",
+      "column": {
+        "time": "Time",
+        "peer": "Peer",
+        "duration": "Duration",
+        "flag_hits": "Flag hits"
+      },
+      "filter": {
+        "regex": "Regex...",
+        "peer_ip": "Peer IP...",
+        "flags_only": "Flag hits only",
+        "direction": {
+          "both": "Both",
+          "in": "↓ in",
+          "out": "↑ out"
+        }
+      },
+      "detail": {
+        "empty": "Select a flow to inspect.",
+        "ascii": "ASCII",
+        "hex": "Hex"
+      }
+    }
+  },
+  "notice": {
+    "blood": "Congratulations to {{team}} for the {{blood}} on {{chal}}.",
+    "new_challenge": "New challenge [{{title}}] has been released.",
+    "new_hint": "Hints for [{{title}}] has been updated."
+  },
+  "notification": {
+    "ad": {
+      "attack_accepted": "Attack accepted (epoch evidence recorded)",
+      "reset_queued": {
+        "title": "Reset queued",
+        "message": "Container will rebuild in seconds."
+      }
+    },
+    "connected": {
+      "event": "Real-time event connected",
+      "submission": "Real-time submission connected"
+    },
+    "ended": "The game has ended",
+    "fetch_failed": {
+      "event": "Failed to fetch events",
+      "notice": "Failed to fetch notifications",
+      "submission": "Failed to fetch submissions"
+    },
+    "joined": "Registration successful",
+    "left": "Successfully cancel",
+    "no_division": "Please select the division",
+    "no_invite_code": "Invitation code cannot be empty",
+    "no_team": "Please select the team to participate with",
+    "not_joined": "You haven't joined the game yet",
+    "not_started": "Game not yet started",
+    "select_chal_and_part": "Please select challenges and teams first",
+    "suspended": "You have been banned",
+    "traffic": {
+      "deleted": "Traffic file(s) has been deleted"
+    },
+    "writeup": {
+      "submitted": "Writeup was successfully submitted"
+    }
+  },
+  "participation": {
+    "actions": {
+      "accepted": "Approved",
+      "pending": "Pending review",
+      "rejected": "Re-Sign Up",
+      "suspended": "Banned",
+      "unsubmitted": "Join game"
+    },
+    "alert": {
+      "not_started": {
+        "content": "You have successfully registered and passed the review as a member of team {{team}}. Please wait for the game start.",
+        "mobile": "Please use desktop site to see the details of the game.",
+        "title": "Game not yet started"
+      },
+      "pending": {
+        "content": "Please wait for review results",
+        "title": "You have successfully registered as a member of team {{team}}"
+      },
+      "rejected": {
+        "content": "Please make sure you are eligible to register in the game and re-register after you meet the requirements",
+        "title": "Your participating request was rejected"
+      },
+      "suspended": {
+        "content": "If you have any objections, please contact the administrator to appeal.",
+        "title": "Your team {{team}} has been suspended"
+      },
+      "team_required": {
+        "content": "You didn't join any team, please create or join a team on the <1> Team Management </1> page.",
+        "title": "Unable to register at this time"
+      }
+    },
+    "status": {
+      "accepted": "Approved",
+      "pending": "Pending",
+      "rejected": "Rejected",
+      "suspended": "Banned"
+    }
+  },
+  "placeholder": {
+    "no_solved": "Ouch! This team has not solved any challenges...",
+    "search_team": "Search Team"
+  },
+  "tooltip": {
+    "ad": {
+      "reset": "Rebuild this container to baseline (you lose SLA during the rebuild)",
+      "reset_cooldown": "On cooldown — {{seconds}}s remaining",
+      "snapshot": "Download your container as a loadable Docker image (docker load -i …)"
+    },
+    "copy": {
+      "copied": "Copied",
+      "ip_port": "Copy IP:port",
+      "flag": "Copy flag"
+    }
+  },
+  "tab": {
+    "challenge": "Challenges",
+    "monitor": {
+      "cheat": "Cheat Detection",
+      "cheatinfo": "Cheats",
+      "events": "Events",
+      "index": "Monitoring",
+      "submissions": "Submissions",
+      "traffic": "Traffics"
+    },
+    "scoreboard": "Scoreboard",
+    "submit": "Submit",
+    "ad": "Attack & Defense"
+  },
+  "tag": {
+    "hidden": "Hidden",
+    "individual": "Personal",
+    "limited": "{{count}} players",
+    "multiplayer": "Team"
+  },
+  "title": {
+    "index": "Games"
+  },
+  "submit": {
+    "title": "Submit a challenge",
+    "subtitle": "Share a challenge with the game organizers for review.",
+    "review_notice": "Submissions are hidden from participants until an admin approves.",
+    "disabled_notice": "User submissions are turned off for this game by the organizer.",
+    "github_tab": "From GitHub",
+    "tarball_tab": "From tarball",
+    "repo_url": "Repo URL",
+    "ref": "Branch / tag (optional)",
+    "subpath": "Subpath (optional)",
+    "tarball_help": "Upload a .tar.gz of one challenge directory (challenge.yaml + attachments).",
+    "archive_help": "Upload a .tar.gz or .zip of one challenge directory (challenge.yaml + attachments).",
+    "result": "Submission result",
+    "no_file": "Pick an archive first.",
+    "no_url": "Enter a repo URL first.",
+    "button": {
+      "submit": "Submit",
+      "pick_file": "Choose archive",
+      "clear": "Clear"
+    },
+    "dropzone": {
+      "title": "Drag your archive here, or click to pick one",
+      "hint": "Accepts .tar.gz or .zip up to 64 MB. Must contain challenge.yaml at the root.",
+      "rejected": "File type or size not accepted."
+    },
+    "example": {
+      "title": "Challenge templates",
+      "intro": "Pick the type that matches your challenge and download the template. Edit the files, zip the folder, then upload below.",
+      "static_attachment_title": "Static Attachment",
+      "static_attachment_desc": "Files-only challenge. Players download whatever you put in dist/; flag is matched server-side from the flags: list. Use for crypto, reverse, misc, anything that doesn't need a live server.",
+      "dynamic_container_title": "Dynamic Container",
+      "dynamic_container_desc": "A separate container per team, each with a unique flag injected via the RSCTF_FLAG environment variable. Prevents flag-sharing.",
+      "attack_defense_title": "Attack & Defense",
+      "attack_defense_desc": "Persistent per-team service plus a checker. The platform plants a fresh flag into /flag every tick and rotates it — no flags: or flagTemplate: block. Defenders patch the bug; attackers exploit other teams' instances.",
+      "download_template": "Download template",
+      "tips_title": "Notes",
+      "tips": {
+        "value_ignored": "value: in the YAML is ignored — the admin sets the score after review.",
+        "visible_ignored": "visible: in the YAML is ignored — admin chooses when to enable.",
+        "review_queue": "Submissions sit in the admin review queue; they are NOT live until approved.",
+        "template_image": "For container types, omit containerImage entirely — the platform auto-builds ./src/Dockerfile. Only set it if you want to override (e.g. \"ghcr.io/...\" for an already-published image).",
+        "dynamic_flag_env": "For Dynamic Container, the platform sets the RSCTF_FLAG environment variable inside each team's container. Reference it from src/run.sh (the template's run.sh shows the pattern); never hard-code a flag.",
+        "solver_folder": "Put a working solver under solver/ so admins (and your future self) can verify the challenge still works after edits.",
+        "size_cap": "Archive must be ≤ 64 MB. Single challenge per archive."
+      }
+    },
+    "notification": {
+      "submitted": "Submitted",
+      "under_review": "Awaiting admin review."
+    }
+  }
+}

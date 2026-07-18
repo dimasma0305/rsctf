@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="850" viewBox="0 0 1600 850" role="img" aria-labelledby="title desc">
+  <title id="title">KotH evidence-to-score pipeline</title>
+  <desc id="desc">The platform converts exact crown-cycle capabilities, qualified marker observations, and health evidence into acquisition A, control C, and reliability R. Sustained control has the largest direct coefficient, and reliability multiplies the complete score. Hills without scorable field evidence are excluded; normalized hill weights and equal evidence-bearing complete epochs aggregate bounded hill scores, while a partial final epoch is attenuated. Unfinished evidence is a projection; equal settled scores use ordinal evidence tie-breaks.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#222222"/>
+    </marker>
+    <pattern id="void-hatch" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="10" stroke="#b8b8b8" stroke-width="3"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="850" fill="#ffffff"/>
+  <text x="68" y="66" fill="#111111" font-family="Georgia, 'DejaVu Serif', serif" font-size="44" font-weight="700">From observed outcomes to a bounded KotH score</text>
+  <text x="68" y="105" fill="#444444" font-family="'DejaVu Sans', sans-serif" font-size="21">The scorer uses durable platform evidence; teams do not declare captures, patches, or intent</text>
+
+  <g font-family="'DejaVu Sans', sans-serif">
+    <rect x="68" y="148" width="382" height="530" rx="12" fill="#f7f7f7" stroke="#222222" stroke-width="3"/>
+    <rect x="68" y="148" width="382" height="58" rx="12" fill="#222222"/>
+    <rect x="68" y="184" width="382" height="22" fill="#222222"/>
+    <text x="259" y="185" fill="#ffffff" font-size="21" font-weight="700" text-anchor="middle">1. AUTHORITATIVE EVIDENCE</text>
+
+    <rect x="96" y="236" width="326" height="116" rx="8" fill="#ffffff" stroke="#555555" stroke-width="2"/>
+    <text x="120" y="270" fill="#111111" font-size="19" font-weight="700">CYCLE CAPABILITY</text>
+    <text x="120" y="300" fill="#333333" font-size="17">Which exact team, hill, cycle,</text>
+    <text x="120" y="326" fill="#333333" font-size="17">reset, and container are current?</text>
+
+    <rect x="96" y="374" width="326" height="116" rx="8" fill="#ffffff" stroke="#555555" stroke-width="2"/>
+    <text x="120" y="408" fill="#111111" font-size="19" font-weight="700">QUALIFIED CLAIM</text>
+    <text x="120" y="438" fill="#333333" font-size="17">Did the same exact token remain</text>
+    <text x="120" y="464" fill="#333333" font-size="17">healthy for consecutive ticks?</text>
+
+    <rect x="96" y="512" width="326" height="116" rx="8" fill="#ffffff" stroke="#555555" stroke-width="2"/>
+    <text x="120" y="546" fill="#111111" font-size="19" font-weight="700">HEALTH AND RESPONSIBILITY</text>
+    <text x="120" y="576" fill="#333333" font-size="17">Was the hill healthy, and which</text>
+    <text x="120" y="602" fill="#333333" font-size="17">observed team was responsible?</text>
+
+    <line x1="452" y1="412" x2="504" y2="412" stroke="#222222" stroke-width="4" marker-end="url(#arrow)"/>
+
+    <rect x="514" y="148" width="356" height="530" rx="12" fill="#ffffff" stroke="#222222" stroke-width="3"/>
+    <rect x="514" y="148" width="356" height="58" rx="12" fill="#4f4f4f"/>
+    <rect x="514" y="184" width="356" height="22" fill="#4f4f4f"/>
+    <text x="692" y="185" fill="#ffffff" font-size="21" font-weight="700" text-anchor="middle">2. NORMALIZED RATES</text>
+
+    <circle cx="570" cy="278" r="34" fill="#222222"/>
+    <text x="570" y="287" fill="#ffffff" font-size="27" font-weight="700" text-anchor="middle">A</text>
+    <text x="624" y="258" fill="#111111" font-size="20" font-weight="700">ACQUISITION</text>
+    <text x="624" y="288" fill="#333333" font-size="17">confirmed windows</text>
+    <line x1="624" y1="298" x2="820" y2="298" stroke="#555555" stroke-width="1.5"/>
+    <text x="624" y="323" fill="#333333" font-size="17">personal eligible windows</text>
+
+    <circle cx="570" cy="416" r="34" fill="#555555"/>
+    <text x="570" y="425" fill="#ffffff" font-size="27" font-weight="700" text-anchor="middle">C</text>
+    <text x="624" y="396" fill="#111111" font-size="20" font-weight="700">CONTROL</text>
+    <text x="624" y="426" fill="#333333" font-size="17">exact-capability ticks</text>
+    <line x1="624" y1="436" x2="820" y2="436" stroke="#555555" stroke-width="1.5"/>
+    <text x="624" y="461" fill="#333333" font-size="17">personal scorable ticks</text>
+
+    <circle cx="570" cy="554" r="34" fill="#777777"/>
+    <text x="570" y="563" fill="#ffffff" font-size="27" font-weight="700" text-anchor="middle">R</text>
+    <text x="624" y="534" fill="#111111" font-size="20" font-weight="700">RELIABILITY</text>
+    <text x="624" y="564" fill="#333333" font-size="17">healthy responsible ticks</text>
+    <line x1="624" y1="574" x2="820" y2="574" stroke="#555555" stroke-width="1.5"/>
+    <text x="624" y="599" fill="#333333" font-size="17">responsible ticks</text>
+
+    <line x1="872" y1="412" x2="924" y2="412" stroke="#222222" stroke-width="4" marker-end="url(#arrow)"/>
+
+    <rect x="934" y="148" width="598" height="318" rx="12" fill="#f2f2f2" stroke="#111111" stroke-width="4"/>
+    <text x="1233" y="190" fill="#111111" font-size="21" font-weight="700" text-anchor="middle">3. CONTROL-WEIGHTED LOCAL HILL SCORE</text>
+    <line x1="984" y1="216" x2="1482" y2="216" stroke="#555555" stroke-width="2"/>
+    <text x="1233" y="275" fill="#111111" font-family="Georgia, 'DejaVu Serif', serif" font-size="24" font-weight="700" text-anchor="middle">Core = 0.25A + 0.55C + 0.20 sqrt(A x C)</text>
+    <text x="1233" y="330" fill="#111111" font-family="Georgia, 'DejaVu Serif', serif" font-size="32" font-weight="700" text-anchor="middle">Local = 100 x R x Core</text>
+    <rect x="1034" y="369" width="398" height="58" rx="29" fill="#222222"/>
+    <text x="1233" y="406" fill="#ffffff" font-size="21" font-weight="700" text-anchor="middle">BOUNDED: 0 TO 100 PER HILL</text>
+
+    <rect x="934" y="492" width="598" height="186" rx="12" fill="#ffffff" stroke="#222222" stroke-width="3"/>
+    <text x="1233" y="531" fill="#111111" font-size="20" font-weight="700" text-anchor="middle">4. AGGREGATE WITHOUT A POINT JACKPOT</text>
+    <line x1="984" y1="551" x2="1482" y2="551" stroke="#777777" stroke-width="2"/>
+    <text x="970" y="582" fill="#333333" font-size="16">&#8226; Wholly void hills are excluded; other weights normalize.</text>
+    <text x="970" y="608" fill="#333333" font-size="16">&#8226; Evidence-bearing complete epochs have equal weight.</text>
+    <text x="990" y="634" fill="#333333" font-size="16">Only a partial final epoch uses played / expected weight.</text>
+    <text x="970" y="660" fill="#333333" font-size="16">&#8226; Finalized epochs rank; Settled ties use C, R, A, then ID.</text>
+  </g>
+
+  <rect x="68" y="720" width="1464" height="82" rx="10" fill="url(#void-hatch)" stroke="#555555" stroke-width="2"/>
+  <text x="100" y="753" fill="#111111" font-family="'DejaVu Sans', sans-serif" font-size="18" font-weight="700">FIELD-COMMON VOID RULE</text>
+  <text x="100" y="782" fill="#333333" font-family="'DejaVu Sans', sans-serif" font-size="17">Reset, readiness, InternalError, and incomplete issuance are field voids; a champion cooldown is removed only from that team's personal denominator.</text>
+</svg>

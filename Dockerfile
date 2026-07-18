@@ -1,0 +1,54 @@
+# --- React frontend build stage ---
+FROM node:22-bookworm AS web-builder
+RUN corepack enable
+WORKDIR /web
+COPY web/ ./
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile && pnpm build
+
+# --- backend build stage ---
+FROM rust:1-bookworm AS builder
+# libpcap-dev is needed to build the live traffic-capture (pcap) crate.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpcap-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY Cargo.toml Cargo.lock* build.rs ./
+COPY lib/worker-protocol ./lib/worker-protocol
+COPY src ./src
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --locked \
+    && cp /app/target/release/rsctf /tmp/rsctf
+
+# --- runtime stage ---
+FROM debian:bookworm-slim
+# git: the repo-binding challenge-sync (git_sync) shells out to `git clone`/`fetch`.
+# ca-certificates: TLS for git-over-https + outbound HTTP. libpcap0.8: live capture.
+# iptables + ipset + iproute2: the in-process A&D WireGuard hub enforces
+# game-scoped peer/target sets and scoped masquerading (needs NET_ADMIN + the
+# host wireguard/ipset modules).
+# python3 + venv: A&D checkers are prepared as a venv on sync and run as a
+# sandboxed subprocess (Landlock + seccomp + dropped uid). The venv-provided pip
+# may install exact requirements.txt pins from binary wheels only; source builds
+# and their setup.py/PEP 517 hooks stay disabled.
+# Checker children use a reserved configurable UID range; no passwd entries are
+# required because the launcher switches numeric identities directly.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git libpcap0.8 iptables ipset iproute2 wireguard-tools \
+       python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /tmp/rsctf /usr/local/bin/rsctf
+COPY --from=web-builder /web/build /app/web/build
+COPY LICENSING.md LICENSE.txt NOTICE /app/web/build/legal/
+COPY web/src/lib/creepjs/LICENSE /app/web/build/legal/third-party/CreepJS-LICENSE.txt
+ENV RSCTF_BIND=0.0.0.0:8080
+ENV RSCTF_STATIC_DIR=/app/web/build
+EXPOSE 8080
+# Optional trusted worker-plane mTLS listener.
+EXPOSE 9443
+# WireGuard hub UDP port teams dial (A&D VPN).
+EXPOSE 51820/udp
+ENTRYPOINT ["/usr/local/bin/rsctf"]

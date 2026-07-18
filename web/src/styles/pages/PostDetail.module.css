@@ -1,0 +1,127 @@
+.article {
+  width: min(100%, 70rem);
+  margin-inline: auto;
+  padding: clamp(1rem, 3.5vw, 3rem);
+}
+
+.header {
+  position: relative;
+  width: min(100%, 52rem);
+  margin-inline: auto;
+  padding: clamp(1.5rem, 4vw, 3rem);
+  overflow: hidden;
+  border: 1px solid var(--app-surface-border);
+  border-radius: var(--mantine-radius-xl);
+  background:
+    radial-gradient(
+      circle at 92% 4%,
+      color-mix(in srgb, var(--mantine-primary-color-5) 15%, transparent),
+      transparent 16rem
+    ),
+    color-mix(in srgb, var(--app-raised-surface) 96%, transparent);
+  box-shadow: var(--mantine-shadow-sm);
+}
+
+.eyebrow {
+  margin-bottom: 0.65rem;
+  color: var(--app-accent-text);
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 780;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.title {
+  max-width: 24ch;
+  color: var(--app-text-primary);
+  font-size: clamp(1.8rem, 5vw, 3.25rem);
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.byline {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: clamp(1.4rem, 3vw, 2.25rem);
+  padding-top: 1rem;
+  padding-right: 1rem;
+  border-top: 1px solid var(--app-border-subtle);
+}
+
+.bylineCopy {
+  min-width: 0;
+}
+
+.author,
+.date {
+  overflow-wrap: anywhere;
+}
+
+.content {
+  width: min(100%, 48rem);
+  margin: clamp(1.75rem, 4vw, 3.5rem) auto 0;
+  color: var(--app-text-primary);
+  font-size: clamp(1rem, 1.4vw, 1.075rem);
+  line-height: 1.75;
+}
+
+.content :global(pre),
+.content :global(table) {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.content :global(img) {
+  max-width: 100%;
+  height: auto;
+}
+
+.footer {
+  width: min(100%, 48rem);
+  margin: 2rem auto 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--app-border-subtle);
+}
+
+.tag {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  padding-inline: 0.65rem;
+  color: var(--app-accent-surface-text);
+  border: 1px solid var(--app-accent-border);
+  border-radius: 999px;
+  background: var(--app-accent-surface);
+  font-size: var(--mantine-font-size-sm);
+}
+
+@media (max-width: $mantine-breakpoint-xs) {
+  .article {
+    padding: 0.75rem 0.75rem 2rem;
+  }
+
+  .header {
+    padding: 1.25rem;
+    border-radius: var(--mantine-radius-lg);
+  }
+
+  .title {
+    font-size: clamp(1.65rem, 9vw, 2.25rem);
+  }
+
+  .byline {
+    width: 100%;
+    padding-right: 0;
+  }
+
+  .date {
+    font-size: var(--mantine-font-size-xs);
+  }
+
+  .content,
+  .footer {
+    padding-inline: 0.5rem;
+  }
+}
