@@ -23,18 +23,21 @@ use bytes::Bytes;
 use futures::io::AsyncWriteExt;
 use futures::{future, SinkExt, StreamExt};
 use ipnet::Ipv4Net;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
-use tokio::net::TcpListener;
+use sea_orm::DatabaseConnection;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::app_state::SharedState;
-use crate::models::data::{ad_team_service, game, game_challenge, participation, team};
-use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
 
+mod authorization;
 mod control;
+mod endpoint;
+mod lifecycle;
+use authorization::live_tunnel_authorized;
 pub use control::start_control_listener;
+use endpoint::RelayEndpoint;
+use lifecycle::{activate_tunnel, deactivate_tunnel};
 
 const STREAM_SERVICE: u8 = b'S';
 const STREAM_FLAG: u8 = b'F';
@@ -54,6 +57,9 @@ const MAX_RECV_WINDOW: usize = 16 * 1024 * 1024;
 const MAX_SERVICE_STREAMS: usize = 56;
 const MAX_PENDING_OPEN_REQUESTS: usize = MAX_STREAMS_PER_TUNNEL;
 const AUTHORIZATION_LEASE_SECONDS: u64 = 15;
+/// A tunnel that never completed publication gets a short retry window. Once
+/// published, its endpoint remains stable until authorization expires.
+const FAILED_ACTIVATION_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// A request to open a new outbound yamux stream, answered with the stream.
 type OpenReq = oneshot::Sender<Result<yamux::Stream, ()>>;
@@ -116,7 +122,7 @@ impl TunnelHandle {
 /// Global registry of live BYOC tunnels, keyed by `(participation_id, challenge_id)`.
 #[derive(Default)]
 pub struct Registry {
-    tunnels: Mutex<HashMap<(i32, i32), TunnelHandle>>,
+    endpoints: Mutex<HashMap<(i32, i32), Arc<RelayEndpoint>>>,
     /// A disconnect advances the relevant generation under an exclusive guard.
     /// Activation holds a shared guard while publishing its VPN policy, so a
     /// revocation cannot return and then be followed by a stale publication.
@@ -133,7 +139,64 @@ impl Registry {
     }
 
     async fn get(&self, pid: i32, cid: i32) -> Option<TunnelHandle> {
-        self.tunnels.lock().await.get(&(pid, cid)).cloned()
+        let endpoint = self.endpoints.lock().await.get(&(pid, cid)).cloned()?;
+        endpoint.current().await
+    }
+
+    async fn reserve_endpoint(
+        &self,
+        pid: i32,
+        cid: i32,
+        host: &str,
+    ) -> AppResult<(Arc<RelayEndpoint>, u64, tokio::sync::OwnedSemaphorePermit)> {
+        loop {
+            if let Some(endpoint) = self.endpoints.lock().await.get(&(pid, cid)).cloned() {
+                let activation = endpoint.try_activation().map_err(|_| {
+                    AppError::unavailable("A relay activation is already pending; retry shortly")
+                })?;
+                if let Some(epoch) = endpoint.claim().await {
+                    return Ok((endpoint, epoch, activation));
+                }
+                // A retiring entry is removed by its owner. Yield rather than
+                // returning an endpoint whose acceptor is already stopping.
+                tokio::task::yield_now().await;
+                continue;
+            }
+
+            let candidate = RelayEndpoint::bind(host.to_string())
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            let selected = {
+                let mut endpoints = self.endpoints.lock().await;
+                endpoints
+                    .entry((pid, cid))
+                    .or_insert_with(|| candidate.clone())
+                    .clone()
+            };
+            if Arc::ptr_eq(&selected, &candidate) {
+                // The initial epoch already represents this first claim.
+                let activation = candidate.try_activation().map_err(|_| {
+                    AppError::unavailable("A relay activation is already pending; retry shortly")
+                })?;
+                return Ok((candidate, 1, activation));
+            }
+            candidate.stop_acceptor();
+            candidate.wait_closed().await;
+            let activation = selected.try_activation().map_err(|_| {
+                AppError::unavailable("A relay activation is already pending; retry shortly")
+            })?;
+            if let Some(epoch) = selected.claim().await {
+                return Ok((selected, epoch, activation));
+            }
+        }
+    }
+
+    async fn contains_endpoint(&self, pid: i32, cid: i32, endpoint_id: u64) -> bool {
+        self.endpoints
+            .lock()
+            .await
+            .get(&(pid, cid))
+            .is_some_and(|endpoint| endpoint.id() == endpoint_id)
     }
 
     async fn authorization_generation(&self, pid: i32, cid: i32) -> AuthorizationGeneration {
@@ -153,12 +216,80 @@ impl Registry {
         (guard.current(pid, cid) == expected).then_some(guard)
     }
 
-    async fn insert(&self, pid: i32, cid: i32, h: TunnelHandle) {
-        // A newer agent supersedes any prior session for this team-service —
-        // signal the old one to shut down so its listener/driver don't orphan.
-        if let Some(old) = self.tunnels.lock().await.insert((pid, cid), h) {
-            old.shutdown.notify_one();
+    fn schedule_failed_activation_release(
+        self: &Arc<Self>,
+        pid: i32,
+        cid: i32,
+        endpoint: Arc<RelayEndpoint>,
+        idle_epoch: u64,
+    ) {
+        let registry = Arc::downgrade(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(FAILED_ACTIVATION_GRACE).await;
+            if let Some(registry) = registry.upgrade() {
+                registry
+                    .retire_idle_endpoint(pid, cid, endpoint, idle_epoch)
+                    .await;
+            }
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn schedule_authorized_idle_release(
+        self: &Arc<Self>,
+        st: SharedState,
+        game_id: i32,
+        pid: i32,
+        cid: i32,
+        token: String,
+        endpoint: Arc<RelayEndpoint>,
+        idle_epoch: u64,
+    ) {
+        let registry = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(AUTHORIZATION_LEASE_SECONDS))
+                    .await;
+                if !endpoint.is_idle_at(idle_epoch).await {
+                    return;
+                }
+                if live_tunnel_authorized(&st, game_id, pid, cid, &token).await {
+                    continue;
+                }
+                if let Some(registry) = registry.upgrade() {
+                    registry
+                        .retire_idle_endpoint(pid, cid, endpoint, idle_epoch)
+                        .await;
+                }
+                return;
+            }
+        });
+    }
+
+    async fn retire_idle_endpoint(
+        &self,
+        pid: i32,
+        cid: i32,
+        endpoint: Arc<RelayEndpoint>,
+        idle_epoch: u64,
+    ) {
+        if !endpoint.retire_if_idle(idle_epoch).await {
+            return;
         }
+        {
+            let mut endpoints = self.endpoints.lock().await;
+            if endpoints
+                .get(&(pid, cid))
+                .is_some_and(|current| current.id() == endpoint.id())
+            {
+                endpoints.remove(&(pid, cid));
+            }
+        }
+        // `retire_if_idle` made this endpoint permanently unattachable. Even
+        // if a newer map entry already replaced it, its private acceptor must
+        // still be stopped so the losing socket/task cannot leak.
+        endpoint.stop_acceptor();
+        endpoint.wait_closed().await;
     }
 
     /// Terminate every live tunnel owned by a participation. Authorization
@@ -181,19 +312,22 @@ impl Registry {
         let mut generations = self.authorization_generations.write().await;
         let generation = generations.participations.entry(pid).or_default();
         *generation = generation.saturating_add(1);
-        let mut handles = {
-            let mut tunnels = self.tunnels.lock().await;
-            let keys: Vec<(i32, i32)> = tunnels
+        let endpoints = {
+            let mut endpoints = self.endpoints.lock().await;
+            let keys: Vec<(i32, i32)> = endpoints
                 .keys()
                 .filter(|(candidate, _)| *candidate == pid)
                 .copied()
                 .collect();
             keys.into_iter()
-                .filter_map(|key| tunnels.remove(&key))
+                .filter_map(|key| endpoints.remove(&key))
                 .collect::<Vec<_>>()
         };
-        for handle in &handles {
-            handle.shutdown.notify_one();
+        let mut handles = Vec::with_capacity(endpoints.len());
+        for endpoint in &endpoints {
+            if let Some(handle) = endpoint.revoke().await {
+                handles.push(handle);
+            }
         }
         let revocation = async {
             sqlx::query(
@@ -215,6 +349,7 @@ impl Registry {
         }
         .await;
         wait_for_tunnel_shutdown(&mut handles).await;
+        wait_for_endpoint_shutdown(&endpoints).await;
         if propagate
             && revocation.is_ok()
             && self.events.is_distributed()
@@ -244,19 +379,22 @@ impl Registry {
         let mut generations = self.authorization_generations.write().await;
         let generation = generations.challenges.entry(cid).or_default();
         *generation = generation.saturating_add(1);
-        let mut handles = {
-            let mut tunnels = self.tunnels.lock().await;
-            let keys: Vec<(i32, i32)> = tunnels
+        let endpoints = {
+            let mut endpoints = self.endpoints.lock().await;
+            let keys: Vec<(i32, i32)> = endpoints
                 .keys()
                 .filter(|(_, candidate)| *candidate == cid)
                 .copied()
                 .collect();
             keys.into_iter()
-                .filter_map(|key| tunnels.remove(&key))
+                .filter_map(|key| endpoints.remove(&key))
                 .collect::<Vec<_>>()
         };
-        for handle in &handles {
-            handle.shutdown.notify_one();
+        let mut handles = Vec::with_capacity(endpoints.len());
+        for endpoint in &endpoints {
+            if let Some(handle) = endpoint.revoke().await {
+                handles.push(handle);
+            }
         }
         let revocation = async {
             sqlx::query(
@@ -273,6 +411,7 @@ impl Registry {
         }
         .await;
         wait_for_tunnel_shutdown(&mut handles).await;
+        wait_for_endpoint_shutdown(&endpoints).await;
         if propagate
             && revocation.is_ok()
             && self.events.is_distributed()
@@ -285,19 +424,6 @@ impl Registry {
             });
         }
         revocation
-    }
-
-    /// Remove only if the current entry is still `id` — a reconnected agent that
-    /// replaced this one must not be torn down by the old session's exit. Returns
-    /// whether this call actually removed the (still-current) entry.
-    async fn remove_if(&self, pid: i32, cid: i32, id: u64) -> bool {
-        let mut map = self.tunnels.lock().await;
-        if map.get(&(pid, cid)).is_some_and(|h| h.id == id) {
-            map.remove(&(pid, cid));
-            true
-        } else {
-            false
-        }
     }
 }
 
@@ -314,6 +440,20 @@ async fn wait_for_tunnel_shutdown(handles: &mut [TunnelHandle]) {
         .is_err()
     {
         tracing::warn!("byoc: timed out waiting for a revoked tunnel task to exit");
+    }
+}
+
+async fn wait_for_endpoint_shutdown(endpoints: &[Arc<RelayEndpoint>]) {
+    let closed = async {
+        for endpoint in endpoints {
+            endpoint.wait_closed().await;
+        }
+    };
+    if tokio::time::timeout(std::time::Duration::from_secs(5), closed)
+        .await
+        .is_err()
+    {
+        tracing::warn!("byoc: timed out waiting for revoked relay listeners to exit");
     }
 }
 
@@ -357,59 +497,9 @@ fn services_ip() -> Result<String, String> {
         .clone()
 }
 
-/// Re-resolve every mutable grant behind an established BYOC tunnel. Mutation
-/// handlers disconnect eagerly; this lease is the fail-safe for game-window
-/// expiry and any administrative/database change that bypasses those callbacks.
-async fn live_tunnel_authorized(
-    st: &SharedState,
-    game_id: i32,
-    pid: i32,
-    cid: i32,
-    token: &str,
-) -> bool {
-    let Ok(Some(part)) = participation::Entity::find_by_id(pid).one(&st.db).await else {
-        return false;
-    };
-    if part.game_id != game_id || part.status != ParticipationStatus::Accepted {
-        return false;
-    }
-    let Ok(Some(game)) = game::Entity::find_by_id(game_id).one(&st.db).await else {
-        return false;
-    };
-    if !game.is_active(chrono::Utc::now()) {
-        return false;
-    }
-    let Ok(Some(team)) = team::Entity::find_by_id(part.team_id).one(&st.db).await else {
-        return false;
-    };
-    let challenge_is_live = matches!(
-        game_challenge::Entity::find()
-            .filter(game_challenge::Column::Id.eq(cid))
-            .filter(game_challenge::Column::GameId.eq(game_id))
-            .filter(game_challenge::Column::ChallengeType.eq(ChallengeType::AttackDefense))
-            .filter(game_challenge::Column::AdSelfHosted.eq(true))
-            .filter(game_challenge::Column::IsEnabled.eq(true))
-            .filter(game_challenge::Column::ReviewStatus.eq(ChallengeReviewStatus::Active))
-            .one(&st.db)
-            .await,
-        Ok(Some(_))
-    );
-    if !challenge_is_live {
-        return false;
-    }
-    let expected = crate::controllers::game::ad::byoc_token(
-        "adbyocagent:",
-        &game.private_key,
-        &team.invite_token,
-        pid,
-        cid,
-    );
-    crate::utils::crypto_utils::ct_eq(&expected, token)
-}
-
-/// Accept an agent WebSocket, run the yamux client over it, expose the team's
-/// service on a fresh TCP port, and register the tunnel. Runs until the socket
-/// closes, then deregisters + restores the service to Offline.
+/// Accept an agent WebSocket, run the yamux client over it, and attach it to the
+/// team's stable process-local relay endpoint. Ordinary reconnects swap only
+/// the yamux session; revocation or an idle-grace expiry releases the listener.
 pub async fn serve_agent(
     st: SharedState,
     game_id: i32,
@@ -477,17 +567,15 @@ pub async fn serve_agent(
             return;
         }
     };
-    let listener = match TcpListener::bind(format!("{host}:0")).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::warn!(error = %e, "byoc: could not bind service listener");
+    let (endpoint, claim_epoch, activation) = match st.byoc.reserve_endpoint(pid, cid, &host).await
+    {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            tracing::warn!(%error, "byoc: could not reserve stable service listener");
             return;
         }
     };
-    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0) as i32;
-    // Retain a second reference in this task so the port stays reserved even if
-    // the accept loop exits before endpoint cleanup finishes.
-    let listener = Arc::new(listener);
+    let port = endpoint.port();
 
     let conn_id = NEXT_CONN_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let shutdown = Arc::new(tokio::sync::Notify::new());
@@ -511,49 +599,20 @@ pub async fn serve_agent(
         cid,
         &token,
         authorization_generation,
+        endpoint.clone(),
         handle.clone(),
-        &host,
-        port,
     )
     .await
     {
         tracing::warn!(pid, cid, %error, "byoc: could not publish agent tunnel");
+        drop(activation);
+        st.byoc
+            .schedule_failed_activation_release(pid, cid, endpoint, claim_epoch);
+        let _ = closed_tx.send(true);
         return;
     }
+    drop(activation);
     tracing::info!(pid, cid, %host, port, "byoc: agent tunnel up");
-
-    // Accept service connections → open 'S' streams while the driver runs. Each live
-    // pipe bumps `active` so the driver fast-polls only while traffic actually flows.
-    let accept_handle = handle.clone();
-    let accept_active = active.clone();
-    let accept_listener = listener.clone();
-    let service_slots = Arc::new(tokio::sync::Semaphore::new(MAX_SERVICE_STREAMS));
-    let mut acceptor = tokio::spawn(async move {
-        loop {
-            let (client, _) = match accept_listener.accept().await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    tracing::warn!(%error, "byoc: service listener failed");
-                    break;
-                }
-            };
-            let Ok(service_slot) = service_slots.clone().try_acquire_owned() else {
-                continue;
-            };
-            let h = accept_handle.clone();
-            let a = accept_active.clone();
-            tokio::spawn(async move {
-                // The pre-acquired permit bounds pending opens as well as live
-                // pipes, preserving yamux headroom for flag and shell streams.
-                let _service_slot = service_slot;
-                a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let _active = ActiveGuard(a.clone());
-                if let Some(s) = h.open_stream().await {
-                    let _ = pipe(client, s).await;
-                }
-            });
-        }
-    });
 
     let authorization_lease = async {
         loop {
@@ -566,31 +625,38 @@ pub async fn serve_agent(
 
     // Drive the yamux connection until it closes, a newer agent supersedes us,
     // or its live participation/game/challenge authorization expires.
-    tokio::select! {
-        _ = drive(conn, open_rx, active) => {}
+    let authorization_expired = tokio::select! {
+        _ = drive(conn, open_rx, active) => false,
         _ = shutdown.notified() => {
             tracing::info!(pid, cid, "byoc: agent superseded by a newer session");
+            false
         }
         _ = authorization_lease => {
             tracing::info!(pid, cid, "byoc: agent authorization expired");
+            true
         }
-        result = &mut acceptor => {
-            if let Err(error) = result {
-                tracing::warn!(pid, cid, %error, "byoc: service listener task failed");
-            }
-        }
-    }
+    };
 
-    // Only tear down the service if we're still the registered session (a
-    // reconnecting agent may have already superseded us).
-    if deactivate_tunnel(&st, pid, cid, conn_id, &host, port).await {
+    // Only the still-current connection may unpublish this stable address. A
+    // superseded task has the same host/port as its replacement, so coordinates
+    // alone are not a sufficient compare-and-swap fence.
+    if let Some(idle_epoch) = deactivate_tunnel(&st, pid, cid, conn_id, &endpoint).await {
         tracing::info!(pid, cid, "byoc: agent tunnel down");
-    }
-    // The acceptor owns the bound listener. Keep it alive until the exact
-    // endpoint is removed from DB + firewall so the authorized port cannot be
-    // reused during cleanup retries.
-    if !acceptor.is_finished() {
-        acceptor.abort();
+        if authorization_expired {
+            st.byoc
+                .retire_idle_endpoint(pid, cid, endpoint, idle_epoch)
+                .await;
+        } else {
+            st.byoc.schedule_authorized_idle_release(
+                st.clone(),
+                game_id,
+                pid,
+                cid,
+                token,
+                endpoint,
+                idle_epoch,
+            );
+        }
     }
     let _ = closed_tx.send(true);
 }
@@ -743,229 +809,4 @@ async fn pipe(client: tokio::net::TcpStream, stream: yamux::Stream) -> std::io::
     server.write_all(&[STREAM_SERVICE]).await?;
     tokio::io::copy_bidirectional(&mut client, &mut server).await?;
     Ok(())
-}
-
-/// Point the BYOC service row at the live tunnel listener (host:port) so the
-/// checker probes it. Upserts if the row is missing.
-async fn register_service(
-    st: &SharedState,
-    pid: i32,
-    cid: i32,
-    host: &str,
-    port: i32,
-) -> AppResult<()> {
-    let game_id = match ad_team_service::Entity::find()
-        .filter(ad_team_service::Column::ParticipationId.eq(pid))
-        .filter(ad_team_service::Column::ChallengeId.eq(cid))
-        .one(&st.db)
-        .await
-    {
-        Ok(Some(row)) => {
-            let mut am: ad_team_service::ActiveModel = row.into();
-            am.host = Set(host.to_string());
-            am.port = Set(port);
-            am.container_id = Set(None);
-            am.update(&st.db).await?;
-            return Ok(());
-        }
-        Ok(None) => participation_game(st, pid).await,
-        Err(error) => return Err(error.into()),
-    };
-    let gid = game_id.ok_or_else(|| AppError::not_found("Participation not found"))?;
-    ad_team_service::ActiveModel {
-        game_id: Set(gid),
-        participation_id: Set(pid),
-        challenge_id: Set(cid),
-        host: Set(host.to_string()),
-        port: Set(port),
-        status: Set(crate::utils::enums::AdCheckStatus::Offline as i16),
-        container_id: Set(None),
-        last_reset_at: Set(None),
-        ..Default::default()
-    }
-    .insert(&st.db)
-    .await?;
-    Ok(())
-}
-
-/// On tunnel loss, blank the endpoint + mark Offline so the checker stops probing.
-async fn offline_service(
-    st: &SharedState,
-    pid: i32,
-    cid: i32,
-    expected_host: &str,
-    expected_port: i32,
-) -> AppResult<u64> {
-    let result = sqlx::query(
-        r#"
-        UPDATE "AdTeamServices"
-           SET host = '', port = 0, status = 2
-         WHERE participation_id = $1
-           AND challenge_id = $2
-           AND container_id IS NULL
-           AND host = $3
-           AND port = $4
-        "#,
-    )
-    .bind(pid)
-    .bind(cid)
-    .bind(expected_host)
-    .bind(expected_port)
-    .execute(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(result.rows_affected())
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn activate_tunnel(
-    st: &SharedState,
-    game_id: i32,
-    pid: i32,
-    cid: i32,
-    token: &str,
-    authorization_generation: AuthorizationGeneration,
-    handle: TunnelHandle,
-    host: &str,
-    port: i32,
-) -> AppResult<()> {
-    let lock_key = format!("ad-service:{pid}:{cid}");
-    let local = crate::utils::single_flight::coalesce(&lock_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &lock_key)
-            .await?;
-    // Revalidate after taking the same lock used by credential rotation and
-    // service teardown. This closes the authorize-then-publish race for pending
-    // WebSockets during participation rejection, team deletion, or token rotation.
-    if !live_tunnel_authorized(st, game_id, pid, cid, token).await {
-        distributed.release().await?;
-        drop(local);
-        return Err(AppError::Forbidden);
-    }
-    // Hold this shared gate through publication. Disconnect takes the write
-    // side before it advances a generation and returns, which orders an
-    // in-flight sync strictly before that revocation. A pending activation with
-    // an old generation is rejected without touching the endpoint row.
-    let publication_guard = match st
-        .byoc
-        .publication_guard(pid, cid, authorization_generation)
-        .await
-    {
-        Some(guard) => guard,
-        None => {
-            distributed.release().await?;
-            drop(local);
-            return Err(AppError::Forbidden);
-        }
-    };
-    if !live_tunnel_authorized(st, game_id, pid, cid, token).await {
-        distributed.release().await?;
-        drop(local);
-        return Err(AppError::Forbidden);
-    }
-    register_service(st, pid, cid, host, port).await?;
-    st.byoc.insert(pid, cid, handle.clone()).await;
-    // The registry insert precedes the final authorization read deliberately:
-    // a concurrent token rotation either becomes visible here or sees this
-    // handle in its disconnect scan. There is no authorize/publish gap.
-    if !live_tunnel_authorized(st, game_id, pid, cid, token).await {
-        if let Err(error) = distributed.release().await {
-            tracing::warn!(pid, cid, %error, "byoc: relay lock release failed after revocation");
-        }
-        drop(local);
-        drop(publication_guard);
-        let _ = deactivate_tunnel(st, pid, cid, handle.id, host, port).await;
-        return Err(AppError::Forbidden);
-    }
-    if let Err(error) = distributed.release().await {
-        tracing::warn!(pid, cid, %error, "byoc: relay lock release failed after publication");
-    }
-    drop(local);
-    if let Err(error) = crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await {
-        drop(publication_guard);
-        let _ = deactivate_tunnel(st, pid, cid, handle.id, host, port).await;
-        return Err(error);
-    }
-    // Credential state can change while firewall reconciliation is running but
-    // before the mutation handler reaches `disconnect_*`. Do not publish that
-    // now-invalid session: remove it and reconcile before activation returns.
-    // Release the generation gate first so a replacement cannot deadlock while
-    // it holds the per-service provisioning lock.
-    if !live_tunnel_authorized(st, game_id, pid, cid, token).await {
-        drop(publication_guard);
-        let _ = deactivate_tunnel(st, pid, cid, handle.id, host, port).await;
-        return Err(AppError::Forbidden);
-    }
-    drop(publication_guard);
-    Ok(())
-}
-
-async fn deactivate_tunnel(
-    st: &SharedState,
-    pid: i32,
-    cid: i32,
-    id: u64,
-    expected_host: &str,
-    expected_port: i32,
-) -> bool {
-    let lock_key = format!("ad-service:{pid}:{cid}");
-    let mut owns_endpoint = false;
-    loop {
-        let local = crate::utils::single_flight::coalesce(&lock_key).await;
-        let distributed = match crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(
-            st.pg(),
-            &lock_key,
-        )
-        .await
-        {
-            Ok(lock) => lock,
-            Err(error) => {
-                drop(local);
-                tracing::warn!(pid, cid, %error, "byoc: relay cleanup lock unavailable; retrying");
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                continue;
-            }
-        };
-        if !owns_endpoint {
-            owns_endpoint = st.byoc.remove_if(pid, cid, id).await;
-        }
-        match offline_service(st, pid, cid, expected_host, expected_port).await {
-            Ok(_) => {}
-            Err(error) => {
-                let _ = distributed.release().await;
-                drop(local);
-                tracing::warn!(pid, cid, %error, "byoc: relay endpoint cleanup failed; retrying");
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                continue;
-            }
-        };
-        if let Err(error) = distributed.release().await {
-            tracing::warn!(pid, cid, %error, "byoc: could not release relay cleanup lock");
-        }
-        drop(local);
-        // Reconcile even if another revocation path already removed this handle
-        // or blanked the exact row. The caller retains the bound listener until
-        // this returns, so a failed policy rebuild cannot leave the authorized
-        // port available for reuse by an unrelated local process.
-        loop {
-            match crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await {
-                Ok(()) => break,
-                Err(error) => {
-                    tracing::warn!(pid, cid, %error, "byoc: VPN relay revocation failed; retrying");
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            }
-        }
-        return owns_endpoint;
-    }
-}
-
-async fn participation_game(st: &SharedState, pid: i32) -> Option<i32> {
-    use crate::models::data::participation;
-    participation::Entity::find_by_id(pid)
-        .one(&st.db)
-        .await
-        .ok()
-        .flatten()
-        .map(|p| p.game_id)
 }

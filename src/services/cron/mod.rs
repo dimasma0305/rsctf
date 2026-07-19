@@ -822,11 +822,25 @@ async fn sweep_orphan_containers(state: &SharedState) -> AppResult<u64> {
             .into_iter()
             .filter_map(|target| target.container_id),
     );
-    let is_known = |id: &str| {
-        known
-            .iter()
-            .any(|k| k == id || id.starts_with(k.as_str()) || k.starts_with(id))
-    };
+    // During a crown reset, runtime ownership is persisted on the cycle before
+    // publication to KothTargets, and old ownership remains there while audit
+    // snapshot/destruction retries. Protect both crash-recovery windows. Ended
+    // cycles have completed their explicit cleanup and no longer own runtimes.
+    known.extend(
+        sqlx::query_scalar::<_, String>(
+            r#"SELECT DISTINCT runtime_id
+                 FROM "KothCrownCycles" cycle
+                 CROSS JOIN LATERAL unnest(ARRAY[
+                   cycle.old_container_id, cycle.replacement_container_id
+                 ]) runtime(runtime_id)
+                WHERE cycle.phase <> 'Ended'
+                  AND NULLIF(BTRIM(runtime_id), '') IS NOT NULL"#,
+        )
+        .fetch_all(state.pg())
+        .await
+        .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?,
+    );
+    let is_known = |id: &str| container_id_is_known(id, &known);
     // A backend is visible just before its bookkeeping transaction commits.
     // Require it to remain unowned for a full grace window so the orphan sweep
     // cannot destroy an in-flight shared/A&D container between create and insert.
@@ -867,6 +881,19 @@ async fn sweep_orphan_containers(state: &SharedState) -> AppResult<u64> {
         }
     }
     Ok(swept)
+}
+
+fn container_id_is_known(id: &str, known: &[String]) -> bool {
+    known.iter().any(|candidate| {
+        candidate == id
+            || (docker_id_shape(id)
+                && docker_id_shape(candidate)
+                && (id.starts_with(candidate) || candidate.starts_with(id)))
+    })
+}
+
+fn docker_id_shape(value: &str) -> bool {
+    (12..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -922,4 +949,24 @@ fn scoreboard_cache_keys(game_id: i32) -> [String; 10] {
         format!("_KothTimeline_{game_id}"),
         format!("_KothTimelineFrozen_{game_id}"),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::container_id_is_known;
+
+    #[test]
+    fn orphan_identity_matching_accepts_full_and_daemon_short_ids_only() {
+        let known = vec!["abcdef1234567890".to_string()];
+        assert!(container_id_is_known("abcdef1234567890", &known));
+        assert!(container_id_is_known("abcdef123456", &known));
+        assert!(container_id_is_known("abcdef1234567890ffff", &known));
+        assert!(!container_id_is_known("fedcba123456", &known));
+        assert!(!container_id_is_known("abc", &known));
+
+        let named = vec!["rsctf-koth-cycle-17".to_string()];
+        assert!(container_id_is_known("rsctf-koth-cycle-17", &named));
+        assert!(!container_id_is_known("rsctf-koth-cycle", &named));
+        assert!(!container_id_is_known("rsctf-koth-cycle-17-extra", &named));
+    }
 }

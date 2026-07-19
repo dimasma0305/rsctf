@@ -77,6 +77,7 @@ services:
       RSCTF_DATABASE_URL: postgres://postgres:postgres@db:5432/rsctf
       RSCTF_REDIS_URL: redis://redis:6379
       RSCTF_DISTRIBUTED_RATELIMIT: "${RSCTF_DISTRIBUTED_RATELIMIT:-false}"
+      RSCTF_AD_SUBMIT_BURST_FLAGS: "${RSCTF_AD_SUBMIT_BURST_FLAGS:-400}"
       # Bound the per-replica gameplay pool while keeping the documented Compose
       # override effective. Provisioning reserves additional connections through
       # its own semaphore instead of letting runtime operations drain the pool.
@@ -87,6 +88,8 @@ services:
       # IP or a dedicated proxy-only network is configured explicitly in .env.
       RSCTF_TRUSTED_PROXY_CIDRS: "${RSCTF_TRUSTED_PROXY_CIDRS:-}"
       RSCTF_JWT_SECRET: "${RSCTF_JWT_SECRET:?Set RSCTF_JWT_SECRET in .env to a random 32-byte value}"
+      RSCTF_BOOTSTRAP_TOKEN: "${RSCTF_BOOTSTRAP_TOKEN:?Set RSCTF_BOOTSTRAP_TOKEN in .env to a random 32-byte value}"
+      RSCTF_DOCKER_SCOPE: "${RSCTF_DOCKER_SCOPE:-}"
       RSCTF_PUBLIC_URL: "https://${PUBLIC_ENTRY:-tcp.1pc.tf}"
       RSCTF_STORAGE_ROOT: /data/files
       RSCTF_STORAGE_BACKEND: "${RSCTF_STORAGE_BACKEND:-local}"
@@ -107,6 +110,7 @@ services:
       RSCTF_AD_VPN_SERVER_ENDPOINT: "${PUBLIC_ENTRY:-tcp.1pc.tf}:51820"
       # Keep peer addresses disjoint from the 10.13.40.0/24 services bridge.
       RSCTF_AD_VPN_CLIENT_CIDR: "10.13.0.0/19"
+      RSCTF_AD_VPN_SERVICES_NETWORK: "${RSCTF_AD_VPN_SERVICES_NETWORK:-${COMPOSE_PROJECT_NAME:-rsctf}-ad}"
       RSCTF_CONTAINER_BACKEND: "docker"
       RSCTF_TRAFFIC_CAPTURE_ENABLED: "${RSCTF_TRAFFIC_CAPTURE_ENABLED:-true}"
       RSCTF_CAPTURE_DEVICE: "${RSCTF_CAPTURE_DEVICE:-any}"
@@ -130,8 +134,8 @@ services:
       start_period: 30s
     stop_grace_period: 5m
     # The in-process A&D WireGuard hub creates + configures a kernel `wg0` and
-    # masquerades VPN traffic — needs NET_ADMIN, /dev/net/tun, and the host's
-    # `wireguard` kernel module loaded (`modprobe wireguard` on the host).
+    # masquerades VPN traffic — needs NET_ADMIN, NET_RAW for the iptables ipset
+    # matcher, /dev/net/tun, and the host's `wireguard` kernel module loaded.
     cap_drop:
       - ALL
     cap_add:
@@ -184,8 +188,9 @@ services:
 # The `traefik` network is created by your homelab Traefik stack (external),
 # so both stacks share it and Traefik can discover this service. `rsctf-ad` is the
 # isolated A&D services network — service containers join it (no host ports) and
-# the WireGuard hub bridges VPN clients onto it. Fixed name so the app can attach
-# spawned service/checker containers to it by name via the Docker API.
+# the WireGuard hub bridges VPN clients onto it. Its project-scoped name lets the
+# app attach spawned service/checker containers without colliding with a second
+# rsctf installation on the same Docker daemon.
 networks:
   default:
     ipam:
@@ -194,7 +199,7 @@ networks:
   traefik:
     external: true
   rsctf-ad:
-    name: rsctf-ad
+    name: "${RSCTF_AD_VPN_SERVICES_NETWORK:-${COMPOSE_PROJECT_NAME:-rsctf}-ad}"
     # Existing deployments must stop rsctf, remove the old rsctf-ad network, and
     # recreate rsctf once; Docker cannot change Internal on an existing bridge.
     internal: true

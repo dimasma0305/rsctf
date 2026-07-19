@@ -5,6 +5,373 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## Final current-tree operational acceptance — 19 July 2026
+
+The final server-affecting tree passed both a held-rate player comparison and
+the comprehensive lifecycle emulator. The fixed-rate run used 100 distinct
+player identities, one combined A&D/KotH game with 100 teams, one service and
+one hill, `RATE=20 VUS=128 DURATION=60s`, and a uniformly distributed
+three-to-five-second think time. The lifecycle run retained the same 100-team
+roster, selected four real outbound BYOC tunnels and four isolated services for
+checker evidence, and used `VUS=60 DURATION=180s PLAYER_THINK_SECONDS=5`.
+
+The final release-mode image was built before the report and two load-harness
+repairs below. Those later edits affect installer delivery, documentation, and
+test evidence only; they do not change the Rust server or web client embedded in
+the image.
+
+| Artifact | Exact identity |
+| --- | --- |
+| Operational candidate image | `rsctf-local:final-accept` / `sha256:2bab0283f1d5e06754070aa4ebcc74e4f3a59553b2d8b1d0c395ddcd3dfc5a63` |
+| Candidate binary | `sha256:b188177a6bad66948ca1dd11b931d9a826d9eaa4cecd29a977a054092cbd711b` |
+| Final image | `rsctf-local:final-accept2` / `sha256:6b2b454446f7cd37733fd4de548dac1fe91208f9862522c5db3c2e42dfc1ffa8` |
+| Final binary | `sha256:2dad01fcf274522dc52acfbf52d134c01c01ecd4122421022e94d25a858c1072` |
+| Source base | commit `6d389181959b7c69c7502efb77bfcf90de8b8f86` |
+| Final server-source freeze | relevant tracked diff `5c1f3d244df865de7c93786cdb5d96af21a3cc77e20897aea61eb19ea6b57855`; relevant untracked manifest `38d98f09e62a1c3e33f6d48d813634d6dc5337ec4252855e8417061d57317756` |
+
+### Same-shape held-rate before and after
+
+Both images completed essentially the same held traffic: the candidate served
+7,569 requests at 116.933 requests/s and 1,201 iterations; the final image
+served 7,552 at 117.057 requests/s and 1,200 iterations. Both had zero failed
+HTTP requests, server 5xx responses, client error metrics, and invalid official
+A&D boards. Values below are milliseconds.
+
+| Endpoint | Variant | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A&D epoch board | Candidate | 3.652 | 2.679 | 4.283 | 6.468 | 26.962 | 130.242 |
+| A&D epoch board | Final | 2.617 | 2.265 | 3.419 | 4.233 | 6.956 | 54.484 |
+| A&D State | Candidate | 5.144 | 3.710 | 7.862 | 11.385 | 30.161 | 85.661 |
+| A&D State | Final | 3.544 | 3.179 | 5.433 | 6.492 | 10.184 | 13.524 |
+| A&D Targets | Candidate | 4.722 | 2.854 | 7.042 | 11.398 | 31.771 | 107.907 |
+| A&D Targets | Final | 4.158 | 3.438 | 6.031 | 7.391 | 11.889 | 89.765 |
+| Combined board | Candidate | 3.658 | 2.699 | 4.408 | 6.972 | 26.955 | 130.242 |
+| Combined board | Final | 2.758 | 2.302 | 3.587 | 4.411 | 10.700 | 54.484 |
+| KotH board | Candidate | 3.725 | 2.662 | 4.438 | 7.214 | 30.036 | 78.333 |
+| KotH board | Final | 2.904 | 2.277 | 3.631 | 4.550 | 23.356 | 50.305 |
+| KotH State | Candidate | 2.755 | 2.030 | 4.636 | 6.912 | 14.427 | 78.872 |
+| KotH State | Final | 1.826 | 1.562 | 3.282 | 4.995 | 8.882 | 20.106 |
+| KotH timeline | Candidate | 3.153 | 1.591 | 5.337 | 9.003 | 37.875 | 58.624 |
+| KotH timeline | Final | 1.734 | 0.902 | 1.915 | 2.727 | 28.779 | 36.025 |
+| KotH token | Candidate | 4.944 | 3.938 | 6.736 | 8.794 | 29.610 | 119.557 |
+| KotH token | Final | 3.703 | 3.367 | 5.434 | 6.696 | 9.510 | 19.694 |
+| Main scoreboard | Candidate | 3.597 | 2.755 | 4.528 | 7.340 | 19.682 | 66.609 |
+| Main scoreboard | Final | 2.755 | 2.352 | 3.650 | 4.538 | 10.401 | 50.468 |
+| A&D submit | Candidate | 5.878 | 5.083 | 8.656 | 11.200 | 16.151 | 19.287 |
+| A&D submit | Final | 4.511 | 3.954 | 6.492 | 7.328 | 9.417 | 21.449 |
+| All HTTP | Candidate | 3.912 | 2.794 | 5.936 | 8.236 | 26.472 | 130.242 |
+| All HTTP | Final | 2.886 | 2.421 | 4.576 | 5.768 | 10.581 | 89.765 |
+
+Every reported p95 improved: overall HTTP **−29.97%**, combined board
+**−36.73%**, A&D State **−42.98%**, Targets **−35.15%**, KotH board
+**−36.93%**, timeline **−69.71%**, and submit **−34.57%**. The live Targets
+security fence deliberately stopped caching mutable relay ports and checker
+verdicts for five seconds. It added one bounded SQL overlay per poll; its p50
+rose 2.854 → 3.438 ms, while average, p90, p95, p99, and max all improved. This
+is the intended freshness tradeoff: a retired or reconnected BYOC endpoint is
+never served from the five-second immutable roster cache. Submit p95 improved,
+but its single worst observation rose 19.287 → 21.449 ms; neither tail is hidden
+from the table.
+
+Fifteen aligned four-second samples cover the final held-load window. CPU is a
+percentage of one core; RAM is MiB.
+
+| Component | Candidate CPU avg / median / p95 / max | Final CPU avg / median / p95 / max | Final RAM start / average / peak / end |
+| --- | ---: | ---: | ---: |
+| RSCTF | 13.53 / 11.17 / 25.62 / 29.86 | 14.02 / 10.83 / 25.25 / 40.38 | 46.50 / 60.66 / 65.23 / 62.55 |
+| PostgreSQL | 12.98 / 11.52 / 29.21 / 33.45 | 12.00 / 8.58 / 28.80 / 35.25 | 117.40 / 144.89 / 155.50 / 155.50 |
+| Redis | 5.31 / 4.76 / 9.99 / 13.52 | 3.09 / 2.48 / 5.91 / 8.35 | 7.14 / 7.65 / 7.77 / 7.73 |
+
+The sum of sampled component CPU averages fell **31.82% → 29.10% of one
+core**, an 8.55% reduction at the held request rate. RSCTF average CPU rose
+3.61%, while PostgreSQL fell 7.57% and Redis fell 41.90%. The RSCTF maximum is
+a single four-second scheduler/traffic overlap; its p95 was slightly lower than
+the candidate. These are sampled operational bounds, not cumulative cgroup CPU.
+
+| UTC | RSCTF CPU / MiB | PostgreSQL CPU / MiB | Redis CPU / MiB |
+| --- | ---: | ---: | ---: |
+| 13:12:17 | 8.07 / 46.50 | 0.54 / 117.40 | 0.43 / 7.14 |
+| 13:12:21 | 13.73 / 53.12 | 35.25 / 130.30 | 4.85 / 7.55 |
+| 13:12:25 | 18.76 / 58.50 | 25.80 / 139.20 | 2.76 / 7.74 |
+| 13:12:29 | 9.30 / 59.12 | 8.03 / 140.40 | 2.48 / 7.77 |
+| 13:12:33 | 8.30 / 61.29 | 5.70 / 143.90 | 2.75 / 7.77 |
+| 13:12:37 | 16.70 / 62.02 | 10.02 / 145.50 | 2.40 / 7.61 |
+| 13:12:41 | 16.30 / 62.89 | 13.09 / 145.80 | 4.86 / 7.66 |
+| 13:12:45 | 10.83 / 62.66 | 6.97 / 146.50 | 2.06 / 7.66 |
+| 13:12:49 | 16.56 / 62.77 | 8.58 / 147.80 | 2.51 / 7.64 |
+| 13:12:53 | 8.80 / 62.27 | 6.92 / 149.10 | 2.01 / 7.69 |
+| 13:12:57 | 18.15 / 63.18 | 12.11 / 151.30 | 4.62 / 7.66 |
+| 13:13:01 | 40.38 / 63.35 | 26.04 / 152.60 | 8.35 / 7.66 |
+| 13:13:05 | 8.74 / 64.43 | 5.73 / 153.70 | 2.13 / 7.71 |
+| 13:13:09 | 7.57 / 65.23 | 4.36 / 154.40 | 1.99 / 7.72 |
+| 13:13:13 | 8.08 / 62.55 | 10.83 / 155.50 | 2.08 / 7.73 |
+
+### Comprehensive lifecycle acceptance
+
+The final rerun served **15,900 requests at 86.340 requests/s**. It had zero
+server 5xx responses, zero invalid successful A&D boards, and zero invalid
+successful KotH lifecycle models. The script recorded 15 unexpected non-2xx
+responses excluding 429 (0.239%) and 9,622 intentional 429 responses. The
+direct driver is one source address and therefore exercises the configured
+source ceilings; 429s are retained as failed HTTP responses rather than hidden.
+
+| Operation | Average | p50 | p90 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 5.453 | 0.880 | 14.037 | 25.007 | 61.755 | 402.985 |
+| Combined board | 9.706 | 1.758 | 28.490 | 36.277 | 109.435 | 175.562 |
+| A&D epoch board | 6.129 | 1.990 | 6.659 | 8.835 | 151.176 | 159.888 |
+| A&D State | 9.447 | 7.288 | 14.271 | 26.430 | 44.216 | 61.537 |
+| A&D Targets | 9.026 | 7.963 | 14.169 | 17.722 | 55.031 | 61.607 |
+| Details / KotH State | 10.976 | 8.944 | 20.290 | 29.406 | 52.153 | 57.152 |
+| KotH board | 7.170 | 1.824 | 26.335 | 28.707 | 30.196 | 30.510 |
+| A&D submit | 24.944 | 12.599 | 55.575 | 62.479 | 79.888 | 93.075 |
+| Jeopardy submit | 46.307 | 32.055 | 85.972 | 154.733 | 204.576 | 210.272 |
+| Attachment download | 31.264 | 25.773 | 68.556 | 73.712 | 80.754 | 91.800 |
+| Container operation | 388.831 | 388.831 | 400.154 | 401.570 | 402.702 | 402.985 |
+| Onboarding | 58.400 | 45.000 | 82.600 | 82.800 | 82.960 | 83.000 |
+
+The run established 4/4 real tunnels, independently delivered and verified
+4/4 selected service flags, retained all 100 frozen roster services, created
+two real Jeopardy containers, downloaded the seeded attachment, wrote 33 KotH
+captures across three observed cycles, confirmed one stable acquisition, and
+rejected the prior cycle's revoked capability 1/1. The lifecycle's one-second
+sampler returned **319/319 liveness** and **319/319 readiness** probes. An
+independent four-second observer returned 63/63 for public liveness, local
+liveness, and readiness.
+
+Every authoritative integrity query returned zero: duplicate or non-contiguous
+rounds, duplicate attacks/tokens/cycles/control ticks/acquisitions/runtime
+operations/participations, overlapping cycles, invalid reset receipts, stale
+container evidence, cross-cycle token evidence, unbound controls, platform
+voids, invalid cooldowns, holders outside the current cycle, late scorable
+evidence, unfinished pipelines, delivery/publication failures, self-captures,
+post-deadline attacks, probe failures, and fatal server logs. Publication lag
+was p95 5.356 seconds and max 5.357 seconds, inside the 8/12-second gates.
+
+The independent observer spans preparation, timed traffic, settlement, and
+teardown. It retained 62 valid Docker samples per component; two fleet-inventory
+samples raced the intentional relay teardown and did not affect health or
+component telemetry.
+
+| Component | CPU average / median / p95 / max | RAM average / p95 / max |
+| --- | ---: | ---: |
+| RSCTF | 8.75 / 3.56 / 21.99 / 68.82% | 76.48 / 78.83 / 92.27 MiB |
+| PostgreSQL | 12.04 / 6.31 / 45.27 / 65.95% | 384.46 / 395.90 / 396.10 MiB |
+| Redis | 1.83 / 1.10 / 5.01 / 5.97% | 7.73 / 8.03 / 9.03 MiB |
+
+PostgreSQL averaged 32.70 connections and 1.03 active connections, with maxima
+33/2. Waiting connections averaged 0.032 and peaked at one; waiting locks,
+deadlocks, and temporary files remained zero. The longest sampled transaction
+was 17.064 ms. Redis stayed at two keys with zero evictions, rejected
+connections, or new error replies under its 256 MiB `allkeys-lru` bound.
+
+### Saturation diagnostic and harness corrections
+
+Before the representative run, the same image was deliberately driven with 40
+VUs and no think time. It served 1,835,291 requests at **10,194.65 requests/s**
+with zero 5xx responses and 61/61 public/local/readiness observer samples. The
+limiter rejected 96.52% of requests, so the semantic metrics—which intentionally
+classify any non-200 board response as invalid—crossed their zero thresholds.
+This is rate-limit/backpressure evidence, not a successful-payload corruption
+or a representative performance result.
+
+That campaign exposed two load-harness defects, both now covered by regression
+tests. `observe.mjs` used a hard-coded PostgreSQL role and now honors `PG_USER`
+and `PG_DATABASE`. The lifecycle fatal-log gate scanned the unrelated
+`rsctf-rsctf-1` container for its entire lifetime; it now fails closed while
+scanning the configured `RSCTF_CONTAINER` only from the current run's start.
+The unrelated container had nine historical panic/FATAL lines, while the
+isolated accepted server had zero. The corrected full rerun produced the passing
+result above.
+
+This operational comparison does not add an optimization-ledger row. It bundles
+several correctness and security closures and has one run per image, so it
+cannot attribute the latency change to a single edit. It also uses one
+single-binary server, local PostgreSQL/Redis, loopback traffic, one hill, and
+four live tunnels from a 100-team roster. The held-rate player result is a valid
+same-shape comparison; the no-think-time run is only an abuse diagnostic, and
+the lifecycle result is a functional acceptance gate rather than a capacity
+claim.
+
+## Attack-Defense max-batch hardening and fixed-rate optimization — 19 July 2026
+
+> Frozen-campaign scope: the measured after image predates the later A&D
+> submit/deletion fence and the fresh-install repair to `m0071`. These numbers
+> isolate the batch memoization and bounded eligibility-join changes; they are
+> not current-tree end-to-end submit latency.
+
+The measured after variant performs one adjudication for repeated flags in the
+same request, uses one bounded authoritative lookup for a flag and its active
+victim service, and charges the submit limiter for each distinct plausible
+flag. The same frozen after image also passed a two-replica distributed-limiter
+drill. At one maximum-size batch/s, repeated-known p95 fell from **694.49 ms to
+38.74 ms** and whole-stack CPU time fell from **20.742 to 0.850 CPU-seconds**
+(−95.90%). For 100 distinct known duplicates, p95 fell from **790.76 ms to
+367.97 ms** and stack CPU fell from **21.644 to 10.811 CPU-seconds** (−50.05%).
+
+The distinct-unknown control did regress: p95 was **68.92 → 73.35 ms** (+6.42%)
+and stack CPU was **1.757 → 2.079 CPU-seconds** (+18.27%, an absolute increase
+of 0.321 CPU-seconds over 30 seconds). The new joined eligibility lookup does
+more work than the old index-only miss. This is the tradeoff for replacing the
+old lookup plus later service/roster reads with one bounded authoritative
+eligibility join. The join preserves the existing inactive-service rejection,
+and the regression remains small in absolute terms.
+
+### Controlled workload and provenance
+
+Both variants used the same isolated PostgreSQL 18.4 and Redis fixture on an
+8-vCPU Linux 6.8.0 host with Docker Engine 28.4.0/API 1.51. The fixture had game
+65 in synthetic, unfinalized round 20, 500 authoritative active team services,
+100 distinct current engine-shaped flags spread across 100 services, and an
+attacker that had already captured every measured known flag. Its
+accepted-attack count was 107 before and after every trial. No credential or
+flag was written to an artifact or command output.
+
+| Artifact | Exact identity |
+| --- | --- |
+| Before image | `rsctf-local:audit-before-6d38918` / `sha256:43c2ac05e510759395980a1cd60be5258497004f96b0afd1177cc9aa34886987` |
+| Before binary | `sha256:2f9c627d0535177977ae4fa8f6b19fe73a6036f57f1cb4373ffd76e3d6d6d0e8` |
+| After image | `rsctf-local:audit-after-final` / `sha256:869bd8cbf4274b1f2eae3b01489f6c1a4c113355732d1c23ef3fc344201a214b` |
+| After binary | `sha256:b1ec3543b0ed928b6380d4adde0c76fc0245aa21be20223383782caa15fe2107` |
+| Before source | commit `6d389181959b7c69c7502efb77bfcf90de8b8f86` |
+| After source freeze | same HEAD plus tracked binary diff `fc4e7fa8334ff5575dbed3378df5a9836cc7e71a09768ef60885c03abef46a6c` and untracked manifest `87f10891425ac61cf7f12600df319ed0825057cde6d5502cf1efd891ff2f40a8` |
+
+The after source fingerprint excludes this report and its README ledger entry,
+which were written after the binary freeze and cannot affect the executable.
+The frozen after image was built from the exact frozen tree in release mode; its
+web build and Rust release build completed without warnings.
+
+A post-measurement security review subsequently bound the admin import-password
+cache to immutable account IDs, made delivery an atomic row-locked consume
+across replicas, and added a per-account PostgreSQL session lease so a concurrent
+admin update cannot unban an account during deletion teardown. Those admin-only
+paths do not call the A&D submit handler or limiter and are therefore not
+assigned a performance-ledger claim, but they are not part of the measured image
+or source hashes above. A later deletion/submit fence does execute on the
+measured handler and is also outside these hashes and timings. The final commit
+is rebuilt and tested separately after those security fixes.
+
+The measured `m0071` state also predates its later fresh-install default repair.
+The baseline binary predates migration `m0071_team_deletion_fence` and refuses
+to start when that migration is recorded as applied. The runner therefore
+removed only that row from the isolated `seaql_migrations` table before each
+baseline start and restored it before each after start. The schema column and
+all fixture data remained unchanged. The migration row was restored after the
+campaign. This compatibility shim changes startup bookkeeping, not either
+measured query or its data.
+
+Each trial restarted the selected web-only rsctf container cold, flushed the
+dedicated Redis database after startup, and reused the same persistent database
+and Redis containers. rsctf had 4 CPUs and 2 GiB RAM. The harness used k6
+`constant-arrival-rate` with `RATE=1 VUS=4 MAX_VUS=4 DURATION=30s
+REQUEST_TIMEOUT=10s`; every request carried the endpoint maximum of 100 flags.
+CPU figures are bracketed deltas from cumulative container cgroup counters, not
+instantaneous samples. The 30/31-iteration difference is k6's boundary timing;
+both variants met the configured one-batch/s rate without a dropped iteration.
+The trial order alternated before and after for each shape.
+
+### Per-trial latency distributions
+
+All values below are milliseconds. `results` counts individual flag results,
+not HTTP requests.
+
+| Variant | Shape | Trial | Iterations | Results | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Before | repeated known | 1 | 30 | 3,000 | 569.750 | 547.751 | 637.305 | 705.728 | 783.912 | 797.421 |
+| After | repeated known | 1 | 30 | 3,000 | 26.452 | 17.718 | 30.773 | 40.949 | 212.422 | 280.232 |
+| Before | repeated known | 2 | 30 | 3,000 | 611.268 | 604.551 | 658.621 | 683.255 | 788.820 | 827.885 |
+| After | repeated known | 2 | 31 | 3,100 | 17.023 | 16.895 | 24.794 | 36.524 | 49.061 | 49.809 |
+| Before | distinct known | 1 | 31 | 3,100 | 562.143 | 541.941 | 662.613 | 671.642 | 708.294 | 722.796 |
+| After | distinct known | 1 | 30 | 3,000 | 300.334 | 285.025 | 328.880 | 378.813 | 531.612 | 581.829 |
+| Before | distinct known | 2 | 31 | 3,100 | 632.289 | 597.825 | 746.671 | 909.875 | 928.168 | 929.316 |
+| After | distinct known | 2 | 31 | 3,100 | 325.150 | 315.988 | 353.111 | 357.122 | 530.625 | 603.590 |
+| Before | distinct unknown | 1 | 30 | 3,000 | 35.443 | 31.145 | 50.805 | 58.944 | 65.516 | 65.954 |
+| After | distinct unknown | 1 | 30 | 3,000 | 48.369 | 42.434 | 56.991 | 62.749 | 124.299 | 147.551 |
+| Before | distinct unknown | 2 | 31 | 3,100 | 47.193 | 42.325 | 61.684 | 78.903 | 110.390 | 116.692 |
+| After | distinct unknown | 2 | 30 | 3,000 | 55.067 | 49.424 | 79.327 | 83.947 | 123.262 | 139.096 |
+
+### Two-trial means
+
+The following values are arithmetic means of the two trial-level statistics,
+not a reconstructed percentile over combined samples.
+
+| Shape | Variant | Average | p50 | p90 | p95 | p99 | Max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Repeated known | Before | 590.509 | 576.151 | 647.963 | 694.492 | 786.366 | 812.653 |
+| Repeated known | After | 21.737 | 17.306 | 27.784 | 38.736 | 130.742 | 165.020 |
+| Repeated known | Change | **−96.32%** | **−97.00%** | −95.71% | **−94.42%** | −83.37% | −79.70% |
+| Distinct known | Before | 597.216 | 569.883 | 704.642 | 790.758 | 818.231 | 826.056 |
+| Distinct known | After | 312.742 | 300.507 | 340.996 | 367.968 | 531.119 | 592.710 |
+| Distinct known | Change | **−47.63%** | **−47.27%** | −51.61% | **−53.47%** | −35.09% | −28.25% |
+| Distinct unknown | Before | 41.318 | 36.735 | 56.245 | 68.923 | 87.953 | 91.323 |
+| Distinct unknown | After | 51.718 | 45.929 | 68.159 | 73.348 | 123.780 | 143.323 |
+| Distinct unknown | Change | **+25.17%** | **+25.03%** | +21.18% | **+6.42%** | +40.73% | +56.94% |
+
+### CPU time at the held rate
+
+Values are CPU-seconds consumed during each 30-second load window. `Stack` is
+rsctf + PostgreSQL + Redis. The table reports the mean of two trials.
+
+| Shape | Variant | rsctf | PostgreSQL | Redis | Stack |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Repeated known | Before | 6.033 | 14.556 | 0.153 | 20.742 |
+| Repeated known | After | 0.135 | 0.549 | 0.167 | 0.850 |
+| Repeated known | Change | **−97.77%** | **−96.23%** | +9.00% | **−95.90%** |
+| Distinct known | Before | 6.339 | 15.143 | 0.161 | 21.644 |
+| Distinct known | After | 1.701 | 8.948 | 0.162 | 10.811 |
+| Distinct known | Change | **−73.17%** | **−40.91%** | +0.57% | **−50.05%** |
+| Distinct unknown | Before | 0.671 | 0.924 | 0.162 | 1.757 |
+| Distinct unknown | After | 0.632 | 1.284 | 0.163 | 2.079 |
+| Distinct unknown | Change | **−5.92%** | **+39.00%** | +0.33% | **+18.27%** |
+
+The repeated path now performs one adjudication per request rather than 100
+(−99% direct adjudication work). The distinct-known path cannot memoize across
+different flags, but its authoritative joined lookup removes the separate
+victim and two roster reads from each result. The control demonstrates the
+tradeoff: the new path performs the bounded authoritative eligibility query
+even for an unknown flag, while the old path stopped after its simple indexed
+flag miss.
+
+Normalizing for k6's 30/31 boundary iteration produces the same conclusion.
+Repeated stack CPU was 0.6914 → 0.02788 CPU-seconds/batch (−95.97%), distinct
+known was 0.6982 → 0.3544 (−49.23%), and distinct unknown was 0.05762 → 0.06928
+(+20.24%). The joined lookup being responsible for the unknown-control increase
+is an inference from the code path and measured PostgreSQL delta; individual
+SQL statements were not instrumented in this campaign.
+
+### Correctness and two-replica abuse drill
+
+All 36,500 returned flag results matched their expected semantic status. The
+repeated-known and distinct-known trials returned only `duplicate`; the
+distinct-unknown trials returned only `wrong`. Across all 12 trials there were
+zero semantic-invalid results, HTTP 429 responses, server 5xx responses,
+unexpected HTTP statuses, failed HTTP requests, or dropped iterations. Accepted
+attacks remained **107 → 107** in every trial.
+
+The exact after image was then run as two web replicas with 2 CPUs each, sharing
+the same Redis limiter. Thirty-two concurrent requests, each containing 100
+distinct plausible unknown flags, were split across the replicas. All 32
+requests returned HTTP 200; the immediate 33rd returned HTTP 429 with
+`Retry-After: 10`; a request after 10.5 seconds returned HTTP 200. Attacks again
+remained 107 → 107. This exercises the shared 3,200-token bucket and its
+continuous 10-token/s refill across real replicas rather than assuming
+in-process coordination. It proves atomic coordination with the deployed
+standalone Redis; it does not prove Redis-outage fallback, Redis Cluster
+behavior, long-duration fairness, or long-duration stability.
+
+That 3,200-token result is historical evidence for the measured image above,
+not the final production default. The reviewed configuration now permits 400
+immediate distinct plausible flags (four maximum-size batches) and retains the
+same 10 flags/second refill. Reproducing this 30-second distinct-batch campaign
+therefore requires the documented 3,200-token override on an isolated test
+process; production deployments should keep 400.
+
+The campaign is deliberately a submit-path microbenchmark, not a whole-platform
+replacement for `npm run player` or `node lifecycle.mjs`. It establishes the
+cost and correctness of adversarial maximum-size batches. The final release
+image must still pass the broader build, unit, integration, and lifecycle gates
+before deployment.
+
 ## Trusted-worker functional-readiness and replica campaign — 18 July 2026
 
 This campaign validates the new outbound trusted-worker plane with a real native
@@ -475,9 +842,11 @@ during the five-minute event, not evidence for or against a long-duration leak.
   L1 copies expire within one second; a pre-mutation fill racing invalidation
   can repopulate L2 and extend the rare stale window to about two TTLs. Official
   challenge toggles/review changes are locked once scoring begins.
-- The batched limiter is correct for the deployed standalone Redis. Redis
-  Cluster would require both keys to share a hash slot; otherwise Lua returns
-  `CROSSSLOT` and the configured fail-open path applies.
+- The batched limiter in this historical measured build was correct for the
+  deployed standalone Redis. Redis Cluster would require both authenticated
+  keys to share a hash slot; otherwise Lua returns `CROSSSLOT`. Current code
+  falls back to a bounded per-replica limiter on Redis errors instead of
+  becoming unlimited, but global cross-replica coordination is then lost.
 - One run per image is insufficient for latency confidence intervals. Held-rate
   cgroup CPU plus direct SQL/Redis work reductions are the stronger causal
   evidence. p99/max values are reported rather than smoothed away.

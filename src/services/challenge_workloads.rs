@@ -185,7 +185,7 @@ fn runtime_publication_fence(
             challenge.ad_self_hosted,
         ),
         flag_template: (challenge.challenge_type == ChallengeType::DynamicContainer)
-            .then(|| challenge.flag_template.as_deref())
+            .then_some(challenge.flag_template.as_deref())
             .flatten(),
     };
     let canonical =

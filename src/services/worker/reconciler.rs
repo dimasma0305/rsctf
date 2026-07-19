@@ -282,7 +282,7 @@ mod tests {
                 desired_state: WorkloadDesiredState::Absent,
                 ..present.workload.clone()
             },
-            session: present.session.clone(),
+            session: present.session,
         };
         let present_command = command_for(&present).unwrap();
         let absent_command = command_for(&absent).unwrap();

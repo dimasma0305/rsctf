@@ -41,6 +41,10 @@ const containers = Object.freeze({
   postgres: process.env.PG_CONTAINER || 'rsctf-db-1',
   redis: process.env.REDIS_CONTAINER || 'rsctf-redis-1',
 });
+const postgres = Object.freeze({
+  user: process.env.PG_USER || 'postgres',
+  database: process.env.PG_DATABASE || 'rsctf',
+});
 
 const files = Object.freeze({
   publicHealth: join(outDir, 'health-public.csv'),
@@ -781,9 +785,9 @@ async function collectPostgres(timestamp) {
     containers.postgres,
     'psql',
     '-U',
-    'postgres',
+    postgres.user,
     '-d',
-    'rsctf',
+    postgres.database,
     '-X',
     '-qAt',
     '-c',
@@ -910,7 +914,10 @@ async function collectContainerCounts(timestamp) {
         .split(',')
         .includes(label);
     const compose = (row) => hasLabel(row, 'com.docker.compose.project=rsctf');
-    const managed = (row) => hasLabel(row, 'rsctf.managed=true');
+    const managed = (row) =>
+      String(row.Labels || '')
+        .split(',')
+        .some((label) => label.startsWith('rsctf.managed='));
     const operation = (row) => String(row.Labels || '').includes('rsctf.operation=');
     const lifecycleAgent = (row) => /^lcbyoc_\d+$/.test(row.Names || '');
     const isolatedService = (row) => /^lcbyoc_svc_\d+$/.test(row.Names || '');

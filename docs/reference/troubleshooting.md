@@ -107,7 +107,10 @@ non-migration role; VPN does not need to be enabled for this requirement.
 
 ### `/dev/net/tun` missing or WireGuard initialization fails
 
-VPN mode requires Linux, rootful containers, the TUN device, `NET_ADMIN`, WireGuard and ipset kernel support, and IPv4 forwarding. Run installer `doctor`, inspect host kernel logs, and validate the chosen CIDRs do not overlap local routes.
+VPN mode requires Linux, rootful containers, the TUN device, `NET_ADMIN`,
+`NET_RAW` for the iptables ipset matcher, WireGuard and ipset kernel support,
+and IPv4 forwarding. Run installer `doctor`, inspect host kernel logs, and
+validate the chosen CIDRs do not overlap local routes.
 
 ### VPN connects but targets are unreachable
 
@@ -119,7 +122,7 @@ Do not scale an `all`, `control`, or `network` role: exactly one process owns th
 PostgreSQL singleton lease and kernel network state. Scale `web` and `engine`
 roles instead. Keep VPN intent enabled on them so policy mutations wait for the
 owner's durable acknowledgement; the maintained manifests grant TUN and
-`NET_ADMIN` only to the singleton owner.
+`NET_ADMIN` plus the ipset matcher's `NET_RAW` only to the singleton owner.
 
 ## Player problems
 

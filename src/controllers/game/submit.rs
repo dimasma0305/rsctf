@@ -154,6 +154,7 @@ async fn cache_challenge_flag_map(
 /// judge against the per-team dynamic flag or the challenge's static flag(s),
 /// persist the graded submission, and on accept bump counts + record the
 /// FirstSolve/blood order. Returns the new submission id (poll `status/{id}`).
+#[allow(clippy::type_complexity)]
 pub async fn submit(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -466,7 +467,7 @@ pub async fn submit(
             // consistent and cannot deadlock between submitters.
             let prior = if blood_eligible {
                 let observed = count_blood_eligible_solves(
-                    &mut *transaction,
+                    &mut transaction,
                     id,
                     challenge_id,
                     game_start,
@@ -482,7 +483,7 @@ pub async fn submit(
                         .await
                         .map_err(|error| AppError::internal(error.to_string()))?;
                     count_blood_eligible_solves(
-                        &mut *transaction,
+                        &mut transaction,
                         id,
                         challenge_id,
                         game_start,

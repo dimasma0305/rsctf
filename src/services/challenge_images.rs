@@ -95,18 +95,17 @@ pub(crate) fn validate_runtime_reference(
 }
 
 /// Resolve the only image reference a challenge workload may execute.
-pub(crate) fn runtime_image(
+pub(crate) fn runtime_image_from_build_fields(
     st: &SharedState,
-    challenge: &game_challenge::Model,
+    build_status: i16,
+    build_image_digest: Option<&str>,
 ) -> AppResult<String> {
-    if challenge.build_status != ChallengeBuildStatus::Success {
+    if build_status != ChallengeBuildStatus::Success as i16 {
         return Err(AppError::bad_request(
             "The challenge image has not completed a successful immutable build/pull.",
         ));
     }
-    let reference = challenge
-        .build_image_digest
-        .as_deref()
+    let reference = build_image_digest
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
             AppError::bad_request(
@@ -118,6 +117,18 @@ pub(crate) fn runtime_image(
         st.containers.backend_kind(),
         st.config.runtime_role,
         shared_docker_daemon_acknowledged(),
+    )
+}
+
+/// Resolve the only image reference a challenge workload may execute.
+pub(crate) fn runtime_image(
+    st: &SharedState,
+    challenge: &game_challenge::Model,
+) -> AppResult<String> {
+    runtime_image_from_build_fields(
+        st,
+        challenge.build_status as i16,
+        challenge.build_image_digest.as_deref(),
     )
 }
 

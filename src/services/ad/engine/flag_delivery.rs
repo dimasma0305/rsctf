@@ -204,6 +204,7 @@ async fn settle_round_publication(
     Ok(FlagDeliveryPublication { failure_count })
 }
 
+#[allow(clippy::type_complexity)]
 async fn record_flag_delivery_outcomes_transaction(
     tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
     game_id: i32,

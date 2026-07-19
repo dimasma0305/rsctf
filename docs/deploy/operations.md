@@ -51,6 +51,17 @@ docker compose logs --tail=200 rsctf
 
 rsctf applies forward database migrations at startup. There is no automatic downgrade, so a rollback may require restoring the pre-update database and file backup.
 
+The first upgrade to installation-scoped Docker workload labels needs a short
+maintenance drain. Stop competitive game orchestration, inspect legacy
+containers selected by `docker ps -a --filter label=rsctf.managed=true`, and
+remove only containers confirmed obsolete for this installation. Then set a
+stable `RSCTF_DOCKER_SCOPE` and start every replica with that same value. The
+scoped orphan sweeper deliberately ignores legacy unscoped containers: this
+prevents a new installation from adopting or deleting another installation's
+workloads on a shared daemon. Database-tracked legacy containers can still be
+destroyed through their stored IDs, but a pre-upgrade crash orphan requires
+this one-time operator review.
+
 That automatic migration applies only to the default `RSCTF_ROLE=all` process.
 For a split-role deployment, start PostgreSQL and Redis, run exactly one
 one-shot `migrate` process, require it to succeed, and only then update the
@@ -146,4 +157,4 @@ The destructive command below removes named data volumes:
 docker compose down --volumes --remove-orphans
 ```
 
-Do not run it unless a tested backup exists and permanent data deletion is intended. Dynamically created challenge containers are separate Docker objects; review containers labeled `rsctf.managed=true` before deleting them.
+Do not run it unless a tested backup exists and permanent data deletion is intended. Dynamically created challenge containers are separate Docker objects; review containers carrying both `rsctf.managed` and `rsctf.scope` labels before deleting them. Their values are hashed installation identities, not secrets.

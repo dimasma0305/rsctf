@@ -13,8 +13,8 @@ both open a root shell in a live owasp-portal BYOC service):
   (the `'E'` stream), `hubs::container` (the admin web terminal);
 - agent: `rsctf-byoc-agent`'s `'E'` handler — docker-exec's `/bin/sh` in the service
   container over the mounted socket (raw Engine API, no docker CLI/client dep);
-- the generated compose (below) mounts `/var/run/docker.sock` + names the service
-  container so it works without hand-editing.
+- the generated compose names the service container and includes the
+  `/var/run/docker.sock` mount as a commented, explicit opt-in.
 
 The rest of this doc is the reference for the wire format + the agent handler.
 
@@ -92,19 +92,20 @@ services:
     # ...team's service...
 
   agent:                       # rsctf-byoc-agent (byoc_image)
-    image: dimasmaualana/rsctf-byoc-agent:latest
+    # Use the digest-pinned image emitted by the server bundle.
+    image: ghcr.io/dimasma0305/rsctf-byoc-agent@sha256:<release-digest>
     environment:
       RSCTF_BYOC_AGENT_TOKEN: "<adbyocagent:...>"
       RSCTF_BYOC_SERVICE_CONTAINER: "byoc_service"   # what the 'E' handler execs into
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock   # required for exec-shell
+      # Explicit opt-in; required only for exec-shell:
+      - /var/run/docker.sock:/var/run/docker.sock
     # ...tunnel dial config...
 ```
 
 **Security note (state it to the team):** mounting the Docker socket grants the agent
-root-equivalent control of the team's host. That is acceptable because the team runs
-this on *their own* box and it is *their* container — but it is opt-in and must be
-documented, not silently enabled. Teams that decline the socket mount simply don't get
+root-equivalent control of the team's host. The generated setup leaves this mount
+commented out; teams must review and opt in deliberately. Teams that decline it don't get
 BYOC SSH (service + flag streams still work); the alternative is `sshd`-in-the-image +
 an agent that dials `service:22` instead of exec'ing.
 

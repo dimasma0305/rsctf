@@ -14,13 +14,23 @@ use crate::services::ad_vpn;
 pub(super) struct RosterAccessGuard {
     distributed: crate::utils::single_flight::PgAdvisoryLock,
     local: crate::utils::single_flight::CoalesceGuard,
+    _admission: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl RosterAccessGuard {
+    pub(super) fn transaction_mut(&mut self) -> &mut sqlx::Transaction<'static, sqlx::Postgres> {
+        self.distributed.transaction_mut()
+    }
+
     pub(super) async fn release(self) -> AppResult<()> {
-        let Self { distributed, local } = self;
+        let Self {
+            distributed,
+            local,
+            _admission,
+        } = self;
         distributed.release().await?;
         drop(local);
+        drop(_admission);
         Ok(())
     }
 }
@@ -32,41 +42,38 @@ pub(super) async fn acquire_roster_access(
     user: &CurrentUser,
     part: &participation::Model,
 ) -> AppResult<RosterAccessGuard> {
+    // Serialize one team's issuers before consuming global capacity: a flood
+    // from one team must not occupy both slots with one request merely waiting
+    // on the same local gate. Neither wait retains a database connection.
     let key = format!("team-roster:{}", part.team_id);
     let local = crate::utils::single_flight::coalesce(&key).await;
-    let distributed = crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &key).await?;
-    let authorized = sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS(
-               SELECT 1
-                 FROM "UserParticipations" link
-                 JOIN "Participations" participation
-                   ON participation.id = link.participation_id
-                 JOIN "AspNetUsers" account ON account.id = link.user_id
-                WHERE link.user_id = $1
-                  AND link.game_id = $2
-                  AND link.team_id = $3
-                  AND link.participation_id = $4
-                  AND participation.game_id = $2
-                  AND participation.team_id = $3
-                  AND participation.status = $5
-                  AND account.role <> $6
-           )"#,
+
+    // This guard remains live while VPN/BYOC/SSH/token issuance performs
+    // follow-up queries. Global admission still precedes the database checkout,
+    // bounding retained roster transactions across distinct teams.
+    let admission = crate::utils::single_flight::roster_access_permit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut distributed =
+        crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &key).await?;
+    let authorized = crate::services::ad::roster::user_allows_shared_credentials_on(
+        &mut *distributed.transaction_mut(),
+        user.id,
+        part.game_id,
+        part.team_id,
+        part.id,
     )
-    .bind(user.id)
-    .bind(part.game_id)
-    .bind(part.team_id)
-    .bind(part.id)
-    .bind(ParticipationStatus::Accepted as i16)
-    .bind(Role::Banned as i16)
-    .fetch_one(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    .await?;
     if !authorized {
         distributed.release().await?;
         drop(local);
         return Err(AppError::Forbidden);
     }
-    Ok(RosterAccessGuard { distributed, local })
+    Ok(RosterAccessGuard {
+        distributed,
+        local,
+        _admission: admission,
+    })
 }
 
 fn merge_allowed_routes(configured: Option<&str>, required: Vec<String>) -> String {
@@ -85,6 +92,19 @@ fn merge_allowed_routes(configured: Option<&str>, required: Vec<String>) -> Stri
     routes.join(", ")
 }
 
+fn wireguard_comment(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 /// Render the WireGuard `.conf` for a `(game, participation, user)` triple from
 /// the team's **persisted** `AdVpnPeer` key + the in-process hub's server key, so
 /// the downloaded config's keys match the live `wg0` interface and the handshake
@@ -96,7 +116,16 @@ pub(super) async fn render_wg_config(
     user_name: &str,
     participation_id: i32,
 ) -> AppResult<String> {
-    let peer = ad_vpn::ensure_peer(&st.db, game.id, participation_id).await?;
+    render_wg_config_for_game(st, game.id, user_name, participation_id).await
+}
+
+pub(super) async fn render_wg_config_for_game(
+    st: &SharedState,
+    game_id: i32,
+    user_name: &str,
+    participation_id: i32,
+) -> AppResult<String> {
+    let peer = ad_vpn::ensure_peer(&st.db, game_id, participation_id).await?;
     if peer.address.is_empty() {
         return Err(AppError::internal(
             "Could not assign a VPN address for this team",
@@ -125,6 +154,7 @@ pub(super) async fn render_wg_config(
     let allowed_ips = merge_allowed_routes(configured_routes.as_deref(), required_routes);
 
     let generated = Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+    let user_name = wireguard_comment(user_name);
     Ok(format!(
         "# WireGuard config for {name} — A&D game {gid}\n\
          # Generated {generated}\n\
@@ -140,7 +170,7 @@ pub(super) async fn render_wg_config(
          AllowedIPs = {allowed_ips}\n\
          PersistentKeepalive = 25\n",
         name = user_name,
-        gid = game.id,
+        gid = game_id,
         priv_key = peer.private_key,
         address = peer.address,
     ))
@@ -209,6 +239,8 @@ pub async fn download_vpn_config(
     Ok((
         [
             (header::CONTENT_TYPE, "text/plain".to_string()),
+            (header::CACHE_CONTROL, "private, no-store".to_string()),
+            (header::PRAGMA, "no-cache".to_string()),
             (
                 header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"ad-game-{id}-{safe_user_name}.conf\""),
@@ -221,7 +253,7 @@ pub async fn download_vpn_config(
 
 #[cfg(test)]
 mod tests {
-    use super::merge_allowed_routes;
+    use super::{merge_allowed_routes, wireguard_comment};
 
     #[test]
     fn custom_vpn_routes_cannot_drop_required_service_routes() {
@@ -230,5 +262,14 @@ mod tests {
             vec!["10.96.0.0/12".to_string(), "10.13.0.0/16".to_string()],
         );
         assert_eq!(routes, "192.0.2.0/24, 10.96.0.0/12, 10.13.0.0/16");
+    }
+
+    #[test]
+    fn display_name_cannot_add_wg_quick_directives() {
+        let name = wireguard_comment("player\r\nPostUp = touch /tmp/pwned\0");
+        assert_eq!(name, "player  PostUp = touch /tmp/pwned ");
+        assert!(name
+            .chars()
+            .all(|character| !matches!(character, '\r' | '\n' | '\0')));
     }
 }

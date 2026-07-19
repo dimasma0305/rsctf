@@ -29,6 +29,60 @@ pub struct VerifiedTeamToken {
 #[derive(Clone, Copy, Debug)]
 pub struct RejectedTeamToken;
 
+type AuthenticatedTokenRow = (i32, String, Option<i32>, i32, i32, Option<i32>, i32, bool);
+
+const AUTHENTICATE_SQL: &str = r#"
+    WITH candidate AS MATERIALIZED (
+         SELECT credential.id AS credential_id,
+                participation.id,
+                participation.token,
+                participation.writeup_id,
+                participation.game_id,
+                participation.team_id,
+                participation.division_id,
+                participation.suspicion_score
+           FROM "AdTeamApiTokens" credential
+           JOIN "Participations" participation
+             ON participation.id = credential.participation_id
+            AND participation.status = $2
+           JOIN "Teams" team ON team.id = participation.team_id
+          WHERE credential.token_hash = $1
+            AND NOT team.deletion_pending
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM (
+                      SELECT team.captain_id AS user_id
+                      UNION
+                      SELECT member.user_id
+                        FROM "TeamMembers" member
+                       WHERE member.team_id = team.id
+                  ) roster
+                  LEFT JOIN "AspNetUsers" account ON account.id = roster.user_id
+                 WHERE account.id IS NULL OR account.role = 0
+            )
+          LIMIT 1
+       ), usage_update AS (
+         UPDATE "AdTeamApiTokens" credential
+            SET last_used_at_utc = now()
+           FROM candidate
+          WHERE credential.id = candidate.credential_id
+            AND (
+                credential.last_used_at_utc IS NULL
+                OR credential.last_used_at_utc < now() - interval '30 seconds'
+            )
+          RETURNING credential.id
+       )
+       SELECT candidate.id,
+              candidate.token,
+              candidate.writeup_id,
+              candidate.game_id,
+              candidate.team_id,
+              candidate.division_id,
+              candidate.suspicion_score,
+              EXISTS(SELECT 1 FROM usage_update)
+         FROM candidate
+"#;
+
 /// Return a borrowed bearer credential without allocating.
 pub fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
     let value = headers
@@ -69,66 +123,33 @@ pub async fn authenticate(
     pool: &sqlx::PgPool,
     token: &str,
 ) -> AppResult<Option<VerifiedTeamToken>> {
+    authenticate_with(pool, token).await
+}
+
+/// Reauthenticate on a transaction that already owns the team-roster read
+/// fence. This closes the gap between middleware verification and a later
+/// capability-cache lookup after a kick or token revocation.
+pub(crate) async fn authenticate_on(
+    connection: &mut sqlx::PgConnection,
+    token: &str,
+) -> AppResult<Option<VerifiedTeamToken>> {
+    authenticate_with(&mut *connection, token).await
+}
+
+async fn authenticate_with<'e, E>(executor: E, token: &str) -> AppResult<Option<VerifiedTeamToken>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     if !is_well_formed(token) {
         return Ok(None);
     }
     let token_hash = hash(token);
-    type Row = (i32, String, Option<i32>, i32, i32, Option<i32>, i32, bool);
-    let row = sqlx::query_as::<_, Row>(
-        r#"WITH candidate AS MATERIALIZED (
-             SELECT credential.id AS credential_id,
-                    participation.id,
-                    participation.token,
-                    participation.writeup_id,
-                    participation.game_id,
-                    participation.team_id,
-                    participation.division_id,
-                    participation.suspicion_score
-               FROM "AdTeamApiTokens" credential
-               JOIN "Participations" participation
-                 ON participation.id = credential.participation_id
-                AND participation.status = $2
-               JOIN "Teams" team ON team.id = participation.team_id
-              WHERE credential.token_hash = $1
-                AND NOT EXISTS (
-                    SELECT 1
-                      FROM (
-                          SELECT team.captain_id AS user_id
-                          UNION
-                          SELECT member.user_id
-                            FROM "TeamMembers" member
-                           WHERE member.team_id = team.id
-                      ) roster
-                      LEFT JOIN "AspNetUsers" account ON account.id = roster.user_id
-                     WHERE account.id IS NULL OR account.role = 0
-                )
-              LIMIT 1
-           ), usage_update AS (
-             UPDATE "AdTeamApiTokens" credential
-                SET last_used_at_utc = now()
-               FROM candidate
-              WHERE credential.id = candidate.credential_id
-                AND (
-                    credential.last_used_at_utc IS NULL
-                    OR credential.last_used_at_utc < now() - interval '30 seconds'
-                )
-              RETURNING credential.id
-           )
-           SELECT candidate.id,
-                  candidate.token,
-                  candidate.writeup_id,
-                  candidate.game_id,
-                  candidate.team_id,
-                  candidate.division_id,
-                  candidate.suspicion_score,
-                  EXISTS(SELECT 1 FROM usage_update)
-             FROM candidate"#,
-    )
-    .bind(&token_hash)
-    .bind(ParticipationStatus::Accepted as i16)
-    .fetch_optional(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    let row = sqlx::query_as::<_, AuthenticatedTokenRow>(AUTHENTICATE_SQL)
+        .bind(&token_hash)
+        .bind(ParticipationStatus::Accepted as i16)
+        .fetch_optional(executor)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
 
     Ok(row.map(
         |(id, token, writeup_id, game_id, team_id, division_id, suspicion_score, _updated)| {

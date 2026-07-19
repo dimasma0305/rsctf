@@ -1,4 +1,5 @@
 //! Player-facing play surface: game listing/details, join/leave, challenge view + flag submission.
+use super::membership::*;
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -346,188 +347,89 @@ pub async fn join_game(
         return Err(AppError::game_ended());
     }
 
-    // Serialize team joins with invite-based roster changes. If this join is
-    // accepted immediately, setting `locked` under the same guard makes the
-    // roster freeze atomic from the application's perspective.
-    let roster_key = format!("team-roster:{}", model.team_id);
-    let roster_guard = crate::utils::single_flight::coalesce(&roster_key).await;
-    let distributed_roster =
-        crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &roster_key).await?;
-    let team = team::Entity::find_by_id(model.team_id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Team not found"))?;
+    // Lock ordering is global and consistent across join + leave: local
+    // `(user, game)` -> team gates first, followed by PostgreSQL user -> team ->
+    // game advisory locks on one transaction. Combined paths deliberately rely
+    // on the authoritative DB game lock rather than waiting for its local
+    // coalescer while retaining a connection. The user/game lock serializes
+    // cross-team joins; team -> game matches review and engine mutation paths.
+    let mut membership_locks =
+        MembershipMutationLocks::acquire(st.pg(), user.id, id, model.team_id, true).await?;
 
-    // RSCTF gates joining with `team.Members.Contains(user)`. Use the team
-    // roster (TeamMembers): any member — not only the captain — may register the
-    // team for a game. The captain is always treated as a member.
-    let is_member = team.captain_id == user.id
-        || team_member::Entity::find()
-            .filter(team_member::Column::TeamId.eq(team.id))
-            .filter(team_member::Column::UserId.eq(user.id))
-            .count(&st.db)
-            .await?
-            > 0;
-    if !is_member {
-        return Err(AppError::Forbidden);
-    }
-    // No `team.locked` guard: RSCTF's lock freezes the team ROSTER, not game
-    // registration (GameController.JoinGame has no such check). A team accepted
-    // (locked) in one game must still register for others. (Regression once
-    // accept began locking teams.)
+    // Every mutable join rule is re-read only after the shared game-control
+    // lock is held. This closes stale invite/review/division/window requests and
+    // keeps the global DB order user -> team -> game -> rows.
+    membership_locks.acquire_game_advisory().await?;
+    let policy = resolve_join_policy_locked(
+        membership_locks.transaction_mut(),
+        id,
+        model.division_id,
+        model.invite_code.as_deref(),
+    )
+    .await?;
+    let target_status = policy.target_status;
 
-    // Resolve the joinable division (if the game defines divisions).
-    let divisions = division::Entity::find()
-        .filter(division::Column::GameId.eq(id))
-        .all(&st.db)
-        .await?;
+    // Re-read the team and caller membership after both locks are held. No
+    // `team.locked` gate: that bit freezes the roster, not registration in a
+    // second game.
+    let team_name =
+        load_join_team_locked(membership_locks.transaction_mut(), model.team_id, user.id).await?;
 
-    let mut div: Option<division::Model> = None;
-    if !divisions.is_empty() {
-        let div_id = model
-            .division_id
-            .ok_or_else(|| AppError::bad_request("A division must be selected"))?;
-        let found = divisions
-            .into_iter()
-            .find(|d| d.id == div_id)
-            .ok_or_else(|| AppError::bad_request("Invalid division"))?;
-        if !GamePermission(found.default_permissions).contains(GamePermission::JOIN_GAME) {
-            return Err(AppError::bad_request("Invalid division"));
-        }
-        div = Some(found);
-    }
-
-    // Validate invitation code (division code takes precedence over game code).
-    let required_code = match &div {
-        Some(d) => d.invite_code.clone().filter(|c| !c.is_empty()),
-        None => g.invite_code.clone().filter(|c| !c.is_empty()),
-    };
-    if let Some(code) = required_code {
-        if model.invite_code.as_deref() != Some(code.as_str()) {
-            return Err(AppError::bad_request("Invalid invitation code"));
-        }
-    }
-
-    // Reject if the user already participates in this game through any team,
-    // EXCLUDING rejected participations (RSCTF CheckRepeatParticipation filters
-    // `Status != Rejected`) — a rejected user may re-register.
-    if let Some(p) = find_participation(&st, user.id, id).await? {
-        if p.status != ParticipationStatus::Rejected {
-            return Err(AppError::bad_request("Already participating in this game"));
-        }
-    }
-
-    // Existing team participation in this game?
-    let existing = participation::Entity::find()
-        .filter(participation::Column::GameId.eq(id))
-        .filter(participation::Column::TeamId.eq(team.id))
-        .one(&st.db)
-        .await?;
-
-    let should_accept = match &div {
-        None => g.accept_without_review,
-        Some(d) => !GamePermission(d.default_permissions).contains(GamePermission::REQUIRE_REVIEW),
-    };
-    let target_status = if should_accept {
-        ParticipationStatus::Accepted
-    } else {
-        ParticipationStatus::Pending
-    };
-    let validated_division_id = div.as_ref().map(|division| division.id);
+    // This read is protected by the team advisory lock but deliberately does
+    // not row-lock before the A&D game lock. Taking a participation row lock
+    // first would invert the review path's team -> game -> row ordering.
+    let existing =
+        existing_team_participation_locked(membership_locks.transaction_mut(), id, model.team_id)
+            .await?;
     let will_write_accepted = target_status == ParticipationStatus::Accepted
-        && match &existing {
+        && match existing {
             None => true,
-            Some(participation) => participation.status == ParticipationStatus::Rejected,
+            Some(participation) => participation.status == ParticipationStatus::Rejected as i16,
         };
-    let mut scoring_control = if will_write_accepted {
-        let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    if will_write_accepted {
         let scoring_started = crate::controllers::edit::ad_epoch_scoring_started_locked(
-            &mut **control.transaction_mut(),
+            membership_locks.transaction_mut(),
             id,
         )
         .await?;
         crate::controllers::edit::ensure_ad_roster_status_mutable(
             scoring_started,
-            existing.as_ref().map(|participation| participation.status),
+            existing
+                .map(|participation| participation_status(participation.status))
+                .transpose()?,
             ParticipationStatus::Accepted,
         )?;
-        Some(control)
-    } else {
-        None
-    };
-
-    // Always clean up the user's rejected participation link rows in this game so
-    // re-registration re-adds the user fresh (RSCTF RemoveUserParticipations).
-    // This runs only after the immutable-roster guard, so a rejected auto-accept
-    // attempt has no side effects.
-    user_participation::Entity::delete_many()
-        .filter(user_participation::Column::UserId.eq(user.id))
-        .filter(user_participation::Column::GameId.eq(id))
-        .exec(&st.db)
-        .await?;
-
-    let part_id = match existing {
-        Some(p) => {
-            // Re-join after rejection: reset status/division.
-            if p.status == ParticipationStatus::Rejected {
-                let pid = p.id;
-                let mut am: participation::ActiveModel = p.into();
-                am.division_id = Set(validated_division_id);
-                am.status = Set(target_status);
-                am.update(&st.db).await?;
-                pid
-            } else if p.division_id != validated_division_id {
-                return Err(AppError::bad_request("Invalid division"));
-            } else {
-                p.id
-            }
-        }
-        None => {
-            let token = participation_token(&g, team.id)?;
-            let am = participation::ActiveModel {
-                status: Set(target_status),
-                token: Set(token),
-                writeup_id: Set(None),
-                game_id: Set(id),
-                team_id: Set(team.id),
-                division_id: Set(validated_division_id),
-                suspicion_score: Set(0),
-                ..Default::default()
-            };
-            am.insert(&st.db).await?.id
-        }
-    };
-
-    // Link the user to this participation (UserParticipations join row).
-    let already_linked = user_participation::Entity::find_by_id((user.id, id))
-        .one(&st.db)
-        .await?
-        .is_some();
-    if !already_linked {
-        // Enforce the team member-count limit before adding a new member (RSCTF
-        // GameController.JoinGame: `game.TeamMemberCountLimit > 0 &&
-        // part.Members.Count >= game.TeamMemberCountLimit`). Members are the
-        // UserParticipations already linked to this participation.
-        if g.team_member_count_limit > 0 {
-            let member_count = user_participation::Entity::find()
-                .filter(user_participation::Column::ParticipationId.eq(part_id))
-                .count(&st.db)
-                .await?;
-            if member_count >= g.team_member_count_limit as u64 {
-                return Err(AppError::bad_request(
-                    "The number of participants in the team exceeds the limit",
-                ));
-            }
-        }
-
-        let up = user_participation::ActiveModel {
-            user_id: Set(user.id),
-            game_id: Set(id),
-            team_id: Set(team.id),
-            participation_id: Set(part_id),
-        };
-        up.insert(&st.db).await?;
     }
+
+    let token = participation_token(&g, model.team_id)?;
+    let persisted = persist_game_join_locked(
+        membership_locks.transaction_mut(),
+        JoinMutation {
+            user_id: user.id,
+            game_id: id,
+            team_id: model.team_id,
+            division_id: policy.division_id,
+            target_status,
+            token: &token,
+            member_limit: policy.member_limit,
+        },
+    )
+    .await?;
+    let part_id = persisted.participation_id;
+    let prepare_accepted_resources =
+        target_status == ParticipationStatus::Accepted && persisted.is_accepted();
+
+    if prepare_accepted_resources {
+        sqlx::query(r#"UPDATE "Teams" SET locked = TRUE WHERE id = $1"#)
+            .bind(model.team_id)
+            .execute(&mut **membership_locks.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+
+    // Commit the participation + membership + roster freeze before releasing
+    // the scoring fence. A failed commit rolls every join row back together.
+    membership_locks.release().await?;
 
     // Join / re-request changed this user's participation — drop any cached copy so the
     // next poll resolves fresh (also clears a stale non-accepted entry, though those
@@ -543,7 +445,7 @@ pub async fn join_game(
         "GameController",
         Some(user.name.clone()),
         None,
-        format!("{} has successfully joined game {}", team.name, g.title),
+        format!("{} has successfully joined game {}", team_name, g.title),
     )
     .await;
 
@@ -552,18 +454,7 @@ pub async fn join_game(
     // provision the participation's play resources (EnsureInstances + self-hosted
     // A&D service containers). Mirrors the admin update_participation Accepted
     // branch; provisioning is best-effort so a Docker outage never fails the join.
-    if target_status == ParticipationStatus::Accepted {
-        let mut tm: team::ActiveModel = team.into();
-        tm.locked = Set(true);
-        tm.update(&st.db).await?;
-        if let Some(control) = scoring_control.take() {
-            control
-                .release()
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-        }
-        distributed_roster.release().await?;
-        drop(roster_guard);
+    if prepare_accepted_resources {
         if let Err(e) =
             crate::controllers::edit::provision_accepted_participation(&st, id, part_id).await
         {
@@ -574,10 +465,6 @@ pub async fn join_game(
                 "join_game: accept-without-review provisioning failed (best-effort; join committed)"
             );
         }
-    } else {
-        debug_assert!(scoring_control.is_none());
-        distributed_roster.release().await?;
-        drop(roster_guard);
     }
 
     Ok(StatusCode::OK)
@@ -591,37 +478,102 @@ pub async fn leave_game(
 ) -> AppResult<StatusCode> {
     let _ = load_game(&st, id).await?;
 
-    let part = find_participation(&st, user.id, id)
-        .await?
-        .ok_or_else(|| AppError::bad_request("Cannot leave a game you have not joined"))?;
+    // Resolve a candidate team without retaining a transaction. It is only a
+    // hint for which team gate to acquire; the row is re-read authoritatively
+    // after the ordered user + team locks below.
+    let initial: Option<(i32, i32)> = sqlx::query_as(
+        r#"SELECT participation.id, participation.team_id
+              FROM "UserParticipations" membership
+              JOIN "Participations" participation
+                ON participation.id = membership.participation_id
+             WHERE membership.user_id = $1 AND membership.game_id = $2"#,
+    )
+    .bind(user.id)
+    .bind(id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((part_id, team_id)) = initial else {
+        return Err(AppError::bad_request(
+            "Cannot leave a game you have not joined",
+        ));
+    };
 
-    if part.status != ParticipationStatus::Pending && part.status != ParticipationStatus::Rejected {
+    let mut membership_locks =
+        MembershipMutationLocks::acquire(st.pg(), user.id, id, team_id, false).await?;
+
+    let live: Option<(i32, i32, i16)> = sqlx::query_as(
+        r#"SELECT participation.id, participation.team_id, participation.status
+              FROM "UserParticipations" membership
+              JOIN "Participations" participation
+                ON participation.id = membership.participation_id
+             WHERE membership.user_id = $1 AND membership.game_id = $2
+             FOR UPDATE OF membership, participation"#,
+    )
+    .bind(user.id)
+    .bind(id)
+    .fetch_optional(&mut **membership_locks.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((live_part_id, live_team_id, live_status)) = live else {
+        return Err(AppError::bad_request(
+            "Cannot leave a game you have not joined",
+        ));
+    };
+    if live_part_id != part_id || live_team_id != team_id {
+        return Err(AppError::conflict(
+            "Participation changed; retry the request",
+        ));
+    }
+    if live_status != ParticipationStatus::Pending as i16
+        && live_status != ParticipationStatus::Rejected as i16
+    {
         return Err(AppError::bad_request("Cannot leave after approval"));
     }
 
-    // Remove this user's membership link.
-    user_participation::Entity::delete_by_id((user.id, id))
-        .exec(&st.db)
-        .await?;
+    sqlx::query(
+        r#"DELETE FROM "UserParticipations"
+            WHERE user_id = $1 AND game_id = $2 AND participation_id = $3"#,
+    )
+    .bind(user.id)
+    .bind(id)
+    .bind(part_id)
+    .execute(&mut **membership_locks.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+
+    let remaining: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)::bigint FROM "UserParticipations"
+            WHERE participation_id = $1"#,
+    )
+    .bind(part_id)
+    .fetch_one(&mut **membership_locks.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if remaining == 0 {
+        // Pending/rejected participations cannot own a valid KotH capability.
+        // Their dependent rows are FK-cascaded, and holder references are
+        // ON DELETE SET NULL, so the atomic delete is also the revocation fence.
+        sqlx::query(
+            r#"DELETE FROM "Participations"
+                WHERE id = $1 AND status IN ($2, $3)"#,
+        )
+        .bind(part_id)
+        .bind(ParticipationStatus::Pending as i16)
+        .bind(ParticipationStatus::Rejected as i16)
+        .execute(&mut **membership_locks.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+
+    membership_locks.release().await?;
+
     // Left the game — drop the cached participation so access ends now, not on the TTL.
     st.cache
         .remove(&crate::controllers::game::ad::participation_cache_key(
             user.id, id,
         ))
         .await;
-
-    // If no members remain, remove the participation entirely.
-    let remaining = user_participation::Entity::find()
-        .filter(user_participation::Column::ParticipationId.eq(part.id))
-        .count(&st.db)
-        .await?;
-    if remaining == 0 {
-        crate::services::ad_engine::revoke_koth_capabilities(&st.db, st.cache.as_ref(), &[part.id])
-            .await?;
-        participation::Entity::delete_by_id(part.id)
-            .exec(&st.db)
-            .await?;
-    }
 
     Ok(StatusCode::OK)
 }

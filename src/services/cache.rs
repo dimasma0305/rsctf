@@ -44,6 +44,10 @@ pub trait Cache: Send + Sync {
     async fn get_and_remove(&self, key: &str) -> Option<Bytes>;
     /// Atomically remove `key` only when its value matches `expected`.
     async fn compare_and_remove(&self, key: &str, expected: &[u8]) -> bool;
+    /// Atomically insert `key` only when no live value exists. This is used
+    /// when a failed one-time operation restores its reservation without
+    /// overwriting a newer value created concurrently.
+    async fn set_if_absent(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool;
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>);
     async fn remove(&self, key: &str);
 
@@ -232,6 +236,47 @@ impl Cache for InMemoryCache {
         matches
     }
 
+    async fn set_if_absent(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool {
+        let now = Instant::now();
+        let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
+        if state
+            .map
+            .get(key)
+            .is_some_and(|entry| entry.expires_at.is_some_and(|expires_at| expires_at <= now))
+        {
+            state.remove(key);
+        }
+        if state.map.contains_key(key) {
+            return false;
+        }
+
+        let entry_bytes = key.len().saturating_add(value.len());
+        if entry_bytes > self.max_bytes {
+            return false;
+        }
+        if now.duration_since(state.last_expired_sweep) >= EXPIRED_SWEEP_INTERVAL
+            || state.map.len() >= self.max_entries
+            || state.payload_bytes.saturating_add(entry_bytes) > self.max_bytes
+        {
+            state.sweep_expired(now);
+        }
+        let generation = state.next_generation;
+        state.next_generation = state.next_generation.wrapping_add(1);
+        state.map.insert(
+            key.to_string(),
+            Entry {
+                value: Bytes::copy_from_slice(value),
+                expires_at: ttl.map(|duration| now + duration),
+                generation,
+            },
+        );
+        state.payload_bytes = state.payload_bytes.saturating_add(entry_bytes);
+        state.order.push_back((generation, key.to_string()));
+        state.order_key_bytes = state.order_key_bytes.saturating_add(key.len());
+        state.evict_to_limits(self.max_entries, self.max_bytes);
+        true
+    }
+
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
         let now = Instant::now();
         let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
@@ -415,6 +460,23 @@ impl Cache for RedisCache {
         .is_ok_and(|result| result.is_ok_and(|removed| removed == 1))
     }
 
+    async fn set_if_absent(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool {
+        let Some(mut conn) = self.connection().await else {
+            return false;
+        };
+        let mut cmd = redis::cmd("SET");
+        cmd.arg(key).arg(value).arg("NX");
+        if let Some(ttl) = ttl {
+            cmd.arg("EX").arg(ttl.as_secs().max(1));
+        }
+        tokio::time::timeout(
+            REDIS_IO_TIMEOUT,
+            cmd.query_async::<Option<String>>(&mut conn),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok_and(|reply| reply.as_deref() == Some("OK")))
+    }
+
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
         let Some(mut conn) = self.connection().await else {
             return;
@@ -512,6 +574,17 @@ impl Cache for TieredCache {
         removed
     }
 
+    async fn set_if_absent(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool {
+        let inserted = self.l2.set_if_absent(key, value, ttl).await;
+        if inserted {
+            self.l1.set(key, value, self.l1_ttl(ttl)).await;
+        } else {
+            // A local stale value must not hide the authoritative winner.
+            self.l1.remove(key).await;
+        }
+        inserted
+    }
+
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
         self.l1.set(key, value, self.l1_ttl(ttl)).await;
         self.l2.set(key, value, ttl).await;
@@ -552,6 +625,32 @@ mod tests {
         assert!(!cache.compare_and_remove("current", b"old").await);
         assert!(cache.compare_and_remove("current", b"new").await);
         assert!(cache.get("current").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn in_memory_set_if_absent_never_overwrites_a_live_value() {
+        let cache = InMemoryCache::new();
+        assert!(
+            cache
+                .set_if_absent("reserved", b"first", Some(Duration::from_secs(60)))
+                .await
+        );
+        assert!(
+            !cache
+                .set_if_absent("reserved", b"second", Some(Duration::from_secs(60)))
+                .await
+        );
+        assert_eq!(
+            cache.get("reserved").await.as_deref(),
+            Some(b"first".as_slice())
+        );
+
+        cache.set("expired", b"old", Some(Duration::ZERO)).await;
+        assert!(cache.set_if_absent("expired", b"fresh", None).await);
+        assert_eq!(
+            cache.get("expired").await.as_deref(),
+            Some(b"fresh".as_slice())
+        );
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@ import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useNavigate } from 'react-router'
+import { Link, useNavigate, useSearchParams } from 'react-router'
 import { AccountView } from '@Components/AccountView'
 import { Captcha, useCaptchaRef } from '@Components/Captcha'
 import { OAuthButtons } from '@Components/OAuthButtons'
@@ -23,12 +23,15 @@ const Register: FC = () => {
   const [retypedPwd, setRetypedPwd] = useInputState('')
   const [uname, setUname] = useInputState('')
   const [email, setEmail] = useInputState('')
+  const [bootstrapToken, setBootstrapToken] = useInputState('')
   const [disabled, setDisabled] = useState(false)
   const [accepted, setAccepted] = useState(false)
   const [tosOpened, { open: openTos, close: closeTos }] = useDisclosure(false)
   const { config } = useConfig()
 
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const bootstrapMode = searchParams.get('bootstrap') === '1'
   const { captchaRef, getToken, cleanUp } = useCaptchaRef()
 
   const { t } = useTranslation()
@@ -127,6 +130,7 @@ const Register: FC = () => {
         challenge: token,
         fingerprint: fingerprintPayload?.fingerprint,
         fingerprintProof: fingerprintPayload?.fingerprintProof,
+        bootstrapToken: bootstrapMode ? bootstrapToken : undefined,
       })
       const data = RegisterStatusMap.get(res.data.data)
       if (data) {
@@ -175,6 +179,21 @@ const Register: FC = () => {
       description={t('account.content.register.description', 'Create an account and get ready for the next challenge.')}
       onSubmit={onRegister}
     >
+      {bootstrapMode && (
+        <PasswordInput
+          required
+          label={t('account.label.bootstrap_token', 'Setup token')}
+          description={t(
+            'account.content.register.bootstrap_token',
+            'Enter the one-time setup token shown by your rsctf installer or Helm notes.',
+          )}
+          value={bootstrapToken}
+          disabled={disabled}
+          onChange={(event) => setBootstrapToken(event.currentTarget.value)}
+          w="100%"
+          autoComplete="off"
+        />
+      )}
       <TextInput
         required
         label={t('account.label.email')}

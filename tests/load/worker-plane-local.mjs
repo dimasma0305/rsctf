@@ -545,6 +545,7 @@ async function main() {
   const pki = createWorkerPki();
   const password = randomBytes(24).toString('hex');
   const jwtSecret = randomBytes(32).toString('hex');
+  const bootstrapToken = randomBytes(32).toString('base64url');
   const target = `http://127.0.0.1:${httpPort}`;
   composeEnvironment = isolatedComposeEnvironment(process.env, {
     DOCKER_CONTEXT,
@@ -557,6 +558,7 @@ async function main() {
     REDIS_IMAGE,
     REDIS_MAXMEMORY: '256mb',
     RSCTF_JWT_SECRET: jwtSecret,
+    RSCTF_BOOTSTRAP_TOKEN: bootstrapToken,
     RSCTF_PUBLIC_URL: target,
     RSCTF_COOKIE_SECURE: 'false',
     RSCTF_HTTP_BIND_IP: '127.0.0.1',
@@ -637,6 +639,7 @@ async function main() {
       userName: `worker-e2e-${process.pid}`,
       password: randomBytes(16).toString('base64url'),
       email: `worker-e2e-${process.pid}@load.test`,
+      bootstrapToken,
     },
   });
   const adminToken = A.adminJwt();

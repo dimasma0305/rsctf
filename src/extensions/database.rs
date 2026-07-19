@@ -89,7 +89,7 @@ pub async fn connect(url: &str) -> anyhow::Result<DatabaseConnection> {
 /// checker-publication locks while its model insert needs another checkout
 /// (4R).
 /// Provisioning can hold one advisory lock while issuing a query (2P). A
-/// A network owner always retains the singleton BYOC ownership lease. When VPN
+/// network owner always retains the singleton BYOC ownership lease. When VPN
 /// is enabled it also retains a PgListener and needs room for nested kernel
 /// reconciliation. The one-shot migration role opens none of these paths and
 /// needs only the pool's two baseline connections.
@@ -111,9 +111,29 @@ fn required_pool_connections(
         (true, false) => 3,
         (false, _) => 1,
     };
+    // Credential issuance or fail-closed roster teardown retains one roster
+    // transaction. VPN/BYOC work can additionally hold its allocator/reconciler
+    // transaction while issuing one query, so reserve three connections per
+    // admitted operation. SSH and team-token mutations use less, but share the
+    // same admission budget.
+    // Only the monolith and scalable web role mount the ordinary account,
+    // team, and player A&D controllers that acquire these guards. The
+    // control/network role's deliberately narrow stateful router must not be
+    // charged for controller paths it cannot serve.
+    let serves_player_api = matches!(role, RuntimeRole::All | RuntimeRole::Web);
+    let roster_access = serves_player_api
+        .then_some(crate::utils::single_flight::ROSTER_ACCESS_CONCURRENCY.saturating_mul(3));
+    // An admin account update/deletion retains one session-level lifecycle
+    // lease while its registration or roster transaction uses another
+    // connection. Admission is independently bounded to avoid nested-gate
+    // deadlocks with roster teardown.
+    let account_lifecycle = serves_player_api
+        .then_some(crate::utils::single_flight::ACCOUNT_LIFECYCLE_CONCURRENCY.saturating_mul(2));
     scans
         .saturating_add(provisioning)
         .saturating_add(owner_connections)
+        .saturating_add(roster_access.unwrap_or_default())
+        .saturating_add(account_lifecycle.unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -123,7 +143,7 @@ mod tests {
 
     #[test]
     fn connection_floor_accounts_for_nested_scan_provisioning_and_owner_work() {
-        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::Web), 13);
+        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::Web), 21);
         assert_eq!(
             required_pool_connections(4, 4, false, RuntimeRole::Engine),
             25
@@ -132,11 +152,13 @@ mod tests {
             required_pool_connections(1, 4, false, RuntimeRole::Control),
             15
         );
-        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::Web), 13);
+        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::Web), 21);
         assert_eq!(
             required_pool_connections(1, 4, true, RuntimeRole::Control),
             18
         );
+        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::All), 23);
+        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::All), 26);
         assert_eq!(
             required_pool_connections(4, 16, true, RuntimeRole::Migrate),
             2

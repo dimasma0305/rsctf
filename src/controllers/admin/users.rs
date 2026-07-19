@@ -1,5 +1,9 @@
 //! User listing / search / CRUD / batch creation.
 
+use super::users_bulk_identity::{
+    provision_explicit_user, provision_import_user, ExplicitUserWrite, ImportCredentialWrite,
+    ImportProvision, ImportUserWrite,
+};
 use super::*;
 use sea_orm::sea_query::{Alias, Expr, Func};
 
@@ -185,19 +189,6 @@ pub struct ImportResult {
     pub users: Vec<ImportUserResult>,
 }
 
-/// Cache-key prefix for a freshly-imported user's plaintext password, so
-/// `credentials/send` can email it later WITHOUT resetting (and thus
-/// invalidating) the password already shown in the import table.
-pub(super) const CRED_CACHE_PREFIX: &str = "credimport:";
-
-/// TTL for a cached import credential (7 days) — long enough to email after
-/// review, short enough that stale plaintext doesn't linger.
-const CRED_CACHE_TTL_SECS: u64 = 7 * 24 * 3600;
-
-pub(super) fn may_bulk_recredential(role: Role) -> bool {
-    role != Role::Admin
-}
-
 /// The default username the client previews from a real name
 /// (`previewUsername`): lowercase, whitespace runs → `.`, drop anything outside
 /// `[a-z0-9.]`, cap at 15, fall back to `user`. An override wins (trimmed, ≤15).
@@ -249,87 +240,36 @@ fn skipped_row(
     }
 }
 
-/// Pick a username unique (case-insensitively) across the DB AND this batch,
-/// suffixing `.2`, `.3`, … on collision. Two distinct people who normalize to
-/// the same base both get created (the client dedupes by EMAIL, not username),
-/// and a collision never silently drops a legitimate row.
-async fn unique_username(
-    st: &SharedState,
-    base: &str,
-    used: &mut std::collections::HashSet<String>,
-) -> AppResult<String> {
-    let mut n = 1;
-    loop {
-        let candidate = if n == 1 {
-            base.to_string()
-        } else {
-            format!("{base}.{n}")
-        };
-        let norm = candidate.to_uppercase();
-        let free = !used.contains(&norm)
-            && user::Entity::find()
-                .filter(user::Column::NormalizedUserName.eq(norm.clone()))
-                .one(&st.db)
-                .await?
-                .is_none();
-        if free {
-            used.insert(norm);
-            return Ok(candidate);
-        }
-        n += 1;
+fn sanitized_import_row_error(error: &AppError) -> String {
+    match error {
+        AppError::BadRequest(reason)
+        | AppError::Conflict(reason)
+        | AppError::Validation(reason) => reason.clone(),
+        AppError::ServiceUnavailable(_) => "service temporarily unavailable".to_string(),
+        _ => "row could not be imported".to_string(),
     }
 }
 
-/// Join `user_id` to the team named `team_name`, reusing an existing team of that
-/// name (first from this batch's `team_by_name` cache, then the DB) or creating a
-/// fresh one with `user_id` as captain. Idempotent on the membership row. Used by
-/// the upsert (re-add-to-team) paths of `import_users` / `add_users`.
-async fn join_or_create_team(
-    st: &SharedState,
-    team_by_name: &mut BTreeMap<String, i32>,
-    team_name: &str,
-    user_id: Uuid,
-) -> AppResult<()> {
-    let team_id = if let Some(&tid) = team_by_name.get(team_name) {
-        tid
-    } else if let Some(existing) = team::Entity::find()
-        .filter(team::Column::Name.eq(team_name))
-        .one(&st.db)
-        .await?
-    {
-        team_by_name.insert(team_name.to_string(), existing.id);
-        existing.id
-    } else {
-        let team = team::ActiveModel {
-            name: Set(team_name.to_string()),
-            bio: Set(None),
-            avatar_hash: Set(None),
-            locked: Set(false),
-            invite_token: Set(random_hex(16)),
-            captain_id: Set(user_id),
-            ..Default::default()
+/// Convert a failing per-row step into a sanitized result while retaining the
+/// full cause exclusively in server logs. Both password hashing and database
+/// provisioning use this boundary, so neither can discard results committed by
+/// an earlier row in the same request.
+pub(super) fn import_row_step<T>(
+    result: AppResult<T>,
+    row_number: usize,
+    stage: &'static str,
+) -> Result<T, String> {
+    result.map_err(|error| {
+        match &error {
+            AppError::Database(_) | AppError::Internal(_) => {
+                tracing::error!(row_number, stage, error = %error, "CSV import row failed");
+            }
+            _ => {
+                tracing::warn!(row_number, stage, error = %error, "CSV import row skipped");
+            }
         }
-        .insert(&st.db)
-        .await?;
-        team_by_name.insert(team_name.to_string(), team.id);
-        team.id
-    };
-    let already = team_member::Entity::find()
-        .filter(team_member::Column::TeamId.eq(team_id))
-        .filter(team_member::Column::UserId.eq(user_id))
-        .one(&st.db)
-        .await?
-        .is_some();
-    if !already {
-        team_member::ActiveModel {
-            team_id: Set(team_id),
-            user_id: Set(user_id),
-            ..Default::default()
-        }
-        .insert(&st.db)
-        .await?;
-    }
-    Ok(())
+        sanitized_import_row_error(&error)
+    })
 }
 
 /// `POST /api/admin/users/import` — CSV bulk import (client-parsed → JSON rows).
@@ -344,14 +284,15 @@ async fn join_or_create_team(
 /// `FindByEmail` + `UpdateUserInfo` + `ResetPassword`). The existing username is
 /// kept (rsctf's generator is DB-unique, so it would never regenerate their own
 /// name — renaming a matched user is undesirable). Each created/updated user's
-/// plaintext password is cached (keyed by email) so a later `credentials/send`
-/// can email it without a destructive reset. Returns the RAW `CsvImportResult`
-/// (no envelope — the client reads `result.total` directly).
+/// plaintext password is cached with its immutable user id so a later
+/// `credentials/send` can email it without a destructive reset or an email-key
+/// reassignment race. Returns the RAW `CsvImportResult` (no envelope — the
+/// client reads `result.total` directly).
 pub async fn import_users(
     State(st): State<SharedState>,
     AdminUser(caller): AdminUser,
     Json(req): Json<ImportRequest>,
-) -> AppResult<Json<ImportResult>> {
+) -> AppResult<Response> {
     let now = Utc::now();
     let single_team = req
         .single_team_name
@@ -360,14 +301,14 @@ pub async fn import_users(
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut team_by_name: BTreeMap<String, i32> = BTreeMap::new();
 
     let mut out: Vec<ImportUserResult> = Vec::with_capacity(req.rows.len());
     let (mut created, mut updated, mut skipped) = (0usize, 0usize, 0usize);
 
-    for row in &req.rows {
+    for (row_index, row) in req.rows.iter().enumerate() {
+        let row_number = row_index.saturating_add(1);
         let email = row.email.trim().to_lowercase();
         let real_name = row.real_name.trim().to_string();
 
@@ -411,162 +352,113 @@ pub async fn import_users(
             ));
             continue;
         }
-        // Duplicate email already in the DB: UPDATE the existing user instead of
-        // skipping — re-credential (fresh password), overwrite the provided profile
-        // fields, and re-add to their team (RSCTF `ImportUsersFromCsv` upsert).
-        if let Some(existing) = user::Entity::find()
-            .filter(user::Column::NormalizedEmail.eq(norm_email.clone()))
-            .one(&st.db)
-            .await?
-        {
-            seen_emails.insert(norm_email.clone());
-            if !may_bulk_recredential(existing.role) {
-                skipped += 1;
-                out.push(skipped_row(
-                    &email,
-                    &real_name,
-                    &preview_name,
-                    team_name,
-                    "administrator accounts cannot be updated by import",
-                ));
-                continue;
-            }
-            let existing_id = existing.id;
-            let existing_user_name = existing.user_name.clone().unwrap_or_default();
-            let password = generate_password();
-            let password_hash = hash_password(&password)?;
-
-            let txn = crate::controllers::account::locked_registration_transaction(&st).await?;
-            let existing = user::Entity::find_by_id(existing_id)
-                .one(&txn)
-                .await?
-                .ok_or_else(|| AppError::not_found("User not found"))?;
-            if !may_bulk_recredential(existing.role) {
-                txn.rollback().await?;
-                skipped += 1;
-                out.push(skipped_row(
-                    &email,
-                    &real_name,
-                    &preview_name,
-                    team_name,
-                    "administrator accounts cannot be updated by import",
-                ));
-                continue;
-            }
-            let mut am: user::ActiveModel = existing.into();
-            am.password_hash = Set(Some(password_hash));
-            // Rotate the security stamp so any live sessions are invalidated (as
-            // RSCTF `ResetPasswordAsync` does).
-            am.security_stamp = Set(Some(Uuid::new_v4().to_string()));
-            // RSCTF `UpdateUserInfo(UserCreateModel)`: overwrite each provided field
-            // (leave the existing value when the row omits it).
-            if !real_name.is_empty() {
-                am.real_name = Set(real_name.clone());
-            }
-            if let Some(std) = row
-                .std_number
-                .clone()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-            {
-                am.std_number = Set(std);
-            }
-            if let Some(phone) = row
-                .phone
-                .clone()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-            {
-                am.phone_number = Set(Some(phone));
-            }
-            am.update(&txn).await?;
-            txn.commit().await?;
-
-            if let Some(tname) = team_name.as_deref() {
-                join_or_create_team(&st, &mut team_by_name, tname, existing_id).await?;
-            }
-
-            // Cache the fresh plaintext for a later `credentials/send` (no reset).
-            st.cache
-                .set(
-                    &format!("{CRED_CACHE_PREFIX}{norm_email}"),
-                    password.as_bytes(),
-                    Some(std::time::Duration::from_secs(CRED_CACHE_TTL_SECS)),
-                )
-                .await;
-
-            updated += 1;
-            out.push(ImportUserResult {
-                email,
-                real_name,
-                user_name: existing_user_name,
-                password,
-                team_name,
-                status: "updated".into(),
-                error: None,
-            });
-            continue;
-        }
         seen_emails.insert(norm_email.clone());
-
-        let user_name = unique_username(&st, &preview_name, &mut used_names).await?;
         let password = generate_password();
-        let password_hash = hash_password(&password)?;
-        let id = Uuid::now_v7();
-
-        let am = user::ActiveModel {
-            id: Set(id),
-            user_name: Set(Some(user_name.clone())),
-            normalized_user_name: Set(Some(user_name.to_uppercase())),
-            email: Set(Some(email.clone())),
-            normalized_email: Set(Some(norm_email.clone())),
-            email_confirmed: Set(req.email_confirmed),
-            password_hash: Set(Some(password_hash)),
-            security_stamp: Set(Some(Uuid::new_v4().to_string())),
-            concurrency_stamp: Set(Some(Uuid::new_v4().to_string())),
-            phone_number: Set(row.phone.clone()),
-            phone_number_confirmed: Set(false),
-            two_factor_enabled: Set(false),
-            lockout_end: Set(None),
-            lockout_enabled: Set(false),
-            access_failed_count: Set(0),
-            role: Set(Role::User),
-            ip: Set("0.0.0.0".to_string()),
-            browser_fingerprint: Set(None),
-            last_signed_in_utc: Set(now),
-            last_visited_utc: Set(now),
-            register_time_utc: Set(now),
-            bio: Set(String::new()),
-            real_name: Set(real_name.clone()),
-            std_number: Set(row.std_number.clone().unwrap_or_default()),
-            exercise_visible: Set(true),
-            avatar_hash: Set(None),
+        let password_hash = match import_row_step(
+            hash_password_async(password.clone()).await,
+            row_number,
+            "password_hash",
+        ) {
+            Ok(password_hash) => password_hash,
+            Err(reason) => {
+                skipped += 1;
+                out.push(skipped_row(
+                    &email,
+                    &real_name,
+                    &preview_name,
+                    team_name,
+                    &reason,
+                ));
+                continue;
+            }
         };
-        am.insert(&st.db).await?;
-
-        // Wire up team membership (reuse a team named `team_name`: this batch,
-        // then the DB; else create it with this user as captain).
-        if let Some(tname) = team_name.as_deref() {
-            join_or_create_team(&st, &mut team_by_name, tname, id).await?;
-        }
-
-        // Cache the plaintext for a later `credentials/send` (no reset needed).
-        st.cache
-            .set(
-                &format!("{CRED_CACHE_PREFIX}{norm_email}"),
-                password.as_bytes(),
-                Some(std::time::Duration::from_secs(CRED_CACHE_TTL_SECS)),
+        let update_std_number = row
+            .std_number
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let update_phone = row
+            .phone
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let cached_team_id = team_name
+            .as_deref()
+            .and_then(|name| team_by_name.get(name).copied());
+        let provision = match import_row_step(
+            provision_import_user(
+                st.pg(),
+                ImportUserWrite {
+                    email: &email,
+                    normalized_email: &norm_email,
+                    base_user_name: &preview_name,
+                    password_hash: &password_hash,
+                    email_confirmed: req.email_confirmed,
+                    create_real_name: &real_name,
+                    create_std_number: row.std_number.as_deref().unwrap_or_default(),
+                    create_phone: row.phone.as_deref(),
+                    update_real_name: (!real_name.is_empty()).then_some(real_name.as_str()),
+                    update_std_number,
+                    update_phone,
+                    now,
+                },
+                ImportCredentialWrite {
+                    cache: st.cache.as_ref(),
+                    password: &password,
+                },
+                team_name.as_deref(),
+                cached_team_id,
             )
-            .await;
-
-        created += 1;
+            .await,
+            row_number,
+            "provision",
+        ) {
+            Ok(provision) => provision,
+            Err(reason) => {
+                skipped += 1;
+                out.push(skipped_row(
+                    &email,
+                    &real_name,
+                    &preview_name,
+                    team_name,
+                    &reason,
+                ));
+                continue;
+            }
+        };
+        let provision = match provision {
+            ImportProvision::Provisioned(provision) => provision,
+            ImportProvision::Skipped(reason) => {
+                skipped += 1;
+                out.push(skipped_row(
+                    &email,
+                    &real_name,
+                    &preview_name,
+                    team_name,
+                    reason,
+                ));
+                continue;
+            }
+        };
+        if let (Some(name), Some(team_id)) = (team_name.as_ref(), provision.team_id) {
+            team_by_name.insert(name.clone(), team_id);
+        }
+        if provision.created {
+            created += 1;
+        } else {
+            updated += 1;
+        }
         out.push(ImportUserResult {
             email,
             real_name,
-            user_name,
+            user_name: provision.user_name,
             password,
             team_name,
-            status: "created".into(),
+            status: if provision.created {
+                "created".into()
+            } else {
+                "updated".into()
+            },
             error: None,
         });
     }
@@ -580,13 +472,15 @@ pub async fn import_users(
     )
     .await;
 
-    Ok(Json(ImportResult {
-        total: req.rows.len(),
-        created,
-        updated,
-        skipped,
-        users: out,
-    }))
+    Ok(super::users_credentials::private_no_store(Json(
+        ImportResult {
+            total: req.rows.len(),
+            created,
+            updated,
+            skipped,
+            users: out,
+        },
+    )))
 }
 
 /// `GET /api/admin/users` — paginated listing with optional substring search.
@@ -637,16 +531,8 @@ pub async fn add_users(
     // ── Validate every row before inserting anything ──────────────────────
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // Each entry carries the row + resolved identity, plus `Some(id)` when it maps
-    // to an existing DB user to UPDATE (upsert), or `None` to CREATE.
-    let mut prepared: Vec<(
-        UserCreateModel,
-        String,
-        String,
-        String,
-        String,
-        Option<Uuid>,
-    )> = Vec::with_capacity(models.len());
+    let mut prepared: Vec<(UserCreateModel, String, String, String, String)> =
+        Vec::with_capacity(models.len());
 
     for m in models {
         let user_name = m.user_name.trim().to_string();
@@ -671,34 +557,9 @@ pub async fn add_users(
         if seen_names.contains(&norm_name) || seen_emails.contains(&norm_email) {
             continue;
         }
-        // A row matching an existing DB user (by username first, then email —
-        // mirroring RSCTF's DuplicateUserName-then-DuplicateEmail resolution) is an
-        // UPDATE; otherwise a CREATE.
-        let existing = if let Some(u) = user::Entity::find()
-            .filter(user::Column::NormalizedUserName.eq(norm_name.clone()))
-            .one(&st.db)
-            .await?
-        {
-            Some(u)
-        } else {
-            user::Entity::find()
-                .filter(user::Column::NormalizedEmail.eq(norm_email.clone()))
-                .one(&st.db)
-                .await?
-        };
-        if existing
-            .as_ref()
-            .is_some_and(|target| !may_bulk_recredential(target.role))
-        {
-            return Err(AppError::bad_request(
-                "Administrator accounts cannot be updated by batch import",
-            ));
-        }
-        let existing_id = existing.map(|target| target.id);
-
         seen_names.insert(norm_name.clone());
         seen_emails.insert(norm_email.clone());
-        prepared.push((m, user_name, email, norm_name, norm_email, existing_id));
+        prepared.push((m, user_name, email, norm_name, norm_email));
     }
 
     // ── Insert users, then wire up team membership ────────────────────────
@@ -711,106 +572,52 @@ pub async fn add_users(
     // + updated). Capture it before the consuming loop below.
     let created_count = prepared.len();
 
-    for (m, user_name, email, norm_name, norm_email, existing_id) in prepared {
-        // CREATE a new user, or UPDATE the matched existing one (upsert). Both arms
-        // yield the user id the team block below wires membership for.
-        let id = match existing_id {
-            None => {
-                let id = Uuid::now_v7();
-                let password_hash = hash_password(&m.password)?;
-                let am = user::ActiveModel {
-                    id: Set(id),
-                    user_name: Set(Some(user_name.clone())),
-                    normalized_user_name: Set(Some(norm_name)),
-                    email: Set(Some(email)),
-                    normalized_email: Set(Some(norm_email)),
-                    email_confirmed: Set(true),
-                    password_hash: Set(Some(password_hash)),
-                    security_stamp: Set(Some(Uuid::new_v4().to_string())),
-                    concurrency_stamp: Set(Some(Uuid::new_v4().to_string())),
-                    phone_number: Set(m.phone.clone()),
-                    phone_number_confirmed: Set(false),
-                    two_factor_enabled: Set(false),
-                    lockout_end: Set(None),
-                    lockout_enabled: Set(false),
-                    access_failed_count: Set(0),
-                    role: Set(Role::User),
-                    ip: Set("0.0.0.0".to_string()),
-                    browser_fingerprint: Set(None),
-                    last_signed_in_utc: Set(now),
-                    last_visited_utc: Set(now),
-                    register_time_utc: Set(now),
-                    bio: Set(String::new()),
-                    real_name: Set(m.real_name.clone().unwrap_or_default()),
-                    std_number: Set(m.std_number.clone().unwrap_or_default()),
-                    exercise_visible: Set(true),
-                    avatar_hash: Set(None),
-                };
-                am.insert(&st.db).await?;
-                id
-            }
-            Some(eid) => {
-                // RSCTF `UpdateUserInfo(UserCreateModel)` + `ResetPassword`: set the
-                // username/email to the row's values (this row uniquely owns them —
-                // the batch + DB dedup guarantees it), re-credential, rotate the
-                // security stamp, and overwrite each provided profile field.
-                let password_hash = hash_password(&m.password)?;
-                let txn = crate::controllers::account::locked_registration_transaction(&st).await?;
-                let existing = user::Entity::find_by_id(eid)
-                    .one(&txn)
-                    .await?
-                    .ok_or_else(|| AppError::not_found("User not found"))?;
-                if !may_bulk_recredential(existing.role) {
-                    return Err(AppError::bad_request(
-                        "Administrator accounts cannot be updated by batch import",
-                    ));
-                }
-                let mut am: user::ActiveModel = existing.into();
-                am.user_name = Set(Some(user_name.clone()));
-                am.normalized_user_name = Set(Some(norm_name));
-                am.email = Set(Some(email));
-                am.normalized_email = Set(Some(norm_email));
-                am.password_hash = Set(Some(password_hash));
-                am.security_stamp = Set(Some(Uuid::new_v4().to_string()));
-                if let Some(rn) = m
-                    .real_name
-                    .clone()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                {
-                    am.real_name = Set(rn);
-                }
-                if let Some(std) = m
-                    .std_number
-                    .clone()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                {
-                    am.std_number = Set(std);
-                }
-                if let Some(phone) = m
-                    .phone
-                    .clone()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                {
-                    am.phone_number = Set(Some(phone));
-                }
-                am.update(&txn).await?;
-                txn.commit().await?;
-                eid
-            }
-        };
-
-        let Some(team_name) = m
+    for (m, user_name, email, norm_name, norm_email) in prepared {
+        let password_hash = hash_password_async(m.password.clone()).await?;
+        let team_name = m
             .team_name
             .as_deref()
             .map(str::trim)
-            .filter(|s| !s.is_empty())
-        else {
-            continue;
-        };
-        join_or_create_team(&st, &mut team_by_name, team_name, id).await?;
+            .filter(|s| !s.is_empty());
+        let cached_team_id = team_name.and_then(|name| team_by_name.get(name).copied());
+        let update_real_name = m
+            .real_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let update_std_number = m
+            .std_number
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let update_phone = m
+            .phone
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let provision = provision_explicit_user(
+            st.pg(),
+            ExplicitUserWrite {
+                user_name: &user_name,
+                normalized_user_name: &norm_name,
+                email: &email,
+                normalized_email: &norm_email,
+                password_hash: &password_hash,
+                phone: m.phone.as_deref(),
+                create_real_name: m.real_name.as_deref().unwrap_or_default(),
+                create_std_number: m.std_number.as_deref().unwrap_or_default(),
+                update_real_name,
+                update_std_number,
+                update_phone,
+                now,
+            },
+            team_name,
+            cached_team_id,
+        )
+        .await?;
+        if let (Some(name), Some(team_id)) = (team_name, provision.team_id) {
+            team_by_name.insert(name.to_string(), team_id);
+        }
     }
 
     // RSCTF `AdminController` audit event (`Admin_UserBatchAdded`).
@@ -895,10 +702,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bulk_recredential_policy_excludes_only_administrators() {
-        assert!(!may_bulk_recredential(Role::Admin));
-        assert!(may_bulk_recredential(Role::Monitor));
-        assert!(may_bulk_recredential(Role::User));
-        assert!(may_bulk_recredential(Role::Banned));
+    fn internal_import_step_errors_are_logged_but_sanitized() {
+        let reason = import_row_step::<()>(
+            Err(AppError::internal(
+                "postgres://operator:secret@example.test/private",
+            )),
+            7,
+            "password_hash",
+        )
+        .unwrap_err();
+        assert_eq!(reason, "row could not be imported");
+        assert!(!reason.contains("secret"));
+        assert!(!reason.contains("postgres"));
+    }
+
+    #[test]
+    fn expected_import_step_errors_keep_only_safe_reasons() {
+        assert_eq!(
+            import_row_step::<()>(Err(AppError::bad_request("Team is full")), 2, "provision",)
+                .unwrap_err(),
+            "Team is full"
+        );
+        assert_eq!(
+            import_row_step::<()>(
+                Err(AppError::unavailable("redis endpoint details")),
+                3,
+                "provision",
+            )
+            .unwrap_err(),
+            "service temporarily unavailable"
+        );
     }
 }

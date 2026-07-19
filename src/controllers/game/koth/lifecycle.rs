@@ -151,14 +151,14 @@ pub(super) fn wire_phase(phase: Option<&str>) -> String {
     .to_string()
 }
 
-fn effective_phase<'a>(
+fn effective_phase(
     snapshot: bool,
-    durable_phase: Option<&'a str>,
+    durable_phase: Option<&str>,
     latest_round: i32,
     planned_start_round: Option<i32>,
     planned_end_round: Option<i32>,
     actual_start_round: Option<i32>,
-) -> Option<&'a str> {
+) -> Option<&str> {
     if snapshot || durable_phase != Some("Active") {
         return durable_phase;
     }
@@ -181,6 +181,7 @@ fn durable_phase_can_retry(phase: Option<&str>) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use std::collections::HashMap;
 

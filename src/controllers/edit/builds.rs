@@ -395,10 +395,11 @@ pub(crate) async fn build_challenge_image(
         };
     }
 
-    let local_image_id = context_selector
-        .is_none()
-        .then(|| crate::services::challenge_images::is_local_image_id(&image))
-        .unwrap_or(false);
+    let local_image_id = if context_selector.is_none() {
+        crate::services::challenge_images::is_local_image_id(&image)
+    } else {
+        false
+    };
     if local_image_id {
         let backend = if worker_runtime {
             crate::services::container::ContainerBackendKind::Worker

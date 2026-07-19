@@ -1,3 +1,6 @@
+ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE=""
+ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="false"
+
 # --- React frontend build stage ---
 FROM node:22-bookworm AS web-builder
 RUN corepack enable
@@ -8,6 +11,8 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 
 # --- backend build stage ---
 FROM rust:1-bookworm AS builder
+ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
+ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH
 # libpcap-dev is needed to build the live traffic-capture (pcap) crate.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libpcap-dev \
@@ -19,16 +24,20 @@ COPY src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
+    RSCTF_DEFAULT_BYOC_AGENT_IMAGE="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}" \
+    RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="${RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH}" \
     cargo build --release --locked \
     && cp /app/target/release/rsctf /tmp/rsctf
 
 # --- runtime stage ---
 FROM debian:bookworm-slim
+ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
+LABEL org.opencontainers.image.rsctf.byoc-agent="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}"
 # git: the repo-binding challenge-sync (git_sync) shells out to `git clone`/`fetch`.
 # ca-certificates: TLS for git-over-https + outbound HTTP. libpcap0.8: live capture.
 # iptables + ipset + iproute2: the in-process A&D WireGuard hub enforces
-# game-scoped peer/target sets and scoped masquerading (needs NET_ADMIN + the
-# host wireguard/ipset modules).
+# game-scoped peer/target sets and scoped masquerading (needs NET_ADMIN,
+# NET_RAW for the iptables ipset matcher, and the host wireguard/ipset modules).
 # python3 + venv: A&D checkers are prepared as a venv on sync and run as a
 # sandboxed subprocess (Landlock + seccomp + dropped uid). The venv-provided pip
 # may install exact requirements.txt pins from binary wheels only; source builds

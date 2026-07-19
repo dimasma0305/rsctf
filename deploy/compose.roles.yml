@@ -9,9 +9,8 @@
 services:
   rsctf:
     # Split roles must all resolve the same reviewed image. Requiring the
-    # variable here prevents the base file's convenient `latest` default from
-    # becoming an accidental rolling split deployment.
-    image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to one pinned, non-latest rsctf release}
+    # variable here keeps every replica on one immutable build.
+    image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to one immutable rsctf image digest}
     # The base file publishes one fixed host port, which cannot be scaled.
     # `!reset` requires Docker Compose v2.24+ and leaves discovery/LB to Caddy
     # or another reverse proxy on the Compose network.
@@ -32,7 +31,7 @@ services:
       RSCTF_MIGRATE: "0"
       RSCTF_SHARED_STORAGE: "true"
       RSCTF_DISTRIBUTED_RATELIMIT: "true"
-      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_WEB_DB_MAX_CONNECTIONS:-13}
+      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_WEB_DB_MAX_CONNECTIONS:-21}
     networks:
       default:
         # The base service owns this alias in single-role mode. Remove it from
@@ -41,7 +40,7 @@ services:
       backend: {}
 
   rsctf-control:
-    image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to one pinned, non-latest rsctf release}
+    image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to one immutable rsctf image digest}
     restart: unless-stopped
     init: true
     pids_limit: ${RSCTF_APP_PIDS_LIMIT:-1024}
@@ -73,6 +72,7 @@ services:
       RSCTF_REDIS_URL: redis://redis:6379
       RSCTF_DISTRIBUTED_RATELIMIT: "true"
       RSCTF_JWT_SECRET: ${RSCTF_JWT_SECRET:?Set RSCTF_JWT_SECRET in deploy/.env}
+      RSCTF_BOOTSTRAP_TOKEN: ${RSCTF_BOOTSTRAP_TOKEN:?Set RSCTF_BOOTSTRAP_TOKEN in deploy/.env to a random 32-byte value}
       RSCTF_JWT_TTL_SECS: ${RSCTF_JWT_TTL_SECS:-604800}
       RSCTF_PUBLIC_URL: ${RSCTF_PUBLIC_URL:?Set RSCTF_PUBLIC_URL in deploy/.env}
       RSCTF_COOKIE_SECURE: ${RSCTF_COOKIE_SECURE:-true}
@@ -93,6 +93,7 @@ services:
       RSCTF_PROVISIONING_CONCURRENCY: ${RSCTF_PROVISIONING_CONCURRENCY:-4}
       RSCTF_REPO_SCAN_CONCURRENCY: ${RSCTF_REPO_SCAN_CONCURRENCY:-1}
       RSCTF_CONTAINER_BACKEND: ${RSCTF_CONTAINER_BACKEND:-none}
+      RSCTF_DOCKER_SCOPE: ${RSCTF_DOCKER_SCOPE:-}
       RSCTF_CONTAINER_MAX_MEMORY_MB: ${RSCTF_CONTAINER_MAX_MEMORY_MB:-4096}
       RSCTF_CONTAINER_MAX_CPU_COUNT: ${RSCTF_CONTAINER_MAX_CPU_COUNT:-8}
       RSCTF_TRAFFIC_CAPTURE_ENABLED: ${RSCTF_TRAFFIC_CAPTURE_ENABLED:-false}

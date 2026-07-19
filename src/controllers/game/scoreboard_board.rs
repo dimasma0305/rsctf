@@ -7,6 +7,7 @@ type SolvesByParticipation = HashMap<i32, HashMap<i32, FirstSolve>>;
 type EligibleSolve = (DateTime<Utc>, i32, i32, bool, bool, Option<Uuid>);
 
 #[derive(Clone, Default)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum GameLoadFlight {
     Found(game::Model),
     NotFound,

@@ -57,14 +57,14 @@ services:
       retries: 10
 
   rsctf:
-    image: ${RSCTF_IMAGE:-dimasmaualana/rsctf:latest}
+    image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to an immutable ghcr.io/dimasma0305/rsctf@sha256 digest}
     restart: unless-stopped
     init: true
     pids_limit: ${RSCTF_APP_PIDS_LIMIT:-1024}
     # The all-in-one role runs process-sandboxed A&D/KotH checkers. Drop
     # Docker's broad default set, then grant only checker/firewall cleanup and
-    # firewall cleanup capabilities. Packet capture is a separate opt-in via
-    # compose.capture.yml because NET_RAW is unnecessary otherwise.
+    # firewall cleanup capabilities. NET_RAW stays out of the base and is
+    # granted only by the VPN or packet-capture companion overlay.
     cap_drop:
       - ALL
     cap_add:
@@ -92,7 +92,9 @@ services:
       RSCTF_DATABASE_URL: postgresql://${POSTGRES_USER:-rsctf}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/.env}@db:5432/${POSTGRES_DB:-rsctf}
       RSCTF_REDIS_URL: redis://redis:6379
       RSCTF_DISTRIBUTED_RATELIMIT: ${RSCTF_DISTRIBUTED_RATELIMIT:-false}
+      RSCTF_AD_SUBMIT_BURST_FLAGS: ${RSCTF_AD_SUBMIT_BURST_FLAGS:-400}
       RSCTF_JWT_SECRET: ${RSCTF_JWT_SECRET:?Set RSCTF_JWT_SECRET in deploy/.env}
+      RSCTF_BOOTSTRAP_TOKEN: ${RSCTF_BOOTSTRAP_TOKEN:?Set RSCTF_BOOTSTRAP_TOKEN in deploy/.env to a random 32-byte value}
       RSCTF_JWT_TTL_SECS: ${RSCTF_JWT_TTL_SECS:-604800}
       RSCTF_PUBLIC_URL: ${RSCTF_PUBLIC_URL:?Set RSCTF_PUBLIC_URL in deploy/.env}
       RSCTF_COOKIE_SECURE: ${RSCTF_COOKIE_SECURE:-true}
@@ -112,6 +114,10 @@ services:
       RSCTF_PROVISIONING_CONCURRENCY: ${RSCTF_PROVISIONING_CONCURRENCY:-4}
       RSCTF_REPO_SCAN_CONCURRENCY: ${RSCTF_REPO_SCAN_CONCURRENCY:-1}
       RSCTF_CONTAINER_BACKEND: ${RSCTF_CONTAINER_BACKEND:-none}
+      # Stable installation identity for Docker-managed challenge workloads.
+      # Empty falls back to a hash of the JWT secret; set it before rotating
+      # that secret or when intentionally sharing one daemon across installs.
+      RSCTF_DOCKER_SCOPE: ${RSCTF_DOCKER_SCOPE:-}
       RSCTF_CONTAINER_MAX_MEMORY_MB: ${RSCTF_CONTAINER_MAX_MEMORY_MB:-4096}
       RSCTF_CONTAINER_MAX_CPU_COUNT: ${RSCTF_CONTAINER_MAX_CPU_COUNT:-8}
       RSCTF_TRAFFIC_CAPTURE_ENABLED: ${RSCTF_TRAFFIC_CAPTURE_ENABLED:-false}

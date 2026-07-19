@@ -449,6 +449,7 @@ pub(crate) async fn ensure_ad_containers(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{should_provision_vpn, should_reconcile_vpn};
 

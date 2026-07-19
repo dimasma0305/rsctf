@@ -177,6 +177,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- else if has $role (list "all" "control" "network") -}}
   {{- $minimumConnections = add $scanConnections (mul 2 .Values.config.provisioningConcurrency) 3 -}}
 {{- end -}}
+{{- if and (ne $role "migrate") (has $role (list "all" "web")) -}}
+  {{- $minimumConnections = add $minimumConnections 8 -}}
+{{- end -}}
 {{- if lt (int .Values.config.dbMaxConnections) (int $minimumConnections) -}}
 {{- fail (printf "runtimeRole=%s with vpn.enabled=%v, config.repoScanConcurrency=%v, and config.provisioningConcurrency=%v requires config.dbMaxConnections >= %v" $role .Values.vpn.enabled .Values.config.repoScanConcurrency .Values.config.provisioningConcurrency $minimumConnections) -}}
 {{- end -}}
@@ -195,6 +198,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- $_ := required "existingSecret.databaseUrlKey is required" .Values.existingSecret.databaseUrlKey -}}
 {{- $_ := required "existingSecret.jwtSecretKey is required" .Values.existingSecret.jwtSecretKey -}}
+{{- $_ := required "existingSecret.bootstrapTokenKey is required" .Values.existingSecret.bootstrapTokenKey -}}
 {{- if .Values.postgresql.enabled -}}
   {{- $_ := required "existingSecret.postgresqlPasswordKey is required for bundled PostgreSQL" .Values.existingSecret.postgresqlPasswordKey -}}
 {{- end -}}
@@ -210,6 +214,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   {{- end -}}
   {{- if has $jwt (list "insecure-dev-secret-change-me" "change-me-in-production") -}}
     {{- fail "secrets.jwtSecret uses a known insecure value; generate a unique secret" -}}
+  {{- end -}}
+  {{- if and (not (empty .Values.secrets.bootstrapToken)) (lt (len .Values.secrets.bootstrapToken) 32) -}}
+    {{- fail "secrets.bootstrapToken must contain at least 32 characters when explicitly set" -}}
   {{- end -}}
   {{- if and (not .Values.postgresql.enabled) (empty .Values.database.url) -}}
     {{- fail "database.url is required when postgresql.enabled=false and existingSecret.name is empty" -}}

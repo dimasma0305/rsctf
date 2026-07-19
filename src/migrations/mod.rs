@@ -77,6 +77,8 @@ mod m0067_worker_workload_maintenance;
 mod m0068_worker_workload_dimensions;
 mod m0069_worker_local_image_digest;
 mod m0070_flag_egress_identity;
+mod m0071_team_deletion_fence;
+mod m0072_koth_crown_cycle_defaults;
 
 pub struct Migrator;
 
@@ -154,6 +156,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0068_worker_workload_dimensions::Migration),
             Box::new(m0069_worker_local_image_digest::Migration),
             Box::new(m0070_flag_egress_identity::Migration),
+            Box::new(m0071_team_deletion_fence::Migration),
+            Box::new(m0072_koth_crown_cycle_defaults::Migration),
         ]
     }
 }

@@ -197,7 +197,7 @@ impl CaptureRegistry {
             .iter()
             .map(|(id, capture)| (id.clone(), capture.spec.clone()))
             .collect();
-        let plan = reconciliation_plan(&current, &desired);
+        let plan = reconciliation_plan(&current, desired);
 
         // Signal every obsolete capture first, then join all of them before a
         // replacement starts. This prevents an old filter from recording a new
@@ -687,7 +687,7 @@ async fn reconcile_owner_pass(
     }
     if !capture_failures.is_empty() {
         state.readiness.begin_capture_restore();
-        failures::persist_and_deactivate(&mut **connection, &capture_failures).await?;
+        failures::persist_and_deactivate(connection, &capture_failures).await?;
     }
     if let Some(generation) = pending {
         record_request_results(
@@ -705,8 +705,7 @@ async fn reconcile_owner_pass(
     // Endpoint rows are already fail-closed and request generations are
     // acknowledged. Retry the independent kernel-policy acknowledgement only
     // after that, so one broken capture cannot strand an unrelated teardown.
-    let network_revoked =
-        failures::reconcile_pending(state, &mut **connection, APPLY_TIMEOUT).await?;
+    let network_revoked = failures::reconcile_pending(state, connection, APPLY_TIMEOUT).await?;
     // Re-read desired state on the next pass after any failure. Even when an
     // exact deactivation matched no row (because a replacement raced it), this
     // owner cannot claim restored until it has observed and captured that new
@@ -797,7 +796,7 @@ pub async fn fence_unowned_capture_owner(pool: &PgPool) -> AppResult<()> {
     else {
         return Ok(());
     };
-    let fenced = health::fence_unowned(&mut **owner.connection_mut()).await;
+    let fenced = health::fence_unowned(owner.connection_mut()).await;
     let released = release_owner(owner).await;
     fenced.map_err(|error| AppError::internal(error.to_string()))?;
     released.map_err(AppError::internal)
@@ -882,7 +881,7 @@ async fn run_capture_reconciler(
                     tracing::info!(
                         "traffic capture singleton ownership acquired; restoring desired captures"
                     );
-                    let token = match health::claim(&mut **connection.connection_mut()).await {
+                    let token = match health::claim(connection.connection_mut()).await {
                         Ok(token) => token,
                         Err(error) => {
                             tracing::warn!(%error, "traffic capture durable ownership claim failed");
@@ -895,7 +894,7 @@ async fn run_capture_reconciler(
                     {
                         tracing::warn!(%error, "traffic capture owner fence was not acknowledged");
                         pulse.stop().await;
-                        let _ = health::release(&mut **connection.connection_mut(), token).await;
+                        let _ = health::release(connection.connection_mut(), token).await;
                         let _ = release_owner(connection).await;
                         continue;
                     }
@@ -928,7 +927,7 @@ async fn run_capture_reconciler(
             Ok(restored) => {
                 let token = owner_token.expect("owned capture session has a durable token");
                 let mut policy_changed = match health::publish_live(
-                    &mut **owner.connection_mut(),
+                    owner.connection_mut(),
                     token,
                     &captures.active_specs(),
                 )
@@ -941,8 +940,7 @@ async fn run_capture_reconciler(
                     }
                 };
                 if restored && !owner_active {
-                    if let Err(error) = health::activate(&mut **owner.connection_mut(), token).await
-                    {
+                    if let Err(error) = health::activate(owner.connection_mut(), token).await {
                         tracing::warn!(%error, "traffic capture owner activation failed");
                         break;
                     }

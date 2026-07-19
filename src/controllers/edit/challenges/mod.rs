@@ -76,14 +76,13 @@ pub async fn add_challenge(
         None
     };
     if let Some(control) = engine_control.as_mut() {
-        if ad_epoch_scoring_started_locked(&mut **control.transaction_mut(), id).await? {
+        if ad_epoch_scoring_started_locked(control.transaction_mut(), id).await? {
             return Err(AppError::bad_request(
                 "A&D/KotH challenges cannot be added after epoch scoring has started.",
             ));
         }
         if model.challenge_type == ChallengeType::KingOfTheHill {
-            super::games::validate_koth_game_shape_locked(&mut **control.transaction_mut(), id)
-                .await?;
+            super::games::validate_koth_game_shape_locked(control.transaction_mut(), id).await?;
         }
     }
 
@@ -399,7 +398,7 @@ pub async fn update_challenge(
     };
     let scoring_started = if ch_type.uses_ad_engine() {
         ad_epoch_scoring_started_locked(
-            &mut **engine_control
+            engine_control
                 .as_mut()
                 .expect("engine challenge holds the game control lock")
                 .transaction_mut(),
@@ -484,12 +483,10 @@ pub async fn update_challenge(
                 "Engine challenge scoring weight must be between 0.8 and 1.2.",
             ));
         }
-        if (weight - challenge.ad_scoring_weight).abs() > f64::EPSILON {
-            if scoring_started {
-                return Err(AppError::bad_request(
-                    "A&D/KotH challenge weights are locked after epoch scoring has started.",
-                ));
-            }
+        if (weight - challenge.ad_scoring_weight).abs() > f64::EPSILON && scoring_started {
+            return Err(AppError::bad_request(
+                "A&D/KotH challenge weights are locked after epoch scoring has started.",
+            ));
         }
     }
     if let Some(name) = &model.file_name {
@@ -905,20 +902,19 @@ pub async fn delete_challenge(
     } else {
         None
     };
-    if challenge.challenge_type.uses_ad_engine() {
-        if ad_epoch_scoring_started_locked(
-            &mut **engine_control
+    if challenge.challenge_type.uses_ad_engine()
+        && ad_epoch_scoring_started_locked(
+            engine_control
                 .as_mut()
                 .expect("engine challenge holds the game control lock")
                 .transaction_mut(),
             id,
         )
         .await?
-        {
-            return Err(AppError::bad_request(
-                "A&D/KotH challenges cannot be deleted after epoch scoring has started.",
-            ));
-        }
+    {
+        return Err(AppError::bad_request(
+            "A&D/KotH challenges cannot be deleted after epoch scoring has started.",
+        ));
     }
 
     // Establish a durable deny-new-creates marker before any teardown snapshot.

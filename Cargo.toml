@@ -105,6 +105,9 @@ rsctf-worker-protocol = { path = "lib/worker-protocol" }
 sha2 = "0.11"
 hex = "0.4"
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
 [profile.dev]
 opt-level = 0
 debug = 1

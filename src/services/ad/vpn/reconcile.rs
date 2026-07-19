@@ -333,12 +333,19 @@ async fn load_peers(
         .into_iter()
         .map(|game| (game.id, game))
         .collect();
+    let team_ids: Vec<i32> = parts.values().map(|part| part.team_id).collect();
+    let eligible_teams = crate::services::ad::roster::eligible_shared_credential_teams(
+        db.get_postgres_connection_pool(),
+        &team_ids,
+    )
+    .await?;
     let now = Utc::now();
     let (mut peers, invalid): (Vec<_>, Vec<_>) = all_peers.into_iter().partition(|peer| {
         peer_address_allowed(&peer.address, client_network, service_networks)
             && parts.get(&peer.participation_id).is_some_and(|part| {
                 part.game_id == peer.game_id
                     && part.status == ParticipationStatus::Accepted
+                    && eligible_teams.contains(&part.team_id)
                     && games
                         .get(&peer.game_id)
                         .is_some_and(|game| game.is_active(now))

@@ -339,6 +339,7 @@ fn score_evidence_rows(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn merge_rollup_prefix(
     roster_ids: &[i32],
     rollup_header: Option<&rollup::RollupHeaderRow>,

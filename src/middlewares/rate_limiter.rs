@@ -14,10 +14,9 @@
 //!   .route("/api/account/login", limited(Policy::Login, post(login)))
 //!   ```
 //!
-//! RSCTF is Redis-backed with a `FailOpenRateLimiter` wrapper: a Redis outage
-//! degrades to "unlimited" rather than 500ing. A single-node **in-memory** store
-//! is therefore the faithful fail-open behaviour for a one-replica deployment —
-//! it is exactly the fallback path RSCTF takes when Redis isn't configured.
+//! Distributed deployments share limits through Redis. If Redis is unavailable,
+//! requests fall back to the same sharded in-process limiter used by a single-node
+//! deployment: availability is preserved without silently becoming unlimited.
 //!
 //! Requests are partitioned by client IP, taken from proxy-set headers that a
 //! client cannot forge past a trusted reverse proxy: `X-Real-IP`, else the
@@ -57,6 +56,51 @@ static CREDENTIAL_IP_ADMISSION_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
         .unwrap_or(30_000)
 });
 
+/// Maximum distinct plausible flags one participation may enqueue immediately.
+/// Four maximum-size batches leave room for ordinary exploit retries without
+/// turning the fixed-rate test allowance into a five-minute production burst.
+const MIN_AD_SUBMIT_BURST_FLAGS: u32 = 100;
+const DEFAULT_AD_SUBMIT_BURST_FLAGS: u32 = 400;
+const MAX_AD_SUBMIT_BURST_FLAGS: u32 = 3_200;
+
+fn parse_ad_submit_burst_flags(value: Option<&str>) -> Result<u32, String> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_AD_SUBMIT_BURST_FLAGS);
+    };
+    let parsed = value.parse::<u32>().map_err(|_| {
+        format!(
+            "RSCTF_AD_SUBMIT_BURST_FLAGS must be an integer from \
+             {MIN_AD_SUBMIT_BURST_FLAGS} through {MAX_AD_SUBMIT_BURST_FLAGS}"
+        )
+    })?;
+    if !(MIN_AD_SUBMIT_BURST_FLAGS..=MAX_AD_SUBMIT_BURST_FLAGS).contains(&parsed) {
+        return Err(format!(
+            "RSCTF_AD_SUBMIT_BURST_FLAGS must be an integer from \
+             {MIN_AD_SUBMIT_BURST_FLAGS} through {MAX_AD_SUBMIT_BURST_FLAGS}"
+        ));
+    }
+    Ok(parsed)
+}
+
+static AD_SUBMIT_BURST_FLAGS: LazyLock<Result<u32, String>> = LazyLock::new(|| {
+    parse_ad_submit_burst_flags(std::env::var("RSCTF_AD_SUBMIT_BURST_FLAGS").ok().as_deref())
+});
+
+/// Reject an invalid explicit A&D work budget before the server accepts traffic.
+pub fn validate_configuration() -> anyhow::Result<()> {
+    AD_SUBMIT_BURST_FLAGS
+        .as_ref()
+        .map(|_| ())
+        .map_err(|message| anyhow::anyhow!(message.clone()))
+}
+
+fn ad_submit_burst_flags() -> u32 {
+    AD_SUBMIT_BURST_FLAGS
+        .as_ref()
+        .copied()
+        .unwrap_or_else(|message| panic!("{message}"))
+}
+
 // ---------------------------------------------------------------------------
 // Policies
 // ---------------------------------------------------------------------------
@@ -84,6 +128,10 @@ pub enum Policy {
     /// Cheap source-IP admission before JWT verification or A&D token lookup.
     /// Appended to preserve every shipped Redis policy discriminant.
     CredentialIpAdmission,
+    /// Team-scoped A&D batch work budget. The cost is the number of distinct,
+    /// plausible flags in the request rather than one token per HTTP request.
+    /// Appended to preserve every shipped Redis policy discriminant.
+    AdSubmit,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -123,6 +171,15 @@ impl Policy {
                     refill_per_sec: capacity / 60.0,
                 }
             }
+            // A maximum-size batch may contain 100 distinct flags. Bound the
+            // default immediate queue to four such batches while limiting
+            // sustained lookup work to ten flags/s per participation. The
+            // larger opt-in ceiling exists only for an isolated fixed-rate
+            // campaign that deliberately needs a longer pre-funded window.
+            Policy::AdSubmit => Kind::Bucket {
+                capacity: ad_submit_burst_flags() as f64,
+                refill_per_sec: 10.0,
+            },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
                 permit: 50,
@@ -156,11 +213,10 @@ impl Policy {
         }
     }
 
-    /// A fixed-window `(limit, window-in-ms)` approximation of this policy, used by
-    /// the optional Redis-backed distributed limiter — the single-node sliding
-    /// window / token bucket can't be shared across replicas, so an equivalent
-    /// counter is used instead. A sliding window maps directly; a bucket maps to
-    /// `(capacity, capacity / refill)` — its burst over the time to refill it.
+    /// A fixed-window `(limit, window-in-ms)` representation. Redis uses this for
+    /// sliding policies; bucket policies use their native capacity/refill values.
+    /// Keeping the bucket-derived representation is useful for diagnostics and
+    /// tests that compare the sustained rate of both backends.
     fn fixed_window(self) -> (u32, u64) {
         match self.kind() {
             Kind::Sliding { permit, window } => (permit, window.as_millis() as u64),
@@ -219,6 +275,13 @@ fn shard_for(policy: Policy, key: &str) -> &'static Shard {
 /// Check one policy for one partition key. `Ok(())` allows the request;
 /// `Err(secs)` denies it and reports the `Retry-After` value in seconds.
 fn check(policy: Policy, key: String) -> Result<(), u64> {
+    check_weighted(policy, key, 1)
+}
+
+/// Check a policy while charging more than one unit atomically. A&D batches use
+/// this to bound actual distinct-flag adjudication work; repeated flags in one
+/// request do not amplify database cost and therefore consume one unit.
+fn check_weighted(policy: Policy, key: String, cost: u32) -> Result<(), u64> {
     let now = Instant::now();
     let mut store = shard_for(policy, &key)
         .lock()
@@ -252,13 +315,17 @@ fn check(policy: Policy, key: String) -> Result<(), u64> {
                     break;
                 }
             }
-            if hits.len() as u32 >= permit {
+            let cost = cost.max(1);
+            if cost > permit {
+                return Err(ceil_secs(window.as_secs_f64()));
+            }
+            if hits.len() as u32 > permit - cost {
                 // The oldest retained hit frees a slot when it expires.
                 let oldest = *hits.front().expect("len >= permit >= 1");
                 let wait = (oldest + window).saturating_duration_since(now);
                 Err(ceil_secs(wait.as_secs_f64()))
             } else {
-                hits.push_back(now);
+                hits.extend(std::iter::repeat_n(now, cost as usize));
                 Ok(())
             }
         }
@@ -273,11 +340,12 @@ fn check(policy: Policy, key: String) -> Result<(), u64> {
             let elapsed = now.duration_since(*last).as_secs_f64();
             *tokens = (*tokens + elapsed * refill_per_sec).min(capacity);
             *last = now;
-            if *tokens >= 1.0 {
-                *tokens -= 1.0;
+            let cost = f64::from(cost.max(1));
+            if cost <= capacity && *tokens >= cost {
+                *tokens -= cost;
                 Ok(())
             } else {
-                let need = 1.0 - *tokens;
+                let need = (cost - *tokens).max(1.0);
                 Err(ceil_secs(need / refill_per_sec))
             }
         }
@@ -399,7 +467,7 @@ fn session_partition_key(claims: &crate::services::token::Claims) -> String {
 // Optional Redis-backed distributed limiter (multi-node)
 // ---------------------------------------------------------------------------
 
-/// A Redis-backed fixed-window limiter shared across replicas. **Off by default** —
+/// A Redis-backed limiter shared across replicas. **Off by default** —
 /// the in-process sharded store above is faster (no network hop) and correct on a
 /// single node. It is only needed when running several replicas behind a load
 /// balancer, where each node's independent in-process counters would each admit the
@@ -416,73 +484,188 @@ pub struct DistributedLimiter {
 static DISTRIBUTED: std::sync::OnceLock<DistributedLimiter> = std::sync::OnceLock::new();
 
 fn redis_key(policy: Policy, partition: &str) -> String {
-    format!("rl:{}:{}", policy as u8, partition)
+    match policy.kind() {
+        // Bucket state is a Redis hash. Keep it in a separate namespace from
+        // fixed-window counters so a rolling upgrade never observes WRONGTYPE
+        // errors from an older deployment's string value. Both remain below the
+        // `rl:*` operational prefix used for inspection and cleanup.
+        Kind::Bucket { .. } => format!("rl:tb:{}:{}", policy as u8, partition),
+        Kind::Sliding { .. } => format!("rl:{}:{}", policy as u8, partition),
+    }
 }
 
 impl DistributedLimiter {
-    /// Atomic fixed-window in one round-trip: INCR the `(policy, ip)` counter, set
-    /// its expiry on the first hit of the window, and return the remaining TTL (ms)
-    /// iff the count now exceeds the limit — a Lua script so there is no
-    /// INCR-then-EXPIRE race (a key that never expired would ban an IP forever).
+    /// Check one shared policy in one Redis round trip. Sliding policies retain
+    /// their fixed-window counter. Bucket policies use a continuously-refilled
+    /// hash driven by Redis's clock, so replicas cannot disagree about elapsed
+    /// time. A Redis error falls back to the process-local limiter.
     async fn check(&self, policy: Policy, ip: &str) -> Result<(), u64> {
-        const SCRIPT: &str = r"
-            local c = redis.call('INCR', KEYS[1])
-            if c == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
-            if c > tonumber(ARGV[2]) then return redis.call('PTTL', KEYS[1]) else return 0 end
+        self.check_weighted(policy, ip, 1).await
+    }
+
+    /// Weighted counterpart to [`Self::check`]. The complete charge, refill,
+    /// decision, state update, and expiry update are one Lua invocation. A denied
+    /// charge does not consume tokens, matching the local bucket.
+    async fn check_weighted(&self, policy: Policy, ip: &str, cost: u32) -> Result<(), u64> {
+        const SLIDING_SCRIPT: &str = r"
+            local c = redis.call('INCRBY', KEYS[1], ARGV[3])
+            local ttl = redis.call('PTTL', KEYS[1])
+            if ttl < 0 then
+                redis.call('PEXPIRE', KEYS[1], ARGV[1])
+                ttl = tonumber(ARGV[1])
+            end
+            if c > tonumber(ARGV[2]) then return ttl else return 0 end
         ";
-        let (limit, window_ms) = policy.fixed_window();
+
+        const BUCKET_SCRIPT: &str = r"
+            local capacity = tonumber(ARGV[1])
+            local refill_per_sec = tonumber(ARGV[2])
+            local cost = tonumber(ARGV[3])
+            local clock = redis.call('TIME')
+            local now_ms = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+
+            local tokens = tonumber(redis.call('HGET', KEYS[1], 'tokens'))
+            local last_ms = tonumber(redis.call('HGET', KEYS[1], 'last_ms'))
+            if not tokens or not last_ms then
+                tokens = capacity
+                last_ms = now_ms
+            else
+                tokens = math.max(0, math.min(capacity, tokens))
+                -- Never mint tokens when the wall clock moves backwards. Keep
+                -- the prior timestamp until Redis's clock catches up.
+                if now_ms > last_ms then
+                    tokens = math.min(capacity, tokens + ((now_ms - last_ms) * refill_per_sec / 1000))
+                    last_ms = now_ms
+                end
+            end
+
+            local allowed = cost <= capacity and tokens >= cost
+            if allowed then tokens = tokens - cost end
+
+            redis.call('HSET', KEYS[1], 'tokens', tokens, 'last_ms', last_ms)
+            local full_in_ms = math.ceil((capacity - tokens) * 1000 / refill_per_sec)
+            redis.call('PEXPIRE', KEYS[1], math.max(1, full_in_ms))
+
+            if allowed then return 0 end
+            if cost > capacity then
+                return math.max(1, math.ceil(capacity * 1000 / refill_per_sec))
+            end
+            return math.max(1, math.ceil((cost - tokens) * 1000 / refill_per_sec))
+        ";
+
+        let cost = cost.max(1);
         let key = redis_key(policy, ip);
         let mut conn = self.conn.clone();
-        // Fail-open: a Redis blip must not lock every client out of the platform.
-        redis_result(
-            redis::Script::new(SCRIPT)
-                .key(key)
-                .arg(window_ms)
-                .arg(limit)
-                .invoke_async(&mut conn)
-                .await,
-        )
+        let result = match policy.kind() {
+            Kind::Sliding { permit, window } => {
+                redis::Script::new(SLIDING_SCRIPT)
+                    .key(&key)
+                    .arg(window.as_millis() as u64)
+                    .arg(permit)
+                    .arg(cost)
+                    .invoke_async(&mut conn)
+                    .await
+            }
+            Kind::Bucket {
+                capacity,
+                refill_per_sec,
+            } => {
+                redis::Script::new(BUCKET_SCRIPT)
+                    .key(&key)
+                    .arg(capacity)
+                    .arg(refill_per_sec)
+                    .arg(cost)
+                    .invoke_async(&mut conn)
+                    .await
+            }
+        };
+        redis_or_local(result, || check_weighted(policy, ip.to_owned(), cost))
     }
 
     /// Check the authenticated identity ceiling and source-IP backstop in one
     /// atomic Redis invocation. The script deliberately processes Global first
     /// and returns immediately when it rejects, leaving the backstop untouched;
-    /// this exactly preserves the old two-call ordering and counter semantics.
+    /// this exactly preserves the old two-call admission ordering.
     async fn check_authenticated(&self, identity: &str, ip: &str) -> Result<(), u64> {
         const SCRIPT: &str = r"
-            local function hit(key, window_ms, limit)
+            local function fixed_hit(key, window_ms, limit)
                 local c = redis.call('INCR', key)
-                if c == 1 then redis.call('PEXPIRE', key, window_ms) end
-                if c > tonumber(limit) then return redis.call('PTTL', key) else return 0 end
+                local ttl = redis.call('PTTL', key)
+                if ttl < 0 then
+                    redis.call('PEXPIRE', key, window_ms)
+                    ttl = tonumber(window_ms)
+                end
+                if c > tonumber(limit) then return ttl else return 0 end
             end
 
-            local ttl = hit(KEYS[1], ARGV[1], ARGV[2])
+            local function bucket_hit(key, capacity, refill_per_sec)
+                capacity = tonumber(capacity)
+                refill_per_sec = tonumber(refill_per_sec)
+                local clock = redis.call('TIME')
+                local now_ms = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+                local tokens = tonumber(redis.call('HGET', key, 'tokens'))
+                local last_ms = tonumber(redis.call('HGET', key, 'last_ms'))
+                if not tokens or not last_ms then
+                    tokens = capacity
+                    last_ms = now_ms
+                else
+                    tokens = math.max(0, math.min(capacity, tokens))
+                    if now_ms > last_ms then
+                        tokens = math.min(capacity, tokens + ((now_ms - last_ms) * refill_per_sec / 1000))
+                        last_ms = now_ms
+                    end
+                end
+
+                local allowed = tokens >= 1
+                if allowed then tokens = tokens - 1 end
+                redis.call('HSET', key, 'tokens', tokens, 'last_ms', last_ms)
+                local full_in_ms = math.ceil((capacity - tokens) * 1000 / refill_per_sec)
+                redis.call('PEXPIRE', key, math.max(1, full_in_ms))
+                if allowed then return 0 end
+                return math.max(1, math.ceil((1 - tokens) * 1000 / refill_per_sec))
+            end
+
+            local ttl = fixed_hit(KEYS[1], ARGV[1], ARGV[2])
             if ttl > 0 then return ttl end
-            return hit(KEYS[2], ARGV[3], ARGV[4])
+            return bucket_hit(KEYS[2], ARGV[3], ARGV[4])
         ";
         let (identity_limit, identity_window_ms) = Policy::Global.fixed_window();
-        let (ip_limit, ip_window_ms) = Policy::GlobalIpBackstop.fixed_window();
+        let Kind::Bucket {
+            capacity: ip_capacity,
+            refill_per_sec: ip_refill_per_sec,
+        } = Policy::GlobalIpBackstop.kind()
+        else {
+            return check_authenticated_local(identity.to_owned(), ip.to_owned());
+        };
         let identity_key = redis_key(Policy::Global, identity);
         let ip_key = redis_key(Policy::GlobalIpBackstop, ip);
         let mut conn = self.conn.clone();
-        redis_result(
+        redis_or_local(
             redis::Script::new(SCRIPT)
                 .key(identity_key)
                 .key(ip_key)
                 .arg(identity_window_ms)
                 .arg(identity_limit)
-                .arg(ip_window_ms)
-                .arg(ip_limit)
+                .arg(ip_capacity)
+                .arg(ip_refill_per_sec)
                 .invoke_async(&mut conn)
                 .await,
+            || check_authenticated_local(identity.to_owned(), ip.to_owned()),
         )
     }
 }
 
 /// Convert the Redis script's millisecond TTL to the public whole-second
-/// response. Any Redis error remains fail-open, matching the original limiter.
-fn redis_result(result: redis::RedisResult<i64>) -> Result<(), u64> {
-    let ttl_ms = result.unwrap_or(0);
+/// response. Redis failures use the supplied in-process fallback instead of
+/// bypassing the limiter entirely.
+fn redis_or_local(
+    result: redis::RedisResult<i64>,
+    local: impl FnOnce() -> Result<(), u64>,
+) -> Result<(), u64> {
+    let ttl_ms = match result {
+        Ok(ttl_ms) => ttl_ms,
+        Err(_) => return local(),
+    };
     if ttl_ms > 0 {
         Err((ttl_ms as u64).div_ceil(1000).max(1))
     } else {
@@ -508,6 +691,29 @@ async fn check_async(policy: Policy, ip: String) -> Result<(), u64> {
         Some(d) => d.check(policy, &ip).await,
         None => check(policy, ip),
     }
+}
+
+async fn check_weighted_async(policy: Policy, key: String, cost: u32) -> Result<(), u64> {
+    match DISTRIBUTED.get() {
+        Some(distributed) => distributed.check_weighted(policy, &key, cost).await,
+        None => check_weighted(policy, key, cost),
+    }
+}
+
+/// Enforce the team-scoped A&D work budget after authentication has resolved a
+/// canonical participation. Returning the normal 429 response preserves the
+/// public error envelope and `Retry-After` header.
+pub(crate) async fn admit_ad_submit(
+    game_id: i32,
+    participation_id: i32,
+    distinct_plausible_flags: usize,
+) -> Option<Response> {
+    let cost = u32::try_from(distinct_plausible_flags.max(1)).unwrap_or(u32::MAX);
+    let key = format!("game:{game_id}:participation:{participation_id}");
+    check_weighted_async(Policy::AdSubmit, key, cost)
+        .await
+        .err()
+        .map(too_many_requests)
 }
 
 fn check_authenticated_local(identity: String, ip: String) -> Result<(), u64> {
@@ -651,344 +857,5 @@ fn too_many_requests(retry_after: u64) -> Response {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn claims(subject: &str) -> crate::services::token::Claims {
-        crate::services::token::Claims {
-            sub: subject.to_string(),
-            role: 1,
-            name: "player".to_string(),
-            stamp: "stamp".to_string(),
-            iat: 1,
-            exp: i64::MAX,
-        }
-    }
-
-    async fn set_redis_counter(
-        conn: &mut redis::aio::ConnectionManager,
-        key: &str,
-        count: u32,
-        ttl_ms: u64,
-    ) {
-        redis::cmd("SET")
-            .arg(key)
-            .arg(count)
-            .arg("PX")
-            .arg(ttl_ms)
-            .query_async::<()>(conn)
-            .await
-            .unwrap();
-    }
-
-    async fn redis_counter(conn: &mut redis::aio::ConnectionManager, key: &str) -> u32 {
-        redis::cmd("GET").arg(key).query_async(conn).await.unwrap()
-    }
-
-    #[test]
-    fn authenticated_partitions_do_not_share_a_nat_bucket() {
-        let mut first = Request::builder()
-            .header("x-real-ip", "192.0.2.10")
-            .body(axum::body::Body::empty())
-            .unwrap();
-        first.extensions_mut().insert(
-            crate::middlewares::privilege_authentication::VerifiedSessionClaims(claims("user-a")),
-        );
-        first.extensions_mut().insert(ConnectInfo(
-            "192.0.2.10:1234".parse::<SocketAddr>().unwrap(),
-        ));
-        let mut second = Request::builder()
-            .header("x-real-ip", "192.0.2.10")
-            .body(axum::body::Body::empty())
-            .unwrap();
-        second.extensions_mut().insert(
-            crate::middlewares::privilege_authentication::VerifiedSessionClaims(claims("user-b")),
-        );
-        second.extensions_mut().insert(ConnectInfo(
-            "192.0.2.10:5678".parse::<SocketAddr>().unwrap(),
-        ));
-        assert_eq!(partition_key(Policy::Submit, &first).len(), 68);
-        assert_eq!(partition_key(Policy::Submit, &second).len(), 68);
-        assert_ne!(
-            partition_key(Policy::Submit, &first),
-            partition_key(Policy::Submit, &second)
-        );
-        assert_eq!(
-            partition_key(Policy::Login, &first),
-            partition_key(Policy::Login, &second)
-        );
-        assert_eq!(partition_key(Policy::Register, &first), "192.0.2.10");
-    }
-
-    #[test]
-    fn session_partition_binds_subject_and_security_stamp_without_exposing_either() {
-        let a = claims("user-a");
-        let mut rotated = a.clone();
-        rotated.stamp = "stamp-2".to_string();
-        let key = session_partition_key(&a);
-        assert_eq!(key.len(), 68);
-        assert!(key.starts_with("jwt:"));
-        assert!(!key.contains(&a.sub));
-        assert!(!key.contains(&a.stamp));
-        assert_ne!(key, session_partition_key(&rotated));
-        assert_ne!(key, session_partition_key(&claims("user-b")));
-    }
-
-    #[test]
-    fn named_policy_reuses_verified_session_partition_key() {
-        let session = claims("user-a");
-        let expected = session_partition_key(&session);
-        let mut request = Request::builder()
-            .header("x-real-ip", "192.0.2.10")
-            .body(axum::body::Body::empty())
-            .unwrap();
-        request
-            .extensions_mut()
-            .insert(crate::middlewares::privilege_authentication::VerifiedSessionClaims(session));
-        request.extensions_mut().insert(ConnectInfo(
-            "192.0.2.10:1234".parse::<SocketAddr>().unwrap(),
-        ));
-
-        // The fallback remains available to callers that construct the verified
-        // claims extension without passing through global_middleware.
-        assert_eq!(partition_key(Policy::Submit, &request), expected);
-
-        let cached = "jwt:already-computed".to_string();
-        request
-            .extensions_mut()
-            .insert(VerifiedSessionPartitionKey(cached.clone()));
-        assert_eq!(partition_key(Policy::Submit, &request), cached);
-        // Anonymous-facing policies must remain source-IP partitioned even when a
-        // verified session key is present.
-        assert_eq!(partition_key(Policy::Login, &request), "192.0.2.10");
-    }
-
-    #[test]
-    fn redis_result_rounds_retry_after_and_fails_open() {
-        assert_eq!(redis_result(Ok(1)), Err(1));
-        assert_eq!(redis_result(Ok(1_001)), Err(2));
-        assert_eq!(redis_result(Ok(0)), Ok(()));
-        assert_eq!(redis_result(Ok(-1)), Ok(()));
-
-        let unavailable = redis::RedisError::from((redis::ErrorKind::Io, "test outage"));
-        assert_eq!(redis_result(Err(unavailable)), Ok(()));
-    }
-
-    #[test]
-    fn local_authenticated_check_short_circuits_before_ip_backstop() {
-        let identity = "test-local-identity-denied".to_string();
-        let ip = "test-local-ip-not-counted".to_string();
-        let (limit, _) = Policy::Global.fixed_window();
-        let now = Instant::now();
-        {
-            let mut shard = shard_for(Policy::Global, &identity)
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            shard.insert(
-                (Policy::Global, identity.clone()),
-                State::Sliding(VecDeque::from(vec![now; limit as usize])),
-            );
-        }
-
-        assert!(check_authenticated_local(identity.clone(), ip.clone()).is_err());
-        let ip_was_counted = shard_for(Policy::GlobalIpBackstop, &ip)
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .contains_key(&(Policy::GlobalIpBackstop, ip.clone()));
-        assert!(!ip_was_counted);
-
-        shard_for(Policy::Global, &identity)
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&(Policy::Global, identity));
-    }
-
-    #[test]
-    fn sweep_evicts_buckets_that_refilled_while_idle() {
-        let now = Instant::now();
-        let mut store = HashMap::new();
-        for index in 0..2_048 {
-            store.insert(
-                (Policy::Submit, format!("idle-{index}")),
-                State::Bucket {
-                    tokens: 0.0,
-                    last: now - Duration::from_secs(120),
-                },
-            );
-        }
-        maybe_sweep(&mut store, now);
-        assert!(store.is_empty());
-    }
-
-    #[test]
-    fn high_source_ceilings_have_constant_size_state() {
-        for policy in [Policy::GlobalIpBackstop, Policy::CredentialIpAdmission] {
-            assert!(matches!(policy.kind(), Kind::Bucket { .. }));
-            assert_eq!(policy.fixed_window().1, 60_000);
-        }
-    }
-
-    /// Two `DistributedLimiter` instances = two replicas sharing one Redis. Proves
-    /// the whole point of the distributed limiter: N nodes enforce ONE combined
-    /// quota, not N independent ones (two in-process stores would each admit `limit`,
-    /// i.e. `2 × limit` total — the per-replica bug this fixes). Runs only when
-    /// `RSCTF_TEST_REDIS_URL` points at a reachable Redis; otherwise it's a no-op.
-    #[tokio::test]
-    async fn distributed_limiter_shares_one_counter_across_replicas() {
-        let Ok(url) = std::env::var("RSCTF_TEST_REDIS_URL") else {
-            return;
-        };
-        // The opt-in live test keeps Redis's short defaults so a stalled test
-        // server fails promptly; production construction uses the shared helper.
-        let connect = || async {
-            redis::Client::open(url.as_str())
-                .unwrap()
-                .get_connection_manager()
-                .await
-                .unwrap()
-        };
-        let node_a = DistributedLimiter {
-            conn: connect().await,
-        };
-        let node_b = DistributedLimiter {
-            conn: connect().await,
-        };
-
-        let ip = "test_two_replica_client";
-        let key = format!("rl:{}:{}", Policy::Global as u8, ip);
-        let mut admin = connect().await;
-        let _: () = redis::cmd("DEL")
-            .arg(&key)
-            .query_async(&mut admin)
-            .await
-            .unwrap();
-
-        let (limit, _) = Policy::Global.fixed_window(); // 150 / 60s
-        let mut allowed = 0u32;
-        for i in 0..(limit + 40) {
-            // Alternate replicas — requests are spread across both nodes.
-            let node = if i % 2 == 0 { &node_a } else { &node_b };
-            if node.check(Policy::Global, ip).await.is_ok() {
-                allowed += 1;
-            }
-        }
-
-        // Exactly `limit` allowed IN TOTAL across BOTH replicas (a shared counter),
-        // NOT `limit` per replica — that's the multi-node correctness guarantee.
-        assert_eq!(
-            allowed, limit,
-            "distributed limiter must enforce one combined quota across replicas"
-        );
-
-        let _: () = redis::cmd("DEL")
-            .arg(&key)
-            .query_async(&mut admin)
-            .await
-            .unwrap();
-    }
-
-    /// The batched script must be observationally identical to the old ordered
-    /// pair of Redis checks: Global always increments first, an identity denial
-    /// leaves the backstop unchanged, and a backstop denial retains both hits.
-    #[tokio::test]
-    async fn distributed_authenticated_check_preserves_order_and_counters() {
-        let Ok(url) = std::env::var("RSCTF_TEST_REDIS_URL") else {
-            return;
-        };
-        // The opt-in live test keeps Redis's short defaults so a stalled test
-        // server fails promptly; production construction uses the shared helper.
-        let connect = || async {
-            redis::Client::open(url.as_str())
-                .unwrap()
-                .get_connection_manager()
-                .await
-                .unwrap()
-        };
-        let limiter = DistributedLimiter {
-            conn: connect().await,
-        };
-        let mut admin = connect().await;
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let (identity_limit, _) = Policy::Global.fixed_window();
-        let (ip_limit, _) = Policy::GlobalIpBackstop.fixed_window();
-
-        let denied_identity = format!("batch-denied-identity-{nonce}");
-        let untouched_ip = format!("batch-untouched-ip-{nonce}");
-        let denied_identity_key = redis_key(Policy::Global, &denied_identity);
-        let untouched_ip_key = redis_key(Policy::GlobalIpBackstop, &untouched_ip);
-        set_redis_counter(&mut admin, &denied_identity_key, identity_limit, 20_000).await;
-        set_redis_counter(&mut admin, &untouched_ip_key, 41, 50_000).await;
-
-        let retry = limiter
-            .check_authenticated(&denied_identity, &untouched_ip)
-            .await
-            .unwrap_err();
-        assert!((1..=20).contains(&retry));
-        assert_eq!(
-            redis_counter(&mut admin, &denied_identity_key).await,
-            identity_limit + 1
-        );
-        assert_eq!(
-            redis_counter(&mut admin, &untouched_ip_key).await,
-            41,
-            "identity denial must short-circuit before the IP counter"
-        );
-
-        let allowed_identity = format!("batch-allowed-identity-{nonce}");
-        let denied_ip = format!("batch-denied-ip-{nonce}");
-        let allowed_identity_key = redis_key(Policy::Global, &allowed_identity);
-        let denied_ip_key = redis_key(Policy::GlobalIpBackstop, &denied_ip);
-        set_redis_counter(
-            &mut admin,
-            &allowed_identity_key,
-            identity_limit - 1,
-            50_000,
-        )
-        .await;
-        set_redis_counter(&mut admin, &denied_ip_key, ip_limit, 7_000).await;
-
-        let retry = limiter
-            .check_authenticated(&allowed_identity, &denied_ip)
-            .await
-            .unwrap_err();
-        assert!((1..=7).contains(&retry));
-        assert_eq!(
-            redis_counter(&mut admin, &allowed_identity_key).await,
-            identity_limit
-        );
-        assert_eq!(
-            redis_counter(&mut admin, &denied_ip_key).await,
-            ip_limit + 1
-        );
-
-        let fresh_identity = format!("batch-fresh-identity-{nonce}");
-        let fresh_ip = format!("batch-fresh-ip-{nonce}");
-        let fresh_identity_key = redis_key(Policy::Global, &fresh_identity);
-        let fresh_ip_key = redis_key(Policy::GlobalIpBackstop, &fresh_ip);
-        limiter
-            .check_authenticated(&fresh_identity, &fresh_ip)
-            .await
-            .unwrap();
-        for key in [&fresh_identity_key, &fresh_ip_key] {
-            assert_eq!(redis_counter(&mut admin, key).await, 1);
-        }
-
-        for key in [
-            denied_identity_key,
-            untouched_ip_key,
-            allowed_identity_key,
-            denied_ip_key,
-            fresh_identity_key,
-            fresh_ip_key,
-        ] {
-            redis::cmd("DEL")
-                .arg(key)
-                .query_async::<()>(&mut admin)
-                .await
-                .unwrap();
-        }
-    }
-}
+#[path = "rate_limiter_tests.rs"]
+mod tests;

@@ -14,7 +14,29 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+
+/// Credential issuance may retain a roster transaction while VPN allocation or
+/// reconciliation retains another transaction and performs a query. Bound the
+/// outer transactions so the pool floor can reserve forward progress explicitly.
+pub(crate) const ROSTER_ACCESS_CONCURRENCY: usize = 2;
+/// Account deletion/update is admin-only and may retain one session plus one
+/// transaction connection. One admitted operation per replica preserves pool
+/// headroom while PostgreSQL still serializes the same account across replicas.
+pub(crate) const ACCOUNT_LIFECYCLE_CONCURRENCY: usize = 1;
+static ROSTER_ACCESS_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(ROSTER_ACCESS_CONCURRENCY))
+    });
 use tokio::sync::broadcast;
+
+/// Bound operations that retain a team-roster transaction while issuing
+/// follow-up queries or reconciling external credentials. Every caller takes
+/// this permit before checking out PostgreSQL, so unrelated teams cannot fill
+/// the pool with outer transactions waiting for nested work.
+pub(crate) async fn roster_access_permit(
+) -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError> {
+    ROSTER_ACCESS_GATE.clone().acquire_owned().await
+}
 
 pub struct SingleFlight<T> {
     inflight: Mutex<HashMap<String, broadcast::Sender<T>>>,
@@ -126,8 +148,9 @@ impl<T: Clone + Default + Send + 'static> Default for SingleFlight<T> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::{coalesce, SingleFlight, COALESCE_FLIGHTS};
+    use super::{advisory_lock_key, coalesce, PgAdvisoryLock, SingleFlight, COALESCE_FLIGHTS};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -176,6 +199,46 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(key)
             .is_some_and(|lock| lock.upgrade().is_none()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn shared_advisory_readers_exclude_a_roster_writer() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(3)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let key = format!("team-roster-test:{}", uuid::Uuid::new_v4());
+        let first = PgAdvisoryLock::try_acquire_shared(&pool, &key)
+            .await
+            .unwrap()
+            .unwrap();
+        let second = PgAdvisoryLock::try_acquire_shared(&pool, &key)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut writer = pool.begin().await.unwrap();
+        let writer_acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(advisory_lock_key(&key))
+            .fetch_one(&mut *writer)
+            .await
+            .unwrap();
+        assert!(!writer_acquired);
+        writer.rollback().await.unwrap();
+
+        first.release().await.unwrap();
+        second.release().await.unwrap();
+        let mut writer = pool.begin().await.unwrap();
+        let writer_acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(advisory_lock_key(&key))
+            .fetch_one(&mut *writer)
+            .await
+            .unwrap();
+        assert!(writer_acquired);
+        writer.rollback().await.unwrap();
     }
 }
 
@@ -238,9 +301,48 @@ fn advisory_lock_key(key: &str) -> i64 {
     )
 }
 
+/// Add one transaction-scoped lock to a transaction owned by a longer-lived
+/// session lease. This is the hand-off used by roster mutations that must keep
+/// their session-scoped team ownership after the short database transaction
+/// commits and while external cleanup or provisioning runs.
+pub(crate) async fn acquire_transaction_advisory_lock(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    key: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(advisory_lock_key(key))
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
+}
+
 impl PgAdvisoryLock {
     pub async fn acquire(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
         Self::acquire_with_permit(pool, key, None).await
+    }
+
+    /// Try to take a short shared transaction lock against an existing
+    /// exclusive advisory-lock domain. Shared readers never block one another;
+    /// a concurrent roster mutation makes this fail immediately so a poll does
+    /// not occupy a pool connection while waiting behind credential teardown.
+    pub(crate) async fn try_acquire_shared(
+        pool: &sqlx::PgPool,
+        key: &str,
+    ) -> anyhow::Result<Option<Self>> {
+        let lock_key = advisory_lock_key(key);
+        let mut transaction = super::database::begin_sqlx_transaction(pool).await?;
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock_shared($1)")
+            .bind(lock_key)
+            .fetch_one(&mut *transaction)
+            .await?;
+        if !acquired {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            transaction: Some(transaction),
+            _concurrency_permit: None,
+        }))
     }
 
     /// Advisory lock for a sequence that calls an external container runtime.
@@ -315,6 +417,14 @@ impl PgAdvisoryLock {
         Ok(())
     }
 
+    /// Acquire another transaction-scoped advisory lock on this guard's existing
+    /// connection. Callers that need an ordered lock hierarchy can retain one
+    /// transaction (and one pool connection) instead of nesting independent
+    /// [`PgAdvisoryLock`] guards and risking pool starvation under contention.
+    pub(crate) async fn acquire_additional(&mut self, key: &str) -> anyhow::Result<()> {
+        acquire_transaction_advisory_lock(self.transaction_mut(), key).await
+    }
+
     /// Run short database mutations in the same transaction that owns the lock.
     /// This avoids reserving a second pool connection while waiting on a guarded
     /// write, which can deadlock when many distinct keys are active at once.
@@ -326,6 +436,30 @@ impl PgAdvisoryLock {
 }
 
 impl PgSessionAdvisoryLock {
+    /// Serialize a multi-stage account deletion with admin updates that could
+    /// otherwise unban or rename the account between its durable fence and
+    /// external roster teardown. Keep this gate independent from roster access:
+    /// deletion legitimately holds this lease while acquiring roster leases.
+    pub(crate) async fn acquire_account_lifecycle(
+        pool: &sqlx::PgPool,
+        key: &str,
+    ) -> anyhow::Result<Self> {
+        static GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+            std::sync::LazyLock::new(|| {
+                std::sync::Arc::new(tokio::sync::Semaphore::new(ACCOUNT_LIFECYCLE_CONCURRENCY))
+            });
+        let permit = GATE.clone().acquire_owned().await?;
+        Self::acquire_with_permit(pool, key, Some(permit)).await
+    }
+
+    /// Serialize roster deletion teardown across replicas without holding an
+    /// open transaction. The shared roster admission gate bounds retained pool
+    /// connections while the operation performs nested DB and network work.
+    pub(crate) async fn acquire_roster(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
+        let permit = roster_access_permit().await?;
+        Self::acquire_with_permit(pool, key, Some(permit)).await
+    }
+
     async fn acquire_with_permit(
         pool: &sqlx::PgPool,
         key: &str,
@@ -364,8 +498,7 @@ impl PgSessionAdvisoryLock {
     }
 
     pub(crate) fn connection_mut(&mut self) -> &mut sqlx::PgConnection {
-        &mut **self
-            .connection
+        self.connection
             .as_mut()
             .expect("advisory lock session is live until release")
     }

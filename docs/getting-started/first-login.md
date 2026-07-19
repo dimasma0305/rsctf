@@ -4,10 +4,22 @@ Use this checklist before inviting players. It takes a few minutes and prevents 
 
 ## 1. Register the administrator
 
-The first password-registered account becomes **Admin**. Use a unique password and complete this step while the new site is still private or closely monitored.
+Open `/account/register?bootstrap=1` and choose a unique password. For Docker
+Compose, retrieve the private setup token on the deployment host without
+putting it in shell history or a shared log:
+
+```bash
+sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' deploy/.env
+```
+
+For Kubernetes, use the Secret retrieval command in the Helm notes. Only a
+token-authorized registration can become the first **Admin**; public requests
+without it fail closed.
 
 ::: warning Existing database
-“First account” means the first account in the connected PostgreSQL database, not the first registration after a container restart or reinstall.
+“First account” means the first account in the connected PostgreSQL database,
+not the first registration after a container restart or reinstall. If you
+deliberately wipe the database, rotate the setup token before exposing it again.
 :::
 
 ## 2. Review the public identity

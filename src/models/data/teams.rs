@@ -14,6 +14,10 @@ pub mod team {
         pub bio: Option<String>,
         pub avatar_hash: Option<String>,
         pub locked: bool,
+        /// Durable fail-closed marker while multi-stage deletion tears down
+        /// credentials and workloads. Internal only; not part of the API DTO.
+        #[serde(default, skip_serializing)]
+        pub deletion_pending: bool,
         pub invite_token: String,
         pub captain_id: Uuid,
     }

@@ -1,10 +1,19 @@
 // BYOC tunnel fleet orchestration for the load tests. Spins up one real relay agent
 // per live Accepted participation, all forwarding to one shared nginx.
 import { spawn } from 'node:child_process';
-import { sql, docker, rsctfIp, byocCapabilities, GAME, NET, sleep } from './lib.mjs';
+import {
+  sql,
+  docker,
+  rsctfIp,
+  byocCapabilities,
+  DEFAULT_BYOC_AGENT_IMAGE,
+  GAME,
+  NET,
+  sleep,
+} from './lib.mjs';
 
 const AGENT_IMAGE =
-  process.env.RSCTF_BYOC_AGENT_IMAGE ?? 'dimasmaualana/rsctf-byoc-agent:latest';
+  process.env.RSCTF_BYOC_AGENT_IMAGE ?? DEFAULT_BYOC_AGENT_IMAGE;
 let activeCapabilities = [];
 
 /** Derive capability URLs from current Accepted participations; secrets stay in lib.mjs. */

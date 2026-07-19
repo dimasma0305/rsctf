@@ -58,7 +58,7 @@ pub async fn approve_challenge(
     };
     if challenge.challenge_type.uses_ad_engine()
         && ad_epoch_scoring_started_locked(
-            &mut **engine_control
+            engine_control
                 .as_mut()
                 .expect("engine challenge holds the game control lock")
                 .transaction_mut(),
@@ -197,7 +197,7 @@ pub async fn approve_challenge(
         challenge = load_challenge(&st, id, c_id).await?;
         if challenge.challenge_type.uses_ad_engine() {
             let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-            if ad_epoch_scoring_started_locked(&mut **control.transaction_mut(), id).await? {
+            if ad_epoch_scoring_started_locked(control.transaction_mut(), id).await? {
                 return Err(AppError::bad_request(
                     "The challenge image was built but remains pending because A&D/KotH epoch scoring started during approval.",
                 ));
@@ -300,7 +300,7 @@ pub async fn reject_challenge(
     };
     if challenge.challenge_type.uses_ad_engine()
         && ad_epoch_scoring_started_locked(
-            &mut **engine_control
+            engine_control
                 .as_mut()
                 .expect("engine challenge holds the game control lock")
                 .transaction_mut(),

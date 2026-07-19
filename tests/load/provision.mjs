@@ -434,10 +434,8 @@ async function main() {
     type: 'KingOfTheHill',
   }));
   const kothImage =
-    KOTH_CONTAINER_OVERRIDE?.image ??
-    (REALISTIC_COMPETITION ? A.buildCompetitiveKothImage() : CONTAINER_IMAGE);
-  const kothPort =
-    KOTH_CONTAINER_OVERRIDE?.port ?? (REALISTIC_COMPETITION ? 8080 : 80);
+    KOTH_CONTAINER_OVERRIDE?.image ?? A.buildCompetitiveKothImage();
+  const kothPort = KOTH_CONTAINER_OVERRIDE?.port ?? 8080;
   const kothCheckerDir = A.prepareKothChecker(mixGame, kothChal);
   await interruptibleMutation(A.setChallenge(mixGame, kothChal, {
     containerImage: kothImage,

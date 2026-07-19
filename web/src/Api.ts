@@ -249,6 +249,8 @@ export type RegisterModel = ModelWithCaptcha & {
   fingerprint?: string | null;
   /** Browser fingerprint proof */
   fingerprintProof?: string | null;
+  /** Deployment bootstrap secret, required only for the first administrator. */
+  bootstrapToken?: string | null;
 };
 
 export interface ModelWithCaptcha {

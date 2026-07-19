@@ -314,6 +314,7 @@ pub(super) async fn ensure_epoch_rollups(
     Ok(cycle_ticks)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn materialize_epoch(
     connection: &mut PgConnection,
     game_id: i32,

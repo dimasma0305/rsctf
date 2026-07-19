@@ -63,7 +63,9 @@ In addition to the container test, verify:
 - Each focused check is deterministic, read-only, and order-independent; the
   whole shuffled suite completes well inside one tick.
 - Flag planting and retrieval work after a service restart.
-- Allowed egress matches the challenge's real needs.
+- `allowEgress` matches the deployment backend: keep it `false` for Docker,
+  which fails closed, or use Kubernetes when the service genuinely needs
+  per-workload isolated outbound access.
 - Self-reset and SSH behavior match the published rules.
 - Two teams can reach each other only through the intended path.
 - A failed service produces the expected availability result.

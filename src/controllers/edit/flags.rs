@@ -23,11 +23,8 @@ pub async fn add_flags(
 
     let mut definition_lock =
         crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
-    crate::utils::scoring::lock_jeopardy_flags_exclusive(
-        &mut **definition_lock.transaction_mut(),
-        c_id,
-    )
-    .await?;
+    crate::utils::scoring::lock_jeopardy_flags_exclusive(definition_lock.transaction_mut(), c_id)
+        .await?;
 
     // Keep the parent alive until every insert commits. This also makes a
     // concurrent challenge delete wait instead of turning a valid edit into a
@@ -78,11 +75,8 @@ pub async fn remove_flag(
 
     let mut definition_lock =
         crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
-    crate::utils::scoring::lock_jeopardy_flags_exclusive(
-        &mut **definition_lock.transaction_mut(),
-        c_id,
-    )
-    .await?;
+    crate::utils::scoring::lock_jeopardy_flags_exclusive(definition_lock.transaction_mut(), c_id)
+        .await?;
 
     // Capture the hand-out attachment in the same statement that removes the
     // flag. The exclusive advisory lock makes this deletion linearizable with

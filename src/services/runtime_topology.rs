@@ -230,7 +230,7 @@ async fn monitor(
     )
     .await;
     let initial = match initial {
-        Ok(result) => result.map_err(anyhow::Error::from),
+        Ok(result) => result,
         Err(_) => Err(anyhow::anyhow!("initial runtime role heartbeat timed out")),
     };
     if let Err(error) = initial {

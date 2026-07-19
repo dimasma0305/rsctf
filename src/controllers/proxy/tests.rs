@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn proxy_client_messages_have_a_small_memory_bound() {
     assert_eq!(MAX_CLIENT_MESSAGE_SIZE, 64 * 1024);
-    assert!(MAX_CLIENT_MESSAGE_SIZE <= BUFFER_SIZE * 16);
+    const { assert!(MAX_CLIENT_MESSAGE_SIZE <= BUFFER_SIZE * 16) };
 }
 
 #[test]

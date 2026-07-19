@@ -42,6 +42,7 @@ import {
 import { Icon } from '@mdi/react'
 import { FC, useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { quoteSpreadsheetCsvCell } from '@Utils/Csv'
 
 // ─── Backend response types ───────────────────────────────────────────────────
 
@@ -197,12 +198,15 @@ function triggerDownload(blob: Blob, name: string) {
 
 function buildCredentialsCsv(users: CsvImportUserResult[]): Blob {
   const hdr = ['Username', 'Password', 'Email', 'Real Name', 'Team', 'Status']
-  const q = (v: string) => `"${(v ?? '').replace(/"/g, '""')}"`
   const lines = [
     hdr.join(','),
     ...users
       .filter((u) => u.status !== 'skipped')
-      .map((u) => [u.userName, u.password, u.email, u.realName, u.teamName ?? '', u.status].map(q).join(',')),
+      .map((u) =>
+        [u.userName, u.password, u.email, u.realName, u.teamName ?? '', u.status]
+          .map(quoteSpreadsheetCsvCell)
+          .join(','),
+      ),
   ]
   return new Blob([lines.join('\n')], { type: 'text/csv' })
 }
@@ -971,7 +975,8 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                   (respecting any overrides) and secure passwords in a single atomic transaction.
                 </Text>
                 <Text size="xs" c="dimmed">
-                  Download the credentials CSV after import — passwords are not stored beyond this session.
+                  Download the credentials CSV after import. The server keeps a temporary delivery copy for at most
+                  one hour so it can send email; the response itself is never browser/proxy cached.
                 </Text>
               </Stack>
             </Alert>

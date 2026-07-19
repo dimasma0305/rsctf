@@ -153,7 +153,12 @@ fn challenge_contributions_reconcile_with_unequal_weights_and_partial_tail() {
         cumulative_sla_numerator: 1.0,
         cumulative_capture_count: 4,
     };
-    let left = merge_service_detail(1, Some(&historical(1, 20.0)), &[epoch.clone()], None);
+    let left = merge_service_detail(
+        1,
+        Some(&historical(1, 20.0)),
+        std::slice::from_ref(&epoch),
+        None,
+    );
     let right = merge_service_detail(2, Some(&historical(2, 30.0)), &[epoch], None);
 
     assert!((left.settled_points + right.settled_points - 50.0).abs() < 1e-12);

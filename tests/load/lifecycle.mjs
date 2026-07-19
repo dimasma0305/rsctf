@@ -23,7 +23,8 @@ import {
   kothDeadlineCleanupQuery,
 } from "./koth-deadline-cleanup.js";
 import { kothResetReceiptIntegrityQuery } from "./koth-reset-receipts.js";
-import { sql, JWT_SECRET } from "./lib.mjs";
+import { sql, JWT_SECRET, RSCTF } from "./lib.mjs";
+import { countContainerFatalLogs } from "./log-audit.mjs";
 import {
   abortedLifecycleState,
   assertLifecycleRunClaimable,
@@ -2242,16 +2243,7 @@ async function main() {
         !distributedTeamClients && (k6Exit !== 0 || k6SpawnError) ? 1 : 0,
       "integrated anti-cheat failure":
         integratedCheat && cheatExit !== 0 ? 1 : 0,
-      panics: execFileSync(
-        "bash",
-        [
-          "-c",
-          `docker logs rsctf-rsctf-1 2>&1 | grep -icE 'panic|FATAL' || true`,
-        ],
-        {
-          encoding: "utf8",
-        },
-      ).trim(),
+      panics: countContainerFatalLogs(RSCTF, evidenceNotBeforeMs),
     };
     if (distributedTeamClients) {
       checks["team-client process failures"] =

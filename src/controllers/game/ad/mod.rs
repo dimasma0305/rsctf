@@ -31,17 +31,17 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
 use rand::TryRng;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};
+use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::{
-    ad_attack, ad_flag, ad_round, ad_ssh_key, ad_team_api_token, ad_team_service, game,
-    game_challenge, participation, team,
+    ad_ssh_key, ad_team_api_token, ad_team_service, game, game_challenge, participation,
 };
-use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus, Role};
+use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{MessageResponse, RequestResponse};
 
@@ -58,7 +58,7 @@ fn common_router() -> Router<SharedState> {
         )
         .route(
             "/api/Game/{id}/Ad/Services/{adTeamServiceId}/Snapshot",
-            get(download_snapshot),
+            limited(Policy::Container, get(download_snapshot)),
         )
         .route(
             "/api/Game/{id}/Ad/Ssh/Key",
@@ -389,77 +389,12 @@ fn fill_random(buf: &mut [u8]) {
         .expect("operating-system CSPRNG unavailable");
 }
 
-/// `round_id -> round number` for a game's timeline.
-async fn round_number_map(st: &SharedState, game_id: i32) -> AppResult<HashMap<i32, i32>> {
-    let rounds = ad_round::Entity::find()
-        .filter(ad_round::Column::GameId.eq(game_id))
-        .all(&st.db)
-        .await?;
-    Ok(rounds.into_iter().map(|r| (r.id, r.number)).collect())
-}
-
-/// The newest check verdict for each of `service_ids`.
-struct LatestCheck {
-    status: i16,
-}
-
-async fn latest_check_by_service(
-    st: &SharedState,
-    service_ids: &[i32],
-) -> AppResult<HashMap<i32, LatestCheck>> {
-    if service_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    // Latest verdict per service. A plain `DISTINCT ON … ORDER BY team_service_id,
-    // round_id DESC` still reads EVERY index entry for these services (tens of thousands
-    // of rows over a long game) and dedups — the index orders the scan but can't skip to
-    // the first row per group. A LATERAL `… ORDER BY round_id DESC LIMIT 1` per service
-    // seeks the index once and returns a single row, so it's O(services) not O(history)
-    // — the query dropped from ~5 ms scanning ~42k rows to a handful of index seeks.
-    // (INNER lateral: a service with no check yet yields no row, same as DISTINCT ON.)
-    let rows: Vec<(i32, i16)> = sqlx::query_as(
-        r#"SELECT s.sid, cr.status
-           FROM unnest($1::int[]) AS s(sid)
-           JOIN LATERAL (
-             SELECT status FROM "AdCheckResults"
-             WHERE team_service_id = s.sid
-               AND sla_credit IS NOT NULL
-             ORDER BY round_id DESC
-             LIMIT 1
-           ) cr ON TRUE"#,
-    )
-    .bind(service_ids)
-    .fetch_all(st.pg())
-    .await
-    .map_err(|e| AppError::internal(e.to_string()))?;
-
-    Ok(rows
-        .into_iter()
-        .map(|(service_id, status)| (service_id, LatestCheck { status }))
-        .collect())
-}
-
-/// `team_id -> name` for a set of team ids.
-async fn team_name_map(
-    st: &SharedState,
-    ids: impl Iterator<Item = i32>,
-) -> AppResult<HashMap<i32, String>> {
-    let ids: Vec<i32> = ids.collect::<HashSet<_>>().into_iter().collect();
-    if ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let teams = team::Entity::find()
-        .filter(team::Column::Id.is_in(ids))
-        .all(&st.db)
-        .await?;
-    Ok(teams.into_iter().map(|t| (t.id, t.name)).collect())
-}
-
 // ---------------------------------------------------------------------------
 // Submodules — split by cohesive responsibility (routes/handlers unchanged).
 // ---------------------------------------------------------------------------
 
 mod byoc;
+mod byoc_authorization;
 mod scoreboard;
 mod scoreboard_encoding;
 mod ssh;

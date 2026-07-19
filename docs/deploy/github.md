@@ -17,13 +17,16 @@ The workflow obtains the repository's Pages base path, so forks work at `/reposi
 
 ## Images built by GitHub Actions
 
-The image workflow builds the full-stack Dockerfile and publishes the end-user image to Docker Hub:
+The image workflow builds the full-stack Dockerfile and publishes the end-user image to the repository-linked GitHub Container Registry package:
 
 ```text
-docker.io/dimasmaualana/rsctf
+ghcr.io/dimasma0305/rsctf
 ```
 
-It can also publish a repository-linked GHCR mirror. Docker Hub remains the installer default so every installation path uses the same published image.
+This public GHCR package is the installer, Compose, and Helm default. When both
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` are configured, the workflow also
+publishes the same digest to the optional
+`docker.io/dimasmaualana/rsctf` mirror; installs do not depend on that mirror.
 
 Publishing behavior is intentionally predictable:
 
@@ -32,13 +35,21 @@ Publishing behavior is intentionally predictable:
 | Pull request | amd64 | Build only; never pushed |
 | Push to `main` | amd64 | `main` and a commit-SHA tag |
 | Stable tag such as `v1.2.3` | amd64 + arm64 | `1.2.3`, `1.2`, `1`, and `latest` |
-| Prerelease such as `v1.2.3-rc.1` | amd64 + arm64 | Exact prerelease tag; does not move `latest` |
 
-Release images include OCI metadata, BuildKit provenance, and an SBOM. Docker Hub publication uses the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; the optional GHCR mirror uses `GITHUB_TOKEN`.
+Release tags use strict `vX.Y.Z` syntax and must match the application, worker,
+BYOC agent, and Helm chart versions in the tagged commit.
 
-If the first `main` build ran before you added the Docker Hub secrets, open **Actions → Container image → Run workflow** after adding them. A manual run on `main` republishes the `main` and commit-SHA tags without requiring an empty source commit.
+Release images include OCI metadata, BuildKit provenance, and an SBOM. GHCR
+publication uses `GITHUB_TOKEN`. Optional Docker Hub publication uses the
+repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
-Keep the Docker Hub repository public so anonymous Docker and Kubernetes installations can pull it without registry credentials.
+If the optional Docker Hub secrets are added later, open **Actions → Container
+image → Run workflow**. A manual run on `main` republishes the `main` and
+commit-SHA tags without requiring an empty source commit.
+
+Keep the GHCR package public so anonymous Docker and Kubernetes installations
+can pull it without registry credentials. Keep the optional Docker Hub mirror
+public as well when it is enabled.
 
 ## Sample challenge source validation
 

@@ -5,7 +5,18 @@
 // so the shared host + games 9/10 are never touched.
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { TARGET, sql, docker, mintJwt, byocCapabilitiesForPids, rsctfIp, sleep, NET, RSCTF } from './lib.mjs';
+import {
+  TARGET,
+  sql,
+  docker,
+  mintJwt,
+  byocCapabilitiesForPids,
+  rsctfIp,
+  sleep,
+  DEFAULT_BYOC_AGENT_IMAGE,
+  NET,
+  RSCTF,
+} from './lib.mjs';
 import { cohortSeedQuery, parseCohortSeedResult } from './cohort-seed.js';
 import { materializeFixtures } from './fixtures.mjs';
 import {
@@ -14,6 +25,7 @@ import {
   isImmutableImageReference,
 } from './fixture-image-config.js';
 import { retainedManifestMatchesGame } from './retention-identity.mjs';
+import { dockerScopeFromContainerEnv } from './docker-scope.js';
 import {
   dockerLabelArgs,
   dockerOwnershipFilterArgs,
@@ -484,10 +496,35 @@ function kothRuntimeScope(gameIds) {
   return { targetContainerIds, cycleIds };
 }
 
+let cachedDockerScope;
+
+function currentDockerScope() {
+  if (cachedDockerScope) return cachedDockerScope;
+  const inspected = mustDocker(
+    docker(['inspect', RSCTF, '--format', '{{json .Config.Env}}']),
+    'discover rsctf Docker workload scope',
+  );
+  const environment = JSON.parse(inspected.stdout.trim() || '[]');
+  cachedDockerScope = dockerScopeFromContainerEnv(environment);
+  return cachedDockerScope;
+}
+
 function kothOperationContainerIds(cycleIds) {
   if (cycleIds.size === 0) return [];
+  const scope = currentDockerScope();
   const runtimes = mustDocker(
-    docker(['ps', '-a', '--filter', 'label=rsctf.operation', '--format', '{{.ID}}\t{{.Label "rsctf.operation"}}']),
+    docker([
+      'ps',
+      '-a',
+      '--filter',
+      `label=rsctf.managed=${scope}`,
+      '--filter',
+      `label=rsctf.scope=${scope}`,
+      '--filter',
+      'label=rsctf.operation',
+      '--format',
+      '{{.ID}}\t{{.Label "rsctf.operation"}}\t{{.Label "rsctf.scope"}}',
+    ]),
     'discover KotH reset-operation containers'
   );
   return runtimes.stdout
@@ -495,7 +532,11 @@ function kothOperationContainerIds(cycleIds) {
     .split('\n')
     .filter(Boolean)
     .map((row) => row.split('\t'))
-    .filter(([, operation]) => cycleIds.has(operation?.match(/^koth-cycle:(\d+):attempt:\d+$/)?.[1]))
+    .filter(
+      ([, operation, runtimeScope]) =>
+        runtimeScope === scope &&
+        cycleIds.has(operation?.match(/^koth-cycle:(\d+):attempt:\d+$/)?.[1]),
+    )
     .map(([id]) => id)
     .filter((id) => /^[a-f0-9]{12,64}$/.test(id));
 }
@@ -983,7 +1024,7 @@ export function startFleetForPids(gameId, cid, pids, svcAddr) {
               'RSCTF_BYOC_FLAG_FILE=/shared/flag',
             ]
           : []),
-        process.env.RSCTF_BYOC_AGENT_IMAGE ?? 'dimasmaualana/rsctf-byoc-agent:latest',
+        process.env.RSCTF_BYOC_AGENT_IMAGE ?? DEFAULT_BYOC_AGENT_IMAGE,
       ]);
       if (result.status !== 0) {
         throw new Error(

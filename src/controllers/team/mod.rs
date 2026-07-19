@@ -19,10 +19,7 @@ use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
-use crate::models::data::{
-    ad_ssh_key, ad_team_api_token, container, game_instance, participation, team, team_member,
-    user, user_participation,
-};
+use crate::models::data::{container, game_instance, participation, team, team_member, user};
 use crate::utils::codec::random_hex;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
@@ -30,14 +27,20 @@ use crate::utils::shared::RequestResponse;
 mod avatar;
 mod lifecycle;
 mod models;
+mod revocation;
 pub use avatar::avatar;
-use lifecycle::destroy_participation_ad_services;
 pub use models::*;
+use revocation::remove_membership;
+pub(crate) use revocation::{
+    acquire_roster_mutation, invalidate_removed_membership_cache, mark_team_participations_revoked,
+    require_team_mutable, revoke_participation_capabilities, revoke_team_shared_capabilities,
+    TeamDeletionLease,
+};
 
 /// Each user may captain at most this many teams. Mirrors RSCTF `MaxTeamsAllowed`.
-const MAX_TEAMS_ALLOWED: u64 = 3;
+pub(crate) const MAX_TEAMS_ALLOWED: u64 = 3;
 /// Defensive roster bound; per-game limits remain authoritative for participation.
-const MAX_TEAM_MEMBERS: u64 = 100;
+pub(crate) const MAX_TEAM_MEMBERS: u64 = 100;
 
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -89,38 +92,12 @@ pub async fn create_team(
     user: CurrentUser,
     Json(model): Json<TeamUpdateModel>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
-    let captained = team::Entity::find()
-        .filter(team::Column::CaptainId.eq(user.id))
-        .count(&st.db)
-        .await?;
-    if captained >= MAX_TEAMS_ALLOWED {
-        return Err(AppError::bad_request("Exceeded team creation limit"));
-    }
-
     let name = model.name.unwrap_or_default().trim().to_string();
     if name.is_empty() {
         return Err(AppError::bad_request("Team name cannot be empty"));
     }
-
-    let am = team::ActiveModel {
-        name: Set(name),
-        bio: Set(model.bio),
-        avatar_hash: Set(None),
-        locked: Set(false),
-        invite_token: Set(random_hex(16)),
-        captain_id: Set(user.id),
-        ..Default::default()
-    };
-    let team = am.insert(&st.db).await?;
-
-    // The creator is the captain *and* the first roster member (RSCTF
-    // `CreateTeam` seeds `Team.Members` with the creator).
-    let member = team_member::ActiveModel {
-        team_id: Set(team.id),
-        user_id: Set(user.id),
-        ..Default::default()
-    };
-    member.insert(&st.db).await?;
+    let team_id = create_team_rows(st.pg(), user.id, &name, model.bio.as_deref()).await?;
+    let team = load_team(&st, team_id).await?;
 
     // RSCTF `Team_Created` — "Create team {name}" (TeamController, Success).
     crate::services::audit::info(
@@ -136,6 +113,65 @@ pub async fn create_team(
     Ok(RequestResponse::ok(info))
 }
 
+/// Atomically enforce account liveness + the captain limit, then create both
+/// ownership rows. The account lock is the hand-off with admin deletion: one
+/// side commits first and the other must observe either the new captaincy or
+/// the durable Banned role.
+pub(crate) async fn create_team_rows(
+    pool: &sqlx::PgPool,
+    creator_id: Uuid,
+    name: &str,
+    bio: Option<&str>,
+) -> AppResult<i32> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let role: Option<i16> =
+        sqlx::query_scalar(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#)
+            .bind(creator_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    if role.is_none_or(|role| role == crate::utils::enums::Role::Banned as i16) {
+        return Err(AppError::Forbidden);
+    }
+    let captained: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*)::bigint FROM "Teams" WHERE captain_id = $1"#)
+            .bind(creator_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    if captained >= MAX_TEAMS_ALLOWED as i64 {
+        return Err(AppError::bad_request("Exceeded team creation limit"));
+    }
+
+    let team_id: i32 = sqlx::query_scalar(
+        r#"INSERT INTO "Teams"
+             (name, bio, avatar_hash, locked, invite_token, captain_id)
+           VALUES ($1, $2, NULL, FALSE, $3, $4)
+        RETURNING id"#,
+    )
+    .bind(name)
+    .bind(bio)
+    .bind(random_hex(16))
+    .bind(creator_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES ($1, $2)"#)
+        .bind(team_id)
+        .bind(creator_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(team_id)
+}
+
 /// `PUT /api/team/{id}` — update name/bio (captain only).
 pub async fn update_team(
     State(st): State<SharedState>,
@@ -143,6 +179,8 @@ pub async fn update_team(
     Path(id): Path<i32>,
     Json(model): Json<TeamUpdateModel>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
+    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
+    require_team_mutable(roster.transaction_mut(), id).await?;
     let team = load_team(&st, id).await?;
     require_captain(&team, &user)?;
 
@@ -161,6 +199,7 @@ pub async fn update_team(
         am.bio = Set(Some(bio));
     }
     let team = am.update(&st.db).await?;
+    roster.release().await?;
 
     // RSCTF `FlushScoreboardCacheForTeam`: a rename must invalidate the scoreboard
     // caches for every game the team is in, otherwise the board keeps the old name
@@ -181,18 +220,29 @@ pub async fn delete_team(
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
     let roster_key = format!("team-roster:{id}");
-    let _roster_guard = crate::utils::single_flight::coalesce(&roster_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &roster_key).await?;
+    let mut initial = acquire_roster_mutation(st.pg(), id).await?;
     let team = load_team(&st, id).await?;
     require_captain(&team, &user)?;
     let affected_game_ids = team_game_ids(&st, team.id).await?;
+    let info = to_info(&st, &team, false).await?;
 
-    if team.locked && any_active_game(&st, team.id).await? {
+    if !team.deletion_pending && team.locked && any_active_game(&st, team.id).await? {
         return Err(AppError::bad_request("Team is locked by an active game"));
     }
 
-    mark_team_participations_revoked(&st, team.id).await?;
+    mark_team_participations_revoked(initial.advisory_mut(), team.id).await?;
+    // Commit the fail-closed suspension and release the per-team transaction
+    // before capability teardown acquires its own game/VPN locks.
+    let _roster_guard = initial.release_for_external().await?;
+    let Some(deletion_lease) = TeamDeletionLease::acquire(st.pg(), &roster_key, team.id).await?
+    else {
+        // A cross-replica duplicate completed while this request waited for the
+        // external lease. Its teardown and cascade are already authoritative.
+        return Ok(RequestResponse::ok(info));
+    };
+    // Drop accepted-participation cache entries as soon as the suspension is
+    // durable, rather than waiting for the slower container/network teardown.
+    crate::controllers::game::ad::flush_team_participation_cache(&st, team.id).await;
     revoke_team_shared_capabilities(&st, team.id).await?;
 
     // RSCTF `DeleteTeam`: reap the team's live containers BEFORE the cascade drops
@@ -209,29 +259,7 @@ pub async fn delete_team(
     // 7 days (RSCTF `DeleteTeam` → `FlushScoreboardsForGames`). Best-effort.
     flush_scoreboard_for_team(&st, team.id).await?;
 
-    for part in participation::Entity::find()
-        .filter(participation::Column::TeamId.eq(team.id))
-        .all(&st.db)
-        .await?
-    {
-        st.byoc.disconnect_participation(&st.db, part.id).await?;
-    }
-
-    participation::Entity::delete_many()
-        .filter(participation::Column::TeamId.eq(team.id))
-        .exec(&st.db)
-        .await?;
-    user_participation::Entity::delete_many()
-        .filter(user_participation::Column::TeamId.eq(team.id))
-        .exec(&st.db)
-        .await?;
-    team_member::Entity::delete_many()
-        .filter(team_member::Column::TeamId.eq(team.id))
-        .exec(&st.db)
-        .await?;
-
-    let info = to_info(&st, &team, false).await?;
-    team::Entity::delete_by_id(team.id).exec(&st.db).await?;
+    deletion_lease.finalize(team.id).await?;
     flush_scoreboards_for_games(&st, &affected_game_ids).await;
 
     // RSCTF `Team_Deleted` — "Delete team {name}" (TeamController, Success).
@@ -244,7 +272,6 @@ pub async fn delete_team(
     )
     .await;
 
-    distributed.release().await?;
     Ok(RequestResponse::ok(info))
 }
 
@@ -265,16 +292,15 @@ pub async fn update_invite_token(
     user: CurrentUser,
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<String>> {
-    let roster_key = format!("team-roster:{id}");
-    let _roster_guard = crate::utils::single_flight::coalesce(&roster_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &roster_key).await?;
+    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
+    require_team_mutable(roster.transaction_mut(), id).await?;
     let team = load_team(&st, id).await?;
     require_captain(&team, &user)?;
 
     let mut am: team::ActiveModel = team.into();
     am.invite_token = Set(random_hex(16));
     let team = am.update(&st.db).await?;
+    roster.release().await?;
     for part in participation::Entity::find()
         .filter(participation::Column::TeamId.eq(team.id))
         .all(&st.db)
@@ -282,11 +308,26 @@ pub async fn update_invite_token(
     {
         st.byoc.disconnect_participation(&st.db, part.id).await?;
     }
-    distributed.release().await?;
     Ok(RequestResponse::ok(team.invite_code()))
 }
 
 /// `POST /api/team/accept` — join a team via its invite code (`name:id:token`).
+async fn lock_live_roster_account(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+) -> AppResult<()> {
+    let role: Option<i16> =
+        sqlx::query_scalar(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR SHARE"#)
+            .bind(user_id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    if role.is_none_or(|role| role == crate::utils::enums::Role::Banned as i16) {
+        return Err(AppError::Forbidden);
+    }
+    Ok(())
+}
+
 pub async fn accept(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -318,34 +359,86 @@ pub async fn accept(
 
     let roster_key = format!("team-roster:{team_id}");
     let _roster_guard = crate::utils::single_flight::coalesce(&roster_key).await;
-    let distributed =
+    let mut distributed =
         crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &roster_key).await?;
-    let team = team::Entity::find_by_id(team_id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::bad_request("Team not found"))?;
+    // Retain a share lock until the membership insert commits. Account deletion
+    // first takes the conflicting row lock and sets Role::Banned, so it either
+    // waits for this membership (and snapshots it) or this request observes the
+    // fence and cannot create a late roster entry.
+    lock_live_roster_account(distributed.transaction_mut(), user.id).await?;
+    let team: Option<(String, String, bool, bool, Uuid)> = sqlx::query_as(
+        r#"SELECT name, invite_token, locked, deletion_pending, captain_id
+              FROM "Teams" WHERE id = $1"#,
+    )
+    .bind(team_id)
+    .fetch_optional(&mut **distributed.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((team_name, current_invite, locked, deletion_pending, captain_id)) = team else {
+        return Err(AppError::bad_request("Team not found"));
+    };
+    if deletion_pending {
+        return Err(AppError::conflict("Team is being deleted"));
+    }
 
-    if team.invite_token != invite_token {
+    if current_invite != invite_token {
         return Err(AppError::bad_request("Invalid invitation for this team"));
     }
-    if team.locked && any_active_game(&st, team.id).await? {
+    let has_active_game: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1
+                 FROM "Participations" participation
+                 JOIN "Games" game ON game.id = participation.game_id
+                WHERE participation.team_id = $1
+                  AND game.end_time_utc > clock_timestamp()
+           )"#,
+    )
+    .bind(team_id)
+    .fetch_one(&mut **distributed.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if locked && has_active_game {
         return Err(AppError::bad_request("Team is locked by an active game"));
     }
-    let members = member_ids(&st, &team).await?;
-    if members.contains(&user.id) {
+    let already_member: bool = captain_id == user.id
+        || sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM "TeamMembers"
+                    WHERE team_id = $1 AND user_id = $2
+               )"#,
+        )
+        .bind(team_id)
+        .bind(user.id)
+        .fetch_one(&mut **distributed.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if already_member {
         return Err(AppError::bad_request("Already a member of this team"));
     }
-    if members.len() as u64 >= MAX_TEAM_MEMBERS {
+    let member_count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)::bigint
+              FROM (
+                    SELECT captain_id AS user_id FROM "Teams" WHERE id = $1
+                    UNION
+                    SELECT user_id FROM "TeamMembers" WHERE team_id = $1
+              ) roster"#,
+    )
+    .bind(team_id)
+    .fetch_one(&mut **distributed.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if member_count >= MAX_TEAM_MEMBERS as i64 {
         return Err(AppError::bad_request("Team is full"));
     }
 
     // Add the caller to the roster (RSCTF `team.Members.Add(user)`).
-    let member = team_member::ActiveModel {
-        team_id: Set(team.id),
-        user_id: Set(user.id),
-        ..Default::default()
-    };
-    member.insert(&st.db).await?;
+    sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES ($1, $2)"#)
+        .bind(team_id)
+        .bind(user.id)
+        .execute(&mut **distributed.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    distributed.release().await?;
 
     // RSCTF `Team_UserJoined` — "Join Team {name}" (TeamController, Success).
     crate::services::audit::info(
@@ -353,14 +446,13 @@ pub async fn accept(
         "TeamController",
         Some(user.name.clone()),
         None,
-        format!("Join Team {}", team.name),
+        format!("Join Team {team_name}"),
     )
     .await;
 
     // RSCTF `Accept` returns a bare `Ok()` (empty 200); the client types this as
     // `void` with no JSON parse, so emit an empty 200 rather than a `{title,status}`
     // body.
-    distributed.release().await?;
     Ok(StatusCode::OK)
 }
 
@@ -371,10 +463,8 @@ pub async fn leave(
     user: CurrentUser,
     Path(id): Path<i32>,
 ) -> AppResult<StatusCode> {
-    let roster_key = format!("team-roster:{id}");
-    let _roster_guard = crate::utils::single_flight::coalesce(&roster_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &roster_key).await?;
+    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
+    require_team_mutable(roster.transaction_mut(), id).await?;
     let team = load_team(&st, id).await?;
 
     let members = member_ids(&st, &team).await?;
@@ -388,7 +478,13 @@ pub async fn leave(
         return Err(AppError::bad_request("Team is locked by an active game"));
     }
 
-    remove_membership(&st, team.id, user.id).await?;
+    // Keep the roster lock until every copied team credential is invalidated.
+    // If external cleanup fails, membership remains intact and the same leave
+    // request can be retried without creating an unauthorized credential gap.
+    let parts = revoke_team_shared_capabilities(&st, team.id).await?;
+    remove_membership(roster.transaction_mut(), team.id, user.id).await?;
+    roster.release().await?;
+    invalidate_removed_membership_cache(&st, user.id, &parts).await?;
 
     // RSCTF `Team_UserLeft` — "Left the team {name}" (TeamController, Success).
     crate::services::audit::info(
@@ -402,7 +498,6 @@ pub async fn leave(
 
     // RSCTF `Leave` returns a bare `Ok()` (empty 200); the client types this as
     // `void` with no JSON parse, so emit an empty 200.
-    distributed.release().await?;
     Ok(StatusCode::OK)
 }
 
@@ -412,10 +507,8 @@ pub async fn kick_user(
     user: CurrentUser,
     Path((id, target)): Path<(i32, Uuid)>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
-    let roster_key = format!("team-roster:{id}");
-    let _roster_guard = crate::utils::single_flight::coalesce(&roster_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &roster_key).await?;
+    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
+    require_team_mutable(roster.transaction_mut(), id).await?;
     let team = load_team(&st, id).await?;
     require_captain(&team, &user)?;
 
@@ -429,7 +522,10 @@ pub async fn kick_user(
         return Err(AppError::bad_request("User is not in this team"));
     }
 
-    remove_membership(&st, team.id, target).await?;
+    let parts = revoke_team_shared_capabilities(&st, team.id).await?;
+    remove_membership(roster.transaction_mut(), team.id, target).await?;
+    roster.release().await?;
+    invalidate_removed_membership_cache(&st, target, &parts).await?;
 
     // RSCTF `Team_MemberRemoved` — "Kick {kicked} from Team {name}" (TeamController,
     // Success). Resolve the kicked user's name for the message (best-effort read).
@@ -450,7 +546,6 @@ pub async fn kick_user(
     .await;
 
     let info = to_info(&st, &team, true).await?;
-    distributed.release().await?;
     Ok(RequestResponse::ok(info))
 }
 
@@ -463,46 +558,110 @@ pub async fn transfer(
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
     let roster_key = format!("team-roster:{id}");
     let _roster_guard = crate::utils::single_flight::coalesce(&roster_key).await;
-    let distributed =
+    let mut distributed =
         crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &roster_key).await?;
+    transfer_captain_locked(
+        distributed.transaction_mut(),
+        id,
+        user.id,
+        model.new_captain_id,
+    )
+    .await?;
+    distributed.release().await?;
     let team = load_team(&st, id).await?;
-    require_captain(&team, &user)?;
+    let info = to_info(&st, &team, true).await?;
+    Ok(RequestResponse::ok(info))
+}
 
-    if team.locked && any_active_game(&st, team.id).await? {
-        return Err(AppError::bad_request("Team is locked by an active game"));
+async fn transfer_captain_locked(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team_id: i32,
+    current_captain_id: Uuid,
+    new_captain_id: Uuid,
+) -> AppResult<()> {
+    let team: Option<(Uuid, bool, bool)> = sqlx::query_as(
+        r#"SELECT captain_id, locked, deletion_pending
+              FROM "Teams" WHERE id = $1"#,
+    )
+    .bind(team_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((captain_id, locked, deletion_pending)) = team else {
+        return Err(AppError::not_found("Team not found"));
+    };
+    if captain_id != current_captain_id {
+        return Err(AppError::Forbidden);
     }
-    if !member_ids(&st, &team)
-        .await?
-        .contains(&model.new_captain_id)
-    {
+    if deletion_pending {
+        return Err(AppError::conflict("Team is being deleted"));
+    }
+    if locked {
+        let active_game: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                     FROM "Participations" participation
+                     JOIN "Games" game ON game.id = participation.game_id
+                    WHERE participation.team_id = $1
+                      AND game.end_time_utc > clock_timestamp()
+               )"#,
+        )
+        .bind(team_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if active_game {
+            return Err(AppError::bad_request("Team is locked by an active game"));
+        }
+    }
+    let target_is_member: bool = new_captain_id == captain_id
+        || sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM "TeamMembers"
+                    WHERE team_id = $1 AND user_id = $2
+               )"#,
+        )
+        .bind(team_id)
+        .bind(new_captain_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if !target_is_member {
         return Err(AppError::bad_request(
             "New captain must already be a team member",
         ));
     }
 
-    let new_captain = user::Entity::find_by_id(model.new_captain_id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::bad_request("New captain not found"))?;
-
-    // Keep the per-user captaincy cap after the roster eligibility check.
-    let captained = team::Entity::find()
-        .filter(team::Column::CaptainId.eq(new_captain.id))
-        .count(&st.db)
-        .await?;
-    if captained >= MAX_TEAMS_ALLOWED {
+    // FOR UPDATE serializes the captain limit across teams and conflicts with
+    // the admin deletion fence. A pre-authenticated transfer therefore cannot
+    // make an already-fenced account the new captain.
+    let target_role: Option<i16> =
+        sqlx::query_scalar(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#)
+            .bind(new_captain_id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    if target_role.is_none_or(|role| role == crate::utils::enums::Role::Banned as i16) {
+        return Err(AppError::bad_request("New captain not found"));
+    }
+    let captained: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*)::bigint FROM "Teams" WHERE captain_id = $1"#)
+            .bind(new_captain_id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    if captained >= MAX_TEAMS_ALLOWED as i64 {
         return Err(AppError::bad_request(
             "New captain already captains too many teams",
         ));
     }
-
-    let mut am: team::ActiveModel = team.into();
-    am.captain_id = Set(new_captain.id);
-    let team = am.update(&st.db).await?;
-
-    let info = to_info(&st, &team, true).await?;
-    distributed.release().await?;
-    Ok(RequestResponse::ok(info))
+    sqlx::query(r#"UPDATE "Teams" SET captain_id = $1 WHERE id = $2"#)
+        .bind(new_captain_id)
+        .bind(team_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
 }
 
 /// `POST /api/team/verify` — verify a team signature. Mirrors RSCTF
@@ -659,233 +818,6 @@ async fn user_teams(st: &SharedState, user_id: Uuid) -> AppResult<Vec<team::Mode
     Ok(teams)
 }
 
-/// Revoke every participation-shared A&D capability for one participation.
-pub(crate) async fn revoke_participation_capabilities(
-    st: &SharedState,
-    participation_id: i32,
-) -> AppResult<()> {
-    // BYOC tokens are derived from the team invite secret. Rotate it so a bundle
-    // rejected once cannot silently become valid again if the participation is
-    // later re-accepted. This intentionally invalidates BYOC bundles for every
-    // participation of the team until the remaining players download fresh ones.
-    let team_id = participation::Entity::find_by_id(participation_id)
-        .one(&st.db)
-        .await?
-        .map(|part| part.team_id);
-    let team_parts = if let Some(team_id) = team_id {
-        participation::Entity::find()
-            .filter(participation::Column::TeamId.eq(team_id))
-            .all(&st.db)
-            .await?
-    } else {
-        Vec::new()
-    };
-    let mut errors = Vec::new();
-    if let Some(team_id) = team_id {
-        match team::Entity::find_by_id(team_id).one(&st.db).await {
-            Ok(Some(team)) => {
-                let mut am: team::ActiveModel = team.into();
-                am.invite_token = Set(random_hex(16));
-                if let Err(error) = am.update(&st.db).await {
-                    errors.push(format!("rotate team secret: {error}"));
-                }
-            }
-            Ok(None) => {}
-            Err(error) => errors.push(format!("load team secret: {error}")),
-        }
-    }
-    if let Err(error) = ad_team_api_token::Entity::delete_many()
-        .filter(ad_team_api_token::Column::ParticipationId.eq(participation_id))
-        .exec(&st.db)
-        .await
-    {
-        errors.push(format!("revoke API token: {error}"));
-    }
-    if let Err(error) = ad_ssh_key::Entity::delete_many()
-        .filter(ad_ssh_key::Column::ParticipationId.eq(participation_id))
-        .exec(&st.db)
-        .await
-    {
-        errors.push(format!("revoke SSH key: {error}"));
-    }
-    if let Err(error) =
-        crate::services::ad_vpn::revoke_peers_for_participations(&st.db, &[participation_id]).await
-    {
-        errors.push(format!("revoke VPN peer: {error}"));
-    }
-    if let Err(error) = destroy_participation_ad_services(st, participation_id).await {
-        errors.push(format!("destroy A&D service: {error}"));
-    }
-    if team_parts.is_empty() {
-        if let Err(error) = st
-            .byoc
-            .disconnect_participation(&st.db, participation_id)
-            .await
-        {
-            errors.push(format!("revoke BYOC tunnel: {error}"));
-        }
-    } else {
-        for part in team_parts {
-            if let Err(error) = st.byoc.disconnect_participation(&st.db, part.id).await {
-                errors.push(format!("revoke BYOC tunnel: {error}"));
-            }
-        }
-    }
-    if let Err(error) = crate::services::ad_engine::revoke_koth_capabilities(
-        &st.db,
-        st.cache.as_ref(),
-        &[participation_id],
-    )
-    .await
-    {
-        errors.push(format!("revoke KotH capability: {error}"));
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(AppError::internal(errors.join("; ")))
-    }
-}
-
-/// Revoke credentials copied by any member of a team. These credentials are
-/// participation-shared in this schema, so member removal/ban must revoke them
-/// for the whole team and require the remaining roster to mint fresh material.
-pub(crate) async fn revoke_team_shared_capabilities(
-    st: &SharedState,
-    team_id: i32,
-) -> AppResult<Vec<participation::Model>> {
-    let parts = participation::Entity::find()
-        .filter(participation::Column::TeamId.eq(team_id))
-        .all(&st.db)
-        .await?;
-    let part_ids: Vec<i32> = parts.iter().map(|part| part.id).collect();
-    let mut errors = Vec::new();
-    match team::Entity::find_by_id(team_id).one(&st.db).await {
-        Ok(Some(team)) => {
-            let mut am: team::ActiveModel = team.into();
-            am.invite_token = Set(random_hex(16));
-            if let Err(error) = am.update(&st.db).await {
-                errors.push(format!("rotate team secret: {error}"));
-            }
-        }
-        Ok(None) => {}
-        Err(error) => errors.push(format!("load team secret: {error}")),
-    }
-    if !part_ids.is_empty() {
-        if let Err(error) = ad_team_api_token::Entity::delete_many()
-            .filter(ad_team_api_token::Column::ParticipationId.is_in(part_ids.clone()))
-            .exec(&st.db)
-            .await
-        {
-            errors.push(format!("revoke API tokens: {error}"));
-        }
-        if let Err(error) = ad_ssh_key::Entity::delete_many()
-            .filter(ad_ssh_key::Column::ParticipationId.is_in(part_ids.clone()))
-            .exec(&st.db)
-            .await
-        {
-            errors.push(format!("revoke SSH keys: {error}"));
-        }
-        if let Err(error) =
-            crate::services::ad_vpn::revoke_peers_for_participations(&st.db, &part_ids).await
-        {
-            errors.push(format!("revoke VPN peers: {error}"));
-        }
-    }
-    for part in &parts {
-        if let Err(error) = st.byoc.disconnect_participation(&st.db, part.id).await {
-            errors.push(format!("revoke BYOC tunnel: {error}"));
-        }
-    }
-    if !part_ids.is_empty() {
-        if let Err(error) = crate::services::ad_engine::revoke_koth_capabilities(
-            &st.db,
-            st.cache.as_ref(),
-            &part_ids,
-        )
-        .await
-        {
-            errors.push(format!("revoke KotH capabilities: {error}"));
-        }
-    }
-    if !errors.is_empty() {
-        return Err(AppError::internal(errors.join("; ")));
-    }
-    Ok(parts)
-}
-
-/// Establish a durable fail-closed gate before team deletion starts teardown.
-pub(crate) async fn mark_team_participations_revoked(
-    st: &SharedState,
-    team_id: i32,
-) -> AppResult<()> {
-    let game_ids: std::collections::BTreeSet<i32> = participation::Entity::find()
-        .filter(participation::Column::TeamId.eq(team_id))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|participation| participation.game_id)
-        .collect();
-    let mut scoring_controls = Vec::new();
-    for game_id in game_ids {
-        let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?;
-        if crate::controllers::edit::ad_epoch_scoring_started_locked(
-            &mut **control.transaction_mut(),
-            game_id,
-        )
-        .await?
-        {
-            return Err(AppError::bad_request(
-                "A team cannot be deleted after A&D epoch scoring has started.",
-            ));
-        }
-        scoring_controls.push(control);
-    }
-
-    sqlx::query(r#"UPDATE "Participations" SET status = $1 WHERE team_id = $2"#)
-        .bind(crate::utils::enums::ParticipationStatus::Suspended as i16)
-        .bind(team_id)
-        .execute(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    for control in scoring_controls.into_iter().rev() {
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-    Ok(())
-}
-
-/// Drop a user from a team's roster: delete the `team_member` row and, mirroring
-/// RSCTF `RemoveUserParticipations`, any per-game participation rows they hold
-/// for this team.
-async fn remove_membership(st: &SharedState, team_id: i32, user_id: Uuid) -> AppResult<()> {
-    let parts = revoke_team_shared_capabilities(st, team_id).await?;
-
-    team_member::Entity::delete_many()
-        .filter(team_member::Column::TeamId.eq(team_id))
-        .filter(team_member::Column::UserId.eq(user_id))
-        .exec(&st.db)
-        .await?;
-    user_participation::Entity::delete_many()
-        .filter(user_participation::Column::TeamId.eq(team_id))
-        .filter(user_participation::Column::UserId.eq(user_id))
-        .exec(&st.db)
-        .await?;
-
-    for part in parts {
-        st.cache
-            .remove(&crate::controllers::game::ad::participation_cache_key(
-                user_id,
-                part.game_id,
-            ))
-            .await;
-        st.byoc.disconnect_participation(&st.db, part.id).await?;
-    }
-    Ok(())
-}
-
 /// Distinct ids of the games the team has (or had) a participation in.
 pub(crate) async fn team_game_ids(st: &SharedState, team_id: i32) -> AppResult<Vec<i32>> {
     let mut ids: Vec<i32> = participation::Entity::find()
@@ -947,7 +879,7 @@ pub(crate) async fn destroy_team_containers(st: &SharedState, team_id: i32) -> A
     let ad_backend_ids =
         crate::services::ad_vpn::deactivate_participation_services(&st.db, &part_ids).await?;
     for backend_id in ad_backend_ids {
-        crate::services::traffic::stop_container_capture(&st, &backend_id).await?;
+        crate::services::traffic::stop_container_capture(st, &backend_id).await?;
         let _ = st.containers.destroy(&backend_id).await;
     }
 
@@ -990,3 +922,11 @@ async fn any_active_game(st: &SharedState, team_id: i32) -> AppResult<bool> {
         .await?;
     Ok(active > 0)
 }
+
+#[cfg(test)]
+#[path = "accept_tests.rs"]
+mod accept_tests;
+
+#[cfg(test)]
+#[path = "account_lifecycle_tests.rs"]
+mod account_lifecycle_tests;

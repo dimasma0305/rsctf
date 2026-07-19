@@ -78,8 +78,10 @@ spec:
                 - SETUID
                 - NET_ADMIN
                 {{- end }}
-                {{- if $captureOwner }}
-                # The singleton Docker capture owner opens a libpcap device.
+                {{- if or $captureOwner $vpnOwner }}
+                # The singleton Docker capture owner opens a libpcap device;
+                # the VPN owner's iptables ipset matcher also opens a raw
+                # socket while resolving sets. Neither capability reaches web.
                 - NET_RAW
                 {{- end }}
               {{- end }}
@@ -97,6 +99,12 @@ spec:
                 secretKeyRef:
                   name: {{ include "rsctf.secretName" . }}
                   key: {{ .Values.existingSecret.jwtSecretKey }}
+            - name: RSCTF_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.bootstrapTokenKey }}
+                  optional: true
             {{- if or .Values.redis.enabled (not (empty .Values.redis.url)) (not (empty .Values.existingSecret.name)) }}
             - name: RSCTF_REDIS_URL
               valueFrom:

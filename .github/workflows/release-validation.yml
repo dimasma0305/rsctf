@@ -1,0 +1,114 @@
+name: Validate coordinated publication
+
+on:
+  workflow_call:
+    inputs:
+      require_main:
+        description: Require the selected commit to be reachable from origin/main
+        required: false
+        type: boolean
+        default: false
+      release_version:
+        description: Optional unprefixed version requested by a manual publisher
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release:
+    name: Validate publication source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Skip validation when no release policy applies
+        if: github.ref_type != 'tag' && !inputs.require_main
+        run: echo "No release policy applies to ${GITHUB_REF}."
+
+      - name: Check out repository history
+        if: github.ref_type == 'tag' || inputs.require_main || inputs.release_version != ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Match publication and repository versions
+        if: github.ref_type == 'tag' || inputs.release_version != ''
+        env:
+          REQUESTED_RELEASE_VERSION: ${{ inputs.release_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Releases require a strict vX.Y.Z tag."
+              exit 1
+            fi
+            release_version="${GITHUB_REF_NAME#v}"
+          else
+            release_version="$REQUESTED_RELEASE_VERSION"
+            if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::Manual publications require an explicit semantic version."
+              exit 1
+            fi
+          fi
+
+          cargo_package_version() {
+            awk '
+              $0 == "[package]" { in_package = 1; next }
+              in_package && /^\[/ { exit }
+              in_package && /^version = "/ {
+                value = $0
+                sub(/^version = "/, "", value)
+                sub(/"$/, "", value)
+                print value
+                exit
+              }
+            ' "$1"
+          }
+
+          chart_value() {
+            local value
+            value="$(awk -v key="$1:" '$1 == key { print $2; exit }' charts/rsctf/Chart.yaml)"
+            value="${value#\"}"
+            value="${value%\"}"
+            value="${value#\'}"
+            value="${value%\'}"
+            printf '%s\n' "$value"
+          }
+
+          require_release_version() {
+            local component="$1"
+            local version="$2"
+            if [[ -z "$version" || "$version" != "$release_version" ]]; then
+              echo "::error::Publication version ${release_version} does not match ${component} version ${version:-unknown}."
+              exit 1
+            fi
+          }
+
+          require_release_version "rsctf" \
+            "$(cargo_package_version Cargo.toml)"
+          require_release_version "rsctf-byoc-agent" \
+            "$(cargo_package_version agents/byoc-agent/Cargo.toml)"
+          require_release_version "rsctf-worker-agent" \
+            "$(cargo_package_version agents/worker-agent/Cargo.toml)"
+          require_release_version "Helm chart" \
+            "$(chart_value version)"
+          require_release_version "Helm appVersion" \
+            "$(chart_value appVersion)"
+
+      - name: Require a commit reachable from main
+        if: github.ref_type == 'tag' || inputs.require_main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin \
+            refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::Publications must use a commit reachable from main."
+            exit 1
+          fi

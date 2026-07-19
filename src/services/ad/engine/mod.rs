@@ -181,7 +181,8 @@ pub(crate) use flag_delivery::{
     record_flag_delivery_outcomes, FlagDeliveryKind, FlagDeliveryOutcome,
 };
 pub(crate) use koth_auth::{
-    acquire_game_lock as acquire_ad_game_lock, clear_challenge_control, revoke_koth_capabilities,
+    acquire_game_lock as acquire_ad_game_lock, clear_challenge_control, game_lock_key,
+    revoke_koth_capabilities,
 };
 pub(crate) use persistence::{complete_missing_koth_results, finalize_ended_round_checks};
 pub use reducers::*;

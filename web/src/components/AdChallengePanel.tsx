@@ -231,7 +231,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
             <Text size="xs">
               {t(
                 'game.content.ad.byoc.description',
-                'Self-hosted challenge — run it on your own machine, one command. Download setup.sh and run `sh setup.sh`: it pulls the real service from the game server and connects it. No build, no public IP, inbound firewall, or VPN needed — just one outbound connection.'
+                'Self-hosted challenge — run it on a dedicated machine. Download setup.sh and run `sh setup.sh`: it pulls the service and connects with one outbound connection. The script contains team credentials; keep it private and delete the downloaded copy after setup.'
               )}
             </Text>
             <Group gap="xs">

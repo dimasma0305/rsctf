@@ -14,6 +14,8 @@
 
 pub mod ad;
 mod flag_egress;
+#[path = "participation.rs"]
+mod participation_review;
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Write};
@@ -38,15 +40,14 @@ use uuid::Uuid;
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
 
 use crate::app_state::SharedState;
-use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser};
+use crate::middlewares::privilege_authentication::AdminUser;
 use crate::models::data::{
     anti_cheat_block, api_token, build_record, challenge_review, config, container, division,
     flag_context, game, game_challenge, game_instance, game_manager, local_file, log_entry,
     participation, repo_binding, repo_binding_scan, submission, suspicion_event, team, team_member,
     user, user_participation,
 };
-use crate::utils::codec::random_hex;
-use crate::utils::crypto_utils::hash_password;
+use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::{
     ChallengeBuildStatus, ChallengeCategory, ParticipationStatus, RepoWatchStatus, ReviewRating,
     Role,
@@ -54,6 +55,7 @@ use crate::utils::enums::{
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{ArrayResponse, MessageResponse, RequestResponse};
 pub use flag_egress::*;
+pub use participation_review::*;
 
 // ─── DTOs ──────────────────────────────────────────────────────────────────
 
@@ -79,16 +81,6 @@ fn default_count() -> u64 {
 pub struct SearchModel {
     #[serde(default)]
     pub hint: String,
-}
-
-/// RSCTF `ParticipationEditModel`.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ParticipationEditModel {
-    #[serde(default)]
-    pub status: Option<ParticipationStatus>,
-    #[serde(default)]
-    pub division_id: Option<i32>,
 }
 
 // ─── Router ──────────────────────────────────────────────────────────────────
@@ -187,165 +179,6 @@ pub fn router() -> Router<SharedState> {
         )
         // Admin A&D controller (round advance, service registration) under admin.
         .merge(ad::router())
-}
-
-// ─── Participation ─────────────────────────────────────────────────────────────
-
-/// `PUT /api/admin/participation/{id}` — update a participation's status /
-/// division (registration review).
-///
-/// RSCTF's `AdminController.Participation` is `[RequireUser]`, not
-/// `[RequireAdmin]`: a platform Admin OR an EventManager of the participation's
-/// game may review it. We mirror that — take a plain `CurrentUser` and gate on
-/// `is_admin()` OR a `GameManagers` row for `(game_id, user_id)`. 404-before-403
-/// ordering matches RSCTF (it loads the participation, then checks authz).
-pub async fn update_participation(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path(id): Path<i32>,
-    Json(model): Json<ParticipationEditModel>,
-) -> AppResult<MessageResponse> {
-    let mut p = participation::Entity::find_by_id(id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Participation not found"))?;
-
-    let game_id = p.game_id;
-
-    // Authorization: platform Admin OR a manager (EventManager) of this game.
-    if !user.is_admin() {
-        let is_manager = game_manager::Entity::find()
-            .filter(game_manager::Column::GameId.eq(game_id))
-            .filter(game_manager::Column::UserId.eq(user.id))
-            .count(&st.db)
-            .await?
-            > 0;
-        if !is_manager {
-            return Err(AppError::Forbidden);
-        }
-    }
-
-    let team_id = p.team_id;
-    let roster_guard = if model.status.is_some() {
-        let key = format!("team-roster:{team_id}");
-        Some(crate::utils::single_flight::coalesce(&key).await)
-    } else {
-        None
-    };
-    let distributed_roster = if model.status.is_some() {
-        let key = format!("team-roster:{team_id}");
-        Some(crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &key).await?)
-    } else {
-        None
-    };
-    let mut scoring_control = None;
-    if let Some(requested_status) = model.status {
-        let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?;
-        p = participation::Entity::find_by_id(id)
-            .one(&st.db)
-            .await?
-            .ok_or_else(|| AppError::not_found("Participation not found"))?;
-        let scoring_started = crate::controllers::edit::ad_epoch_scoring_started_locked(
-            &mut **control.transaction_mut(),
-            game_id,
-        )
-        .await?;
-        crate::controllers::edit::ensure_ad_roster_status_mutable(
-            scoring_started,
-            Some(p.status),
-            requested_status,
-        )?;
-        scoring_control = Some(control);
-    }
-    let mut am: participation::ActiveModel = p.into();
-
-    // RSCTF ParticipationRepository.UpdateDivision: the requested division must
-    // belong to the participation's game (GetDivision(part.GameId, divId)). A
-    // provided divisionId is applied only if such a division exists for this game
-    // — an out-of-game / unknown id is ignored, leaving the current value. An
-    // explicit null (absent maps to the same in the C# `int?` model) clears it.
-    match model.division_id {
-        Some(division_id) => {
-            let in_game = division::Entity::find()
-                .filter(division::Column::Id.eq(division_id))
-                .filter(division::Column::GameId.eq(game_id))
-                .count(&st.db)
-                .await?
-                > 0;
-            if in_game {
-                am.division_id = Set(Some(division_id));
-            }
-        }
-        None => {
-            am.division_id = Set(None);
-        }
-    }
-
-    if let Some(status) = model.status {
-        am.status = Set(status);
-        // RSCTF UpdateParticipationStatus: clear the division when Rejected. This
-        // runs after UpdateDivision, so it overrides any division just set above.
-        if status == ParticipationStatus::Rejected {
-            am.division_id = Set(None);
-        }
-    }
-    am.update(&st.db).await?;
-    if let Some(control) = scoring_control {
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-
-    if model
-        .status
-        .is_some_and(|status| status != ParticipationStatus::Accepted)
-    {
-        crate::controllers::team::revoke_participation_capabilities(&st, id).await?;
-    }
-
-    // RSCTF UpdateParticipationStatus: when a participation is Accepted, lock the
-    // team so its roster is frozen, then provision its play resources —
-    // ParticipationRepository.EnsureInstances (a GameInstance per enabled+Active
-    // challenge) plus, for a self-hosted A&D game, the team's service containers
-    // (best-effort on a Docker outage). Runs AFTER the status update is persisted.
-    let accepting = model.status == Some(ParticipationStatus::Accepted);
-    if accepting {
-        if let Some(t) = team::Entity::find_by_id(team_id).one(&st.db).await? {
-            let mut tm: team::ActiveModel = t.into();
-            tm.locked = Set(true);
-            tm.update(&st.db).await?;
-        }
-    }
-    if let Some(lock) = distributed_roster {
-        lock.release().await?;
-    }
-    drop(roster_guard);
-    if accepting {
-        crate::controllers::edit::provision_accepted_participation(&st, game_id, id).await?;
-    }
-
-    // RSCTF FlushScoreboardCache (+ FlushAdScoreboardCacheIncludingFrozen for
-    // A&D/KotH): participation status is a scoring input, so a review ruling must
-    // evict the cached boards. Clear the whole scoreboard cache family for the
-    // game — a superset of RSCTF's jeopardy-always + AD/KotH-conditional eviction;
-    // removing an absent key is a no-op. Mirrors edit::reviews::flush_scoreboard.
-    for key in [
-        format!("_ScoreBoard_{game_id}"),
-        format!("_ScoreBoardFrozen_{game_id}"),
-        format!("_KothScoreBoard_{game_id}"),
-        format!("_KothScoreBoardFrozen_{game_id}"),
-        format!("_KothTimeline_{game_id}"),
-        format!("_KothTimelineFrozen_{game_id}"),
-    ] {
-        st.cache.remove(&key).await;
-    }
-    crate::controllers::game::ad::hard_invalidate_ad_scoreboard(&st, game_id).await;
-    // A review ruling (accept / reject / ban) changes the team's access — flush every
-    // member's cached participation so it takes effect at once, not on the 5s TTL.
-    crate::controllers::game::ad::flush_participation_cache(&st, game_id, id).await;
-
-    Ok(MessageResponse::ok(""))
 }
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
@@ -951,6 +784,7 @@ mod repo_bindings;
 mod settings;
 mod teams;
 mod users;
+mod users_bulk_identity;
 mod users_credentials;
 mod users_mutate;
 pub use anti_cheat::*;

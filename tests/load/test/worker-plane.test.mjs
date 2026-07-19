@@ -134,6 +134,25 @@ test('local worker runner validates the fixture response marker', () => {
   assert.match(source, /Shared rsctf demo service/);
 });
 
+test('local worker runner binds a private per-run bootstrap token exactly twice', () => {
+  const source = readFileSync(new URL('../worker-plane-local.mjs', import.meta.url), 'utf8');
+  assert.match(
+    source,
+    /const bootstrapToken = randomBytes\(32\)\.toString\('base64url'\);/,
+  );
+  assert.match(source, /RSCTF_BOOTSTRAP_TOKEN: bootstrapToken,/);
+  assert.match(
+    source,
+    /\/api\/account\/register[\s\S]*?body: \{[\s\S]*?bootstrapToken,[\s\S]*?\},/,
+  );
+  assert.equal(
+    source.match(/\bbootstrapToken\b/g)?.length,
+    3,
+    'the secret must only be generated, passed to isolated Compose, and sent to registration',
+  );
+  assert.doesNotMatch(source, /process\.env\.RSCTF_BOOTSTRAP_TOKEN\s*=/);
+});
+
 test('source fingerprints are required and fail closed on either mismatch', () => {
   const tracked = 'ab'.repeat(32);
   const untracked = 'cd'.repeat(32);

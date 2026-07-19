@@ -1,26 +1,34 @@
 # Docker Compose
 
-The generic files under `deploy/` are the recommended Docker path. The installer downloads these small templates and pulls a ready-to-run image from Docker Hub. End users do not need the source code, Rust, Node.js, or a local image build.
+The generic files under `deploy/` are the recommended Docker path. The remote
+bootstrap verifies one tagged deployment bundle and pulls its matching
+ready-to-run image from GHCR. End users do not need the source code, Rust,
+Node.js, or a local image build.
 
 ## Recommended: use the wizard
 
-Run the one-command remote installer:
+Follow the [verified release-installer procedure](../reference/installer). After
+the downloaded `install.sh` passes attestation verification, run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dimasma0305/rsctf/main/scripts/install.sh | bash
+bash ./install.sh --ref vX.Y.Z
 ```
 
 See [Install with the wizard](../getting-started/install-wizard) for the guided flow.
 
 ## Image used by the installer
 
-The stable default is:
+For release `vX.Y.Z`, the verified bundle selects:
 
 ```text
-dimasmaualana/rsctf:latest
+ghcr.io/dimasma0305/rsctf@sha256:<release-digest>
 ```
 
-For a repeatable event, select a versioned tag instead of `latest`. The wizard accepts an image override for a pinned release or private mirror.
+The bootstrap resolves the latest release to a strict version tag by default;
+use `--ref vX.Y.Z` to make that choice explicit. It rejects branches and moving
+refs, and it never substitutes `latest` or the version tag. The wizard still
+accepts a deliberate image override for an immutable digest or a private
+mirror.
 
 After installation, validate and start the downloaded deployment bundle with:
 
@@ -48,10 +56,28 @@ The installer writes the selected files to `COMPOSE_FILE` in `deploy/.env`, so n
 Add the Docker-backend override to give rsctf access to the host daemon. This lets rsctf create per-team challenge containers.
 
 ::: danger Root-equivalent boundary
-The Docker socket lets the rsctf process control the host daemon. A compromise of the public application can become a host compromise. Run it on a dedicated VM/server and keep the host free of unrelated sensitive workloads.
+The Docker socket lets the rsctf process control the host daemon. Socket access,
+including membership in the host's `docker` group, is effectively host-root
+access; container or systemd hardening does not remove that authority. A
+compromise of the public application can become a host compromise. Run it on a
+dedicated VM/server and keep the host free of unrelated sensitive workloads.
 :::
 
 Normal dynamic challenges publish daemon-selected TCP ports on the host. Allow the intended port range through the firewall or place a purpose-built challenge proxy in front of them. `RSCTF_DOCKER_PUBLIC_ENTRY` must be the hostname or address players can actually reach.
+
+Docker challenge containers carry a hashed installation scope. All replicas in
+one installation must use the same `RSCTF_DOCKER_SCOPE`; independent
+installations sharing a daemon need different scopes and different A&D network
+names/CIDRs. The default derives from `RSCTF_JWT_SECRET`. Set an explicit value
+before rotating that secret so existing workloads remain owned by the same
+installation.
+
+Docker deliberately rejects `allowEgress: true` for every A&D and KotH
+workload. A shared external bridge cannot prevent one hostile workload from
+reaching peers, private networks, or cloud metadata, so treating that bridge as
+outbound-only would fail open. Keep `allowEgress: false` on Docker. If a service
+requires outbound access, use the Kubernetes backend with a NetworkPolicy-capable
+CNI; rsctf creates a per-workload egress policy there.
 
 The base `all` role drops Docker's default capability set. It receives only the
 identity and cleanup capabilities needed by checker children, `NET_ADMIN` for
@@ -78,13 +104,18 @@ The Caddy override publishes ports 80 and 443, obtains a certificate for the con
 The VPN override adds:
 
 - `NET_ADMIN`
+- `NET_RAW` for the iptables ipset matcher
 - `/dev/net/tun`
 - IPv4 forwarding inside the container
 - UDP 51820 for WireGuard
 - TCP 2222 for the A&D SSH bastion
 - An internal Docker network for A&D services
 
-It requires rootful Docker on Linux, WireGuard/ipset kernel support, non-overlapping network ranges, and a reachable public endpoint. Test this mode on the production host before the event.
+It requires rootful Docker on Linux, WireGuard/ipset kernel support, non-overlapping network ranges, and a reachable public endpoint. `NET_RAW` stays on the singleton VPN owner; public web replicas receive neither VPN capability. Test this mode on the production host before the event.
+
+The Docker A&D services bridge is internal-only. Enabling a challenge's
+`allowEgress` setting is rejected before Docker creates or pulls the workload;
+Kubernetes is required for isolated allowed egress.
 
 ### Multiple web replicas
 

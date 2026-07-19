@@ -33,9 +33,11 @@ pub(super) fn container_name(
         name.push_str(&uuid::Uuid::new_v4().simple().to_string()[..12]);
     }
     let name = name.trim_matches('-').to_string();
-    (!name.is_empty())
-        .then_some(name)
-        .unwrap_or_else(|| "rsctf-container".to_string())
+    if name.is_empty() {
+        "rsctf-container".to_string()
+    } else {
+        name
+    }
 }
 
 pub(super) fn map_status(state: Option<ContainerStateStatusEnum>) -> &'static str {

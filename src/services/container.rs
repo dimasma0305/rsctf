@@ -20,7 +20,8 @@
 //!      quota (`HostConfig.nano_cpus`), a `PidsLimit`, the dynamic flag injected
 //!      as the `RSCTF_FLAG` env var, the challenge port exposed and published to
 //!      a daemon-chosen host port (`PortBinding { host_port: "0" }`), and an
-//!      `rsctf.managed=true` label so orphans are identifiable,
+//!      installation-scoped managed labels so orphans are identifiable without
+//!      one rsctf deployment reaping another deployment's containers,
 //!    - start it and inspect it to read back the published host IP/port and the
 //!      live lifecycle state.
 //! 3. **Destroy** — force-remove by id, treating "not found" as success (the
@@ -39,6 +40,7 @@
 //! and call create/destroy/exec/snapshot_changes for the full instance lifecycle.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -78,6 +80,9 @@ pub use docker::{from_env, from_env_required};
 /// team/challenge metadata).
 const MANAGED_LABEL: &str = "rsctf.managed";
 const OPERATION_LABEL: &str = "rsctf.operation";
+const SCOPE_LABEL: &str = "rsctf.scope";
+const DOCKER_SCOPE_ENV: &str = "RSCTF_DOCKER_SCOPE";
+const JWT_SECRET_ENV: &str = "RSCTF_JWT_SECRET";
 
 /// Environment names injected into rsctf-managed challenge containers.
 const FLAG_ENV: &str = "RSCTF_FLAG";
@@ -87,13 +92,98 @@ const TEAM_ENV: &str = "RSCTF_TEAM_ID";
 const DEFAULT_MAX_MEMORY_MB: i32 = 4_096;
 const DEFAULT_MAX_CPU_COUNT: i32 = 8;
 pub(super) const MAX_EXEC_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_SNAPSHOT_EXPORT_BYTES: usize = 64 * 1024 * 1024;
+const SNAPSHOT_EXPORT_MAX_DURATION: Duration = Duration::from_secs(120);
+const SNAPSHOT_EXPORT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONCURRENT_SNAPSHOT_EXPORTS: usize = 2;
+const DOCKER_COMPETITIVE_EGRESS_ERROR: &str =
+    "Docker does not safely support allowEgress=true for A&D or KotH workloads; \
+     set allowEgress=false or use the Kubernetes backend with per-workload NetworkPolicy isolation";
+
+fn snapshot_export_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(MAX_CONCURRENT_SNAPSHOT_EXPORTS))
+}
+
+fn append_snapshot_chunk(out: &mut Vec<u8>, chunk: &[u8], limit: usize) -> AppResult<()> {
+    let next_len = out
+        .len()
+        .checked_add(chunk.len())
+        .ok_or_else(|| AppError::bad_request("snapshot export size overflow"))?;
+    if next_len > limit {
+        return Err(AppError::bad_request(format!(
+            "snapshot export exceeds the {} MiB safety limit",
+            limit / (1024 * 1024)
+        )));
+    }
+    out.try_reserve(chunk.len())
+        .map_err(|_| AppError::internal("failed to reserve snapshot export buffer"))?;
+    out.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn docker_workload_scope(explicit: Option<&str>, jwt_secret: Option<&str>) -> String {
+    let (source, identity) = explicit
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| ("explicit", value))
+        .or_else(|| {
+            jwt_secret
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| ("jwt", value))
+        })
+        // Normal startup rejects this fallback before a container backend is
+        // used. Keeping it deterministic makes isolated manager tests useful.
+        .unwrap_or(("development", "rsctf"));
+    crate::utils::codec::sha256_str(&format!("{source}\0{identity}"))[..32].to_string()
+}
+
+fn scoped_managed_labels(scope: &str) -> HashMap<String, String> {
+    HashMap::from([
+        (MANAGED_LABEL.to_string(), scope.to_string()),
+        (SCOPE_LABEL.to_string(), scope.to_string()),
+    ])
+}
+
+fn scoped_operation_id(scope: &str, operation_id: Option<&str>) -> Option<String> {
+    operation_id.map(|operation_id| format!("{scope}\0{operation_id}"))
+}
+
+fn managed_container_filters(scope: &str) -> HashMap<String, Vec<String>> {
+    HashMap::from([(
+        "label".to_string(),
+        vec![
+            format!("{MANAGED_LABEL}={scope}"),
+            format!("{SCOPE_LABEL}={scope}"),
+        ],
+    )])
+}
+
+fn labels_match_scope(labels: Option<&HashMap<String, String>>, scope: &str) -> bool {
+    labels.is_some_and(|labels| {
+        labels.get(MANAGED_LABEL).map(String::as_str) == Some(scope)
+            && labels.get(SCOPE_LABEL).map(String::as_str) == Some(scope)
+    })
+}
+
+/// Legacy Compose-created bridges did not carry an rsctf scope label. Continue
+/// to accept those after checking their exact name/subnet/internal shape, but a
+/// bridge that declares ownership must belong to this installation.
+fn network_scope_matches(existing: &Network, scope: &str) -> bool {
+    existing
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(SCOPE_LABEL))
+        .is_none_or(|actual| actual == scope)
+}
 
 fn bridge_network_matches(existing: &Network, subnet: Option<&str>, internal: bool) -> bool {
     let managed = existing
         .labels
         .as_ref()
         .and_then(|labels| labels.get(MANAGED_LABEL))
-        .is_some_and(|value| value == "true");
+        .is_some();
     let subnet_matches = subnet.is_none_or(|expected| {
         let Ok(expected) = expected.parse::<Ipv4Net>() else {
             return false;
@@ -143,8 +233,10 @@ pub struct ContainerSpec {
     /// it's reachable only over the WireGuard tunnel. `ContainerInfo.ip` then
     /// carries the assigned in-VPN IP and `port` the container-internal expose port.
     pub ad_network: Option<String>,
-    /// Whether an A&D/KotH container may also join the dedicated outbound-only
-    /// bridge. Ignored when `ad_network` is absent.
+    /// Whether an A&D/KotH container may use backend-isolated outbound access.
+    /// Kubernetes enforces this with a per-workload NetworkPolicy. Docker
+    /// rejects it because a shared external bridge cannot prevent east-west,
+    /// private-network, or metadata access.
     pub allow_egress: bool,
     /// Stable lifecycle identity for crash-recoverable create operations. When
     /// present, a backend must adopt the matching existing workload instead of
@@ -162,9 +254,10 @@ pub fn game_kind_for_challenge(challenge_type: ChallengeType) -> GameKind {
 
 impl ContainerSpec {
     /// Build the invariant placement for a platform-hosted A&D service: it joins
-    /// the internal services network and is never published on a host port. When
-    /// explicitly allowed it also joins a separate outbound-only bridge. Both the
-    /// initial provision and every restart/reset must use this constructor.
+    /// the internal services network and is never published on a host port.
+    /// Docker accepts only `allow_egress=false`; Kubernetes can enforce an
+    /// allowed-egress policy per workload. Both the initial provision and every
+    /// restart/reset must use this constructor.
     pub fn ad_service(
         image: String,
         memory_limit: i32,
@@ -230,6 +323,18 @@ pub(crate) fn validate_container_spec(spec: &ContainerSpec) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_docker_container_spec(spec: &ContainerSpec) -> AppResult<()> {
+    if spec.allow_egress
+        && matches!(
+            spec.game_kind,
+            GameKind::AttackDefense | GameKind::KingOfTheHill
+        )
+    {
+        return Err(AppError::bad_request(DOCKER_COMPETITIVE_EGRESS_ERROR));
+    }
+    validate_container_spec(spec)
+}
+
 /// Runtime information about a created / running container.
 ///
 /// Mirrors the parts of RSCTF `Models.Data.Container` that callers need to
@@ -261,6 +366,10 @@ pub struct DockerContainerManager {
     /// Public host/IP that exposed container ports are advertised on. When set,
     /// [`ContainerInfo::ip`] is this value (matching RSCTF `PublicEntry`).
     pub public_entry: Option<String>,
+    /// Hashed installation identity shared by replicas using the same Docker
+    /// daemon. It prevents one deployment's orphan sweep or operation adoption
+    /// from touching another deployment's workloads.
+    scope: String,
     /// Live Docker client handle populated by [`Self::connect`].
     docker: Option<Docker>,
 }
@@ -277,6 +386,10 @@ impl DockerContainerManager {
         Ok(Self {
             endpoint: std::env::var("DOCKER_HOST").ok(),
             public_entry: std::env::var("RSCTF_DOCKER_PUBLIC_ENTRY").ok(),
+            scope: docker_workload_scope(
+                std::env::var(DOCKER_SCOPE_ENV).ok().as_deref(),
+                std::env::var(JWT_SECRET_ENV).ok().as_deref(),
+            ),
             docker: Some(docker),
         })
     }
@@ -329,7 +442,9 @@ impl DockerContainerManager {
             )
             .await
         {
-            if bridge_network_matches(&existing, subnet, internal) {
+            if bridge_network_matches(&existing, subnet, internal)
+                && network_scope_matches(&existing, &self.scope)
+            {
                 return Ok(());
             }
             return Err(AppError::internal(format!(
@@ -353,7 +468,7 @@ impl DockerContainerManager {
             driver: "bridge".to_string(),
             internal,
             ipam,
-            labels: HashMap::from([(MANAGED_LABEL.to_string(), "true".to_string())]),
+            labels: scoped_managed_labels(&self.scope),
             ..Default::default()
         };
         match docker.create_network(opts).await {
@@ -367,7 +482,12 @@ impl DockerContainerManager {
                     )
                     .await
                 {
-                    Ok(existing) if bridge_network_matches(&existing, subnet, internal) => Ok(()),
+                    Ok(existing)
+                        if bridge_network_matches(&existing, subnet, internal)
+                            && network_scope_matches(&existing, &self.scope) =>
+                    {
+                        Ok(())
+                    }
                     _ => Err(AppError::internal(format!(
                         "failed to create Docker network {name}: {create_error}"
                     ))),
@@ -399,14 +519,6 @@ fn is_conflict(err: &bollard::errors::Error) -> bool {
     )
 }
 
-fn ad_network_plan(primary: &str, allow_egress: bool) -> Vec<(String, bool)> {
-    let mut networks = vec![(primary.to_string(), true)];
-    if allow_egress {
-        networks.push((crate::services::ad_vpn::egress_network(), false));
-    }
-    networks
-}
-
 #[async_trait]
 impl ContainerManager for DockerContainerManager {
     fn backend_kind(&self) -> ContainerBackendKind {
@@ -424,11 +536,9 @@ impl ContainerManager for DockerContainerManager {
         let Ok(docker) = self.client() else {
             return Vec::new();
         };
-        let mut filters: HashMap<String, Vec<String>> = HashMap::new();
-        filters.insert("label".to_string(), vec![format!("{MANAGED_LABEL}=true")]);
         let opts = ListContainersOptions {
             all: true,
-            filters,
+            filters: managed_container_filters(&self.scope),
             ..Default::default()
         };
         match docker.list_containers(Some(opts)).await {
@@ -441,7 +551,7 @@ impl ContainerManager for DockerContainerManager {
     }
 
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
-        validate_container_spec(&spec)?;
+        validate_docker_container_spec(&spec)?;
         let docker = self.client()?;
 
         // 1. Pull the immutable reference only if it is not present locally.
@@ -504,26 +614,20 @@ impl ContainerManager for DockerContainerManager {
             ..Default::default()
         };
 
-        let mut labels: HashMap<String, String> =
-            HashMap::from([(MANAGED_LABEL.to_string(), "true".to_string())]);
+        let mut labels = scoped_managed_labels(&self.scope);
         if let Some(operation_id) = spec.operation_id.as_ref() {
             labels.insert(OPERATION_LABEL.to_string(), operation_id.clone());
         }
 
-        // A&D-over-VPN: always attach to the internal services bridge. Opted-in
-        // services additionally join a dedicated egress bridge that has no
-        // rsctf/Postgres/Redis members.
+        // A&D-over-VPN always attaches only to the internal services bridge.
+        // Docker allowEgress is rejected above: adding a shared external bridge
+        // would permit cross-workload, private-network, and metadata access.
         let networking_config = if let Some(net) = spec.ad_network.as_ref() {
             let services_cidr = crate::services::ad_vpn::services_cidr();
-            let mut endpoints = HashMap::new();
-            for (network, internal) in ad_network_plan(net, spec.allow_egress) {
-                let subnet = internal.then_some(services_cidr.as_str());
-                self.ensure_bridge_network(&network, subnet, internal)
-                    .await?;
-                endpoints.insert(network, EndpointSettings::default());
-            }
+            self.ensure_bridge_network(net, Some(services_cidr.as_str()), true)
+                .await?;
             Some(NetworkingConfig {
-                endpoints_config: endpoints,
+                endpoints_config: HashMap::from([(net.clone(), EndpointSettings::default())]),
             })
         } else {
             None
@@ -541,7 +645,8 @@ impl ContainerManager for DockerContainerManager {
 
         // 5. Create with a readable unique name. Never remove a 409 holder: without
         // an ownership proof it may be another user's live challenge container.
-        let mut name = container_name(&spec.image, &spec.env, spec.operation_id.as_deref());
+        let scoped_operation = scoped_operation_id(&self.scope, spec.operation_id.as_deref());
+        let mut name = container_name(&spec.image, &spec.env, scoped_operation.as_deref());
         let (id, adopted) = match docker
             .create_container(
                 Some(CreateContainerOptions::<String> {
@@ -573,7 +678,13 @@ impl ContainerManager for DockerContainerManager {
                     .config
                     .as_ref()
                     .and_then(|config| config.image.as_deref());
-                if actual_operation != expected_operation
+                let scope_matches = existing
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.labels.as_ref())
+                    .is_some_and(|labels| labels_match_scope(Some(labels), &self.scope));
+                if !scope_matches
+                    || actual_operation != expected_operation
                     || actual_image != Some(spec.image.as_str())
                 {
                     return Err(AppError::conflict(
@@ -834,18 +945,30 @@ impl ContainerManager for DockerContainerManager {
     /// serve the A&D post-game snapshot; the archive is uncompressed TAR.
     async fn export(&self, id: &str) -> AppResult<Vec<u8>> {
         let docker = self.client()?;
-        let mut stream = docker.export_container(id);
-        let mut out = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let bytes = chunk.map_err(|e| {
-                if is_not_found(&e) {
-                    AppError::not_found(format!("container not found: {id}"))
-                } else {
-                    AppError::internal(format!("failed to export container: {e}"))
-                }
-            })?;
-            out.extend_from_slice(&bytes);
-        }
-        Ok(out)
+        let _permit = tokio::time::timeout(
+            SNAPSHOT_EXPORT_ADMISSION_TIMEOUT,
+            snapshot_export_slots().acquire(),
+        )
+        .await
+        .map_err(|_| AppError::unavailable("snapshot export capacity is busy; retry shortly"))?
+        .map_err(|_| AppError::unavailable("snapshot export service is shutting down"))?;
+
+        tokio::time::timeout(SNAPSHOT_EXPORT_MAX_DURATION, async {
+            let mut stream = docker.export_container(id);
+            let mut out = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let bytes = chunk.map_err(|e| {
+                    if is_not_found(&e) {
+                        AppError::not_found(format!("container not found: {id}"))
+                    } else {
+                        AppError::internal(format!("failed to export container: {e}"))
+                    }
+                })?;
+                append_snapshot_chunk(&mut out, &bytes, MAX_SNAPSHOT_EXPORT_BYTES)?;
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|_| AppError::unavailable("snapshot export exceeded its 120 second limit"))?
     }
 }

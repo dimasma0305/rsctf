@@ -3,7 +3,7 @@
 # web coordination for a hybrid split is not implemented and startup must fail
 # closed instead of granting the web tier a Docker socket.
 services:
-  # Web replicas do not receive TUN/NET_ADMIN, but they must know that VPN
+  # Web replicas do not receive TUN/NET_ADMIN/NET_RAW, but they must know that VPN
   # policy is enabled so mutations enqueue a durable reconcile request and wait
   # for the control owner to acknowledge the kernel update.
   rsctf:
@@ -12,7 +12,7 @@ services:
       RSCTF_AD_VPN_REQUIRED: "true"
       RSCTF_AD_VPN_CLIENT_CIDR: ${RSCTF_AD_VPN_CLIENT_CIDR:-10.13.0.0/19}
       RSCTF_AD_VPN_SERVICES_CIDR: ${RSCTF_AD_VPN_SERVICES_CIDR:-10.13.40.0/24}
-      RSCTF_AD_VPN_SERVICES_NETWORK: ${RSCTF_AD_VPN_SERVICES_NETWORK:-rsctf-ad}
+      RSCTF_AD_VPN_SERVICES_NETWORK: ${RSCTF_AD_VPN_SERVICES_NETWORK:-${COMPOSE_PROJECT_NAME:-rsctf}-ad}
       RSCTF_AD_VPN_SERVER_ENDPOINT: ${RSCTF_AD_VPN_SERVER_ENDPOINT:?Set the public WireGuard host:port}
       RSCTF_AD_VPN_LISTEN_PORT: ${RSCTF_AD_VPN_PORT:-51820}
 
@@ -26,12 +26,14 @@ services:
       RSCTF_AD_VPN_REQUIRED: "true"
       RSCTF_AD_VPN_CLIENT_CIDR: ${RSCTF_AD_VPN_CLIENT_CIDR:-10.13.0.0/19}
       RSCTF_AD_VPN_SERVICES_CIDR: ${RSCTF_AD_VPN_SERVICES_CIDR:-10.13.40.0/24}
-      RSCTF_AD_VPN_SERVICES_NETWORK: ${RSCTF_AD_VPN_SERVICES_NETWORK:-rsctf-ad}
+      RSCTF_AD_VPN_SERVICES_NETWORK: ${RSCTF_AD_VPN_SERVICES_NETWORK:-${COMPOSE_PROJECT_NAME:-rsctf}-ad}
       RSCTF_AD_VPN_SERVER_ENDPOINT: ${RSCTF_AD_VPN_SERVER_ENDPOINT:?Set the public WireGuard host:port}
       RSCTF_AD_VPN_LISTEN_PORT: ${RSCTF_AD_VPN_PORT:-51820}
       RSCTF_AD_SSH_PORT: ${RSCTF_AD_SSH_PORT:-2222}
     cap_add:
       - NET_ADMIN
+      # Required by the iptables ipset matcher used by the VPN policy fence.
+      - NET_RAW
     devices:
       - /dev/net/tun:/dev/net/tun
     sysctls:
@@ -48,7 +50,7 @@ services:
 
 networks:
   rsctf-ad:
-    name: ${RSCTF_AD_VPN_SERVICES_NETWORK:-rsctf-ad}
+    name: ${RSCTF_AD_VPN_SERVICES_NETWORK:-${COMPOSE_PROJECT_NAME:-rsctf}-ad}
     internal: true
     ipam:
       config:

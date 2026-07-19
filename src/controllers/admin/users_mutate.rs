@@ -6,32 +6,45 @@ fn role_change_requires_stamp_rotation(current: Role, requested: Option<Role>) -
     requested.is_some_and(|role| role != current)
 }
 
-/// `PUT /api/admin/users/{userid}` — mutate role / name / email / bio / etc.
-pub async fn update_user(
-    State(st): State<SharedState>,
-    AdminUser(caller): AdminUser,
-    Path(userid): Path<Uuid>,
-    Json(model): Json<AdminUserInfoModel>,
-) -> AppResult<MessageResponse> {
-    let txn = crate::controllers::account::locked_registration_transaction(&st).await?;
-    let target = user::Entity::find_by_id(userid)
-        .one(&txn)
-        .await?
-        .ok_or_else(|| AppError::not_found("User not found"))?;
-    let revoke_shared = model.role == Some(Role::Banned) && target.role != Role::Banned;
-    let rotate_stamp = role_change_requires_stamp_rotation(target.role, model.role);
+fn role_request_requires_shared_revocation(requested: Option<Role>) -> bool {
+    requested == Some(Role::Banned)
+}
 
+fn unban_requires_prior_shared_revocation(current: Role, requested: Option<Role>) -> bool {
+    current == Role::Banned && requested.is_some_and(|role| role != Role::Banned)
+}
+
+fn account_lifecycle_key(user_id: Uuid) -> String {
+    format!("account-lifecycle:{user_id}")
+}
+
+async fn revoke_user_shared_teams(st: &SharedState, user_id: Uuid) -> AppResult<()> {
+    for team_id in affected_team_ids(st.pg(), user_id).await? {
+        let roster = crate::controllers::team::acquire_roster_mutation(st.pg(), team_id).await?;
+        let parts = crate::controllers::team::revoke_team_shared_capabilities(st, team_id).await?;
+        roster.release().await?;
+        crate::controllers::team::invalidate_removed_membership_cache(st, user_id, &parts).await?;
+    }
+    Ok(())
+}
+
+async fn validate_admin_update(
+    transaction: &sea_orm::DatabaseTransaction,
+    target: &user::Model,
+    caller_id: Uuid,
+    requested_role: Option<Role>,
+) -> AppResult<()> {
     // Admin-war protection: an admin may edit their own profile, but may not
     // mutate a *fellow* admin (ban / demote / rename).
-    if target.role == Role::Admin && caller.id != target.id {
+    if target.role == Role::Admin && caller_id != target.id {
         return Err(AppError::bad_request("Cannot modify another administrator"));
     }
 
     if target.role == Role::Admin
-        && model.role.is_some_and(|role| role != Role::Admin)
+        && requested_role.is_some_and(|role| role != Role::Admin)
         && user::Entity::find()
             .filter(user::Column::Role.eq(Role::Admin))
-            .count(&txn)
+            .count(transaction)
             .await?
             <= 1
     {
@@ -39,6 +52,120 @@ pub async fn update_user(
             "Cannot demote or ban the last administrator",
         ));
     }
+    Ok(())
+}
+
+/// Make an account fail closed before any roster snapshot or capability
+/// teardown begins. Locking the account row closes the hand-off with team
+/// invite acceptance: an accept either retains a share lock and commits before
+/// this update (so the later snapshot sees it), or observes the banned role and
+/// is rejected.
+async fn fence_user_for_deletion(pool: &sqlx::PgPool, user_id: Uuid) -> AppResult<()> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(crate::controllers::account::REGISTRATION_LOCK_ID)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    // This is deliberately a separate statement from the captain lookup. A
+    // PostgreSQL statement keeps the snapshot it took before waiting for this
+    // row lock; combining the EXISTS with FOR UPDATE could therefore miss a
+    // captaincy committed by the transaction that just released the row.
+    let role: Option<i16> =
+        sqlx::query_scalar(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#)
+            .bind(user_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some(role) = role else {
+        return Err(AppError::not_found("User not found"));
+    };
+    if role == Role::Admin as i16 {
+        return Err(AppError::bad_request("Cannot delete another administrator"));
+    }
+    // A new statement gets a fresh READ COMMITTED snapshot after the account
+    // lock is held. Team creation/transfer must take that same account lock, so
+    // captaincy can neither be hidden by a stale snapshot nor appear afterward.
+    let is_captain: bool =
+        sqlx::query_scalar(r#"SELECT EXISTS(SELECT 1 FROM "Teams" WHERE captain_id = $1)"#)
+            .bind(user_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    if is_captain {
+        return Err(AppError::bad_request(
+            "Cannot delete a user who is a team captain",
+        ));
+    }
+
+    sqlx::query(
+        r#"UPDATE "AspNetUsers"
+              SET role = $1, security_stamp = $2
+            WHERE id = $3"#,
+    )
+    .bind(Role::Banned as i16)
+    .bind(Uuid::new_v4().to_string())
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
+}
+
+/// `PUT /api/admin/users/{userid}` — mutate role / name / email / bio / etc.
+pub async fn update_user(
+    State(st): State<SharedState>,
+    AdminUser(caller): AdminUser,
+    Path(userid): Path<Uuid>,
+    Json(model): Json<AdminUserInfoModel>,
+) -> AppResult<MessageResponse> {
+    // Lock ordering is account lifecycle lease → registration transaction →
+    // roster leases. Deletion uses the same order and retains this session
+    // lease across external teardown, so an unban cannot reopen a fenced
+    // account before deletion finishes.
+    let account_lifecycle =
+        crate::utils::single_flight::PgSessionAdvisoryLock::acquire_account_lifecycle(
+            st.pg(),
+            &account_lifecycle_key(userid),
+        )
+        .await?;
+    let mut txn = crate::controllers::account::locked_registration_transaction(&st).await?;
+    let mut target = user::Entity::find_by_id(userid)
+        .one(&txn)
+        .await?
+        .ok_or_else(|| AppError::not_found("User not found"))?;
+    validate_admin_update(&txn, &target, caller.id, model.role).await?;
+
+    // Keep the durable role Banned while retrying every partially completed
+    // team-wide revocation. Release the registration transaction first: the
+    // teardown acquires roster transactions and performs nested DB/external
+    // work, so retaining this connection could starve a small pool. Reacquire
+    // the cross-replica registration lock and revalidate all mutable state
+    // before applying the requested unban or profile edits.
+    if unban_requires_prior_shared_revocation(target.role, model.role) {
+        txn.rollback().await?;
+        revoke_user_shared_teams(&st, userid).await?;
+        txn = crate::controllers::account::locked_registration_transaction(&st).await?;
+        target = user::Entity::find_by_id(userid)
+            .one(&txn)
+            .await?
+            .ok_or_else(|| AppError::not_found("User not found"))?;
+        validate_admin_update(&txn, &target, caller.id, model.role).await?;
+    }
+
+    // Repeating an already-banned update is the retry path when an earlier
+    // external VPN/BYOC teardown failed after the role change committed.
+    let revoke_shared = role_request_requires_shared_revocation(model.role);
+    let rotate_stamp = role_change_requires_stamp_rotation(target.role, model.role);
+    let original_normalized_email = target.normalized_email.clone();
+    let mut credential_email_to_invalidate = None;
 
     let mut am: user::ActiveModel = target.into();
 
@@ -72,6 +199,9 @@ pub async fn update_user(
             {
                 return Err(AppError::conflict("Email already registered"));
             }
+            if original_normalized_email.as_deref() != Some(norm.as_str()) {
+                credential_email_to_invalidate = original_normalized_email.clone();
+            }
             am.normalized_email = Set(Some(norm));
             am.email = Set(Some(email));
         }
@@ -100,16 +230,18 @@ pub async fn update_user(
 
     am.update(&txn).await?;
     txn.commit().await?;
-    if revoke_shared {
-        for team_id in affected_team_ids(&st, userid).await? {
-            let key = format!("team-roster:{team_id}");
-            let _local = crate::utils::single_flight::coalesce(&key).await;
-            let distributed =
-                crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &key).await?;
-            crate::controllers::team::revoke_team_shared_capabilities(&st, team_id).await?;
-            distributed.release().await?;
-        }
+    if let Some(old_email) = credential_email_to_invalidate {
+        super::users_credentials::invalidate_import_credential(
+            st.cache.as_ref(),
+            userid,
+            &old_email,
+        )
+        .await;
     }
+    if revoke_shared {
+        revoke_user_shared_teams(&st, userid).await?;
+    }
+    account_lifecycle.release().await?;
     Ok(MessageResponse::ok(""))
 }
 
@@ -124,24 +256,21 @@ pub async fn delete_user(
         return Err(AppError::bad_request("Cannot delete yourself"));
     }
 
-    let target = load_user(&st, userid).await?;
-
-    if target.role == Role::Admin {
-        return Err(AppError::bad_request("Cannot delete another administrator"));
-    }
-
-    let is_captain = team::Entity::find()
-        .filter(team::Column::CaptainId.eq(userid))
-        .one(&st.db)
-        .await?
-        .is_some();
-    if is_captain {
-        return Err(AppError::bad_request(
-            "Cannot delete a user who is a team captain",
-        ));
-    }
-
-    let team_ids = affected_team_ids(&st, userid).await?;
+    // Retain a session-level fence for the entire slow teardown. Without it, a
+    // concurrent admin update could unban the durable account fence after the
+    // initial registration transaction commits, then create a late membership
+    // that is absent from the deletion snapshot.
+    let account_lifecycle =
+        crate::utils::single_flight::PgSessionAdvisoryLock::acquire_account_lifecycle(
+            st.pg(),
+            &account_lifecycle_key(userid),
+        )
+        .await?;
+    // This must precede the affected-team snapshot. Fresh sessions fail the
+    // live role/stamp check, and team invite acceptance synchronizes through a
+    // share lock on this row so it cannot commit an invisible late membership.
+    fence_user_for_deletion(st.pg(), userid).await?;
+    let team_ids = affected_team_ids(st.pg(), userid).await?;
 
     // ApiToken.Creator is ON DELETE RESTRICT — clear the user's tokens first.
     api_token::Entity::delete_many()
@@ -150,22 +279,26 @@ pub async fn delete_user(
         .await?;
 
     for team_id in team_ids {
-        let key = format!("team-roster:{team_id}");
-        let _local = crate::utils::single_flight::coalesce(&key).await;
-        let distributed =
-            crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &key).await?;
-        crate::controllers::team::revoke_team_shared_capabilities(&st, team_id).await?;
-        team_member::Entity::delete_many()
-            .filter(team_member::Column::TeamId.eq(team_id))
-            .filter(team_member::Column::UserId.eq(userid))
-            .exec(&st.db)
-            .await?;
-        user_participation::Entity::delete_many()
-            .filter(user_participation::Column::TeamId.eq(team_id))
-            .filter(user_participation::Column::UserId.eq(userid))
-            .exec(&st.db)
-            .await?;
-        distributed.release().await?;
+        let mut roster =
+            crate::controllers::team::acquire_roster_mutation(st.pg(), team_id).await?;
+        let parts = crate::controllers::team::revoke_team_shared_capabilities(&st, team_id).await?;
+        sqlx::query(r#"DELETE FROM "TeamMembers" WHERE team_id = $1 AND user_id = $2"#)
+            .bind(team_id)
+            .bind(userid)
+            .execute(&mut **roster.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        sqlx::query(r#"DELETE FROM "UserParticipations" WHERE team_id = $1 AND user_id = $2"#)
+            .bind(team_id)
+            .bind(userid)
+            .execute(&mut **roster.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        // The two roster rows disappear atomically only after every shared
+        // credential has been invalidated. Until then, the durable banned role
+        // keeps roster-aware API/SSH authentication closed and makes retry safe.
+        roster.release().await?;
+        crate::controllers::team::invalidate_removed_membership_cache(&st, userid, &parts).await?;
     }
 
     // Defensive cleanup for malformed legacy links without a resolvable team.
@@ -179,26 +312,23 @@ pub async fn delete_user(
         .await?;
 
     user::Entity::delete_by_id(userid).exec(&st.db).await?;
+    account_lifecycle.release().await?;
     Ok(RequestResponse::ok(userid.to_string()))
 }
 
-async fn affected_team_ids(st: &SharedState, user_id: Uuid) -> AppResult<Vec<i32>> {
-    let mut ids: std::collections::BTreeSet<i32> = team_member::Entity::find()
-        .filter(team_member::Column::UserId.eq(user_id))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|member| member.team_id)
-        .collect();
-    ids.extend(
-        user_participation::Entity::find()
-            .filter(user_participation::Column::UserId.eq(user_id))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .map(|link| link.team_id),
-    );
-    Ok(ids.into_iter().collect())
+async fn affected_team_ids(pool: &sqlx::PgPool, user_id: Uuid) -> AppResult<Vec<i32>> {
+    sqlx::query_scalar(
+        r#"SELECT team_id FROM "TeamMembers" WHERE user_id = $1
+           UNION
+           SELECT team_id FROM "UserParticipations" WHERE user_id = $1
+           UNION
+           SELECT id AS team_id FROM "Teams" WHERE captain_id = $1
+           ORDER BY team_id"#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
 }
 
 /// `DELETE /api/admin/users/{userid}/password` — reset the user's password to a
@@ -207,9 +337,9 @@ pub async fn reset_password(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(userid): Path<Uuid>,
-) -> AppResult<RequestResponse<String>> {
+) -> AppResult<Response> {
     let password = generate_password();
-    let hash = hash_password(&password)?;
+    let hash = hash_password_async(password.clone()).await?;
 
     let txn = crate::controllers::account::locked_registration_transaction(&st).await?;
     let target = user::Entity::find_by_id(userid)
@@ -221,19 +351,33 @@ pub async fn reset_password(
             "Administrator passwords must be changed from the account security flow",
         ));
     }
+    let credential_email_to_invalidate = target.normalized_email.clone();
 
     let mut am: user::ActiveModel = target.into();
     am.password_hash = Set(Some(hash));
     am.security_stamp = Set(Some(Uuid::new_v4().to_string()));
     am.update(&txn).await?;
+    // Keep the account row locked until the import-only plaintext has been
+    // removed. A concurrent credential email either consumes the old value
+    // before this reset linearizes, or observes the cache removal afterwards;
+    // it can never send the pre-reset password after the new hash commits.
+    if let Some(email) = credential_email_to_invalidate {
+        super::users_credentials::invalidate_import_credential(st.cache.as_ref(), userid, &email)
+            .await;
+    }
     txn.commit().await?;
 
-    Ok(RequestResponse::ok(password))
+    Ok(super::users_credentials::private_no_store(
+        RequestResponse::ok(password),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
     #[test]
     fn every_role_transition_rotates_the_session_stamp() {
@@ -250,5 +394,277 @@ mod tests {
             Some(Role::User)
         ));
         assert!(!role_change_requires_stamp_rotation(Role::User, None));
+    }
+
+    #[test]
+    fn repeated_ban_request_retries_shared_credential_revocation() {
+        assert!(role_request_requires_shared_revocation(Some(Role::Banned)));
+        assert!(!role_request_requires_shared_revocation(Some(Role::User)));
+        assert!(!role_request_requires_shared_revocation(None));
+    }
+
+    #[test]
+    fn unban_cannot_precede_a_successful_revocation_retry() {
+        assert!(unban_requires_prior_shared_revocation(
+            Role::Banned,
+            Some(Role::User)
+        ));
+        assert!(unban_requires_prior_shared_revocation(
+            Role::Banned,
+            Some(Role::Monitor)
+        ));
+        assert!(!unban_requires_prior_shared_revocation(
+            Role::Banned,
+            Some(Role::Banned)
+        ));
+        assert!(!unban_requires_prior_shared_revocation(
+            Role::User,
+            Some(Role::Monitor)
+        ));
+    }
+
+    #[test]
+    fn account_lifecycle_locks_are_scoped_to_immutable_user_ids() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        assert_eq!(
+            account_lifecycle_key(first),
+            format!("account-lifecycle:{first}")
+        );
+        assert_ne!(account_lifecycle_key(first), account_lifecycle_key(second));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn account_update_waits_for_a_cross_replica_deletion_lease() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let key = account_lifecycle_key(Uuid::new_v4());
+        let deletion =
+            crate::utils::single_flight::PgSessionAdvisoryLock::acquire_account_lifecycle(
+                &pool, &key,
+            )
+            .await
+            .unwrap();
+        let mut update = tokio::spawn({
+            let pool = pool.clone();
+            let key = key.clone();
+            async move {
+                crate::utils::single_flight::PgSessionAdvisoryLock::acquire_account_lifecycle(
+                    &pool, &key,
+                )
+                .await
+            }
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut update)
+                .await
+                .is_err(),
+            "admin update passed a live account-deletion lease"
+        );
+
+        deletion.release().await.unwrap();
+        let acquired = tokio::time::timeout(std::time::Duration::from_secs(2), update)
+            .await
+            .expect("admin update remained blocked after deletion released its lease")
+            .expect("account update task failed")
+            .expect("account update could not acquire the released lease");
+        acquired.release().await.unwrap();
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn roster_mutation_waits_for_a_preexisting_replica_issuer() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to PostgreSQL");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let random = uuid::Uuid::new_v4();
+        let team_id = i32::from_be_bytes(random.as_bytes()[..4].try_into().unwrap());
+        let key = format!("team-roster:{team_id}");
+
+        // No local gate: this lock represents an issuer on another replica.
+        let issuer = crate::utils::single_flight::PgAdvisoryLock::acquire(&pool, &key)
+            .await
+            .unwrap();
+        let mut fence = tokio::spawn({
+            let pool = pool.clone();
+            async move { crate::controllers::team::acquire_roster_mutation(&pool, team_id).await }
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut fence)
+                .await
+                .is_err(),
+            "fence passed a live credential issuer"
+        );
+
+        issuer.release().await.unwrap();
+        let acquired = tokio::time::timeout(std::time::Duration::from_secs(2), fence)
+            .await
+            .expect("fence remained blocked after issuer release")
+            .expect("fence task failed")
+            .expect("fence returned an application error");
+        acquired.release().await.unwrap();
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn delete_fence_bans_and_rotates_before_teardown() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("rsctf_user_delete_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE "AspNetUsers" (
+              id UUID PRIMARY KEY,
+              role SMALLINT NOT NULL,
+              security_stamp TEXT
+            );
+            CREATE TABLE "Teams" (
+              id INTEGER PRIMARY KEY,
+              captain_id UUID NOT NULL
+            );
+            CREATE TABLE "TeamMembers" (
+              team_id INTEGER NOT NULL,
+              user_id UUID NOT NULL
+            );
+            CREATE TABLE "UserParticipations" (
+              team_id INTEGER NOT NULL,
+              user_id UUID NOT NULL
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let ordinary = Uuid::new_v4();
+        let administrator = Uuid::new_v4();
+        let captain = Uuid::new_v4();
+        let newly_made_captain = Uuid::new_v4();
+        for (id, role) in [
+            (ordinary, Role::User),
+            (administrator, Role::Admin),
+            (captain, Role::User),
+            (newly_made_captain, Role::User),
+        ] {
+            sqlx::query(
+                r#"INSERT INTO "AspNetUsers" (id, role, security_stamp)
+                   VALUES ($1, $2, 'old-stamp')"#,
+            )
+            .bind(id)
+            .bind(role as i16)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(r#"INSERT INTO "Teams" (id, captain_id) VALUES (1, $1)"#)
+            .bind(captain)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "UserParticipations" (team_id, user_id)
+               VALUES (9, $1)"#,
+        )
+        .bind(ordinary)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        fence_user_for_deletion(&pool, ordinary).await.unwrap();
+        let fenced: (i16, Option<String>) =
+            sqlx::query_as(r#"SELECT role, security_stamp FROM "AspNetUsers" WHERE id = $1"#)
+                .bind(ordinary)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(fenced.0, Role::Banned as i16);
+        assert_ne!(fenced.1.as_deref(), Some("old-stamp"));
+        assert_eq!(affected_team_ids(&pool, ordinary).await.unwrap(), vec![9]);
+        assert_eq!(affected_team_ids(&pool, captain).await.unwrap(), vec![1]);
+
+        let error = fence_user_for_deletion(&pool, administrator)
+            .await
+            .expect_err("administrator deletion must remain forbidden");
+        assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+        let error = fence_user_for_deletion(&pool, captain)
+            .await
+            .expect_err("captain deletion must remain forbidden");
+        assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        // Reproduce the READ COMMITTED stale-snapshot window: the fence starts
+        // its account-lock statement while another transaction owns the row,
+        // then that owner makes the target a captain before releasing it. The
+        // captain query must run as a fresh statement after lock acquisition.
+        let mut captain_assignment = pool.begin().await.unwrap();
+        sqlx::query(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#)
+            .bind(newly_made_captain)
+            .execute(&mut *captain_assignment)
+            .await
+            .unwrap();
+        let mut racing_fence = tokio::spawn({
+            let pool = pool.clone();
+            async move { fence_user_for_deletion(&pool, newly_made_captain).await }
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut racing_fence)
+                .await
+                .is_err(),
+            "deletion fence did not wait for the preexisting account lock"
+        );
+        sqlx::query(r#"INSERT INTO "Teams" (id, captain_id) VALUES (2, $1)"#)
+            .bind(newly_made_captain)
+            .execute(&mut *captain_assignment)
+            .await
+            .unwrap();
+        captain_assignment.commit().await.unwrap();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), racing_fence)
+            .await
+            .expect("deletion fence remained blocked")
+            .expect("deletion fence task failed")
+            .expect_err("fresh captaincy was hidden by a stale statement snapshot");
+        assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            sqlx::query_scalar::<_, i16>(r#"SELECT role FROM "AspNetUsers" WHERE id = $1"#)
+                .bind(newly_made_captain)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            Role::User as i16
+        );
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
     }
 }

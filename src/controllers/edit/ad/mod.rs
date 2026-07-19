@@ -400,7 +400,7 @@ pub async fn ad_toggle_challenge(
     let mut engine_control =
         Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?);
     if ad_epoch_scoring_started_locked(
-        &mut **engine_control
+        engine_control
             .as_mut()
             .expect("engine challenge holds the game control lock")
             .transaction_mut(),
@@ -837,6 +837,8 @@ pub async fn ad_download_snapshot(
     Ok((
         [
             (header::CONTENT_TYPE, "application/x-tar".to_string()),
+            (header::CACHE_CONTROL, "private, no-store".to_string()),
+            (header::PRAGMA, "no-cache".to_string()),
             (
                 header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"{filename}\""),

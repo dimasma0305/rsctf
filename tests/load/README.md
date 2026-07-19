@@ -11,6 +11,7 @@ scenarios. Run via npm:
 cd tests/load
 N=60  npm run byoc          # BYOC scale + request flood
       npm run player        # A&D + KotH player poll/submit load
+      npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
 N=120 npm run worst-case    # mass BYOC reconnect storm (restarts rsctf)
 FLEET=10 npm run worker      # trusted worker create/proxy/destroy + lease gate
 FLEET=5  npm run worker-local # isolated current-tree rsctf + native Linux agent
@@ -33,12 +34,14 @@ tests/load/
   observe.mjs       read-only health/resource/evidence sampler for long event runs
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
   player.mjs        → runs k6/player.js         (npm run player)
+  ad-submit-batch.mjs → runs k6/ad-submit-batch.js (npm run ad-submit-batch)
   byoc.mjs          → runs k6/byoc-requests.js  (npm run byoc)
   worst-case.mjs    → reconnect-storm harness   (npm run worst-case)
   worker-plane.mjs  → trusted worker lifecycle  (npm run worker)
   worker-plane-local.mjs → isolated native-agent acceptance wrapper (npm run worker-local)
   k6/
     player.js         A&D + KotH player: poll boards/timelines, tokens/state, submit flags
+    ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     byoc-requests.js  flood BYOC tunnel listeners
     worker-plane.js   fixed-rate trusted-worker TCP proxy streams + health polls
     team-event.js     one isolated, VPN-connected player process per team
@@ -64,15 +67,67 @@ Every knob is env-overridable: `TARGET`, `GAME`, `CID`, `VUS`, `RATE`, `DURATION
 real player session on its public-board polls. This keeps a normal reverse proxy's
 anti-spoofing of forwarding headers from turning a logged-in player load into one
 anonymous source-IP bucket. Lifecycle provisioning also accepts a paired immutable
-`KOTH_CONTAINER_IMAGE` and `KOTH_CONTAINER_PORT`, allowing its functional hill
-fixture to differ from the Jeopardy `CONTAINER_IMAGE`. Long distributed runs also use `FLEET`,
+`KOTH_CONTAINER_IMAGE` and `KOTH_CONTAINER_PORT`, allowing the default functional
+hill fixture to be replaced independently of the Jeopardy `CONTAINER_IMAGE`. Long distributed runs also use `FLEET`,
 `DISTRIBUTED_TEAM_CLIENTS`, `LIFECYCLE_ISOLATED_SERVICES`, `TEAM_THINK_SECONDS`,
 `TEAM_START_DELAY_SECONDS`, `EVENT_END_GRACE_SECONDS`, `TEAM_EVIDENCE_DIR`, and
 `TEAM_CLIENT_CPUS`/`TEAM_CLIENT_MEMORY`. Competitive runs add
 `REALISTIC_COMPETITION`, `SIMULATION_SEED`, `INTEGRATED_CHEAT_SIMULATION`,
 `CHEAT_AT_FRACTION`, `RETAIN_EVENT`, and `LIFECYCLE_STATE_TAG`. Set
-`RSCTF_BYOC_AGENT_IMAGE` to test a specific RSCTF agent tag or immutable digest; the
-default is `dimasmaualana/rsctf-byoc-agent:latest`.
+`RSCTF_BYOC_AGENT_IMAGE` to test a specific local RSCTF agent tag or immutable digest;
+the network-fetched default is pinned to the attested GHCR digest used by the server.
+
+### A&D submit batch (`npm run ad-submit-batch`)
+
+This narrow micro-harness measures the A&D flag lookup, eligibility, deduplication, and
+result-encoding paths with `ad_submit_ms` at a held arrival rate. Every request contains
+the endpoint's maximum 100-entry batch. `BATCH_SHAPE=repeated` repeats one supplied
+current flag; a correctly scoped attacker accepts it at most once and every remaining
+result must be `duplicate`. `BATCH_SHAPE=distinct-known` requires `FLAGS_JSON` with
+exactly 100 distinct engine-shaped flags that the attacker already captured and expects
+100 `duplicate` results. `BATCH_SHAPE=distinct` generates 100 deterministic,
+valid-shaped but deliberately unknown flags and expects 100 `wrong` results. Per-status
+counters are exported as `ad_submit_status_*`; any unexpected result, 429, or 5xx fails
+the run.
+
+It never queries PostgreSQL, discovers a flag, or mints a credential. Use only a
+disposable live game, explicitly supply an Accepted attacker's bearer token and another
+team's current active flag, and acknowledge that a known, uncaptured flag can change
+scoring:
+
+```sh
+cd tests/load
+read -rsp 'Attacker bearer token: ' TOKEN; export TOKEN; printf '\n'
+read -rsp 'Current opponent flag: ' FLAG; export FLAG; printf '\n'
+CONFIRM_MUTATING_LOAD=1 GAME=42 RATE=1 VUS=4 DURATION=30s \
+  SUMMARY_JSON=/tmp/rsctf-ad-submit-batch.json npm run ad-submit-batch
+unset TOKEN FLAG
+```
+
+For the two controlled variants, add `BATCH_SHAPE=distinct`, or read the known
+fixture flags without putting them in shell history:
+
+```sh
+read -rsp 'Attacker bearer token: ' TOKEN; export TOKEN; printf '\n'
+read -rsp 'JSON array of 100 known flags: ' FLAGS_JSON; export FLAGS_JSON; printf '\n'
+FLAG="$(node -e 'process.stdout.write(JSON.parse(process.env.FLAGS_JSON)[0])')"; export FLAG
+CONFIRM_MUTATING_LOAD=1 GAME=42 RATE=1 VUS=4 DURATION=30s \
+  BATCH_SHAPE=distinct-known npm run ad-submit-batch
+unset TOKEN FLAG FLAGS_JSON
+```
+
+The known array must contain exactly 100 unique values and is intended for a
+pre-seeded disposable fixture; do not put live flags or bearer tokens in
+repository files or command history.
+
+The defaults hold one batch request per second for 30 seconds; `RATE` is bounded to 20
+and duration to 10 minutes to prevent an accidental flood. For a before/after claim,
+use the same disposable fixture, rate, VUs, duration, current flag window, and resource
+sampler for both release builds. Do not compare runs that cross a round-expiry boundary.
+Repeated batches cost one rate-limit token because they contain one distinct plausible
+flag. Each `distinct` or `distinct-known` request costs 100. A 30-second distinct campaign
+therefore requires starting that isolated rsctf process with
+`RSCTF_AD_SUBMIT_BURST_FLAGS=3200`; never copy that benchmark override to production.
 
 ### Trusted worker plane (`npm run worker`)
 
@@ -285,7 +340,7 @@ distributed event are in [`REPORT.md`](REPORT.md).
 
 ## Baselines & findings (single-node, docker)
 
-**Current replicated player-load baseline** (`npm run player`, 16 July 2026): two
+**Latest measured replicated player-load baseline** (`npm run player`, 16 July 2026): two
 web replicas plus singleton control, 400 A&D/KotH teams, 100 Jeopardy teams,
 `RATE=70 VUS=400 DURATION=300s`, and public TLS. The final measured campaign
 image sustained **429.70 req/s** with **0 failed requests, 0 server 5xx, and
@@ -304,12 +359,31 @@ crown-cycle, and stale-token coverage. This is functional acceptance, not an
 extra row in the fixed-rate optimization ledger; details and the two retained
 diagnostic attempts are in [`REPORT.md`](REPORT.md#final-exact-image-lifecycle-acceptance).
 
+The 19 July final singleton acceptance used 100 distinct player tokens at
+`RATE=20 VUS=128 DURATION=60s`: 7,552 requests completed at 117.057 requests/s
+with zero failed requests, server 5xx responses, or semantic board errors.
+Against the same-shape operational candidate, overall HTTP p95 improved
+8.236 → 5.768 ms (−30.0%), combined-board p95 improved 6.972 → 4.411 ms
+(−36.7%), and sampled whole-stack CPU fell 31.82 → 29.10% of one core
+(−8.5%). The representative lifecycle rerun also passed every integrity gate
+at 86.340 requests/s with 4/4 live checker-verified tunnels, a 100-team frozen
+roster, zero 5xx, 319/319 liveness/readiness probes, real container and asset
+operations, a confirmed KotH acquisition, and stale-token rejection. This
+bundled operational comparison has no causal optimization-ledger row; exact
+endpoint distributions, the CPU/RAM series, image identities, saturation
+diagnostic, harness corrections, and limitations are in
+[`REPORT.md`](REPORT.md#final-current-tree-operational-acceptance--19-july-2026).
+
 ### Optimization ledger
 
-All 16 July rows compare adjacent images with the common workload above. App CPU
-is both web replicas plus control; stack CPU adds PostgreSQL and Redis. A row is
-retained even when one secondary metric regresses, so the ledger does not hide
-the cost of an optimization.
+All 16 July rows compare adjacent images with the common workload above. The 19
+July row is a frozen pre-submit-fence campaign using the isolated max-batch A&D harness documented in
+[`REPORT.md`](REPORT.md#attack-defense-max-batch-hardening-and-fixed-rate-optimization--19-july-2026),
+so its held throughput and CPU window are not comparable to the replicated
+player-load rows. App CPU is both web replicas plus control for the 16 July
+campaign and the single web-only rsctf container for the 19 July campaign;
+stack CPU adds PostgreSQL and Redis. A row is retained even when one secondary
+metric regresses, so the ledger does not hide the cost of an optimization.
 
 | Date | Change | Held-rate throughput | Direct work reduction | App CPU-s | Stack CPU-s | Relevant p95 | Result |
 | --- | --- | ---: | --- | ---: | ---: | ---: | --- |
@@ -320,6 +394,15 @@ the cost of an optimization.
 | 2026-07-16 | Coalesce and batch activity writes | 429.46 → 429.44 req/s | Update statements −93.54% | 148.25 → 152.78 | 301.35 → 295.48 | HTTP 8.80 → 9.02 ms | 0 5xx; clean |
 | 2026-07-16 | Cache narrow KotH eligibility sets | 429.44 → 429.41 req/s | Challenge-query calls −99.10% | 152.78 → 126.42 | 295.48 → 244.08 | KotH token 9.21 → 6.61 ms | 0 5xx; clean |
 | 2026-07-16 | Replace two participation reads with one join | 429.41 → 429.70 req/s | Statements −51.73% | 126.42 → 121.14 | 244.08 → 232.48 | HTTP 7.30 → 6.88 ms | 0 5xx; clean |
+| 2026-07-19 | Memoize repeated A&D batch work and bound victim lookup | 1 → 1 batch/s target | Adjudications 100 → 1/repeated batch | 6.033 → 0.135 | 20.742 → 0.850 | Repeated-batch 694.49 → 38.74 ms | 0 429/5xx; attacks 107 → 107; unknown p95 +6.42% |
+
+At the same one-batch/s load, the 100-distinct-known case also improved: p95
+790.76 → 367.97 ms and stack CPU 21.644 → 10.811 CPU-seconds. The
+distinct-unknown control regressed to p95 68.92 → 73.35 ms and stack CPU 1.757
+→ 2.079 CPU-seconds because the miss now performs the authoritative active
+service eligibility lookup. Full trial distributions, exact image/binary
+digests, fixture controls, and the two-replica limiter drill are retained in the
+report rather than compressed into the ledger row.
 
 ### Historical comparison
 
@@ -663,8 +746,10 @@ acquisition, and accepted 45 KotH capture writes. Every duplicate, overlapping
 cycle, stale-container, cross-cycle token, void-evidence, cooldown-window, holder,
 runtime-operation, and rollup integrity check was zero after the run.
 
-KotH provisioning uses one real `nginx:alpine` hill and a dependency-free functional
-checker. The first official boundary snapshots the 12-tick epoch, 3-tick crown cycle,
+KotH provisioning builds a dependency-free competitive hill fixture whose
+port-8080 response matches the functional checker. A paired immutable
+`KOTH_CONTAINER_IMAGE`/`KOTH_CONTAINER_PORT` override can replace it. The first
+official boundary snapshots the 12-tick epoch, 3-tick crown cycle,
 1-tick champion cooldown, 2-tick claim confirmation, roster, hill image, and service
 weight. The lifecycle worker then destroys that bootstrap hill and adopts one managed
 replacement from the same image. Because round advancement waits for the checker pipeline,

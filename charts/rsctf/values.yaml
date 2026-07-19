@@ -17,7 +17,7 @@ image:
   # Override repository/tag to use the GHCR package for your GitHub owner. The
   # convenient monolith default may track latest; every split role must select
   # the same reviewed, non-latest release tag.
-  repository: docker.io/dimasmaualana/rsctf
+  repository: ghcr.io/dimasma0305/rsctf
   pullPolicy: IfNotPresent
   tag: latest
 
@@ -32,6 +32,7 @@ existingSecret:
   name: ""
   databaseUrlKey: database-url
   jwtSecretKey: jwt-secret
+  bootstrapTokenKey: bootstrap-token
   redisUrlKey: redis-url
   postgresqlPasswordKey: postgresql-password
   redisPasswordKey: redis-password
@@ -40,6 +41,9 @@ secrets:
   # Required when existingSecret.name is empty. Generate at least 32 random
   # bytes, for example: openssl rand -hex 32
   jwtSecret: ""
+  # Optional. When empty, Helm generates and retains a 48-character first-admin
+  # setup token in the release Secret.
+  bootstrapToken: ""
 
 # Blob storage selection. Local storage remains the default and uses the PVC
 # below. S3 stores content-addressed blobs, but repositories, packet captures,
@@ -245,8 +249,9 @@ config:
   useCaptcha: false
   migrate: true
   logLevel: info
-  # Pool floor: 2 for migrate, 4R+2P+1 for web/engine, 4R+2P+3 for a non-VPN
-  # all/control/network owner, or 4R+2P+6 for a VPN owner.
+  # Pool floor: 2 for migrate; 4R+2P+1 for engine; 4R+2P+9 for web;
+  # 4R+2P+3 for a non-VPN control/network owner; 4R+2P+6 for a VPN owner;
+  # or 4R+2P+11 / +14 for the corresponding all-in-one role.
   provisioningConcurrency: 4
   repoScanConcurrency: 1
   dbMaxConnections: 32
@@ -254,12 +259,16 @@ config:
   # checkers. The budget is also the per-rsctf-process custom-checker cap.
   checkerUidBase: 60000
   checkerProcessBudget: 32
+  # Four maximum-size A&D submit batches per participation, then 10 flags/s.
+  # Increase only for a controlled, isolated load campaign.
+  adSubmitBurstFlags: 400
   containerMaxMemoryMb: 4096
   containerMaxCpuCount: 8
 
-# Docker-only live A&D packet capture is an explicit capability opt-in. The
-# chart grants NET_RAW only to the singleton all/control/network owner when this
-# is enabled. Kubernetes-backed capture is not currently supported.
+# Docker-only live A&D packet capture is an explicit capability opt-in. It
+# grants NET_RAW to the singleton all/control/network owner; VPN mode grants the
+# same owner NET_RAW independently for its iptables ipset matcher.
+# Kubernetes-backed capture is not currently supported.
 trafficCapture:
   enabled: false
   device: any
@@ -315,7 +324,8 @@ docker:
     path: /var/run/docker.sock
 
 # ADVANCED: enabling VPN intent on an all/control/network release grants that
-# singleton owner mounts /dev/net/tun, enables forwarding, and publishes UDP.
+# singleton owner NET_ADMIN + NET_RAW, mounts /dev/net/tun, enables forwarding,
+# and publishes UDP. NET_RAW is required by the iptables ipset matcher.
 # Engine releases already receive NET_ADMIN for their checker firewall only;
 # they never mount TUN or own WireGuard. Web releases receive no capabilities.
 vpn:

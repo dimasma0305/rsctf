@@ -38,6 +38,11 @@ Check rollout and health:
   kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "rsctf.fullname" . }}
   kubectl -n {{ .Release.Namespace }} get pods
 
+First administrator setup (required only while the user table is empty):
+  Open the URL above with `/account/register?bootstrap=1` appended.
+  Read the setup token without putting it in a URL or shell history:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "rsctf.secretName" . }} -o jsonpath='{.data.{{ .Values.existingSecret.bootstrapTokenKey }}}' | base64 -d; echo
+
 Database connection budget for this release:
   {{ .Values.replicaCount }} x {{ .Values.config.dbMaxConnections }} = {{ mul .Values.replicaCount .Values.config.dbMaxConnections }} maximum application connections
 Budget all role releases together and leave headroom for migrations, operators,
@@ -104,8 +109,9 @@ the event does not use live captures.
 
 {{- if and .Values.vpn.enabled (has .Values.runtimeRole (list "all" "control" "network")) }}
 ADVANCED SECURITY NOTICE: WireGuard VPN mode is enabled. The rsctf container
-has NET_ADMIN, /dev/net/tun, and net.ipv4.ip_forward. Confirm your node's
-WireGuard support and firewall rules, then verify the public UDP endpoint:
+has NET_ADMIN, NET_RAW for the iptables ipset matcher, /dev/net/tun, and
+net.ipv4.ip_forward. Confirm your node's WireGuard support and firewall rules,
+then verify the public UDP endpoint:
   {{ .Values.vpn.serverEndpoint }}
 {{- else if .Values.vpn.enabled }}
 VPN policy coordination is enabled for this role. Kernel privileges remain

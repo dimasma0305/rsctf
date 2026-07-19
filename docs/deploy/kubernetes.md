@@ -45,7 +45,7 @@ Do not put production secrets in the repository. Create a private values file ou
 ```yaml
 # rsctf-values.yaml
 image:
-  repository: docker.io/dimasmaualana/rsctf
+  repository: ghcr.io/dimasma0305/rsctf
   tag: "1.2.3"
 
 secrets:
@@ -69,7 +69,12 @@ Generate secrets with `openssl rand -hex 32` and protect the file with `chmod 60
 
 If an ingress controller sets forwarded client-address headers, also set `config.trustedProxyCidrs` to the controller's actual source CIDR. Leave it empty until you know that range; trusting a broad cluster or private network lets other workloads spoof player IPs. See [Reverse proxy and HTTPS](./reverse-proxy).
 
-The bundled starter PostgreSQL and Redis passwords are generated on first install and retained on upgrades. For production, use `existingSecret.name` with an external secret manager and an external PostgreSQL service instead of keeping sensitive values in Helm release data.
+The bundled starter PostgreSQL/Redis passwords and first-administrator setup
+token are generated on first install and retained on upgrades. The Helm notes
+print a command that reads the token without placing it in a URL. For
+production, use `existingSecret.name` with an external secret manager and an
+external PostgreSQL service instead of keeping sensitive values in Helm release
+data; include the configured `bootstrap-token` key.
 
 ## Install
 
@@ -131,10 +136,11 @@ Treat Kubernetes support as advanced and test the complete event flow. In the cu
 The integrated WireGuard hub is an advanced, cluster-specific configuration. It
 needs exactly one `all`, `control`, or `network` owner Pod, an ordinary isolated
 Pod network namespace, `NET_ADMIN`, `/dev/net/tun`, permitted IPv4-forwarding
-sysctls, a public UDP endpoint, the actual cluster Service CIDR, and working
+sysctls, `NET_RAW` for the iptables ipset matcher, a public UDP endpoint, the
+actual cluster Service CIDR, and working
 routing from the owner Pod to Service IPs. Split web/engine releases set the
 same `vpn.enabled` intent so they can wait for durable policy acknowledgement,
-but only the owner receives TUN, forwarding, and the WireGuard Service. An
+but only the owner receives TUN, `NET_RAW`, forwarding, and the WireGuard Service. An
 `engine` Pod still receives `NET_ADMIN` solely to install the process checker's
 uid-scoped egress firewall; a `web` Pod receives no kernel capability.
 Every non-migration release using `containerBackend: kubernetes` must set
@@ -145,6 +151,13 @@ nodes must also expose Landlock ABI v3 as an active LSM and seccomp filter
 support; each Pod proves the real child confinement path before readiness.
 
 Managed clusters with restricted Pod Security may reject this mode. A NetworkPolicy-capable CNI is necessary but not sufficient; verify routing and isolation with two real test teams.
+
+Kubernetes is the supported backend for A&D or KotH challenges that set
+`allowEgress: true`. rsctf installs the workload's NetworkPolicy before its Pod
+exists, permits public Internet destinations plus cluster DNS while excluding
+private and link-local ranges, and keeps service ingress scoped to the
+competition network. Docker fails closed for the same setting because a shared
+external bridge cannot provide equivalent per-workload isolation.
 
 ## Scale with runtime roles
 

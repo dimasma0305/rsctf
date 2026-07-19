@@ -15,6 +15,7 @@ test("cohort seed is one atomic statement with database-owned identity mapping",
   assert.equal((query.match(/INSERT INTO/g) || []).length, 5);
   assert.match(query, /FROM generate_series\(1,100\)/);
   assert.match(query, /'LT77_' \|\| cohort\.ordinal/);
+  assert.match(query, /locked,deletion_pending/);
   assert.match(query, /'ordinal',cohort\.ordinal/);
   assert.match(query, /ORDER BY cohort\.ordinal/);
   assert.doesNotMatch(query, /BEGIN|COMMIT/);

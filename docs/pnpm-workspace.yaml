@@ -1,2 +1,7 @@
 allowBuilds:
   esbuild: true
+
+overrides:
+  # VitePress 1.x resolves vulnerable Vite 5; its Vue plugin also supports
+  # Vite 6, so force the first release fixing the path/dev-server advisories.
+  vite: "6.4.3"

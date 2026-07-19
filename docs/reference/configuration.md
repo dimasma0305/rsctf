@@ -14,6 +14,7 @@ Restart rsctf after changing a startup value. Settings changed in **Admin → Se
 | `RSCTF_DB_MAX_CONNECTIONS` | `32` | Per-process database connection cap; computed minimum described below |
 | `RSCTF_REDIS_URL` | Unset | Redis cache URL; when configured, Redis is required for readiness and reconnects after an outage |
 | `RSCTF_DISTRIBUTED_RATELIMIT` | `false` | Share rate limits through Redis for multiple replicas |
+| `RSCTF_AD_SUBMIT_BURST_FLAGS` | `400` | Immediate per-participation A&D flag-work budget before the fixed 10 flags/s refill (`100..3200`) |
 | `RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE` | `120000` | High shared-source ceiling after credential validation (`12000..1000000`) |
 | `RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE` | `30000` | Cheap shared-source ceiling before bearer verification/token lookup (`3000..1000000`) |
 | `RSCTF_JWT_SECRET` | Insecure development placeholder | Session signing secret; deployment validation requires at least 32 bytes and rejects known defaults |
@@ -66,6 +67,7 @@ first; rsctf does not silently dual-read or migrate historical objects.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `RSCTF_ALLOW_REGISTER` | `true` | Allow public password registration; the empty-database admin bootstrap remains possible |
+| `RSCTF_BOOTSTRAP_TOKEN` | Unset | 32+ character secret required for the first administrator while the user table is empty; ignored for later registrations |
 | `RSCTF_EMAIL_CONFIRM` | `false` | Require email-confirmation behavior for later accounts |
 | `RSCTF_ACTIVE_ON_REGISTER` | `true` | Make later registered users active immediately |
 
@@ -79,6 +81,7 @@ first; rsctf does not silently dual-read or migrate historical objects.
 | `RSCTF_CONTAINER_MAX_MEMORY_MB` | `4096` | Global upper bound for one challenge container |
 | `RSCTF_CONTAINER_MAX_CPU_COUNT` | `8` | Global CPU-count upper bound for one challenge container |
 | `RSCTF_DOCKER_PUBLIC_ENTRY` | Unset | Hostname/IP advertised for Docker-published challenge ports |
+| `RSCTF_DOCKER_SCOPE` | Hash of `RSCTF_JWT_SECRET` | Stable installation identity for Docker workload labels and recovery names; use one value across replicas and a different value for every installation sharing a daemon |
 | `RSCTF_PROVISIONING_CONCURRENCY` | `4` | Concurrent provisioning operations |
 | `RSCTF_REPO_SCAN_CONCURRENCY` | `1` | Concurrent long-lived shared checkout scans per process (`1..4`) |
 | `RSCTF_TRAFFIC_CAPTURE_ENABLED` | `false` | Allow the singleton `all`/`control`/`network` worker to collect packet captures for challenges that enable it; Compose deployments must also select the matching capture overlay that grants `NET_RAW` |
@@ -86,7 +89,7 @@ first; rsctf does not silently dual-read or migrate historical objects.
 | `RSCTF_CAPTURE_RECONCILE_SECONDS` | `2` | Durable capture desired-state recovery interval (`1..60` seconds) |
 | `DOCKER_HOST` | Local socket | Docker daemon endpoint used by the Docker backend |
 
-If the selected explicit backend is unavailable, startup fails. `auto` can fall back to no container manager and is prohibited when the integrated VPN is enabled.
+If the selected explicit backend is unavailable, startup fails. `auto` can fall back to no container manager and is prohibited when the integrated VPN is enabled. rsctf hashes the Docker scope before writing it to labels. Set an explicit scope before rotating the JWT secret so already-running workloads remain discoverable; all replicas and the control owner must use the same scope.
 
 Live packet collection currently requires the Docker backend, visibility of the
 A&D service traffic on `RSCTF_CAPTURE_DEVICE`, and `CAP_NET_RAW`. PostgreSQL
@@ -111,14 +114,15 @@ uses S3.
 | `RSCTF_AD_VPN_REQUIRED` | `false` | Fail startup if VPN initialization fails; requires VPN enabled |
 | `RSCTF_AD_VPN_CLIENT_CIDR` | `10.13.37.0/24` in code | Address pool for team peers; deployment templates may choose a larger non-overlapping range |
 | `RSCTF_AD_VPN_SERVICES_CIDR` | `10.13.40.0/24` | Docker A&D service network |
-| `RSCTF_AD_VPN_SERVICES_NETWORK` | `rsctf-ad` | Docker A&D service network name |
-| `RSCTF_AD_VPN_EGRESS_NETWORK` | `rsctf-ad-egress` | Separate bridge for explicitly allowed A&D egress |
+| `RSCTF_AD_VPN_SERVICES_NETWORK` | `<Compose project>-ad` (`rsctf-ad` outside Compose) | Docker A&D service network name; keep it unique per installation sharing a daemon |
+| `RSCTF_AD_VPN_EGRESS_NETWORK` | `rsctf-ad-egress` | Legacy Docker bridge name; competitive Docker egress now fails closed and never joins this shared bridge |
 | `RSCTF_AD_VPN_LISTEN_PORT` | `51820` | WireGuard UDP listen port |
 | `RSCTF_AD_VPN_SERVER_ENDPOINT` | Derived | Public `host:port` placed in player configurations |
 | `RSCTF_AD_VPN_DNS` | `1.1.1.1` | DNS server placed in generated WireGuard profiles |
 | `RSCTF_AD_VPN_ALLOWED_IPS` | Derived routes | Optional explicit routes in player profiles |
 | `RSCTF_AD_SSH_PORT` | `2222` | A&D SSH bastion listen port |
 | `RSCTF_AD_SSH_PUBLIC_HOST` | Docker public entry | Host advertised for the SSH bastion |
+| `RSCTF_AD_BYOC_AGENT_IMAGE` | Same-release GHCR digest in official images; audited source fallback otherwise | Optional immutable `repository@sha256:...` relay-agent override. Tagged official server images embed the exact amd64/arm64 agent index produced by their workflow; direct source and local Docker builds retain an amd64-only fallback. |
 | `RSCTF_AD_TICK_SECONDS` | Engine/game setting | Default A&D tick timing override (`30..600` seconds); persisted round boundaries are anchored to this cadence |
 | `RSCTF_AD_CHECKER_TIMEOUT_SECONDS` | `30` | Per-check timeout; set deliberately below the event tick only after checker validation |
 | `RSCTF_AD_CHECKER_CONCURRENCY` | CPU-scaled, `32..128` | Maximum concurrent A&D/KotH probes (`1..256`) |
@@ -129,6 +133,13 @@ uses S3.
 | `RSCTF_AD_FLAG_PUSH_ATTEMPTS` | `3` | Bounded flag-publication attempts per service (`1..5`) |
 | `RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS` | `2` | Timeout for one publication attempt (`1..10`) |
 | `RSCTF_AD_CHECKER_MEM_MB` | Internal default | Checker sandbox memory cap |
+
+`allowEgress: true` is supported only by the Kubernetes container backend,
+which creates a per-workload NetworkPolicy. The Docker backend rejects it for
+A&D and KotH because its shared bridge cannot safely exclude peer workloads,
+private networks, and metadata endpoints. Keep the legacy egress-network
+variable only for configuration compatibility; it does not re-enable Docker
+egress.
 
 ### Checker dependency preparation
 
@@ -172,17 +183,23 @@ while its challenge insert needs a fourth connection. Let `R` be
 | Process mode | Minimum `RSCTF_DB_MAX_CONNECTIONS` |
 | --- | ---: |
 | One-shot `migrate` | `2` |
-| `web` or `engine` | `4R + 2P + 1` |
-| Non-VPN `all`, `control`, or `network` | `4R + 2P + 3` |
-| Active VPN-owning `all`, `control`, or `network` | `4R + 2P + 6` |
+| `engine` | `4R + 2P + 1` |
+| `web` | `4R + 2P + 9` |
+| Non-VPN `control` or `network` | `4R + 2P + 3` |
+| Active VPN-owning `control` or `network` | `4R + 2P + 6` |
+| Non-VPN `all` | `4R + 2P + 11` |
+| Active VPN-owning `all` | `4R + 2P + 14` |
 
 The migration role uses only the pool's two baseline connections. A network
 owner retains both the network/BYOC lease and the traffic-capture lease even
 without VPN, plus one progress connection. The VPN allowance additionally
-covers its `LISTEN` connection and nested kernel/allocation reconciliation. At
-the defaults (`R=1`, `P=4`), web/engine need 13 connections, a non-VPN network
-owner needs 15, and a VPN owner needs 18. Keep additional headroom for ordinary
-request bursts where practical.
+covers its `LISTEN` connection and nested kernel/allocation reconciliation.
+Monolithic and web roles reserve eight more connections for bounded roster and
+account lifecycle operations that retain a lock while issuing nested work. At
+the defaults (`R=1`, `P=4`), engine needs 13 connections, web needs 21,
+control/network needs 15 without VPN or 18 with it, and `all` needs 23 without
+VPN or 26 with it. Keep additional headroom for ordinary request bursts where
+practical.
 
 Checker and flag work is bounded by the persisted round deadline. Evidence that
 finishes at or after that deadline is excluded, unresolved samples become
@@ -213,6 +230,12 @@ shared-source backstop is configured with
 `30000`, valid `3000..1000000`) bounds work from rotating invalid credentials
 before signature or database verification. Login, recovery, registration, mail,
 and OAuth-start limits remain strictly IP-scoped.
+
+A&D submission is charged by distinct plausible flags, not HTTP requests. The
+default permits four immediate maximum-size batches for one participation, then
+refills at 10 flags/second. Repeating one flag in a batch costs one token. Keep
+`RSCTF_AD_SUBMIT_BURST_FLAGS=400` in production; the upper bound exists for an
+explicit isolated load campaign, not as a scoring or event-size setting.
 
 ## Kubernetes backend
 

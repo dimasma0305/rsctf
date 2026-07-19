@@ -18,6 +18,8 @@ use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 
 use crate::utils::error::{AppError, AppResult};
 
+const SMTP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// SMTP configuration resolved from the process environment.
 ///
 /// Mirrors the fields RSCTF reads from `EmailConfig`/`SmtpConfig`
@@ -142,9 +144,9 @@ impl MailSender {
             .body(html_body.to_string())
             .map_err(|e| AppError::internal(format!("failed to build message: {e}")))?;
 
-        cfg.transport
-            .send(email)
+        tokio::time::timeout(SMTP_SEND_TIMEOUT, cfg.transport.send(email))
             .await
+            .map_err(|_| AppError::internal("SMTP send timed out after 15 seconds"))?
             .map_err(|e| AppError::internal(format!("SMTP send failed: {e}")))?;
 
         tracing::info!(to, subject, "mail sent");

@@ -33,10 +33,11 @@ export function cohortSeedQuery(gameId, count) {
      ORDER BY ordinal
     RETURNING id
 ), inserted_teams AS (
-    INSERT INTO "Teams"(name,invite_token,captain_id,locked)
+    INSERT INTO "Teams"(name,invite_token,captain_id,locked,deletion_pending)
     SELECT 'LT${gid}_' || cohort.ordinal,
            substr(md5(gen_random_uuid()::text),1,32),
            inserted_users.id,
+           false,
            false
       FROM cohort
       JOIN inserted_users ON inserted_users.id=cohort.user_id

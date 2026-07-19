@@ -73,6 +73,12 @@ pub enum RuntimeReadiness {
     Draining = 2,
 }
 
+impl Default for ReadinessProbe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReadinessProbe {
     pub fn new() -> Self {
         Self {

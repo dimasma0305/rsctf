@@ -295,9 +295,7 @@ async fn import_from_dir(
                 return result;
             }
         };
-    match ad_epoch_scoring_started_locked(&mut **configuration_lock.transaction_mut(), game_id)
-        .await
-    {
+    match ad_epoch_scoring_started_locked(configuration_lock.transaction_mut(), game_id).await {
         Ok(false) => {}
         Ok(true) => {
             result.failed = manifests.len() as i32;

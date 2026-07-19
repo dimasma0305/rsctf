@@ -27,6 +27,12 @@ The challenge instructions are authoritative if they specify a different mechani
 
 Capabilities are bound to a hill, its exact container, and the current crown-cycle reset. Re-read the toolkit after every reset; a capability from an earlier cycle cannot claim the replacement container.
 
+Capability access is also bound to the team's current eligible roster. A ban,
+team deletion, or missing account revokes the team's live bearer credentials and
+holder projection. The official scoring roster remains frozen for historical
+identity and denominators; only currently eligible teams receive or can present
+new cycle capabilities, so removing one team does not void the remaining field.
+
 ## Ticks, crown cycles, and epochs
 
 The checker observes every hill once per scorable tick at a server-randomized time. Do not rely on the round boundary as the check time. Several ticks form a **crown cycle**. At every cycle boundary, rsctf pauses scoring, finalizes the cycle, destroys the old container, and creates exactly one replacement from the same pristine challenge image. It clears the holder and provisional claim, revokes old capabilities, waits for the replacement to pass readiness, applies any champion cooldown, and only then starts the next cycle. Reset and readiness time is not scoring evidence.

@@ -362,6 +362,7 @@ pub async fn get_game(
     Ok(RequestResponse::ok(GameInfoModel::from_game(&g)))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_scoring_transition(
     current_epoch_ticks: i32,
     current_start_round: Option<i32>,

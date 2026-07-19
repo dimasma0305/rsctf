@@ -28,6 +28,22 @@ jwt=(--set-string secrets.jwtSecret=0123456789abcdef0123456789abcdef)
 
 helm lint charts/rsctf --strict "${jwt[@]}"
 
+default_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
+  --show-only templates/configmap.yaml)"
+assert_contains "$default_config" 'RSCTF_AD_SUBMIT_BURST_FLAGS: "400"' \
+  "default A&D submit burst was not rendered"
+benchmark_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
+  --set config.adSubmitBurstFlags=3200 \
+  --show-only templates/configmap.yaml)"
+assert_contains "$benchmark_config" 'RSCTF_AD_SUBMIT_BURST_FLAGS: "3200"' \
+  "explicit A&D submit burst was not rendered"
+for invalid_burst in 99 3201; do
+  if helm template rsctf charts/rsctf "${jwt[@]}" \
+    --set config.adSubmitBurstFlags="$invalid_burst" >/dev/null 2>&1; then
+    fail "chart accepted out-of-range A&D submit burst $invalid_burst"
+  fi
+done
+
 rbac="$(helm template rsctf charts/rsctf \
   --show-only templates/rbac.yaml \
   --set containerBackend=kubernetes \
@@ -73,13 +89,17 @@ web=(
   --set existingSecret.name=rsctf-shared
   --set persistence.enabled=true
   --set persistence.existingClaim=rsctf-files-rwx
-  --set persistence.accessModes[0]=ReadWriteMany
+  --set 'persistence.accessModes[0]=ReadWriteMany'
   --set containerBackend=worker
   --set workerBackend.localBackend=none
   --set trafficCapture.enabled=false
-  --set config.dbMaxConnections=13
+  --set config.dbMaxConnections=21
 )
 web_rendered="$(helm template rsctf-web charts/rsctf "${web[@]}")"
+if helm template rsctf-web charts/rsctf "${web[@]}" \
+  --set config.dbMaxConnections=20 >/dev/null 2>&1; then
+  fail "web role accepted a database pool below its replica-safe floor"
+fi
 assert_absent "$web_rendered" 'RSCTF_WORKER_LISTEN' \
   "web role received the singleton worker listener"
 assert_absent "$web_rendered" 'worker-ca.key' \
@@ -141,6 +161,16 @@ assert_contains "$docker_hybrid" 'name: docker-socket' \
 assert_contains "$docker_hybrid" '- NET_RAW' \
   "capture-enabled Docker hybrid did not receive NET_RAW"
 
+vpn_owner="$(helm template rsctf charts/rsctf "${jwt[@]}" \
+  --set containerBackend=kubernetes \
+  --set kubernetes.adServiceCidr=10.96.0.0/12 \
+  --set vpn.enabled=true \
+  --set vpn.serverEndpoint=vpn.ctf.example:51820)"
+assert_contains "$vpn_owner" '- NET_ADMIN' \
+  "VPN owner did not receive NET_ADMIN"
+assert_contains "$vpn_owner" '- NET_RAW' \
+  "VPN owner did not receive NET_RAW for the iptables ipset matcher"
+
 kubernetes_hybrid="$(helm template rsctf charts/rsctf "${worker[@]}" \
   --set workerBackend.localBackend=kubernetes \
   --set kubernetes.challengeNamespace=rsctf-challenges \
@@ -165,14 +195,23 @@ split=(
   --set existingSecret.name=rsctf-shared
   --set persistence.enabled=true
   --set persistence.existingClaim=rsctf-files-rwx
-  --set persistence.accessModes[0]=ReadWriteMany
+  --set 'persistence.accessModes[0]=ReadWriteMany'
   --set containerBackend=kubernetes
   --set kubernetes.challengeNamespace=rsctf-challenges
   --set kubernetes.createChallengeNamespace=false
   --set kubernetes.adServiceCidr=10.96.0.0/12
-  --set config.dbMaxConnections=13
+  --set config.dbMaxConnections=21
 )
 helm template rsctf-web charts/rsctf "${split[@]}" >/dev/null
+vpn_web="$(helm template rsctf-web charts/rsctf "${split[@]}" \
+  --set vpn.enabled=true \
+  --set vpn.serverEndpoint=vpn.ctf.example:51820)"
+assert_absent "$vpn_web" '- NET_ADMIN' \
+  "VPN-aware web role received NET_ADMIN"
+assert_absent "$vpn_web" '- NET_RAW' \
+  "VPN-aware web role received NET_RAW"
+assert_absent "$vpn_web" 'name: tun' \
+  "VPN-aware web role received the TUN device"
 
 must_reject_split() {
   local label="$1"

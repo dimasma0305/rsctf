@@ -179,7 +179,7 @@ pub async fn create_repo_binding(
     // success toast can read (gamesCreated/... rather than NaN).
     let result = if m.run_immediately.unwrap_or(false) {
         // Best-effort: the binding exists whether or not the first scan succeeds.
-        run_repo_scan(&st, id)
+        run_repo_scan_cancellation_safe(st.clone(), id)
             .await
             .unwrap_or_else(|e| RepoBindingScanResultModel {
                 games_created: 0,
@@ -257,7 +257,9 @@ pub async fn scan_repo_binding(
     _admin: AdminUser,
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<RepoBindingScanResultModel>> {
-    Ok(RequestResponse::ok(run_repo_scan(&st, id).await?))
+    Ok(RequestResponse::ok(
+        run_repo_scan_cancellation_safe(st, id).await?,
+    ))
 }
 
 /// `GET /api/admin/repobindings/{id}/scans` — scan history, newest first.
@@ -292,6 +294,19 @@ pub async fn repo_binding_scans(
 /// record a truthful scan row + update the binding. Reports the actual manifest
 /// count (never faked all-zeros); full per-game import is bounded by the manifests'
 /// own game targets.
+async fn run_repo_scan_cancellation_safe(
+    st: SharedState,
+    id: i32,
+) -> AppResult<RepoBindingScanResultModel> {
+    // Repository imports can build several images and outlive an HTTP client.
+    // Awaiting a spawned task preserves the synchronous response when the client
+    // stays connected, while dropping the JoinHandle on disconnect detaches the
+    // scan instead of cancelling it halfway through the event tree.
+    tokio::spawn(async move { run_repo_scan(&st, id).await })
+        .await
+        .map_err(|error| AppError::internal(format!("repository scan task failed: {error}")))?
+}
+
 async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanResultModel> {
     let binding = repo_binding::Entity::find_by_id(id)
         .one(&st.db)
@@ -388,7 +403,7 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                         let mut configuration_lock =
                             crate::services::ad_engine::acquire_ad_game_lock(&st.db, gid).await?;
                         if crate::controllers::edit::ad_epoch_scoring_started_locked(
-                            &mut **configuration_lock.transaction_mut(),
+                            configuration_lock.transaction_mut(),
                             gid,
                         )
                         .await?
@@ -578,6 +593,15 @@ async fn upsert_event_game(
         ad_min_grace_period_seconds: Set(ad.and_then(|a| a.min_grace_period_seconds)),
         ad_allow_snapshot_download: Set(ad.and_then(|a| a.allow_snapshot_download).unwrap_or(true)),
         ad_scoring_paused: Set(false),
+        // Keep repository-created games aligned with `add_game`. Fresh schemas
+        // can contain these NOT NULL columns without their migration defaults
+        // because m0001 derives them from the current entity before m0046's
+        // `ADD COLUMN IF NOT EXISTS` statements run.
+        ad_epoch_ticks: Set(8),
+        koth_epoch_ticks: Set(12),
+        koth_cycle_ticks: Set(3),
+        koth_champion_cooldown_ticks: Set(1),
+        koth_claim_confirmation_ticks: Set(2),
         ..Default::default()
     };
     Ok((am.insert(&st.db).await?.id, true))

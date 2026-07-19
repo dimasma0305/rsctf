@@ -83,6 +83,14 @@ function srcIp() {
   return `10.${10 + (v % 240)}.${1 + (Math.floor(v / 240) % 254)}.${1 + (v % 250)}`;
 }
 
+// Keep the deliberately unknown capture in the engine's exact 32-character
+// payload shape. A short placeholder is rejected before PostgreSQL and would
+// make this scenario stop exercising authoritative flag lookup under load.
+function unknownFlag(vu, iteration) {
+  const identity = `${vu.toString(36)}_${iteration.toString(36)}`;
+  return `flag{${identity.padEnd(32, 'x').slice(0, 32)}}`;
+}
+
 function validServiceBreakdown(model) {
   if (!Array.isArray(model?.challenges) || model.challenges.length === 0 || !Array.isArray(model?.teams)) return false;
   if (!model.challenges.every((challenge) => Number.isSafeInteger(challenge.challengeId) && challenge.challengeId > 0)) return false;
@@ -181,7 +189,7 @@ export default function () {
   if (it % 5 === 0 && CHALS.length) {
     const r = http.post(
       `${TARGET}/api/Game/${GAME}/Ad/Submit`,
-      JSON.stringify({ flags: [`flag{stress_${vu}_${it}}`] }),
+      JSON.stringify({ flags: [unknownFlag(vu, it)] }),
       {
         headers: { 'X-Real-IP': ip, Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
         tags: { kind: 'submit' },

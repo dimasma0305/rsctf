@@ -3,13 +3,41 @@
 
 use std::path::Path;
 
+use axum::extract::MatchedPath;
+use axum::http::Request;
 use axum::routing::get;
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{MakeSpan, TraceLayer};
 
 use crate::app_state::SharedState;
 use crate::{controllers, hubs};
+
+const UNMATCHED_TRACE_ROUTE: &str = "<unmatched>";
+
+/// Builds bounded-cardinality request spans without copying raw URI path or
+/// query data into logs. Some process-local routes contain bearer capabilities
+/// in path parameters, so only Axum's route template is safe to record.
+#[derive(Clone, Copy)]
+struct RedactedHttpMakeSpan;
+
+impl<B> MakeSpan<B> for RedactedHttpMakeSpan {
+    fn make_span(&mut self, request: &Request<B>) -> tracing::Span {
+        tracing::debug_span!(
+            "request",
+            method = %request.method(),
+            route = trace_route(request),
+            version = ?request.version(),
+        )
+    }
+}
+
+fn trace_route<B>(request: &Request<B>) -> &str {
+    request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or(UNMATCHED_TRACE_ROUTE, MatchedPath::as_str)
+}
 
 /// The merged application routes, without state applied. Constructing this
 /// runs every controller's route registration, so route conflicts surface
@@ -119,7 +147,7 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
             state.clone(),
             crate::middlewares::user_activity::middleware,
         ))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(RedactedHttpMakeSpan))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middlewares::rate_limiter::global_middleware,
@@ -146,7 +174,7 @@ pub fn build_health_router(state: SharedState) -> Router {
     Router::new()
         .route("/livez", get(crate::services::health::liveness))
         .route("/healthz", get(crate::services::health::readiness))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(RedactedHttpMakeSpan))
         .with_state(state)
 }
 
@@ -163,3 +191,59 @@ fn inject_head(html: &str, snippet: &str) -> String {
 /// login page's autofill keeps working; a MutationObserver re-applies it across the
 /// SPA's client-side navigations and React re-renders.
 const ANTI_AUTOFILL_SCRIPT: &str = r#"<script>(function(){function h(){if(!/^\/admin\/settings/.test(location.pathname))return;document.querySelectorAll("input:not([data-noaf])").forEach(function(e){var t=(e.getAttribute("type")||"").toLowerCase(),n=e.getAttribute("name")||"",d=e.id||"";if(t==="password"||/pass|secret|key|token/i.test(n+" "+d)){e.setAttribute("autocomplete","new-password");e.setAttribute("data-noaf","1")}})}try{new MutationObserver(h).observe(document.documentElement,{childList:!0,subtree:!0})}catch(e){}document.addEventListener("DOMContentLoaded",h);window.addEventListener("load",h);h()})();</script>"#;
+
+#[cfg(test)]
+mod tests {
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use super::{trace_route, UNMATCHED_TRACE_ROUTE};
+
+    const BYOC_IMAGE_ROUTE: &str =
+        "/api/game/{game}/ad/byoc/{participation}/{challenge}/image/{token}";
+
+    async fn traced_route(request: Request<Body>) -> String {
+        trace_route(&request).to_owned()
+    }
+
+    #[tokio::test]
+    async fn byoc_capability_is_replaced_with_the_matched_route_template() {
+        const SECRET: &str = "fake-capability-token-must-not-be-logged";
+        let app = Router::new().route(BYOC_IMAGE_ROUTE, get(traced_route));
+        let request = Request::builder()
+            .uri(format!(
+                "/api/game/7/ad/byoc/11/13/image/{SECRET}?download=secret"
+            ))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let route = std::str::from_utf8(&body).unwrap();
+
+        assert_eq!(route, BYOC_IMAGE_ROUTE);
+        assert!(!route.contains(SECRET));
+        assert!(!route.contains("download"));
+    }
+
+    #[tokio::test]
+    async fn fallback_does_not_log_an_unmatched_path_or_query() {
+        const SECRET: &str = "unmatched-path-secret";
+        let app = Router::new().fallback(traced_route);
+        let request = Request::builder()
+            .uri(format!("/missing/{SECRET}?token=query-secret"))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let route = std::str::from_utf8(&body).unwrap();
+
+        assert_eq!(route, UNMATCHED_TRACE_ROUTE);
+        assert!(!route.contains(SECRET));
+        assert!(!route.contains("query-secret"));
+    }
+}

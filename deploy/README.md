@@ -8,13 +8,26 @@ The guided installer is the easiest path:
 
 It creates `deploy/.env`, validates the complete Compose configuration, pulls
 the published full-stack image, starts the stack, and waits for `/healthz`. The
-first account registered in a new database becomes the active administrator.
+first account becomes the active administrator only when registration supplies
+the private token stored in the owner-only `deploy/.env`. The installer does
+not print that secret. The maintained Compose files refuse an empty setup token
+so a fresh database cannot come up in an unbootstrappable state.
 
-You do not need Git or a source checkout. To download the small deployment
-bundle and run the wizard in one step:
+You do not need Git or a source checkout. The bootstrap resolves only a strict
+`vX.Y.Z` release, verifies the coherent deployment archive against its checksum
+and GitHub artifact attestation, and uses the matching immutable server image
+digest. Follow the
+[verified release-installer procedure](../docs/reference/installer.md) rather
+than executing a mutable branch copy. Install a current GitHub CLI with
+`gh attestation verify` support first. Pin a release with `--ref vX.Y.Z`; the
+explicit `--skip-attestation` option is a warned checksum-only escape hatch for
+controlled recovery or development. A trusted source checkout can still run
+`./scripts/install.sh` directly and use its existing local deployment files.
+
+Retrieve the first-administrator token only from a trusted local terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dimasma0305/rsctf/main/scripts/install.sh | bash
+sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' deploy/.env
 ```
 
 For a configuration-only run that does not start containers:
@@ -51,13 +64,17 @@ docker compose down
 - `compose.caddy.yml` adds Caddy with automatic HTTPS. DNS must point at the
   server and inbound TCP 80/443 plus UDP 443 must be open.
 - `compose.ad-vpn.yml` adds the Docker backend, isolated A&D service network,
-  WireGuard hub, and SSH bastion. It requires `/dev/net/tun`, `NET_ADMIN`, and
-  inbound UDP 51820/TCP 2222 by default.
+  WireGuard hub, and SSH bastion. It requires `/dev/net/tun`, `NET_ADMIN`,
+  `NET_RAW` for the iptables ipset matcher, and inbound UDP 51820/TCP 2222 by
+  default. Docker A&D/KotH workloads must keep `allowEgress: false`; rsctf
+  rejects `true` because a shared bridge cannot safely isolate outbound access.
+  Use the Kubernetes backend with per-workload NetworkPolicy when egress is a
+  challenge requirement.
 - `compose.roles.yml` changes the public service to the `web` role and adds one
   checker-owning `control` owner. `web` keeps no Linux capabilities; `control`
-  receives the same narrow checker/network set as `all`, without `NET_RAW`
-  unless `compose.roles.capture.yml` is selected. It also requires an
-  explicit `RSCTF_IMAGE`; pin a reviewed version instead of `latest` so every
+  receives the same narrow checker/network set as `all`; the A&D VPN or capture
+  companion grants `NET_RAW` only to this singleton owner. It also requires an
+  explicit `RSCTF_IMAGE`; pin a reviewed digest so every
   role executes the exact same build. Its
   `compose.roles.docker.yml` and
   `compose.roles.ad-vpn.yml` companions are manual advanced scaling options;

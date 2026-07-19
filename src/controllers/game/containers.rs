@@ -934,7 +934,7 @@ pub(crate) async fn destroy_managed_container_row(
     }
 
     crate::services::ad_vpn::deactivate_backend_endpoint(&st.db, &current.container_id).await?;
-    crate::services::traffic::stop_container_capture(&st, &current.container_id).await?;
+    crate::services::traffic::stop_container_capture(st, &current.container_id).await?;
     st.containers.destroy(&current.container_id).await?;
 
     if let Some(gi_id) = current.game_instance_id {

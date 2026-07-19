@@ -793,6 +793,7 @@ impl Drop for SandboxRunGuard {
 /// `read_paths`/`exec_paths` are the Landlock allowlist; `env` is the exact set
 /// passed to the checker (the caller passes only the `RSCTF_*` contract — every
 /// other host env var, incl. rsctf's secrets, is stripped by `env_clear`).
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     venv_python: &str,
     run_py: &str,

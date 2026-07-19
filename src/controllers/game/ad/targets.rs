@@ -7,7 +7,7 @@ use serde::Deserialize;
 /// literal `?? 60` in `AdGameController.Targets`).
 const DEFAULT_TICK_SECONDS: i64 = 60;
 const LIVE_HILL_SNAPSHOT_TTL: std::time::Duration = std::time::Duration::from_secs(1);
-static AD_TARGETS_SF: std::sync::LazyLock<
+static AD_TARGET_ROSTER_SF: std::sync::LazyLock<
     crate::utils::single_flight::SingleFlight<Option<bytes::Bytes>>,
 > = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 static LIVE_HILL_SNAPSHOT_SF: std::sync::LazyLock<
@@ -74,9 +74,10 @@ pub async fn targets(
     verified: Option<axum::Extension<crate::services::ad::api_token::VerifiedTeamToken>>,
     rejected: Option<axum::Extension<crate::services::ad::api_token::RejectedTeamToken>>,
 ) -> AppResult<RequestResponse<AdTargetsModel>> {
-    // Auth resolves the caller; the target set itself is game-global (every accepted
-    // team's live container), so it's built once + cached (5 s) and only the caller's own
-    // team is filtered per request — turning ~9 DB queries/poll into a cache hit + a filter.
+    // Auth resolves the caller. Only the game-global challenge/roster skeleton is
+    // cached; mutable service endpoints and verdicts are loaded from PostgreSQL on
+    // every request so a BYOC reconnect cannot leave opponents targeting a retired
+    // relay port.
     let caller = resolve_ad_attacker(
         &st,
         &headers,
@@ -86,47 +87,47 @@ pub async fn targets(
         id,
     )
     .await?;
-    let (bytes, current_round) = tokio::try_join!(
-        targets_all_json(&st, id),
+    let (bytes, current_round, live_services) = tokio::try_join!(
+        target_roster_json(&st, id),
         crate::controllers::game::koth::load_latest_round_cached(&st, id),
+        fetch_live_ad_service_identities(&st, id),
     )?;
     let mut model: AdTargetsModel =
         serde_json::from_slice(&bytes).map_err(|e| AppError::internal(e.to_string()))?;
     apply_current_round(&mut model, current_round);
     if current_round > 0 {
+        apply_live_ad_service_identities(&mut model, &live_services);
         overlay_live_hills(&st, id, &mut model).await?;
     }
-    for ch in &mut model.challenges {
-        ch.teams.retain(|t| t.participation_id != caller.id);
-    }
+    exclude_caller(&mut model, caller.id);
     Ok(RequestResponse::ok(model))
 }
 
-/// The game-global target set as JSON, cached 5 s with single-flight so a poll storm
-/// recomputes it once. The per-caller "exclude my own team" filter is [`targets`]'s job.
-async fn targets_all_json(st: &SharedState, id: i32) -> AppResult<bytes::Bytes> {
-    let key = format!("adtargets:{id}");
+/// The immutable-during-play challenge/roster skeleton, cached for five seconds
+/// with single-flight. Live A&D endpoints and verdicts are deliberately absent.
+async fn target_roster_json(st: &SharedState, id: i32) -> AppResult<bytes::Bytes> {
+    let key = format!("adtargetroster:{id}");
     if let Some(b) = st.cache.get(&key).await {
         return Ok(b);
     }
     let st = st.clone();
     let key_for_fill = key.clone();
-    AD_TARGETS_SF
+    AD_TARGET_ROSTER_SF
         .run(&key, move || async move {
             if let Some(bytes) = st.cache.get(&key_for_fill).await {
                 return Some(bytes);
             }
-            let model = match build_targets_all(&st, id).await {
+            let model = match build_target_roster(&st, id).await {
                 Ok(model) => model,
                 Err(error) => {
-                    tracing::warn!(game = id, %error, "A&D targets cache fill failed");
+                    tracing::warn!(game = id, %error, "A&D target roster cache fill failed");
                     return None;
                 }
             };
             let json = match serde_json::to_vec(&model) {
                 Ok(json) => bytes::Bytes::from(json),
                 Err(error) => {
-                    tracing::warn!(game = id, %error, "A&D targets serialization failed");
+                    tracing::warn!(game = id, %error, "A&D target roster serialization failed");
                     return None;
                 }
             };
@@ -140,7 +141,105 @@ async fn targets_all_json(st: &SharedState, id: i32) -> AppResult<bytes::Bytes> 
             Some(json)
         })
         .await
-        .ok_or_else(|| AppError::internal("A&D targets cache fill failed"))
+        .ok_or_else(|| AppError::internal("A&D target roster cache fill failed"))
+}
+
+/// Mutable A&D endpoint identity and its newest completed checker verdict.
+/// This is internal projection data and is never serialized onto the wire.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+struct LiveAdServiceIdentity {
+    challenge_id: i32,
+    participation_id: i32,
+    host: String,
+    port: i32,
+    last_check_status: Option<i16>,
+}
+
+/// Load all currently publishable A&D endpoints in one bounded query. The
+/// LATERAL seek uses the per-service result index and returns at most one verdict
+/// per service, avoiding a scan over the game's historical checker results.
+async fn fetch_live_ad_service_identities(
+    st: &SharedState,
+    game_id: i32,
+) -> AppResult<Vec<LiveAdServiceIdentity>> {
+    sqlx::query_as::<_, LiveAdServiceIdentity>(
+        r#"SELECT service.challenge_id, service.participation_id,
+                  service.host, service.port,
+                  verdict.status AS last_check_status
+             FROM "AdTeamServices" service
+             JOIN "Participations" participation
+               ON participation.id = service.participation_id
+              AND participation.game_id = service.game_id
+              AND participation.status = $2
+             JOIN "GameChallenges" challenge
+               ON challenge.id = service.challenge_id
+              AND challenge.game_id = service.game_id
+              AND challenge.is_enabled = TRUE
+              AND challenge.review_status = $3
+              AND challenge."Type" = $4
+             LEFT JOIN LATERAL (
+               SELECT result.status
+                 FROM "AdCheckResults" result
+                WHERE result.team_service_id = service.id
+                  AND result.sla_credit IS NOT NULL
+                ORDER BY result.round_id DESC
+                LIMIT 1
+             ) verdict ON TRUE
+            WHERE service.game_id = $1
+              AND (
+                service.container_id IS NOT NULL
+                OR (
+                  challenge.ad_self_hosted = TRUE
+                  AND service.host <> ''
+                  AND service.port > 0
+                )
+              )
+            ORDER BY service.challenge_id, service.participation_id"#,
+    )
+    .bind(game_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::AttackDefense as i16)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
+/// Replace every cached placeholder with its current endpoint atomically at the
+/// model level. Missing identities are removed, so a tunnel teardown cannot
+/// leave a stale address in a previously cached roster body.
+fn apply_live_ad_service_identities(
+    model: &mut AdTargetsModel,
+    identities: &[LiveAdServiceIdentity],
+) {
+    let identities: HashMap<(i32, i32), &LiveAdServiceIdentity> = identities
+        .iter()
+        .map(|identity| ((identity.challenge_id, identity.participation_id), identity))
+        .collect();
+
+    for challenge in &mut model.challenges {
+        if challenge.hill.is_some() {
+            continue;
+        }
+        challenge.teams.retain_mut(|team| {
+            let Some(identity) = identities.get(&(challenge.challenge_id, team.participation_id))
+            else {
+                return false;
+            };
+            team.ip = (!identity.host.is_empty()).then(|| identity.host.clone());
+            team.port = Some(identity.port);
+            team.last_check_status = identity.last_check_status.map(status_str);
+            true
+        });
+    }
+}
+
+fn exclude_caller(model: &mut AdTargetsModel, caller_id: i32) {
+    for challenge in &mut model.challenges {
+        challenge
+            .teams
+            .retain(|team| team.participation_id != caller_id);
+    }
 }
 
 fn live_hill_snapshot_cache_key(game_id: i32) -> String {
@@ -362,10 +461,10 @@ fn apply_current_round(model: &mut AdTargetsModel, current_round: i32) {
     }
 }
 
-/// Build the game-global roster and challenge skeleton. Live round and hill
-/// identity fields are overlaid after this five-second snapshot is loaded;
-/// caller exclusion is also applied per request by [`targets`].
-async fn build_targets_all(st: &SharedState, id: i32) -> AppResult<AdTargetsModel> {
+/// Build the game-global roster and challenge skeleton. Live round, A&D
+/// endpoint/verdict, and hill identity fields are overlaid after this five-second
+/// snapshot is loaded; caller exclusion is also applied per request by [`targets`].
+async fn build_target_roster(st: &SharedState, id: i32) -> AppResult<AdTargetsModel> {
     // Enabled A&D + KotH challenges, ordered by id — the same column set as the
     // board. KotH hills appear as challenge rows with an empty `teams` list and a
     // populated `hill` (the hill is a single shared container, not per-team).
@@ -381,53 +480,27 @@ async fn build_targets_all(st: &SharedState, id: i32) -> AppResult<AdTargetsMode
         .all(&st.db)
         .await?;
     challenges.sort_by_key(|c| c.id);
-    let self_hosted_challenges: HashSet<i32> = challenges
-        .iter()
-        .filter(|challenge| challenge.ad_self_hosted)
-        .map(|challenge| challenge.id)
-        .collect();
-
-    // KotH hills — one shared container per KotH challenge. The endpoint and
-    // its exact-container verdict are overlaid live after this global roster
-    // snapshot is loaded, so this cached half deliberately carries no verdict.
-    // Every service in the game; every accepted team is a potential target here (the
-    // caller's own team is dropped per request on the cached copy, not in this build).
-    let services = ad_team_service::Entity::find()
-        .filter(ad_team_service::Column::GameId.eq(id))
-        .all(&st.db)
-        .await?;
-    let all_part_ids: Vec<i32> = services
-        .iter()
-        .map(|s| s.participation_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    let accepted_parts: HashMap<i32, participation::Model> = if all_part_ids.is_empty() {
-        HashMap::new()
-    } else {
-        participation::Entity::find()
-            .filter(participation::Column::Id.is_in(all_part_ids))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .filter(|p| p.status == ParticipationStatus::Accepted)
-            .map(|p| (p.id, p))
-            .collect()
-    };
-    let team_names = team_name_map(st, accepted_parts.values().map(|p| p.team_id)).await?;
-
-    let target_service_ids: Vec<i32> = services
-        .iter()
-        .filter(|service| {
-            accepted_parts.contains_key(&service.participation_id)
-                && (service.container_id.is_some()
-                    || (self_hosted_challenges.contains(&service.challenge_id)
-                        && !service.host.is_empty()
-                        && service.port > 0))
-        })
-        .map(|s| s.id)
-        .collect();
-    let latest_check = latest_check_by_service(st, &target_service_ids).await?;
+    // The accepted roster is stable once A&D/KotH scoring starts. Cache this
+    // compact metadata independently from service rows so a newly published
+    // endpoint already has a placeholder to occupy without rebuilding the cache.
+    let mut roster: Vec<(i32, String)> = sqlx::query_as(
+        r#"SELECT participation.id, team.name
+             FROM "Participations" participation
+             JOIN "Teams" team ON team.id = participation.team_id
+            WHERE participation.game_id = $1
+              AND participation.status = $2"#,
+    )
+    .bind(id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    roster.sort_by(|left, right| {
+        left.1
+            .to_lowercase()
+            .cmp(&right.1.to_lowercase())
+            .then_with(|| left.0.cmp(&right.0))
+    });
 
     // Tick length is game-wide (RSCTF `Game.AdTickSeconds ?? 60`) — one value for
     // every challenge row below, sourced from the game row rather than an env
@@ -464,34 +537,17 @@ async fn build_targets_all(st: &SharedState, id: i32) -> AppResult<AdTargetsMode
                 };
             }
 
-            let mut teams: Vec<AdTeamTarget> = services
+            let teams: Vec<AdTeamTarget> = roster
                 .iter()
-                // Platform targets require a live container link. BYOC targets
-                // intentionally have no container row and are published only
-                // while their direct/relay endpoint is non-empty.
-                .filter(|s| {
-                    s.challenge_id == c.id
-                        && accepted_parts.contains_key(&s.participation_id)
-                        && (s.container_id.is_some()
-                            || (c.ad_self_hosted && !s.host.is_empty() && s.port > 0))
-                })
-                .map(|s| AdTeamTarget {
-                    participation_id: s.participation_id,
-                    team_name: accepted_parts
-                        .get(&s.participation_id)
-                        .and_then(|p| team_names.get(&p.team_id).cloned())
-                        .unwrap_or_default(),
+                .map(|(participation_id, team_name)| AdTeamTarget {
+                    participation_id: *participation_id,
+                    team_name: team_name.clone(),
                     division: None,
-                    ip: if s.host.is_empty() {
-                        None
-                    } else {
-                        Some(s.host.clone())
-                    },
-                    port: Some(s.port),
-                    last_check_status: latest_check.get(&s.id).map(|lc| status_str(lc.status)),
+                    ip: None,
+                    port: None,
+                    last_check_status: None,
                 })
                 .collect();
-            teams.sort_by_key(|team| team.team_name.to_lowercase());
             AdChallengeTargets {
                 challenge_id: c.id,
                 title: c.title.clone(),
@@ -513,8 +569,9 @@ async fn build_targets_all(st: &SharedState, id: i32) -> AppResult<AdTargetsMode
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_current_round, apply_hill_identities, invalidate_live_hill_snapshot_cache,
-        live_hill_snapshot_cache_key, AdChallengeTargets, AdHillTarget, AdTargetsModel,
+        apply_current_round, apply_hill_identities, apply_live_ad_service_identities,
+        exclude_caller, invalidate_live_hill_snapshot_cache, live_hill_snapshot_cache_key,
+        AdChallengeTargets, AdHillTarget, AdTargetsModel, AdTeamTarget, LiveAdServiceIdentity,
         LiveHillIdentity,
     };
     use crate::services::cache::{Cache, InMemoryCache};
@@ -547,6 +604,63 @@ mod tests {
         cache.set(&key, b"cached", None).await;
         invalidate_live_hill_snapshot_cache(&cache, 17).await;
         assert!(cache.get(&key).await.is_none());
+    }
+
+    #[test]
+    fn live_ad_identity_replaces_every_cached_endpoint_field() {
+        let mut model = cached_ad_model();
+        model.challenges[0].teams[0].ip = Some("retired.example".to_string());
+        model.challenges[0].teams[0].port = Some(31000);
+        model.challenges[0].teams[0].last_check_status = Some("Offline".to_string());
+
+        apply_live_ad_service_identities(
+            &mut model,
+            &[live_ad_identity(41, "relay.example", 32000, Some(0))],
+        );
+
+        let target = &model.challenges[0].teams[0];
+        assert_eq!(target.ip.as_deref(), Some("relay.example"));
+        assert_eq!(target.port, Some(32000));
+        assert_eq!(target.last_check_status.as_deref(), Some("Ok"));
+    }
+
+    #[test]
+    fn missing_live_ad_identity_removes_a_retired_cached_target() {
+        let mut model = cached_ad_model();
+        model.challenges[0].teams[0].ip = Some("retired.example".to_string());
+        model.challenges[0].teams[0].port = Some(31000);
+
+        apply_live_ad_service_identities(&mut model, &[]);
+
+        assert!(model.challenges[0].teams.is_empty());
+    }
+
+    #[test]
+    fn caller_is_excluded_after_live_ad_overlay() {
+        let mut model = cached_ad_model();
+        model.challenges[0].teams.push(AdTeamTarget {
+            participation_id: 42,
+            team_name: "other".to_string(),
+            division: None,
+            ip: None,
+            port: None,
+            last_check_status: None,
+        });
+        apply_live_ad_service_identities(
+            &mut model,
+            &[
+                live_ad_identity(41, "caller.example", 32000, Some(0)),
+                live_ad_identity(42, "other.example", 32001, Some(0)),
+            ],
+        );
+        exclude_caller(&mut model, 41);
+
+        assert_eq!(model.challenges[0].teams.len(), 1);
+        assert_eq!(model.challenges[0].teams[0].participation_id, 42);
+        assert_eq!(
+            model.challenges[0].teams[0].ip.as_deref(),
+            Some("other.example")
+        );
     }
 
     #[test]
@@ -704,6 +818,21 @@ mod tests {
         )
     }
 
+    fn live_ad_identity(
+        participation_id: i32,
+        host: &str,
+        port: i32,
+        last_check_status: Option<i16>,
+    ) -> LiveAdServiceIdentity {
+        LiveAdServiceIdentity {
+            challenge_id: 8,
+            participation_id,
+            host: host.to_string(),
+            port,
+            last_check_status,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn identity_with_verdict(
         host: &str,
@@ -743,6 +872,26 @@ mod tests {
                     last_check_status: Some("Ok".to_string()),
                     last_refresh_round: 1,
                 }),
+            }],
+        }
+    }
+
+    fn cached_ad_model() -> AdTargetsModel {
+        AdTargetsModel {
+            current_round: 4,
+            challenges: vec![AdChallengeTargets {
+                challenge_id: 8,
+                title: "service".to_string(),
+                tick_seconds: 30,
+                teams: vec![AdTeamTarget {
+                    participation_id: 41,
+                    team_name: "caller".to_string(),
+                    division: None,
+                    ip: None,
+                    port: None,
+                    last_check_status: None,
+                }],
+                hill: None,
             }],
         }
     }

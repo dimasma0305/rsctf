@@ -343,7 +343,7 @@ mod tests {
                 WHERE conname = ANY($1)
                 ORDER BY conname"#,
         )
-        .bind(&[
+        .bind([
             "fk_ad_rounds_game",
             "fk_ad_team_services_game",
             "fk_ad_flags_round",

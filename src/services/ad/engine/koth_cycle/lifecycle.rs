@@ -3,15 +3,19 @@ use serde_json::json;
 
 use crate::app_state::SharedState;
 use crate::services::container::ContainerSpec;
-use crate::utils::enums::{ChallengeType, ParticipationStatus};
+use crate::utils::enums::ChallengeType;
 use crate::utils::error::{AppError, AppResult};
 
 use super::{cycle_position, select_cycle_champions, CrownPhase};
 mod audit;
+mod capability;
 mod data;
 mod deadline;
 mod readiness;
 
+use capability::mint_capabilities;
+#[cfg(test)]
+use capability::{rotate_capability_window, CapabilityWindow};
 pub(super) use data::OfficialConfig;
 use data::{load_config, load_cycle, load_hill_spec, CycleRow};
 
@@ -463,7 +467,7 @@ async fn publish_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     record_receipt(
-        &mut **control.transaction_mut(),
+        control.transaction_mut(),
         cycle,
         CrownPhase::PublishPending,
         json!({"containerId": container_id, "host": host, "port": port}),
@@ -475,151 +479,6 @@ async fn publish_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     crate::controllers::game::ad::invalidate_live_hill_snapshot(st, cycle.game_id).await;
-    Ok(())
-}
-
-struct CapabilityWindow<'a> {
-    target_id: i32,
-    game_id: i32,
-    challenge_id: i32,
-    cycle_id: i64,
-    reset_attempt: i32,
-    round_number: i32,
-    ad_round_id: i32,
-    roster: &'a [i32],
-    tokens: &'a [String],
-}
-
-async fn rotate_capability_window(
-    connection: &mut sqlx::PgConnection,
-    window: CapabilityWindow<'_>,
-) -> AppResult<()> {
-    sqlx::query(
-        r#"UPDATE "KothTokens" token
-              SET revoked_at = COALESCE(revoked_at, clock_timestamp())
-            WHERE challenge_id = $1 AND revoked_at IS NULL
-              AND (cycle_id <> $2 OR reset_attempt <> $3)"#,
-    )
-    .bind(window.challenge_id)
-    .bind(window.cycle_id)
-    .bind(window.reset_attempt)
-    .execute(&mut *connection)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if window.roster.is_empty() {
-        return Ok(());
-    }
-    sqlx::query(
-        r#"INSERT INTO "KothTokens"
-             (target_id, participation_id, token, submitted_at,
-              round_number, ad_round_id, revoked_at, cycle_id, challenge_id,
-              reset_attempt)
-           SELECT $1, minted.participation_id, minted.token,
-                  clock_timestamp(), $4, $5, NULL, $6, $7, $8
-             FROM UNNEST($2::integer[], $3::text[])
-                  AS minted(participation_id, token)
-             JOIN "Participations" participation
-               ON participation.id = minted.participation_id
-              AND participation.game_id = $9
-              AND participation.status = $10
-           ON CONFLICT (cycle_id, challenge_id, reset_attempt, participation_id)
-             DO NOTHING"#,
-    )
-    .bind(window.target_id)
-    .bind(window.roster)
-    .bind(window.tokens)
-    .bind(window.round_number)
-    .bind(window.ad_round_id)
-    .bind(window.cycle_id)
-    .bind(window.challenge_id)
-    .bind(window.reset_attempt)
-    .bind(window.game_id)
-    .bind(ParticipationStatus::Accepted as i16)
-    .execute(&mut *connection)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
-}
-
-async fn mint_capabilities(
-    st: &SharedState,
-    config: &OfficialConfig,
-    cycle: &CycleRow,
-    ad_round_id: i32,
-    round_number: i32,
-) -> AppResult<()> {
-    let spec = load_hill_spec(st, cycle).await?;
-    let tokens: Vec<String> = config
-        .roster
-        .iter()
-        .map(|_| format!("koth_{}", crate::utils::codec::random_token(18)))
-        .collect();
-    let mut control = super::super::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
-    rotate_capability_window(
-        &mut **control.transaction_mut(),
-        CapabilityWindow {
-            target_id: spec.target_id,
-            game_id: cycle.game_id,
-            challenge_id: cycle.challenge_id,
-            cycle_id: cycle.id,
-            reset_attempt: cycle.reset_attempt,
-            round_number,
-            ad_round_id,
-            roster: &config.roster,
-            tokens: &tokens,
-        },
-    )
-    .await?;
-    sqlx::query(r#"DELETE FROM "KothClaimStates" WHERE target_id = $1"#)
-        .bind(spec.target_id)
-        .execute(&mut **control.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    sqlx::query(
-        r#"UPDATE "KothCrownCycles"
-              SET provisional_participation_id = NULL,
-                  confirmed_participation_id = NULL,
-                  confirmation_progress = 0,
-                  phase = 'ReadinessPending', updated_at = clock_timestamp()
-            WHERE id = $1 AND phase = 'CapabilityPending'"#,
-    )
-    .bind(cycle.id)
-    .execute(&mut **control.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    record_receipt(
-        &mut **control.transaction_mut(),
-        cycle,
-        CrownPhase::CapabilityPending,
-        json!({
-            "issuedCapabilities": config.roster.len(),
-            "round": round_number,
-            "resetAttempt": cycle.reset_attempt,
-        }),
-        None,
-    )
-    .await?;
-    control
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    st.cache
-        .remove(&format!("latestround:{}", cycle.game_id))
-        .await;
-    for participation_id in &config.roster {
-        st.cache
-            .remove(&format!(
-                "kothtoken:{}:{}:{}:{}",
-                cycle.game_id, cycle.challenge_id, participation_id, round_number
-            ))
-            .await;
-        st.cache
-            .remove(&format!(
-                "kothtokensall:{}:{}:{}",
-                cycle.game_id, participation_id, round_number
-            ))
-            .await;
-    }
     Ok(())
 }
 

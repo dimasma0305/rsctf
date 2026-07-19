@@ -73,24 +73,82 @@ async fn update_password_if_stamp_matches(
     Ok(result.rows_affected == 1)
 }
 
-async fn update_email_if_stamp_matches(
-    txn: &DatabaseTransaction,
+#[derive(Debug, PartialEq, Eq)]
+enum EmailUpdateOutcome {
+    Updated,
+    Conflict,
+    StampMismatch,
+}
+
+/// Commit an email identity change under the same cross-replica lock used by
+/// password registration, OAuth provisioning, and admin identity writers.
+/// `normalized_email` is not protected by a database unique constraint on
+/// existing installations, so the in-lock recheck is the authoritative guard;
+/// any earlier handler-level lookup is only a fast failure path.
+async fn update_email_serialized(
+    pool: &sqlx::PgPool,
     user_id: Uuid,
     expected_stamp: &str,
     email: &str,
     normalized_email: &str,
     new_stamp: String,
-) -> AppResult<bool> {
-    let result = user::Entity::update_many()
-        .col_expr(user::Column::Email, Expr::value(email))
-        .col_expr(user::Column::NormalizedEmail, Expr::value(normalized_email))
-        .col_expr(user::Column::EmailConfirmed, Expr::value(true))
-        .col_expr(user::Column::SecurityStamp, Expr::value(new_stamp))
-        .filter(user::Column::Id.eq(user_id))
-        .filter(user::Column::SecurityStamp.eq(expected_stamp))
-        .exec(txn)
-        .await?;
-    Ok(result.rows_affected == 1)
+) -> AppResult<EmailUpdateOutcome> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(REGISTRATION_LOCK_ID)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    let collision: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "AspNetUsers"
+                WHERE normalized_email = $1 AND id <> $2
+           )"#,
+    )
+    .bind(normalized_email)
+    .bind(user_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if collision {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(EmailUpdateOutcome::Conflict);
+    }
+
+    let result = sqlx::query(
+        r#"UPDATE "AspNetUsers"
+              SET email = $1,
+                  normalized_email = $2,
+                  email_confirmed = TRUE,
+                  security_stamp = $3
+            WHERE id = $4 AND security_stamp = $5"#,
+    )
+    .bind(email)
+    .bind(normalized_email)
+    .bind(new_stamp)
+    .bind(user_id)
+    .bind(expected_stamp)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if result.rows_affected() != 1 {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(EmailUpdateOutcome::StampMismatch);
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(EmailUpdateOutcome::Updated)
 }
 
 pub(super) async fn invalidate_password_reset_tokens(st: &SharedState, user_id: Uuid) {
@@ -497,9 +555,8 @@ pub async fn change_email(
         }
     } else {
         let new_stamp = Uuid::new_v4().to_string();
-        let txn = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
-        if !update_email_if_stamp_matches(
-            &txn,
+        match update_email_serialized(
+            st.pg(),
             user.id,
             &expected_stamp,
             &new_mail,
@@ -508,11 +565,12 @@ pub async fn change_email(
         )
         .await?
         {
-            txn.rollback().await?;
-            return Err(AppError::Unauthorized);
+            EmailUpdateOutcome::Updated => refreshed_stamp = Some(new_stamp),
+            EmailUpdateOutcome::Conflict => {
+                return Err(AppError::conflict("Email already registered"));
+            }
+            EmailUpdateOutcome::StampMismatch => return Err(AppError::Unauthorized),
         }
-        txn.commit().await?;
-        refreshed_stamp = Some(new_stamp);
     }
 
     crate::services::audit::info(
@@ -603,9 +661,8 @@ pub async fn mail_change_confirm(
     }
 
     let name = current.user_name.clone().unwrap_or_default();
-    let txn = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
-    if !update_email_if_stamp_matches(
-        &txn,
+    match update_email_serialized(
+        st.pg(),
         ticket.user_id,
         &ticket.security_stamp,
         &ticket.new_email,
@@ -614,12 +671,16 @@ pub async fn mail_change_confirm(
     )
     .await?
     {
-        txn.rollback().await?;
-        return Err(AppError::bad_request(
-            "Invalid or expired email-change token",
-        ));
+        EmailUpdateOutcome::Updated => {}
+        EmailUpdateOutcome::Conflict => {
+            return Err(AppError::conflict("Email already registered"));
+        }
+        EmailUpdateOutcome::StampMismatch => {
+            return Err(AppError::bad_request(
+                "Invalid or expired email-change token",
+            ));
+        }
     }
-    txn.commit().await?;
 
     crate::services::audit::info(
         &st.db,
@@ -636,6 +697,8 @@ pub async fn mail_change_confirm(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use std::str::FromStr;
 
     #[test]
     fn unknown_login_uses_a_valid_dummy_argon2_hash() {
@@ -668,5 +731,120 @@ mod tests {
         let encoded = serde_json::to_vec(&ticket).unwrap();
         let decoded: EmailChangeTicket = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded.security_stamp, "stamp-1");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn email_change_rechecks_identity_after_a_registration_lock_wait() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("rsctf_email_identity_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE "AspNetUsers" (
+                 id UUID PRIMARY KEY,
+                 email TEXT,
+                 normalized_email TEXT,
+                 email_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+                 security_stamp TEXT
+               )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let changer = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO "AspNetUsers"
+                 (id, email, normalized_email, email_confirmed, security_stamp)
+               VALUES ($1, 'old@example.test', 'OLD@EXAMPLE.TEST', TRUE, 'stamp-old')"#,
+        )
+        .bind(changer)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Model a public/OAuth/admin registration that selected the requested
+        // email while holding the shared identity lock but has not committed.
+        let mut registration = crate::utils::database::begin_sqlx_transaction(&pool)
+            .await
+            .unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(REGISTRATION_LOCK_ID)
+            .execute(&mut *registration)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "AspNetUsers"
+                 (id, email, normalized_email, email_confirmed, security_stamp)
+               VALUES ($1, 'claimed@example.test', 'CLAIMED@EXAMPLE.TEST', TRUE, 'stamp-owner')"#,
+        )
+        .bind(Uuid::new_v4())
+        .execute(&mut *registration)
+        .await
+        .unwrap();
+
+        let contender = tokio::spawn({
+            let pool = pool.clone();
+            async move {
+                update_email_serialized(
+                    &pool,
+                    changer,
+                    "stamp-old",
+                    "claimed@example.test",
+                    "CLAIMED@EXAMPLE.TEST",
+                    "stamp-new".to_string(),
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+        registration.commit().await.unwrap();
+
+        assert_eq!(
+            contender.await.unwrap().unwrap(),
+            EmailUpdateOutcome::Conflict
+        );
+        let changer_identity: (Option<String>, Option<String>) = sqlx::query_as(
+            r#"SELECT normalized_email, security_stamp
+                 FROM "AspNetUsers" WHERE id = $1"#,
+        )
+        .bind(changer)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            changer_identity,
+            (Some("OLD@EXAMPLE.TEST".into()), Some("stamp-old".into()))
+        );
+        let owners: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)::bigint FROM "AspNetUsers"
+                WHERE normalized_email = 'CLAIMED@EXAMPLE.TEST'"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(owners, 1);
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }

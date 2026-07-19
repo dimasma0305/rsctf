@@ -121,6 +121,8 @@ pub async fn update_team(
     Path(id): Path<i32>,
     Json(model): Json<AdminTeamModel>,
 ) -> AppResult<MessageResponse> {
+    let mut roster = crate::controllers::team::acquire_roster_mutation(st.pg(), id).await?;
+    crate::controllers::team::require_team_mutable(roster.transaction_mut(), id).await?;
     let t = team::Entity::find_by_id(id)
         .one(&st.db)
         .await?
@@ -141,6 +143,7 @@ pub async fn update_team(
         am.locked = Set(locked);
     }
     let updated = am.update(&st.db).await?;
+    roster.release().await?;
     if updated.name != old_name {
         crate::controllers::team::flush_scoreboard_for_team(&st, updated.id).await?;
     }
@@ -155,16 +158,26 @@ pub async fn delete_team(
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<String>> {
     let roster_key = format!("team-roster:{id}");
-    let _roster_guard = crate::utils::single_flight::coalesce(&roster_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &roster_key).await?;
+    let mut initial = crate::controllers::team::acquire_roster_mutation(st.pg(), id).await?;
     let team = team::Entity::find_by_id(id)
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Team not found"))?;
     let affected_game_ids = crate::controllers::team::team_game_ids(&st, team.id).await?;
 
-    crate::controllers::team::mark_team_participations_revoked(&st, team.id).await?;
+    crate::controllers::team::mark_team_participations_revoked(initial.advisory_mut(), team.id)
+        .await?;
+    // The suspension is the durable authorization fence. Commit it before
+    // capability teardown takes independent game/VPN locks.
+    let _roster_guard = initial.release_for_external().await?;
+    let Some(deletion_lease) =
+        crate::controllers::team::TeamDeletionLease::acquire(st.pg(), &roster_key, team.id).await?
+    else {
+        return Ok(RequestResponse::ok(id.to_string()));
+    };
+    // Make the durable suspension visible to cached session reads before the
+    // slower external teardown begins.
+    crate::controllers::game::ad::flush_team_participation_cache(&st, team.id).await;
     // Revoke team-shared API/SSH/VPN/BYOC capabilities before their ownership
     // rows disappear. These tables are not all FK-cascaded, and live network
     // sessions otherwise outlive an admin deletion.
@@ -179,30 +192,8 @@ pub async fn delete_team(
     crate::controllers::team::destroy_team_containers(&st, team.id).await?;
     crate::controllers::team::flush_scoreboard_for_team(&st, team.id).await?;
 
-    // Flush every member's cached participation before the rows vanish — the whole team
-    // is being removed across all its games.
-    crate::controllers::game::ad::flush_team_participation_cache(&st, team.id).await;
-
-    // Cascade the team's participation / membership rows before dropping the team
-    // (same order as the team-controller disband path). Deleting `participation`
-    // first lets the schema cascade its `game_instance` / `submission` children;
-    // `user_participation` and `team_member` are leaf roster rows.
-    participation::Entity::delete_many()
-        .filter(participation::Column::TeamId.eq(team.id))
-        .exec(&st.db)
-        .await?;
-    user_participation::Entity::delete_many()
-        .filter(user_participation::Column::TeamId.eq(team.id))
-        .exec(&st.db)
-        .await?;
-    team_member::Entity::delete_many()
-        .filter(team_member::Column::TeamId.eq(team.id))
-        .exec(&st.db)
-        .await?;
-
-    team::Entity::delete_by_id(team.id).exec(&st.db).await?;
+    deletion_lease.finalize(team.id).await?;
     crate::controllers::team::flush_scoreboards_for_games(&st, &affected_game_ids).await;
-    distributed.release().await?;
     Ok(RequestResponse::ok(id.to_string()))
 }
 

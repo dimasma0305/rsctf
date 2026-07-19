@@ -2,7 +2,7 @@
 
 use axum::extract::{Multipart, Path, State};
 
-use super::{load_team, require_captain};
+use super::{acquire_roster_mutation, load_team, require_captain};
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::utils::error::{AppError, AppResult};
@@ -54,22 +54,30 @@ pub async fn avatar(
         return Err(AppError::bad_request("Avatar must be an image"));
     }
 
-    let team_name = team.name.clone();
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let old_hash = sqlx::query_as::<_, (Option<String>,)>(
-        r#"SELECT avatar_hash FROM "Teams" WHERE id = $1 FOR UPDATE"#,
+    // Multipart ingestion happens before retaining a pooled connection. Recheck
+    // captaincy and the deletion fence under the same roster lock used by the
+    // final team cascade, then commit the blob reference and avatar hash in that
+    // transaction.
+    let mut roster = acquire_roster_mutation(st.pg(), id).await?;
+    let live = sqlx::query_as::<_, (Option<String>, String, uuid::Uuid, bool)>(
+        r#"SELECT avatar_hash, name, captain_id, deletion_pending
+              FROM "Teams" WHERE id = $1"#,
     )
     .bind(id)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut **roster.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Team not found"))?
-    .0;
+    .ok_or_else(|| AppError::not_found("Team not found"))?;
+    let (old_hash, team_name, captain_id, deletion_pending) = live;
+    if captain_id != user.id {
+        return Err(AppError::Forbidden);
+    }
+    if deletion_pending {
+        return Err(AppError::conflict("Team is being deleted"));
+    }
     let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
         st.storage.as_ref(),
-        &mut transaction,
+        roster.transaction_mut(),
         "avatar",
         &bytes,
     )
@@ -77,13 +85,10 @@ pub async fn avatar(
     sqlx::query(r#"UPDATE "Teams" SET avatar_hash = $2 WHERE id = $1"#)
         .bind(id)
         .bind(&blob.hash)
-        .execute(&mut *transaction)
+        .execute(&mut **roster.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    roster.release().await?;
     if let Some(old_hash) = old_hash {
         if let Err(error) =
             crate::services::blob_refs::release_and_purge(st.pg(), st.storage.as_ref(), &old_hash)

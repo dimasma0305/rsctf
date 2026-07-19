@@ -31,6 +31,7 @@ use uuid::Uuid;
 use crate::app_state::SharedState;
 use crate::controllers::game::ContainerInfoModel;
 use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser};
+use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::{
     ad_check_result, ad_flag, ad_round, ad_team_service, attachment, build_record,
     challenge_review, container, division, division_challenge_config, flag_context, game,
@@ -755,7 +756,7 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot",
-            get(ad_download_snapshot),
+            limited(Policy::Container, get(ad_download_snapshot)),
         )
         .route(
             "/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot/Changes",

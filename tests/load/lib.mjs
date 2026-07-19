@@ -11,6 +11,8 @@ export const PG_USER = process.env.PG_USER || 'postgres';
 export const PG_DATABASE = process.env.PG_DATABASE || 'rsctf';
 export const RSCTF = process.env.RSCTF_CONTAINER || 'rsctf-rsctf-1';
 export const NET = process.env.NET || 'rsctf_default';
+export const DEFAULT_BYOC_AGENT_IMAGE =
+  'ghcr.io/dimasma0305/rsctf-byoc-agent@sha256:fa5243f7aea7cd1198668134f5c1bae99c339c773ba3a5902d633c2c56c6c490';
 export const JWT_SECRET = process.env.RSCTF_JWT_SECRET;
 if (!JWT_SECRET) throw new Error('RSCTF_JWT_SECRET is required for load-test token minting');
 

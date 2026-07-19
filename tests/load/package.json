@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "player": "node player.mjs",
+    "ad-submit-batch": "node ad-submit-batch.mjs",
     "byoc": "node byoc.mjs",
     "busy": "node byoc-busy.mjs",
     "scale": "node scale-curve.mjs",

@@ -39,7 +39,7 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::set_session_cookie;
 use crate::models::data::{config, user};
 use crate::services::anti_cheat;
-use crate::utils::crypto_utils::hash_password;
+use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::Role;
 use crate::utils::error::AppError;
 
@@ -532,7 +532,7 @@ async fn create_external_user(
     let id = Uuid::now_v7();
     // No password login for external users — hash an unguessable random value so
     // the column is never empty and cannot be used to authenticate.
-    let password_hash = hash_password(&Uuid::new_v4().to_string())?;
+    let password_hash = hash_password_async(Uuid::new_v4().to_string()).await?;
 
     let txn = crate::controllers::account::locked_registration_transaction(st).await?;
     let has_admin = user::Entity::find()

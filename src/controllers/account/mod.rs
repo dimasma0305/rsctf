@@ -38,7 +38,9 @@ use crate::utils::shared::{MessageResponse, RequestResponse, Wrapped};
 
 const MAX_AVATAR_BYTES: usize = 3 * 1024 * 1024;
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$YBSHJA9ANNWFII7EsOe1rw$O5h6h9EwR/6Pyoe9wCcjK91HivbrgJZwb44fhsiqonw";
+pub(crate) const REGISTRATION_LOCK_ID: i64 = 0x5253_4354_4652_4547; // "RSCTFREG"
 
+mod bootstrap;
 mod recovery;
 pub use recovery::*;
 
@@ -204,7 +206,6 @@ impl ProfileUserInfoModel {
 pub(crate) async fn locked_registration_transaction(
     st: &SharedState,
 ) -> AppResult<DatabaseTransaction> {
-    const REGISTRATION_LOCK_ID: i64 = 0x5253_4354_4652_4547; // "RSCTFREG"
     let txn = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
     txn.execute_unprepared(&format!(
         "SELECT pg_advisory_xact_lock({REGISTRATION_LOCK_ID})"
@@ -221,6 +222,8 @@ pub async fn register(
     State(st): State<SharedState>,
     Json(model): Json<RegisterModel>,
 ) -> AppResult<Response> {
+    // Fail fast before policy loading, captcha verification, and Argon2.
+    let may_be_first = bootstrap::preflight(&st, model.bootstrap_token.as_deref()).await?;
     // Load the live AccountPolicy from the `Configs` key/value table so the
     // /admin/config toggles take effect per-request (RSCTF reads AccountPolicy
     // from an IOptionsSnapshot backed by the DB). Each key falls back to the
@@ -248,7 +251,6 @@ pub async fn register(
     // The very first account always bootstraps the platform admin — even when
     // public registration is disabled — so a fresh or locked-down instance can
     // always be set up. Everyone after the first obeys the allow_register gate.
-    let may_be_first = user::Entity::find().count(&st.db).await? == 0;
     if !may_be_first && !allow_register {
         return Err(AppError::bad_request("Registration is disabled"));
     }
@@ -331,6 +333,7 @@ pub async fn register(
     // concurrent request can observe an empty user table and become bootstrap admin.
     let txn = locked_registration_transaction(&st).await?;
     let is_first = user::Entity::find().count(&txn).await? == 0;
+    let txn = bootstrap::recheck(txn, is_first, model.bootstrap_token.as_deref()).await?;
     if !is_first && !allow_register {
         txn.rollback().await?;
         return Err(AppError::bad_request("Registration is disabled"));

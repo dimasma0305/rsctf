@@ -1,0 +1,45 @@
+[Unit]
+Description=RSCTF worker agent
+Documentation=https://github.com/dimasma0305/rsctf/blob/main/docs/deploy/workers.md
+Wants=docker.service network-online.target
+After=docker.service network-online.target
+ConditionPathExists=/var/lib/rsctf-worker/worker.json
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=rsctf-worker
+Group=rsctf-worker
+SupplementaryGroups=docker
+UMask=0077
+ExecStart=/usr/local/bin/rsctf-worker-agent run --config /var/lib/rsctf-worker/worker.json --accept-host-network-boundary
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rsctf-worker
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

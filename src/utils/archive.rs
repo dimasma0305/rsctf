@@ -1,7 +1,7 @@
 //! Narrow validation helpers for attacker-controlled archive metadata.
 
 use std::io::Read;
-use std::path::{Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Return a ZIP entry's path only when its raw name is already the exact,
 /// portable canonical spelling of the enclosed path.
@@ -36,7 +36,7 @@ pub(crate) fn canonical_zip_entry_path<R: Read + ?Sized>(
     } else {
         canonical.clone()
     };
-    if raw_name != expected_name || enclosed != PathBuf::from(&canonical) {
+    if raw_name != expected_name || enclosed != Path::new(&canonical) {
         return None;
     }
     Some(enclosed)

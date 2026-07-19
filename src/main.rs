@@ -51,17 +51,6 @@ fn main() -> anyhow::Result<()> {
         .block_on(async_main())
 }
 
-#[cfg(test)]
-mod startup_tests {
-    use super::*;
-
-    #[test]
-    fn installs_an_explicit_tls_crypto_provider() {
-        install_tls_crypto_provider().unwrap();
-        assert!(tokio_rustls::rustls::crypto::CryptoProvider::get_default().is_some());
-    }
-}
-
 async fn async_main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
@@ -69,6 +58,7 @@ async fn async_main() -> anyhow::Result<()> {
 
     let config = Arc::new(AppConfig::from_env());
     config.validate_runtime_role()?;
+    rsctf::middlewares::rate_limiter::validate_configuration()?;
     let role = config.runtime_role;
     let capabilities = role.capabilities();
     if role != RuntimeRole::Migrate {
@@ -767,4 +757,15 @@ async fn wait_for_shutdown_signal() {
 
     #[cfg(not(unix))]
     ctrl_c.await;
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn installs_an_explicit_tls_crypto_provider() {
+        install_tls_crypto_provider().unwrap();
+        assert!(tokio_rustls::rustls::crypto::CryptoProvider::get_default().is_some());
+    }
 }

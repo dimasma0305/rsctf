@@ -16,7 +16,7 @@ use crate::services::ad::engine::{
     AdCheckStatus, RoundFinishLease,
 };
 use crate::services::container::{ContainerLiveness, ContainerManager};
-use crate::utils::enums::ParticipationStatus;
+use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -53,10 +53,17 @@ struct LiveHill {
     claim_confirmation_ticks: i32,
     token_count: i64,
     roster_count: i64,
+    eligible_roster: Vec<i32>,
     game_start: chrono::DateTime<Utc>,
     game_end: chrono::DateTime<Utc>,
     round_start: chrono::DateTime<Utc>,
     round_end: chrono::DateTime<Utc>,
+}
+
+impl LiveHill {
+    fn has_complete_token_window(&self) -> bool {
+        self.roster_count >= 2 && self.token_count == self.roster_count
+    }
 }
 
 async fn load_live_hill(
@@ -78,8 +85,10 @@ async fn load_live_hill(
                       AND token.challenge_id = target.challenge_id
                       AND token.target_id = target.id
                       AND token.reset_attempt = cycle.reset_attempt
+                      AND token.participation_id = ANY(eligible.participation_ids)
                       AND token.revoked_at IS NULL) AS token_count,
-                  jsonb_array_length(config.roster_snapshot)::bigint AS roster_count,
+                  cardinality(eligible.participation_ids)::bigint AS roster_count,
+                  eligible.participation_ids AS eligible_roster,
                   game.start_time_utc AS game_start,
                   game.end_time_utc AS game_end,
                   scoring_round.start_time_utc AS round_start,
@@ -90,6 +99,37 @@ async fn load_live_hill(
                ON config.game_id = target.game_id
              JOIN "AdRounds" scoring_round
                ON scoring_round.id = $3 AND scoring_round.game_id = target.game_id
+             JOIN LATERAL (
+               SELECT COALESCE(
+                          array_agg(participation.id ORDER BY participation.id),
+                          ARRAY[]::integer[]
+                      ) AS participation_ids
+                 FROM jsonb_array_elements(config.roster_snapshot) frozen(item)
+                 JOIN "Participations" participation
+                   ON participation.id = CASE jsonb_typeof(frozen.item)
+                        WHEN 'number' THEN (frozen.item #>> '{}')::integer
+                        WHEN 'object' THEN
+                          NULLIF(frozen.item->>'participationId', '')::integer
+                        ELSE NULL
+                      END
+                  AND participation.game_id = target.game_id
+                  AND participation.status = $4
+                 JOIN "Teams" team ON team.id = participation.team_id
+                WHERE NOT team.deletion_pending
+                  AND NOT EXISTS (
+                      SELECT 1
+                        FROM (
+                            SELECT team.captain_id AS user_id
+                            UNION
+                            SELECT member.user_id
+                              FROM "TeamMembers" member
+                             WHERE member.team_id = team.id
+                        ) roster
+                        LEFT JOIN "AspNetUsers" account
+                          ON account.id = roster.user_id
+                       WHERE account.id IS NULL OR account.role = $5
+                  )
+             ) eligible ON TRUE
              JOIN LATERAL (
                SELECT crown.* FROM "KothCrownCycles" crown
                 WHERE crown.game_id = target.game_id
@@ -105,9 +145,54 @@ async fn load_live_hill(
     .bind(game_id)
     .bind(challenge_id)
     .bind(round.id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(Role::Banned as i16)
     .fetch_optional(connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))
+}
+
+async fn reconcile_ineligible_incumbents(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+    hill: &LiveHill,
+) -> AppResult<()> {
+    let ineligible_incumbents: Vec<i32> = sqlx::query_scalar(
+        r#"SELECT DISTINCT incumbent.participation_id
+             FROM (
+                 SELECT target.holder_participation_id AS participation_id
+                   FROM "KothTargets" target
+                  WHERE target.id = $1
+                 UNION ALL
+                 SELECT cycle.provisional_participation_id
+                   FROM "KothCrownCycles" cycle WHERE cycle.id = $2
+                 UNION ALL
+                 SELECT cycle.confirmed_participation_id
+                   FROM "KothCrownCycles" cycle WHERE cycle.id = $2
+                 UNION ALL
+                 SELECT claim.provisional_participation_id
+                   FROM "KothClaimStates" claim
+                  WHERE claim.target_id = $1 AND claim.cycle_id = $2
+                 UNION ALL
+                 SELECT claim.confirmed_participation_id
+                   FROM "KothClaimStates" claim
+                  WHERE claim.target_id = $1 AND claim.cycle_id = $2
+                 UNION ALL
+                 SELECT token.participation_id
+                   FROM "KothClaimStates" claim
+                   JOIN "KothTokens" token ON token.id = claim.token_id
+                  WHERE claim.target_id = $1 AND claim.cycle_id = $2
+             ) incumbent
+            WHERE incumbent.participation_id IS NOT NULL
+              AND NOT (incumbent.participation_id = ANY($3))"#,
+    )
+    .bind(hill.target_id)
+    .bind(hill.cycle_id)
+    .bind(&hill.eligible_roster)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    koth_auth::revoke_game_capabilities(connection, game_id, &ineligible_incumbents).await
 }
 
 async fn insert_missing_cycle_void(
@@ -189,6 +274,7 @@ async fn insert_void(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn check_one_hill(
     db: &DatabaseConnection,
     containers: &dyn ContainerManager,
@@ -239,7 +325,8 @@ async fn check_one_hill(
         lifecycle.release().await?;
         return Ok(());
     };
-    let complete_tokens = hill.roster_count >= 2 && hill.token_count == hill.roster_count;
+    reconcile_ineligible_incumbents(&mut *control.transaction_mut(), game_id, &hill).await?;
+    let complete_tokens = hill.has_complete_token_window();
     if hill.phase != "Active" || !complete_tokens {
         let reason = if hill.phase != "Active" {
             std::borrow::Cow::Owned(format!(
@@ -340,6 +427,7 @@ async fn check_one_hill(
         lifecycle.release().await?;
         return Ok(());
     };
+    reconcile_ineligible_incumbents(&mut *control.transaction_mut(), game_id, &current).await?;
     let duplicate: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(SELECT 1 FROM "KothControlResults"
                           WHERE game_id = $1 AND challenge_id = $2
@@ -354,12 +442,35 @@ async fn check_one_hill(
     if duplicate
         || current.cycle_id != hill.cycle_id
         || current.container_id != hill.container_id
-        || current.phase != "Active"
         || current.game_start > observed_at
         || current.round_start > observed_at
         || !observation_precedes_deadline(observed_at, current.round_end)
         || !observation_precedes_deadline(observed_at, current.game_end)
     {
+        control
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        lifecycle.release().await?;
+        return Ok(());
+    }
+    if current.phase != "Active" || !current.has_complete_token_window() {
+        let reason = if current.phase != "Active" {
+            format!(
+                "crown cycle changed to {}; post-probe sample void",
+                current.phase
+            )
+        } else {
+            "live KotH capability field changed during probe; sample void".to_string()
+        };
+        insert_void(
+            &mut *control.transaction_mut(),
+            &current,
+            game_id,
+            round,
+            &reason,
+        )
+        .await?;
         control
             .release()
             .await
@@ -387,6 +498,7 @@ async fn check_one_hill(
                 WHERE token.cycle_id = $3 AND token.challenge_id = $4
                   AND token.target_id = $5 AND token.token = $6
                   AND token.reset_attempt = $8
+                  AND token.participation_id = ANY($9)
                   AND token.revoked_at IS NULL
                 LIMIT 1"#,
         )
@@ -398,6 +510,7 @@ async fn check_one_hill(
         .bind(marker)
         .bind(round.number)
         .bind(current.token_window_attempt)
+        .bind(&current.eligible_roster)
         .fetch_optional(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?
@@ -429,7 +542,7 @@ async fn check_one_hill(
             token: observed_token,
             status,
             confirmation_ticks: current.claim_confirmation_ticks,
-            token_window_complete: current.token_count == current.roster_count,
+            token_window_complete: current.has_complete_token_window(),
             claimant_is_eligible,
         },
     )
@@ -572,6 +685,124 @@ pub(super) async fn check_hills(
 mod tests {
     use super::*;
     use sqlx::{Connection, PgConnection};
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn live_capability_field_excludes_a_banned_snapshot_team() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
+        let mut connection = PgConnection::connect(&database_url).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TEMP TABLE "AspNetUsers" (
+              id UUID PRIMARY KEY, role SMALLINT NOT NULL
+            );
+            CREATE TEMP TABLE "Teams" (
+              id INTEGER PRIMARY KEY, captain_id UUID NOT NULL,
+              deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TEMP TABLE "TeamMembers" (
+              team_id INTEGER NOT NULL, user_id UUID NOT NULL
+            );
+            CREATE TEMP TABLE "Participations" (
+              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+              team_id INTEGER NOT NULL, status SMALLINT NOT NULL
+            );
+            CREATE TEMP TABLE "Games" (
+              id INTEGER PRIMARY KEY, start_time_utc TIMESTAMPTZ NOT NULL,
+              end_time_utc TIMESTAMPTZ NOT NULL
+            );
+            CREATE TEMP TABLE "KothOfficialConfigs" (
+              game_id INTEGER PRIMARY KEY, claim_confirmation_ticks INTEGER NOT NULL,
+              roster_snapshot JSONB NOT NULL
+            );
+            CREATE TEMP TABLE "AdRounds" (
+              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, number INTEGER NOT NULL,
+              start_time_utc TIMESTAMPTZ NOT NULL,
+              end_time_utc TIMESTAMPTZ NOT NULL, finalized BOOLEAN NOT NULL
+            );
+            CREATE TEMP TABLE "KothTargets" (
+              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+              challenge_id INTEGER NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL,
+              container_id TEXT
+            );
+            CREATE TEMP TABLE "KothCrownCycles" (
+              id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
+              challenge_id INTEGER NOT NULL, cycle_number INTEGER NOT NULL,
+              planned_start_round INTEGER NOT NULL, planned_end_round INTEGER NOT NULL,
+              replacement_container_id TEXT, old_container_id TEXT,
+              reset_attempt INTEGER NOT NULL, phase TEXT NOT NULL
+            );
+            CREATE TEMP TABLE "KothTokens" (
+              id INTEGER PRIMARY KEY, cycle_id BIGINT NOT NULL,
+              challenge_id INTEGER NOT NULL, target_id INTEGER NOT NULL,
+              reset_attempt INTEGER NOT NULL, participation_id INTEGER NOT NULL,
+              revoked_at TIMESTAMPTZ
+            );
+            INSERT INTO "AspNetUsers" VALUES
+              ('00000000-0000-0000-0000-000000000021', 1),
+              ('00000000-0000-0000-0000-000000000022', 1),
+              ('00000000-0000-0000-0000-000000000023', 0);
+            INSERT INTO "Teams" (id, captain_id) VALUES
+              (21, '00000000-0000-0000-0000-000000000021'),
+              (22, '00000000-0000-0000-0000-000000000022'),
+              (23, '00000000-0000-0000-0000-000000000023');
+            INSERT INTO "Participations" VALUES
+              (11, 7, 21, 1), (12, 7, 22, 1), (13, 7, 23, 1);
+            INSERT INTO "Games" VALUES
+              (7, clock_timestamp() - interval '1 hour',
+                  clock_timestamp() + interval '1 hour');
+            INSERT INTO "KothOfficialConfigs" VALUES
+              (7, 2, '[11,12,13]'::jsonb);
+            INSERT INTO "AdRounds" VALUES
+              (101, 7, 5, clock_timestamp() - interval '10 seconds',
+                  clock_timestamp() + interval '20 seconds', FALSE);
+            INSERT INTO "KothTargets" VALUES
+              (3, 7, 9, '127.0.0.1', 8080, 'runtime-1');
+            INSERT INTO "KothCrownCycles" VALUES
+              (41, 7, 9, 1, 1, 10, 'runtime-1', NULL, 1, 'Active');
+            INSERT INTO "KothTokens" VALUES
+              (101, 41, 9, 3, 1, 11, NULL),
+              (102, 41, 9, 3, 1, 12, NULL),
+              (103, 41, 9, 3, 1, 13, NULL);
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        let now = Utc::now();
+        let round = ad_round::Model {
+            id: 101,
+            game_id: 7,
+            number: 5,
+            start_time_utc: now - chrono::Duration::seconds(10),
+            end_time_utc: now + chrono::Duration::seconds(20),
+            finalized: false,
+        };
+
+        let live = load_live_hill(&mut connection, 7, 9, &round)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.eligible_roster, vec![11, 12]);
+        assert_eq!((live.token_count, live.roster_count), (2, 2));
+        assert!(live.has_complete_token_window());
+
+        sqlx::query(
+            r#"UPDATE "AspNetUsers" SET role = 0
+                WHERE id = '00000000-0000-0000-0000-000000000022'"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        let live = load_live_hill(&mut connection, 7, 9, &round)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.eligible_roster, vec![11]);
+        assert_eq!((live.token_count, live.roster_count), (1, 1));
+        assert!(!live.has_complete_token_window());
+    }
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]

@@ -48,6 +48,7 @@ data:
   RSCTF_CHECKER_UID_BASE: {{ .Values.config.checkerUidBase | quote }}
   RSCTF_CHECKER_PROCESS_BUDGET: {{ .Values.config.checkerProcessBudget | quote }}
   RSCTF_DISTRIBUTED_RATELIMIT: {{ ternary "false" "true" (eq .Values.runtimeRole "all") | quote }}
+  RSCTF_AD_SUBMIT_BURST_FLAGS: {{ .Values.config.adSubmitBurstFlags | quote }}
   RSCTF_CONTAINER_MAX_MEMORY_MB: {{ .Values.config.containerMaxMemoryMb | quote }}
   RSCTF_CONTAINER_MAX_CPU_COUNT: {{ .Values.config.containerMaxCpuCount | quote }}
   RSCTF_CONTAINER_BACKEND: {{ .Values.containerBackend | quote }}

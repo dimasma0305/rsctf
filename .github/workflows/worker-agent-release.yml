@@ -1,4 +1,4 @@
-name: Linux worker agent
+name: RSCTF release
 
 on:
   push:
@@ -17,83 +17,421 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
+  validate-release:
+    name: Validate publication source
+    uses: ./.github/workflows/release-validation.yml
+    permissions:
+      contents: read
+
+  validate-release-state:
+    name: Require a fresh GitHub release
+    needs: [validate-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse to overwrite an existing release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! gh api --silent "repos/${GITHUB_REPOSITORY}"; then
+            echo "::error::Could not verify access to ${GITHUB_REPOSITORY}; refusing to build."
+            exit 1
+          fi
+
+          if ! releases="$(gh api \
+            --paginate \
+            --jq '.[] | [.id, .tag_name] | @tsv' \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100")"; then
+            echo "::error::Could not list releases, including drafts; refusing to build."
+            exit 1
+          fi
+
+          while IFS=$'\t' read -r release_id release_tag; do
+            if [[ -n "$release_id" && "$release_tag" == "$GITHUB_REF_NAME" ]]; then
+              echo "::error::Release ${GITHUB_REF_NAME} already exists. Delete the existing draft or release manually before retrying; this workflow never overwrites release assets."
+              exit 1
+            fi
+          done <<< "$releases"
+
   verify:
     name: Verify release commit
+    needs: [validate-release-state]
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
-  linux:
-    name: Build Linux x86_64 (static)
+  build-linux:
+    name: Build ${{ matrix.name }} (static)
     needs: [verify]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux AMD64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            arch: amd64
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            arch: arm64
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          targets: x86_64-unknown-linux-musl
+          toolchain: 1.96.0
+          targets: ${{ matrix.target }}
 
       - name: Install static-linker toolchain
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools
 
       - name: Restore worker build cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: agents/worker-agent -> target
-          shared-key: worker-agent-release-linux
+          shared-key: worker-agent-release-${{ matrix.target }}
 
       - name: Build release binary
         run: >-
           cargo build --manifest-path agents/worker-agent/Cargo.toml
-          --release --target x86_64-unknown-linux-musl --locked
+          --release --target ${{ matrix.target }} --locked
 
-      - name: Package release binary
+      - name: Package release archive
         shell: bash
         run: |
           set -euo pipefail
-          stage="rsctf-worker-agent-${GITHUB_REF_NAME}-x86_64-unknown-linux-musl"
-          mkdir "$stage"
-          install -m 0755 agents/worker-agent/target/x86_64-unknown-linux-musl/release/rsctf-worker-agent "$stage/"
-          cp LICENSE.txt NOTICE "$stage/"
-          tar -czf "$stage.tar.gz" "$stage"
 
-      - name: Upload Linux artifact
-        uses: actions/upload-artifact@v7
+          package_root="package/rsctf-worker-agent"
+          archive="dist/rsctf-worker-agent-linux-${{ matrix.arch }}.tar.gz"
+          mkdir -p "$package_root" dist
+
+          install -m 0755 \
+            "agents/worker-agent/target/${{ matrix.target }}/release/rsctf-worker-agent" \
+            "$package_root/rsctf-worker-agent"
+          install -m 0644 LICENSE.txt NOTICE "$package_root/"
+          install -m 0644 \
+            agents/worker-agent/rsctf-worker-agent.service \
+            "$package_root/rsctf-worker-agent.service"
+
+          tar -C package -czf "$archive" rsctf-worker-agent
+
+      - name: Upload ${{ matrix.name }} archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: worker-agent-linux-x86_64
-          path: rsctf-worker-agent-*.tar.gz
+          name: worker-agent-linux-${{ matrix.arch }}
+          path: dist/rsctf-worker-agent-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    name: Attach Linux binary to release
-    needs: [linux]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    name: Publish verified rsctf release assets
+    needs: [build-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
     permissions:
+      artifact-metadata: write
+      attestations: write
       contents: write
+      id-token: write
+      packages: read
     steps:
-      - name: Download release artifacts
-        uses: actions/download-artifact@v8
+      - name: Check out release installer
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          pattern: worker-agent-*
+          persist-credentials: false
+
+      - name: Download Linux release archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: worker-agent-linux-*
           path: dist
           merge-multiple: true
 
-      - name: Generate checksums
-        working-directory: dist
-        run: sha256sum rsctf-worker-agent-* > SHA256SUMS
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
-      - name: Publish GitHub release assets
-        uses: softprops/action-gh-release@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
         with:
-          generate_release_notes: true
-          files: |
-            dist/rsctf-worker-agent-*
-            dist/SHA256SUMS
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve and verify the tagged server image
+        id: server-image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME#v}"
+          tagged_ref="${image}:${version}"
+          deadline=$((SECONDS + 3600))
+          pinned_ref=""
+
+          echo "Waiting for the image workflow to publish and attest ${tagged_ref}."
+          while ((SECONDS < deadline)); do
+            digest=""
+            if digest="$(
+              docker buildx imagetools inspect "$tagged_ref" \
+                --format '{{ json .Manifest.Digest }}' 2>/dev/null \
+                | jq -er 'select(type == "string")'
+            )" && [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              candidate="${image}@${digest}"
+              if gh attestation verify "oci://${candidate}" \
+                --bundle-from-oci \
+                --hostname github.com \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/image.yml" \
+                --source-ref "$GITHUB_REF" \
+                --source-digest "$GITHUB_SHA" \
+                --deny-self-hosted-runners \
+                >/dev/null 2>&1; then
+                pinned_ref=$candidate
+                break
+              fi
+            fi
+            sleep 15
+          done
+
+          if [[ -z "$pinned_ref" ]]; then
+            echo "::error::The matching tagged server image and trusted image-workflow attestation were not available within one hour; refusing to publish a mutable deployment bundle."
+            exit 1
+          fi
+          printf 'pinned=%s\n' "$pinned_ref" >> "$GITHUB_OUTPUT"
+          printf 'Verified immutable server image %s\n' "$pinned_ref"
+
+      - name: Package the deployment bundle
+        env:
+          PINNED_IMAGE: ${{ steps.server-image.outputs.pinned }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bundle_root="package/rsctf"
+          install -d \
+            "$bundle_root/deploy/postgres/init" \
+            "$bundle_root/scripts" \
+            dist
+          install -m 0644 deploy/compose*.yml "$bundle_root/deploy/"
+          install -m 0644 \
+            deploy/Caddyfile \
+            deploy/README.md \
+            deploy/.env.example \
+            deploy/.gitignore \
+            "$bundle_root/deploy/"
+          install -m 0644 \
+            deploy/postgres/init/00-pg-stat-statements.sql \
+            "$bundle_root/deploy/postgres/init/"
+          install -m 0755 scripts/install.sh "$bundle_root/scripts/install.sh"
+          install -m 0644 LICENSE.txt NOTICE "$bundle_root/"
+          printf 'RSCTF_RELEASE_VERSION=%s\nRSCTF_RELEASE_IMAGE=%s\n' \
+            "$GITHUB_REF_NAME" "$PINNED_IMAGE" \
+            > "$bundle_root/deploy/release.env"
+          chmod 0644 "$bundle_root/deploy/release.env"
+
+          tar \
+            --sort=name \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -C package \
+            -czf dist/rsctf-deployment-bundle.tar.gz \
+            rsctf
+
+      - name: Stage release installers
+        run: |
+          install -m 0755 scripts/install-worker.sh dist/install-worker.sh
+          install -m 0755 scripts/install.sh dist/install.sh
+
+      - name: Generate release checksums
+        working-directory: dist
+        run: >-
+          sha256sum
+          rsctf-worker-agent-linux-amd64.tar.gz
+          rsctf-worker-agent-linux-arm64.tar.gz
+          install-worker.sh
+          install.sh
+          rsctf-deployment-bundle.tar.gz
+          > SHA256SUMS
+
+      - name: Attest release artifact provenance
+        id: attest
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Stage attestation bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: >-
+          install -m 0644 "$BUNDLE_PATH"
+          dist/rsctf-worker-agent-attestation.json
+
+      - name: Verify release artifact attestations
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for artifact in \
+            rsctf-worker-agent-linux-amd64.tar.gz \
+            rsctf-worker-agent-linux-arm64.tar.gz \
+            install-worker.sh \
+            install.sh \
+            rsctf-deployment-bundle.tar.gz; do
+            gh attestation verify "dist/${artifact}" \
+              --bundle dist/rsctf-worker-agent-attestation.json \
+              --hostname github.com \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/worker-agent-release.yml" \
+              --source-ref "$GITHUB_REF" \
+              --deny-self-hosted-runners
+          done
+
+      - name: Create a new draft release atomically
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          error_file="$(mktemp)"
+          trap 'rm -f "$error_file"' EXIT
+          if ! release_json="$(gh api \
+            --method POST \
+            -f "tag_name=${GITHUB_REF_NAME}" \
+            -F draft=true \
+            -F generate_release_notes=true \
+            "repos/${GITHUB_REPOSITORY}/releases" \
+            2>"$error_file")"; then
+            echo "::error::Could not create a fresh draft for ${GITHUB_REF_NAME}. A draft or release may have appeared during the build; no existing release was modified."
+            sed 's/^/GitHub API: /' "$error_file" >&2
+            exit 1
+          fi
+
+          release_id="$(jq -er \
+            --arg tag "$GITHUB_REF_NAME" \
+            'select(.draft == true and .tag_name == $tag) | .id' \
+            <<< "$release_json")" || {
+            echo "::error::GitHub returned an invalid draft-release response."
+            exit 1
+          }
+          printf 'release-id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload assets to the new draft only
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          assets=(
+            rsctf-worker-agent-linux-amd64.tar.gz
+            rsctf-worker-agent-linux-arm64.tar.gz
+            install-worker.sh
+            install.sh
+            rsctf-deployment-bundle.tar.gz
+            SHA256SUMS
+            rsctf-worker-agent-attestation.json
+          )
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+
+          for asset in "${assets[@]}"; do
+            curl --disable \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --proto '=https' \
+              --tlsv1.2 \
+              --connect-timeout 15 \
+              --max-time 300 \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'Content-Type: application/octet-stream' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              --output "$response" \
+              --request POST \
+              --data-binary "@dist/${asset}" \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${asset}"
+
+            jq -e --arg name "$asset" '.name == $name' "$response" >/dev/null || {
+              echo "::error::GitHub returned an invalid upload response for ${asset}."
+              exit 1
+            }
+          done
+
+      - name: Verify and publish the new release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected_assets="$(mktemp)"
+          actual_assets="$(mktemp)"
+          trap 'rm -f "$expected_assets" "$actual_assets"' EXIT
+          printf '%s\n' \
+            SHA256SUMS \
+            install-worker.sh \
+            install.sh \
+            rsctf-deployment-bundle.tar.gz \
+            rsctf-worker-agent-attestation.json \
+            rsctf-worker-agent-linux-amd64.tar.gz \
+            rsctf-worker-agent-linux-arm64.tar.gz \
+            > "$expected_assets"
+
+          if ! gh api \
+            --paginate \
+            --jq '.[].name' \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" \
+            | LC_ALL=C sort > "$actual_assets"; then
+            echo "::error::Could not verify assets on draft release ${RELEASE_ID}."
+            exit 1
+          fi
+          if ! diff -u "$expected_assets" "$actual_assets"; then
+            echo "::error::Draft release ${RELEASE_ID} does not contain exactly the expected assets."
+            exit 1
+          fi
+
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          jq -e \
+            --arg tag "$GITHUB_REF_NAME" \
+            --argjson release_id "$RELEASE_ID" \
+            '.id == $release_id and .draft == true and .tag_name == $tag' \
+            <<< "$release_json" >/dev/null || {
+            echo "::error::Draft release identity changed before publication."
+            exit 1
+          }
+
+          published_json="$(gh api \
+            --method PATCH \
+            -F draft=false \
+            -f make_latest=true \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          jq -e \
+            --arg tag "$GITHUB_REF_NAME" \
+            --argjson release_id "$RELEASE_ID" \
+            '.id == $release_id and .draft == false and .tag_name == $tag' \
+            <<< "$published_json" >/dev/null || {
+            echo "::error::GitHub did not confirm publication of release ${RELEASE_ID}."
+            exit 1
+          }

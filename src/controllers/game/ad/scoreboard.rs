@@ -841,6 +841,8 @@ pub async fn download_snapshot(
     Ok((
         [
             (header::CONTENT_TYPE, "application/x-tar".to_string()),
+            (header::CACHE_CONTROL, "private, no-store".to_string()),
+            (header::PRAGMA, "no-cache".to_string()),
             (
                 header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"{filename}\""),

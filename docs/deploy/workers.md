@@ -7,18 +7,21 @@ Windows PC behind NAT can host a dedicated Linux VM for the worker; neither the
 PC nor VM needs a public IP, port forward, VPN, or shared private network with
 the server.
 
-Workers are trusted infrastructure, not team-owned BYOC agents. The agent can
-control its local Docker daemon, so run it on a dedicated event host or VM that
-does not contain unrelated secrets. Never expose the Docker Unix socket or
-Docker TCP API to RSCTF or the Internet.
+Workers are trusted infrastructure, not team-owned BYOC agents. The agent's
+Docker socket access (normally through membership in the host's `docker` group)
+is host-root-equivalent: compromise of the agent can become compromise of the
+entire Docker host despite the systemd sandbox. Every production worker must
+therefore be a dedicated event host or VM with no unrelated workloads or
+secrets. Never expose the Docker Unix socket or Docker TCP API to RSCTF or the
+Internet.
 
 ## Supported runtime and topology
 
-The released worker agent manages Linux containers on a Linux Docker Engine.
-Native Windows-container execution is intentionally disabled in v1: Docker's
-Windows network backend cannot enforce the same internal-network boundary used
-by the Linux runtime. Do not publish or deploy the Windows build as a workload
-worker. The RSCTF server itself
+The worker agent manages Linux containers on a Linux Docker Engine. Tagged
+releases publish static Linux binaries for AMD64 and ARM64; there is no native
+Windows artifact or runtime. Docker's Windows network backend cannot enforce
+the same internal-network boundary used by the Linux runtime. On a Windows PC,
+run the Linux agent in a dedicated Linux VM instead. The RSCTF server itself
 may run as a single binary under Docker Compose or Kubernetes, but the worker
 agent does **not** schedule Kubernetes Pods and does not use the Kubernetes API.
 One agent represents one Docker daemon. If the agent is containerized, it must
@@ -155,6 +158,9 @@ An all-in-one hybrid can also retain local Docker A&D with WireGuard:
 COMPOSE_FILE=compose.yml:compose.ad-vpn.yml:compose.workers.yml
 ```
 
+The VPN companion grants `NET_RAW` to that singleton owner because its
+iptables ipset matcher requires a raw socket; it does not enable packet capture.
+
 If that hybrid also requires local packet capture, add the capture overlay
 last. It enables capture and grants `NET_RAW` as one operation:
 
@@ -170,8 +176,8 @@ coordination. Helm rejects split hybrid worker releases; the split Compose
 overlay pins both services to `RSCTF_WORKER_LOCAL_BACKEND=none` and capture off.
 
 Do not enable `RSCTF_TRAFFIC_CAPTURE_ENABLED` without the matching capture
-overlay. Pure remote and non-capturing hybrid configurations keep both capture
-and `NET_RAW` disabled. The Docker overlays explicitly run rsctf as root
+overlay. Pure remote and non-capturing, non-VPN hybrid configurations keep both
+capture and `NET_RAW` disabled. The Docker overlays explicitly run rsctf as root
 because access to the daemon socket is already root-equivalent. Compose does
 not provision Kubernetes ServiceAccounts or RBAC; use the all-in-one Helm
 configuration below for a Kubernetes local backend.
@@ -205,6 +211,12 @@ RSCTF_WORKER_LOCAL_BACKEND=none
 different from `LISTEN` when a public TCP load balancer forwards another port.
 Use raw TCP or TLS/SNI passthrough; do not terminate worker mTLS at Caddy,
 Traefik, an HTTP Ingress, or a CDN.
+
+The architecture setting is the placement default, not an emulation request.
+For an ARM64-only fleet, set `RSCTF_WORKER_DEFAULT_ARCH=arm64` in Compose or
+`workerBackend.defaultArchitecture=arm64` in Helm. In a mixed AMD64/ARM64 fleet,
+set each workload's `workloadSpec.platform.architecture` explicitly so it lands
+only on a compatible worker.
 
 ## Kubernetes server
 
@@ -282,7 +294,8 @@ a dedicated node.
 
 ## Prepare the Docker worker
 
-Use a dedicated Linux host or VM. Docker's `internal` bridge blocks routed
+Use a dedicated Linux host or VM; sharing a general-purpose host is unsupported
+for production. Docker's `internal` bridge blocks routed
 container egress to the LAN and Internet, but a container can still address the
 bridge's host-side gateway. The agent therefore refuses to start without
 `--accept-host-network-boundary`. That flag is an acknowledgement, not a
@@ -319,41 +332,145 @@ share one daemon. To replace an identity, drain it, remove its managed workloads
 and networks, then deliberately remove the sentinel before enrolling the new
 identity.
 
-## Enroll a worker
+## Install and enroll a worker
 
-Download the matching `rsctf-worker-agent` archive from the GitHub release and
-verify it against `SHA256SUMS`. V1 releases include a statically linked Linux
-amd64 binary; build from source for another Linux architecture. Create a worker
-in the RSCTF admin API. The returned enrollment token is shown once and expires
-after 15 minutes.
-
-```bash
-curl --fail-with-body \
-  --request POST \
-  --header "Authorization: Bearer $RSCTF_ADMIN_TOKEN" \
-  --header "Content-Type: application/json" \
-  --data '{"name":"linux-event-host"}' \
-  https://ctf.example/api/admin/workers
-```
-
-Exchange the token on the worker host. The agent creates its private key and
-CSR locally; the key is never uploaded.
+Beginning with tagged releases, the
+[worker installer](https://github.com/dimasma0305/rsctf/blob/main/scripts/install-worker.sh)
+detects Linux AMD64 or ARM64 and downloads the latest tagged archive from
+[GitHub Releases](https://github.com/dimasma0305/rsctf/releases), verifies its
+SHA-256 checksum and GitHub build attestation, creates the dedicated
+`rsctf-worker` account, state directory, and systemd unit, then enables the unit
+without starting it. Install a current system-wide GitHub CLI with
+`gh attestation verify` support first. Download the installer release asset and
+verify its provenance before running it as root. The local attestation bundle
+means the worker does not need a GitHub login or token:
 
 ```bash
-sudo install -d -m 0700 /var/lib/rsctf-worker
-printf '%s\n' "$ONE_TIME_TOKEN" | sudo rsctf-worker-agent enroll \
-  --server-url https://ctf.example \
-  --token-stdin \
-  --state-dir /var/lib/rsctf-worker
-
-sudo rsctf-worker-agent run \
-  --config /var/lib/rsctf-worker/worker.json \
-  --accept-host-network-boundary
+(
+  set -euo pipefail
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  curl_args=(--disable --fail --silent --show-error --location \
+    --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 \
+    --max-time 300 --retry 5 --retry-all-errors --retry-max-time 300 \
+    --speed-limit 1024 --speed-time 30)
+  version="$(curl "${curl_args[@]}" --max-filesize 1048576 \
+    -o /dev/null -w '%{url_effective}' \
+    https://github.com/dimasma0305/rsctf/releases/latest)"
+  version="${version##*/}"
+  [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  base="https://github.com/dimasma0305/rsctf/releases/download/${version}"
+  curl "${curl_args[@]}" --max-filesize 1048576 \
+    -o "$tmp/install-worker.sh" "$base/install-worker.sh"
+  curl "${curl_args[@]}" --max-filesize 16777216 \
+    -o "$tmp/attestation.json" \
+    "$base/rsctf-worker-agent-attestation.json"
+  gh attestation verify "$tmp/install-worker.sh" \
+    --bundle "$tmp/attestation.json" \
+    --hostname github.com \
+    --repo dimasma0305/rsctf \
+    --signer-workflow dimasma0305/rsctf/.github/workflows/worker-agent-release.yml \
+    --source-ref "refs/tags/$version" \
+    --deny-self-hosted-runners
+  sudo bash "$tmp/install-worker.sh" --version "$version"
+)
 ```
 
-`--token-stdin` keeps the secret out of the local process list. For unattended
-provisioning, `--token-file` may instead read a root-only temporary file; delete
-that file immediately after enrollment.
+On upgrade, an already-active worker is restarted after the verified binary and
+unit are replaced. The final install phase is transactional: if the systemd
+reload, enable, or restart fails, the installer restores the previous binary,
+unit, documentation files, and enabled state, then restarts the restored release
+when needed. It exits with an error if that recovery is incomplete. The
+idempotent nologin service identity, Docker-group membership, and state directory
+are retained for a safe retry; remove them manually only after confirming they
+are unused. A fresh installation remains stopped until enrollment succeeds.
+
+To pin a production installation, select the release explicitly, verify its
+installer, inspect it, and pass the same tag to the installer:
+
+```bash
+VERSION=vX.Y.Z
+(
+  set -euo pipefail
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  curl_args=(--disable --fail --silent --show-error --location \
+    --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 \
+    --max-time 300 --retry 5 --retry-all-errors --retry-max-time 300 \
+    --speed-limit 1024 --speed-time 30)
+  base="https://github.com/dimasma0305/rsctf/releases/download/${VERSION}"
+  curl "${curl_args[@]}" --max-filesize 1048576 \
+    -o "$tmp/install-worker.sh" "$base/install-worker.sh"
+  curl "${curl_args[@]}" --max-filesize 16777216 \
+    -o "$tmp/attestation.json" \
+    "$base/rsctf-worker-agent-attestation.json"
+  gh attestation verify "$tmp/install-worker.sh" \
+    --bundle "$tmp/attestation.json" \
+    --hostname github.com \
+    --repo dimasma0305/rsctf \
+    --signer-workflow dimasma0305/rsctf/.github/workflows/worker-agent-release.yml \
+    --source-ref "refs/tags/$VERSION" \
+    --deny-self-hosted-runners
+  less "$tmp/install-worker.sh"
+  sudo bash "$tmp/install-worker.sh" --version "$VERSION"
+)
+```
+
+An untagged checkout does not have corresponding downloadable assets. Releases
+contain `install-worker.sh`, both Linux worker archives, the Docker deployment
+`install.sh` and `rsctf-deployment-bundle.tar.gz`, their shared `SHA256SUMS`,
+and `rsctf-worker-agent-attestation.json`. The exact asset set is checked before
+publication. The explicit
+`--skip-attestation` installer option falls back to co-hosted HTTPS and checksum
+verification; reserve that weaker mode for controlled recovery or development.
+
+On a trusted admin workstation, create a worker through the RSCTF admin API.
+The returned enrollment token is nested at `.enrollment.token`, is shown once,
+and expires after 15 minutes:
+
+```bash
+set -o pipefail
+read -rsp 'RSCTF admin token: ' RSCTF_ADMIN_TOKEN
+printf '\n'
+printf 'Authorization: Bearer %s\n' "$RSCTF_ADMIN_TOKEN" |
+  curl --fail-with-body \
+    --request POST \
+    --header @- \
+    --header 'Content-Type: application/json' \
+    --data '{"name":"linux-event-host"}' \
+    https://ctf.example/api/admin/workers |
+  jq -er '.enrollment.token'
+unset RSCTF_ADMIN_TOKEN
+```
+
+Copy only that one-time token to the worker through a secure operator channel;
+never copy or configure `RSCTF_ADMIN_TOKEN` on the worker. On the worker, cache
+sudo authorization before connecting the secret to the agent's standard input.
+The non-interactive `sudo -n` prevents a sudo password prompt from consuming
+the enrollment token:
+
+```bash
+sudo -v
+read -rsp 'One-time enrollment token: ' ONE_TIME_TOKEN
+printf '\n'
+printf '%s\n' "$ONE_TIME_TOKEN" |
+  sudo -n -u rsctf-worker -- /usr/local/bin/rsctf-worker-agent enroll \
+    --server-url https://ctf.example \
+    --token-stdin \
+    --state-dir /var/lib/rsctf-worker
+unset ONE_TIME_TOKEN
+
+sudo systemctl enable --now rsctf-worker-agent
+sudo systemctl status --no-pager rsctf-worker-agent
+```
+
+The agent creates its private key and CSR locally; the key is never uploaded.
+Run enrollment as `rsctf-worker`, as above. If provisioning must enroll as
+root, also pass `--unix-service-uid "$(id -u rsctf-worker)"` so the state
+directory and every identity file are transferred to the service account. Do
+not leave a root-owned identity for a service that runs as `rsctf-worker`.
+`--token-stdin` keeps the secret out of the local process list. A protected
+temporary `--token-file` is also supported; delete it immediately afterward.
 
 The server consumes a token when it signs the certificate. If the response is
 lost or local identity-file persistence fails afterward, issue a new token from
@@ -362,7 +479,8 @@ one and disconnects any old session.
 
 For suspected key compromise, rotate without briefly reviving the old
 credential: set the worker to `Disabled`, stop its service, issue a replacement
-token, and enroll the same worker into a fresh root-only state directory. The
+token, and enroll the same worker into a fresh state directory owned by
+`rsctf-worker` (or use `--unix-service-uid` during root provisioning). The
 replacement certificate is accepted for enrollment while the node remains
 disabled, but neither old nor new certificate can open a worker session in that
 state. Point the service at the new `worker.json`, explicitly set the worker to
@@ -379,9 +497,57 @@ addresses.
 the default 512 MiB writable-layer limit and 5 GiB free-space floor unless the
 event's capacity model calls for stricter values.
 
-For long-running Linux use, install the binary in `/usr/local/bin` and run it
-as a systemd service under a dedicated account that can access Docker. Protect
-`/var/lib/rsctf-worker`: it contains the worker's mTLS private key.
+For long-running Linux use, keep the systemd service under its dedicated
+account and protect `/var/lib/rsctf-worker`: it contains the worker's mTLS
+private key. Follow logs with
+`sudo journalctl -u rsctf-worker-agent --follow`.
+
+### Verify or build manually
+
+The installer performs checksum verification automatically. For a manual
+download, select the asset matching `uname -m` (`amd64` for `x86_64`, `arm64`
+for `aarch64`), download it and `SHA256SUMS` from the same tag, then verify:
+
+```bash
+VERSION=vX.Y.Z
+ARCH=amd64
+ASSET="rsctf-worker-agent-linux-${ARCH}.tar.gz"
+BUNDLE=rsctf-worker-agent-attestation.json
+BASE="https://github.com/dimasma0305/rsctf/releases/download/${VERSION}"
+
+curl --disable -fLO "${BASE}/${ASSET}"
+curl --disable -fLO "${BASE}/SHA256SUMS"
+curl --disable -fLO "${BASE}/${BUNDLE}"
+awk -v asset="$ASSET" '$2 == asset { print }' SHA256SUMS | sha256sum --check -
+
+# Independent provenance verification with GitHub CLI:
+gh attestation verify "$ASSET" \
+  --bundle "$BUNDLE" \
+  --hostname github.com \
+  --repo dimasma0305/rsctf \
+  --signer-workflow dimasma0305/rsctf/.github/workflows/worker-agent-release.yml \
+  --source-ref "refs/tags/$VERSION" \
+  --deny-self-hosted-runners
+```
+
+To build instead, install Rust and a musl toolchain, clone the repository, and
+choose the target matching the Linux host:
+
+```bash
+# AMD64: x86_64-unknown-linux-musl
+# ARM64: aarch64-unknown-linux-musl
+TARGET=x86_64-unknown-linux-musl
+rustup target add "$TARGET"
+cargo build --manifest-path agents/worker-agent/Cargo.toml \
+  --release --target "$TARGET" --locked
+sudo install -m 0755 \
+  "agents/worker-agent/target/${TARGET}/release/rsctf-worker-agent" \
+  /usr/local/bin/rsctf-worker-agent
+```
+
+The source build changes only how the binary is obtained. Use the same
+dedicated account, state ownership, enrollment, and systemd configuration as a
+release installation.
 
 ### Windows PC through a Linux VM
 
@@ -404,7 +570,7 @@ The agent detects Docker host capacity. Operators can reserve headroom or
 define placement constraints with run flags or environment variables:
 
 ```bash
-rsctf-worker-agent run \
+sudo -u rsctf-worker /usr/local/bin/rsctf-worker-agent run \
   --config /var/lib/rsctf-worker/worker.json \
   --accept-host-network-boundary \
   --cpu-millis 12000 \

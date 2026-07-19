@@ -2,8 +2,11 @@ use bollard::models::{Ipam, IpamConfig, Network};
 
 use super::docker::docker_liveness;
 use super::{
-    ad_network_plan, bounded_log_config, bridge_network_matches, container_name,
-    game_kind_for_challenge, validate_container_spec, ContainerLiveness, ContainerSpec,
+    append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
+    docker_workload_scope, game_kind_for_challenge, labels_match_scope, managed_container_filters,
+    network_scope_matches, scoped_managed_labels, scoped_operation_id, validate_container_spec,
+    validate_docker_container_spec, ContainerLiveness, ContainerManager, ContainerSpec,
+    DockerContainerManager,
 };
 
 fn inspected_network(subnets: &[&str], internal: bool) -> Network {
@@ -47,6 +50,71 @@ fn existing_ad_network_must_match_exact_ipv4_subnet() {
 }
 
 #[test]
+fn snapshot_buffer_rejects_the_chunk_that_crosses_its_limit() {
+    let mut out = Vec::new();
+    append_snapshot_chunk(&mut out, b"1234", 6).unwrap();
+    let error = append_snapshot_chunk(&mut out, b"567", 6).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::utils::error::AppError::BadRequest(_)
+    ));
+    assert_eq!(out, b"1234", "the rejected chunk was partially appended");
+}
+
+#[test]
+fn docker_workloads_are_scoped_without_exposing_the_identity() {
+    let first = docker_workload_scope(Some("event-a"), Some("ignored-secret"));
+    let replica = docker_workload_scope(Some("event-a"), Some("rotated-secret"));
+    let second = docker_workload_scope(Some("event-b"), Some("ignored-secret"));
+    assert_eq!(first, replica);
+    assert_ne!(first, second);
+    assert_eq!(first.len(), 32);
+    assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+    let labels = scoped_managed_labels(&first);
+    assert!(labels_match_scope(Some(&labels), &first));
+    assert!(!labels_match_scope(Some(&labels), &second));
+    assert_ne!(
+        labels.get("rsctf.managed").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        managed_container_filters(&first).get("label"),
+        Some(&vec![
+            format!("rsctf.managed={first}"),
+            format!("rsctf.scope={first}"),
+        ])
+    );
+}
+
+#[test]
+fn a_declared_network_scope_cannot_be_adopted_by_another_installation() {
+    let mut network = inspected_network(&["10.13.40.0/24"], true);
+    network.labels = Some(scoped_managed_labels("installation-a"));
+    assert!(network_scope_matches(&network, "installation-a"));
+    assert!(!network_scope_matches(&network, "installation-b"));
+
+    network.labels = None;
+    assert!(
+        network_scope_matches(&network, "installation-b"),
+        "legacy Compose bridges remain migratable after exact shape validation"
+    );
+}
+
+#[test]
+fn jwt_secret_is_the_replica_safe_scope_fallback() {
+    let first = docker_workload_scope(None, Some("deployment-secret-a"));
+    assert_eq!(
+        first,
+        docker_workload_scope(None, Some("deployment-secret-a"))
+    );
+    assert_ne!(
+        first,
+        docker_workload_scope(None, Some("deployment-secret-b"))
+    );
+}
+
+#[test]
 fn ad_service_specs_are_internal_only() {
     let spec = ContainerSpec::ad_service("image".into(), 256, 1, 8080, 7, false, "flag".into());
     assert_eq!(
@@ -81,16 +149,54 @@ fn challenge_game_kind_preserves_competitive_modes() {
 }
 
 #[test]
-fn ad_egress_uses_a_separate_external_bridge() {
-    let primary = crate::services::ad_vpn::services_network();
-    assert_eq!(
-        ad_network_plan(&primary, false),
-        vec![(primary.clone(), true)]
-    );
-    let plan = ad_network_plan(&primary, true);
-    assert_eq!(plan[0], (primary.clone(), true));
-    assert_eq!(plan[1], (crate::services::ad_vpn::egress_network(), false));
-    assert_ne!(plan[0].0, plan[1].0);
+fn docker_competitive_egress_fails_closed_for_both_game_modes() {
+    let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let mut spec = ContainerSpec::ad_service(image.into(), 256, 1, 8080, 7, true, "flag".into());
+
+    // Generic validation remains backend-neutral so Kubernetes can enforce
+    // allowed egress with its per-workload NetworkPolicy.
+    assert!(validate_container_spec(&spec).is_ok());
+    for game_kind in [
+        rsctf_worker_protocol::GameKind::AttackDefense,
+        rsctf_worker_protocol::GameKind::KingOfTheHill,
+    ] {
+        spec.game_kind = game_kind;
+        let error = validate_docker_container_spec(&spec).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::utils::error::AppError::BadRequest(_)
+        ));
+        assert_eq!(
+            error.to_string(),
+            "Docker does not safely support allowEgress=true for A&D or KotH workloads; set allowEgress=false or use the Kubernetes backend with per-workload NetworkPolicy isolation"
+        );
+    }
+}
+
+#[test]
+fn docker_competitive_default_deny_egress_remains_supported() {
+    let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let mut spec = ContainerSpec::ad_service(image.into(), 256, 1, 8080, 7, false, "flag".into());
+    assert!(validate_docker_container_spec(&spec).is_ok());
+
+    spec.game_kind = rsctf_worker_protocol::GameKind::KingOfTheHill;
+    assert!(validate_docker_container_spec(&spec).is_ok());
+}
+
+#[tokio::test]
+async fn docker_create_rejects_competitive_egress_before_daemon_access() {
+    let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let spec = ContainerSpec::ad_service(image.into(), 256, 1, 8080, 7, true, "flag".into());
+    let error = DockerContainerManager::default()
+        .create(spec)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::utils::error::AppError::BadRequest(_)
+    ));
+    assert!(error.to_string().contains("use the Kubernetes backend"));
 }
 
 #[test]
@@ -135,22 +241,32 @@ fn container_names_are_unique_for_identical_specs() {
 #[test]
 fn recovery_operation_names_are_stable_and_scoped() {
     let env = vec![("RSCTF_TEAM_ID".to_string(), "7".to_string())];
+    let first_operation = scoped_operation_id("scope-a", Some("koth-cycle:41"));
+    let retry_operation = scoped_operation_id("scope-a", Some("koth-cycle:41"));
+    let foreign_operation = scoped_operation_id("scope-b", Some("koth-cycle:41"));
+    let next_operation = scoped_operation_id("scope-a", Some("koth-cycle:42"));
     let first = container_name(
         "registry.example/ctf/web:latest",
         &env,
-        Some("koth-cycle:41"),
+        first_operation.as_deref(),
     );
     let retry = container_name(
         "registry.example/ctf/web:latest",
         &env,
-        Some("koth-cycle:41"),
+        retry_operation.as_deref(),
+    );
+    let foreign = container_name(
+        "registry.example/ctf/web:latest",
+        &env,
+        foreign_operation.as_deref(),
     );
     let next = container_name(
         "registry.example/ctf/web:latest",
         &env,
-        Some("koth-cycle:42"),
+        next_operation.as_deref(),
     );
     assert_eq!(first, retry);
+    assert_ne!(first, foreign);
     assert_ne!(first, next);
 }
 

@@ -21,7 +21,7 @@ fn route_expiry_wait(durably_fenced: bool, kernel_fenced: bool) -> Option<std::t
 async fn begin_drain(owner: &mut OwnerLease, token: OwnerToken) -> Result<(), String> {
     tokio::time::timeout(
         DURABLE_FENCE_TIMEOUT,
-        health::begin_drain(&mut **owner.connection_mut(), token),
+        health::begin_drain(owner.connection_mut(), token),
     )
     .await
     .map_err(|_| "traffic capture durable drain timed out".to_string())?
@@ -31,7 +31,7 @@ async fn begin_drain(owner: &mut OwnerLease, token: OwnerToken) -> Result<(), St
 async fn release_durable(owner: &mut OwnerLease, token: OwnerToken) -> Result<(), String> {
     tokio::time::timeout(
         DURABLE_FENCE_TIMEOUT,
-        health::release(&mut **owner.connection_mut(), token),
+        health::release(owner.connection_mut(), token),
     )
     .await
     .map_err(|_| "traffic capture durable release timed out".to_string())?

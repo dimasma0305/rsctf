@@ -167,6 +167,7 @@ pub(crate) async fn prepare_service_reset(
 
 /// Publish the new endpoint under the same identity fence used by checker
 /// persistence. It must still be the blank placeholder installed above.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn publish_service_reset(
     db: &DatabaseConnection,
     game_id: i32,

@@ -52,10 +52,12 @@ Every long-running split role must share:
 - the same container backend and challenge namespace/daemon view.
 
 Treat those resources as one installation boundary. Independent rsctf
-installations must not share a Redis logical database, Docker daemon, or
-control/challenge namespace pair: cache keys, channels, daemon resources, and
-Kubernetes resources are not installation-ID-prefixed and can collide. Give
-each installation separate instances or namespaces.
+installations must not share a Redis logical database or Kubernetes
+control/challenge namespace pair: cache keys, channels, and namespace resources
+can collide. They may share one Docker daemon only when each installation has a
+different `RSCTF_DOCKER_SCOPE`, A&D network name, and non-overlapping A&D CIDRs.
+The scope is shared by replicas and prevents orphan cleanup or crash recovery
+from adopting or deleting another installation's challenge containers.
 
 Redis Pub/Sub events are best-effort UI notifications. A Redis interruption can
 drop a live notification, but it cannot change scores or round correctness;
@@ -113,6 +115,9 @@ serves those endpoints must be able to address the same backend:
 - On one Docker host, replicas may share the same Docker socket.
 - A remote `DOCKER_HOST` may be shared if it is secured and all containers are
   created by that one daemon.
+- Every replica in one installation uses the same `RSCTF_DOCKER_SCOPE`. Give
+  independent installations distinct scopes; the default derives from their
+  JWT secrets, while an explicit value survives secret rotation.
 - Independent node-local Docker daemons are unsupported because persisted
   container IDs do not currently carry daemon ownership.
 - Kubernetes is naturally shared through its API and is the preferred backend
@@ -164,7 +169,7 @@ and then scale the web service:
 
 ```bash
 cd deploy
-export RSCTF_IMAGE=dimasmaualana/rsctf:1.2.3
+export RSCTF_IMAGE=ghcr.io/dimasma0305/rsctf@sha256:<release-digest>
 export COMPOSE_FILE=compose.yml:compose.roles.yml
 docker compose up -d db redis
 docker compose run --rm --no-deps \
@@ -186,8 +191,9 @@ COMPOSE_FILE=compose.yml:compose.roles.yml:compose.docker.yml:compose.roles.ad-v
 ```
 
 The role-aware A&D override grants TUN only to control. Control already has the
-narrow checker/capture capability set and also uses `NET_ADMIN` for WireGuard;
-web replicas receive no Linux capabilities. The web replicas retain Docker access
+narrow checker capability set and also uses `NET_ADMIN` for WireGuard plus
+`NET_RAW` for the iptables ipset matcher; web replicas receive no Linux
+capabilities. The web replicas retain Docker access
 because their API routes may create or destroy player containers.
 
 Scale only the public web service:
@@ -240,8 +246,10 @@ The chart's `runtimeRole` selects one role per release. This keeps scaling and
 rollbacks independent without building another image. A production split uses
 external/shared PostgreSQL and Redis, a pre-created Secret, an externally owned
 challenge namespace when using Kubernetes, and one explicitly named existing
-RWX claim, even when blobs use S3. The shared Secret must contain the configured `database-url`,
-`redis-url`, and `jwt-secret` keys. The chart rejects bundled PostgreSQL or Redis,
+RWX claim, even when blobs use S3. The shared Secret must contain the configured
+`database-url`, `redis-url`, `jwt-secret`, and `bootstrap-token` keys. The
+bootstrap token is consulted only while the shared user table is empty. The
+chart rejects bundled PostgreSQL or Redis,
 `image.tag=latest`, or generated Secrets for every long-running split role; a
 Kubernetes split also rejects a release-owned challenge namespace. The normal `runtimeRole=all` development
 defaults remain available.
@@ -290,7 +298,7 @@ redis:
   enabled: false
 
 config:
-  dbMaxConnections: 13
+  dbMaxConnections: 21
 
 persistence:
   enabled: true
@@ -323,14 +331,16 @@ Install one `control` release for the simple topology, or install `engine` and
 `network` releases for the advanced topology. Give every release the same
 Secret, PVC, challenge namespace, image tag, and backend configuration. Set
 `kubernetes.createChallengeNamespace: false` on every role; no role release owns
-the namespace resource. Use `config.dbMaxConnections: 13` for each engine and
-`config.dbMaxConnections: 20` for the control or network singleton at the
-default concurrency settings.
+the namespace resource. At the default concurrency settings, use
+`config.dbMaxConnections: 21` for each web replica and `13` for each engine;
+the example value `20` keeps headroom above the control/network minimum of 15
+without VPN or 18 with it.
 
 When the deployment uses the A&D VPN, set `vpn.enabled: true` on every role so
 web/engine mutations participate in the durable network-policy acknowledgement.
 The chart grants `/dev/net/tun`, forwarding sysctls, and the UDP Service only to
-`all`, `control`, or `network`. Scalable engine Pods receive `NET_ADMIN` only for
+`all`, `control`, or `network`; that owner also receives `NET_RAW` for the
+iptables ipset matcher. Scalable engine Pods receive `NET_ADMIN` only for
 their process-checker firewall; web Pods receive the shared intent configuration
 without kernel privileges.
 
@@ -437,8 +447,8 @@ helm upgrade rsctf-engine ./charts/rsctf --reuse-values --set replicaCount=4
 total application ceiling = sum(role replicas x role pool limit)
 ```
 
-For example, four web replicas at 12 connections, two engines at 12, and one
-network owner at 20 can open 92 connections. Leave capacity for migration,
+For example, four web replicas at 21 connections, two engines at 13, and one
+network owner at 20 can open 130 connections. Leave capacity for migration,
 administration, PostgreSQL workers, and failure overlap during rolling updates.
 Include every temporary `maxSurge` web/engine Pod in that rollout ceiling, not
 only the steady-state replica count.
@@ -447,14 +457,18 @@ limit blindly.
 
 Pool validation accounts for connections retained across nested operations. Let
 `R=RSCTF_REPO_SCAN_CONCURRENCY` and
-`P=RSCTF_PROVISIONING_CONCURRENCY`: use at least `4R+2P+1` for `web` and
-`engine`; one checker-bearing scan can briefly retain three guards plus its
-challenge-insert checkout. A non-VPN `all`/`control`/`network` process needs `4R+2P+3` because
-network/BYOC and traffic-capture ownership each retain one session and another
-checkout must remain available for progress. With VPN enabled, that owner needs
-`4R+2P+6`. The one-shot migration role needs two connections. At the defaults
-(`R=1`, `P=4`), those floors are 13, 15, and 18 respectively; the Compose
-control example uses 20 for headroom.
+`P=RSCTF_PROVISIONING_CONCURRENCY`: use at least `4R+2P+1` for `engine`;
+one checker-bearing scan can briefly retain three guards plus its
+challenge-insert checkout. Web needs `4R+2P+9`, reserving eight additional
+connections for the bounded roster and account-lifecycle paths. A non-VPN
+`control`/`network` process needs `4R+2P+3` because network/BYOC and
+traffic-capture ownership each retain one session and another checkout must
+remain available for progress; with VPN enabled it needs `4R+2P+6`. The
+monolithic `all` role serves both surfaces and therefore needs `4R+2P+11`
+without VPN or `4R+2P+14` with it. The one-shot migration role needs two
+connections. At the defaults (`R=1`, `P=4`), those floors are 13 for engine, 21
+for web, 15/18 for control or network, and 23/26 for `all`; the Compose control
+example uses 20 for headroom.
 
 ## Graceful scale-down
 

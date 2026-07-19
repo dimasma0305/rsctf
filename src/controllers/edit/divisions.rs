@@ -134,6 +134,92 @@ async fn apply_challenge_configs(
     Ok(())
 }
 
+fn normalized_challenge_configs(
+    configs: &[DivisionChallengeConfigInput],
+) -> std::collections::BTreeMap<i32, i32> {
+    configs
+        .iter()
+        .map(|config| {
+            (
+                config.challenge_id,
+                config.permissions.unwrap_or(GamePermission::ALL),
+            )
+        })
+        .collect()
+}
+
+fn ensure_scored_division_policy_unchanged(
+    scoring_started: bool,
+    current_default_permissions: i32,
+    current_challenge_configs: &std::collections::BTreeMap<i32, i32>,
+    requested_default_permissions: Option<i32>,
+    requested_challenge_configs: Option<&[DivisionChallengeConfigInput]>,
+) -> AppResult<()> {
+    if !scoring_started {
+        return Ok(());
+    }
+    let default_changed = requested_default_permissions
+        .is_some_and(|permissions| permissions != current_default_permissions);
+    let configs_changed = requested_challenge_configs
+        .is_some_and(|configs| normalized_challenge_configs(configs) != *current_challenge_configs);
+    if default_changed || configs_changed {
+        return Err(AppError::bad_request(
+            "Division permissions are locked after A&D/KotH epoch scoring has started.",
+        ));
+    }
+    Ok(())
+}
+
+/// Lock and validate the scoring-affecting half of a division update while the
+/// caller owns the per-game engine fence. Round preparation takes the same
+/// distributed lock before publishing either official scoring boundary, so an
+/// update linearizes wholly before that boundary or observes it and is rejected.
+async fn guard_division_policy_update(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+    division_id: i32,
+    requested_default_permissions: Option<i32>,
+    requested_challenge_configs: Option<&[DivisionChallengeConfigInput]>,
+) -> AppResult<()> {
+    let current_default_permissions: Option<i32> = sqlx::query_scalar(
+        r#"SELECT default_permissions FROM "Divisions"
+            WHERE id = $1 AND game_id = $2
+            FOR UPDATE"#,
+    )
+    .bind(division_id)
+    .bind(game_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let current_default_permissions =
+        current_default_permissions.ok_or_else(|| AppError::not_found("Division not found"))?;
+    let scoring_started = ad_epoch_scoring_started_locked(connection, game_id).await?;
+
+    let current_challenge_configs = if scoring_started && requested_challenge_configs.is_some() {
+        sqlx::query_as::<_, (i32, i32)>(
+            r#"SELECT challenge_id, permissions
+                 FROM "DivisionChallengeConfigs"
+                WHERE division_id = $1
+                ORDER BY challenge_id"#,
+        )
+        .bind(division_id)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .into_iter()
+        .collect()
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    ensure_scored_division_policy_unchanged(
+        scoring_started,
+        current_default_permissions,
+        &current_challenge_configs,
+        requested_default_permissions,
+        requested_challenge_configs,
+    )
+}
+
 /// Permission edits affect every projection of a game's standings. Evict both
 /// permission caches and all role-stable board snapshots immediately.
 async fn invalidate_division_caches(
@@ -194,9 +280,7 @@ pub async fn create_division(
     manager_or_admin(&st, &user, id).await?;
     load_game(&st, id).await?;
     validate_challenge_configs(&st, id, model.challenge_configs.as_deref()).await?;
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     let created_id: i32 = sqlx::query_scalar(
         r#"INSERT INTO "Divisions" (game_id, name, invite_code, default_permissions)
            VALUES ($1, $2, $3, $4) RETURNING id"#,
@@ -205,12 +289,17 @@ pub async fn create_division(
     .bind(&model.name)
     .bind(&model.invite_code)
     .bind(model.default_permissions.unwrap_or(GamePermission::ALL))
-    .fetch_one(&mut *transaction)
+    .fetch_one(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    apply_challenge_configs(&mut transaction, created_id, model.challenge_configs).await?;
-    transaction
-        .commit()
+    apply_challenge_configs(
+        control.transaction_mut(),
+        created_id,
+        model.challenge_configs,
+    )
+    .await?;
+    control
+        .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     let created = division::Entity::find_by_id(created_id)
@@ -232,9 +321,15 @@ pub async fn update_division(
 ) -> AppResult<RequestResponse<DivisionDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
     validate_challenge_configs(&st, id, model.challenge_configs.as_deref()).await?;
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    guard_division_policy_update(
+        control.transaction_mut(),
+        id,
+        division_id,
+        model.default_permissions,
+        model.challenge_configs.as_deref(),
+    )
+    .await?;
     // This exclusive parent lock is the authorization linearization point.
     // In-flight submissions hold FOR SHARE on the same row until commit.
     let updated_id: Option<i32> = sqlx::query_scalar(
@@ -250,13 +345,18 @@ pub async fn update_division(
     .bind(&model.name)
     .bind(&model.invite_code)
     .bind(model.default_permissions)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     let updated_id = updated_id.ok_or_else(|| AppError::not_found("Division not found"))?;
-    apply_challenge_configs(&mut transaction, updated_id, model.challenge_configs).await?;
-    transaction
-        .commit()
+    apply_challenge_configs(
+        control.transaction_mut(),
+        updated_id,
+        model.challenge_configs,
+    )
+    .await?;
+    control
+        .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     let updated = division::Entity::find_by_id(updated_id)
@@ -276,9 +376,7 @@ pub async fn delete_division(
     Path((id, division_id)): Path<(i32, i32)>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     let existing_id: Option<i32> = sqlx::query_scalar(
         r#"SELECT id FROM "Divisions"
             WHERE id = $1 AND game_id = $2
@@ -286,7 +384,7 @@ pub async fn delete_division(
     )
     .bind(division_id)
     .bind(id)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     if existing_id.is_none() {
@@ -298,7 +396,7 @@ pub async fn delete_division(
     )
     .bind(id)
     .bind(division_id)
-    .fetch_one(&mut *transaction)
+    .fetch_one(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     if participants != 0 {
@@ -308,22 +406,26 @@ pub async fn delete_division(
     }
     sqlx::query(r#"DELETE FROM "DivisionChallengeConfigs" WHERE division_id = $1"#)
         .bind(division_id)
-        .execute(&mut *transaction)
+        .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     sqlx::query(r#"DELETE FROM "Divisions" WHERE id = $1 AND game_id = $2"#)
         .bind(division_id)
         .bind(id)
-        .execute(&mut *transaction)
+        .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    transaction
-        .commit()
+    control
+        .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     invalidate_division_caches(&st, id, division_id).await?;
     Ok(MessageResponse::ok(""))
 }
+
+#[cfg(test)]
+#[path = "divisions_tests.rs"]
+mod tests;
 
 // ============================================================================
 //  Attack & Defense live console

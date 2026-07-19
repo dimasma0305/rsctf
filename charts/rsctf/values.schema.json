@@ -60,11 +60,12 @@
     "existingSecret": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "databaseUrlKey", "jwtSecretKey", "redisUrlKey", "postgresqlPasswordKey", "redisPasswordKey"],
+      "required": ["name", "databaseUrlKey", "jwtSecretKey", "bootstrapTokenKey", "redisUrlKey", "postgresqlPasswordKey", "redisPasswordKey"],
       "properties": {
         "name": {"type": "string"},
         "databaseUrlKey": {"$ref": "#/definitions/secretKey"},
         "jwtSecretKey": {"$ref": "#/definitions/secretKey"},
+        "bootstrapTokenKey": {"$ref": "#/definitions/secretKey"},
         "redisUrlKey": {"$ref": "#/definitions/secretKey"},
         "postgresqlPasswordKey": {"$ref": "#/definitions/secretKey"},
         "redisPasswordKey": {"$ref": "#/definitions/secretKey"}
@@ -73,8 +74,11 @@
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["jwtSecret"],
-      "properties": {"jwtSecret": {"type": "string", "description": "At least 32 random characters unless existingSecret.name is used."}}
+      "required": ["jwtSecret", "bootstrapToken"],
+      "properties": {
+        "jwtSecret": {"type": "string", "description": "At least 32 random characters unless existingSecret.name is used."},
+        "bootstrapToken": {"type": "string", "description": "Optional 32+ character first-admin setup token; generated and retained when empty."}
+      }
     },
     "storage": {
       "type": "object",
@@ -306,7 +310,7 @@
     "config": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["publicUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "containerMaxMemoryMb", "containerMaxCpuCount"],
+      "required": ["publicUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "adSubmitBurstFlags", "containerMaxMemoryMb", "containerMaxCpuCount"],
       "properties": {
         "publicUrl": {"type": "string", "pattern": "^(|https?://[^[:space:]]+)$"},
         "cookieSecure": {"type": "boolean"},
@@ -321,9 +325,10 @@
         "logLevel": {"type": "string", "minLength": 1},
         "provisioningConcurrency": {"type": "integer", "minimum": 1, "description": "P in the database pool floor; each concurrent provisioning operation may retain two connections."},
         "repoScanConcurrency": {"type": "integer", "minimum": 1, "maximum": 4, "description": "R in the database pool floor; a checker-bearing repository scan may briefly retain four connections."},
-        "dbMaxConnections": {"type": "integer", "minimum": 2, "description": "Per-process pool cap. Required minimum is 2 for migrate, 4R+2P+1 for web/engine, 4R+2P+3 for a non-VPN all/control/network owner, or 4R+2P+6 for a VPN owner."},
+        "dbMaxConnections": {"type": "integer", "minimum": 2, "description": "Per-process pool cap. Required minimum is 2 for migrate; 4R+2P+1 for engine; 4R+2P+9 for web; 4R+2P+3 or +6 for non-VPN/VPN control and network; and 4R+2P+11 or +14 for non-VPN/VPN all."},
         "checkerUidBase": {"type": "integer", "minimum": 1, "maximum": 65534, "description": "First otherwise-unused numeric UID reserved for process checker isolation."},
         "checkerProcessBudget": {"type": "integer", "minimum": 1, "maximum": 256, "description": "Reserved UID count and per-process custom-checker concurrency bound."},
+        "adSubmitBurstFlags": {"type": "integer", "minimum": 100, "maximum": 3200, "description": "Immediate per-participation A&D flag-work budget before the fixed 10 flags/second refill."},
         "containerMaxMemoryMb": {"type": "integer", "minimum": 1},
         "containerMaxCpuCount": {"type": "integer", "minimum": 1}
       }

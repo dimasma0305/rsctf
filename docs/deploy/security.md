@@ -4,7 +4,8 @@ Use this checklist before exposing rsctf to untrusted players.
 
 ## Account and browser boundary
 
-- Register the first administrator immediately and use a unique password.
+- Keep the generated first-administrator setup token private, use it only on
+  `/account/register?bootstrap=1`, and rotate it before reusing an empty database.
 - Disable open registration when it is not needed.
 - Serve one canonical `https://` origin and set `RSCTF_PUBLIC_URL` exactly.
 - Keep secure cookies enabled in production.
@@ -31,6 +32,9 @@ Use this checklist before exposing rsctf to untrusted players.
 ## Dynamic challenges
 
 - Treat a mounted Docker socket as host-root access.
+- Treat the worker service account's Docker-group membership the same way:
+  systemd sandboxing does not contain a process that can control the daemon.
+  Require a dedicated worker host/VM with no unrelated workloads or secrets.
 - Pin reviewed challenge images or digests; avoid mutable production tags.
 - Enforce CPU and memory limits.
 - Test that a challenge cannot reach the rsctf control plane, database, Redis, or cloud metadata.
@@ -56,7 +60,10 @@ Use this checklist before exposing rsctf to untrusted players.
 
 ## A&D and Bring Your Own Container (BYOC)
 
-- Run only one VPN kernel owner (`all`, `control`, or `network`) with TUN access.
+- Run only one VPN kernel owner (`all`, `control`, or `network`) with TUN access,
+  `NET_ADMIN`, and `NET_RAW`. The latter is required by libxtables while its
+  ipset matcher resolves the fail-closed VPN policy sets; public web replicas
+  receive neither networking capability.
   Every round-engine role also needs `NET_ADMIN` for the process checker's
   uid-scoped, default-deny egress firewall; `web` receives neither capability.
 - Treat a round-engine startup failure to install that firewall as a deployment
@@ -65,7 +72,8 @@ Use this checklist before exposing rsctf to untrusted players.
   The role also needs `CHOWN`, `SETUID`, `SETGID`, and `KILL` so the parent can
   create the per-run scratch area, drop the child identity, and reap that child
   after a timeout. The bundled manifests drop the default capability set and
-  add only those four, `NET_ADMIN`, and (for a capture owner) `NET_RAW`.
+  add only those four and `NET_ADMIN`; `NET_RAW` is added only to a VPN or
+  capture owner.
 - Run checker-owning roles on Linux with Landlock ABI v3 available and enabled
   in the active LSM set (`CONFIG_SECURITY_LANDLOCK`), seccomp filter support
   (`CONFIG_SECCOMP` and `CONFIG_SECCOMP_FILTER`), and the netfilter owner match
@@ -90,9 +98,28 @@ Use this checklist before exposing rsctf to untrusted players.
   Web provisioning needs it to build policy, and checker roles use it as the
   parent-side target allowlist; a built-in TCP probe cannot defer this startup
   validation.
+- Keep `allowEgress: false` for Docker-managed A&D and KotH workloads. Docker
+  rejects `true` because its shared external bridges cannot isolate hostile
+  workloads from peers, private address space, or cloud metadata. Use the
+  Kubernetes backend and a NetworkPolicy-capable CNI when a challenge genuinely
+  requires outbound access; its allow policy is scoped to that workload.
 - Protect WireGuard profiles and rotate access after roster changes.
+- Exclude BYOC Agent/Image request paths from reverse-proxy and ingress access
+  logs because their final path segment is a bearer capability. The bundled
+  Caddyfile does this with `log_skip`; apply an equivalent URI-redaction or
+  log-exclusion rule when using another proxy.
 - Confirm checker and team routes cannot reach control-plane interfaces.
 - Keep BYOC Docker-socket access opt-in and recommend disposable team hosts.
+- Keep the BYOC agent pinned by digest. Tagged official server images embed the
+  exact amd64/arm64 agent index built in the same workflow. Direct source and
+  local Docker builds retain the audited amd64-only fallback; use
+  `RSCTF_AD_BYOC_AGENT_IMAGE` with an immutable multi-platform digest to replace
+  it when serving other worker architectures. Official image configs expose the
+  binding in the `org.opencontainers.image.rsctf.byoc-agent` OCI label.
+- BYOC image authorization is linearized through Docker producing the first
+  archive chunk. A concurrent revocation waits for that bounded startup; an
+  HTTP response that has already started may finish under its idle and absolute
+  duration limits, while every later request observes the revocation.
 - Monitor the checker duration, submission rate, VPN peer changes, and unusual service egress.
 
 ## Operations

@@ -1274,6 +1274,24 @@ cannot establish that the scoring policy measures skill or causes engagement.
 
 In a BYOC challenge, your team runs the service and relay
 agent on its own machine. Follow the generated configuration from the toolkit.
+The downloaded setup script contains an image capability and creates
+a Compose file with the relay capability plus a WireGuard private key. Keep the
+script private, run it only on the dedicated BYOC host, and delete the downloaded
+copy after setup. The generated directory and credential files are owner-only.
+When the server supplies a reviewed service archive, setup gives Docker load's
+returned content ID a revision-scoped local name and sets `pull_policy: never`.
+The service therefore starts from that downloaded archive without a second
+registry lookup; if the local identity cannot be verified, setup uses the
+digest-pinned placeholder instead.
+Tagged official server images embed the exact Linux amd64/arm64 relay-agent
+index built in the same release workflow. Direct source and local Docker builds
+retain the audited amd64-only fallback, whose setup script stops early on other
+architectures. Organizers may replace either default via
+`RSCTF_AD_BYOC_AGENT_IMAGE`, but the override must still be an immutable
+`repository@sha256:...` reference.
+The optional BYOC SSH/admin shell requires deliberately uncommenting a Docker
+socket mount; leave it disabled unless that root-equivalent host access is
+acceptable on the dedicated worker.
 
 ::: danger Optional BYOC shell access
 BYOC SSH can require mounting your host's Docker socket into the relay agent.

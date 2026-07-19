@@ -11,8 +11,9 @@ use std::str::FromStr;
 /// narrower roles let larger installations run more copies of the same image
 /// without every HTTP replica also trying to own the round engine or host
 /// networking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeRole {
+    #[default]
     All,
     Web,
     Control,
@@ -115,12 +116,6 @@ impl RuntimeRole {
             Self::Network => "api,health,network,network-rounds",
             Self::Migrate => "migrations",
         }
-    }
-}
-
-impl Default for RuntimeRole {
-    fn default() -> Self {
-        Self::All
     }
 }
 

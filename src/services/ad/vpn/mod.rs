@@ -1,5 +1,6 @@
 //! In-process A&D WireGuard hub and fail-closed network policy reconciliation.
-//! Requires `NET_ADMIN` and `/dev/net/tun`.
+//! Requires `NET_ADMIN`, `NET_RAW` for the iptables ipset matcher, and
+//! `/dev/net/tun`.
 
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
@@ -487,14 +488,12 @@ pub async fn revoke_peers_for_participations(
         .map_err(|error| AppError::internal(error.to_string()))?;
     drop(_local_allocation);
 
-    if removed > 0 || sync_is_dirty() {
-        let sync = ensure_hub_and_sync(db).await;
-        if removed > 0 {
-            sync?;
-        } else if let Err(error) = sync {
-            tracing::warn!(%error, "VPN cleanup retry remains pending");
-        }
-    }
+    // Always request and await one durable network generation for non-empty
+    // revocation input. A retry on another replica may find that the peer row
+    // was already deleted while its process-local dirty bit is clear; returning
+    // before the lease owner acknowledges the restrictive state would revive a
+    // copied WireGuard credential until a later periodic reconciliation.
+    ensure_hub_and_sync(db).await?;
     Ok(removed)
 }
 

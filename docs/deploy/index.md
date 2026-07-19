@@ -23,7 +23,7 @@ Think of the deployment as three layers:
 
 1. **Platform only** — accounts, teams, games, static attachments, flag submission, scoring, and administration.
 2. **Dynamic challenges** — adds Docker socket access or Kubernetes workload RBAC.
-3. **A&D networking** — adds WireGuard, TUN access, public UDP, and a singleton background role. (`NET_ADMIN` is already required on round-engine roles for fail-closed checker egress.)
+3. **A&D networking** — adds WireGuard, TUN access, public UDP, and a singleton background role. (`NET_ADMIN` is already required on round-engine roles for fail-closed checker egress; the VPN owner also receives `NET_RAW` for its iptables ipset matcher.)
 
 Enable only the layers the event uses. Each extra layer expands the operational and security boundary.
 

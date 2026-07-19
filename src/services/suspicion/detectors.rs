@@ -58,6 +58,7 @@ const INSERT_SUSPICION_EVENT_SQL: &str = r#"
 /// Persist one rule observation and its score delta as one PostgreSQL statement.
 /// The unique index installed by migration m0052 is the concurrency gate: only
 /// the statement that inserts the evidence row may increment the running score.
+#[allow(clippy::too_many_arguments)]
 async fn persist_suspicion_event_with_weight(
     pool: &sqlx::PgPool,
     game_id: i32,
