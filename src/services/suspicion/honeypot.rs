@@ -12,13 +12,13 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{Duration, Utc};
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::models::data::{game, honeypot_hit, participation, user_participation};
 use crate::utils::enums::ParticipationStatus;
-use crate::utils::error::AppResult;
+use crate::utils::error::{AppError, AppResult};
 
 use super::{SuspicionType, GLOBAL_EVIDENCE_KEY};
 
@@ -26,6 +26,59 @@ use super::{SuspicionType, GLOBAL_EVIDENCE_KEY};
 const CHAIN_THRESHOLD: usize = 3;
 /// RSCTF `HoneypotConfig.ChainWindowMinutes` default.
 const CHAIN_WINDOW_MINUTES: i64 = 30;
+
+/// Persist one hit while retaining a share lock on its attributed scoring
+/// identity. If cleanup already removed that identity, keep the forensic hit
+/// but store it without a dangling participation id.
+#[allow(clippy::too_many_arguments)]
+async fn persist_honeypot_hit(
+    st: &SharedState,
+    attributed: Option<(i32, i32)>,
+    user_id: Option<uuid::Uuid>,
+    bait: &str,
+    remote_ip: &str,
+    user_agent: Option<&str>,
+) -> AppResult<bool> {
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let identity_exists = match attributed {
+        Some((game_id, participation_id)) => {
+            crate::services::participation_evidence::lock_audit_insert_scope(
+                &mut transaction,
+                game_id,
+                None,
+                &[participation_id],
+            )
+            .await?
+        }
+        None => true,
+    };
+    let durable_attribution = attributed.filter(|_| identity_exists);
+    sqlx::query(
+        r#"INSERT INTO "HoneypotHits"
+               (game_id, participation_id, user_id, bait, remote_ip,
+                user_agent, hit_at_utc)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+    )
+    .bind(durable_attribution.map(|(game_id, _)| game_id))
+    .bind(durable_attribution.map(|(_, participation_id)| participation_id))
+    .bind(user_id)
+    .bind(bait)
+    .bind(remote_ip)
+    .bind(user_agent)
+    .bind(Utc::now())
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(identity_exists)
+}
 
 /// Record a honeypot bait hit + raise `HoneypotHit` when attributable.
 pub async fn record_honeypot_hit(
@@ -67,17 +120,20 @@ pub async fn record_honeypot_hit(
         }
     }
 
-    let hit = honeypot_hit::ActiveModel {
-        game_id: Set(attributed.map(|(g, _)| g)),
-        participation_id: Set(attributed.map(|(_, p)| p)),
-        user_id: Set(user_id),
-        bait: Set(bait.to_string()),
-        remote_ip: Set(remote_ip.unwrap_or_default()),
-        user_agent: Set(user_agent),
-        hit_at_utc: Set(Utc::now()),
-        ..Default::default()
-    };
-    let _ = hit.insert(&st.db).await;
+    let remote_ip = remote_ip.unwrap_or_default();
+    if persist_honeypot_hit(
+        st,
+        attributed,
+        user_id,
+        bait,
+        &remote_ip,
+        user_agent.as_deref(),
+    )
+    .await
+    .is_ok_and(|identity_exists| !identity_exists)
+    {
+        attributed = None;
+    }
 
     if let Some((game_id, part_id)) = attributed {
         let mut codes = Vec::new();
@@ -153,17 +209,19 @@ pub async fn record_honeypot_tcp_hit(st: &SharedState, bait: &str, remote_ip: Op
         }
     }
 
-    let hit = honeypot_hit::ActiveModel {
-        game_id: Set(attributed.map(|(g, _, _)| g)),
-        participation_id: Set(attributed.map(|(_, p, _)| p)),
-        user_id: Set(attributed.map(|(_, _, u)| u)),
-        bait: Set(bait.to_string()),
-        remote_ip: Set(ip),
-        user_agent: Set(None),
-        hit_at_utc: Set(Utc::now()),
-        ..Default::default()
-    };
-    let _ = hit.insert(&st.db).await;
+    if persist_honeypot_hit(
+        st,
+        attributed.map(|(game_id, participation_id, _)| (game_id, participation_id)),
+        attributed.map(|(_, _, user_id)| user_id),
+        bait,
+        &ip,
+        None,
+    )
+    .await
+    .is_ok_and(|identity_exists| !identity_exists)
+    {
+        attributed = None;
+    }
 
     if let Some((game_id, part_id, _)) = attributed {
         let mut codes = Vec::new();

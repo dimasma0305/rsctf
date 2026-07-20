@@ -42,7 +42,7 @@ use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
-use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use sea_orm::EntityTrait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use uuid::Uuid;
@@ -60,10 +60,12 @@ use rsctf_worker_protocol::{
     DataStreamRequest, TcpProxyRequest, ValidatedWorkloadSpec, WorkloadFence,
 };
 
+mod authorization;
 mod egress;
 #[cfg(test)]
 mod tests;
 
+use authorization::game_proxy_scope_is_valid;
 use egress::{build_egress_scan, record_flag_egress, EgressScan, RollingFlagMatcher};
 
 /// Buffer size for TCP→WebSocket reads, matching RSCTF's `BufferSize`.
@@ -146,6 +148,7 @@ async fn proxy_for_instance(
                                 owner: LeaseOwner::Game {
                                     game_id: game.game_id,
                                     participation_id: game.accessing_participation_id,
+                                    challenge_id: game.challenge_id,
                                 },
                             };
                             (admission, scan, lease)
@@ -277,6 +280,17 @@ async fn resolve_instance_target(
         .await
         .ok()??;
     if link.participation_id != part.id {
+        return None;
+    }
+    if !game_proxy_scope_is_valid(
+        st.pg(),
+        user.id,
+        part.game_id,
+        part.id,
+        instance.challenge_id,
+    )
+    .await
+    {
         return None;
     }
 
@@ -445,6 +459,17 @@ async fn resolve_shared_instance_target(
     .fetch_optional(st.pg())
     .await
     .ok()??;
+    if !game_proxy_scope_is_valid(
+        st.pg(),
+        user.id,
+        row.game_id,
+        row.participation_id,
+        row.challenge_id,
+    )
+    .await
+    {
+        return None;
+    }
     let part = participation::Model {
         id: row.participation_id,
         status: ParticipationStatus::Accepted,
@@ -496,22 +521,53 @@ async fn log_container_access(
     remote_ip: String,
     user_agent: Option<String>,
 ) {
-    use crate::models::data::container_access_event;
-
-    let row = container_access_event::ActiveModel {
-        game_id: Set(game.game_id),
-        challenge_id: Set(game.challenge_id),
-        container_owner_participation_id: Set(game.owner_participation_id),
-        container_id: Set(a.container_id),
-        accessing_user_id: Set(Some(a.accessing_user_id)),
-        accessing_user_name: Set(Some(a.accessing_user_name.clone())),
-        accessing_participation_id: Set(Some(game.accessing_participation_id)),
-        remote_ip: Set(remote_ip),
-        user_agent: Set(user_agent),
-        connected_at_utc: Set(chrono::Utc::now()),
-        ..Default::default()
-    };
-    if let Err(e) = row.insert(&st.db).await {
+    let persist = async {
+        let mut transaction = st
+            .pg()
+            .begin()
+            .await
+            .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
+        let identities = [game.owner_participation_id, game.accessing_participation_id];
+        if !crate::services::participation_evidence::lock_audit_insert_scope(
+            &mut transaction,
+            game.game_id,
+            Some(game.challenge_id),
+            &identities,
+        )
+        .await?
+        {
+            return Err(crate::utils::error::AppError::conflict(
+                "Participation changed while recording container access",
+            ));
+        }
+        sqlx::query(
+            r#"INSERT INTO "ContainerAccessEvents"
+                   (game_id, challenge_id, container_owner_participation_id,
+                    container_id, accessing_user_id, accessing_user_name,
+                    accessing_participation_id, remote_ip, user_agent,
+                    connected_at_utc)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
+        )
+        .bind(game.game_id)
+        .bind(game.challenge_id)
+        .bind(game.owner_participation_id)
+        .bind(a.container_id)
+        .bind(a.accessing_user_id)
+        .bind(&a.accessing_user_name)
+        .bind(game.accessing_participation_id)
+        .bind(&remote_ip)
+        .bind(user_agent.as_deref())
+        .bind(chrono::Utc::now())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))
+    }
+    .await;
+    if let Err(e) = persist {
         tracing::warn!(container = %a.container_id, error = %e, "ContainerAccessEvent persist failed");
     }
 
@@ -741,6 +797,7 @@ enum LeaseOwner {
     Game {
         game_id: i32,
         participation_id: i32,
+        challenge_id: i32,
     },
     Exercise {
         exercise_instance_id: i32,
@@ -754,49 +811,44 @@ async fn wait_for_revocation(lease: InstanceLease) {
     tick.tick().await;
     loop {
         tick.tick().await;
-        let account_valid = user::Entity::find_by_id(lease.user_id)
-            .one(&lease.db)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|account| account.role != Role::Banned);
-        let owner_valid = match lease.owner {
+        let lease_valid = match lease.owner {
             LeaseOwner::Game {
                 game_id,
                 participation_id,
+                challenge_id,
             } => {
-                let participation_valid = participation::Entity::find_by_id(participation_id)
-                    .one(&lease.db)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|part| {
-                        part.game_id == game_id && part.status == ParticipationStatus::Accepted
-                    });
-                let link_valid = user_participation::Entity::find_by_id((lease.user_id, game_id))
-                    .one(&lease.db)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|link| link.participation_id == participation_id);
-                participation_valid && link_valid
+                game_proxy_scope_is_valid(
+                    &lease.pool,
+                    lease.user_id,
+                    game_id,
+                    participation_id,
+                    challenge_id,
+                )
+                .await
             }
             LeaseOwner::Exercise {
                 exercise_instance_id,
                 exercise_id,
                 container_id,
             } => {
-                exercise_lease_is_valid(
-                    &lease.pool,
-                    lease.user_id,
-                    exercise_instance_id,
-                    exercise_id,
-                    container_id,
-                )
-                .await
+                let account_valid = user::Entity::find_by_id(lease.user_id)
+                    .one(&lease.db)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|account| account.role != Role::Banned);
+                account_valid
+                    && exercise_lease_is_valid(
+                        &lease.pool,
+                        lease.user_id,
+                        exercise_instance_id,
+                        exercise_id,
+                        container_id,
+                    )
+                    .await
             }
         };
-        if !account_valid || !owner_valid {
+        if !lease_valid {
             return;
         }
     }

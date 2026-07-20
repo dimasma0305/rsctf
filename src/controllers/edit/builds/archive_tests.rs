@@ -107,6 +107,14 @@ fn terminal_publish_is_compare_and_swap_on_the_complete_definition() {
 }
 
 #[test]
+fn build_read_and_publication_reject_both_deletion_fences() {
+    for sql in [BUILD_FINGERPRINT_SQL, PUBLISH_BUILD_OUTCOME_SQL] {
+        assert!(sql.contains("challenge.deletion_pending = FALSE"));
+        assert!(sql.contains("game.deletion_pending = FALSE"));
+    }
+}
+
+#[test]
 fn pulled_images_prefer_the_matching_portable_repository_digest() {
     let id = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let expected =

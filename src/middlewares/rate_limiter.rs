@@ -26,8 +26,10 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -483,6 +485,17 @@ pub struct DistributedLimiter {
 
 static DISTRIBUTED: std::sync::OnceLock<DistributedLimiter> = std::sync::OnceLock::new();
 
+/// Keep an unavailable shared limiter off the request path. The connection
+/// manager deliberately reconnects in the background, but its command future
+/// can otherwise wait indefinitely for that reconnect while Redis is down.
+/// Falling back after this short deadline preserves availability and still
+/// applies the process-local abuse ceiling.
+const REDIS_COMMAND_TIMEOUT: Duration = Duration::from_millis(100);
+const REDIS_CONNECT_TIMEOUT: Duration = Duration::from_millis(750);
+const REDIS_FALLBACK_LOG_INTERVAL: Duration = Duration::from_secs(30);
+static REDIS_FALLBACK_CLOCK: LazyLock<Instant> = LazyLock::new(Instant::now);
+static REDIS_FALLBACK_LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
+
 fn redis_key(policy: Policy, partition: &str) -> String {
     match policy.kind() {
         // Bucket state is a Redis hash. Keep it in a separate namespace from
@@ -558,25 +571,31 @@ impl DistributedLimiter {
         let mut conn = self.conn.clone();
         let result = match policy.kind() {
             Kind::Sliding { permit, window } => {
-                redis::Script::new(SLIDING_SCRIPT)
-                    .key(&key)
-                    .arg(window.as_millis() as u64)
-                    .arg(permit)
-                    .arg(cost)
-                    .invoke_async(&mut conn)
-                    .await
+                redis_with_timeout(async {
+                    redis::Script::new(SLIDING_SCRIPT)
+                        .key(&key)
+                        .arg(window.as_millis() as u64)
+                        .arg(permit)
+                        .arg(cost)
+                        .invoke_async(&mut conn)
+                        .await
+                })
+                .await
             }
             Kind::Bucket {
                 capacity,
                 refill_per_sec,
             } => {
-                redis::Script::new(BUCKET_SCRIPT)
-                    .key(&key)
-                    .arg(capacity)
-                    .arg(refill_per_sec)
-                    .arg(cost)
-                    .invoke_async(&mut conn)
-                    .await
+                redis_with_timeout(async {
+                    redis::Script::new(BUCKET_SCRIPT)
+                        .key(&key)
+                        .arg(capacity)
+                        .arg(refill_per_sec)
+                        .arg(cost)
+                        .invoke_async(&mut conn)
+                        .await
+                })
+                .await
             }
         };
         redis_or_local(result, || check_weighted(policy, ip.to_owned(), cost))
@@ -641,18 +660,47 @@ impl DistributedLimiter {
         let ip_key = redis_key(Policy::GlobalIpBackstop, ip);
         let mut conn = self.conn.clone();
         redis_or_local(
-            redis::Script::new(SCRIPT)
-                .key(identity_key)
-                .key(ip_key)
-                .arg(identity_window_ms)
-                .arg(identity_limit)
-                .arg(ip_capacity)
-                .arg(ip_refill_per_sec)
-                .invoke_async(&mut conn)
-                .await,
+            redis_with_timeout(async {
+                redis::Script::new(SCRIPT)
+                    .key(identity_key)
+                    .key(ip_key)
+                    .arg(identity_window_ms)
+                    .arg(identity_limit)
+                    .arg(ip_capacity)
+                    .arg(ip_refill_per_sec)
+                    .invoke_async(&mut conn)
+                    .await
+            })
+            .await,
             || check_authenticated_local(identity.to_owned(), ip.to_owned()),
         )
     }
+}
+
+async fn redis_with_timeout(
+    operation: impl Future<Output = redis::RedisResult<i64>>,
+) -> redis::RedisResult<i64> {
+    redis_with_timeout_for(
+        operation,
+        REDIS_COMMAND_TIMEOUT,
+        "rate limiter Redis command timed out",
+    )
+    .await
+}
+
+async fn redis_with_timeout_for<T>(
+    operation: impl Future<Output = redis::RedisResult<T>>,
+    timeout: Duration,
+    timeout_message: &'static str,
+) -> redis::RedisResult<T> {
+    tokio::time::timeout(timeout, operation)
+        .await
+        .unwrap_or_else(|_| {
+            Err(redis::RedisError::from((
+                redis::ErrorKind::Io,
+                timeout_message,
+            )))
+        })
 }
 
 /// Convert the Redis script's millisecond TTL to the public whole-second
@@ -664,7 +712,23 @@ fn redis_or_local(
 ) -> Result<(), u64> {
     let ttl_ms = match result {
         Ok(ttl_ms) => ttl_ms,
-        Err(_) => return local(),
+        Err(error) => {
+            let now_ms = REDIS_FALLBACK_CLOCK
+                .elapsed()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+            if claim_redis_fallback_log_slot(
+                &REDIS_FALLBACK_LAST_LOG_MS,
+                now_ms.max(1),
+                REDIS_FALLBACK_LOG_INTERVAL.as_millis() as u64,
+            ) {
+                tracing::warn!(
+                    %error,
+                    "distributed rate limiter unavailable; using per-process fallback"
+                );
+            }
+            return local();
+        }
     };
     if ttl_ms > 0 {
         Err((ttl_ms as u64).div_ceil(1000).max(1))
@@ -673,11 +737,34 @@ fn redis_or_local(
     }
 }
 
+fn claim_redis_fallback_log_slot(last_log_ms: &AtomicU64, now_ms: u64, interval_ms: u64) -> bool {
+    let mut observed = last_log_ms.load(Ordering::Relaxed);
+    loop {
+        if observed != 0 && now_ms.saturating_sub(observed) < interval_ms {
+            return false;
+        }
+        match last_log_ms.compare_exchange_weak(
+            observed,
+            now_ms,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => observed = actual,
+        }
+    }
+}
+
 /// Initialise the distributed limiter from a Redis URL — called once at startup when
 /// `RSCTF_DISTRIBUTED_RATELIMIT` is set; afterwards [`check_async`] routes through it.
 pub async fn init_distributed(redis_url: &str) -> anyhow::Result<()> {
     let client = redis::Client::open(redis_url)?;
-    let conn = crate::utils::redis::connection_manager(&client).await?;
+    let conn = redis_with_timeout_for(
+        crate::utils::redis::connection_manager(&client),
+        REDIS_CONNECT_TIMEOUT,
+        "rate limiter Redis connection timed out",
+    )
+    .await?;
     let _ = DISTRIBUTED.set(DistributedLimiter { conn });
     tracing::info!("rate limiter: distributed (Redis-backed) mode enabled");
     Ok(())

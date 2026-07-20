@@ -89,6 +89,7 @@ async fn emulate_replica_join(
             target_status: ParticipationStatus::Accepted,
             token: &token,
             member_limit: 0,
+            scoring_started: false,
         },
     )
     .await?;
@@ -144,16 +145,11 @@ async fn emulate_leave_replica(
             .execute(&mut **control.transaction_mut())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-            sqlx::query(
-                r#"DELETE FROM "Participations"
-                    WHERE id = $1 AND status IN ($2, $3)"#,
+            crate::services::participation_evidence::delete_unlinked_pending_or_rejected_without_evidence(
+                control.transaction_mut(),
+                participation_id,
             )
-            .bind(participation_id)
-            .bind(ParticipationStatus::Pending as i16)
-            .bind(ParticipationStatus::Rejected as i16)
-            .execute(&mut **control.transaction_mut())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+            .await?;
             true
         } else {
             false
@@ -240,7 +236,9 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
           practice_mode BOOLEAN NOT NULL,
           accept_without_review BOOLEAN NOT NULL,
           invite_code TEXT,
-          team_member_count_limit INTEGER NOT NULL
+          team_member_count_limit INTEGER NOT NULL,
+          ad_scoring_start_round INTEGER,
+          koth_scoring_start_round INTEGER
         );
         CREATE TABLE "Divisions" (
           id INTEGER PRIMARY KEY,
@@ -280,6 +278,9 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
     .execute(&pool)
     .await
     .expect("create membership tables");
+    crate::services::participation_evidence::create_test_evidence_tables(&pool)
+        .await
+        .expect("create competition-evidence tables");
 
     let user_id = Uuid::new_v4();
     let barrier = Arc::new(tokio::sync::Barrier::new(3));
@@ -393,6 +394,7 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
         .unwrap();
     assert_eq!(live.target_status, ParticipationStatus::Pending);
     assert_eq!(live.member_limit, 7);
+    assert!(!live.scoring_started);
     policy_locks.release().await.unwrap();
 
     sqlx::query(
@@ -427,6 +429,26 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
     .unwrap();
     assert_eq!(live_division.division_id, Some(991));
     assert_eq!(live_division.target_status, ParticipationStatus::Pending);
+    assert!(!live_division.scoring_started);
+    policy_locks.release().await.unwrap();
+
+    sqlx::query(r#"UPDATE "Games" SET ad_scoring_start_round = 1 WHERE id = 990"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut policy_locks = MembershipMutationLocks::acquire(&pool, policy_user, 990, 991, true)
+        .await
+        .unwrap();
+    policy_locks.acquire_game_advisory().await.unwrap();
+    let scoring_policy = resolve_join_policy_locked(
+        policy_locks.transaction_mut(),
+        990,
+        Some(991),
+        Some("division-new"),
+    )
+    .await
+    .unwrap();
+    assert!(scoring_policy.scoring_started);
     policy_locks.release().await.unwrap();
 
     sqlx::query(r#"TRUNCATE "UserParticipations", "Participations" RESTART IDENTITY"#)
@@ -465,6 +487,7 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
                 target_status: ParticipationStatus::Accepted,
                 token: "new",
                 member_limit: 0,
+                scoring_started: false,
             },
         )
         .await
@@ -484,6 +507,194 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
         .unwrap();
         assert_eq!(stored_status, existing_status as i16);
     }
+
+    // Once either A&D or KotH scoring has started, the membership-to-score
+    // attribution is immutable even when the team's participation already
+    // exists. A non-rejected existing link keeps its established idempotent
+    // error, while a rejected link cannot be replaced behind the scoring fence.
+    for (offset, existing_status) in [
+        ParticipationStatus::Accepted,
+        ParticipationStatus::Suspended,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sqlx::query(r#"TRUNCATE "UserParticipations", "Participations" RESTART IDENTITY"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let game_id = 8_100 + offset as i32;
+        let team_id = 8_200 + offset as i32;
+        let participation_id: i32 = sqlx::query_scalar(
+            r#"INSERT INTO "Participations"
+                 (status, token, game_id, team_id, suspicion_score)
+               VALUES ($1, 'scored', $2, $3, 0)
+               RETURNING id"#,
+        )
+        .bind(existing_status as i16)
+        .bind(game_id)
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let user_id = Uuid::new_v4();
+        let mut locks = MembershipMutationLocks::acquire(&pool, user_id, game_id, team_id, true)
+            .await
+            .unwrap();
+        locks.acquire_game_advisory().await.unwrap();
+        let error = persist_game_join_locked(
+            locks.transaction_mut(),
+            JoinMutation {
+                user_id,
+                game_id,
+                team_id,
+                division_id: None,
+                target_status: ParticipationStatus::Accepted,
+                token: "new",
+                member_limit: 0,
+                scoring_started: true,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.to_string(),
+            "Game membership cannot change after A&D/KotH epoch scoring has started"
+        );
+        locks.release().await.unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM "UserParticipations" WHERE participation_id = $1"#,
+            )
+            .bind(participation_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0
+        );
+    }
+
+    sqlx::query(r#"TRUNCATE "UserParticipations", "Participations" RESTART IDENTITY"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let replacement_user = Uuid::new_v4();
+    let replacement_game = 8_300;
+    let rejected_id: i32 = sqlx::query_scalar(
+        r#"INSERT INTO "Participations"
+             (status, token, game_id, team_id, suspicion_score)
+           VALUES ($1, 'rejected', $2, 8301, 0)
+           RETURNING id"#,
+    )
+    .bind(ParticipationStatus::Rejected as i16)
+    .bind(replacement_game)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let accepted_id: i32 = sqlx::query_scalar(
+        r#"INSERT INTO "Participations"
+             (status, token, game_id, team_id, suspicion_score)
+           VALUES ($1, 'accepted', $2, 8302, 0)
+           RETURNING id"#,
+    )
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(replacement_game)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "UserParticipations"
+             (user_id, game_id, team_id, participation_id)
+           VALUES ($1, $2, 8301, $3)"#,
+    )
+    .bind(replacement_user)
+    .bind(replacement_game)
+    .bind(rejected_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut locks =
+        MembershipMutationLocks::acquire(&pool, replacement_user, replacement_game, 8302, true)
+            .await
+            .unwrap();
+    locks.acquire_game_advisory().await.unwrap();
+    let replacement_error = persist_game_join_locked(
+        locks.transaction_mut(),
+        JoinMutation {
+            user_id: replacement_user,
+            game_id: replacement_game,
+            team_id: 8302,
+            division_id: None,
+            target_status: ParticipationStatus::Accepted,
+            token: "replacement",
+            member_limit: 0,
+            scoring_started: true,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        replacement_error.to_string(),
+        "Game membership cannot change after A&D/KotH epoch scoring has started"
+    );
+    locks.release().await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>(
+            r#"SELECT participation_id FROM "UserParticipations"
+                WHERE user_id = $1 AND game_id = $2"#,
+        )
+        .bind(replacement_user)
+        .bind(replacement_game)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        rejected_id,
+        "the scoring fence removed or replaced the historical link"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Participations" WHERE id = $1"#)
+            .bind(accepted_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+
+    sqlx::query(r#"UPDATE "Participations" SET status = $1 WHERE id = $2"#)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(rejected_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut locks =
+        MembershipMutationLocks::acquire(&pool, replacement_user, replacement_game, 8301, true)
+            .await
+            .unwrap();
+    locks.acquire_game_advisory().await.unwrap();
+    let idempotent_error = persist_game_join_locked(
+        locks.transaction_mut(),
+        JoinMutation {
+            user_id: replacement_user,
+            game_id: replacement_game,
+            team_id: 8301,
+            division_id: None,
+            target_status: ParticipationStatus::Accepted,
+            token: "same",
+            member_limit: 0,
+            scoring_started: true,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        idempotent_error.to_string(),
+        "Already participating in this game"
+    );
+    locks.release().await.unwrap();
 
     // Emulate leave and admin acceptance arriving on different replicas. The
     // only valid terminal states are an accepted linked participation or a
@@ -557,6 +768,117 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
             status == ParticipationStatus::Accepted as i16 && linked
         }));
     }
+
+    // Legacy rejected solvers may still reach both physical cleanup paths.
+    // Leaving removes only the membership; the participation and its evidence
+    // must remain. Re-registering through another team must preserve them too.
+    sqlx::query(r#"TRUNCATE "UserParticipations", "Participations" RESTART IDENTITY"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let history_user = Uuid::new_v4();
+    let history_game = 8_001;
+    let history_team = 8_002;
+    let history_participation: i32 = sqlx::query_scalar(
+        r#"INSERT INTO "Participations"
+             (status, token, game_id, team_id, suspicion_score)
+           VALUES ($1, 'historical', $2, $3, 0)
+           RETURNING id"#,
+    )
+    .bind(ParticipationStatus::Rejected as i16)
+    .bind(history_game)
+    .bind(history_team)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "UserParticipations"
+             (user_id, game_id, team_id, participation_id)
+           VALUES ($1, $2, $3, $4)"#,
+    )
+    .bind(history_user)
+    .bind(history_game)
+    .bind(history_team)
+    .bind(history_participation)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO "Submissions" (participation_id) VALUES ($1)"#)
+        .bind(history_participation)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    emulate_leave_replica(
+        &pool,
+        history_user,
+        history_game,
+        history_team,
+        Arc::new(tokio::sync::Barrier::new(1)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Participations" WHERE id = $1"#,)
+            .bind(history_participation)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1,
+        "leave deleted a participation with evidence"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM "Submissions" WHERE participation_id = $1"#,
+        )
+        .bind(history_participation)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+
+    sqlx::query(
+        r#"INSERT INTO "UserParticipations"
+             (user_id, game_id, team_id, participation_id)
+           VALUES ($1, $2, $3, $4)"#,
+    )
+    .bind(history_user)
+    .bind(history_game)
+    .bind(history_team)
+    .bind(history_participation)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let replacement_id = emulate_replica_join(
+        &pool,
+        history_user,
+        history_game,
+        history_team + 1,
+        Arc::new(tokio::sync::Barrier::new(1)),
+    )
+    .await
+    .unwrap();
+    assert_ne!(replacement_id, history_participation);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Participations" WHERE id = $1"#,)
+            .bind(history_participation)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1,
+        "cross-team re-registration deleted historical participation evidence"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM "Submissions" WHERE participation_id = $1"#,
+        )
+        .bind(history_participation)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
 
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

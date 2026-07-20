@@ -251,6 +251,59 @@ fn redis_result_rounds_retry_after_and_uses_local_fallback() {
 }
 
 #[test]
+fn distributed_fallback_warning_is_rate_limited() {
+    let last = std::sync::atomic::AtomicU64::new(0);
+    assert!(claim_redis_fallback_log_slot(&last, 1, 30_000));
+    assert!(!claim_redis_fallback_log_slot(&last, 29_999, 30_000));
+    assert!(claim_redis_fallback_log_slot(&last, 30_001, 30_000));
+}
+
+#[tokio::test]
+async fn stalled_redis_command_uses_local_fallback_promptly() {
+    let fallback = tokio::time::timeout(Duration::from_secs(1), async {
+        redis_or_local(
+            redis_with_timeout_for(
+                std::future::pending::<redis::RedisResult<i64>>(),
+                Duration::from_millis(5),
+                "test command timed out",
+            )
+            .await,
+            || Err(7),
+        )
+    })
+    .await
+    .expect("a stalled Redis command must not hold the request indefinitely");
+
+    assert_eq!(fallback, Err(7));
+    assert_eq!(
+        redis_with_timeout_for(
+            std::future::ready(Ok::<i64, redis::RedisError>(17)),
+            Duration::from_millis(5),
+            "test command timed out",
+        )
+        .await,
+        Ok(17),
+    );
+}
+
+#[tokio::test]
+async fn stalled_redis_connection_attempt_times_out_promptly() {
+    let result = tokio::time::timeout(Duration::from_secs(1), async {
+        redis_with_timeout_for(
+            std::future::pending::<redis::RedisResult<()>>(),
+            Duration::from_millis(5),
+            "test connection timed out",
+        )
+        .await
+    })
+    .await
+    .expect("a stalled Redis connection attempt must not hold startup indefinitely")
+    .unwrap_err();
+
+    assert!(result.to_string().contains("test connection timed out"));
+}
+
+#[test]
 fn redis_outage_still_enforces_local_weighted_budget() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -1,6 +1,12 @@
-use bollard::models::{Ipam, IpamConfig, Network};
+use bollard::models::{
+    ContainerConfig, ContainerInspectResponse, ContainerState, ContainerStateStatusEnum, Ipam,
+    IpamConfig, Network,
+};
 
-use super::docker::docker_liveness;
+use super::docker::{
+    docker_liveness, failed_start_action, launch_spec_fingerprint, launch_spec_matches,
+    verify_container_scope, FailedStartAction, LAUNCH_SPEC_LABEL,
+};
 use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
     docker_workload_scope, game_kind_for_challenge, labels_match_scope, managed_container_filters,
@@ -26,6 +32,32 @@ fn inspected_network(subnets: &[&str], internal: bool) -> Network {
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+fn inspected_container_state(status: ContainerStateStatusEnum) -> ContainerInspectResponse {
+    ContainerInspectResponse {
+        id: Some("canonical-container-id".to_string()),
+        state: Some(ContainerState {
+            status: Some(status),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn fingerprint_spec() -> ContainerSpec {
+    ContainerSpec {
+        game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
+        image: format!("registry.example/hill@sha256:{}", "a".repeat(64)),
+        memory_limit: 256,
+        cpu_count: 1,
+        expose_port: 8080,
+        env: vec![("TEAM".to_string(), "7".to_string())],
+        flag: Some("flag-secret".to_string()),
+        ad_network: Some("rsctf-ad".to_string()),
+        allow_egress: false,
+        operation_id: Some("cycle:9".to_string()),
     }
 }
 
@@ -84,6 +116,120 @@ fn docker_workloads_are_scoped_without_exposing_the_identity() {
             format!("rsctf.managed={first}"),
             format!("rsctf.scope={first}"),
         ])
+    );
+}
+
+#[test]
+fn inspected_container_must_belong_to_the_current_installation() {
+    let owned = ContainerInspectResponse {
+        config: Some(ContainerConfig {
+            labels: Some(scoped_managed_labels("installation-a")),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(verify_container_scope(&owned, "installation-a").is_ok());
+    assert!(matches!(
+        verify_container_scope(&owned, "installation-b"),
+        Err(crate::utils::error::AppError::Conflict(_))
+    ));
+
+    let unlabeled = ContainerInspectResponse::default();
+    assert!(matches!(
+        verify_container_scope(&unlabeled, "installation-a"),
+        Err(crate::utils::error::AppError::Conflict(_))
+    ));
+}
+
+#[test]
+fn launch_fingerprint_rejects_stale_runtime_configuration() {
+    let spec = fingerprint_spec();
+    let expected = launch_spec_fingerprint(&spec);
+    assert_eq!(expected.len(), 64);
+    assert!(expected.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert!(!expected.contains("flag-secret"));
+
+    let mut retry = spec.clone();
+    retry.operation_id = Some("a different lifecycle identity".to_string());
+    assert_eq!(launch_spec_fingerprint(&retry), expected);
+
+    let mut changed = spec.clone();
+    changed.expose_port += 1;
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.memory_limit += 1;
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.cpu_count += 1;
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.image = format!("registry.example/hill@sha256:{}", "b".repeat(64));
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.game_kind = rsctf_worker_protocol::GameKind::AttackDefense;
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.flag = Some("different-flag".to_string());
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.env.push(("EXTRA".to_string(), "1".to_string()));
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.ad_network = Some("different-network".to_string());
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.allow_egress = true;
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+
+    let mut labels = scoped_managed_labels("installation-a");
+    labels.insert(LAUNCH_SPEC_LABEL.to_string(), expected.clone());
+    let mut inspected = ContainerInspectResponse {
+        config: Some(ContainerConfig {
+            labels: Some(labels),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(launch_spec_matches(&inspected, &expected));
+    inspected
+        .config
+        .as_mut()
+        .and_then(|config| config.labels.as_mut())
+        .expect("test labels")
+        .remove(LAUNCH_SPEC_LABEL);
+    assert!(!launch_spec_matches(&inspected, &expected));
+}
+
+#[test]
+fn concurrent_adopter_start_never_authorizes_creator_cleanup() {
+    let running = inspected_container_state(ContainerStateStatusEnum::RUNNING);
+    assert_eq!(
+        failed_start_action(true, Some(&running)),
+        FailedStartAction::TreatAsStarted
+    );
+
+    let created = inspected_container_state(ContainerStateStatusEnum::CREATED);
+    assert_eq!(
+        failed_start_action(true, Some(&created)),
+        FailedStartAction::RetainForRetry,
+        "a stable-operation container may be starting on another replica"
+    );
+    assert_eq!(
+        failed_start_action(false, Some(&created)),
+        FailedStartAction::RemoveOwned,
+        "a unique non-adoptable failed create remains safe to clean up"
+    );
+
+    let paused = inspected_container_state(ContainerStateStatusEnum::PAUSED);
+    assert_eq!(
+        failed_start_action(false, Some(&paused)),
+        FailedStartAction::RetainForRetry,
+        "ambiguous live states must never be removed after a start error"
+    );
+    assert_eq!(
+        failed_start_action(false, None),
+        FailedStartAction::RetainForRetry,
+        "failed ownership reinspection must fail closed"
     );
 }
 

@@ -25,7 +25,7 @@ import {
   isImmutableImageReference,
 } from './fixture-image-config.js';
 import { retainedManifestMatchesGame } from './retention-identity.mjs';
-import { dockerScopeFromContainerEnv } from './docker-scope.js';
+import { dockerOwnershipLabelArgs, dockerScopeFromContainerEnv } from './docker-scope.js';
 import {
   dockerLabelArgs,
   dockerOwnershipFilterArgs,
@@ -1293,8 +1293,19 @@ export function startHill(gid, cid, image = 'nginx:alpine', port = 80) {
     throw new Error(`invalid lifecycle KotH port ${port}`);
   }
   docker(['rm', '-f', 'lckoth_hill']);
+  const ownershipLabels = dockerOwnershipLabelArgs(currentDockerScope());
   const out = mustDocker(
-    docker(['run', '-d', '--rm', '--name', 'lckoth_hill', '--network', NET, String(image)]),
+    docker([
+      'run',
+      '-d',
+      '--rm',
+      '--name',
+      'lckoth_hill',
+      '--network',
+      NET,
+      ...ownershipLabels,
+      String(image),
+    ]),
     'start lifecycle KotH hill'
   );
   const container = out.stdout.trim();

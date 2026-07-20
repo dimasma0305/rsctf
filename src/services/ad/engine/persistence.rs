@@ -355,12 +355,18 @@ pub(crate) async fn finalize_ended_round_checks(
     sqlx::query(
         r#"UPDATE "KothCrownCycles" cycle
               SET phase = 'Completed',
-                  actual_end_round = COALESCE(cycle.actual_end_round, (
-                    SELECT MAX(round.number) FROM "AdRounds" round
-                     JOIN "Games" game ON game.id = round.game_id
-                    WHERE round.game_id = cycle.game_id
-                      AND round.start_time_utc < game.end_time_utc
-                  )),
+                  actual_end_round = COALESCE(
+                    cycle.actual_end_round,
+                    CASE WHEN cycle.actual_start_round IS NULL THEN NULL ELSE GREATEST(
+                      cycle.actual_start_round,
+                      COALESCE((
+                        SELECT MAX(round.number) FROM "AdRounds" round
+                         JOIN "Games" game ON game.id = round.game_id
+                        WHERE round.game_id = cycle.game_id
+                          AND round.start_time_utc < game.end_time_utc
+                      ), cycle.actual_start_round)
+                    ) END
+                  ),
                   finalized_at = COALESCE(finalized_at, clock_timestamp()),
                   completed_at = COALESCE(completed_at, clock_timestamp()),
                   updated_at = clock_timestamp()
@@ -851,9 +857,20 @@ mod batch_tests {
               id BIGINT PRIMARY KEY, game_id INTEGER, challenge_id INTEGER,
               cycle_number INTEGER,
               planned_start_round INTEGER, planned_end_round INTEGER,
-              phase TEXT, actual_end_round INTEGER, finalized_at TIMESTAMPTZ,
+              phase TEXT, actual_start_round INTEGER, actual_end_round INTEGER,
+              finalized_at TIMESTAMPTZ,
               completed_at TIMESTAMPTZ, updated_at TIMESTAMPTZ,
-              reset_attempt INTEGER
+              reset_attempt INTEGER,
+              CONSTRAINT ck_koth_crown_cycles_rounds CHECK (
+                planned_start_round >= 1
+                AND planned_end_round >= planned_start_round
+                AND (actual_start_round IS NULL
+                     OR actual_start_round >= planned_start_round)
+                AND (actual_end_round IS NULL OR (
+                  actual_start_round IS NOT NULL
+                  AND actual_end_round >= actual_start_round
+                ))
+              )
             );
             CREATE TEMP TABLE "KothControlResults" (
               game_id INTEGER, challenge_id INTEGER, ad_round_id INTEGER,
@@ -908,7 +925,11 @@ mod batch_tests {
             .unwrap();
         sqlx::query(
             r#"INSERT INTO "KothCrownCycles"
-               VALUES (11,41,5,1,1,3,'Active',NULL,NULL,NULL,clock_timestamp(),4)"#,
+               (id, game_id, challenge_id, cycle_number,
+                planned_start_round, planned_end_round, phase,
+                actual_start_round, actual_end_round, finalized_at,
+                completed_at, updated_at, reset_attempt)
+               VALUES (11,41,5,1,1,3,'Active',5,NULL,NULL,NULL,clock_timestamp(),4)"#,
         )
         .execute(pool)
         .await
@@ -924,11 +945,13 @@ mod batch_tests {
         .await
         .unwrap();
         assert_eq!(receipt, (Some(11), Some(0), false, Some(7), 4));
-        let phase: String =
-            sqlx::query_scalar(r#"SELECT phase FROM "KothCrownCycles" WHERE id = 11"#)
-                .fetch_one(pool)
-                .await
-                .unwrap();
-        assert_eq!(phase, "Completed");
+        let cycle: (String, Option<i32>, Option<i32>) = sqlx::query_as(
+            r#"SELECT phase, actual_start_round, actual_end_round
+                 FROM "KothCrownCycles" WHERE id = 11"#,
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(cycle, ("Completed".to_string(), Some(5), Some(5)));
     }
 }

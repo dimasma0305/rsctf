@@ -843,6 +843,7 @@ impl ManagerInfoModel {
 mod ad;
 mod builds;
 mod challenges;
+mod deletion_locks;
 mod divisions;
 mod flags;
 mod games;

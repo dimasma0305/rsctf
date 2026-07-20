@@ -88,7 +88,7 @@ Keep new challenges disabled until another organizer reviews the description, do
 
 ## Import from GitHub
 
-Repository bindings can import events and challenges from Git. A bound repository needs a `.gzevent`; standalone `challenge.yaml` files are not imported. A rescan preserves operator-edited game settings but recreates that game's challenges from repository content.
+Repository bindings can import events and challenges from Git. A bound repository needs a `.gzevent`; standalone `challenge.yaml` files are not imported. A rescan preserves operator-edited game settings and updates challenges in place by binding-relative manifest path, retaining challenge IDs and solve/scoring history. Missing played manifests are retained as disabled tombstones or rejected while event state still depends on them; they are never silently cascade-deleted.
 
 Private repositories use a PAT stored in PostgreSQL, so database backups are sensitive. Push-on-edit needs a writable branch and write-capable token. Automatic interval scans are not currently scheduled; use **Scan now** after repository changes.
 

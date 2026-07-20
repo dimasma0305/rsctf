@@ -27,6 +27,15 @@ static ROSTER_ACCESS_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semap
     std::sync::LazyLock::new(|| {
         std::sync::Arc::new(tokio::sync::Semaphore::new(ROSTER_ACCESS_CONCURRENCY))
     });
+static PROVISIONING_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        let permits = std::env::var("RSCTF_PROVISIONING_CONCURRENCY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(4);
+        std::sync::Arc::new(tokio::sync::Semaphore::new(permits))
+    });
 use tokio::sync::broadcast;
 
 /// Bound operations that retain a team-roster transaction while issuing
@@ -316,6 +325,16 @@ pub(crate) async fn acquire_transaction_advisory_lock(
     Ok(())
 }
 
+pub(crate) async fn try_acquire_transaction_advisory_lock(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    key: &str,
+) -> anyhow::Result<bool> {
+    Ok(sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(advisory_lock_key(key))
+        .fetch_one(&mut **transaction)
+        .await?)
+}
+
 impl PgAdvisoryLock {
     pub async fn acquire(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
         Self::acquire_with_permit(pool, key, None).await
@@ -345,22 +364,63 @@ impl PgAdvisoryLock {
         }))
     }
 
+    /// Try to take an exclusive transaction lock without waiting. This is used
+    /// when a caller already owns a higher-level lock and blocking here would
+    /// invert another mutation path's lock order.
+    pub(crate) async fn try_acquire(
+        pool: &sqlx::PgPool,
+        key: &str,
+    ) -> anyhow::Result<Option<Self>> {
+        let lock_key = advisory_lock_key(key);
+        let mut transaction = super::database::begin_sqlx_transaction(pool).await?;
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(lock_key)
+            .fetch_one(&mut *transaction)
+            .await?;
+        if !acquired {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            transaction: Some(transaction),
+            _concurrency_permit: None,
+        }))
+    }
+
     /// Advisory lock for a sequence that calls an external container runtime.
     /// Bound the number of held DB connections per replica so a provisioning burst
     /// cannot consume the connection pool while image pulls are in flight. The
     /// default still leaves most of the standard 32-connection pool available.
     pub async fn acquire_provisioning(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
-        static GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-            std::sync::LazyLock::new(|| {
-                let permits = std::env::var("RSCTF_PROVISIONING_CONCURRENCY")
-                    .ok()
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .filter(|value| *value > 0)
-                    .unwrap_or(4);
-                std::sync::Arc::new(tokio::sync::Semaphore::new(permits))
-            });
-        let permit = GATE.clone().acquire_owned().await?;
+        let permit = PROVISIONING_GATE.clone().acquire_owned().await?;
         Self::acquire_with_permit(pool, key, Some(permit)).await
+    }
+
+    /// Acquire shared parent fences before the exclusive leaf key on one
+    /// transaction. This ordering lets a mode transition retain an exclusive
+    /// parent while it takes leaf locks without deadlocking a publisher that
+    /// started moments earlier.
+    pub(crate) async fn acquire_provisioning_below_shared(
+        pool: &sqlx::PgPool,
+        shared_keys: &[String],
+        key: &str,
+    ) -> anyhow::Result<Self> {
+        let permit = PROVISIONING_GATE.clone().acquire_owned().await?;
+        let mut transaction = super::database::begin_sqlx_transaction(pool).await?;
+        for shared_key in shared_keys {
+            sqlx::query("SELECT pg_advisory_xact_lock_shared($1)")
+                .bind(advisory_lock_key(shared_key))
+                .execute(&mut *transaction)
+                .await?;
+        }
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(advisory_lock_key(key))
+            .execute(&mut *transaction)
+            .await?;
+        Ok(Self {
+            transaction: Some(transaction),
+            _concurrency_permit: Some(permit),
+        })
     }
 
     /// Definition saves, publication fences, and explicit rollouts can issue
@@ -371,6 +431,19 @@ impl PgAdvisoryLock {
     pub async fn acquire_definition(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
         static GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
             std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
+        let permit = GATE.clone().acquire_owned().await?;
+        Self::acquire_with_permit(pool, key, Some(permit)).await
+    }
+
+    /// Runtime eligibility transitions retain their cross-replica fence while
+    /// taking game/definition locks and reconciling external runtimes. Admit
+    /// one such outer operation per replica before checking out PostgreSQL so
+    /// distinct challenges cannot fill a small pool with transactions that all
+    /// need a second connection to make progress. This gate stays independent
+    /// from definition and provisioning because transition operations nest both.
+    pub async fn acquire_transition(pool: &sqlx::PgPool, key: &str) -> anyhow::Result<Self> {
+        static GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+            std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
         let permit = GATE.clone().acquire_owned().await?;
         Self::acquire_with_permit(pool, key, Some(permit)).await
     }

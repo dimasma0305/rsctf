@@ -10,10 +10,11 @@ use std::collections::BTreeSet;
 
 use sqlx::{Postgres, Transaction};
 
-use crate::storage::BlobStorage;
-use crate::utils::error::AppResult;
+use crate::storage::{BlobStorage, StoredBlob};
+use crate::utils::codec::sha256_hex;
+use crate::utils::error::{AppError, AppResult};
 
-use super::{database_error, lock_hash, purge_if_unreferenced, release_locked};
+use super::{acquire_locked, database_error, lock_hash, purge_if_unreferenced, release_locked};
 
 const SELECT_ONE_SQL: &str = r#"
     SELECT original_archive_blob_path, ad_checker_image
@@ -44,6 +45,123 @@ const DELETE_GAME_SQL: &str = r#"
 
 type ArtifactRow = (Option<String>, Option<String>);
 
+/// Store (or clear) one challenge source archive while atomically swapping the
+/// owning row and releasing its previous logical reference. The object write
+/// occurs under the same hash fences as deletion. A post-commit purge handles
+/// the old zero-reference tombstone without reopening the owner/refcount race.
+pub async fn store_and_replace_challenge_archive(
+    pool: &sqlx::PgPool,
+    storage: &dyn BlobStorage,
+    challenge_id: i32,
+    archive: Option<(&str, &[u8])>,
+) -> AppResult<Option<StoredBlob>> {
+    let expected_hash = archive.map(|(_, bytes)| sha256_hex(bytes));
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(database_error)?;
+    let operation: AppResult<(Option<StoredBlob>, Option<String>)> = async {
+        let old_hash = sqlx::query_scalar::<_, Option<String>>(
+            r#"SELECT original_archive_blob_path
+                 FROM "GameChallenges"
+                WHERE id = $1
+                FOR UPDATE"#,
+        )
+        .bind(challenge_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| AppError::not_found("Challenge not found"))?;
+
+        let mut hashes = std::collections::BTreeSet::new();
+        if let Some(hash) = old_hash.as_deref().filter(|hash| !hash.trim().is_empty()) {
+            hashes.insert(hash);
+        }
+        if let Some(hash) = expected_hash.as_deref() {
+            hashes.insert(hash);
+        }
+        for hash in hashes {
+            lock_hash(&mut transaction, hash)
+                .await
+                .map_err(database_error)?;
+        }
+
+        let stored = if let Some((name, bytes)) = archive {
+            let blob = storage.store(name, bytes).await?;
+            if Some(blob.hash.as_str()) != expected_hash.as_deref() {
+                return Err(AppError::internal(
+                    "blob storage returned a hash that does not match its content",
+                ));
+            }
+            acquire_locked(&mut transaction, &blob.hash, name, blob.size)
+                .await
+                .map_err(database_error)?;
+            Some(blob)
+        } else {
+            None
+        };
+        sqlx::query(
+            r#"UPDATE "GameChallenges"
+                  SET original_archive_blob_path = $2
+                WHERE id = $1"#,
+        )
+        .bind(challenge_id)
+        .bind(stored.as_ref().map(|blob| blob.hash.as_str()))
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+
+        let deleted_hash = if let Some(old_hash) = old_hash {
+            let old_id = sqlx::query_scalar::<_, i32>(
+                r#"SELECT id FROM "Files" WHERE hash = $1 FOR UPDATE"#,
+            )
+            .bind(&old_hash)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            match old_id {
+                Some(old_id) => {
+                    release_locked(&mut transaction, old_id)
+                        .await
+                        .map_err(database_error)?
+                        .deleted_hash
+                }
+                None => Some(old_hash),
+            }
+        } else {
+            None
+        };
+        Ok((stored, deleted_hash))
+    }
+    .await;
+
+    let (stored, deleted_hash) = match operation {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = transaction.rollback().await;
+            if let Some(hash) = expected_hash.as_deref() {
+                if let Err(cleanup_error) = purge_if_unreferenced(pool, storage, hash).await {
+                    tracing::warn!(%cleanup_error, %hash, "failed challenge archive cleanup deferred");
+                }
+            }
+            return Err(error);
+        }
+    };
+    if let Err(error) = transaction.commit().await.map_err(database_error) {
+        if let Some(hash) = expected_hash.as_deref() {
+            if let Err(cleanup_error) = purge_if_unreferenced(pool, storage, hash).await {
+                tracing::warn!(%cleanup_error, %hash, "uncertain challenge archive cleanup deferred");
+            }
+        }
+        return Err(error);
+    }
+    if let Some(hash) = deleted_hash {
+        if let Err(error) = purge_if_unreferenced(pool, storage, &hash).await {
+            tracing::warn!(%error, %hash, "replaced challenge archive purge deferred");
+        }
+    }
+    Ok(stored)
+}
+
 /// Challenge-owned artifacts returned by the authoritative `DELETE ..
 /// RETURNING`. Archive hashes deliberately retain duplicates: two challenges
 /// pointing at the same content acquired two references and release two.
@@ -52,6 +170,9 @@ pub struct DeletedChallengeArtifacts {
     pub deleted: u64,
     pub archive_hashes: Vec<String>,
     pub checker_revisions: Vec<String>,
+    /// Challenge and flag hand-out attachment rows made unreachable by the
+    /// owner deletion. Post-commit cleanup may retry them independently.
+    pub attachment_ids: Vec<i32>,
 }
 
 async fn lock_archive_hashes(
@@ -95,7 +216,7 @@ async fn release_archive_hashes(
     Ok(())
 }
 
-fn artifacts(rows: Vec<ArtifactRow>) -> DeletedChallengeArtifacts {
+fn artifacts(rows: Vec<ArtifactRow>, mut attachment_ids: Vec<i32>) -> DeletedChallengeArtifacts {
     let deleted = rows.len() as u64;
     let mut archive_hashes = Vec::new();
     let mut checker_revisions = Vec::new();
@@ -107,10 +228,13 @@ fn artifacts(rows: Vec<ArtifactRow>) -> DeletedChallengeArtifacts {
             checker_revisions.push(checker);
         }
     }
+    attachment_ids.sort_unstable();
+    attachment_ids.dedup();
     DeletedChallengeArtifacts {
         deleted,
         archive_hashes,
         checker_revisions,
+        attachment_ids,
     }
 }
 
@@ -135,28 +259,51 @@ pub async fn delete_challenge(
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
+    let result = delete_challenge_locked(&mut transaction, challenge_id).await?;
+    transaction.commit().await.map_err(database_error)?;
+
+    purge_deleted_challenge_artifacts(pool, storage, &result).await;
+    Ok(result)
+}
+
+/// Delete one challenge inside the caller's already-fenced definition
+/// transaction. The final evidence predicate and owner/refcount release can
+/// therefore commit as one indivisible operation.
+pub(crate) async fn delete_challenge_locked(
+    transaction: &mut Transaction<'_, Postgres>,
+    challenge_id: i32,
+) -> AppResult<DeletedChallengeArtifacts> {
     let selected = sqlx::query_as::<_, ArtifactRow>(SELECT_ONE_SQL)
         .bind(challenge_id)
-        .fetch_all(&mut *transaction)
+        .fetch_all(&mut **transaction)
         .await
         .map_err(database_error)?;
-    lock_archive_hashes(&mut transaction, &selected).await?;
+    lock_archive_hashes(transaction, &selected).await?;
+    let attachment_ids = sqlx::query_scalar::<_, i32>(
+        r#"SELECT attachment_id
+             FROM "GameChallenges"
+            WHERE id = $1 AND attachment_id IS NOT NULL
+            UNION ALL
+           SELECT attachment_id
+             FROM "FlagContexts"
+            WHERE challenge_id = $1 AND attachment_id IS NOT NULL"#,
+    )
+    .bind(challenge_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     sqlx::query(r#"DELETE FROM "FlagContexts" WHERE challenge_id = $1"#)
         .bind(challenge_id)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
     let deleted = sqlx::query_as::<_, ArtifactRow>(DELETE_ONE_SQL)
         .bind(challenge_id)
-        .fetch_all(&mut *transaction)
+        .fetch_all(&mut **transaction)
         .await
         .map_err(database_error)?;
-    release_archive_hashes(&mut transaction, &deleted).await?;
-    transaction.commit().await.map_err(database_error)?;
-
-    let result = artifacts(deleted);
-    purge_archives(pool, storage, &result.archive_hashes).await;
-    Ok(result)
+    release_archive_hashes(transaction, &deleted).await?;
+    Ok(artifacts(deleted, attachment_ids))
 }
 
 /// Delete all challenges in one game for a repository re-scan. The returned
@@ -170,12 +317,39 @@ pub async fn delete_game_challenges(
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
+    let result = delete_game_challenges_locked(&mut transaction, game_id).await?;
+    transaction.commit().await.map_err(database_error)?;
+
+    purge_deleted_challenge_artifacts(pool, storage, &result).await;
+    Ok(result)
+}
+
+/// Delete every challenge owner inside the caller's game-deletion transaction.
+/// This keeps archive refcounts and the final `Games` delete all-or-nothing.
+pub(crate) async fn delete_game_challenges_locked(
+    transaction: &mut Transaction<'_, Postgres>,
+    game_id: i32,
+) -> AppResult<DeletedChallengeArtifacts> {
     let selected = sqlx::query_as::<_, ArtifactRow>(SELECT_GAME_SQL)
         .bind(game_id)
-        .fetch_all(&mut *transaction)
+        .fetch_all(&mut **transaction)
         .await
         .map_err(database_error)?;
-    lock_archive_hashes(&mut transaction, &selected).await?;
+    lock_archive_hashes(transaction, &selected).await?;
+    let attachment_ids = sqlx::query_scalar::<_, i32>(
+        r#"SELECT attachment_id
+             FROM "GameChallenges"
+            WHERE game_id = $1 AND attachment_id IS NOT NULL
+            UNION ALL
+           SELECT flag.attachment_id
+             FROM "FlagContexts" flag
+             JOIN "GameChallenges" challenge ON challenge.id = flag.challenge_id
+            WHERE challenge.game_id = $1 AND flag.attachment_id IS NOT NULL"#,
+    )
+    .bind(game_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     sqlx::query(
         r#"DELETE FROM "FlagContexts" flag
             USING "GameChallenges" challenge
@@ -183,20 +357,24 @@ pub async fn delete_game_challenges(
               AND challenge.game_id = $1"#,
     )
     .bind(game_id)
-    .execute(&mut *transaction)
+    .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
     let deleted = sqlx::query_as::<_, ArtifactRow>(DELETE_GAME_SQL)
         .bind(game_id)
-        .fetch_all(&mut *transaction)
+        .fetch_all(&mut **transaction)
         .await
         .map_err(database_error)?;
-    release_archive_hashes(&mut transaction, &deleted).await?;
-    transaction.commit().await.map_err(database_error)?;
+    release_archive_hashes(transaction, &deleted).await?;
+    Ok(artifacts(deleted, attachment_ids))
+}
 
-    let result = artifacts(deleted);
+pub(crate) async fn purge_deleted_challenge_artifacts(
+    pool: &sqlx::PgPool,
+    storage: &dyn BlobStorage,
+    result: &DeletedChallengeArtifacts,
+) {
     purge_archives(pool, storage, &result.archive_hashes).await;
-    Ok(result)
 }
 
 #[cfg(test)]
@@ -243,9 +421,10 @@ mod tests {
             (Some("same".to_string()), Some("checker-a".to_string())),
             (Some("same".to_string()), Some("checker-b".to_string())),
         ];
-        let result = artifacts(rows);
+        let result = artifacts(rows, vec![9, 7, 9]);
         assert_eq!(result.archive_hashes, vec!["same", "same"]);
         assert_eq!(result.checker_revisions, vec!["checker-a", "checker-b"]);
+        assert_eq!(result.attachment_ids, vec![7, 9]);
     }
 
     #[tokio::test]
@@ -276,17 +455,18 @@ mod tests {
             CREATE TABLE "{schema}"."Configs" (config_key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE "{schema}"."GameChallenges" (
                 id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-                original_archive_blob_path TEXT, ad_checker_image TEXT
+                original_archive_blob_path TEXT, ad_checker_image TEXT,
+                attachment_id INTEGER
             );
             CREATE TABLE "{schema}"."FlagContexts" (
-                id INTEGER PRIMARY KEY, challenge_id INTEGER
+                id INTEGER PRIMARY KEY, challenge_id INTEGER, attachment_id INTEGER
             );
             INSERT INTO "{schema}"."Files" (hash, reference_count)
             VALUES ('archive', 2);
             INSERT INTO "{schema}"."GameChallenges" VALUES
-                (1, 7, 'archive', '/checkers/a'),
-                (2, 7, 'archive', '/checkers/b');
-            INSERT INTO "{schema}"."FlagContexts" VALUES (1, 1), (2, 2);
+                (1, 7, 'archive', '/checkers/a', NULL),
+                (2, 7, 'archive', '/checkers/b', NULL);
+            INSERT INTO "{schema}"."FlagContexts" VALUES (1, 1, NULL), (2, 2, NULL);
             "#
         );
         sqlx::raw_sql(&setup).execute(&admin).await.unwrap();

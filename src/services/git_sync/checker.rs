@@ -40,6 +40,25 @@ pub(super) fn checker_dest_dir(storage_root: &Path, game_id: i32, name: &str) ->
         .into_owned()
 }
 
+pub(super) async fn cleanup_unpublished_checker(
+    prepared: bool,
+    preparation: Option<&(String, PathBuf)>,
+    guard: &mut Option<crate::utils::single_flight::PgAdvisoryLock>,
+) {
+    if prepared {
+        if let Some((dest, _)) = preparation {
+            if let Err(error) = tokio::fs::remove_dir_all(dest).await {
+                tracing::warn!(%error, path = %dest, "git_sync: unpublished checker cleanup failed");
+            }
+        }
+    }
+    if let Some(guard) = guard.take() {
+        if let Err(error) = guard.release().await {
+            tracing::warn!(%error, "checker publication guard release failed");
+        }
+    }
+}
+
 fn checker_dest_dir_at(root: &Path, game_id: i32, name: &str) -> PathBuf {
     root.join("checkers")
         .join(game_id.to_string())
@@ -172,6 +191,23 @@ async fn read_checker_requirements(src_dir: &Path) -> AppResult<Vec<String>> {
         .await
         .map_err(|error| AppError::internal(format!("checker requirements read: {error}")))?;
     validate_checker_requirements(&contents)
+}
+
+/// Validate the inert checker tree before an enabled challenge is considered
+/// runtime-equivalent. Preparation performs the same checks, but live imports
+/// deliberately do not prepare a replacement and therefore need this explicit
+/// validation path.
+pub(super) async fn validate_checker_source(src_dir: &Path) -> AppResult<()> {
+    let entrypoint = tokio::fs::symlink_metadata(src_dir.join("run.py"))
+        .await
+        .map_err(|error| AppError::bad_request(format!("checker/run.py is unreadable: {error}")))?;
+    if !entrypoint.file_type().is_file() {
+        return Err(AppError::bad_request(
+            "checker/run.py must be a regular file",
+        ));
+    }
+    read_checker_requirements(src_dir).await?;
+    Ok(())
 }
 
 /// Build the checker environment (no Docker) in a private sibling staging

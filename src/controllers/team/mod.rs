@@ -28,14 +28,16 @@ mod avatar;
 mod lifecycle;
 mod models;
 mod revocation;
+mod roster_policy;
 pub use avatar::avatar;
 pub use models::*;
-use revocation::remove_membership;
 pub(crate) use revocation::{
     acquire_roster_mutation, invalidate_removed_membership_cache, mark_team_participations_revoked,
     require_team_mutable, revoke_participation_capabilities, revoke_team_shared_capabilities,
     TeamDeletionLease,
 };
+use revocation::{remove_membership, revoke_team_shared_capabilities_locked};
+pub(crate) use roster_policy::ensure_roster_change_allowed;
 
 /// Each user may captain at most this many teams. Mirrors RSCTF `MaxTeamsAllowed`.
 pub(crate) const MAX_TEAMS_ALLOWED: u64 = 3;
@@ -245,12 +247,9 @@ pub async fn delete_team(
     crate::controllers::game::ad::flush_team_participation_cache(&st, team.id).await;
     revoke_team_shared_capabilities(&st, team.id).await?;
 
-    // RSCTF `DeleteTeam`: reap the team's live containers BEFORE the cascade drops
-    // the participation/instance rows the teardown keys off — otherwise A&D service
-    // containers (and per-team KotH instances) would leak, running until game end
-    // with no row left to reconcile them against. Best-effort: a container-daemon
-    // hiccup must never block the delete, so failures are swallowed and we degrade
-    // (mirrors RSCTF wrapping each destroy in a try/catch).
+    // Reap the team's live containers before the cascade drops their retry
+    // identities. A failed capture fence/backend destroy aborts finalization;
+    // deletion remains durably suspended and exactly retryable.
     destroy_team_containers(&st, team.id).await?;
 
     // Evict the scoreboard caches for every game the team was in *before* the
@@ -366,15 +365,15 @@ pub async fn accept(
     // waits for this membership (and snapshots it) or this request observes the
     // fence and cannot create a late roster entry.
     lock_live_roster_account(distributed.transaction_mut(), user.id).await?;
-    let team: Option<(String, String, bool, bool, Uuid)> = sqlx::query_as(
-        r#"SELECT name, invite_token, locked, deletion_pending, captain_id
+    let team: Option<(String, String, bool, Uuid)> = sqlx::query_as(
+        r#"SELECT name, invite_token, deletion_pending, captain_id
               FROM "Teams" WHERE id = $1"#,
     )
     .bind(team_id)
     .fetch_optional(&mut **distributed.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((team_name, current_invite, locked, deletion_pending, captain_id)) = team else {
+    let Some((team_name, current_invite, deletion_pending, captain_id)) = team else {
         return Err(AppError::bad_request("Team not found"));
     };
     if deletion_pending {
@@ -383,22 +382,6 @@ pub async fn accept(
 
     if current_invite != invite_token {
         return Err(AppError::bad_request("Invalid invitation for this team"));
-    }
-    let has_active_game: bool = sqlx::query_scalar(
-        r#"SELECT EXISTS(
-               SELECT 1
-                 FROM "Participations" participation
-                 JOIN "Games" game ON game.id = participation.game_id
-                WHERE participation.team_id = $1
-                  AND game.end_time_utc > clock_timestamp()
-           )"#,
-    )
-    .bind(team_id)
-    .fetch_one(&mut **distributed.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if locked && has_active_game {
-        return Err(AppError::bad_request("Team is locked by an active game"));
     }
     let already_member: bool = captain_id == user.id
         || sqlx::query_scalar::<_, bool>(
@@ -415,6 +398,7 @@ pub async fn accept(
     if already_member {
         return Err(AppError::bad_request("Already a member of this team"));
     }
+    ensure_roster_change_allowed(distributed.transaction_mut(), team_id).await?;
     let member_count: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*)::bigint
               FROM (
@@ -456,8 +440,9 @@ pub async fn accept(
     Ok(StatusCode::OK)
 }
 
-/// `POST /api/team/{id}/leave` — leave a team. Any member may leave, the captain
-/// included (RSCTF `Leave` has no captain guard); only an active-game lock blocks it.
+/// `POST /api/team/{id}/leave` — leave a team. A captain must atomically transfer
+/// captaincy first; other members may leave until the shared roster policy
+/// freezes membership.
 pub async fn leave(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -467,23 +452,27 @@ pub async fn leave(
     require_team_mutable(roster.transaction_mut(), id).await?;
     let team = load_team(&st, id).await?;
 
+    if team.captain_id == user.id {
+        return Err(AppError::bad_request(
+            "Team captain must transfer captaincy before leaving",
+        ));
+    }
     let members = member_ids(&st, &team).await?;
     if !members.contains(&user.id) {
         return Err(AppError::bad_request("You are not in this team"));
     }
-    // RSCTF `Leave` has no captain guard: any member (captain included) may leave
-    // whenever the team is not locked by an active game. It does not block or
-    // reassign captaincy, so mirror that and simply drop the caller's membership.
-    if team.locked && any_active_game(&st, team.id).await? {
-        return Err(AppError::bad_request("Team is locked by an active game"));
-    }
+    // Captaincy is stable now; the shared policy fences the remaining mutable
+    // roster state before credential revocation and membership deletion.
+    ensure_roster_change_allowed(roster.transaction_mut(), team.id).await?;
 
     // Keep the roster lock until every copied team credential is invalidated.
     // If external cleanup fails, membership remains intact and the same leave
     // request can be retried without creating an unauthorized credential gap.
-    let parts = revoke_team_shared_capabilities(&st, team.id).await?;
+    let (parts, koth_cache_invalidation) =
+        revoke_team_shared_capabilities_locked(&st, roster.transaction_mut(), team.id).await?;
     remove_membership(roster.transaction_mut(), team.id, user.id).await?;
     roster.release().await?;
+    koth_cache_invalidation.apply(st.cache.as_ref()).await;
     invalidate_removed_membership_cache(&st, user.id, &parts).await?;
 
     // RSCTF `Team_UserLeft` — "Left the team {name}" (TeamController, Success).
@@ -512,19 +501,18 @@ pub async fn kick_user(
     let team = load_team(&st, id).await?;
     require_captain(&team, &user)?;
 
-    if team.locked && any_active_game(&st, team.id).await? {
-        return Err(AppError::bad_request("Team is locked by an active game"));
-    }
+    ensure_roster_change_allowed(roster.transaction_mut(), team.id).await?;
     if target == team.captain_id {
         return Err(AppError::bad_request("Cannot kick the team captain"));
     }
     if !member_ids(&st, &team).await?.contains(&target) {
         return Err(AppError::bad_request("User is not in this team"));
     }
-
-    let parts = revoke_team_shared_capabilities(&st, team.id).await?;
+    let (parts, koth_cache_invalidation) =
+        revoke_team_shared_capabilities_locked(&st, roster.transaction_mut(), team.id).await?;
     remove_membership(roster.transaction_mut(), team.id, target).await?;
     roster.release().await?;
+    koth_cache_invalidation.apply(st.cache.as_ref()).await;
     invalidate_removed_membership_cache(&st, target, &parts).await?;
 
     // RSCTF `Team_MemberRemoved` — "Kick {kicked} from Team {name}" (TeamController,
@@ -859,11 +847,9 @@ pub(crate) async fn flush_scoreboards_for_games(st: &SharedState, game_ids: &[i3
     }
 }
 
-/// Best-effort teardown of every live container the team owns. Walks the team's
-/// participations → game instances → container rows, destroys the backing
-/// container via `st.containers` (a no-op when Docker is absent) and drops the
-/// bookkeeping row. Failures at any step are swallowed so a container-daemon
-/// hiccup can never wedge a team delete (RSCTF wraps each destroy in try/catch).
+/// Fail-closed teardown of every live container the team owns. Durable service,
+/// instance, and container identities are cleared only after the exact backend
+/// has been fenced and destroyed, so a failure remains retryable.
 pub(crate) async fn destroy_team_containers(st: &SharedState, team_id: i32) -> AppResult<()> {
     let part_ids: Vec<i32> = participation::Entity::find()
         .filter(participation::Column::TeamId.eq(team_id))
@@ -876,11 +862,8 @@ pub(crate) async fn destroy_team_containers(st: &SharedState, team_id: i32) -> A
         return Ok(());
     }
 
-    let ad_backend_ids =
-        crate::services::ad_vpn::deactivate_participation_services(&st.db, &part_ids).await?;
-    for backend_id in ad_backend_ids {
-        crate::services::traffic::stop_container_capture(st, &backend_id).await?;
-        let _ = st.containers.destroy(&backend_id).await;
+    for &participation_id in &part_ids {
+        lifecycle::destroy_participation_ad_services(st, participation_id).await?;
     }
 
     let instances = game_instance::Entity::find()
@@ -892,11 +875,8 @@ pub(crate) async fn destroy_team_containers(st: &SharedState, team_id: i32) -> A
         let Some(cuuid) = inst.container_id else {
             continue;
         };
-        if let Ok(Some(c)) = container::Entity::find_by_id(cuuid).one(&st.db).await {
-            // Destroy the backing container first, then remove the row. Both are
-            // best-effort; the surrounding delete continues regardless.
-            let _ = st.containers.destroy(&c.container_id).await;
-            let _ = container::Entity::delete_by_id(cuuid).exec(&st.db).await;
+        if let Some(c) = container::Entity::find_by_id(cuuid).one(&st.db).await? {
+            crate::controllers::game::destroy_managed_container_row(st, &c, false).await?;
         }
     }
     Ok(())

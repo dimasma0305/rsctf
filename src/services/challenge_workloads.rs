@@ -354,12 +354,48 @@ pub fn definition_lock_key(game_id: i32, challenge_id: i32) -> String {
     format!("challenge-workload-rollout:{game_id}:{challenge_id}")
 }
 
+/// Serialize a tombstone teardown with the only state transition that can make
+/// its stale cleanup destructive (false -> true). Its independent admission
+/// gate is deliberately outside the bounded provisioning semaphore: cleanup
+/// may take per-runtime provisioning locks while it owns this outer fence.
+pub fn runtime_transition_lock_key(challenge_id: i32) -> String {
+    format!("challenge-runtime-transition:{challenge_id}")
+}
+
+pub async fn acquire_runtime_transition_lock(
+    pool: &sqlx::PgPool,
+    challenge_id: i32,
+) -> AppResult<crate::utils::single_flight::PgAdvisoryLock> {
+    crate::utils::single_flight::PgAdvisoryLock::acquire_transition(
+        pool,
+        &runtime_transition_lock_key(challenge_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 pub async fn acquire_definition_lock(
     pool: &sqlx::PgPool,
     game_id: i32,
     challenge_id: i32,
 ) -> AppResult<crate::utils::single_flight::PgAdvisoryLock> {
     crate::utils::single_flight::PgAdvisoryLock::acquire_definition(
+        pool,
+        &definition_lock_key(game_id, challenge_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
+/// Nonblocking definition fence for callers that already hold the per-game
+/// configuration lock. Returning `None` keeps that broad game fence short when
+/// definition-only build, attachment, or publication work is in flight.
+pub async fn try_acquire_definition_lock(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<Option<crate::utils::single_flight::PgAdvisoryLock>> {
+    crate::utils::single_flight::PgAdvisoryLock::try_acquire(
         pool,
         &definition_lock_key(game_id, challenge_id),
     )
@@ -766,5 +802,10 @@ mod tests {
         assert!(ensure_definition_unchanged("workload:sha256:a", "workload:sha256:a",).is_ok());
         assert!(ensure_definition_unchanged("workload:sha256:a", "workload:sha256:b",).is_err());
         assert_ne!(definition_lock_key(1, 2), definition_lock_key(1, 3));
+        assert_ne!(
+            runtime_transition_lock_key(2),
+            runtime_transition_lock_key(3)
+        );
+        assert_ne!(runtime_transition_lock_key(2), definition_lock_key(1, 2));
     }
 }

@@ -12,6 +12,7 @@ cd tests/load
 N=60  npm run byoc          # BYOC scale + request flood
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
+      npm run redis-outage  # disposable Redis failure/recovery micro-harness
 N=120 npm run worst-case    # mass BYOC reconnect storm (restarts rsctf)
 FLEET=10 npm run worker      # trusted worker create/proxy/destroy + lease gate
 FLEET=5  npm run worker-local # isolated current-tree rsctf + native Linux agent
@@ -35,6 +36,7 @@ tests/load/
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
   player.mjs        → runs k6/player.js         (npm run player)
   ad-submit-batch.mjs → runs k6/ad-submit-batch.js (npm run ad-submit-batch)
+  redis-outage.mjs  → stops/restores one acknowledged disposable Redis + runs k6/redis-outage.js
   byoc.mjs          → runs k6/byoc-requests.js  (npm run byoc)
   worst-case.mjs    → reconnect-storm harness   (npm run worst-case)
   worker-plane.mjs  → trusted worker lifecycle  (npm run worker)
@@ -42,6 +44,7 @@ tests/load/
   k6/
     player.js         A&D + KotH player: poll boards/timelines, tokens/state, submit flags
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
+    redis-outage.js   fixed-rate malformed requests while Redis is unavailable
     byoc-requests.js  flood BYOC tunnel listeners
     worker-plane.js   fixed-rate trusted-worker TCP proxy streams + health polls
     team-event.js     one isolated, VPN-connected player process per team
@@ -76,6 +79,29 @@ hill fixture to be replaced independently of the Jeopardy `CONTAINER_IMAGE`. Lon
 `CHEAT_AT_FRACTION`, `RETAIN_EVENT`, and `LIFECYCLE_STATE_TAG`. Set
 `RSCTF_BYOC_AGENT_IMAGE` to test a specific local RSCTF agent tag or immutable digest;
 the network-fetched default is pinned to the attested GHCR digest used by the server.
+
+### Redis outage (`npm run redis-outage`)
+
+This fixed-rate micro-harness stops one explicitly acknowledged Compose Redis service,
+waits for `/livez` to remain 200 while `/healthz` reports the dependency outage, sends
+malformed registration requests that must remain HTTP 400 responses with p95 latency
+below 1,000 ms, and restores Redis in a `finally` block. It then waits for `/healthz`
+to recover without restarting rsctf. Use only a disposable stack; the exact container
+name must be repeated as the acknowledgement:
+
+```sh
+cd tests/load
+TARGET=http://127.0.0.1:58080 \
+REDIS_CONTAINER=rsctf-test-redis-1 \
+CONFIRM_REDIS_OUTAGE=rsctf-test-redis-1 \
+RATE=1 DURATION=15s SUMMARY_JSON=/tmp/rsctf-redis-outage.json \
+npm run redis-outage
+```
+
+Non-loopback targets require a second exact acknowledgement through
+`CONFIRM_REMOTE_REDIS_OUTAGE=<target origin>`. The scenario fails on a dropped
+iteration, a response other than 400, p95 latency at or above 1,000 ms, or an
+unsuccessful dependency recovery.
 
 ### A&D submit batch (`npm run ad-submit-batch`)
 
@@ -340,7 +366,41 @@ distributed event are in [`REPORT.md`](REPORT.md).
 
 ## Baselines & findings (single-node, docker)
 
-**Latest measured replicated player-load baseline** (`npm run player`, 16 July 2026): two
+**Current immutable deployment acceptance** (20 July 2026) used two web replicas,
+one singleton control replica, PostgreSQL 18.4, Redis, Caddy, 100 Jeopardy teams,
+400 A&D/KotH teams, and 80 real BYOC tunnels. The exact
+`rsctf-local:deploy-20260720-1` image served 627,022 requests at 1,995.612
+requests/s over the five-minute fixed load. All 627,618 checks passed, with zero
+unexpected non-2xx responses, zero server 5xx, zero PostgreSQL deadlocks, zero
+restarts or OOM kills, and clean duplicate, overlap, cadence, evidence, and
+cleanup gates. Expected quota enforcement accounted for 179,875 HTTP 429
+responses (28.687%). The run also exercised 36 real container lifecycle
+operations, attachment upload/download, 80 scoped KotH captures, five crown
+cycles, stale-capability rejection, and two confirmed acquisitions.
+
+The final proxy policy addresses a separate mutation-only Caddy failure found by
+two strict pre-acceptance runs. Reads and stateful network routes retain pooled
+upstreams, while ordinary `POST`, `PUT`, `PATCH`, and `DELETE` requests use the
+dynamic Docker-DNS transport with keepalive disabled; ambiguous mutations are
+not blindly retried. A focused 120-second POST storm served 143,429 requests at
+1,195.195 requests/s with zero proxy 5xx and an 8.75 ms p95, and the full
+lifecycle recorded no Caddy 5xx or closed-idle errors. The accepted image ID,
+binary hash, Caddy digest, endpoint distributions, resource series, and complete
+failure-to-acceptance sequence are in
+[`REPORT.md`](REPORT.md#final-immutable-two-replica-lifecycle-acceptance--20-july-2026).
+
+The original 19 July diagnosis remains relevant: `/admin/teams` changed from a
+502 in 3,143.541 ms to a 200 in 54.955 ms, and repository rescans now update
+challenges in place by stable manifest identity while preserving solves, first
+solves, IDs, counters, attachments, and runtime evidence. Solve rows already
+removed by the former delete/recreate sync cannot be reconstructed without a
+backup. The earlier fixed-rate replica-churn and Redis-outage comparisons remain
+documented in
+[`REPORT.md`](REPORT.md#repository-sync-and-event-integrity-acceptance--19-july-2026).
+The 20 July acceptance adds no optimization-ledger row because it is correctness
+work without a same-harness before/after CPU bracket.
+
+**Earlier replicated player-load baseline** (`npm run player`, 16 July 2026): two
 web replicas plus singleton control, 400 A&D/KotH teams, 100 Jeopardy teams,
 `RATE=70 VUS=400 DURATION=300s`, and public TLS. The final measured campaign
 image sustained **429.70 req/s** with **0 failed requests, 0 server 5xx, and
@@ -359,7 +419,7 @@ crown-cycle, and stale-token coverage. This is functional acceptance, not an
 extra row in the fixed-rate optimization ledger; details and the two retained
 diagnostic attempts are in [`REPORT.md`](REPORT.md#final-exact-image-lifecycle-acceptance).
 
-The 19 July final singleton acceptance used 100 distinct player tokens at
+An earlier 19 July singleton campaign used 100 distinct player tokens at
 `RATE=20 VUS=128 DURATION=60s`: 7,552 requests completed at 117.057 requests/s
 with zero failed requests, server 5xx responses, or semantic board errors.
 Against the same-shape operational candidate, overall HTTP p95 improved
@@ -372,17 +432,20 @@ operations, a confirmed KotH acquisition, and stale-token rejection. This
 bundled operational comparison has no causal optimization-ledger row; exact
 endpoint distributions, the CPU/RAM series, image identities, saturation
 diagnostic, harness corrections, and limitations are in
-[`REPORT.md`](REPORT.md#final-current-tree-operational-acceptance--19-july-2026).
+[`REPORT.md`](REPORT.md#historical-singleton-operational-acceptance--19-july-2026).
 
 ### Optimization ledger
 
-All 16 July rows compare adjacent images with the common workload above. The 19
-July row is a frozen pre-submit-fence campaign using the isolated max-batch A&D harness documented in
+All 16 July rows compare adjacent images with the common workload above. The
+max-batch 19 July row is a frozen pre-submit-fence campaign using the isolated
+A&D harness documented in
 [`REPORT.md`](REPORT.md#attack-defense-max-batch-hardening-and-fixed-rate-optimization--19-july-2026),
 so its held throughput and CPU window are not comparable to the replicated
 player-load rows. App CPU is both web replicas plus control for the 16 July
 campaign and the single web-only rsctf container for the 19 July campaign;
-stack CPU adds PostgreSQL and Redis. A row is retained even when one secondary
+stack CPU adds PostgreSQL and Redis. The Caddy and Redis incident rows compare
+the same fixed scheduler setting before and after, but CPU was not bracketed and
+is therefore shown as unavailable. A row is retained even when one secondary
 metric regresses, so the ledger does not hide the cost of an optimization.
 
 | Date | Change | Held-rate throughput | Direct work reduction | App CPU-s | Stack CPU-s | Relevant p95 | Result |
@@ -395,6 +458,8 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 | 2026-07-16 | Cache narrow KotH eligibility sets | 429.44 → 429.41 req/s | Challenge-query calls −99.10% | 152.78 → 126.42 | 295.48 → 244.08 | KotH token 9.21 → 6.61 ms | 0 5xx; clean |
 | 2026-07-16 | Replace two participation reads with one join | 429.41 → 429.70 req/s | Statements −51.73% | 126.42 → 121.14 | 244.08 → 232.48 | HTTP 7.30 → 6.88 ms | 0 5xx; clean |
 | 2026-07-19 | Memoize repeated A&D batch work and bound victim lookup | 1 → 1 batch/s target | Adjudications 100 → 1/repeated batch | 6.033 → 0.135 | 20.742 → 0.850 | Repeated-batch 694.49 → 38.74 ms | 0 429/5xx; attacks 107 → 107; unknown p95 +6.42% |
+| 2026-07-19 | Refresh Caddy Docker DNS and retry replica connection failures | 20 → 20 iterations/s target | Retired-address 5xx 800 → 0; drops 33 → 0 | — | — | HTTP 3,001.818 → 7.521 ms | 0 5xx after; over-quota 429 retained |
+| 2026-07-19 | Bound Redis commands and fall back to the local limiter during outage | 1 → 1 request/s target | Outage responses 15/15 → 16/16 expected 400 | — | — | HTTP 18,084.879 → 207.823 ms | 0 drops after; recovered without restart |
 
 At the same one-batch/s load, the 100-distinct-known case also improved: p95
 790.76 → 367.97 ms and stack CPU 21.644 → 10.811 CPU-seconds. The
@@ -403,6 +468,13 @@ distinct-unknown control regressed to p95 68.92 → 73.35 ms and stack CPU 1.757
 service eligibility lookup. Full trial distributions, exact image/binary
 digests, fixture controls, and the two-replica limiter drill are retained in the
 report rather than compressed into the ledger row.
+
+The Caddy row's 20-identity run intentionally exceeded the authenticated
+per-user quota; its 429 responses are disclosed and the row claims only the
+retired-upstream 5xx/drop/p95 change. The Redis row compares the same scheduled
+arrival rate: the old requests blocked long enough that k6 drained at only
+0.509901 requests/s, so it is not presented as an achieved-throughput win. No
+CPU claim is inferred for either incident row.
 
 ### Historical comparison
 
@@ -492,7 +564,9 @@ state, anonymous browsing, an admin monitor feed, and a concurrent same-flag ded
   healthz sampling, integrity checks, and teardown. Before distributed clients start,
   scoring is paused again; it resumes at their common start barrier after every expected
   WireGuard peer is authenticated. The event deadline is aligned to that barrier with a
-  configurable 15-second grace (`EVENT_END_GRACE_SECONDS`). In capacity mode, the host
+  configurable 45-second grace (`EVENT_END_GRACE_SECONDS`). This exceeds k6's default
+  30-second graceful-stop allowance, so in-flight work cannot consume the entire
+  settlement window. In capacity mode, the host
   capture driver holds one exact cycle-scoped capability across checker rounds so the load
   covers provisional → confirmed acquisition, then switches to an eligible challenger
   after a pristine reset. Before the next valid capture it plants the revoked prior-cycle
@@ -632,7 +706,7 @@ TEAMS_JEO=100 TEAMS_AD=100 EVENT_DURATION_SECONDS=10800 npm run provision
 
 TARGET=https://tcp.1pc.tf FLEET=100 DURATION=1h KEEP=1 RETAIN_EVENT=1 \
   DISTRIBUTED_TEAM_CLIENTS=1 REQUIRE_ISOLATED_SERVICES=1 \
-  TEAM_START_DELAY_SECONDS=90 EVENT_END_GRACE_SECONDS=15 \
+  TEAM_START_DELAY_SECONDS=90 EVENT_END_GRACE_SECONDS=45 \
   SIMULATION_SEED=rsctf-competitive-v2 \
   INTEGRATED_CHEAT_SIMULATION=1 CHEAT_AT_FRACTION=0.45 npm run lifecycle
 ```
@@ -749,6 +823,9 @@ runtime-operation, and rollup integrity check was zero after the run.
 KotH provisioning builds a dependency-free competitive hill fixture whose
 port-8080 response matches the functional checker. A paired immutable
 `KOTH_CONTAINER_IMAGE`/`KOTH_CONTAINER_PORT` override can replace it. The first
+bootstrap hill carries the same hashed `rsctf.managed` and `rsctf.scope`
+installation identity as the isolated server; an unlabeled or foreign-scoped hill is
+correctly rejected by runtime reconciliation. The first
 official boundary snapshots the 12-tick epoch, 3-tick crown cycle,
 1-tick champion cooldown, 2-tick claim confirmation, roster, hill image, and service
 weight. The lifecycle worker then destroys that bootstrap hill and adopts one managed

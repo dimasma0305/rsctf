@@ -162,6 +162,7 @@ pub(super) struct LiveJoinPolicy {
     pub(super) division_id: Option<i32>,
     pub(super) target_status: ParticipationStatus,
     pub(super) member_limit: i32,
+    pub(super) scoring_started: bool,
 }
 
 /// Resolve every mutable join rule after the authoritative per-game advisory
@@ -183,6 +184,7 @@ pub(super) async fn resolve_join_policy_locked(
         Option<i32>,
         Option<String>,
         Option<i32>,
+        bool,
     );
     let row: Option<PolicyRow> = sqlx::query_as(
         r#"SELECT game.practice_mode OR game.end_time_utc >= clock_timestamp() AS join_open,
@@ -193,7 +195,9 @@ pub(super) async fn resolve_join_policy_locked(
                           WHERE candidate.game_id = game.id) AS has_divisions,
                   division.id,
                   division.invite_code,
-                  division.default_permissions
+                  division.default_permissions,
+                  game.ad_scoring_start_round IS NOT NULL
+                    OR game.koth_scoring_start_round IS NOT NULL AS scoring_started
              FROM "Games" game
              LEFT JOIN "Divisions" division
                ON division.game_id = game.id AND division.id = $2
@@ -213,6 +217,7 @@ pub(super) async fn resolve_join_policy_locked(
         live_division_id,
         division_invite,
         division_permissions,
+        scoring_started,
     )) = row
     else {
         return Err(AppError::not_found("Game not found"));
@@ -259,6 +264,7 @@ pub(super) async fn resolve_join_policy_locked(
             ParticipationStatus::Pending
         },
         member_limit,
+        scoring_started,
     })
 }
 
@@ -270,6 +276,7 @@ pub(super) struct JoinMutation<'a> {
     pub(super) target_status: ParticipationStatus,
     pub(super) token: &'a str,
     pub(super) member_limit: i32,
+    pub(super) scoring_started: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -313,6 +320,16 @@ pub(super) async fn persist_game_join_locked(
         None => None,
     };
 
+    // Once the first A&D/KotH epoch is official, the set of people attached
+    // to each scored participation is immutable. This also covers linking a
+    // newly joined teammate to an already Accepted or Suspended participation
+    // and replacing a rejected link with a different team's participation.
+    if mutation.scoring_started {
+        return Err(AppError::bad_request(
+            "Game membership cannot change after A&D/KotH epoch scoring has started",
+        ));
+    }
+
     // Also repair a legacy dangling link. A valid non-rejected link was rejected
     // above; a valid rejected one is deliberately replaced below.
     sqlx::query(
@@ -340,7 +357,18 @@ pub(super) async fn persist_game_join_locked(
     .map_err(|error| AppError::internal(error.to_string()))?;
 
     let (part_id, persisted_status) = match existing {
-        Some((id, status, _)) if status == ParticipationStatus::Rejected as i16 => {
+        Some((id, status, current_division_id))
+            if status == ParticipationStatus::Rejected as i16 =>
+        {
+            crate::services::participation_evidence::ensure_evidence_preserving_update(
+                transaction,
+                id,
+                ParticipationStatus::Rejected,
+                mutation.target_status,
+                current_division_id,
+                mutation.division_id,
+            )
+            .await?;
             sqlx::query(
                 r#"UPDATE "Participations"
                       SET division_id = $1, status = $2
@@ -415,23 +443,14 @@ pub(super) async fn persist_game_join_locked(
 
     // Re-registration through another team used to strand the old rejected row.
     // Remove it only when this transaction removed its final member; the status
-    // predicate prevents a concurrent review from turning it into an accepted
-    // orphan while this request is in flight.
+    // and evidence predicates prevent a concurrent review from turning it into
+    // an accepted orphan or a legacy solver from losing cascade-owned history.
     if rejected_participation_id.is_some_and(|old_id| old_id != part_id) {
-        sqlx::query(
-            r#"DELETE FROM "Participations" participation
-                WHERE participation.id = $1
-                  AND participation.status = $2
-                  AND NOT EXISTS (
-                      SELECT 1 FROM "UserParticipations" membership
-                       WHERE membership.participation_id = participation.id
-                  )"#,
+        crate::services::participation_evidence::delete_unlinked_rejected_without_evidence(
+            transaction,
+            rejected_participation_id.expect("checked as present"),
         )
-        .bind(rejected_participation_id)
-        .bind(ParticipationStatus::Rejected as i16)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+        .await?;
     }
 
     Ok(PersistedGameJoin {

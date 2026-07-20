@@ -2,7 +2,7 @@
 //! bounded ZIP creation for durable import/build source archives.
 
 use std::ffi::OsStr;
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
 use sea_orm::Iterable;
@@ -147,6 +147,11 @@ pub(super) async fn zip_context_dir(dir: &Path) -> AppResult<Vec<u8>> {
         }
     }
 
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    encode_context_files(files)
+}
+
+fn encode_context_files(files: Vec<(String, Vec<u8>)>) -> AppResult<Vec<u8>> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::<u8>::new()));
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -162,4 +167,64 @@ pub(super) async fn zip_context_dir(dir: &Path) -> AppResult<Vec<u8>> {
         .finish()
         .map(|cursor| cursor.into_inner())
         .map_err(|error| AppError::internal(format!("git_sync: zip finish: {error}")))
+}
+
+/// Stable fingerprint of the exact bytes a local Docker build can consume.
+pub(super) async fn context_fingerprint(dir: &Path) -> AppResult<String> {
+    zip_context_dir(dir)
+        .await
+        .map(|bytes| crate::utils::codec::sha256_hex(&bytes))
+}
+
+/// Fingerprint one build-context subtree from a previously retained full
+/// package archive. Entry names are normalized relative to the selected root,
+/// then re-encoded in deterministic order to match [`context_fingerprint`].
+pub(super) async fn archived_context_fingerprint(
+    archive: Vec<u8>,
+    subdir: &str,
+) -> AppResult<String> {
+    let subdir = subdir.trim_matches('/').to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut zip = zip::ZipArchive::new(Cursor::new(archive)).map_err(|error| {
+            AppError::internal(format!("git_sync: open source archive: {error}"))
+        })?;
+        let prefix = (subdir != "." && !subdir.is_empty()).then(|| format!("{subdir}/"));
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        for index in 0..zip.len() {
+            let mut entry = zip.by_index(index).map_err(|error| {
+                AppError::internal(format!("git_sync: read source archive entry: {error}"))
+            })?;
+            if !entry.is_file() {
+                continue;
+            }
+            let name = match prefix.as_deref() {
+                Some(prefix) => match entry.name().strip_prefix(prefix) {
+                    Some(name) if !name.is_empty() => name.to_string(),
+                    _ => continue,
+                },
+                None => entry.name().to_string(),
+            };
+            if files.len() >= MAX_REPO_FILES || entry.size() > MAX_REPO_FILE_BYTES {
+                return Err(AppError::bad_request(
+                    "source archive build context exceeds limits",
+                ));
+            }
+            total = total.saturating_add(entry.size());
+            if total > MAX_REPO_TOTAL_BYTES {
+                return Err(AppError::bad_request(
+                    "source archive build context exceeds limits",
+                ));
+            }
+            let mut bytes = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut bytes).map_err(|error| {
+                AppError::internal(format!("git_sync: extract source archive entry: {error}"))
+            })?;
+            files.push((name, bytes));
+        }
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+        encode_context_files(files).map(|bytes| crate::utils::codec::sha256_hex(&bytes))
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("git_sync: source fingerprint task: {error}")))?
 }

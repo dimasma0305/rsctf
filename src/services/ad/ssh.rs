@@ -379,6 +379,17 @@ impl BastionHandler {
             .container_id
             .filter(|c| !c.is_empty())
             .ok_or("your container isn't running yet — ask the operator to Ensure containers")?;
+        let container = self
+            .st
+            .containers
+            .resolve_interactive_exec_target(&container)
+            .await
+            .map_err(|error| {
+                tracing::warn!(participation = pid, challenge = cid, %error,
+                    "A&D SSH container ownership check failed");
+                "your container identity is no longer valid — ask the operator to Ensure containers"
+                    .to_string()
+            })?;
 
         let docker = Docker::connect_with_local_defaults().map_err(|_| "docker unavailable")?;
         let exec = docker

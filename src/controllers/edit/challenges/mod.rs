@@ -3,8 +3,12 @@ use super::*;
 
 mod attachments;
 mod audit;
+mod deletion;
+#[cfg(test)]
+mod deletion_tests;
 mod hints;
 mod lifecycle;
+mod repo_push;
 mod review;
 mod scoring;
 mod workload;
@@ -12,13 +16,16 @@ mod workload;
 pub(crate) use attachments::build_attachment;
 pub use attachments::update_attachment;
 pub use audit::{get_challenge_audit_meta, rebuild_challenge};
-use lifecycle::{
-    destroy_after_capture_fence, destroy_container_row_after_capture_fence,
-    destroy_shared_container_after_capture_fence, destroy_test_container_locked,
-    mark_challenge_deleting,
-};
+pub(crate) use deletion::reject_pending_mutation;
+pub(crate) use lifecycle::destroy_challenge_containers;
+use lifecycle::destroy_test_container_locked;
+#[cfg(test)]
+pub(crate) use repo_push::commit_latest_to_checkout_for_test;
 pub use review::{approve_challenge, list_pending_challenges, reject_challenge};
 pub use workload::rollout_workloads;
+
+const INSERTABLE_GAME_SQL: &str =
+    r#"SELECT NOT deletion_pending FROM "Games" WHERE id = $1 FOR SHARE"#;
 
 // ============================================================================
 //  Game challenges
@@ -70,12 +77,24 @@ pub async fn add_challenge(
     manager_or_admin(&st, &user, id).await?;
     load_game(&st, id).await?;
 
-    let mut engine_control = if model.challenge_type.uses_ad_engine() {
-        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?)
-    } else {
-        None
-    };
-    if let Some(control) = engine_control.as_mut() {
+    // Every challenge kind shares the game deletion/control domain. A game
+    // whose hard-delete fence committed must not gain a new child while its
+    // external teardown is running.
+    let mut engine_control =
+        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
+    let control = engine_control
+        .as_mut()
+        .expect("new challenge holds the game control lock");
+    let game_accepts_children = sqlx::query_scalar::<_, bool>(INSERTABLE_GAME_SQL)
+        .bind(id)
+        .fetch_optional(&mut **control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::not_found("Game not found"))?;
+    if !game_accepts_children {
+        return Err(AppError::conflict("Game is being deleted"));
+    }
+    if model.challenge_type.uses_ad_engine() {
         if ad_epoch_scoring_started_locked(control.transaction_mut(), id).await? {
             return Err(AppError::bad_request(
                 "A&D/KotH challenges cannot be added after epoch scoring has started.",
@@ -155,223 +174,6 @@ fn uses_shared_container(c: &game_challenge::Model) -> bool {
         && crate::services::challenge_workloads::has_runtime(c)
 }
 
-/// Best-effort teardown of every running container a challenge owns — the per-team
-/// containers materialized as `game_instance` rows plus the challenge-owned shared
-/// container (`shared_container_id`). Mirrors RSCTF
-/// `GameInstanceRepository.DestroyAllContainers` / `RemoveChallenge`'s container
-/// sweep, and the single-container teardown in `game::containers::destroy_container`.
-/// Returns `()` and swallows every error (Docker **and** the bookkeeping DB writes)
-/// so a broken daemon or a mid-sweep hiccup can never fail the operator's edit or
-/// delete; the remaining rows are cleared on a best-effort basis (matches how RSCTF
-/// wraps each `DestroyContainer`).
-pub(crate) async fn destroy_challenge_containers(
-    st: &SharedState,
-    challenge: &game_challenge::Model,
-) {
-    // A&D services are not GameInstances. Clear their routable endpoints first;
-    // only release a backend address after the local VPN policy acknowledges the
-    // revocation. This phase deliberately holds no shared-container lock: nesting
-    // two `acquire_provisioning` calls self-deadlocks when the provisioning gate has
-    // one permit.
-    if let Ok(services) = ad_team_service::Entity::find()
-        .filter(ad_team_service::Column::ChallengeId.eq(challenge.id))
-        .all(&st.db)
-        .await
-    {
-        for service in services {
-            let lock_key = format!(
-                "ad-service:{}:{}",
-                service.participation_id, service.challenge_id
-            );
-            let _local = crate::utils::single_flight::coalesce(&lock_key).await;
-            let distributed =
-                match crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(
-                    st.pg(),
-                    &lock_key,
-                )
-                .await
-                {
-                    Ok(lock) => lock,
-                    Err(error) => {
-                        tracing::warn!(challenge = challenge.id, service = service.id, %error,
-                        "challenge teardown: service lock failed");
-                        continue;
-                    }
-                };
-            let current = ad_team_service::Entity::find_by_id(service.id)
-                .one(&st.db)
-                .await
-                .ok()
-                .flatten()
-                .filter(|row| row.challenge_id == challenge.id);
-            let container_id = current.as_ref().and_then(|row| row.container_id.clone());
-            match current {
-                None => {}
-                Some(current) => {
-                    match crate::services::ad_vpn::deactivate_team_service(&st.db, current.id).await
-                    {
-                        Ok(()) => {
-                            if let Some(container_id) = container_id {
-                                let _ = destroy_after_capture_fence(st, &container_id).await;
-                            }
-                        }
-                        Err(error) => tracing::warn!(
-                            challenge = challenge.id,
-                            service = current.id,
-                            %error,
-                            "challenge teardown: endpoint revocation failed; retaining container"
-                        ),
-                    }
-                }
-            }
-            if let Err(error) = distributed.release().await {
-                tracing::warn!(challenge = challenge.id, service = service.id, %error,
-                    "challenge teardown: service unlock failed");
-            }
-        }
-    }
-
-    // Per-team containers are serialized by participation, matching create/delete/
-    // extend. Enumerate every participation owner in the game, then re-query the
-    // challenge instance only after its lock is held. Including all participations
-    // (not merely the pre-lock rows with a container) closes the publish-after-sweep
-    // race for a first container creation.
-    let participation_ids = match sqlx::query_scalar::<_, i32>(
-        r#"SELECT id
-             FROM "Participations"
-            WHERE game_id = $1
-            UNION
-           SELECT participation_id
-             FROM "GameInstances"
-            WHERE challenge_id = $2
-            ORDER BY 1"#,
-    )
-    .bind(challenge.game_id)
-    .bind(challenge.id)
-    .fetch_all(st.pg())
-    .await
-    {
-        Ok(ids) => ids,
-        Err(error) => {
-            tracing::warn!(challenge = challenge.id, %error,
-                "challenge teardown: listing participation owners failed");
-            Vec::new()
-        }
-    };
-    for participation_id in participation_ids {
-        let key = format!("game-container:{participation_id}");
-        let _local = crate::utils::single_flight::coalesce(&key).await;
-        let distributed = match crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(
-            st.pg(),
-            &key,
-        )
-        .await
-        {
-            Ok(lock) => lock,
-            Err(error) => {
-                tracing::warn!(challenge = challenge.id, participation = participation_id, %error,
-                        "challenge teardown: instance lock failed");
-                continue;
-            }
-        };
-        let instances = game_instance::Entity::find()
-            .filter(game_instance::Column::ParticipationId.eq(participation_id))
-            .filter(game_instance::Column::ChallengeId.eq(challenge.id))
-            .all(&st.db)
-            .await;
-        match instances {
-            Ok(instances) => {
-                for inst in instances {
-                    let Some(cuuid) = inst.container_id else {
-                        continue;
-                    };
-                    if destroy_container_row_after_capture_fence(st, cuuid)
-                        .await
-                        .is_ok()
-                    {
-                        let mut active: game_instance::ActiveModel = inst.into();
-                        active.container_id = Set(None);
-                        active.is_loaded = Set(false);
-                        active.last_container_operation = Set(Utc::now());
-                        let _ = active.update(&st.db).await;
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::warn!(challenge = challenge.id, participation = participation_id, %error,
-                "challenge teardown: instance re-query failed")
-            }
-        }
-        if let Err(error) = distributed.release().await {
-            tracing::warn!(challenge = challenge.id, participation = participation_id, %error,
-                "challenge teardown: instance unlock failed");
-        }
-    }
-
-    // KotH target publication and the shared challenge pointer use one final shared
-    // phase. The pointer is intentionally loaded after lock acquisition rather than
-    // trusted from the edit handler's stale challenge snapshot.
-    let shared_key = format!("shared-container:{}", challenge.id);
-    let _shared_flight = crate::utils::single_flight::coalesce(&shared_key).await;
-    let shared_lock = match crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(
-        st.pg(),
-        &shared_key,
-    )
-    .await
-    {
-        Ok(lock) => lock,
-        Err(error) => {
-            tracing::warn!(challenge = challenge.id, %error, "challenge teardown lock failed");
-            return;
-        }
-    };
-
-    if let Ok(targets) = koth_target::Entity::find()
-        .filter(koth_target::Column::ChallengeId.eq(challenge.id))
-        .filter(koth_target::Column::ContainerId.is_not_null())
-        .all(&st.db)
-        .await
-    {
-        for target in targets {
-            let Some(container_id) = target.container_id.clone() else {
-                continue;
-            };
-            let mut active: koth_target::ActiveModel = target.into();
-            active.host = Set(String::new());
-            active.port = Set(0);
-            active.container_id = Set(None);
-            active.holder_participation_id = Set(None);
-            active.held_since = Set(None);
-            if active.update(&st.db).await.is_ok()
-                && crate::services::ad_vpn::ensure_hub_and_sync(&st.db)
-                    .await
-                    .is_ok()
-            {
-                let _ = st.containers.destroy(&container_id).await;
-            }
-        }
-    }
-
-    if let Ok(Some(current_challenge)) = game_challenge::Entity::find_by_id(challenge.id)
-        .one(&st.db)
-        .await
-    {
-        if let Some(sid) = current_challenge.shared_container_id {
-            if destroy_shared_container_after_capture_fence(st, sid)
-                .await
-                .is_ok()
-            {
-                let mut active: game_challenge::ActiveModel = current_challenge.into();
-                active.shared_container_id = Set(None);
-                let _ = active.update(&st.db).await;
-            }
-        }
-    }
-    if let Err(error) = shared_lock.release().await {
-        tracing::warn!(challenge = challenge.id, %error, "challenge teardown unlock failed");
-    }
-}
-
 /// `PUT /api/edit/games/{id}/challenges/{cId}`
 pub async fn update_challenge(
     State(st): State<SharedState>,
@@ -381,9 +183,24 @@ pub async fn update_challenge(
 ) -> AppResult<RequestResponse<ChallengeEditDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
     let game = load_game(&st, id).await?;
+    // Every runtime eligibility/topology mutation and its possible cleanup
+    // shares this outer challenge fence. Cleanup may take per-runtime
+    // provisioning locks, so this gate deliberately sits outside that bounded
+    // semaphore. The global order is transition -> game -> definition -> runtime.
+    let runtime_transition = if workload::update_changes_runtime_definition(&model) {
+        Some(
+            crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
+                .await?,
+        )
+    } else {
+        None
+    };
+    let mut engine_control =
+        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
     let mut workload_lock =
         workload::acquire_update_lock_for_model(st.pg(), id, c_id, &model).await?;
     let challenge = load_challenge(&st, id, c_id).await?;
+    deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
     let ch_type = challenge.challenge_type;
     crate::utils::scoring::validate_challenge_scoring(
         model.original_score.unwrap_or(challenge.original_score),
@@ -391,11 +208,6 @@ pub async fn update_challenge(
         model.difficulty.unwrap_or(challenge.difficulty),
         model.submission_limit.unwrap_or(challenge.submission_limit),
     )?;
-    let mut engine_control = if ch_type.uses_ad_engine() {
-        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?)
-    } else {
-        None
-    };
     let scoring_started = if ch_type.uses_ad_engine() {
         ad_epoch_scoring_started_locked(
             engine_control
@@ -417,6 +229,8 @@ pub async fn update_challenge(
     // predicate) so a shared↔per-team flip can be detected after the write and the
     // now-orphaned containers torn down (RSCTF `wasSharedManaged`).
     let was_shared_managed = uses_shared_container(&challenge);
+    let final_enabled = model.is_enabled.unwrap_or(challenge.is_enabled);
+    let requested_ad_self_hosted = model.ad_self_hosted.unwrap_or(was_ad_self_hosted);
     // Whether the client's hints array differs from the stored one (RSCTF
     // `hintUpdated`) — captured before `model.hints` is consumed below; drives the
     // NewHint notice further down.
@@ -425,6 +239,30 @@ pub async fn update_challenge(
         .as_ref()
         .is_some_and(|h| hints::updated(challenge.hints.as_ref(), h));
     let workload_update = workload::validate_update(&challenge, &model.workload_spec)?;
+    let projected_workload_present = workload_update
+        .as_ref()
+        .map_or(challenge.workload_spec.is_some(), Option::is_some);
+    let projected_image_present = model.container_image.as_deref().map_or_else(
+        || {
+            challenge
+                .container_image
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        },
+        |value| !value.trim().is_empty(),
+    );
+    let requested_shared_managed = ch_type == ChallengeType::StaticContainer
+        && model.enable_shared_container.unwrap_or(old_shared)
+        && (projected_workload_present || projected_image_present);
+    let active_topology_flip = challenge.is_enabled
+        && final_enabled
+        && (was_shared_managed != requested_shared_managed
+            || was_ad_self_hosted != requested_ad_self_hosted);
+    let transition_definition = if active_topology_flip {
+        Some(lifecycle::runtime_definition_snapshot(st.pg(), c_id, challenge.challenge_type).await?)
+    } else {
+        None
+    };
 
     // Guard: enabling a non-dynamic challenge with no flags is rejected.
     if model.is_enabled == Some(true) && !challenge.is_enabled && !ch_type.is_dynamic() {
@@ -514,7 +352,76 @@ pub async fn update_challenge(
         }
     }
 
-    let mut am: game_challenge::ActiveModel = challenge.into();
+    if active_topology_flip {
+        // A live topology change is a durable two-phase transition. First make
+        // every runtime publisher ineligible while the existing
+        // transition/game/definition hierarchy is held. Release the short DB
+        // locks before external teardown; publishers that began earlier either
+        // finish first or fail their final definition/eligibility CAS. A crash
+        // or teardown failure leaves the challenge disabled, never half-old and
+        // half-new while still playable.
+        let fenced = sqlx::query(
+            r#"UPDATE "GameChallenges"
+                  SET is_enabled = FALSE
+                WHERE id = $1 AND game_id = $2
+                  AND is_enabled = TRUE
+                  AND deletion_pending = FALSE"#,
+        )
+        .bind(c_id)
+        .bind(id)
+        .execute(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if fenced.rows_affected() != 1 {
+            return Err(AppError::conflict(
+                "Challenge eligibility changed; retry the topology update",
+            ));
+        }
+        workload::release_update_lock(workload_lock.take()).await?;
+        if let Some(lock) = engine_control.take() {
+            lock.release()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        if was_ad_self_hosted {
+            st.byoc.disconnect_challenge(&st.db, c_id).await?;
+        }
+        destroy_challenge_containers(&st, &challenge, true, true).await?;
+
+        // Re-enter the canonical transition -> game -> definition order and
+        // publish the new topology together with restored eligibility below.
+        let mut reacquired_engine =
+            crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+        if ch_type.uses_ad_engine()
+            && ad_epoch_scoring_started_locked(reacquired_engine.transaction_mut(), id).await?
+        {
+            return Err(AppError::conflict(
+                "A&D/KotH scoring started while the topology transition was draining; the challenge remains disabled",
+            ));
+        }
+        engine_control = Some(reacquired_engine);
+        workload_lock = workload::acquire_update_lock_for_model(st.pg(), id, c_id, &model).await?;
+    }
+
+    let update_base = if active_topology_flip {
+        let current = load_challenge(&st, id, c_id).await?;
+        if current.is_enabled {
+            return Err(AppError::conflict(
+                "Challenge topology fence changed during cleanup; retry the update",
+            ));
+        }
+        let current_definition =
+            lifecycle::runtime_definition_snapshot(st.pg(), c_id, current.challenge_type).await?;
+        if transition_definition.as_ref() != Some(&current_definition) {
+            return Err(AppError::conflict(
+                "Challenge runtime definition changed during cleanup; review the repository update and retry. The challenge remains disabled",
+            ));
+        }
+        current
+    } else {
+        challenge
+    };
+    let mut am: game_challenge::ActiveModel = update_base.into();
     if let Some(v) = model.title {
         am.title = Set(v);
     }
@@ -535,6 +442,8 @@ pub async fn update_challenge(
     }
     if let Some(v) = model.is_enabled {
         am.is_enabled = Set(v);
+    } else if active_topology_flip {
+        am.is_enabled = Set(final_enabled);
     }
     if let Some(v) = model.file_name {
         am.file_name = Set(Some(v));
@@ -652,11 +561,13 @@ pub async fn update_challenge(
     // Both route through `DestroyAllContainers`; call it once for either trigger.
     // Best-effort: teardown failures never fail the edit.
     let now_shared_managed = uses_shared_container(&updated);
-    if was_shared_managed != now_shared_managed
-        || was_ad_self_hosted != updated.ad_self_hosted
+    if (!active_topology_flip
+        && (was_shared_managed != now_shared_managed
+            || was_ad_self_hosted != updated.ad_self_hosted))
         || (model.is_enabled == Some(false) && updated.challenge_type.is_container())
     {
-        destroy_challenge_containers(&st, &updated).await;
+        let _ = destroy_challenge_containers(&st, &updated, model.is_enabled == Some(false), false)
+            .await;
     }
 
     // A challenge going live mid-game (IsEnabled false->true) is announced as a
@@ -719,13 +630,19 @@ pub async fn update_challenge(
         );
     }
 
+    if let Some(lock) = runtime_transition {
+        lock.release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+
     // Repo push-back (RSCTF `EditController.TryPushBackAsync`): when this
     // challenge's game is repo-bound and the binding opts into `push_on_edit`,
     // regenerate `challenge.yml` from the updated row and git-push it upstream.
     // Fire-and-forget + best-effort — a slow or failed push must never extend or
     // fail the operator's edit-save round trip.
-    if let Some(bid) = game.repo_binding_id {
-        spawn_push_back(st.clone(), bid, updated.clone());
+    if game.repo_binding_id.is_some() {
+        repo_push::spawn(st.clone(), id, c_id);
     }
 
     let flags = if updated.challenge_type == ChallengeType::DynamicContainer {
@@ -738,157 +655,6 @@ pub async fn update_challenge(
     ))
 }
 
-/// Spawn the fire-and-forget repo push-back for an edited challenge (RSCTF
-/// `EditController.TryPushBackAsync`'s `Task.Run`). Any failure is logged and
-/// swallowed — the in-DB edit is the operator's source of truth, so a git
-/// push-back problem must not surface as a 5xx on the edit.
-fn spawn_push_back(st: SharedState, binding_id: i32, challenge: game_challenge::Model) {
-    tokio::spawn(async move {
-        let (cid, title) = (challenge.id, challenge.title.clone());
-        if let Err(e) = push_back(&st, binding_id, &challenge).await {
-            tracing::warn!(
-                binding = binding_id,
-                challenge = cid,
-                title = %title,
-                error = %e,
-                "push-back: failed (best-effort; edit already committed)"
-            );
-        }
-    });
-}
-
-/// Regenerate `challenge.yml` from the DB row and push it to the binding repo.
-/// Mirrors the body of RSCTF `TryPushBackAsync`: gate on the binding's
-/// `push_on_edit` + token, sync the checkout to HEAD, locate the yaml, overwrite
-/// it from [`serialize_challenge`](crate::services::git_sync::serialize_challenge),
-/// then commit+push via [`push_file`](crate::services::git_sync::push_file).
-async fn push_back(
-    st: &SharedState,
-    binding_id: i32,
-    challenge: &game_challenge::Model,
-) -> AppResult<()> {
-    use crate::models::data::repo_binding;
-    use crate::services::git_sync;
-
-    // Binding must exist, opt into push-on-edit, and carry a token.
-    let Some(binding) = repo_binding::Entity::find_by_id(binding_id)
-        .one(&st.db)
-        .await?
-    else {
-        return Ok(());
-    };
-    if !binding.push_on_edit {
-        return Ok(());
-    }
-    let token = match binding.github_token.as_deref() {
-        Some(t) if !t.is_empty() => t.to_string(),
-        _ => {
-            tracing::info!(
-                binding = binding_id,
-                "push-back: binding has push_on_edit but no token; skipping"
-            );
-            return Ok(());
-        }
-    };
-    let repo_url = git_sync::validate_binding_repo_url(&binding.repo_url)?;
-    let git_ref = git_sync::validate_git_ref(binding.git_ref.as_deref())?;
-
-    // Per-binding checkout dir — same convention as the scan path
-    // (`{storage_root}/repos/{binding_id}`).
-    let dest = std::path::PathBuf::from(&st.config.storage_root)
-        .join("repos")
-        .join(binding_id.to_string());
-    let _checkout_lock = git_sync::lock_checkout_distributed(st.pg(), &dest).await?;
-
-    // Ensure the checkout exists and is at HEAD before overlaying the new yaml.
-    let auth_url = git_sync::GitCredentials::new(token.clone()).apply(&repo_url);
-    git_sync::sync_repo(&auth_url, git_ref.as_deref(), &dest).await?;
-
-    // Flags to serialize. A DynamicContainer plants per-instance flags at runtime
-    // and carries none in the manifest — leave the yaml's `flag_template` as-is.
-    let flag_texts: Vec<String> = if challenge.challenge_type == ChallengeType::DynamicContainer {
-        Vec::new()
-    } else {
-        flag_context::Entity::find()
-            .filter(flag_context::Column::ChallengeId.eq(challenge.id))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .filter_map(|f| {
-                let f = f.flag.trim().to_string();
-                (!f.is_empty()).then_some(f)
-            })
-            .collect()
-    };
-
-    // Locate the yaml in the checkout.
-    let Some(yaml_abs) = locate_challenge_yaml(&dest, challenge).await else {
-        tracing::warn!(
-            binding = binding_id,
-            challenge = challenge.id,
-            "push-back: could not locate challenge.yml in checkout (operator may have moved/renamed it); skipping"
-        );
-        return Ok(());
-    };
-    let rel = yaml_abs
-        .strip_prefix(&dest)
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| yaml_abs.to_string_lossy().to_string());
-
-    let yaml = git_sync::serialize_challenge(challenge, &flag_texts)?;
-    tokio::fs::write(&yaml_abs, yaml)
-        .await
-        .map_err(|e| AppError::internal(format!("push-back: write {}: {e}", yaml_abs.display())))?;
-
-    let msg = format!("chore: update {} from rsctf admin edit", challenge.title);
-    git_sync::push_file(&dest, &rel, &repo_url, &token, &msg).await?;
-    tracing::info!(
-        binding = binding_id,
-        challenge = challenge.id,
-        yaml = %rel,
-        "push-back: pushed"
-    );
-    Ok(())
-}
-
-/// Find the `challenge.yml` in the checkout that corresponds to `challenge`.
-/// Prefers the path recorded at import (`source_yaml_path`, absolute + rooted at
-/// this checkout) so a title/category rename still resolves; falls back to
-/// scanning every manifest and matching by challenge name (RSCTF locates purely
-/// via `SourceYamlPath` — the name fallback covers rows imported before that
-/// column was populated). Returns `None` when nothing matches.
-async fn locate_challenge_yaml(
-    dest: &std::path::Path,
-    challenge: &game_challenge::Model,
-) -> Option<std::path::PathBuf> {
-    // 1. Recorded import path (must live inside this checkout and still exist).
-    if let Some(p) = challenge
-        .source_yaml_path
-        .as_deref()
-        .filter(|s| !s.is_empty())
-    {
-        let abs = std::path::PathBuf::from(p);
-        if abs.starts_with(dest) && tokio::fs::try_exists(&abs).await.unwrap_or(false) {
-            return Some(abs);
-        }
-    }
-    // 2. Fallback: discover manifests, match by challenge name.
-    let manifests = crate::services::git_sync::discover_challenges(dest)
-        .await
-        .ok()?;
-    for m in manifests {
-        let Ok(raw) = tokio::fs::read_to_string(&m).await else {
-            continue;
-        };
-        if let Ok(y) = serde_norway::from_str::<crate::services::git_sync::ChallengeYaml>(&raw) {
-            if y.name.as_deref().map(str::trim) == Some(challenge.title.trim()) {
-                return Some(m);
-            }
-        }
-    }
-    None
-}
-
 /// `DELETE /api/edit/games/{id}/challenges/{cId}` — void.
 pub async fn delete_challenge(
     State(st): State<SharedState>,
@@ -896,31 +662,33 @@ pub async fn delete_challenge(
     Path((id, c_id)): Path<(i32, i32)>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
+    // Share the hard-deletion admission domain with whole-game deletion before
+    // retaining the outer runtime-transition transaction.
+    let deletion_admission = super::deletion_locks::acquire_hard_deletion_admission().await?;
+    // Take the same transition -> game -> definition order as false -> true
+    // edits. The transition fence remains held through physical teardown so no
+    // replica can re-enable the challenge behind a stale cleanup snapshot.
+    let runtime_transition =
+        crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
+            .await?;
+    let mut engine_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    let mut definition_lock = deletion::acquire_definition_lock(st.pg(), id, c_id).await?;
     let challenge = load_challenge(&st, id, c_id).await?;
-    let mut engine_control = if challenge.challenge_type.uses_ad_engine() {
-        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?)
-    } else {
-        None
-    };
     if challenge.challenge_type.uses_ad_engine()
-        && ad_epoch_scoring_started_locked(
-            engine_control
-                .as_mut()
-                .expect("engine challenge holds the game control lock")
-                .transaction_mut(),
-            id,
-        )
-        .await?
+        && ad_epoch_scoring_started_locked(engine_control.transaction_mut(), id).await?
     {
         return Err(AppError::bad_request(
             "A&D/KotH challenges cannot be deleted after epoch scoring has started.",
         ));
     }
 
-    // Establish a durable deny-new-creates marker before any teardown snapshot.
-    // The row is about to be deleted, so disabling non-A&D challenges here has no
-    // user-visible intermediate state and closes publish-after-sweep races.
-    mark_challenge_deleting(&st, c_id).await?;
+    // The JFLG-exclusive predicate and the durable disabled marker share the
+    // definition-lock transaction. This preserves Jeopardy history once play
+    // could have started and closes an in-flight-submit TOCTOU. Committing the
+    // short definition mutation before runtime I/O also keeps the pool bounded.
+    deletion::fence_challenge_deletion(definition_lock.transaction_mut(), id, c_id).await?;
+    definition_lock.release().await?;
+
     // Revoke A&D/KotH routes before any backing address can be freed.
     if challenge.challenge_type.uses_ad_engine() {
         if challenge.challenge_type == ChallengeType::KingOfTheHill {
@@ -928,51 +696,58 @@ pub async fn delete_challenge(
         }
         crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
     }
-    if let Some(lock) = engine_control {
-        lock.release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-
-    // Collect the flags' hand-out attachments before deleting the rows so we can
-    // release their ref-counted blobs afterwards.
-    let flags = flag_context::Entity::find()
-        .filter(flag_context::Column::ChallengeId.eq(c_id))
-        .all(&st.db)
-        .await?;
-    let flag_attachment_ids: Vec<i32> = flags.iter().filter_map(|f| f.attachment_id).collect();
-    let challenge_attachment_id = challenge.attachment_id;
+    engine_control
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
 
     // Tear down every running per-team + shared container this challenge owns
     // BEFORE its rows vanish — otherwise they run orphaned until the idle reaper.
     // Mirrors RSCTF `RemoveChallenge`'s container sweep (gated on container type).
-    // Best-effort: never fail the delete.
     if challenge.challenge_type.is_container() {
-        destroy_challenge_containers(&st, &challenge).await;
+        destroy_challenge_containers(&st, &challenge, false, true).await?;
     }
     if challenge.ad_self_hosted {
         st.byoc.disconnect_challenge(&st.db, c_id).await?;
     }
 
-    // Take the game's single test lifecycle gate only after all other provisioning
-    // phases released their permits. Re-query under it so a test created during
-    // the earlier sweep cannot publish behind challenge deletion.
-    let test_key = format!("test-containers-game:{id}");
-    let _test_local = crate::utils::single_flight::coalesce(&test_key).await;
-    let test_lock =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &test_key)
+    // Reacquire game control before the test/definition gates. Engine writers
+    // that do not touch a participation row still serialize with the final
+    // evidence predicate and physical delete, and the established game -> test
+    // -> definition order avoids cross-replica lock inversion.
+    let final_locks =
+        super::deletion_locks::acquire_game_test_deletion_locks(&st.db, id, deletion_admission)
             .await?;
+
+    // Re-query under the shared game/test lock stack so a test created during
+    // the earlier sweep cannot publish behind challenge deletion.
     destroy_test_container_locked(&st, c_id).await?;
-    let _deleted_artifacts =
-        crate::services::blob_refs::delete_challenge(st.pg(), st.storage.as_ref(), c_id).await?;
-    test_lock.release().await?;
+
+    // Reacquire definition only after the slow provisioning sweeps. Test
+    // creation uses test-lifecycle -> definition, so taking the same order here
+    // avoids inversion while making the final attachment snapshot and physical
+    // delete indivisible with every flag/attachment/repository definition edit.
+    let mut final_definition_lock = deletion::acquire_definition_lock(st.pg(), id, c_id).await?;
+    deletion::fence_challenge_deletion(final_definition_lock.transaction_mut(), id, c_id).await?;
+    let deleted_artifacts = crate::services::blob_refs::delete_challenge_locked(
+        final_definition_lock.transaction_mut(),
+        c_id,
+    )
+    .await?;
+    final_definition_lock.release().await?;
+    final_locks.release().await?;
+    runtime_transition.release().await?;
+
+    crate::services::blob_refs::purge_deleted_challenge_artifacts(
+        st.pg(),
+        st.storage.as_ref(),
+        &deleted_artifacts,
+    )
+    .await;
 
     // Release the now-orphaned attachment blobs (clear-FK-first: rows above are
     // already gone).
-    for aid in flag_attachment_ids {
-        delete_attachment(&st, aid).await?;
-    }
-    if let Some(aid) = challenge_attachment_id {
+    for aid in deleted_artifacts.attachment_ids {
         delete_attachment(&st, aid).await?;
     }
     flush_game_scoreboards(&st, id).await;

@@ -26,6 +26,10 @@ mod health;
 mod owner;
 mod shutdown;
 mod spec;
+mod teardown;
+
+pub(crate) use teardown::destroy_container_after_capture_fence;
+pub use teardown::stop_container_capture;
 
 use config::{
     capture_device, capture_enabled, capture_filename, join_capture_thread, reconcile_interval,
@@ -59,12 +63,6 @@ const CAPTURE_IDENTITY_STATE_SQL: &str = r#"SELECT
               AND NULLIF(BTRIM(service.host), '') IS NOT NULL
               AND service.port BETWEEN 1 AND 65535
        ) AS is_desired"#;
-const CLEAR_INACTIVE_BACKEND_SQL: &str = r#"UPDATE "AdTeamServices"
-       SET container_id = NULL
-     WHERE container_id = $1
-       AND NULLIF(BTRIM(host), '') IS NULL
-       AND port = 0"#;
-
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
 struct DesiredCaptureRow {
     service_id: i32,
@@ -742,12 +740,8 @@ pub async fn start_container_capture(state: &SharedState, container_id: &str) ->
         {
             tracing::warn!(container = %container_id, %error, "failed capture startup endpoint revocation");
         }
-        match stop_container_capture(state, container_id).await {
-            Ok(()) => {
-                if let Err(error) = state.containers.destroy(container_id).await {
-                    tracing::warn!(container = %container_id, %error, "failed capture startup backend rollback");
-                }
-            }
+        match destroy_container_after_capture_fence(state, container_id).await {
+            Ok(()) => {}
             Err(error) => tracing::warn!(
                 container = %container_id,
                 %error,
@@ -756,34 +750,6 @@ pub async fn start_container_capture(state: &SharedState, container_id: &str) ->
         }
     }
     result
-}
-
-/// Fence a teardown against the singleton owner. The authoritative endpoint
-/// must be made unroutable first, while its backend identity remains persisted
-/// for retry. Acknowledgement is emitted only after the old thread has been
-/// signalled and joined, so its IP/port filter cannot observe reuse.
-pub async fn stop_container_capture(state: &SharedState, container_id: &str) -> AppResult<()> {
-    let identity = capture_identity_state(state.pg(), container_id).await?;
-    if !identity.has_identity {
-        return Ok(());
-    }
-    if identity.is_desired {
-        return Err(AppError::internal(
-            "traffic capture teardown requested before container deactivation",
-        ));
-    }
-    let generation = request_reconciliation(state, container_id, ReconcileAction::Stop).await?;
-    wait_for_request_result(state.pg(), generation).await?;
-
-    // A&D deactivation deliberately retains its backend identity while the
-    // owner fence is pending. Clear only the exact inactive endpoint after ACK;
-    // an active replacement that raced this request is never detached.
-    sqlx::query(CLEAR_INACTIVE_BACKEND_SQL)
-        .bind(container_id)
-        .execute(state.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
 }
 
 /// Fence stale durable capture health before a new network owner builds its

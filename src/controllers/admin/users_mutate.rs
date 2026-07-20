@@ -60,7 +60,7 @@ async fn validate_admin_update(
 /// invite acceptance: an accept either retains a share lock and commits before
 /// this update (so the later snapshot sees it), or observes the banned role and
 /// is rejected.
-async fn fence_user_for_deletion(pool: &sqlx::PgPool, user_id: Uuid) -> AppResult<()> {
+pub(crate) async fn fence_user_for_deletion(pool: &sqlx::PgPool, user_id: Uuid) -> AppResult<()> {
     let mut transaction = pool
         .begin()
         .await
@@ -70,10 +70,10 @@ async fn fence_user_for_deletion(pool: &sqlx::PgPool, user_id: Uuid) -> AppResul
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    // This is deliberately a separate statement from the captain lookup. A
+    // This is deliberately a separate statement from the team-link lookup. A
     // PostgreSQL statement keeps the snapshot it took before waiting for this
     // row lock; combining the EXISTS with FOR UPDATE could therefore miss a
-    // captaincy committed by the transaction that just released the row.
+    // roster link committed by the transaction that just released the row.
     let role: Option<i16> =
         sqlx::query_scalar(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#)
             .bind(user_id)
@@ -87,17 +87,34 @@ async fn fence_user_for_deletion(pool: &sqlx::PgPool, user_id: Uuid) -> AppResul
         return Err(AppError::bad_request("Cannot delete another administrator"));
     }
     // A new statement gets a fresh READ COMMITTED snapshot after the account
-    // lock is held. Team creation/transfer must take that same account lock, so
-    // captaincy can neither be hidden by a stale snapshot nor appear afterward.
-    let is_captain: bool =
-        sqlx::query_scalar(r#"SELECT EXISTS(SELECT 1 FROM "Teams" WHERE captain_id = $1)"#)
-            .bind(user_id)
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    if is_captain {
+    // lock is held. Team creation/transfer and invite acceptance must take that
+    // same account lock, so a roster link can neither be hidden by the stale
+    // snapshot from before the wait nor appear after this check. Physical
+    // deletion is deliberately limited to unteamed accounts: Ban is the safe
+    // emergency revocation path, while deleting a live or historical roster row
+    // would change competition evidence and can partially tear down a team.
+    let association: Option<String> = sqlx::query_scalar(
+        r#"SELECT CASE
+               WHEN EXISTS(SELECT 1 FROM "Teams" WHERE captain_id = $1)
+                 THEN 'captain'
+               WHEN EXISTS(SELECT 1 FROM "TeamMembers" WHERE user_id = $1)
+                 OR EXISTS(SELECT 1 FROM "UserParticipations" WHERE user_id = $1)
+                 THEN 'member'
+               ELSE NULL
+           END"#,
+    )
+    .bind(user_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if association.as_deref() == Some("captain") {
         return Err(AppError::bad_request(
             "Cannot delete a user who is a team captain",
+        ));
+    }
+    if association.is_some() {
+        return Err(AppError::bad_request(
+            "Cannot delete a user who belongs to a team",
         ));
     }
 
@@ -266,48 +283,14 @@ pub async fn delete_user(
             &account_lifecycle_key(userid),
         )
         .await?;
-    // This must precede the affected-team snapshot. Fresh sessions fail the
-    // live role/stamp check, and team invite acceptance synchronizes through a
-    // share lock on this row so it cannot commit an invisible late membership.
+    // Fresh sessions fail the live role/stamp check, and team invite acceptance
+    // synchronizes through a share lock on this row. The fence also rejects any
+    // existing team/participation link before changing the account.
     fence_user_for_deletion(st.pg(), userid).await?;
-    let team_ids = affected_team_ids(st.pg(), userid).await?;
 
     // ApiToken.Creator is ON DELETE RESTRICT — clear the user's tokens first.
     api_token::Entity::delete_many()
         .filter(api_token::Column::CreatorId.eq(userid))
-        .exec(&st.db)
-        .await?;
-
-    for team_id in team_ids {
-        let mut roster =
-            crate::controllers::team::acquire_roster_mutation(st.pg(), team_id).await?;
-        let parts = crate::controllers::team::revoke_team_shared_capabilities(&st, team_id).await?;
-        sqlx::query(r#"DELETE FROM "TeamMembers" WHERE team_id = $1 AND user_id = $2"#)
-            .bind(team_id)
-            .bind(userid)
-            .execute(&mut **roster.transaction_mut())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        sqlx::query(r#"DELETE FROM "UserParticipations" WHERE team_id = $1 AND user_id = $2"#)
-            .bind(team_id)
-            .bind(userid)
-            .execute(&mut **roster.transaction_mut())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        // The two roster rows disappear atomically only after every shared
-        // credential has been invalidated. Until then, the durable banned role
-        // keeps roster-aware API/SSH authentication closed and makes retry safe.
-        roster.release().await?;
-        crate::controllers::team::invalidate_removed_membership_cache(&st, userid, &parts).await?;
-    }
-
-    // Defensive cleanup for malformed legacy links without a resolvable team.
-    team_member::Entity::delete_many()
-        .filter(team_member::Column::UserId.eq(userid))
-        .exec(&st.db)
-        .await?;
-    user_participation::Entity::delete_many()
-        .filter(user_participation::Column::UserId.eq(userid))
         .exec(&st.db)
         .await?;
 
@@ -568,12 +551,16 @@ mod tests {
         let ordinary = Uuid::new_v4();
         let administrator = Uuid::new_v4();
         let captain = Uuid::new_v4();
-        let newly_made_captain = Uuid::new_v4();
+        let roster_member = Uuid::new_v4();
+        let participant = Uuid::new_v4();
+        let newly_linked_member = Uuid::new_v4();
         for (id, role) in [
             (ordinary, Role::User),
             (administrator, Role::Admin),
             (captain, Role::User),
-            (newly_made_captain, Role::User),
+            (roster_member, Role::User),
+            (participant, Role::User),
+            (newly_linked_member, Role::User),
         ] {
             sqlx::query(
                 r#"INSERT INTO "AspNetUsers" (id, role, security_stamp)
@@ -591,10 +578,18 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
+            r#"INSERT INTO "TeamMembers" (team_id, user_id)
+               VALUES (8, $1)"#,
+        )
+        .bind(roster_member)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
             r#"INSERT INTO "UserParticipations" (team_id, user_id)
                VALUES (9, $1)"#,
         )
-        .bind(ordinary)
+        .bind(participant)
         .execute(&pool)
         .await
         .unwrap();
@@ -608,7 +603,15 @@ mod tests {
                 .unwrap();
         assert_eq!(fenced.0, Role::Banned as i16);
         assert_ne!(fenced.1.as_deref(), Some("old-stamp"));
-        assert_eq!(affected_team_ids(&pool, ordinary).await.unwrap(), vec![9]);
+        assert!(affected_team_ids(&pool, ordinary).await.unwrap().is_empty());
+        assert_eq!(
+            affected_team_ids(&pool, roster_member).await.unwrap(),
+            vec![8]
+        );
+        assert_eq!(
+            affected_team_ids(&pool, participant).await.unwrap(),
+            vec![9]
+        );
         assert_eq!(affected_team_ids(&pool, captain).await.unwrap(), vec![1]);
 
         let error = fence_user_for_deletion(&pool, administrator)
@@ -619,20 +622,38 @@ mod tests {
             .await
             .expect_err("captain deletion must remain forbidden");
         assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+        for linked_user in [roster_member, participant] {
+            let error = fence_user_for_deletion(&pool, linked_user)
+                .await
+                .expect_err("team-linked user deletion must remain forbidden");
+            assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+            assert_eq!(
+                error.to_string(),
+                "Cannot delete a user who belongs to a team"
+            );
+            let unchanged: (i16, Option<String>) =
+                sqlx::query_as(r#"SELECT role, security_stamp FROM "AspNetUsers" WHERE id = $1"#)
+                    .bind(linked_user)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(unchanged.0, Role::User as i16);
+            assert_eq!(unchanged.1.as_deref(), Some("old-stamp"));
+        }
 
         // Reproduce the READ COMMITTED stale-snapshot window: the fence starts
         // its account-lock statement while another transaction owns the row,
-        // then that owner makes the target a captain before releasing it. The
-        // captain query must run as a fresh statement after lock acquisition.
-        let mut captain_assignment = pool.begin().await.unwrap();
+        // then that owner links the target to a roster before releasing it. The
+        // association query must run as a fresh statement after lock acquisition.
+        let mut roster_assignment = pool.begin().await.unwrap();
         sqlx::query(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#)
-            .bind(newly_made_captain)
-            .execute(&mut *captain_assignment)
+            .bind(newly_linked_member)
+            .execute(&mut *roster_assignment)
             .await
             .unwrap();
         let mut racing_fence = tokio::spawn({
             let pool = pool.clone();
-            async move { fence_user_for_deletion(&pool, newly_made_captain).await }
+            async move { fence_user_for_deletion(&pool, newly_linked_member).await }
         });
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(50), &mut racing_fence)
@@ -640,21 +661,21 @@ mod tests {
                 .is_err(),
             "deletion fence did not wait for the preexisting account lock"
         );
-        sqlx::query(r#"INSERT INTO "Teams" (id, captain_id) VALUES (2, $1)"#)
-            .bind(newly_made_captain)
-            .execute(&mut *captain_assignment)
+        sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES (2, $1)"#)
+            .bind(newly_linked_member)
+            .execute(&mut *roster_assignment)
             .await
             .unwrap();
-        captain_assignment.commit().await.unwrap();
+        roster_assignment.commit().await.unwrap();
         let error = tokio::time::timeout(std::time::Duration::from_secs(2), racing_fence)
             .await
             .expect("deletion fence remained blocked")
             .expect("deletion fence task failed")
-            .expect_err("fresh captaincy was hidden by a stale statement snapshot");
+            .expect_err("fresh membership was hidden by a stale statement snapshot");
         assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
         assert_eq!(
             sqlx::query_scalar::<_, i16>(r#"SELECT role FROM "AspNetUsers" WHERE id = $1"#)
-                .bind(newly_made_captain)
+                .bind(newly_linked_member)
                 .fetch_one(&pool)
                 .await
                 .unwrap(),

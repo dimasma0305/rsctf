@@ -32,6 +32,54 @@ pub(super) async fn persist_and_deactivate(
     for failure in failures {
         let mut transaction = connection.begin().await?;
         let spec = &failure.spec;
+        let game_id = sqlx::query_scalar::<_, i32>(
+            r#"SELECT game_id
+                 FROM "AdTeamServices"
+                WHERE id = $1
+                  AND challenge_id = $2
+                  AND participation_id = $3"#,
+        )
+        .bind(spec.service_id)
+        .bind(spec.challenge_id)
+        .bind(spec.participation_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(game_id) = game_id else {
+            transaction.rollback().await?;
+            continue;
+        };
+        if !crate::services::participation_evidence::lock_audit_insert_scope_sqlx(
+            &mut transaction,
+            game_id,
+            Some(spec.challenge_id),
+            &[spec.participation_id],
+        )
+        .await?
+        {
+            transaction.rollback().await?;
+            continue;
+        }
+        // The canonical scope check above owns every eligibility lock. Re-read
+        // the narrower service identity afterward so teardown cannot remove the
+        // observed owner between authorization and incident persistence.
+        let service_still_exists = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS (
+                 SELECT 1
+                   FROM "AdTeamServices" service
+                  WHERE service.id = $1
+                    AND service.challenge_id = $2
+                    AND service.participation_id = $3
+               )"#,
+        )
+        .bind(spec.service_id)
+        .bind(spec.challenge_id)
+        .bind(spec.participation_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !service_still_exists {
+            transaction.rollback().await?;
+            continue;
+        }
         let endpoint_was_current = sqlx::query(
             r#"UPDATE "AdTeamServices"
                   SET host = '', port = 0, status = $5

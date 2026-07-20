@@ -13,8 +13,20 @@ use crate::utils::error::{AppError, AppResult};
 
 mod attachments;
 mod challenges;
-pub use attachments::delete_orphan_attachments;
-pub use challenges::{delete_challenge, delete_game_challenges, DeletedChallengeArtifacts};
+#[cfg(test)]
+mod poster_tests;
+mod writeups;
+pub use attachments::{delete_orphan_attachments, store_and_replace_challenge_attachment};
+pub use challenges::{
+    delete_challenge, delete_game_challenges, store_and_replace_challenge_archive,
+    DeletedChallengeArtifacts,
+};
+pub(crate) use challenges::{
+    delete_challenge_locked, delete_game_challenges_locked, purge_deleted_challenge_artifacts,
+};
+#[cfg(test)]
+use writeups::replace_writeup;
+pub use writeups::{clear_game_writeups, store_and_replace_writeup};
 
 const UPSERT_FILE_SQL: &str = r#"
     INSERT INTO "Files" (hash, upload_time_utc, file_size, name, reference_count)
@@ -237,87 +249,39 @@ pub async fn delete_attachment(pool: &PgPool, attachment_id: i32) -> AppResult<O
             .await
             .map_err(database_error)?;
     }
-    sqlx::query(r#"DELETE FROM "Attachments" WHERE id = $1"#)
-        .bind(attachment_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-    let deleted_hash = match file {
-        Some((id, _)) => {
-            release_locked(&mut transaction, id)
+    let deleted_file_id = sqlx::query_scalar::<_, Option<i32>>(
+        r#"DELETE FROM "Attachments" attachment
+            WHERE attachment.id = $1
+              AND NOT EXISTS (
+                    SELECT 1 FROM "GameChallenges" challenge
+                     WHERE challenge.attachment_id = attachment.id
+              )
+              AND NOT EXISTS (
+                    SELECT 1 FROM "FlagContexts" flag
+                     WHERE flag.attachment_id = attachment.id
+              )
+              AND NOT EXISTS (
+                    SELECT 1 FROM "ExerciseChallenges" exercise
+                     WHERE exercise.attachment_id = attachment.id
+              )
+            RETURNING attachment.local_file_id"#,
+    )
+    .bind(attachment_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    let deleted_hash = match (deleted_file_id.flatten(), file) {
+        (Some(deleted_file_id), Some((selected_file_id, _))) => {
+            debug_assert_eq!(deleted_file_id, selected_file_id);
+            release_locked(&mut transaction, selected_file_id)
                 .await
                 .map_err(database_error)?
                 .deleted_hash
         }
-        None => None,
+        _ => None,
     };
     transaction.commit().await.map_err(database_error)?;
     Ok(deleted_hash)
-}
-
-/// Clear and release every writeup for one game exactly once, even when two
-/// admin replicas issue the cleanup concurrently.
-pub async fn clear_game_writeups(pool: &PgPool, game_id: i32) -> AppResult<Vec<String>> {
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
-        .await
-        .map_err(database_error)?;
-    let file_ids: Vec<i32> = sqlx::query_scalar(
-        r#"SELECT writeup_id
-             FROM "Participations"
-            WHERE game_id = $1 AND writeup_id IS NOT NULL
-            ORDER BY id
-            FOR UPDATE"#,
-    )
-    .bind(game_id)
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(database_error)?;
-    if file_ids.is_empty() {
-        transaction.commit().await.map_err(database_error)?;
-        return Ok(Vec::new());
-    }
-
-    let mut files =
-        sqlx::query_as::<_, (i32, String)>(r#"SELECT id, hash FROM "Files" WHERE id = ANY($1)"#)
-            .bind(&file_ids)
-            .fetch_all(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-    files.sort_unstable_by(|left, right| left.1.cmp(&right.1));
-    files.dedup_by_key(|file| file.0);
-    for (_, hash) in &files {
-        lock_hash(&mut transaction, hash)
-            .await
-            .map_err(database_error)?;
-    }
-    sqlx::query(
-        r#"UPDATE "Participations"
-              SET writeup_id = NULL
-            WHERE game_id = $1 AND writeup_id IS NOT NULL"#,
-    )
-    .bind(game_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(database_error)?;
-
-    let mut releases = std::collections::BTreeMap::<i32, usize>::new();
-    for file_id in file_ids {
-        *releases.entry(file_id).or_default() += 1;
-    }
-    let mut deleted_hashes = Vec::new();
-    for (file_id, count) in releases {
-        for _ in 0..count {
-            if let Some(hash) = release_locked(&mut transaction, file_id)
-                .await
-                .map_err(database_error)?
-                .deleted_hash
-            {
-                deleted_hashes.push(hash);
-            }
-        }
-    }
-    transaction.commit().await.map_err(database_error)?;
-    Ok(deleted_hashes)
 }
 
 /// Release one reference selected by its content hash.
@@ -346,6 +310,31 @@ pub async fn release_by_hash(pool: &PgPool, hash: &str) -> AppResult<ReleaseOutc
     Ok(outcome)
 }
 
+/// Release a hash reference inside a caller-owned transaction after its direct
+/// owner row (for example, `Games.poster_hash`) has been detached or deleted.
+/// Keeping both changes in one transaction prevents a committed owner deletion
+/// from leaking its logical blob reference if the metadata update fails.
+pub(crate) async fn release_direct_hash_locked(
+    transaction: &mut Transaction<'_, Postgres>,
+    hash: &str,
+) -> AppResult<ReleaseOutcome> {
+    lock_hash(transaction, hash).await.map_err(database_error)?;
+    let id = sqlx::query_scalar::<_, i32>(r#"SELECT id FROM "Files" WHERE hash = $1 FOR UPDATE"#)
+        .bind(hash)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    match id {
+        Some(id) => release_locked(transaction, id)
+            .await
+            .map_err(database_error),
+        None => Ok(ReleaseOutcome {
+            found: false,
+            deleted_hash: None,
+        }),
+    }
+}
+
 /// Release a direct hash owner (avatar, poster, build archive, or branding)
 /// and purge legacy untracked content when no durable owner remains.
 pub async fn release_and_purge(
@@ -358,133 +347,6 @@ pub async fn release_and_purge(
         return Ok(false);
     }
     purge_if_unreferenced(pool, storage, hash).await
-}
-
-async fn lock_writeup_hashes(
-    transaction: &mut Transaction<'_, Postgres>,
-    participation_id: i32,
-    new_hash: &str,
-) -> AppResult<Option<(i32, String)>> {
-    let current = sqlx::query_as::<_, (Option<i32>,)>(
-        r#"SELECT writeup_id
-             FROM "Participations"
-            WHERE id = $1
-            FOR UPDATE"#,
-    )
-    .bind(participation_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?
-    .ok_or_else(|| AppError::not_found("Participation not found"))?;
-
-    let old = match current.0 {
-        Some(id) => sqlx::query_scalar::<_, String>(r#"SELECT hash FROM "Files" WHERE id = $1"#)
-            .bind(id)
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(database_error)?
-            .map(|old_hash| (id, old_hash)),
-        None => None,
-    };
-
-    // Every multi-hash operation locks in lexical order, preventing two
-    // replacements that swap hashes from deadlocking.
-    let mut hashes = vec![new_hash];
-    if let Some((_, old_hash)) = &old {
-        hashes.push(old_hash);
-    }
-    hashes.sort_unstable();
-    hashes.dedup();
-    for hash in hashes {
-        lock_hash(transaction, hash).await.map_err(database_error)?;
-    }
-    Ok(old)
-}
-
-async fn replace_writeup_locked(
-    transaction: &mut Transaction<'_, Postgres>,
-    participation_id: i32,
-    old: Option<(i32, String)>,
-    hash: &str,
-    name: &str,
-    size: i64,
-) -> Result<Option<String>, sqlx::Error> {
-    let new_id = acquire_locked(transaction, hash, name, size).await?;
-    sqlx::query(
-        r#"UPDATE "Participations"
-              SET writeup_id = $2
-            WHERE id = $1"#,
-    )
-    .bind(participation_id)
-    .bind(new_id)
-    .execute(&mut **transaction)
-    .await?;
-
-    match old {
-        Some((old_id, _)) => Ok(release_locked(transaction, old_id).await?.deleted_hash),
-        None => Ok(None),
-    }
-}
-
-/// Atomically replace a participation's writeup reference and return the old
-/// hash only when its final metadata row was removed.
-///
-/// The participation row is locked and re-read inside the transaction, so two
-/// simultaneous uploads from separate replicas release the actual predecessor
-/// exactly once rather than both acting on stale request context.
-#[cfg(test)]
-async fn replace_writeup(
-    pool: &PgPool,
-    participation_id: i32,
-    hash: &str,
-    name: &str,
-    size: i64,
-) -> AppResult<Option<String>> {
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
-        .await
-        .map_err(database_error)?;
-    let old = lock_writeup_hashes(&mut transaction, participation_id, hash).await?;
-    let deleted_hash =
-        replace_writeup_locked(&mut transaction, participation_id, old, hash, name, size)
-            .await
-            .map_err(database_error)?;
-    transaction.commit().await.map_err(database_error)?;
-    Ok(deleted_hash)
-}
-
-/// Store and atomically replace a participation writeup under the distributed
-/// content-hash lock. The physical write, metadata upsert, FK swap, and old
-/// reference release are ordered as one replica-safe operation.
-pub async fn store_and_replace_writeup(
-    pool: &PgPool,
-    storage: &dyn BlobStorage,
-    participation_id: i32,
-    name: &str,
-    bytes: &[u8],
-) -> AppResult<(StoredBlob, Option<String>)> {
-    let expected_hash = sha256_hex(bytes);
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
-        .await
-        .map_err(database_error)?;
-    let old = lock_writeup_hashes(&mut transaction, participation_id, &expected_hash).await?;
-    let blob = storage.store(name, bytes).await?;
-    if blob.hash != expected_hash {
-        return Err(AppError::internal(
-            "blob storage returned a hash that does not match its content",
-        ));
-    }
-    let deleted_hash = replace_writeup_locked(
-        &mut transaction,
-        participation_id,
-        old,
-        &blob.hash,
-        name,
-        blob.size,
-    )
-    .await
-    .map_err(database_error)?;
-    transaction.commit().await.map_err(database_error)?;
-    Ok((blob, deleted_hash))
 }
 
 /// Delete physical content only when a fresh post-commit query confirms that
@@ -577,6 +439,7 @@ pub async fn purge_pending(pool: &PgPool, storage: &dyn BlobStorage, limit: i64)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::enums::{ParticipationStatus, Role};
     use async_trait::async_trait;
     use sqlx::postgres::PgPoolOptions;
     use std::collections::HashSet;
@@ -662,6 +525,149 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn committed_game_deletion_fence_rejects_a_delayed_writeup_before_storage() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("writeup_fence_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let search_path = schema.clone();
+        let pool = PgPoolOptions::new()
+            .max_connections(3)
+            .after_connect(move |connection, _| {
+                let statement = format!(r#"SET search_path TO "{search_path}""#);
+                Box::pin(async move {
+                    sqlx::query(&statement).execute(connection).await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE "Games" (
+              id INTEGER PRIMARY KEY, deletion_pending BOOLEAN NOT NULL,
+              start_time_utc TIMESTAMPTZ NOT NULL, writeup_required BOOLEAN NOT NULL,
+              writeup_deadline TIMESTAMPTZ NOT NULL
+            );
+            CREATE TABLE "Teams" (
+              id INTEGER PRIMARY KEY, deletion_pending BOOLEAN NOT NULL
+            );
+            CREATE TABLE "AspNetUsers" (id UUID PRIMARY KEY, role SMALLINT NOT NULL);
+            CREATE TABLE "Files" (
+              id SERIAL PRIMARY KEY, hash TEXT NOT NULL UNIQUE,
+              upload_time_utc TIMESTAMPTZ NOT NULL, file_size BIGINT NOT NULL,
+              name TEXT NOT NULL, reference_count BIGINT NOT NULL
+            );
+            CREATE TABLE "Participations" (
+              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+              team_id INTEGER NOT NULL, status SMALLINT NOT NULL,
+              writeup_id INTEGER REFERENCES "Files"(id)
+            );
+            CREATE TABLE "UserParticipations" (
+              user_id UUID NOT NULL, game_id INTEGER NOT NULL,
+              participation_id INTEGER NOT NULL
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let user_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO "Games" VALUES
+               (1, FALSE, clock_timestamp() - interval '1 hour', TRUE,
+                clock_timestamp() + interval '1 hour')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(r#"INSERT INTO "Teams" VALUES (2, FALSE)"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "AspNetUsers" VALUES ($1, $2)"#)
+            .bind(user_id)
+            .bind(Role::User as i16)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "Participations" VALUES (3, 1, 2, $1, NULL)"#)
+            .bind(ParticipationStatus::Accepted as i16)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "UserParticipations" VALUES ($1, 1, 3)"#)
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut deletion = pool.begin().await.unwrap();
+        sqlx::query(r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = 1"#)
+            .execute(&mut *deletion)
+            .await
+            .unwrap();
+        let storage = Arc::new(CoordinatedStorage::default());
+        let mut upload = tokio::spawn({
+            let pool = pool.clone();
+            let storage = Arc::clone(&storage);
+            async move {
+                store_and_replace_writeup(
+                    &pool,
+                    storage.as_ref(),
+                    1,
+                    3,
+                    user_id,
+                    "writeup.pdf",
+                    b"%PDF-1.7",
+                )
+                .await
+            }
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut upload)
+                .await
+                .is_err(),
+            "writeup crossed the uncommitted game deletion fence"
+        );
+        deletion.commit().await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), upload)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err(),
+            "writeup ignored the committed game deletion fence"
+        );
+        assert_eq!(storage.stores.load(Ordering::SeqCst), 0);
+        let state: (i64, Option<i32>) = sqlx::query_as(
+            r#"SELECT (SELECT COUNT(*) FROM "Files"), writeup_id
+                 FROM "Participations" WHERE id = 3"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, (0, None));
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
     async fn concurrent_acquire_release_and_writeup_replace_preserve_one_reference() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to PostgreSQL");
@@ -698,7 +704,16 @@ mod tests {
             CREATE TABLE "{schema}"."Configs" (config_key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE "{schema}"."GameChallenges" (
                 id INTEGER PRIMARY KEY,
-                original_archive_blob_path TEXT
+                original_archive_blob_path TEXT,
+                attachment_id INTEGER REFERENCES "{schema}"."Attachments"(id)
+            );
+            CREATE TABLE "{schema}"."FlagContexts" (
+                id INTEGER PRIMARY KEY,
+                attachment_id INTEGER REFERENCES "{schema}"."Attachments"(id)
+            );
+            CREATE TABLE "{schema}"."ExerciseChallenges" (
+                id INTEGER PRIMARY KEY,
+                attachment_id INTEGER REFERENCES "{schema}"."Attachments"(id)
             );
             "#
         );
@@ -857,6 +872,37 @@ mod tests {
             deleted.extend(task.await.expect("join attachment delete"));
         }
         assert_eq!(deleted, vec![attachment_hash]);
+
+        let owned_attachment_hash = "f".repeat(64);
+        let owned_attachment_file =
+            acquire(&pool, &owned_attachment_hash, "owned-attachment.zip", 21)
+                .await
+                .unwrap();
+        sqlx::query(r#"INSERT INTO "Attachments" (id, local_file_id) VALUES (2, $1)"#)
+            .bind(owned_attachment_file)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "GameChallenges" (id, attachment_id) VALUES (1, 2)"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(delete_attachment(&pool, 2).await.unwrap().is_none());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Attachments" WHERE id = 2"#)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        sqlx::query(r#"DELETE FROM "GameChallenges" WHERE id = 1"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            delete_attachment(&pool, 2).await.unwrap(),
+            Some(owned_attachment_hash)
+        );
 
         // Force deletion to pause while holding the distributed hash lock.
         // A correct uploader cannot enter storage.store until deletion finishes;

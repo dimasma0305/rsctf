@@ -5,7 +5,295 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
-## Final current-tree operational acceptance — 19 July 2026
+## Repository-sync and event-integrity acceptance — 19 July 2026
+
+This is the current incident-focused acceptance record. Production inspection
+was read-only; fixes, migrations, destructive-path regressions, replica churn,
+Redis failure, and load were exercised only in the disposable
+`rsctf-final-719b-*` environment. No live service was restarted, migrated, or
+used as a stress-test target.
+
+### Read-only production diagnosis
+
+The `/admin/teams` 502 was a deterministic decode failure, not a proxy-capacity
+failure. The full user model decoded PostgreSQL `+infinity` from `lockout_end`
+through Chrono, which panicked. At inspection time 31 of 74 live user rows had a
+non-finite value. The repaired list endpoint projects only the roster fields it
+needs, and migration `m0073_finite_lockout_end` converts positive infinity to
+the finite application sentinel, converts negative infinity to `NULL`, and
+adds a validated finite-value constraint.
+
+Repository sync used to delete and recreate matched challenges. Those deletes
+cascaded through submissions and first-solve evidence, so a manifest rescan
+could reset solves even when the challenge was conceptually unchanged. The
+live repository-bound game inspected after the incident, game 67, had no
+remaining accepted submission or `FirstSolves` row from which prior state could
+be reconstructed. The repair prevents another destructive rescan, but it
+cannot recover evidence already deleted; restoration of historical solves
+requires a database backup or another authoritative record.
+
+The new sync path keys a challenge by stable binding-relative manifest
+identity, updates mutable fields in place, rejects ambiguous legacy adoption
+and type changes, and does not use a matching title as identity. Missing active
+definitions are rejected when removal would destroy event evidence; safe
+historical removals retain their identity and evidence. Repository checkout,
+event-definition mutation, push-on-edit, binding update, and binding deletion
+are serialized and re-read under their locks so an older checkout cannot win a
+race with a newer remote head. Incomplete processing of the same commit is
+retryable instead of being silently treated as complete.
+
+Related destructive paths now fence challenge, game, team, roster,
+participation, attachment, runtime, A&D, and KotH evidence. In particular, a
+submission that commits concurrently with team deletion is visible before the
+delete decision; scored participation can only make the reversible
+`Accepted`/`Suspended` transition; a suspended scored team cannot bypass the
+roster freeze; and challenge/game deletion cannot erase retained submissions,
+first solves, rounds, captures, runtime operations, or referenced blobs. These
+are event-integrity controls, not scoring-version changes: A&D and KotH scoring
+constants and wire behavior remain unchanged.
+
+### Isolated admin regression
+
+The same isolated request changed from a failing response to a successful
+roster response. Because the before request returned 502 and the after request
+returned 200, this is a correctness comparison, not a latency-optimization
+claim.
+
+| Variant | Status | Wall latency |
+| --- | ---: | ---: |
+| Before | 502 | 3,143.541 ms |
+| After | 200 | 54.955 ms |
+
+The regression fixture includes both PostgreSQL positive and negative infinity.
+Repository-sync tests retain challenge IDs, solves, first-solve rows, counters,
+attachments, and runtime state across mutable rescans; they also exercise
+ambiguous identity, concurrent update/delete, same-SHA retry, newer-HEAD
+push-on-edit, unsafe removal, and rollback behavior.
+
+### Caddy replica churn at a held arrival rate
+
+The first 2 → 4 → 2 replica rehearsal exposed a proxy-side scale-down defect.
+Caddy's dynamic A upstream cache retained removed Docker addresses long enough
+to route 800 requests to retired replicas. The proxy now refreshes Docker DNS
+every second, uses a 500 ms dial timeout, and retries connection failures for up
+to three seconds. The before and after runs used the same `RATE=20 VUS=128`
+90-second schedule and server image.
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Scheduled iteration target | 20/s | 20/s |
+| Completed / dropped iterations | 1,767 / 33 | 1,800 / 0 |
+| HTTP requests / achieved rate | 11,247 / 107.968153/s | 11,304 / 119.392465/s |
+| Server 5xx | 800 (7.113008%) | 0 |
+| HTTP p50 / p95 / p99 / max | 3.906 / 3,001.818 / 3,003.403 / 3,253.312 ms | 3.072 / 7.521 / 14.969 / 609.602 ms |
+| A&D submit p95 | 3,001.346 ms | 15.862 ms |
+
+This held-rate comparison removes the retired-address failure mode: 5xx fell
+800 → 0, dropped iterations fell 33 → 0, and overall p95 fell 3,001.818 →
+7.521 ms (−99.75%). It is not a clean player-success comparison. Only 20 player
+identities drove the 20-iteration/s diagnostic, exceeding their intentional
+150-request/60-second authenticated quota; the remaining approximately 47%
+failed/semantic metrics after the fix are expected HTTP 429 responses, not
+proxy errors or corrupt boards.
+
+A quota-safe `RATE=5` confirmation completed the same 2 → 4 → 2 shape with 450
+iterations and 2,960 requests at 31.584639 requests/s. It recorded zero 5xx,
+failed requests, semantic errors, invalid boards, and dropped iterations;
+overall p95 was 13.470 ms, board p95 12.110 ms, and submit p95 21.325 ms. The
+surviving replicas had zero restarts and were not OOM-killed. Two direct
+`/healthz` probes observed the deliberately draining replicas' correct 503
+`shutting down` state; `/livez`, the proxy, and all player traffic remained
+available. A temporary wrapper that demanded readiness from containers being
+removed therefore exited nonzero, but the measured scale transition itself was
+clean.
+
+### Redis-outage before and after
+
+The disposable outage harness schedules one malformed registration request per
+second while Redis is stopped. HTTP 400 is the expected application result;
+`/livez` must stay 200, `/healthz` must expose the dependency outage, and
+readiness must recover after Redis restarts without restarting rsctf.
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Scheduled request rate / duration | 1/s / 15 s | 1/s / 15 s |
+| Expected HTTP 400 responses | 15/15 | 16/16 |
+| Dropped iterations | not recorded by the old scenario | 0 |
+| Average | 13,809.782 ms | 180.626 ms |
+| p50 / p90 | 14,942.941 / 17,543.204 ms | 205.079 / 206.980 ms |
+| p95 / p99 / max | 18,084.879 / 18,349.387 / 18,415.514 ms | 207.823 / 209.313 / 209.685 ms |
+
+Outage p95 fell 18,084.879 → 207.823 ms (−98.85%). The old run drained queued
+work after the nominal window and achieved only 0.509901 requests/s, so the
+table compares latency at the same scheduler setting rather than claiming a
+throughput result. The repaired run had no restart or OOM, and both health
+endpoints returned 200 again after Redis recovered. A direct single-replica
+check with fresh source identities returned 20 bounded local-fallback HTTP 400
+responses followed by HTTP 429, confirming that dependency failure does not
+remove admission control. The k6 gate now enforces `http_req_duration`
+`p(95)<1000` in addition to exact status, zero failures, zero unexpected status,
+and zero dropped iterations. CPU was not bracketed for either outage run, so no
+CPU reduction is claimed.
+
+### Clean steady-state snapshot
+
+After the failure drills, a quota-safe `RATE=5 VUS=128 DURATION=60s` run served
+2,017 requests in 301 iterations at 31.358884 requests/s. It had zero HTTP
+failures, 5xx, semantic errors, invalid boards, and dropped iterations; all 63
+health probes passed. Overall HTTP p50/p90/p95/p99/max was
+4.884/9.174/11.393/28.880/92.260 ms. Board p95 was 11.025 ms, A&D epoch-board
+p95 9.010 ms, and submit p95 12.629 ms.
+
+Cgroup deltas over the fixed window were 2.501963 CPU-seconds for web replica
+one, 2.448783 for web replica two, and 1.755374 for control: 6.706120 app
+CPU-seconds. PostgreSQL used 4.838365, Redis 1.864884, and Caddy 2.733272, for
+16.142641 CPU-seconds across the measured stack. This is a clean operational
+snapshot, not a before/after CPU optimization row.
+
+The complete JavaScript load-harness regression suite passed **190/190** after
+adding the Caddy scale-churn, Redis-outage latency, and lifecycle deadline
+guards. The focused run of those three files passed 4/4 tests. These counts
+cover harness logic; Rust, PostgreSQL integration, release-build, and browser
+client verification are reported with the final source-tree acceptance.
+
+### Final immutable two-replica lifecycle acceptance — 20 July 2026
+
+The deployment candidate passed the comprehensive lifecycle gate in a fresh
+PostgreSQL 18.4 environment after all 75 migrations. The topology was two web
+replicas, one singleton control replica, Redis, and Caddy. The fixture contained
+100 Jeopardy teams, 400 A&D/KotH teams, 80 real BYOC relay tunnels, eight static
+challenges, one real container challenge, one A&D service, and one KotH hill.
+The fixed load used `FLEET=80 VUS=400 JEO_VUS=220 AD_VUS=80 KOTH_VUS=40
+CONTAINER_VUS=3 DURATION=300s`, no player think time, and the corrected
+45-second event-end grace.
+
+The accepted run completed **627,022 HTTP requests at 1,995.612 requests/s** and
+208,716 iterations. There were zero unexpected non-2xx responses, zero server
+5xx responses, and zero failed checks across 627,618 checks. The 179,875 HTTP
+429 responses (28.687%) were expected quota enforcement and were excluded from
+the unexpected-status gate. One browsing iteration was dropped because its
+configured 40-VU cap was exhausted; no request or integrity assertion was
+dropped. The in-scenario `/livez` and `/healthz` probes each passed 364/364.
+Independent observers collected 97, 97, and 96 samples from the two web replicas
+and control replica respectively; all 290 public, local, and readiness checks in
+each category passed.
+
+The heavy-path checks completed 36 container lifecycle operations, including
+create and destroy, with a 4,271.904 ms p95. Attachment upload and download p95
+was 1,154.822 ms. The run accepted 80 scoped KotH captures and performed 37
+timed token writes, rejected the prior-cycle capability 1/1 after reset, crossed
+five complete crown cycles, and confirmed two acquisitions. Duplicate rounds,
+KotH rows, overlapping rounds, cadence violations, missing evidence, and cleanup
+leaks were all zero. PostgreSQL recorded zero deadlocks; every rsctf process
+finished healthy with zero restarts and no OOM kill.
+
+| Endpoint trend | Average | p50 | p90 | p95 | p99 | Maximum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 167.216 ms | 131.032 ms | 309.387 ms | 400.359 ms | 768.335 ms | 5,753.686 ms |
+| Asset upload/download | 318.792 ms | 194.394 ms | 698.737 ms | 1,154.822 ms | 1,954.840 ms | 2,589.448 ms |
+| Jeopardy submit | 613.826 ms | 528.652 ms | 1,068.422 ms | 1,298.534 ms | 1,783.250 ms | 2,858.242 ms |
+| A&D State | 201.184 ms | 175.387 ms | 363.294 ms | 439.604 ms | 635.458 ms | 1,120.362 ms |
+| A&D Targets | 192.971 ms | 164.992 ms | 356.868 ms | 433.377 ms | 624.978 ms | 1,171.055 ms |
+| Container lifecycle | 2,464.848 ms | 2,318.378 ms | 3,828.102 ms | 4,271.904 ms | 5,451.191 ms | 5,753.686 ms |
+| A&D submit | 303.579 ms | 265.694 ms | 527.487 ms | 633.038 ms | 875.315 ms | 3,538.040 ms |
+| KotH hills | 183.574 ms | 140.862 ms | 348.249 ms | 444.289 ms | 996.498 ms | 2,247.556 ms |
+| Combined board | 147.802 ms | 112.449 ms | 276.627 ms | 352.143 ms | 760.879 ms | 2,740.535 ms |
+| Jeopardy details | 239.541 ms | 175.749 ms | 483.845 ms | 664.980 ms | 1,096.123 ms | 2,539.487 ms |
+| A&D epoch board | 185.845 ms | 155.787 ms | 332.156 ms | 406.765 ms | 666.387 ms | 1,801.248 ms |
+| BYOC onboarding | 4,357.838 ms | 4,823.000 ms | 6,919.400 ms | 7,171.000 ms | 7,723.480 ms | 8,004.000 ms |
+
+The fixed 02:14:08–02:19:08 UTC resource window contained 59 samples per
+component on an eight-core host. Docker CPU percentages below use 100% for one
+core. Aggregate rsctf CPU averaged 151.358%, or 1.51 cores, and aggregate rsctf
+memory averaged 516.0 MiB.
+
+| Component | CPU average | CPU p95 | CPU maximum | RAM average | RAM maximum |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Web replica 1 | 55.923% | 72.809% | 76.730% | 196.468 MiB | 229.400 MiB |
+| Web replica 2 | 55.546% | 74.511% | 86.870% | 168.775 MiB | 222.200 MiB |
+| Control | 39.889% | 213.304% | 234.650% | 150.759 MiB | 353.500 MiB |
+| PostgreSQL | 120.035% | 153.810% | 221.570% | 651.614 MiB | 699.500 MiB |
+| Redis | 21.117% | 25.562% | 28.930% | 6.789 MiB | 9.957 MiB |
+
+PostgreSQL peaked at 65 connections: 22 active, 31 waiting, and eight waiting on
+locks, with a longest transaction of 4.565 seconds and zero deadlocks. Redis
+peaked at 5.035 MiB, retained 4,963 keys, and had zero evictions, rejected
+connections, or error-reply deltas. At deliberate BYOC fleet teardown, each
+observer logged one Docker-stats read error and two fleet-stats read errors as
+the measured containers disappeared. The 59-sample fixed resource window and
+all health series remained complete.
+
+#### Failure-to-acceptance sequence
+
+The first exact-shape diagnostic served 660,349 requests at 2,198.52 requests/s
+but exposed 64 PostgreSQL deadlocks and 21 server 5xx responses: 17 application
+deadlock responses and four proxy responses. Submit and suspicion processing had
+opposite row-lock order. A participation-scoped transaction advisory lock now
+serializes those paths before either takes its row locks; the accepted run
+recorded zero deadlocks.
+
+Two later strict runs each exposed one Caddy 502 after tens of thousands of
+otherwise successful requests. Caddy reported `server closed idle connection`
+for an ordinary mutation whose upstream connection had been reused; both rsctf
+replicas were healthy and logged no corresponding application failure. Reducing
+the pooled keepalive to 30 seconds did not eliminate it. The final proxy policy
+keeps reads and explicitly stateful network routes pooled, sends ordinary
+`POST`, `PUT`, `PATCH`, and `DELETE` requests through a dynamic Docker-DNS
+transport with keepalive disabled, and does not blindly replay ambiguous
+mutations. A focused two-minute POST storm then served 143,429 requests at
+1,195.195 requests/s with zero proxy 5xx and an 8.75 ms p95. The accepted full
+lifecycle had zero Caddy access-log 5xx entries and zero closed-idle errors.
+
+An otherwise-clean intermediate invocation omitted `HOSTPORT`, so its wrapper
+probed unused port 8080 and failed 469/469 wrapper checks while the independent
+observers proved that the configured endpoint stayed healthy. Supplying the
+actual isolated port produced the accepted run above; that invocation error is
+not counted as an application failure.
+
+This campaign validates correctness and deployment fitness. It does **not** add
+an optimization-ledger row: there is no same-harness before/after CPU bracket
+from which to make a causal performance claim.
+
+### Acceptance boundary and exact provenance
+
+| Artifact | Exact identity |
+| --- | --- |
+| Git base for the uncommitted repair tree | `a901ea29e11aaf29802565d906d33e00c9a94237` |
+| Before application image | `rsctf-local:final-6634c42df829-fb9cda9cab17` / `sha256:157ed4ec1edb6fc31bcdab0f56e4dd051e817b0d614955fa561fb0866aa28122` |
+| Before image binary | `sha256:7b84e145c17964f515baf167f9fdf82851e5f75f72e02de6e8bee47d2002b19b` |
+| Accepted application image | `rsctf-local:deploy-20260720-1` / `sha256:9cdb86a9b98ee0febba3f512d6c50d680a9ba9769c1cdfea6f7ace50417643ee` |
+| Accepted image binary | `sha256:cdc4e618eb35fc350af189b2698ccbda82a4e5f8efbaa1a143e85464b23a8f5b` |
+| Accepted Caddy image | `caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648` / image ID `sha256:af555904a0961945f16bb323a501457b13a4f7e9bde969b145b97da80b38ecbe` |
+
+The finite-lockout migration upgrade was first exercised on the immediately
+preceding near-final image, then repeated from a fresh database by the accepted
+immutable image. That image contains the final Rust server and web client used
+by the lifecycle run. Only the JavaScript harness, documentation, and the
+mounted Caddy configuration changed after the application image was built; none
+of those changes alter the server or client bytes identified above. The Caddy
+digest and mounted mutation-transport policy are therefore recorded separately
+as part of the exact tested deployment composition.
+
+One 180-second lifecycle diagnostic reached the configured event end at the
+same instant k6 exited: 16,052 successful operations, 195 4xx responses, zero
+5xx, and valid semantic checks. It is not counted as a passing benchmark because
+settlement had no post-traffic margin. k6 may use up to its default 30-second
+graceful-stop interval, so the lifecycle default event-end grace is now 45
+seconds. The accepted 300-second lifecycle above used that 45-second boundary
+and supersedes the diagnostic as deployment evidence.
+
+Trivy 0.72.0 scanned the exact accepted application image with its vulnerability
+database updated at 2026-07-19 18:43:16 UTC. The fixable-only gate found **zero
+fixable HIGH or CRITICAL vulnerabilities** and exited successfully. This is not
+a claim of zero total findings: the image still reports 65 unfixed HIGH records
+(27 unique CVEs) and 14 unfixed CRITICAL records (five unique CVEs), all in
+Alpine packages for which the scanner reported no fixed version at scan time.
+
+> Historical boundary: sections below preserve earlier campaigns and their
+> exact artifacts. They are useful comparison evidence but are superseded as a
+> description of the current repair tree.
+
+## Historical singleton operational acceptance — 19 July 2026
 
 The final server-affecting tree passed both a held-rate player comparison and
 the comprehensive lifecycle emulator. The fixed-rate run used 100 distinct

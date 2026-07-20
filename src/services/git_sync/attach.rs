@@ -4,7 +4,6 @@ use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 
 use crate::app_state::SharedState;
-use crate::utils::enums::FileType;
 use crate::utils::error::{AppError, AppResult};
 
 const MAX_ATTACHMENT_FILES: usize = 2_048;
@@ -24,7 +23,17 @@ pub(super) async fn sync_attachment(
     challenge_id: i32,
     package_dir: &Path,
     provide: Option<&str>,
+    replace_existing: bool,
 ) -> bool {
+    let has_explicit_source = provide.is_some_and(|value| !value.trim().is_empty());
+    let implicit_source_absent = matches!(package_dir.join("dist").try_exists(), Ok(false));
+    if !has_explicit_source && implicit_source_absent {
+        return if replace_existing {
+            clear_attachment(st, challenge_id).await
+        } else {
+            true
+        };
+    }
     let package_dir = package_dir.to_path_buf();
     let provide = provide.map(str::to_owned);
     let packaged =
@@ -39,60 +48,37 @@ pub(super) async fn sync_attachment(
     }) else {
         return false;
     };
-    let content_hash = crate::utils::codec::sha256_hex(&bytes);
-
-    // Serialize the physical store, refcount, attachment, and challenge link by
-    // content hash. Deletion uses this same transaction-scoped lock, so it
-    // cannot remove a just-stored object before this metadata commits.
-    let persisted: anyhow::Result<()> = async {
-        let mut tx = crate::utils::database::begin_sqlx_transaction(st.pg()).await?;
-        let (_, local_file_id) = crate::services::blob_refs::store_and_acquire_in_transaction(
-            st.storage.as_ref(),
-            &mut tx,
-            &filename,
-            &bytes,
-        )
-        .await?;
-        let attachment_id = sqlx::query_scalar::<_, i32>(
-            r#"INSERT INTO "Attachments" ("Type", remote_url, local_file_id)
-               VALUES ($1, NULL, $2)
-               RETURNING id"#,
-        )
-        .bind(FileType::Local as i16)
-        .bind(local_file_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let linked = sqlx::query(
-            r#"UPDATE "GameChallenges"
-                  SET attachment_id = $2
-                WHERE id = $1 AND attachment_id IS NULL"#,
-        )
-        .bind(challenge_id)
-        .bind(attachment_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        if linked != 1 {
-            return Err(sqlx::Error::RowNotFound.into());
-        }
-        tx.commit().await?;
-        Ok(())
-    }
-    .await;
-    if let Err(error) = persisted {
+    if let Err(error) = crate::services::blob_refs::store_and_replace_challenge_attachment(
+        st.pg(),
+        st.storage.as_ref(),
+        challenge_id,
+        Some((&filename, &bytes)),
+        replace_existing,
+    )
+    .await
+    {
         tracing::warn!(%error, "git_sync: attachment persistence failed");
-        if let Err(cleanup_error) = crate::services::blob_refs::purge_if_unreferenced(
-            st.pg(),
-            st.storage.as_ref(),
-            &content_hash,
-        )
-        .await
-        {
-            tracing::warn!(%cleanup_error, %content_hash, "git_sync: unpublished attachment purge failed");
-        }
         return false;
     }
     tracing::info!(challenge_id, attachment = %filename, "git_sync: imported attachment");
+    true
+}
+
+/// An update with neither `provide:` nor an implicit `dist/` explicitly owns no
+/// attachment. The owner swap, old row delete, and blob release are one commit.
+async fn clear_attachment(st: &SharedState, challenge_id: i32) -> bool {
+    if let Err(error) = crate::services::blob_refs::store_and_replace_challenge_attachment(
+        st.pg(),
+        st.storage.as_ref(),
+        challenge_id,
+        None,
+        true,
+    )
+    .await
+    {
+        tracing::warn!(%error, challenge_id, "git_sync: attachment removal failed");
+        return false;
+    }
     true
 }
 
@@ -134,39 +120,31 @@ pub async fn repair_missing_attachments(st: &SharedState) -> AppResult<u64> {
     let mut repaired = 0u64;
     let mut after_id = 0i32;
     loop {
-        let challenges = sqlx::query_as::<_, (i32, String)>(
-            r#"SELECT id, source_yaml_path
-                 FROM "GameChallenges"
-                WHERE attachment_id IS NULL
-                  AND source_yaml_path IS NOT NULL
-                  AND id > $1
-                ORDER BY id
+        let challenges = sqlx::query_as::<_, (i32, i32, String)>(
+            r#"SELECT challenge.id, game.repo_binding_id, challenge.source_yaml_path
+                 FROM "GameChallenges" challenge
+                 JOIN "Games" game ON game.id = challenge.game_id
+                WHERE challenge.attachment_id IS NULL
+                  AND challenge.source_yaml_path IS NOT NULL
+                  AND game.repo_binding_id IS NOT NULL
+                  AND challenge.id > $1
+                ORDER BY challenge.id
                 LIMIT 100"#,
         )
         .bind(after_id)
         .fetch_all(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        let Some((last_id, _)) = challenges.last() else {
+        let Some((last_id, _, _)) = challenges.last() else {
             break;
         };
         after_id = *last_id;
-        for (challenge_id, source) in challenges {
+        for (challenge_id, binding_id, source) in challenges {
             // Resolve only far enough to identify the managed checkout, then
             // take the same cross-replica lock used by scans/push-back and
             // resolve again under that guard. This prevents startup repair from
             // packaging a tree while another role is replacing its files.
-            let Ok(preliminary) = tokio::fs::canonicalize(&source).await else {
-                continue;
-            };
-            let Some(std::path::Component::Normal(repo_dir)) = preliminary
-                .strip_prefix(&repos_root)
-                .ok()
-                .and_then(|relative| relative.components().next())
-            else {
-                continue;
-            };
-            let checkout = repos_root.join(repo_dir);
+            let checkout = repos_root.join(binding_id.to_string());
             let _checkout_lock = super::lock_checkout_distributed(st.pg(), &checkout).await?;
             let Ok(locked_checkout) = tokio::fs::canonicalize(&checkout).await else {
                 continue;
@@ -174,7 +152,12 @@ pub async fn repair_missing_attachments(st: &SharedState) -> AppResult<u64> {
             if !locked_checkout.starts_with(&repos_root) {
                 continue;
             }
-            let Ok(manifest) = tokio::fs::canonicalize(&source).await else {
+            let Some(candidate) =
+                super::manifest_candidate_in_checkout(&locked_checkout, Some(binding_id), &source)
+            else {
+                continue;
+            };
+            let Ok(manifest) = tokio::fs::canonicalize(candidate).await else {
                 continue;
             };
             let is_manifest = manifest
@@ -190,7 +173,7 @@ pub async fn repair_missing_attachments(st: &SharedState) -> AppResult<u64> {
                 .and_then(|raw| serde_norway::from_str::<super::ChallengeYaml>(&raw).ok())
                 .and_then(|model| model.provide);
             let package_dir = manifest.parent().unwrap_or(locked_checkout.as_path());
-            if sync_attachment(st, challenge_id, package_dir, provide.as_deref()).await {
+            if sync_attachment(st, challenge_id, package_dir, provide.as_deref(), false).await {
                 repaired += 1;
             }
         }

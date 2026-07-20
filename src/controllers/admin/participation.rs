@@ -79,11 +79,13 @@ impl ParticipationReviewLease {
                    SELECT 1
                      FROM "Participations" participation
                      JOIN "Teams" team ON team.id = participation.team_id
+                     JOIN "Games" game ON game.id = participation.game_id
                     WHERE participation.id = $1
                       AND participation.game_id = $2
                       AND participation.team_id = $3
                       AND participation.status = $4
                       AND team.deletion_pending = FALSE
+                      AND game.deletion_pending = FALSE
                )"#,
         )
         .bind(identity.id)
@@ -124,13 +126,15 @@ async fn persist_participation_status(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
 
-    let live: Option<(i16, Option<i32>, i32, bool)> = sqlx::query_as(
+    let live: Option<(i16, Option<i32>, i32, bool, bool)> = sqlx::query_as(
         r#"SELECT participation.status,
                   participation.division_id,
                   participation.team_id,
-                  team.deletion_pending
+                  team.deletion_pending,
+                  game.deletion_pending
              FROM "Participations" participation
-             JOIN "Teams" team ON team.id = participation.team_id
+            JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "Games" game ON game.id = participation.game_id
             WHERE participation.id = $1 AND participation.game_id = $2
             FOR UPDATE OF participation, team"#,
     )
@@ -139,7 +143,14 @@ async fn persist_participation_status(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((live_status_value, live_division_id, live_team_id, deletion_pending)) = live else {
+    let Some((
+        live_status_value,
+        live_division_id,
+        live_team_id,
+        team_deletion_pending,
+        game_deletion_pending,
+    )) = live
+    else {
         return Err(AppError::not_found("Participation not found"));
     };
     if live_team_id != identity.team_id {
@@ -147,8 +158,8 @@ async fn persist_participation_status(
             "Participation changed; retry the request",
         ));
     }
-    if deletion_pending {
-        return Err(AppError::conflict("Team is being deleted"));
+    if team_deletion_pending || game_deletion_pending {
+        return Err(AppError::conflict("Team or game is being deleted"));
     }
     let live_status = <ParticipationStatus as ActiveEnum>::try_from_value(&live_status_value)
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -164,11 +175,23 @@ async fn persist_participation_status(
     if requested_status == ParticipationStatus::Rejected {
         division_id = None;
     }
+    crate::services::participation_evidence::ensure_evidence_preserving_update(
+        &mut transaction,
+        identity.id,
+        live_status,
+        requested_status,
+        live_division_id,
+        division_id,
+    )
+    .await?;
     let scoring_started = crate::controllers::edit::ad_epoch_scoring_started_locked(
         &mut transaction,
         identity.game_id,
     )
     .await?;
+    // Suspension and reinstatement are the only reversible status mutations
+    // after scoring starts. They retain the same participation and division;
+    // rejection remains subject to both the engine boundary and evidence fence.
     crate::controllers::edit::ensure_ad_roster_status_mutable(
         scoring_started,
         Some(live_status),
@@ -279,12 +302,15 @@ async fn update_division_only(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
 
-    let live: Option<(Option<i32>, i32, bool)> = sqlx::query_as(
-        r#"SELECT participation.division_id,
+    let live: Option<(i16, Option<i32>, i32, bool, bool)> = sqlx::query_as(
+        r#"SELECT participation.status,
+                  participation.division_id,
                   participation.team_id,
-                  team.deletion_pending
+                  team.deletion_pending,
+                  game.deletion_pending
              FROM "Participations" participation
-             JOIN "Teams" team ON team.id = participation.team_id
+            JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "Games" game ON game.id = participation.game_id
             WHERE participation.id = $1 AND participation.game_id = $2
             FOR UPDATE OF participation, team"#,
     )
@@ -293,7 +319,14 @@ async fn update_division_only(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((live_division_id, live_team_id, deletion_pending)) = live else {
+    let Some((
+        live_status_value,
+        live_division_id,
+        live_team_id,
+        team_deletion_pending,
+        game_deletion_pending,
+    )) = live
+    else {
         return Err(AppError::not_found("Participation not found"));
     };
     if live_team_id != identity.team_id {
@@ -301,8 +334,8 @@ async fn update_division_only(
             "Participation changed; retry the request",
         ));
     }
-    if deletion_pending {
-        return Err(AppError::conflict("Team is being deleted"));
+    if team_deletion_pending || game_deletion_pending {
+        return Err(AppError::conflict("Team or game is being deleted"));
     }
 
     let division_id = resolve_requested_division(
@@ -310,6 +343,17 @@ async fn update_division_only(
         identity.game_id,
         live_division_id,
         requested_division_id,
+    )
+    .await?;
+    let live_status = <ParticipationStatus as ActiveEnum>::try_from_value(&live_status_value)
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    crate::services::participation_evidence::ensure_evidence_preserving_update(
+        &mut transaction,
+        identity.id,
+        live_status,
+        live_status,
+        live_division_id,
+        division_id,
     )
     .await?;
     let scoring_started = crate::controllers::edit::ad_epoch_scoring_started_locked(

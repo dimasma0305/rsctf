@@ -93,11 +93,11 @@ web=(
   --set containerBackend=worker
   --set workerBackend.localBackend=none
   --set trafficCapture.enabled=false
-  --set config.dbMaxConnections=21
+  --set config.dbMaxConnections=26
 )
 web_rendered="$(helm template rsctf-web charts/rsctf "${web[@]}")"
 if helm template rsctf-web charts/rsctf "${web[@]}" \
-  --set config.dbMaxConnections=20 >/dev/null 2>&1; then
+  --set config.dbMaxConnections=25 >/dev/null 2>&1; then
   fail "web role accepted a database pool below its replica-safe floor"
 fi
 assert_absent "$web_rendered" 'RSCTF_WORKER_LISTEN' \
@@ -200,7 +200,7 @@ split=(
   --set kubernetes.challengeNamespace=rsctf-challenges
   --set kubernetes.createChallengeNamespace=false
   --set kubernetes.adServiceCidr=10.96.0.0/12
-  --set config.dbMaxConnections=21
+  --set config.dbMaxConnections=26
 )
 helm template rsctf-web charts/rsctf "${split[@]}" >/dev/null
 vpn_web="$(helm template rsctf-web charts/rsctf "${split[@]}" \

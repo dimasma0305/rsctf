@@ -51,7 +51,14 @@ Save the full migration error and stop repeated restarts. Back up the database b
 
 ### Redis unavailable
 
-rsctf falls back to an in-memory cache and logs a warning. The site can remain available on one replica, but load and cache consistency change. Restore Redis and restart rsctf if the connection is only established at startup.
+rsctf falls back to its in-process cache and per-process rate limiter and emits a
+rate-limited warning. The site remains live, while `/healthz` reports `503` until
+Redis recovers. In a replicated deployment, each process has an independent
+fallback budget, so restore Redis promptly to regain globally shared enforcement;
+an already-initialized connection manager reconnects in the background without a
+restart. If an optional single-process deployment started while Redis was down
+and selected its local limiter instead, restart it after Redis recovers to enable
+the shared limiter.
 
 ## Browser and proxy problems
 

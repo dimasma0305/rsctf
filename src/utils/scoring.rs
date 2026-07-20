@@ -1,6 +1,7 @@
 //! Shared validation for jeopardy-style challenge scoring parameters.
 
 use crate::utils::error::{AppError, AppResult};
+use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
 // Keep jeopardy flag changes linearizable with an in-flight submission. Existing
 // `FlagContexts` rows can be protected with row locks, but an INSERT has no row to
@@ -35,6 +36,26 @@ pub async fn lock_jeopardy_flags_exclusive(
         .bind(JEOPARDY_FLAG_LOCK_NAMESPACE)
         .bind(challenge_id)
         .execute(connection)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
+}
+
+/// SeaORM-transaction counterpart used by repository upserts, whose enum-rich
+/// loaded-model merge cannot safely be duplicated as a second raw-SQL write.
+pub async fn lock_jeopardy_flags_exclusive_orm<C>(
+    connection: &C,
+    challenge_id: i32,
+) -> AppResult<()>
+where
+    C: ConnectionTrait,
+{
+    connection
+        .execute(Statement::from_sql_and_values(
+            DatabaseBackend::Postgres,
+            "SELECT pg_advisory_xact_lock($1, $2)",
+            [JEOPARDY_FLAG_LOCK_NAMESPACE.into(), challenge_id.into()],
+        ))
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(())

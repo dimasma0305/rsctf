@@ -13,35 +13,56 @@ pub async fn update_attachment(
     Json(model): Json<AttachmentCreateModel>,
 ) -> AppResult<RequestResponse<i32>> {
     manager_or_admin(&st, &user, id).await?;
-    let challenge = load_challenge(&st, id, c_id).await?;
-    if challenge.challenge_type == ChallengeType::DynamicAttachment {
-        return Err(AppError::bad_request(
-            "Use the assets API for dynamic-attachment challenges",
-        ));
+    let definition_lock =
+        crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
+    let result: AppResult<RequestResponse<i32>> = async {
+        let challenge = load_challenge(&st, id, c_id).await?;
+        if challenge.challenge_type == ChallengeType::DynamicAttachment {
+            return Err(AppError::bad_request(
+                "Use the assets API for dynamic-attachment challenges",
+            ));
+        }
+
+        let new_id = build_attachment(
+            &st,
+            model.attachment_type,
+            model.file_hash,
+            model.remote_url,
+        )
+        .await?;
+
+        // Detach the challenge from its previous attachment FIRST, then release the
+        // orphaned attachment + its ref-counted blob (clear-FK-first).
+        let old_attachment_id = challenge.attachment_id;
+        let mut am: game_challenge::ActiveModel = challenge.into();
+        am.attachment_id = Set(new_id);
+        am.update(&st.db).await?;
+
+        if let Some(old) = old_attachment_id {
+            if Some(old) != new_id {
+                delete_attachment(&st, old).await?;
+            }
+        }
+
+        Ok(RequestResponse::ok(new_id.unwrap_or(0)))
     }
-
-    let new_id = build_attachment(
-        &st,
-        model.attachment_type,
-        model.file_hash,
-        model.remote_url,
-    )
-    .await?;
-
-    // Detach the challenge from its previous attachment FIRST, then release the
-    // orphaned attachment + its ref-counted blob (clear-FK-first).
-    let old_attachment_id = challenge.attachment_id;
-    let mut am: game_challenge::ActiveModel = challenge.into();
-    am.attachment_id = Set(new_id);
-    am.update(&st.db).await?;
-
-    if let Some(old) = old_attachment_id {
-        if Some(old) != new_id {
-            delete_attachment(&st, old).await?;
+    .await;
+    let release = definition_lock
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()));
+    match result {
+        Ok(response) => {
+            release?;
+            Ok(response)
+        }
+        Err(error) => {
+            if let Err(release_error) = release {
+                tracing::warn!(%release_error, c_id, "challenge attachment unlock failed");
+            }
+            Err(error)
         }
     }
-
-    Ok(RequestResponse::ok(new_id.unwrap_or(0)))
 }
 
 /// Materialize an `Attachment` row from the wire model, resolving a `Local`

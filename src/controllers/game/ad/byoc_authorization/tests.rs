@@ -41,13 +41,15 @@ async fn test_pool() -> (sqlx::PgPool, sqlx::PgPool, String) {
         );
         CREATE TABLE "Games" (
           id INTEGER PRIMARY KEY, private_key TEXT NOT NULL,
-          start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
+          start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
         CREATE TABLE "GameChallenges" (
           id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, title TEXT NOT NULL,
           container_image TEXT, build_status SMALLINT NOT NULL,
           build_image_digest TEXT, expose_port INTEGER, "Type" SMALLINT NOT NULL,
           ad_self_hosted BOOLEAN NOT NULL, is_enabled BOOLEAN NOT NULL,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
           review_status SMALLINT NOT NULL
         );
         "#,
@@ -68,7 +70,7 @@ async fn test_pool() -> (sqlx::PgPool, sqlx::PgPool, String) {
         .unwrap();
     let start = Utc::now() - Duration::hours(1);
     let end = Utc::now() + Duration::hours(1);
-    sqlx::query(r#"INSERT INTO "Games" VALUES (3, 'game-secret', $1, $2)"#)
+    sqlx::query(r#"INSERT INTO "Games" VALUES (3, 'game-secret', $1, $2, FALSE)"#)
         .bind(start)
         .bind(end)
         .execute(&pool)
@@ -82,7 +84,7 @@ async fn test_pool() -> (sqlx::PgPool, sqlx::PgPool, String) {
         r#"INSERT INTO "GameChallenges"
            VALUES (13, 3, 'service', 'service:latest', 1,
                    'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-                   31337, 4, TRUE, TRUE, 0)"#,
+                   31337, 4, TRUE, TRUE, FALSE, 0)"#,
     )
     .execute(&pool)
     .await
@@ -184,6 +186,39 @@ async fn challenge_revocation_waits_for_the_atomic_admission_snapshot() {
             .unwrap()
             .is_none(),
         "a disabled challenge retained its old image grant"
+    );
+    cleanup(admin, pool, schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn pending_game_or_challenge_cannot_issue_a_byoc_grant() {
+    let (admin, pool, schema) = test_pool().await;
+    let bearer = token("team-secret");
+    sqlx::query(r#"UPDATE "GameChallenges" SET deletion_pending = TRUE WHERE id = 13"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        authorize_byoc_capability(&pool, 3, 11, 13, "adbyocimage:", &bearer)
+            .await
+            .unwrap()
+            .is_none(),
+        "a deletion-pending challenge issued a fresh BYOC grant"
+    );
+    sqlx::raw_sql(
+        r#"UPDATE "GameChallenges" SET deletion_pending = FALSE WHERE id = 13;
+           UPDATE "Games" SET deletion_pending = TRUE WHERE id = 3;"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        authorize_byoc_capability(&pool, 3, 11, 13, "adbyocimage:", &bearer)
+            .await
+            .unwrap()
+            .is_none(),
+        "a deletion-pending game issued a fresh BYOC grant"
     );
     cleanup(admin, pool, schema).await;
 }

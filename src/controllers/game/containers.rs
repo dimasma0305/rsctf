@@ -7,11 +7,16 @@ use eligibility::{
 };
 mod publication;
 pub(crate) use publication::refresh_shared_container_lease_locked;
-use publication::{revoke_published_shared_container, revoke_published_team_container};
+use publication::{
+    revoke_failed_team_container_publication, revoke_published_shared_container,
+    revoke_published_team_container,
+};
 mod policy;
 use policy::{
     allows_practice_container, container_op_too_frequent, CONTAINER_RENEWAL_WINDOW_MINUTES,
 };
+mod reaping;
+pub(crate) use reaping::destroy_managed_container_row;
 mod workload_fence;
 use workload_fence::{
     acquire_playable_publication_lock, acquire_shared_publication_lock,
@@ -171,12 +176,12 @@ pub async fn create_container(
                         "The container of this challenge already exists",
                     ));
                 }
-                // Stale container: destroy it and clear the instance link before recreating.
-                let _ = st.containers.destroy(&c.container_id).await;
-                container::Entity::delete_by_id(cuuid).exec(&st.db).await?;
-                let mut am: game_instance::ActiveModel = inst.clone().into();
-                am.container_id = Set(None);
-                inst = am.update(&st.db).await?;
+                // The Containers row is the durable retry owner. Clear the exact
+                // instance link only after capture is fenced and destroy succeeds.
+                revoke_published_team_container(&st, &c.container_id, c.id, inst.id, None, None)
+                    .await?;
+                inst.container_id = None;
+                inst.is_loaded = false;
             }
         }
         existing = Some(inst);
@@ -305,6 +310,7 @@ pub async fn create_container(
     };
     let mut created_flag_id = None;
     let mut created_instance_id = None;
+    let existing_instance_id = existing.as_ref().map(|instance| instance.id);
     let persisted: AppResult<(container::Model, chrono::DateTime<Utc>)> = async {
         let now = Utc::now();
         let stop_at = now + chrono::Duration::hours(CONTAINER_LIFETIME_HOURS);
@@ -381,19 +387,24 @@ pub async fn create_container(
     let (c, now) = match persisted {
         Ok(value) => value,
         Err(err) => {
-            let _ = st.containers.destroy(&backend_id).await;
-            let _ = container::Entity::delete_by_id(container_uuid)
-                .exec(&st.db)
-                .await;
-            if let Some(instance_id) = created_instance_id {
-                let _ = game_instance::Entity::delete_by_id(instance_id)
-                    .exec(&st.db)
-                    .await;
-            }
-            if let Some(flag_id) = created_flag_id {
-                let _ = flag_context::Entity::delete_by_id(flag_id)
-                    .exec(&st.db)
-                    .await;
+            if let Err(cleanup_error) = revoke_failed_team_container_publication(
+                &st,
+                &backend_id,
+                container_uuid,
+                created_instance_id.or(existing_instance_id),
+                created_instance_id,
+                created_flag_id,
+            )
+            .await
+            {
+                tracing::error!(
+                    %backend_id,
+                    %cleanup_error,
+                    "team container publication rollback failed; retaining durable owner for retry"
+                );
+                return Err(AppError::internal(format!(
+                    "{err}; container rollback failed: {cleanup_error}"
+                )));
             }
             return Err(err);
         }
@@ -510,18 +521,14 @@ pub async fn delete_container(
     if let Some(err) = container_op_too_frequent(&instance) {
         return Err(err);
     }
-    let mut destroy_id = String::new();
-    if let Some(c) = container::Entity::find_by_id(cuuid).one(&st.db).await? {
-        destroy_id = format!("<{}> {}", &c.id.simple().to_string()[..12], c.container_id);
-        let _ = st.containers.destroy(&c.container_id).await;
-        container::Entity::delete_by_id(cuuid).exec(&st.db).await?;
-    }
-    let mut inst_am: game_instance::ActiveModel = instance.into();
-    inst_am.container_id = Set(None);
-    inst_am.is_loaded = Set(false);
-    inst_am.last_container_operation = Set(Utc::now());
-    inst_am.update(&st.db).await?;
-    distributed.release().await?;
+    let c = container::Entity::find_by_id(cuuid)
+        .one(&st.db)
+        .await?
+        .ok_or_else(|| {
+            AppError::conflict("container bookkeeping is missing; retry after reconciliation")
+        })?;
+    let destroy_id = format!("<{}> {}", &c.id.simple().to_string()[..12], c.container_id);
+    revoke_published_team_container(&st, &c.container_id, c.id, instance.id, None, None).await?;
 
     let team_name = team::Entity::find_by_id(ctx.participation.team_id)
         .one(&st.db)
@@ -561,6 +568,7 @@ pub async fn delete_container(
     }
     .insert(&st.db)
     .await?;
+    distributed.release().await?;
 
     Ok(StatusCode::OK)
 }
@@ -713,11 +721,16 @@ pub(crate) async fn get_or_create_shared_container_locked(
                 let existing = am.update(&st.db).await?;
                 return Ok(existing);
             }
-            // Dead → tear down the stale docker container + row, then recreate below.
-            let _ = st.containers.destroy(&existing.container_id).await;
-            let _ = container::Entity::delete_by_id(existing.id)
-                .exec(&st.db)
-                .await;
+            // Dead → revoke the published route, fence capture, then destroy.
+            // Retain the exact challenge/container owners if any step fails so a
+            // later request can retry instead of publishing over an orphan runtime.
+            revoke_published_shared_container(
+                st,
+                challenge.id,
+                existing.id,
+                &existing.container_id,
+            )
+            .await?;
         }
         // Dangling pointer (row reaped / dead): fall through and recreate.
     }
@@ -833,10 +846,19 @@ pub(crate) async fn get_or_create_shared_container_locked(
     let c = match persisted {
         Ok(c) => c,
         Err(err) => {
-            let _ = st.containers.destroy(&backend_id).await;
-            let _ = container::Entity::delete_by_id(container_uuid)
-                .exec(&st.db)
-                .await;
+            if let Err(cleanup_error) =
+                revoke_published_shared_container(st, challenge.id, container_uuid, &backend_id)
+                    .await
+            {
+                tracing::error!(
+                    %backend_id,
+                    %cleanup_error,
+                    "shared container publication rollback failed; retaining durable owner for retry"
+                );
+                return Err(AppError::internal(format!(
+                    "{err}; shared container rollback failed: {cleanup_error}"
+                )));
+            }
             return Err(err);
         }
     };
@@ -856,125 +878,6 @@ pub(crate) async fn get_or_create_shared_container_locked(
     Ok(c)
 }
 
-/// Revoke and destroy one persisted container. Shared challenge/KotH backends
-/// take the same lock as provisioning, preventing endpoint republish between
-/// firewall removal and runtime destruction. `honor_refresh` lets the reaper
-/// skip a shared container whose lease was extended while it waited for the lock.
-pub(crate) async fn destroy_managed_container_row(
-    st: &SharedState,
-    candidate: &container::Model,
-    honor_refresh: bool,
-) -> AppResult<bool> {
-    let owner = sqlx::query_as::<_, (i16, i32, Option<i32>)>(
-        r#"SELECT owner_kind, lock_id, challenge_id
-             FROM (
-                   SELECT 0::smallint AS owner_kind, challenge.id AS lock_id,
-                          challenge.id AS challenge_id, 0 AS priority
-                     FROM "GameChallenges" challenge
-                    WHERE challenge.shared_container_id = $1
-                   UNION ALL
-                   SELECT 0::smallint, target.challenge_id, target.challenge_id, 1
-                     FROM "KothTargets" target
-                    WHERE target.container_id = $2
-                   UNION ALL
-                   SELECT 2::smallint, challenge.game_id, challenge.id, 2
-                     FROM "GameChallenges" challenge
-                    WHERE challenge.test_container_id = $1
-                   UNION ALL
-                   SELECT 1::smallint, instance.participation_id, NULL::integer, 3
-                     FROM "GameInstances" instance
-                    WHERE instance.id = $3
-             ) owner
-            ORDER BY priority
-            LIMIT 1"#,
-    )
-    .bind(candidate.id)
-    .bind(&candidate.container_id)
-    .bind(candidate.game_instance_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-
-    let shared_challenge_id = owner
-        .filter(|(owner_kind, _, _)| *owner_kind == 0)
-        .and_then(|(_, _, challenge_id)| challenge_id);
-    let test_challenge_id = owner
-        .filter(|(owner_kind, _, _)| *owner_kind == 2)
-        .and_then(|(_, _, challenge_id)| challenge_id);
-    let flight_key = owner.map(|(owner_kind, lock_id, _)| match owner_kind {
-        0 => format!("shared-container:{lock_id}"),
-        2 => format!("test-containers-game:{lock_id}"),
-        _ => format!("game-container:{lock_id}"),
-    });
-    let _flight = if let Some(key) = flight_key.as_deref() {
-        Some(crate::utils::single_flight::coalesce(key).await)
-    } else {
-        None
-    };
-    let distributed = if let Some(key) = flight_key.as_deref() {
-        Some(crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), key).await?)
-    } else {
-        None
-    };
-
-    let Some(current) = container::Entity::find_by_id(candidate.id)
-        .one(&st.db)
-        .await?
-    else {
-        if let Some(lock) = distributed {
-            lock.release().await?;
-        }
-        return Ok(false);
-    };
-    if honor_refresh && current.expect_stop_at >= Utc::now() {
-        if let Some(lock) = distributed {
-            lock.release().await?;
-        }
-        return Ok(false);
-    }
-
-    crate::services::ad_vpn::deactivate_backend_endpoint(&st.db, &current.container_id).await?;
-    crate::services::traffic::stop_container_capture(st, &current.container_id).await?;
-    st.containers.destroy(&current.container_id).await?;
-
-    if let Some(gi_id) = current.game_instance_id {
-        if let Some(instance) = game_instance::Entity::find_by_id(gi_id).one(&st.db).await? {
-            let mut active: game_instance::ActiveModel = instance.into();
-            active.container_id = Set(None);
-            active.is_loaded = Set(false);
-            active.last_container_operation = Set(Utc::now());
-            active.update(&st.db).await?;
-        }
-    }
-    container::Entity::delete_by_id(current.id)
-        .exec(&st.db)
-        .await?;
-    if let Some(challenge_id) = shared_challenge_id {
-        sqlx::query(
-            r#"UPDATE "GameChallenges"
-                  SET shared_container_id = NULL
-                WHERE id = $1 AND shared_container_id = $2"#,
-        )
-        .bind(challenge_id)
-        .bind(current.id)
-        .execute(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-    if let Some(challenge_id) = test_challenge_id {
-        sqlx::query(
-            r#"UPDATE "GameChallenges"
-                  SET test_container_id = NULL
-                WHERE id = $1 AND test_container_id = $2"#,
-        )
-        .bind(challenge_id)
-        .bind(current.id)
-        .execute(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-    if let Some(lock) = distributed {
-        lock.release().await?;
-    }
-    Ok(true)
-}
+#[cfg(test)]
+#[path = "containers/reaping_tests.rs"]
+mod reaping_tests;

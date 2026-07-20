@@ -28,7 +28,7 @@
 //!    challenge definition.
 //! 3. **Import** — each manifest is deserialized and upserted into a
 //!    `GameChallenge`, keyed by `(BindingId, manifest path)` so re-scanning an
-//!    unchanged repo is idempotent. See the TODO on [`import_manifest`].
+//!    unchanged repo is idempotent and preserves its challenge identity.
 //!
 //! Faults are isolated per binding and `NextScanUtc` is always advanced (even on
 //! failure) so a broken target can't hot-loop the poller. That scheduling policy
@@ -44,22 +44,29 @@
 //! through to a credential prompt). Any embedded credential is scrubbed from
 //! error messages before they reach a caller or log.
 
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 #[cfg(test)]
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use sea_orm::{
+    ActiveModelTrait, ConnectionTrait, DatabaseBackend, EntityTrait, Set, Statement,
+    TransactionTrait,
+};
 use serde::Deserialize;
 
 use crate::app_state::SharedState;
 use crate::models::data::{flag_context, game, game_challenge};
-use crate::utils::enums::{ChallengeBuildStatus, ChallengeReviewStatus, ChallengeType, ScoreCurve};
+use crate::utils::enums::{
+    ChallengeBuildStatus, ChallengeReviewStatus, ChallengeType, NetworkMode, ScoreCurve,
+};
 use crate::utils::error::{AppError, AppResult};
 
 mod checker;
-use checker::{checker_dest_dir, checker_source_dir, prepare_checker_venv};
+use checker::{
+    checker_dest_dir, checker_source_dir, cleanup_unpublished_checker, prepare_checker_venv,
+    validate_checker_source,
+};
 mod checker_gc;
 pub(crate) use checker_gc::acquire_checker_execution_lease;
 pub use checker_gc::collect_stale_checker_revisions;
@@ -86,6 +93,15 @@ pub use git::{
 use git::{url_without_credentials, validate_checkout_tree, validate_sync_repo_url};
 mod package;
 use package::{find_dockerfile_context, image_tag, parse_enum, resolve_category, zip_context_dir};
+mod discovery;
+pub use discovery::{discover_challenges, discover_events};
+mod repository;
+use repository::find_repository_challenge;
+pub(crate) use repository::{manifest_candidate_in_checkout, tombstone_missing_challenges};
+mod runtime;
+use runtime::{live_runtime_update_deferred, LiveRuntimeIntent};
+mod grading;
+use grading::{grading_fence_locked, GradingIntent};
 
 /// Whether an import may run executable preparation while ingesting its manifest.
 /// User submissions must remain inert until a separate, isolated approval worker
@@ -94,6 +110,16 @@ use package::{find_dockerfile_context, image_tag, parse_enum, resolve_category, 
 pub enum ImportPolicy {
     PendingReview,
     Trusted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManifestImportResult {
+    pub challenge_id: i32,
+    pub created: bool,
+    pub build_queued: bool,
+    pub runtime_update_deferred: bool,
+    pub grading_update_deferred: bool,
+    pub attachment_synced: bool,
 }
 
 impl ImportPolicy {
@@ -113,20 +139,9 @@ impl ImportPolicy {
     }
 }
 
-async fn cleanup_unpublished_archive(st: &SharedState, hash: Option<&str>) {
-    let Some(hash) = hash else {
-        return;
-    };
-    if let Err(error) =
-        crate::services::blob_refs::release_and_purge(st.pg(), st.storage.as_ref(), hash).await
-    {
-        tracing::warn!(%error, %hash, "git_sync: unpublished source archive cleanup failed");
-    }
-}
-
-/// Persist a source path only when it resolves inside this game's shared,
-/// binding-owned checkout. Temporary ZIP/GitHub imports deliberately store no
-/// path because their request-scoped directories are removed after import.
+/// Persist a replica-independent source identity only when the manifest resolves
+/// inside this game's binding-owned checkout. Temporary ZIP/GitHub imports store
+/// no path because their request-scoped directories are removed after import.
 fn durable_repo_manifest_path(
     storage_root: &str,
     binding_id: Option<i32>,
@@ -141,7 +156,15 @@ fn durable_repo_manifest_path(
     .ok()?;
     let manifest = std::fs::canonicalize(manifest).ok()?;
     (manifest.is_file() && manifest.starts_with(&checkout))
-        .then(|| manifest.to_string_lossy().into_owned())
+        .then(|| manifest.strip_prefix(&checkout).ok())
+        .flatten()
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .map(|relative| {
+            repository::scoped_manifest_identity(
+                binding_id,
+                &relative.to_string_lossy().replace('\\', "/"),
+            )
+        })
 }
 
 const MAX_REPO_ENTRIES: usize = 4_096;
@@ -149,91 +172,6 @@ const MAX_REPO_FILES: usize = 2_048;
 const MAX_REPO_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_REPO_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_REPO_DEPTH: usize = 32;
-
-/// Walk the tree rooted at `dir` and return every `challenge.yml` /
-/// `challenge.yaml` manifest path, sorted for deterministic output.
-///
-/// The `.git` directory is skipped. Traversal is iterative (an explicit stack)
-/// rather than recursive to avoid boxing an async recursion.
-pub async fn discover_challenges(dir: &Path) -> AppResult<Vec<PathBuf>> {
-    let mut manifests = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-
-    while let Some(current) = stack.pop() {
-        let mut entries = tokio::fs::read_dir(&current).await.map_err(|e| {
-            AppError::internal(format!("git_sync: read_dir {}: {e}", current.display()))
-        })?;
-
-        while let Some(entry) = entries.next_entry().await.map_err(|e| {
-            AppError::internal(format!(
-                "git_sync: read dir entry in {}: {e}",
-                current.display()
-            ))
-        })? {
-            let path = entry.path();
-            let file_type = entry.file_type().await.map_err(|e| {
-                AppError::internal(format!("git_sync: stat {}: {e}", path.display()))
-            })?;
-
-            if file_type.is_dir() {
-                // Never descend into the git metadata dir.
-                if path.file_name() == Some(OsStr::new(".git")) {
-                    continue;
-                }
-                stack.push(path);
-            } else if file_type.is_file() {
-                if let Some(name) = path.file_name().and_then(OsStr::to_str) {
-                    if name == "challenge.yml" || name == "challenge.yaml" {
-                        manifests.push(path);
-                    }
-                }
-            }
-        }
-    }
-
-    manifests.sort();
-    Ok(manifests)
-}
-
-/// Walk `dir` for every `.gzevent` event manifest (exact filename, one per event
-/// directory), mirroring RSCTF `RepoBindingDiscoveryService`'s
-/// `EnumerateFiles(scanRoot, ".gzevent", AllDirectories)`. Each `.gzevent`
-/// defines one game (event); challenges are discovered under its directory.
-/// The `.git` dir is skipped; results are sorted for deterministic output.
-pub async fn discover_events(dir: &Path) -> AppResult<Vec<PathBuf>> {
-    let mut events = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-
-    while let Some(current) = stack.pop() {
-        let mut entries = tokio::fs::read_dir(&current).await.map_err(|e| {
-            AppError::internal(format!("git_sync: read_dir {}: {e}", current.display()))
-        })?;
-        while let Some(entry) = entries.next_entry().await.map_err(|e| {
-            AppError::internal(format!(
-                "git_sync: read dir entry in {}: {e}",
-                current.display()
-            ))
-        })? {
-            let path = entry.path();
-            let file_type = entry.file_type().await.map_err(|e| {
-                AppError::internal(format!("git_sync: stat {}: {e}", path.display()))
-            })?;
-            if file_type.is_dir() {
-                if path.file_name() == Some(OsStr::new(".git")) {
-                    continue;
-                }
-                stack.push(path);
-            } else if file_type.is_file()
-                && path.file_name().and_then(OsStr::to_str) == Some(".gzevent")
-            {
-                events.push(path);
-            }
-        }
-    }
-
-    events.sort();
-    Ok(events)
-}
 
 /// In-memory shape of one `.gzevent` event manifest, mirroring RSCTF
 /// `Models/Request/Edit/GzEventModel`. Every field is optional (a sparse
@@ -346,8 +284,8 @@ pub struct ContainerSection {
     pub enable_traffic_capture: Option<bool>,
     #[serde(rename = "enableSharedContainer")]
     pub enable_shared_container: Option<bool>,
-    // networkMode is parsed-but-dropped: the rsctf `GameChallenge` has no
-    // network_mode column (unlike RSCTF), so there is nowhere to persist it.
+    #[serde(rename = "networkMode")]
+    pub network_mode: Option<NetworkMode>,
 }
 
 /// A&D-specific per-challenge knobs (`ad:` block). Only the A&D-specific fields
@@ -366,19 +304,22 @@ pub struct AdSection {
     pub self_hosted: Option<bool>,
 }
 
-/// Parse a `challenge.yml` / `challenge.yaml` manifest and INSERT the resulting
+/// Parse a `challenge.yml` / `challenge.yaml` manifest and persist the resulting
 /// `GameChallenge` (plus its static `FlagContext` rows) under `game_id`.
 ///
 /// Ports RSCTF `ChallengeImportService.ImportOneAsync` +
 /// `ChallengeRepository.CreateChallenge`: deserialize the yaml
 /// ([`ChallengeYaml`], mirroring `ChallengeYamlSerializer`'s model), map it onto
-/// the flattened challenge/base fields, then persist. Returns the created
-/// challenge id.
+/// the flattened challenge/base fields, then persist. Repository-backed rows
+/// are updated in place by durable manifest path so submissions and solve state
+/// retain the same challenge id across scans.
 ///
-/// This is the create half only (the poller's idempotent upsert-on-re-scan keyed
-/// by `(binding id, manifest path)` layers on top of this). [`ImportPolicy`]
-/// establishes the row's review state at insert time and decides whether build /
-/// checker preparation may run.
+/// Repository callers must hold the shared per-game A&D/KotH configuration
+/// lock while importing their sorted manifest set. Both repository scans and
+/// archive imports do so, serializing legacy identity adoption across replicas.
+/// [`ImportPolicy`] establishes a new row's review state and decides whether
+/// build/checker preparation may run; an update preserves its established
+/// review and enabled state.
 ///
 /// Errors: a missing/empty `name`, an unknown `type`, `ignore: true`, or a
 /// nonexistent `game_id` all map to [`AppError::bad_request`]; a yaml parse
@@ -388,13 +329,23 @@ pub async fn import_manifest(
     game_id: i32,
     manifest: &Path,
     policy: ImportPolicy,
-) -> AppResult<i32> {
+) -> AppResult<ManifestImportResult> {
     // Fail early with a friendly message rather than surfacing an FK violation
     // from the INSERT below.
     let game = game::Entity::find_by_id(game_id)
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found(format!("game {game_id} not found")))?;
+    let game_deletion_pending: bool =
+        sqlx::query_scalar(r#"SELECT deletion_pending FROM "Games" WHERE id = $1"#)
+            .bind(game_id)
+            .fetch_optional(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+            .ok_or_else(|| AppError::not_found(format!("game {game_id} not found")))?;
+    if game_deletion_pending {
+        return Err(AppError::conflict("Game is being deleted"));
+    }
 
     let raw = tokio::fs::read_to_string(manifest)
         .await
@@ -413,13 +364,30 @@ pub async fn import_manifest(
     // `ignore: true` opts the challenge out of sync entirely — never created.
     if model.ignore == Some(true) {
         return Err(AppError::bad_request(format!(
-            "'{name}' has ignore: true — not synced"
+            "'{name}' has ignore: true — it is not synced; any existing challenge is retained, and repository removal requires deleting the manifest"
         )));
     }
 
     let raw_type = model.challenge_type.as_deref().unwrap_or("");
     let challenge_type = parse_enum::<ChallengeType>(raw_type)
         .ok_or_else(|| AppError::bad_request(format!("unknown challenge type '{raw_type}'")))?;
+    let source_yaml_path =
+        durable_repo_manifest_path(&st.config.storage_root, game.repo_binding_id, manifest);
+    let existing = find_repository_challenge(
+        st,
+        game_id,
+        game.repo_binding_id,
+        source_yaml_path.as_deref(),
+    )
+    .await?;
+    if existing
+        .as_ref()
+        .is_some_and(|challenge| challenge.challenge_type != challenge_type)
+    {
+        return Err(AppError::bad_request(
+            "repository sync cannot change an existing challenge type; create a new manifest path instead",
+        ));
+    }
     if challenge_type == ChallengeType::KingOfTheHill {
         crate::services::ad_engine::koth_cycle::validate_crown_shape(
             game.koth_epoch_ticks,
@@ -483,6 +451,9 @@ pub async fn import_manifest(
     // Container fields only apply to container-typed challenges. `provide:`
     // attachments and the image auto-build pipeline are separate slices.
     let is_container = challenge_type.is_container();
+    let preserve_live_runtime = existing
+        .as_ref()
+        .is_some_and(|challenge| challenge.is_enabled && challenge.challenge_type.is_container());
     let declared_container_image = if is_container {
         container
             .and_then(|c| c.container_image.clone())
@@ -520,11 +491,31 @@ pub async fn import_manifest(
         && container
             .and_then(|c| c.enable_shared_container)
             .unwrap_or(false);
+    let network_mode = is_container.then_some(
+        container
+            .and_then(|c| c.network_mode)
+            .unwrap_or(NetworkMode::Open),
+    );
 
     // A&D-engine knobs. Egress is deny-by-default; self-reset retains the
     // upstream default. A sparse manifest must opt into outbound access.
     let ad = model.ad.as_ref();
     let uses_ad = challenge_type.uses_ad_engine();
+    let mut requested_static_flags = if uses_ad {
+        Vec::new()
+    } else {
+        model
+            .flags
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|flag| flag.trim().to_string())
+            .filter(|flag| !flag.is_empty())
+            .collect::<Vec<_>>()
+    };
+    requested_static_flags.sort();
+    requested_static_flags.dedup();
+    let disable_blood_bonus = model.disable_blood_bonus.unwrap_or(false);
     let declared_checker_image = if uses_ad {
         ad.and_then(|a| a.checker_image.clone())
             .map(|s| s.trim().to_string())
@@ -560,16 +551,8 @@ pub async fn import_manifest(
     // package before INSERT so a later reviewer can prepare the exact immutable
     // checker they inspected. Trusted repository imports publish their checker
     // inline, then retain the same complete package when a local image is built.
-    let mut archive_blob_path: Option<String> = if policy == ImportPolicy::PendingReview {
-        let package = zip_context_dir(package_dir).await?;
-        let (blob, _) = crate::services::blob_refs::store_and_acquire(
-            st.pg(),
-            st.storage.as_ref(),
-            "challenge-source.zip",
-            &package,
-        )
-        .await?;
-        Some(blob.hash)
+    let mut archive_package: Option<Vec<u8>> = if policy == ImportPolicy::PendingReview {
+        Some(zip_context_dir(package_dir).await?)
     } else {
         None
     };
@@ -579,36 +562,31 @@ pub async fn import_manifest(
     // "{{.slug}}:latest" template placeholder ("build whatever Dockerfile is here").
     // A concrete registry ref (nginx:alpine, ghcr.io/foo:tag) is resolved by the
     // pull seam below rather than built from local source.
-    let wants_local_build = is_container
+    let wants_local_source = is_container
         && declared_container_image
             .as_deref()
             .map(|s| s.contains("{{"))
             .unwrap_or(true);
-    if wants_local_build {
-        if let Some(ctx_dir) = find_dockerfile_context(package_dir) {
+    let local_build_context = wants_local_source
+        .then(|| find_dockerfile_context(package_dir))
+        .flatten();
+    if let Some(ctx_dir) = local_build_context.as_ref() {
+        if ctx_dir == &package_dir.join("src") {
+            // Pending review retains the complete immutable package for checker
+            // preparation and audit. The builder deterministically selects this
+            // subtree without replacing the source blob.
+            build_context_subdir = Some("src".to_string());
+        } else {
+            build_context_subdir = Some(".".to_string());
+        }
+        container_image = Some(image_tag(game_id, &name));
+        if !preserve_live_runtime {
             if policy.may_execute() {
                 // Preserve the complete reviewed package, not only the Docker
                 // subtree. `build_context_subdir` selects the exact bytes sent
                 // to Docker while audit/checker provenance remains available.
-                let zip = zip_context_dir(package_dir).await?;
-                let (blob, _) = crate::services::blob_refs::store_and_acquire(
-                    st.pg(),
-                    st.storage.as_ref(),
-                    "challenge-source.zip",
-                    &zip,
-                )
-                .await?;
-                archive_blob_path = Some(blob.hash);
+                archive_package = Some(zip_context_dir(package_dir).await?);
             }
-            if ctx_dir == package_dir.join("src") {
-                // Pending review retains the complete immutable package for
-                // checker preparation and audit. The builder deterministically
-                // selects this subtree without replacing the source blob.
-                build_context_subdir = Some("src".to_string());
-            } else {
-                build_context_subdir = Some(".".to_string());
-            }
-            container_image = Some(image_tag(game_id, &name));
             build_status = ChallengeBuildStatus::Queued;
             queue_challenge_build = true;
         }
@@ -617,6 +595,7 @@ pub async fn import_manifest(
     // seam so Docker resolves and persists the exact repository digest before a
     // reviewed runtime may execute the challenge.
     if is_container
+        && !preserve_live_runtime
         && container_image
             .as_deref()
             .is_some_and(|image| !image.trim().is_empty())
@@ -637,12 +616,44 @@ pub async fn import_manifest(
         .then(|| checker_source_dir(&package_dir.join("checker")))
         .flatten();
     if declared_checker_image.is_some() && checker_source.is_none() {
-        cleanup_unpublished_archive(st, archive_blob_path.as_deref()).await;
         return Err(AppError::bad_request(
             "ad.checkerImage requests a local checker but checker/run.py is missing",
         ));
     }
-    let checker_prep = if policy.may_execute() {
+    if let Some(source) = checker_source.as_deref() {
+        validate_checker_source(source).await?;
+    }
+    let runtime_update_deferred = match existing.as_ref().filter(|_| preserve_live_runtime) {
+        Some(challenge) => {
+            live_runtime_update_deferred(
+                st,
+                challenge,
+                &LiveRuntimeIntent {
+                    container_image: container_image.as_deref(),
+                    declared_container_image: declared_container_image.as_deref(),
+                    memory_limit,
+                    storage_limit,
+                    cpu_count,
+                    expose_port,
+                    flag_template: flag_template.as_deref(),
+                    build_context_subdir: build_context_subdir.as_deref(),
+                    local_build_context: local_build_context.as_deref(),
+                    checker_source: checker_source.as_deref(),
+                    static_flags: &requested_static_flags,
+                    enable_traffic_capture,
+                    enable_shared_container,
+                    network_mode,
+                    ad_allow_egress,
+                    ad_allow_self_reset,
+                    ad_ssh_requires_flag,
+                    ad_self_hosted,
+                },
+            )
+            .await?
+        }
+        None => false,
+    };
+    let checker_prep = if policy.may_execute() && !preserve_live_runtime {
         checker_source.map(|source| {
             (
                 checker_dest_dir(Path::new(&st.config.storage_root), game_id, &name),
@@ -663,12 +674,10 @@ pub async fn import_manifest(
         let guard = match acquire_checker_artifact_guard(st).await {
             Ok(guard) => guard,
             Err(error) => {
-                cleanup_unpublished_archive(st, archive_blob_path.as_deref()).await;
                 return Err(error);
             }
         };
         if let Err(error) = prepare_checker_venv(dest, src_dir).await {
-            cleanup_unpublished_archive(st, archive_blob_path.as_deref()).await;
             if let Err(release_error) = guard.release().await {
                 tracing::warn!(%release_error, "checker publication guard release failed");
             }
@@ -682,86 +691,254 @@ pub async fn import_manifest(
     };
 
     let now = Utc::now();
-    let am = game_challenge::ActiveModel {
-        game_id: Set(game_id),
-        title: Set(name),
-        content: Set(content),
-        category: Set(category),
-        challenge_type: Set(challenge_type),
-        hints: Set(hints),
-        is_enabled: Set(false),
-        submission_limit: Set(submission_limit),
-        accepted_count: Set(0),
-        submission_count: Set(0),
-        container_image: Set(container_image),
-        memory_limit: Set(memory_limit),
-        storage_limit: Set(storage_limit),
-        cpu_count: Set(cpu_count),
-        expose_port: Set(expose_port),
-        flag_template: Set(flag_template),
-        // Establish review state at INSERT time. A user submission must never be
-        // transiently Active while its untrusted side effects are still running.
-        review_status: Set(policy.review_status()),
-        reviewed_at_utc: Set(policy.reviewed_at(now)),
-        submitted_at_utc: Set(Some(now)),
-        build_status: Set(build_status),
-        // Record the manifest's on-disk path so the edit-time push-back
-        // (EditController.TryPushBackAsync) can find the yaml to regenerate even
-        // after a title/category rename. Absolute (rooted at the per-binding
-        // checkout dir) — the push-back re-derives the git-relative path via
-        // strip_prefix(checkout). Previously left NULL.
-        source_yaml_path: Set(durable_repo_manifest_path(
-            &st.config.storage_root,
-            game.repo_binding_id,
-            manifest,
-        )),
-        original_archive_blob_path: Set(archive_blob_path.clone()),
-        build_context_subdir: Set(build_context_subdir),
-        enable_traffic_capture: Set(enable_traffic_capture),
-        enable_shared_container: Set(enable_shared_container),
-        disable_blood_bonus: Set(model.disable_blood_bonus.unwrap_or(false)),
-        original_score: Set(1000),
-        min_score_rate: Set(min_score_rate),
-        difficulty: Set(difficulty),
-        score_curve: Set(ScoreCurve::Standard),
-        ad_checker_image: Set(ad_checker_image),
-        ad_allow_egress: Set(ad_allow_egress),
-        ad_allow_self_reset: Set(ad_allow_self_reset),
-        ad_ssh_requires_flag: Set(ad_ssh_requires_flag),
-        ad_self_hosted: Set(ad_self_hosted),
-        ..Default::default()
+    let is_update = existing.is_some();
+    // The scan already holds the per-game configuration lock, matching runtime
+    // edits' game -> definition order. Definition-only build/attachment work
+    // can still be in flight, so fail quickly rather than stretching the game
+    // fence across an unbounded wait.
+    let mut definition_lock = None;
+    if let Some(challenge) = existing.as_ref() {
+        let acquired = crate::services::challenge_workloads::try_acquire_definition_lock(
+            st.pg(),
+            game_id,
+            challenge.id,
+        )
+        .await;
+        let mut lock = match acquired {
+            Ok(Some(lock)) => lock,
+            Ok(None) => {
+                cleanup_unpublished_checker(
+                    checker_prepared,
+                    checker_prep.as_ref(),
+                    &mut checker_artifact_guard,
+                )
+                .await;
+                return Err(AppError::conflict(
+                    "challenge definition is being updated; retry the repository scan",
+                ));
+            }
+            Err(error) => {
+                cleanup_unpublished_checker(
+                    checker_prepared,
+                    checker_prep.as_ref(),
+                    &mut checker_artifact_guard,
+                )
+                .await;
+                return Err(error);
+            }
+        };
+        // The retained game + definition advisory locks are the mutation
+        // fence. Do not take a row lock here: the enum-rich model update below
+        // intentionally uses a separate SeaORM transaction, and a FOR SHARE
+        // lock on this transaction would self-deadlock that UPDATE.
+        let deletion_pending = sqlx::query_scalar::<_, bool>(
+            r#"SELECT deletion_pending
+                  FROM "GameChallenges"
+                 WHERE id = $1 AND game_id = $2"#,
+        )
+        .bind(challenge.id)
+        .bind(game_id)
+        .fetch_optional(&mut **lock.transaction_mut())
+        .await;
+        let deletion_pending = match deletion_pending {
+            Ok(value) => value,
+            Err(error) => {
+                cleanup_unpublished_checker(
+                    checker_prepared,
+                    checker_prep.as_ref(),
+                    &mut checker_artifact_guard,
+                )
+                .await;
+                let _ = lock.release().await;
+                return Err(AppError::internal(error.to_string()));
+            }
+        };
+        if deletion_pending != Some(false) {
+            cleanup_unpublished_checker(
+                checker_prepared,
+                checker_prep.as_ref(),
+                &mut checker_artifact_guard,
+            )
+            .await;
+            lock.release()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            return match deletion_pending {
+                Some(true) => Err(AppError::conflict("Challenge is being deleted")),
+                _ => Err(AppError::not_found("Challenge not found")),
+            };
+        }
+        definition_lock = Some(lock);
+    }
+    let mut am = existing
+        .clone()
+        .map(game_challenge::ActiveModel::from)
+        .unwrap_or_default();
+    am.game_id = Set(game_id);
+    am.title = Set(name);
+    am.content = Set(content);
+    am.category = Set(category);
+    am.challenge_type = Set(challenge_type);
+    am.hints = Set(hints);
+    // Record the manifest's durable path so later scans update this same row.
+    // Existing repository rows keep their primary key, solve aggregates,
+    // submissions, enabled/review state, and live runtime ownership fields.
+    am.source_yaml_path = Set(source_yaml_path);
+    if !preserve_live_runtime {
+        am.container_image = Set(container_image);
+        am.memory_limit = Set(memory_limit);
+        am.storage_limit = Set(storage_limit);
+        am.cpu_count = Set(cpu_count);
+        am.expose_port = Set(expose_port);
+        am.build_status = Set(build_status);
+        am.build_image_digest = Set(None);
+        am.last_build_log = Set(None);
+        am.build_context_subdir = Set(build_context_subdir);
+        am.enable_traffic_capture = Set(enable_traffic_capture);
+        am.enable_shared_container = Set(enable_shared_container);
+        am.network_mode = Set(network_mode);
+        am.ad_checker_image = Set(ad_checker_image);
+        am.ad_allow_egress = Set(ad_allow_egress);
+        am.ad_allow_self_reset = Set(ad_allow_self_reset);
+        am.ad_ssh_requires_flag = Set(ad_ssh_requires_flag);
+        am.ad_self_hosted = Set(ad_self_hosted);
+    }
+    if !is_update {
+        am.is_enabled = Set(false);
+        am.accepted_count = Set(0);
+        am.submission_count = Set(0);
+        // Establish review state at INSERT time. A user submission must never
+        // be transiently Active while its untrusted side effects run.
+        am.review_status = Set(policy.review_status());
+        am.reviewed_at_utc = Set(policy.reviewed_at(now));
+        am.submitted_at_utc = Set(Some(now));
+    }
+
+    // Persist the row and its static flags together. On an update the loaded
+    // ActiveModel carries the original id and progress fields, so no FK cascade
+    // can erase Submissions or FirstSolves during a repository scan.
+    // SeaORM is deliberately retained for this write: converting the complete
+    // enum-rich challenge row to raw SQL would duplicate its field mapping and
+    // lose the safe loaded-model merge that preserves fields not owned by YAML.
+    let grading_intent = GradingIntent {
+        submission_limit,
+        disable_blood_bonus,
+        original_score: 1000,
+        min_score_rate,
+        difficulty,
+        score_curve: ScoreCurve::Standard,
+        flag_template: flag_template.as_deref(),
+        static_flags: &requested_static_flags,
     };
-    let created = match am.insert(&st.db).await {
-        Ok(created) => created,
+    let persisted: AppResult<(game_challenge::Model, bool)> = async {
+        let transaction = st.db.begin().await?;
+        if existing
+            .as_ref()
+            .is_some_and(|challenge| !challenge.challenge_type.uses_ad_engine())
+        {
+            crate::utils::scoring::lock_jeopardy_flags_exclusive_orm(
+                &transaction,
+                existing.as_ref().expect("update has an existing row").id,
+            )
+            .await?;
+        }
+        // This is the authoritative start/evidence decision. It runs after the
+        // submit-side exclusive grading fence and immediately before the write,
+        // so slow packaging/checker preparation cannot leave a stale pre-start
+        // decision capable of changing live or historical grading.
+        let grading_fence =
+            grading_fence_locked(&transaction, game_id, existing.as_ref(), &grading_intent).await?;
+        if !grading_fence.protected {
+            am.submission_limit = Set(submission_limit);
+            am.disable_blood_bonus = Set(disable_blood_bonus);
+            am.original_score = Set(1000);
+            am.min_score_rate = Set(min_score_rate);
+            am.difficulty = Set(difficulty);
+            am.score_curve = Set(ScoreCurve::Standard);
+            if !preserve_live_runtime {
+                am.flag_template = Set(flag_template.clone());
+            }
+        }
+        let challenge = if is_update {
+            am.update(&transaction).await?
+        } else {
+            am.insert(&transaction).await?
+        };
+        if is_update && !preserve_live_runtime && !grading_fence.protected {
+            // Dynamic/runtime flags are ownership records, not repository
+            // policy. Replace only unoccupied flags that no GameInstance still
+            // references, all under the submit-side exclusive grading fence.
+            transaction
+                .execute(Statement::from_sql_and_values(
+                    DatabaseBackend::Postgres,
+                    r#"DELETE FROM "FlagContexts" flag
+                        WHERE flag.challenge_id = $1
+                          AND flag.is_occupied = FALSE
+                          AND NOT EXISTS (
+                              SELECT 1 FROM "GameInstances" instance
+                               WHERE instance.flag_id = flag.id
+                          )"#,
+                    [challenge.id.into()],
+                ))
+                .await?;
+        }
+        if !preserve_live_runtime && !grading_fence.protected {
+            for flag in &requested_static_flags {
+                flag_context::ActiveModel {
+                    flag: Set(flag.clone()),
+                    is_occupied: Set(false),
+                    challenge_id: Set(Some(challenge.id)),
+                    ..Default::default()
+                }
+                .insert(&transaction)
+                .await?;
+            }
+        }
+        transaction.commit().await?;
+        Ok((challenge, grading_fence.update_deferred))
+    }
+    .await;
+    let (challenge, grading_update_deferred) = match persisted {
+        Ok(result) => result,
         Err(error) => {
-            // The archive reference was acquired before INSERT so the build
-            // row could point at an already-published object. If publication
-            // of the owning challenge fails, release that otherwise-orphaned
-            // reference under the same distributed hash fence as every other
-            // blob producer.
-            cleanup_unpublished_archive(st, archive_blob_path.as_deref()).await;
-            // This unique revision has not been published through the database,
-            // so it is safe to discard. Once INSERT succeeds revisions are never
-            // mutated or removed by the importer.
-            if checker_prepared {
-                if let Some((dest, _)) = checker_prep.as_ref() {
-                    if let Err(cleanup_error) = tokio::fs::remove_dir_all(dest).await {
-                        tracing::warn!(
-                            error = %cleanup_error,
-                            path = %dest,
-                            "git_sync: unpublished checker cleanup failed"
-                        );
-                    }
-                }
+            cleanup_unpublished_checker(
+                checker_prepared,
+                checker_prep.as_ref(),
+                &mut checker_artifact_guard,
+            )
+            .await;
+            if let Some(lock) = definition_lock.take() {
+                let _ = lock.release().await;
             }
-            if let Some(guard) = checker_artifact_guard.take() {
-                if let Err(release_error) = guard.release().await {
-                    tracing::warn!(%release_error, "checker publication guard release failed");
-                }
-            }
-            return Err(error.into());
+            return Err(error);
         }
     };
+
+    // Keep the content-addressed file reference, owning challenge row, and old
+    // reference release in one SQL transaction. Holding the definition fence
+    // through this swap prevents a build from observing the short interval in
+    // which the metadata update has committed but the archive owner has not.
+    if !preserve_live_runtime {
+        let archive = archive_package
+            .as_deref()
+            .map(|bytes| ("challenge-source.zip", bytes));
+        if let Err(error) = crate::services::blob_refs::store_and_replace_challenge_archive(
+            st.pg(),
+            st.storage.as_ref(),
+            challenge.id,
+            archive,
+        )
+        .await
+        {
+            if let Some(lock) = definition_lock.take() {
+                let _ = lock.release().await;
+            }
+            if let Some(guard) = checker_artifact_guard.take() {
+                let _ = guard.release().await;
+            }
+            return Err(error);
+        }
+    }
     if let Some(guard) = checker_artifact_guard.take() {
         if let Err(error) = guard.release().await {
             tracing::warn!(%error, "checker publication guard release failed");
@@ -769,40 +946,30 @@ pub async fn import_manifest(
     }
 
     // Attach the challenge's provided artifact — the RSCTF `provide:` path, or the
-    // TCP1P `dist/` convention when it's absent. Best-effort (logs on failure).
-    let _ = sync_attachment(st, created.id, package_dir, model.provide.as_deref()).await;
-
-    // Static flags → FlagContext rows. A&D/KotH plant per-team flags at runtime
-    // and carry none here; dedup so a manifest listing the same flag twice
-    // doesn't double-insert.
-    if !uses_ad {
-        if let Some(flags) = model.flags {
-            let mut seen = std::collections::HashSet::new();
-            for flag in flags {
-                let flag = flag.trim().to_string();
-                if flag.is_empty() || !seen.insert(flag.clone()) {
-                    continue;
-                }
-                let fam = flag_context::ActiveModel {
-                    flag: Set(flag),
-                    is_occupied: Set(false),
-                    challenge_id: Set(Some(created.id)),
-                    ..Default::default()
-                };
-                fam.insert(&st.db).await?;
-            }
-        }
+    // TCP1P `dist/` convention when it's absent. Retain the same definition
+    // fence through replacement/removal so an interactive edit cannot race it.
+    let attachment_synced = sync_attachment(
+        st,
+        challenge.id,
+        package_dir,
+        model.provide.as_deref(),
+        is_update,
+    )
+    .await;
+    if let Some(lock) = definition_lock.take() {
+        lock.release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
     }
 
-    // Fire the deferred image builds now the row (and its Model) exists — the build
-    // seam needs the persisted challenge. Mirrors RSCTF enqueuing after SaveChanges.
-    if policy.may_execute() && queue_challenge_build {
-        let (_outcome, _record) =
-            crate::controllers::edit::run_challenge_build(st, &created, "Import", 1).await;
-        // `run_challenge_build` publishes status/log while holding its
-        // cross-replica per-challenge lock.
-    }
-    Ok(created.id)
+    Ok(ManifestImportResult {
+        challenge_id: challenge.id,
+        created: !is_update,
+        build_queued: policy.may_execute() && queue_challenge_build,
+        runtime_update_deferred,
+        grading_update_deferred,
+        attachment_synced,
+    })
 }
 
 /// Push-back: regenerate a challenge's `challenge.yml` from its DB row and
@@ -813,149 +980,8 @@ mod attach;
 pub use attach::repair_missing_attachments;
 use attach::sync_attachment;
 mod push_back;
+pub(crate) use push_back::serialize_challenge_preserving_source;
 pub use push_back::{push_file, serialize_challenge};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pending_imports_are_inert_from_the_initial_insert() {
-        let now = Utc::now();
-        let policy = ImportPolicy::PendingReview;
-        assert_eq!(policy.review_status(), ChallengeReviewStatus::Pending);
-        assert_eq!(policy.reviewed_at(now), None);
-        assert!(!policy.may_execute());
-    }
-
-    #[test]
-    fn trusted_imports_preserve_inline_preparation() {
-        let now = Utc::now();
-        let policy = ImportPolicy::Trusted;
-        assert_eq!(policy.review_status(), ChallengeReviewStatus::Active);
-        assert_eq!(policy.reviewed_at(now), Some(now));
-        assert!(policy.may_execute());
-    }
-
-    #[test]
-    fn source_paths_are_persisted_only_inside_the_binding_checkout() {
-        let root = std::env::temp_dir().join(format!(
-            "rsctf-durable-source-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        let checkout = root.join("repos/7/challenge");
-        std::fs::create_dir_all(&checkout).unwrap();
-        let manifest = checkout.join("challenge.yml");
-        std::fs::write(&manifest, b"name: example\n").unwrap();
-        let outside = root.join("temporary.yml");
-        std::fs::write(&outside, b"name: temporary\n").unwrap();
-
-        assert_eq!(
-            durable_repo_manifest_path(root.to_str().unwrap(), Some(7), &manifest)
-                .map(PathBuf::from),
-            Some(std::fs::canonicalize(&manifest).unwrap())
-        );
-        assert_eq!(
-            durable_repo_manifest_path(root.to_str().unwrap(), Some(7), &outside),
-            None
-        );
-        assert_eq!(
-            durable_repo_manifest_path(root.to_str().unwrap(), None, &manifest),
-            None
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test]
-    async fn checkout_lock_serializes_one_checkout_only() {
-        let root = std::env::temp_dir().join(format!("rsctf-lock-{}", uuid::Uuid::new_v4()));
-        let same = root.join("repo");
-        let different = root.join("other");
-        let first = lock_checkout(&same).await;
-
-        let independent =
-            tokio::time::timeout(Duration::from_millis(250), lock_checkout(&different))
-                .await
-                .expect("different checkouts must not block each other");
-        drop(independent);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), lock_checkout(&same))
-                .await
-                .is_err(),
-            "the same checkout must remain locked"
-        );
-
-        drop(first);
-        tokio::time::timeout(Duration::from_millis(250), lock_checkout(&same))
-            .await
-            .expect("the checkout lock must be released with its guard");
-    }
-
-    #[test]
-    fn repository_url_policy_rejects_local_and_option_like_transports() {
-        assert!(validate_github_repo_url("https://github.com/rsctf/example.git").is_ok());
-        assert!(validate_github_repo_url("http://github.com/rsctf/example.git").is_err());
-        assert!(validate_github_repo_url("https://github.com.evil.test/a/b").is_err());
-        for invalid in [
-            "--upload-pack=/tmp/pwn",
-            "/tmp/repo",
-            "file:///tmp/repo",
-            "ext::sh -c id",
-            "ssh://example.com/repo",
-            "https://user:pass@example.com/repo",
-            "http://127.0.0.1/repo",
-            "http://localhost/repo",
-        ] {
-            assert!(
-                validate_binding_repo_url(invalid).is_err(),
-                "accepted {invalid}"
-            );
-        }
-        assert!(validate_binding_repo_url("https://git.example.com/team/repo.git").is_ok());
-    }
-
-    #[test]
-    fn git_refs_reject_option_and_ref_syntax_injection() {
-        for invalid in [
-            "--upload-pack=evil",
-            "main..evil",
-            "bad ref",
-            "x@{y",
-            "a\\b",
-        ] {
-            assert!(
-                validate_git_ref(Some(invalid)).is_err(),
-                "accepted {invalid}"
-            );
-        }
-        assert_eq!(
-            validate_git_ref(Some(" refs/tags/v1 ")).unwrap().as_deref(),
-            Some("refs/tags/v1")
-        );
-        assert_eq!(validate_git_ref(None).unwrap(), None);
-    }
-
-    #[test]
-    fn credentials_are_encoded_and_removable() {
-        let authenticated =
-            GitCredentials::new("token:@/value").apply("https://github.com/rsctf/example.git");
-        validate_sync_repo_url(&authenticated).unwrap();
-        assert_eq!(
-            url_without_credentials(&authenticated).unwrap(),
-            "https://github.com/rsctf/example.git"
-        );
-    }
-
-    #[tokio::test]
-    async fn checkout_tree_limits_depth_before_packaging() {
-        let root = std::env::temp_dir().join(format!("rsctf-tree-{}", uuid::Uuid::new_v4()));
-        let mut current = root.clone();
-        for _ in 0..=MAX_REPO_DEPTH {
-            current.push("d");
-        }
-        tokio::fs::create_dir_all(&current).await.unwrap();
-        tokio::fs::write(current.join("file"), b"x").await.unwrap();
-        assert!(validate_checkout_tree(&root).await.is_err());
-        let _ = tokio::fs::remove_dir_all(root).await;
-    }
-}
+mod tests;

@@ -41,8 +41,19 @@ pub async fn approve_challenge(
     Path((id, c_id)): Path<(i32, i32)>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
+    // Review activation/deactivation changes runtime eligibility. Retain the
+    // challenge-wide transition through checker/build publication or teardown
+    // so a concurrent approve/reject cannot overtake stale cleanup.
+    let runtime_transition =
+        crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
+            .await?;
     let mut challenge = load_challenge(&st, id, c_id).await?;
+    deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
     if challenge.review_status == ChallengeReviewStatus::Active {
+        runtime_transition
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         return Ok(MessageResponse::ok(""));
     }
     if let Some(spec) = challenge.workload_spec.clone() {
@@ -117,6 +128,7 @@ pub async fn approve_challenge(
                           build_image_digest = NULL
                     WHERE id = $1
                       AND game_id = $2
+                      AND deletion_pending = FALSE
                       AND review_status <> $5
                       AND original_archive_blob_path IS NOT DISTINCT FROM $6
                       AND container_image IS NOT DISTINCT FROM $7
@@ -142,6 +154,7 @@ pub async fn approve_challenge(
                           build_image_digest = NULL
                     WHERE id = $1
                       AND game_id = $2
+                      AND deletion_pending = FALSE
                       AND review_status <> $5
                       AND original_archive_blob_path IS NOT DISTINCT FROM $6
                       AND container_image IS NOT DISTINCT FROM $7
@@ -214,6 +227,7 @@ pub async fn approve_challenge(
                       reviewed_at_utc = clock_timestamp()
                 WHERE id = $1
                   AND game_id = $2
+                  AND deletion_pending = FALSE
                   AND review_status <> $4
                   AND ($5 = FALSE OR (build_status = $6
                        AND build_image_digest IS NOT DISTINCT FROM $7))
@@ -242,6 +256,7 @@ pub async fn approve_challenge(
                       reviewed_at_utc = clock_timestamp()
                 WHERE id = $1
                   AND game_id = $2
+                  AND deletion_pending = FALSE
                   AND review_status <> $3
                   AND ($4 = FALSE OR (build_status = $5
                        AND build_image_digest IS NOT DISTINCT FROM $6))
@@ -281,6 +296,10 @@ pub async fn approve_challenge(
     }
     flush_game_scoreboards(&st, id).await;
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    runtime_transition
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(MessageResponse::ok(""))
 }
 
@@ -292,7 +311,11 @@ pub async fn reject_challenge(
     Json(model): Json<RejectChallengeModel>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
+    let runtime_transition =
+        crate::services::challenge_workloads::acquire_runtime_transition_lock(st.pg(), c_id)
+            .await?;
     let challenge = load_challenge(&st, id, c_id).await?;
+    deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
     let mut engine_control = if challenge.challenge_type.uses_ad_engine() {
         Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?)
     } else {
@@ -312,11 +335,25 @@ pub async fn reject_challenge(
             "A&D/KotH challenge review state is locked after epoch scoring has started.",
         ));
     }
-    let mut am: game_challenge::ActiveModel = challenge.clone().into();
-    am.review_status = Set(ChallengeReviewStatus::Rejected);
-    am.reviewed_at_utc = Set(Some(Utc::now()));
-    am.review_note = Set(model.note);
-    am.update(&st.db).await?;
+    let rejected = sqlx::query(
+        r#"UPDATE "GameChallenges"
+              SET review_status = $3,
+                  reviewed_at_utc = clock_timestamp(),
+                  review_note = $4
+            WHERE id = $1 AND game_id = $2
+              AND deletion_pending = FALSE"#,
+    )
+    .bind(c_id)
+    .bind(id)
+    .bind(ChallengeReviewStatus::Rejected as i16)
+    .bind(model.note)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if rejected != 1 {
+        return Err(AppError::conflict("Challenge is being deleted"));
+    }
     if challenge.challenge_type == ChallengeType::KingOfTheHill {
         crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
     }
@@ -329,7 +366,11 @@ pub async fn reject_challenge(
     st.byoc.disconnect_challenge(&st.db, c_id).await?;
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
     if challenge.challenge_type.is_container() {
-        destroy_challenge_containers(&st, &challenge).await;
+        let _ = destroy_challenge_containers(&st, &challenge, true, false).await;
     }
+    runtime_transition
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(MessageResponse::ok(""))
 }

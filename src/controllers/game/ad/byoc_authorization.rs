@@ -123,9 +123,11 @@ pub(crate) async fn load_byoc_grant_on(
               AND participation.team_id = $3
               AND participation.status = $6
               AND NOT team.deletion_pending
+              AND game.deletion_pending = FALSE
               AND challenge."Type" = $7
               AND challenge.ad_self_hosted = TRUE
               AND challenge.is_enabled = TRUE
+              AND challenge.deletion_pending = FALSE
               AND challenge.review_status = $8
               AND (
                     $5 = FALSE OR (

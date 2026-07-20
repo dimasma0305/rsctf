@@ -438,6 +438,7 @@ pub async fn update_game(
         current_koth_champion_cooldown_ticks,
         current_koth_claim_confirmation_ticks,
         current_end_time,
+        deletion_pending,
     ) = sqlx::query_as::<
         _,
         (
@@ -453,6 +454,7 @@ pub async fn update_game(
             i32,
             i32,
             DateTime<Utc>,
+            bool,
         ),
     >(
         r#"SELECT ad_epoch_ticks, ad_scoring_start_round,
@@ -462,7 +464,7 @@ pub async fn update_game(
                       koth_epoch_ticks, koth_cycle_ticks,
                       koth_champion_cooldown_ticks,
                       koth_claim_confirmation_ticks,
-                      end_time_utc
+                      end_time_utc, deletion_pending
                  FROM "Games"
                 WHERE id = $1
                 FOR UPDATE"#,
@@ -472,6 +474,9 @@ pub async fn update_game(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?;
+    if deletion_pending {
+        return Err(AppError::conflict("Game is being deleted"));
+    }
 
     let requested_epoch_ticks = model.ad_epoch_ticks.unwrap_or(current_epoch_ticks);
     validate_scoring_transition(
@@ -623,7 +628,7 @@ pub async fn update_game(
 mod scoring_transition_tests;
 
 mod deletion;
-use deletion::delete_ad_game_data;
+use deletion::{delete_ad_game_data, fence_game_for_deletion};
 
 #[cfg(test)]
 #[path = "games_deletion_tests.rs"]
@@ -636,32 +641,55 @@ pub async fn delete_game(
     _admin: AdminUser,
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<GameInfoModel>> {
+    // Admit before the first game transaction. The permit survives the slow
+    // runtime sweep and moves into the final deletion lock guard, so queued
+    // hard deletes never consume pool connections while waiting.
+    let deletion_admission = super::deletion_locks::acquire_hard_deletion_admission().await?;
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     let g = load_game(&st, id).await?;
     let model = GameInfoModel::from_game(&g);
-    // End every capability window before backend teardown can recycle addresses.
-    // Practice mode otherwise intentionally permits post-game container creation.
-    let mut revoking: game::ActiveModel = g.clone().into();
-    revoking.end_time_utc = Set(Utc::now() - chrono::Duration::microseconds(1));
-    revoking.practice_mode = Set(false);
-    revoking.update(&st.db).await?;
+    // Reject irreversible deletion before touching event state. The marker and
+    // history predicate share the game transaction and all challenge submission
+    // fences, so an accepted submit cannot slip between the check and commit.
+    fence_game_for_deletion(control.transaction_mut(), id).await?;
+    control
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    // The durable fence is a point of no return even if external teardown must
+    // be retried. Hide the now-partially-deleting event from every cached play
+    // surface before touching Docker, VPN, or blob storage.
+    crate::controllers::game::invalidate_game_row_cache(id);
+    flush_game_scoreboards(&st, id).await;
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
     // Reap every running container the game owns (per-team instances + per-
     // challenge test/shared containers) before the rows cascade away, so the
     // backend isn't left with orphans it can no longer resolve.
     destroy_game_containers(&st, id).await?;
-    let test_game_key = format!("test-containers-game:{id}");
-    let _test_game_local = crate::utils::single_flight::coalesce(&test_game_key).await;
-    let test_game_lock =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &test_game_key)
+    let mut deletion_locks =
+        super::deletion_locks::acquire_game_test_deletion_locks(&st.db, id, deletion_admission)
             .await?;
     destroy_game_test_containers_locked(&st, id).await?;
-    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-    let tx = control.transaction_mut();
+    let tx = deletion_locks.game_transaction_mut();
+    // A concurrent administrative/runtime writer may have committed while slow
+    // backend teardown held no game lock. Re-fence before the first evidence
+    // delete; a conflict leaves every durable competition row intact.
+    fence_game_for_deletion(tx, id).await?;
     // Match the global writer order used by update/materialization paths before
     // deleting rollups or the Games row they reference.
     crate::services::ad::scoring::lock_epoch_rollups(&mut *tx, id).await?;
     crate::controllers::game::koth::lock_epoch_rollups(&mut *tx, id).await?;
     delete_ad_game_data(tx, id).await?;
+    let deleted_challenge_artifacts =
+        crate::services::blob_refs::delete_game_challenges_locked(tx, id).await?;
+    let poster_hash = sqlx::query_scalar::<_, Option<String>>(
+        r#"SELECT poster_hash FROM "Games" WHERE id = $1 FOR UPDATE"#,
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))?;
     let deleted = sqlx::query(r#"DELETE FROM "Games" WHERE id = $1"#)
         .bind(id)
         .execute(&mut **tx)
@@ -670,11 +698,29 @@ pub async fn delete_game(
     if deleted.rows_affected() != 1 {
         return Err(AppError::not_found("Game not found"));
     }
-    control
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    test_game_lock.release().await?;
+    if let Some(hash) = poster_hash.as_deref() {
+        crate::services::blob_refs::release_direct_hash_locked(tx, hash).await?;
+    }
+    deletion_locks.release().await?;
+    crate::services::blob_refs::purge_deleted_challenge_artifacts(
+        st.pg(),
+        st.storage.as_ref(),
+        &deleted_challenge_artifacts,
+    )
+    .await;
+    for attachment_id in deleted_challenge_artifacts.attachment_ids {
+        if let Err(error) = delete_attachment(&st, attachment_id).await {
+            tracing::warn!(%error, attachment_id, "deleted game attachment cleanup deferred");
+        }
+    }
+    if let Some(hash) = poster_hash {
+        if let Err(error) =
+            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
+                .await
+        {
+            tracing::warn!(%error, %hash, "deleted game poster cleanup deferred");
+        }
+    }
     crate::controllers::game::invalidate_game_row_cache(id);
     flush_game_scoreboards(&st, id).await;
     Ok(RequestResponse::ok(model))

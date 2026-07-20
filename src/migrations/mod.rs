@@ -79,6 +79,9 @@ mod m0069_worker_local_image_digest;
 mod m0070_flag_egress_identity;
 mod m0071_team_deletion_fence;
 mod m0072_koth_crown_cycle_defaults;
+mod m0073_finite_lockout_end;
+mod m0074_game_deletion_fence;
+mod m0075_challenge_deletion_fence;
 
 pub struct Migrator;
 
@@ -158,6 +161,9 @@ impl MigratorTrait for Migrator {
             Box::new(m0070_flag_egress_identity::Migration),
             Box::new(m0071_team_deletion_fence::Migration),
             Box::new(m0072_koth_crown_cycle_defaults::Migration),
+            Box::new(m0073_finite_lockout_end::Migration),
+            Box::new(m0074_game_deletion_fence::Migration),
+            Box::new(m0075_challenge_deletion_fence::Migration),
         ]
     }
 }

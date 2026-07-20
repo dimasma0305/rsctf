@@ -281,6 +281,7 @@ pub async fn create_division(
     load_game(&st, id).await?;
     validate_challenge_configs(&st, id, model.challenge_configs.as_deref()).await?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    require_game_mutable(control.transaction_mut(), id).await?;
     let created_id: i32 = sqlx::query_scalar(
         r#"INSERT INTO "Divisions" (game_id, name, invite_code, default_permissions)
            VALUES ($1, $2, $3, $4) RETURNING id"#,
@@ -322,6 +323,7 @@ pub async fn update_division(
     manager_or_admin(&st, &user, id).await?;
     validate_challenge_configs(&st, id, model.challenge_configs.as_deref()).await?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    require_game_mutable(control.transaction_mut(), id).await?;
     guard_division_policy_update(
         control.transaction_mut(),
         id,
@@ -377,6 +379,7 @@ pub async fn delete_division(
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    require_game_mutable(control.transaction_mut(), id).await?;
     let existing_id: Option<i32> = sqlx::query_scalar(
         r#"SELECT id FROM "Divisions"
             WHERE id = $1 AND game_id = $2

@@ -22,6 +22,7 @@ const LIVE_TUNNEL_AUTHORIZATION_SQL: &str = concat!(
      WHERE participation.id = $2
        AND participation.game_id = $1
        AND participation.status = $4
+       AND game.deletion_pending = FALSE
        AND game.start_time_utc <= statement_timestamp()
        AND statement_timestamp() <= game.end_time_utc
        AND "#,
@@ -30,6 +31,7 @@ const LIVE_TUNNEL_AUTHORIZATION_SQL: &str = concat!(
        AND challenge."Type" = $6
        AND challenge.ad_self_hosted = TRUE
        AND challenge.is_enabled = TRUE
+       AND challenge.deletion_pending = FALSE
        AND challenge.review_status = $7
      LIMIT 1
     "#
@@ -111,6 +113,7 @@ mod tests {
         for gate in [
             "participation.game_id = $1",
             "participation.status = $4",
+            "game.deletion_pending = FALSE",
             "game.start_time_utc <= statement_timestamp()",
             "statement_timestamp() <= game.end_time_utc",
             "NOT team.deletion_pending",
@@ -119,6 +122,7 @@ mod tests {
             "challenge.\"Type\" = $6",
             "challenge.ad_self_hosted = TRUE",
             "challenge.is_enabled = TRUE",
+            "challenge.deletion_pending = FALSE",
             "challenge.review_status = $7",
         ] {
             assert!(
@@ -163,12 +167,14 @@ mod tests {
             );
             CREATE TABLE "Games" (
               id INTEGER PRIMARY KEY, private_key TEXT NOT NULL,
-              start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
+              start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL,
+              deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
             );
             CREATE TABLE "GameChallenges" (
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, "Type" SMALLINT NOT NULL,
               ad_self_hosted BOOLEAN NOT NULL, is_enabled BOOLEAN NOT NULL,
-              review_status SMALLINT NOT NULL
+              review_status SMALLINT NOT NULL,
+              deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
             );
             "#,
         )
@@ -217,7 +223,7 @@ mod tests {
             .unwrap();
         let start = Utc::now() - Duration::hours(1);
         let end = Utc::now() + Duration::hours(1);
-        sqlx::query(r#"INSERT INTO "Games" VALUES (3, 'game-secret', $1, $2)"#)
+        sqlx::query(r#"INSERT INTO "Games" VALUES (3, 'game-secret', $1, $2, FALSE)"#)
             .bind(start)
             .bind(end)
             .execute(&pool)
@@ -228,7 +234,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query(r#"INSERT INTO "GameChallenges" VALUES (13, 3, $1, TRUE, TRUE, $2)"#)
+        sqlx::query(r#"INSERT INTO "GameChallenges" VALUES (13, 3, $1, TRUE, TRUE, $2, FALSE)"#)
             .bind(ChallengeType::AttackDefense as i16)
             .bind(ChallengeReviewStatus::Active as i16)
             .execute(&pool)
@@ -291,6 +297,16 @@ mod tests {
             .await
             .unwrap();
 
+        sqlx::query(r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = 3"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(!live_tunnel_authorized_on(&pool, 3, 11, 13, &original).await);
+        sqlx::query(r#"UPDATE "Games" SET deletion_pending = FALSE WHERE id = 3"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+
         sqlx::query(r#"UPDATE "Teams" SET deletion_pending = TRUE WHERE id = 7"#)
             .execute(&pool)
             .await
@@ -332,13 +348,15 @@ mod tests {
             r#"UPDATE "GameChallenges" SET ad_self_hosted = FALSE WHERE id = 13"#,
             r#"UPDATE "GameChallenges" SET is_enabled = FALSE WHERE id = 13"#,
             r#"UPDATE "GameChallenges" SET review_status = 1 WHERE id = 13"#,
+            r#"UPDATE "GameChallenges" SET deletion_pending = TRUE WHERE id = 13"#,
         ] {
             sqlx::query(mutation).execute(&pool).await.unwrap();
             assert!(!live_tunnel_authorized_on(&pool, 3, 11, 13, &original).await);
             sqlx::query(
                 r#"UPDATE "GameChallenges"
                       SET "Type" = $1, ad_self_hosted = TRUE,
-                          is_enabled = TRUE, review_status = $2
+                          is_enabled = TRUE, review_status = $2,
+                          deletion_pending = FALSE
                     WHERE id = 13"#,
             )
             .bind(ChallengeType::AttackDefense as i16)

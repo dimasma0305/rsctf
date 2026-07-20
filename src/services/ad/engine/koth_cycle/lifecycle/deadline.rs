@@ -10,8 +10,11 @@ use super::super::CrownPhase;
 use super::data::{CycleRow, OfficialConfig};
 
 mod access;
+mod target;
 
 use access::persist_deadline_access_revocation;
+pub(super) use target::clear_destroyed_deadline_target;
+use target::persist_deadline_target_deactivation;
 
 struct CompletedCleanup<'a> {
     cycle_id: i64,
@@ -94,30 +97,6 @@ async fn load_cleanup_runtime_state(
     })
 }
 
-async fn persist_deadline_target_clear(
-    connection: &mut sqlx::PgConnection,
-    game_id: i32,
-    challenge_id: i32,
-) -> AppResult<()> {
-    sqlx::query(
-        r#"WITH target AS (
-             UPDATE "KothTargets"
-                SET host = '', port = 0, container_id = NULL,
-                    holder_participation_id = NULL, held_since = NULL
-              WHERE game_id = $1 AND challenge_id = $2
-              RETURNING id
-           )
-           DELETE FROM "KothClaimStates" claim
-            USING target WHERE claim.target_id = target.id"#,
-    )
-    .bind(game_id)
-    .bind(challenge_id)
-    .execute(connection)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
-}
-
 async fn prepare_deadline_network_shutdown(st: &SharedState, cycle: &CycleRow) -> AppResult<()> {
     let mut access = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
@@ -134,7 +113,7 @@ async fn prepare_deadline_network_shutdown(st: &SharedState, cycle: &CycleRow) -
     let mut target = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    persist_deadline_target_clear(&mut target, cycle.game_id, cycle.challenge_id).await?;
+    persist_deadline_target_deactivation(&mut target, cycle.game_id, cycle.challenge_id).await?;
     target
         .commit()
         .await
@@ -275,16 +254,28 @@ async fn deactivate_deadline_endpoints(
     game_id: i32,
     container_ids: &[String],
 ) -> AppResult<()> {
-    if container_ids.is_empty() {
-        // Access/cooldown intent can change even if recovery has no runtime
-        // identity. It still needs exactly one policy reconciliation.
-        crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
-    } else {
-        crate::services::ad_vpn::deactivate_backend_endpoints(&st.db, container_ids)
-            .await
-            .map(|_| ())?;
+    let mut invalidated_games = vec![game_id];
+    for container_id in container_ids {
+        invalidated_games.extend(
+            crate::services::ad_vpn::stage_backend_endpoint_deactivation_retaining_identity(
+                &st.db,
+                container_id,
+            )
+            .await?,
+        );
     }
-    crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
+    invalidated_games.sort_unstable();
+    invalidated_games.dedup();
+    for invalidated_game in invalidated_games {
+        crate::controllers::game::ad::invalidate_live_hill_snapshot(st, invalidated_game).await;
+    }
+    crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await
+}
+
+async fn destroy_deadline_runtimes(st: &SharedState, container_ids: &[String]) -> AppResult<()> {
+    for container_id in container_ids {
+        crate::services::traffic::destroy_container_after_capture_fence(st, container_id).await?;
+    }
     Ok(())
 }
 
@@ -293,21 +284,26 @@ async fn persist_completed_cleanup(
     cleanup: CompletedCleanup<'_>,
 ) -> AppResult<()> {
     persist_deadline_access_revocation(connection, cleanup.game_id, cleanup.challenge_id).await?;
-    persist_deadline_target_clear(connection, cleanup.game_id, cleanup.challenge_id).await?;
+    clear_destroyed_deadline_target(
+        connection,
+        cleanup.game_id,
+        cleanup.challenge_id,
+        cleanup.container_ids,
+    )
+    .await?;
     sqlx::query(
-        r#"UPDATE "GameChallenges"
+        r#"WITH removed AS (
+             DELETE FROM "Containers" WHERE container_id = ANY($2) RETURNING id
+           )
+           UPDATE "GameChallenges"
               SET shared_container_id = NULL
-            WHERE id = $1"#,
+            WHERE id = $1 AND shared_container_id IN (SELECT id FROM removed)"#,
     )
     .bind(cleanup.challenge_id)
+    .bind(cleanup.container_ids)
     .execute(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    sqlx::query(r#"DELETE FROM "Containers" WHERE container_id = ANY($1)"#)
-        .bind(cleanup.container_ids)
-        .execute(&mut *connection)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
     let receipt = json!({
         "reason": "eventDeadline",
         "endedRound": cleanup.round_number,
@@ -437,9 +433,7 @@ pub(super) async fn cleanup_completed_cycle(
     prepare_deadline_network_shutdown(st, cycle).await?;
     deactivate_deadline_endpoints(st, cycle.game_id, &runtime.container_ids).await?;
     capture_deadline_snapshot(st, cycle, runtime.snapshot_container_id.as_deref()).await?;
-    for container_id in &runtime.container_ids {
-        st.containers.destroy(container_id).await?;
-    }
+    destroy_deadline_runtimes(st, &runtime.container_ids).await?;
 
     let mut control =
         super::super::super::koth_auth::acquire_game_lock(&st.db, cycle.game_id).await?;
@@ -534,15 +528,19 @@ pub(super) async fn terminate_interrupted_cycle(
     // Runtime destruction happens before cycle identities are cleared. If the
     // backend call fails, the durable cycle still identifies every workload for
     // a later retry. Container backends treat an absent workload as success.
-    for container_id in &runtime.container_ids {
-        st.containers.destroy(container_id).await?;
-    }
+    destroy_deadline_runtimes(st, &runtime.container_ids).await?;
 
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     persist_deadline_access_revocation(&mut transaction, cycle.game_id, cycle.challenge_id).await?;
-    persist_deadline_target_clear(&mut transaction, cycle.game_id, cycle.challenge_id).await?;
+    clear_destroyed_deadline_target(
+        &mut transaction,
+        cycle.game_id,
+        cycle.challenge_id,
+        &runtime.container_ids,
+    )
+    .await?;
     sqlx::query(
         r#"WITH removed AS (
              DELETE FROM "Containers" WHERE container_id = ANY($2) RETURNING id
@@ -631,9 +629,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        persist_completed_cleanup, persist_deadline_access_revocation,
-        persist_deadline_snapshot_receipt, persist_deadline_target_clear, persist_recovery_error,
-        CompletedCleanup,
+        clear_destroyed_deadline_target, persist_completed_cleanup,
+        persist_deadline_access_revocation, persist_deadline_snapshot_receipt,
+        persist_deadline_target_deactivation, persist_recovery_error, CompletedCleanup,
     };
 
     #[tokio::test]
@@ -798,7 +796,10 @@ mod tests {
         .fetch_one(&mut connection)
         .await
         .unwrap());
-        persist_deadline_target_clear(&mut connection, 8, 10)
+        persist_deadline_target_deactivation(&mut connection, 8, 10)
+            .await
+            .unwrap();
+        clear_destroyed_deadline_target(&mut connection, 8, 10, &["firewall-runtime".to_string()])
             .await
             .unwrap();
         assert_eq!(
@@ -833,6 +834,13 @@ mod tests {
         .unwrap();
 
         let container_ids = ["final-runtime".to_string()];
+        // Production deadline cleanup commits route deactivation before the
+        // backend destroy. Retain that exact ordering here: the runtime
+        // identity remains available for capture fencing until the successful
+        // destroy set is persisted below.
+        persist_deadline_target_deactivation(&mut connection, 7, 9)
+            .await
+            .unwrap();
         assert!(
             persist_recovery_error(&mut connection, 41, "runtime destroy failed")
                 .await
@@ -847,10 +855,6 @@ mod tests {
                         .unwrap(),
                     0
                 );
-                sqlx::query(r#"UPDATE "GameChallenges" SET shared_container_id = 5 WHERE id = 9"#)
-                    .execute(&mut connection)
-                    .await
-                    .unwrap();
             }
             let mut transaction = connection.begin().await.unwrap();
             persist_completed_cleanup(

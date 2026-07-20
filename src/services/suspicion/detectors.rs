@@ -23,9 +23,28 @@ const ZERO_WRONG_MIN_SOLVERS: usize = 5;
 /// operation (a destroy, in the fire case) — RSCTF uses 60 minutes.
 const HOARDING_MIN_GAP_SECS: i64 = 60 * 60;
 const MAX_EVIDENCE_KEY_BYTES: usize = 128;
+// Persisted game, challenge, and participation ids are positive. Reserve one
+// negative first key for the participant-wide detector/submit lock namespace.
+const SUSPICION_SCORE_LOCK_NAMESPACE: i32 = -1_389_606_228;
 
 fn valid_evidence_key(evidence_key: &str) -> bool {
     !evidence_key.trim().is_empty() && evidence_key.len() <= MAX_EVIDENCE_KEY_BYTES
+}
+
+/// Serialize one participation's submissions with detector score writes before
+/// either path takes game, challenge, or participation row locks. Different
+/// teams remain independent, while cross-challenge alternating deadlocks for
+/// the same team become impossible.
+pub(crate) async fn lock_participation_suspicion_writes(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    participation_id: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+        .bind(SUSPICION_SCORE_LOCK_NAMESPACE)
+        .bind(participation_id)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
 }
 
 const INSERT_SUSPICION_EVENT_SQL: &str = r#"
@@ -72,6 +91,29 @@ async fn persist_suspicion_event_with_weight(
     if !valid_evidence_key(evidence_key) {
         return Err(AppError::internal("invalid suspicion evidence key"));
     }
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    // Suspicion evidence also updates the participation's running score. If
+    // duplicate writers all retain the shared audit fence before competing on
+    // the unique evidence row, the winner cannot upgrade its participation
+    // lock while the losers wait on that winner's speculative insert. Serialize
+    // this narrow score mutation first so the normal audit/deletion fence keeps
+    // its read-sharing behavior for every other evidence writer.
+    lock_participation_suspicion_writes(&mut transaction, participation_id)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if !crate::services::participation_evidence::lock_audit_insert_scope(
+        &mut transaction,
+        game_id,
+        challenge_id,
+        &[participation_id],
+    )
+    .await?
+    {
+        return Err(AppError::not_found("participation not found"));
+    }
     let (participant_exists, inserted, new_score): (bool, bool, Option<i32>) =
         sqlx::query_as(INSERT_SUSPICION_EVENT_SQL)
             .bind(game_id)
@@ -81,7 +123,7 @@ async fn persist_suspicion_event_with_weight(
             .bind(evidence_key)
             .bind(weight)
             .bind(chrono::Utc::now())
-            .fetch_one(pool)
+            .fetch_one(&mut *transaction)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
 
@@ -100,6 +142,10 @@ async fn persist_suspicion_event_with_weight(
             "suspicion event recorded"
         );
     }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(inserted)
 }
 
@@ -669,9 +715,25 @@ mod tests {
         let setup = format!(
             r#"
             CREATE SCHEMA "{schema}";
+            CREATE TABLE "{schema}"."Games" (
+                id INTEGER PRIMARY KEY,
+                deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TABLE "{schema}"."GameChallenges" (
+                id INTEGER PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TABLE "{schema}"."Teams" (
+                id INTEGER PRIMARY KEY,
+                deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
             CREATE TABLE "{schema}"."Participations" (
                 id INTEGER PRIMARY KEY,
                 game_id INTEGER NOT NULL,
+                team_id INTEGER NOT NULL,
+                status SMALLINT NOT NULL,
                 suspicion_score INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE "{schema}"."SuspicionEvents" (
@@ -695,21 +757,43 @@ mod tests {
             .expect("create isolated suspicion schema");
 
         let search_path_schema = schema.clone();
+        let application_name = format!("rsctf_suspicion_{}", uuid::Uuid::new_v4().simple());
+        let connect_application_name = application_name.clone();
         let pool = PgPoolOptions::new()
             .max_connections(16)
             .after_connect(move |connection, _metadata| {
-                let statement = format!(r#"SET search_path TO "{search_path_schema}""#);
+                let application_statement =
+                    format!(r#"SET application_name TO '{connect_application_name}'"#);
+                let search_path_statement = format!(r#"SET search_path TO "{search_path_schema}""#);
                 Box::pin(async move {
-                    sqlx::query(&statement).execute(connection).await?;
+                    sqlx::query(&application_statement)
+                        .execute(&mut *connection)
+                        .await?;
+                    sqlx::query(&search_path_statement)
+                        .execute(&mut *connection)
+                        .await?;
                     Ok(())
                 })
             })
             .connect(&database_url)
             .await
             .expect("connect isolated suspicion pool");
+        sqlx::query(r#"INSERT INTO "Games" (id) VALUES (1)"#)
+            .execute(&pool)
+            .await
+            .expect("insert game");
+        sqlx::query(r#"INSERT INTO "GameChallenges" (id, game_id) VALUES (20, 1), (21, 1)"#)
+            .execute(&pool)
+            .await
+            .expect("insert challenges");
+        sqlx::query(r#"INSERT INTO "Teams" (id) VALUES (30)"#)
+            .execute(&pool)
+            .await
+            .expect("insert team");
         sqlx::query(
-            r#"INSERT INTO "Participations" (id, game_id, suspicion_score)
-               VALUES (10, 1, 0)"#,
+            r#"INSERT INTO "Participations"
+                 (id, game_id, team_id, status, suspicion_score)
+               VALUES (10, 1, 30, 1, 0)"#,
         )
         .execute(&pool)
         .await
@@ -773,6 +857,91 @@ mod tests {
         assert_eq!(event_count, 2);
         assert_eq!(deltas, vec![100, 100]);
         assert_eq!(score, 200);
+
+        // Reproduce the production lock stack: a submit for challenge 20 owns
+        // the participation score scope and shared participation row before
+        // its late counter update. A detector for a *different* challenge must
+        // wait on the score scope without retaining any audit row lock. Its
+        // distinct pair key cannot accidentally make this test pass.
+        let mut submit = pool.begin().await.expect("begin simulated submit");
+        super::lock_participation_suspicion_writes(&mut submit, 10)
+            .await
+            .expect("lock simulated suspicion score scope");
+        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+            .bind(10_i32)
+            .bind(20_i32)
+            .execute(&mut *submit)
+            .await
+            .expect("lock simulated submission pair");
+        sqlx::query(r#"SELECT id FROM "Games" WHERE id = 1 FOR SHARE"#)
+            .execute(&mut *submit)
+            .await
+            .expect("lock simulated submission game");
+        sqlx::query(r#"SELECT id FROM "Participations" WHERE id = 10 FOR SHARE"#)
+            .execute(&mut *submit)
+            .await
+            .expect("lock simulated submission participation");
+
+        let detector_pool = pool.clone();
+        let detector = tokio::spawn(async move {
+            persist_suspicion_event_with_weight(
+                &detector_pool,
+                1,
+                10,
+                Some(21),
+                SuspicionType::StolenFlag,
+                "submission:502",
+                100,
+                "submit lock-order test",
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar(
+                    r#"SELECT EXISTS(
+                         SELECT 1
+                           FROM pg_locks lock
+                          JOIN pg_stat_activity activity ON activity.pid = lock.pid
+                          WHERE lock.locktype = 'advisory'
+                            AND lock.granted = FALSE AND lock.objsubid = 2
+                            AND lock.objid::bigint = 10
+                            AND activity.application_name = $1
+                       )"#,
+                )
+                .bind(&application_name)
+                .fetch_one(&pool)
+                .await
+                .expect("inspect detector advisory wait");
+                if waiting {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("detector did not wait outside the submit row-lock stack");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            sqlx::query(r#"UPDATE "GameChallenges" SET is_enabled = is_enabled WHERE id = 20"#)
+                .execute(&mut *submit),
+        )
+        .await
+        .expect("challenge counter update deadlocked")
+        .expect("update simulated challenge counter");
+        submit.commit().await.expect("commit simulated submit");
+        assert!(detector
+            .await
+            .expect("join post-submit detector")
+            .expect("persist post-submit suspicion event"));
+
+        let final_score: i32 =
+            sqlx::query_scalar(r#"SELECT suspicion_score FROM "Participations" WHERE id = 10"#)
+                .fetch_one(&pool)
+                .await
+                .expect("read final suspicion score");
+        assert_eq!(final_score, 300);
 
         pool.close().await;
         let teardown = format!(r#"DROP SCHEMA "{schema}" CASCADE"#);

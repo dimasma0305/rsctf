@@ -17,6 +17,7 @@ pub mod health;
 pub mod honeypot_listener;
 pub mod k8s;
 pub mod mail;
+pub(crate) mod participation_evidence;
 pub mod proxy_admission;
 pub mod runtime_topology;
 pub mod suspicion;

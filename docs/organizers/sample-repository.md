@@ -61,9 +61,9 @@ The Dockerfiles currently use `python:3.12-alpine`, so Docker may still pull tha
 
 ## Understand rescans
 
-Event settings from `.gzevent` seed only a new game; later Admin edits to that game are preserved. Challenges behave differently: each rescan deletes and recreates every challenge below the event, changing challenge IDs and replacing challenge-level Admin edits.
+Event settings from `.gzevent` seed only a new game; later Admin edits to that game are preserved. Challenges keep a stable identity based on the binding and their path relative to the event manifest. A rescan updates mutable repository-owned fields in place, so challenge IDs, solves, submissions, first-solve records, counters, and scoring history remain intact.
 
-Do not rescan a live competition casually. Treat Git as the source of truth and rehearse rescans on staging.
+Removing a manifest does not silently erase played history. rsctf retains the challenge as a disabled tombstone, and rejects unsafe removal while a scored event or an unfinished A&D/KotH round still depends on it. Rehearse structural changes on staging and end/finalize the event before removing a played challenge.
 
 ## Files to learn from
 

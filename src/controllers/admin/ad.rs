@@ -183,17 +183,31 @@ pub async fn register_service(
         return Err(AppError::bad_request("A valid service port is required"));
     }
 
-    let lock_key = format!(
-        "ad-service:{}:{}",
-        model.participation_id, model.challenge_id
-    );
-    let _local = crate::utils::single_flight::coalesce(&lock_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &lock_key)
-            .await?;
+    let distributed = crate::services::ad::service_lifecycle::acquire_publication_lock(
+        st.pg(),
+        game_id,
+        model.participation_id,
+        model.challenge_id,
+    )
+    .await?;
 
     // Revalidate the full live pair after taking the same lock as provisioning
     // and teardown; an admin request must not republish a revoked endpoint.
+    let game_exists = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM "Games"
+              WHERE id = $1
+                AND deletion_pending = FALSE
+                AND end_time_utc >= clock_timestamp()
+           )"#,
+    )
+    .bind(game_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !game_exists {
+        return Err(AppError::bad_request("The game has ended"));
+    }
     let part = participation::Entity::find()
         .filter(participation::Column::Id.eq(model.participation_id))
         .filter(participation::Column::GameId.eq(game_id))
@@ -201,6 +215,19 @@ pub async fn register_service(
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::bad_request("Unknown accepted participation for this game"))?;
+    let team_is_live = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM "Teams"
+              WHERE id = $1 AND deletion_pending = FALSE
+           )"#,
+    )
+    .bind(part.team_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !team_is_live {
+        return Err(AppError::bad_request("The team is being deleted"));
+    }
     let challenge = game_challenge::Entity::find()
         .filter(game_challenge::Column::Id.eq(model.challenge_id))
         .filter(game_challenge::Column::GameId.eq(game_id))
@@ -210,6 +237,20 @@ pub async fn register_service(
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::bad_request("Unknown active A&D challenge for this game"))?;
+    let challenge_is_live = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM "GameChallenges"
+              WHERE id = $1 AND game_id = $2 AND deletion_pending = FALSE
+           )"#,
+    )
+    .bind(model.challenge_id)
+    .bind(game_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !challenge_is_live {
+        return Err(AppError::bad_request("The challenge is being deleted"));
+    }
 
     // Upsert by (game, participation, challenge).
     let existing = ad_team_service::Entity::find()

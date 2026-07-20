@@ -175,30 +175,31 @@ preparation. A custom rsctf runtime image must provide both as well.
 
 Database work that crosses an external Git/container operation retains advisory
 lock connections while it issues nested queries. A checker-bearing repository
-scan can briefly retain checkout, game-control, and checker-publication guards
-while its challenge insert needs a fourth connection. Let `R` be
+scan can briefly retain checkout, game-control, checker-publication, and
+challenge-definition guards while its model write needs a fifth connection. Let `R` be
 `RSCTF_REPO_SCAN_CONCURRENCY` and `P` be
 `RSCTF_PROVISIONING_CONCURRENCY`. The per-process pool floor is:
 
 | Process mode | Minimum `RSCTF_DB_MAX_CONNECTIONS` |
 | --- | ---: |
 | One-shot `migrate` | `2` |
-| `engine` | `4R + 2P + 1` |
-| `web` | `4R + 2P + 9` |
-| Non-VPN `control` or `network` | `4R + 2P + 3` |
-| Active VPN-owning `control` or `network` | `4R + 2P + 6` |
-| Non-VPN `all` | `4R + 2P + 11` |
-| Active VPN-owning `all` | `4R + 2P + 14` |
+| `engine` | `5R + 2P + 1` |
+| `web` | `5R + 2P + 13` |
+| Non-VPN `control` or `network` | `5R + 2P + 3` |
+| Active VPN-owning `control` or `network` | `5R + 2P + 6` |
+| Non-VPN `all` | `5R + 2P + 15` |
+| Active VPN-owning `all` | `5R + 2P + 18` |
 
 The migration role uses only the pool's two baseline connections. A network
 owner retains both the network/BYOC lease and the traffic-capture lease even
 without VPN, plus one progress connection. The VPN allowance additionally
 covers its `LISTEN` connection and nested kernel/allocation reconciliation.
-Monolithic and web roles reserve eight more connections for bounded roster and
-account lifecycle operations that retain a lock while issuing nested work. At
-the defaults (`R=1`, `P=4`), engine needs 13 connections, web needs 21,
-control/network needs 15 without VPN or 18 with it, and `all` needs 23 without
-VPN or 26 with it. Keep additional headroom for ordinary request bursts where
+Monolithic and web roles reserve eight connections for bounded roster and
+account lifecycle operations, plus four for the independently bounded runtime
+transition path; each can retain a lock while issuing nested work. At the
+defaults (`R=1`, `P=4`), engine needs 14 connections, web needs 26,
+control/network needs 16 without VPN or 19 with it, and `all` needs 28 without
+VPN or 31 with it. Keep additional headroom for ordinary request bursts where
 practical.
 
 Checker and flag work is bounded by the persisted round deadline. Evidence that

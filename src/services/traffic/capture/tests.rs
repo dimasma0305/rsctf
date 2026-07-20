@@ -135,9 +135,65 @@ fn filenames_are_safe_and_distinguish_common_prefixes() {
 
 #[test]
 fn retained_backend_pointer_clears_only_after_endpoint_deactivation() {
-    assert!(CLEAR_INACTIVE_BACKEND_SQL.contains("container_id = $1"));
-    assert!(CLEAR_INACTIVE_BACKEND_SQL.contains("BTRIM(host)"));
-    assert!(CLEAR_INACTIVE_BACKEND_SQL.contains("port = 0"));
+    assert!(teardown::CLEAR_INACTIVE_BACKEND_SQL.contains("container_id = $1"));
+    assert!(teardown::CLEAR_INACTIVE_BACKEND_SQL.contains("BTRIM(host)"));
+    assert!(teardown::CLEAR_INACTIVE_BACKEND_SQL.contains("port = 0"));
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn backend_destroy_failure_retains_the_exact_retry_identity() {
+    use sqlx::{Connection, PgConnection};
+
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let mut connection = PgConnection::connect(&database_url).await.unwrap();
+    sqlx::raw_sql(
+        r#"
+        CREATE TEMP TABLE "AdTeamServices" (
+            id INTEGER PRIMARY KEY,
+            container_id TEXT,
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL
+        );
+        INSERT INTO "AdTeamServices" VALUES
+            (1, 'runtime-retry', '', 0),
+            (2, 'runtime-replacement', '10.13.40.9', 8080);
+        "#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+
+    let failure: AppResult<()> = Err(AppError::internal("injected destroy failure"));
+    assert!(
+        teardown::destroy_inactive_backend_with(&mut connection, "runtime-retry", async {
+            failure
+        },)
+        .await
+        .is_err()
+    );
+    let retained: Option<String> =
+        sqlx::query_scalar(r#"SELECT container_id FROM "AdTeamServices" WHERE id = 1"#)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    assert_eq!(retained.as_deref(), Some("runtime-retry"));
+
+    teardown::destroy_inactive_backend_with(&mut connection, "runtime-retry", async { Ok(()) })
+        .await
+        .unwrap();
+    let rows = sqlx::query_as::<_, (i32, Option<String>)>(
+        r#"SELECT id, container_id FROM "AdTeamServices" ORDER BY id"#,
+    )
+    .fetch_all(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![(1, None), (2, Some("runtime-replacement".to_string()))],
+        "a successful retry must clear only its exact inactive identity"
+    );
 }
 
 #[test]
@@ -234,8 +290,31 @@ async fn runtime_failure_deactivates_only_the_exact_observed_endpoint() {
     let mut connection = PgConnection::connect(&database_url).await.unwrap();
     sqlx::raw_sql(
         r#"
+        CREATE TEMP TABLE "Games" (
+            id INTEGER PRIMARY KEY,
+            deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        CREATE TEMP TABLE "Teams" (
+            id INTEGER PRIMARY KEY,
+            deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        CREATE TEMP TABLE "GameChallenges" (
+            id INTEGER PRIMARY KEY,
+            game_id INTEGER NOT NULL,
+            is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        CREATE TEMP TABLE "Participations" (
+            id INTEGER PRIMARY KEY,
+            game_id INTEGER NOT NULL,
+            team_id INTEGER NOT NULL,
+            status SMALLINT NOT NULL
+        );
         CREATE TEMP TABLE "AdTeamServices" (
             id INTEGER PRIMARY KEY,
+            game_id INTEGER NOT NULL,
+            challenge_id INTEGER NOT NULL,
+            participation_id INTEGER NOT NULL,
             container_id TEXT,
             host TEXT NOT NULL,
             port INTEGER NOT NULL,
@@ -259,9 +338,19 @@ async fn runtime_failure_deactivates_only_the_exact_observed_endpoint() {
         CREATE UNIQUE INDEX test_capturefailure_pending
             ON "TrafficCaptureFailures" (service_id, container_id)
             WHERE network_revoked_at IS NULL;
+        INSERT INTO "Games" VALUES (1, FALSE);
+        INSERT INTO "Teams" VALUES
+            (21, FALSE), (22, FALSE), (23, FALSE), (24, FALSE), (25, FALSE);
+        INSERT INTO "GameChallenges" (id, game_id) VALUES (7, 1);
+        INSERT INTO "Participations" VALUES
+            (11, 1, 21, 1), (12, 1, 22, 1), (13, 1, 23, 1),
+            (14, 1, 24, 1), (15, 1, 25, 1);
         INSERT INTO "AdTeamServices" VALUES
-            (1, 'runtime-current', '10.13.40.31', 8080, 0),
-            (2, 'runtime-reused', '10.13.40.99', 9090, 0);
+            (1, 1, 7, 11, 'runtime-current', '10.13.40.31', 8080, 0),
+            (2, 1, 7, 12, 'runtime-reused', '10.13.40.99', 9090, 0),
+            (3, 1, 7, 13, 'runtime-suspended', '10.13.40.33', 8080, 0),
+            (4, 1, 7, 14, 'runtime-team-delete', '10.13.40.34', 8080, 0),
+            (5, 1, 7, 15, 'runtime-game-delete', '10.13.40.35', 8080, 0);
         "#,
     )
     .execute(&mut connection)
@@ -309,4 +398,70 @@ async fn runtime_failure_deactivates_only_the_exact_observed_endpoint() {
     .await
     .unwrap();
     assert_eq!(outcomes, vec![(1, true), (2, false)]);
+
+    sqlx::raw_sql(
+        r#"UPDATE "Participations" SET status = 3 WHERE id = 13;
+           UPDATE "Teams" SET deletion_pending = TRUE WHERE id = 24;"#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    failures::persist_and_deactivate(
+        &mut connection,
+        &[
+            CaptureFailure {
+                spec: CaptureSpec {
+                    service_id: 3,
+                    ..spec("runtime-suspended", "10.13.40.33", 8080, 7, 13)
+                },
+                error: "suspended owner".to_string(),
+            },
+            CaptureFailure {
+                spec: CaptureSpec {
+                    service_id: 4,
+                    ..spec("runtime-team-delete", "10.13.40.34", 8080, 7, 14)
+                },
+                error: "deleting team".to_string(),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    sqlx::query(r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = 1"#)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    failures::persist_and_deactivate(
+        &mut connection,
+        &[CaptureFailure {
+            spec: CaptureSpec {
+                service_id: 5,
+                ..spec("runtime-game-delete", "10.13.40.35", 8080, 7, 15)
+            },
+            error: "deleting game".to_string(),
+        }],
+    )
+    .await
+    .unwrap();
+    let untouched: Vec<(i32, String, i32)> =
+        sqlx::query_as(r#"SELECT id, host, port FROM "AdTeamServices" WHERE id >= 3 ORDER BY id"#)
+            .fetch_all(&mut connection)
+            .await
+            .unwrap();
+    assert_eq!(
+        untouched,
+        vec![
+            (3, "10.13.40.33".to_string(), 8080),
+            (4, "10.13.40.34".to_string(), 8080),
+            (5, "10.13.40.35".to_string(), 8080),
+        ]
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "TrafficCaptureFailures""#)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+        2,
+        "capture failures were attributed to suspended/deleting owners"
+    );
 }

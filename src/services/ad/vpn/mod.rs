@@ -13,7 +13,7 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, Qu
 
 use crate::models::data::{ad_vpn_peer, config, game, participation};
 use crate::services::container::ContainerBackendKind;
-use crate::utils::enums::ParticipationStatus;
+use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
 use allocation::assign_available_ip;
 #[cfg(test)]
@@ -48,6 +48,7 @@ pub use reconcile::{
     audit_owner_state, enforce_cycle_cooldown, ensure_hub_and_sync, reconcile_pending_for_owner,
 };
 
+pub(crate) use endpoints::stage_backend_endpoint_deactivation_retaining_identity;
 pub use endpoints::{
     clear_stale_local_relays, deactivate_backend_endpoint, deactivate_backend_endpoints,
     deactivate_participation_services, deactivate_team_service,
@@ -340,16 +341,34 @@ async fn sync_byoc_service_hosts(
         UPDATE "AdTeamServices" service
            SET host = $1,
                port = COALESCE(challenge.expose_port, NULLIF(service.port, 0), 80)
-          FROM "GameChallenges" challenge
+          FROM "GameChallenges" challenge,
+               "Participations" participation,
+               "Teams" team,
+               "Games" game
          WHERE service.challenge_id = challenge.id
            AND service.participation_id = $2
+           AND participation.id = service.participation_id
+           AND participation.game_id = service.game_id
+           AND participation.status = $3
+           AND team.id = participation.team_id
+           AND team.deletion_pending = FALSE
+           AND game.id = service.game_id
+           AND game.deletion_pending = FALSE
+           AND game.end_time_utc >= clock_timestamp()
            AND service.container_id IS NULL
            AND challenge.ad_self_hosted = TRUE
+           AND challenge.is_enabled = TRUE
+           AND challenge.deletion_pending = FALSE
+           AND challenge.review_status = $4
+           AND challenge."Type" = $5
            AND (service.host = '' OR service.host = $1)
         "#,
     )
     .bind(address)
     .bind(participation_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::AttackDefense as i16)
     .execute(db.get_postgres_connection_pool())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -375,15 +394,30 @@ async fn sync_byoc_service_hosts(
         SELECT service.id, service.host
           FROM "AdTeamServices" service
           JOIN "GameChallenges" challenge ON challenge.id = service.challenge_id
+          JOIN "Participations" participation ON participation.id = service.participation_id
+             AND participation.game_id = service.game_id
+          JOIN "Teams" team ON team.id = participation.team_id
+          JOIN "Games" game ON game.id = service.game_id
          WHERE service.participation_id = $1
            AND service.container_id IS NULL
            AND challenge.ad_self_hosted = TRUE
+           AND challenge.is_enabled = TRUE
+           AND challenge.deletion_pending = FALSE
+           AND challenge.review_status = $3
+           AND challenge."Type" = $4
+           AND participation.status = $5
+           AND team.deletion_pending = FALSE
+           AND game.deletion_pending = FALSE
+           AND game.end_time_utc >= clock_timestamp()
            AND service.host <> ''
            AND service.host <> $2
         "#,
     )
     .bind(participation_id)
     .bind(address)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::AttackDefense as i16)
+    .bind(ParticipationStatus::Accepted as i16)
     .fetch_all(db.get_postgres_connection_pool())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -405,17 +439,35 @@ async fn sync_byoc_service_hosts(
             UPDATE "AdTeamServices" service
                SET host = $1,
                    port = COALESCE(challenge.expose_port, NULLIF(service.port, 0), 80)
-              FROM "GameChallenges" challenge
+              FROM "GameChallenges" challenge,
+                   "Participations" participation,
+                   "Teams" team,
+                   "Games" game
              WHERE service.id = $2
                AND service.challenge_id = challenge.id
+               AND participation.id = service.participation_id
+               AND participation.game_id = service.game_id
+               AND participation.status = $4
+               AND team.id = participation.team_id
+               AND team.deletion_pending = FALSE
+               AND game.id = service.game_id
+               AND game.deletion_pending = FALSE
+               AND game.end_time_utc >= clock_timestamp()
                AND service.host = $3
                AND service.container_id IS NULL
                AND challenge.ad_self_hosted = TRUE
+               AND challenge.is_enabled = TRUE
+               AND challenge.deletion_pending = FALSE
+               AND challenge.review_status = $5
+               AND challenge."Type" = $6
             "#,
         )
         .bind(address)
         .bind(service_id)
         .bind(observed_host)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .bind(ChallengeType::AttackDefense as i16)
         .execute(db.get_postgres_connection_pool())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;

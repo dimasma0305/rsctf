@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
-use chrono::Utc;
 use defguard_wireguard_rs::{
     key::Key, net::IpAddrMask, peer::Peer, InterfaceConfiguration, WGApi, WireguardInterfaceApi,
 };
@@ -326,29 +325,33 @@ async fn load_peers(
         .map(|part| (part.id, part))
         .collect();
     let game_ids: Vec<i32> = all_peers.iter().map(|peer| peer.game_id).collect();
-    let games: HashMap<i32, game::Model> = game::Entity::find()
-        .filter(game::Column::Id.is_in(game_ids))
-        .all(db)
-        .await?
-        .into_iter()
-        .map(|game| (game.id, game))
-        .collect();
+    let eligible_games: std::collections::HashSet<i32> = sqlx::query_scalar(
+        r#"SELECT id
+             FROM "Games"
+            WHERE id = ANY($1)
+              AND deletion_pending = FALSE
+              AND start_time_utc <= clock_timestamp()
+              AND clock_timestamp() <= end_time_utc"#,
+    )
+    .bind(&game_ids)
+    .fetch_all(db.get_postgres_connection_pool())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .into_iter()
+    .collect();
     let team_ids: Vec<i32> = parts.values().map(|part| part.team_id).collect();
     let eligible_teams = crate::services::ad::roster::eligible_shared_credential_teams(
         db.get_postgres_connection_pool(),
         &team_ids,
     )
     .await?;
-    let now = Utc::now();
     let (mut peers, invalid): (Vec<_>, Vec<_>) = all_peers.into_iter().partition(|peer| {
         peer_address_allowed(&peer.address, client_network, service_networks)
             && parts.get(&peer.participation_id).is_some_and(|part| {
                 part.game_id == peer.game_id
                     && part.status == ParticipationStatus::Accepted
                     && eligible_teams.contains(&part.team_id)
-                    && games
-                        .get(&peer.game_id)
-                        .is_some_and(|game| game.is_active(now))
+                    && eligible_games.contains(&peer.game_id)
             })
     });
     peers.sort_by_key(|peer| peer.id);
@@ -386,7 +389,15 @@ async fn load_policies(
           JOIN "GameChallenges" challenge ON challenge.id = service.challenge_id
              AND challenge.game_id = service.game_id
          WHERE game.start_time_utc <= now() AND now() <= game.end_time_utc
-           AND participation.status = 1 AND challenge.is_enabled = TRUE
+           AND game.deletion_pending = FALSE
+           AND participation.status = 1
+           AND EXISTS (
+             SELECT 1 FROM "Teams" team
+              WHERE team.id = participation.team_id
+                AND team.deletion_pending = FALSE
+           )
+           AND challenge.is_enabled = TRUE
+           AND challenge.deletion_pending = FALSE
            AND challenge.review_status = 0 AND challenge."Type" = 4
            AND ((challenge.ad_self_hosted = TRUE AND service.container_id IS NULL)
              OR (challenge.ad_self_hosted = FALSE AND service.container_id IS NOT NULL))
@@ -414,7 +425,10 @@ async fn load_policies(
           JOIN "GameChallenges" challenge ON challenge.id = target.challenge_id
              AND challenge.game_id = target.game_id
          WHERE game.start_time_utc <= now() AND now() <= game.end_time_utc
-           AND challenge.is_enabled = TRUE AND challenge.review_status = 0
+           AND game.deletion_pending = FALSE
+           AND challenge.is_enabled = TRUE
+           AND challenge.deletion_pending = FALSE
+           AND challenge.review_status = 0
            AND challenge."Type" = 5 AND target.container_id IS NOT NULL
            AND target.port BETWEEN 1 AND 65535
         "#,

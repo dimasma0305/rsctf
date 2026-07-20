@@ -33,17 +33,6 @@ pub async fn recent_games(
     State(st): State<SharedState>,
     Query(q): Query<RecentQuery>,
 ) -> AppResult<RequestResponse<Vec<BasicGameInfoModel>>> {
-    let cache_key = "recent_games_list";
-    if let Some(bytes) = st.cache.get(cache_key).await {
-        if let Ok(data) = serde_json::from_slice::<Vec<BasicGameInfoModel>>(&bytes) {
-            let mut res = data;
-            if q.limit > 0 && res.len() > q.limit {
-                res.truncate(q.limit);
-            }
-            return Ok(RequestResponse::ok(res));
-        }
-    }
-
     let now = Utc::now();
     let mut rows = game::Entity::find()
         .filter(game::Column::Hidden.eq(false))
@@ -56,12 +45,6 @@ pub async fn recent_games(
     rows.truncate(50);
 
     let data: Vec<BasicGameInfoModel> = rows.iter().map(BasicGameInfoModel::from).collect();
-    if let Ok(json) = serde_json::to_vec(&data) {
-        st.cache
-            .set(cache_key, &json, Some(std::time::Duration::from_secs(10)))
-            .await;
-    }
-
     let mut res = data;
     if q.limit > 0 && res.len() > q.limit {
         res.truncate(q.limit);
@@ -387,13 +370,8 @@ pub async fn join_game(
             Some(participation) => participation.status == ParticipationStatus::Rejected as i16,
         };
     if will_write_accepted {
-        let scoring_started = crate::controllers::edit::ad_epoch_scoring_started_locked(
-            membership_locks.transaction_mut(),
-            id,
-        )
-        .await?;
         crate::controllers::edit::ensure_ad_roster_status_mutable(
-            scoring_started,
+            policy.scoring_started,
             existing
                 .map(|participation| participation_status(participation.status))
                 .transpose()?,
@@ -412,6 +390,7 @@ pub async fn join_game(
             target_status,
             token: &token,
             member_limit: policy.member_limit,
+            scoring_started: policy.scoring_started,
         },
     )
     .await?;
@@ -542,29 +521,14 @@ pub async fn leave_game(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
 
-    let remaining: i64 = sqlx::query_scalar(
-        r#"SELECT COUNT(*)::bigint FROM "UserParticipations"
-            WHERE participation_id = $1"#,
+    // The parent row remains locked from the authoritative read above. Delete
+    // only if this was its final member and it owns no competition evidence;
+    // legacy rejected solvers must retain their cascade-owned history.
+    crate::services::participation_evidence::delete_unlinked_pending_or_rejected_without_evidence(
+        membership_locks.transaction_mut(),
+        part_id,
     )
-    .bind(part_id)
-    .fetch_one(&mut **membership_locks.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    if remaining == 0 {
-        // Pending/rejected participations cannot own a valid KotH capability.
-        // Their dependent rows are FK-cascaded, and holder references are
-        // ON DELETE SET NULL, so the atomic delete is also the revocation fence.
-        sqlx::query(
-            r#"DELETE FROM "Participations"
-                WHERE id = $1 AND status IN ($2, $3)"#,
-        )
-        .bind(part_id)
-        .bind(ParticipationStatus::Pending as i16)
-        .bind(ParticipationStatus::Rejected as i16)
-        .execute(&mut **membership_locks.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    }
+    .await?;
 
     membership_locks.release().await?;
 

@@ -25,14 +25,19 @@ pub(crate) async fn active_ad_services(
         r#"SELECT service.id
              FROM "AdTeamServices" service
              JOIN "Participations" participation
-               ON participation.id = service.participation_id
+              ON participation.id = service.participation_id
               AND participation.game_id = service.game_id
+             JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "Games" game ON game.id = service.game_id
              JOIN "GameChallenges" challenge
                ON challenge.id = service.challenge_id
               AND challenge.game_id = service.game_id
             WHERE service.game_id = $1
+              AND game.deletion_pending = FALSE
               AND participation.status = $2
+              AND team.deletion_pending = FALSE
               AND challenge.is_enabled = TRUE
+              AND challenge.deletion_pending = FALSE
               AND challenge.review_status = $3
               AND challenge."Type" = $4
             ORDER BY service.id"#,
@@ -182,7 +187,8 @@ pub(crate) use flag_delivery::{
 };
 pub(crate) use koth_auth::{
     acquire_game_lock as acquire_ad_game_lock, clear_challenge_control, game_lock_key,
-    revoke_koth_capabilities,
+    revoke_koth_capabilities, revoke_koth_capabilities_locked, GameControlLock,
+    KothCapabilityCacheInvalidation,
 };
 pub(crate) use persistence::{complete_missing_koth_results, finalize_ended_round_checks};
 pub use reducers::*;

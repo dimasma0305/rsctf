@@ -108,6 +108,16 @@ pub trait ContainerManager: Send + Sync {
         ))
     }
 
+    /// Resolve a local interactive-exec target to a backend-canonical identity
+    /// after applying the backend's ownership checks. The A&D SSH bridge keeps
+    /// the stream attached itself, so it cannot use the bounded-output `exec`
+    /// method, but it must pass through the same installation boundary first.
+    async fn resolve_interactive_exec_target(&self, _id: &str) -> AppResult<String> {
+        Err(AppError::bad_request(
+            "interactive exec is not supported by this backend",
+        ))
+    }
+
     async fn export(&self, _id: &str) -> AppResult<Vec<u8>> {
         Err(AppError::bad_request(
             "snapshot export is not supported by this backend",

@@ -199,6 +199,18 @@ pub async fn submit(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
+    // A post-commit suspicion writer locks this participation's running score
+    // before taking its game/challenge audit fences. Use the same outer lock
+    // order here, ahead of submit's narrower pair lock. Without it, submissions
+    // on different challenges can form an alternating four-transaction cycle:
+    // submit holds participation -> detector holds challenge -> another submit
+    // holds participation -> another detector holds challenge.
+    crate::services::suspicion::lock_participation_suspicion_writes(
+        &mut transaction,
+        ctx.participation.id,
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
         .bind(ctx.participation.id)
         .bind(challenge_id)
@@ -582,7 +594,7 @@ pub async fn submit(
 
     // Best-effort suspicion detection runs only after the canonical submission is
     // committed. It is intentionally not allowed to roll back a player's answer.
-    let _ = crate::services::suspicion::evaluate_submission(
+    if let Err(error) = crate::services::suspicion::evaluate_submission(
         &st.db,
         id,
         ctx.participation.id,
@@ -590,7 +602,16 @@ pub async fn submit(
         &challenge,
         &answer,
     )
-    .await;
+    .await
+    {
+        tracing::warn!(
+            game = id,
+            participation = ctx.participation.id,
+            submission = sub_id,
+            %error,
+            "post-submit suspicion evaluation failed"
+        );
+    }
 
     st.publish_event(
         "ReceivedSubmissions",

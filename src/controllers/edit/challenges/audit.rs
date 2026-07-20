@@ -156,6 +156,7 @@ pub async fn rebuild_challenge(
     Path((id, c_id)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<JsonValue>> {
     manager_or_admin(&st, &user, id).await?;
+    super::reject_pending_mutation(st.pg(), id, c_id).await?;
     let challenge = load_challenge(&st, id, c_id).await?;
 
     // Whether a usable build context is on file (present in blob storage).

@@ -249,9 +249,9 @@ config:
   useCaptcha: false
   migrate: true
   logLevel: info
-  # Pool floor: 2 for migrate; 4R+2P+1 for engine; 4R+2P+9 for web;
-  # 4R+2P+3 for a non-VPN control/network owner; 4R+2P+6 for a VPN owner;
-  # or 4R+2P+11 / +14 for the corresponding all-in-one role.
+  # Pool floor: 2 for migrate; 5R+2P+1 for engine; 5R+2P+13 for web;
+  # 5R+2P+3 for a non-VPN control/network owner; 5R+2P+6 for a VPN owner;
+  # or 5R+2P+15 / +18 for the corresponding all-in-one role.
   provisioningConcurrency: 4
   repoScanConcurrency: 1
   dbMaxConnections: 32

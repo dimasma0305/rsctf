@@ -7,6 +7,7 @@ import { lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as A from "./applib.mjs";
 import { lifecycleStateBasenameFromPath } from "./lifecycle-state-file.js";
+import { selectKothCapacityClaimant } from "./lifecycle-load-model.js";
 import { readCheatResult, mergeCheatResult } from "./cheat-result.js";
 import { cheatRetentionPolicy } from "./cheat-retention.js";
 import {
@@ -23,7 +24,7 @@ import {
   kothDeadlineCleanupQuery,
 } from "./koth-deadline-cleanup.js";
 import { kothResetReceiptIntegrityQuery } from "./koth-reset-receipts.js";
-import { sql, JWT_SECRET, RSCTF } from "./lib.mjs";
+import { sql, JWT_SECRET, RSCTF, mintJwt } from "./lib.mjs";
 import { countContainerFatalLogs } from "./log-audit.mjs";
 import {
   abortedLifecycleState,
@@ -105,6 +106,34 @@ function interruptible(operation) {
       throw shutdownError(signal);
     }),
   ]);
+}
+
+async function ensureCapacityVpnPeer(state, participationId, readyPeers) {
+  if (readyPeers.has(participationId)) return;
+  const index = state.adPartIds.indexOf(participationId);
+  const userId = state.adUsers[index];
+  const securityStamp = userId ? state.userStamps[userId] : null;
+  if (index < 0 || !userId || !securityStamp) {
+    throw new Error(
+      `capacity KotH claimant ${participationId} has no exact user identity`,
+    );
+  }
+  const response = await A.api(
+    "GET",
+    `/api/Game/${Number(state.mixGame)}/Ad/Vpn/Config`,
+    {
+      jwt: mintJwt(userId, securityStamp, 1),
+      ip: `10.8.${Math.floor(index / 254)}.${(index % 254) + 1}`,
+      timeoutMs: 30_000,
+    },
+  );
+  if (response.status !== 200) {
+    throw new Error(
+      `create capacity KotH VPN peer for participation ${participationId} ` +
+        `returned ${response.status}: ${response.text.slice(0, 160)}`,
+    );
+  }
+  readyPeers.add(participationId);
 }
 
 function interruptibleMutation(operation) {
@@ -1237,8 +1266,12 @@ async function main() {
     st = A.readState();
     const before = snapshot(st);
 
+    // k6 allows an in-flight iteration to drain for up to 30 seconds after a
+    // scenario's nominal duration. Keep the event open beyond that window so
+    // the harness does not manufacture end-of-event 4xx responses while its
+    // own container hold/delete sequence is still draining.
     const graceSeconds = safePositiveInteger(
-      process.env.EVENT_END_GRACE_SECONDS || 15,
+      process.env.EVENT_END_GRACE_SECONDS || 45,
       "EVENT_END_GRACE_SECONDS",
       5,
     );
@@ -1278,6 +1311,7 @@ async function main() {
       k6SpawnError = null;
     const probe = { ok: 0, fail: 0, lat: [] };
     const readinessProbe = { ok: 0, fail: 0, lat: [] };
+    const capacityVpnPeers = new Set();
 
     if (distributedTeamClients) {
       teamClientOwnership = TeamClients.vpnTeamClientOwnership(st, FLEET);
@@ -1364,6 +1398,19 @@ async function main() {
         "  official scoring resumed at the distributed player start barrier",
       );
     } else {
+      // Capacity-mode crown captures run out of band rather than through the
+      // distributed team clients. Provision every possible claimant's VPN
+      // identity before timed player traffic begins. Doing this lazily in the
+      // capture loop briefly takes the team credential fence and can manufacture
+      // otherwise-impossible 503s on that team's concurrent token/submit reads.
+      for (const participationId of fleetPids) {
+        await interruptible(
+          ensureCapacityVpnPeer(st, participationId, capacityVpnPeers),
+        );
+      }
+      console.log(
+        `  capacity VPN identities ready: ${capacityVpnPeers.size}/${FLEET}`,
+      );
       if (process.env.ALIGN_EVENT_END === "1") {
         const endAfterSeconds = Math.ceil(runDuration) + graceSeconds;
         sql(
@@ -1387,6 +1434,7 @@ async function main() {
         env: {
           ...process.env,
           VUS: String(VUS),
+          FLEET: String(FLEET),
           DURATION,
           SECRET: JWT_SECRET,
           LIFECYCLE_STATE_FILE: K6_STATE_BASENAME,
@@ -1722,9 +1770,21 @@ async function main() {
                   .filter(Boolean)
                   .map(Number),
               );
-              const eligible = st.adPartIds.filter((pid) => !cooled.has(pid));
-              const pid =
-                eligible[(Math.max(view.cycleNumber, 1) - 1) % eligible.length];
+              // Capacity mode writes KotH tokens out-of-band, without the
+              // distributed WireGuard clients. Restrict claimants to the exact
+              // relay fleet and provision their real VPN identity before a
+              // capture, otherwise the fail-closed champion cooldown correctly
+              // refuses to activate the next crown cycle for a peerless winner.
+              const pid = selectKothCapacityClaimant(
+                fleetPids,
+                cooled,
+                Math.max(view.cycleNumber, 1),
+              );
+              if (pid) {
+                await interruptible(
+                  ensureCapacityVpnPeer(st, pid, capacityVpnPeers),
+                );
+              }
               const token = pid
                 ? A.latestKothToken(st.mixGame, pid, st.kothChal)
                 : null;

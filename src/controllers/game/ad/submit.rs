@@ -55,7 +55,9 @@ const ACTIVE_VICTIM_FLAG_SQL: &str = r#"
 /// first-blood decision in this statement avoids four serialized round trips
 /// after every successful insert.
 const ACCEPTED_ATTACK_SQL: &str = r#"
-    WITH latest_round AS (
+    WITH checked_at AS MATERIALIZED (
+        SELECT clock_timestamp() AS value
+    ), latest_round AS (
         SELECT id, number
           FROM "AdRounds"
          WHERE game_id = $4 AND finalized = FALSE
@@ -69,12 +71,12 @@ const ACCEPTED_ATTACK_SQL: &str = r#"
                attacker.id AS attacker_participation_id,
                service.id AS victim_team_service_id,
                planted.id AS flag_id,
-               now() AS submitted_at,
+               checked_at.value AS submitted_at,
                NOT game.hidden
                AND NOT (
                    game.freeze_time_utc IS NOT NULL
-                   AND now() >= game.freeze_time_utc
-                   AND now() < game.end_time_utc
+                   AND checked_at.value >= game.freeze_time_utc
+                   AND checked_at.value < game.end_time_utc
                ) AS broadcast_ok,
                COALESCE(attacker_team.name, '') AS attacker_team,
                victim_team.name AS victim_team,
@@ -96,6 +98,7 @@ const ACCEPTED_ATTACK_SQL: &str = r#"
             ON planted_round.id = planted.round_id
            AND planted_round.game_id = game.id
           JOIN latest_round latest ON TRUE
+          CROSS JOIN checked_at
           LEFT JOIN "Teams" attacker_team ON attacker_team.id = attacker.team_id
           LEFT JOIN "Teams" victim_team ON victim_team.id = victim.team_id
          WHERE attacker.id = $1
@@ -106,8 +109,8 @@ const ACCEPTED_ATTACK_SQL: &str = r#"
            AND challenge.is_enabled = TRUE
            AND challenge.review_status = $6
            AND challenge."Type" = $7
-           AND game.start_time_utc <= now()
-           AND now() < game.end_time_utc
+           AND game.start_time_utc <= checked_at.value
+           AND checked_at.value < game.end_time_utc
            AND game.ad_scoring_paused = FALSE
            AND planted_round.number >= latest.number
                  - LEAST(

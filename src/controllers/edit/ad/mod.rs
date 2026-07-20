@@ -387,6 +387,14 @@ pub async fn ad_toggle_challenge(
     Path((game_id, challenge_id)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<JsonValue>> {
     manager_or_admin(&st, &user, game_id).await?;
+    // Enabled-state transitions and their slow runtime cleanup are one ordered
+    // operation across replicas. The outer transition must precede the game
+    // control lock, matching the general challenge update/delete path.
+    let runtime_transition = crate::services::challenge_workloads::acquire_runtime_transition_lock(
+        st.pg(),
+        challenge_id,
+    )
+    .await?;
     let challenge = game_challenge::Entity::find()
         .filter(game_challenge::Column::Id.eq(challenge_id))
         .filter(game_challenge::Column::GameId.eq(game_id))
@@ -418,11 +426,25 @@ pub async fn ad_toggle_challenge(
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Challenge not found"))?;
+    crate::controllers::edit::reject_pending_mutation(st.pg(), game_id, challenge_id).await?;
 
     let is_enabled = !challenge.is_enabled;
-    let mut am: game_challenge::ActiveModel = challenge.clone().into();
-    am.is_enabled = Set(is_enabled);
-    am.update(&st.db).await?;
+    let toggled = sqlx::query(
+        r#"UPDATE "GameChallenges"
+              SET is_enabled = $3
+            WHERE id = $1 AND game_id = $2
+              AND deletion_pending = FALSE"#,
+    )
+    .bind(challenge_id)
+    .bind(game_id)
+    .bind(is_enabled)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if toggled != 1 {
+        return Err(AppError::conflict("Challenge is being deleted"));
+    }
     if !is_enabled && challenge.challenge_type == ChallengeType::KingOfTheHill {
         crate::services::ad_engine::clear_challenge_control(&st.db, game_id, challenge_id).await?;
     }
@@ -437,9 +459,15 @@ pub async fn ad_toggle_challenge(
     flush_ad_scoreboard(&st, game_id).await;
     if !is_enabled {
         st.byoc.disconnect_challenge(&st.db, challenge_id).await?;
-        crate::controllers::edit::destroy_challenge_containers(&st, &challenge).await;
+        let _ =
+            crate::controllers::edit::destroy_challenge_containers(&st, &challenge, true, false)
+                .await;
     }
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    runtime_transition
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
 
     Ok(RequestResponse::ok(json!({ "isEnabled": is_enabled })))
 }
@@ -720,10 +748,10 @@ pub async fn ad_restart_service(
     // Revoke the endpoint before teardown so Docker cannot reuse its address while
     // the old game policy still authorizes it.
     crate::services::ad_vpn::deactivate_team_service(&st.db, svc.id).await?;
-    // Tear the wedged container down (best-effort) + stop its capture, then relaunch.
+    // Keep the persisted backend identity retryable until capture is fenced and
+    // the runtime confirms destruction.
     if let Some(cid) = &replacement.retired_container_id {
-        crate::services::traffic::stop_container_capture(&st, cid).await?;
-        let _ = st.containers.destroy(cid).await;
+        crate::services::traffic::destroy_container_after_capture_fence(&st, cid).await?;
     }
 
     let prepared_round_id = replacement.prepared_round_id;
@@ -754,6 +782,27 @@ pub async fn ad_restart_service(
     };
 
     let backend_id = info.id.clone();
+    let retained = crate::services::ad::service_lifecycle::retain_created_backend_identity(
+        st.pg(),
+        game_id,
+        svc.participation_id,
+        svc.challenge_id,
+        &backend_id,
+    )
+    .await;
+    if let Err(error) = retained {
+        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+            tracing::error!(%backend_id, %destroy_error,
+                "failed to destroy replacement whose retry identity could not be retained");
+        }
+        return Err(error);
+    }
+    if !retained.expect("retention error returned above") {
+        st.containers.destroy(&backend_id).await?;
+        return Err(AppError::conflict(
+            "Service ownership disappeared while the replacement was launching",
+        ));
+    }
     let published = match crate::services::ad_engine::publish_service_reset(
         &st.db,
         game_id,
@@ -768,14 +817,24 @@ pub async fn ad_restart_service(
     {
         Ok(published) => published,
         Err(error) => {
-            crate::services::traffic::stop_container_capture(&st, &backend_id).await?;
-            let _ = st.containers.destroy(&backend_id).await;
+            crate::services::ad::service_lifecycle::rollback_created_backend(
+                &st,
+                svc.participation_id,
+                svc.challenge_id,
+                &backend_id,
+            )
+            .await?;
             return Err(error);
         }
     };
     if !published {
-        crate::services::traffic::stop_container_capture(&st, &backend_id).await?;
-        let _ = st.containers.destroy(&backend_id).await;
+        crate::services::ad::service_lifecycle::rollback_created_backend(
+            &st,
+            svc.participation_id,
+            svc.challenge_id,
+            &backend_id,
+        )
+        .await?;
         return Err(AppError::conflict(
             "Service eligibility changed while the replacement was launching",
         ));

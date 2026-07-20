@@ -16,8 +16,41 @@
 	log_skip @byocCapability
 	handle @network {
 		reverse_proxy {
-			dynamic a {$RSCTF_NETWORK_UPSTREAM_HOST:rsctf-network} {$RSCTF_NETWORK_UPSTREAM_PORT:8080}
+			dynamic a {$RSCTF_NETWORK_UPSTREAM_HOST:rsctf-network} {$RSCTF_NETWORK_UPSTREAM_PORT:8080} {
+				refresh 1s
+				resolvers 127.0.0.11
+				versions ipv4
+			}
 			lb_try_duration 3s
+			lb_try_interval 100ms
+			transport http {
+				dial_timeout 500ms
+				# Retire pooled sockets before axum/hyper's upstream idle
+				# timeout. Reusing a socket the server already closed turns a
+				# non-retryable POST into a proxy-generated 502.
+				keepalive 30s
+			}
+		}
+	}
+	# Go safely retries idempotent reads when an HTTP/1.1 upstream closes a
+	# pooled idle connection, but deliberately returns 502 for mutations because
+	# their commit state is ambiguous. Give ordinary API mutations a fresh
+	# upstream connection instead of retrying them or risking stale-pool reuse.
+	@mutation method POST PUT PATCH DELETE
+	handle @mutation {
+		reverse_proxy {
+			dynamic a rsctf 8080 {
+				refresh 1s
+				resolvers 127.0.0.11
+				versions ipv4
+			}
+			lb_policy random_choose 2
+			lb_try_duration 3s
+			lb_try_interval 100ms
+			transport http {
+				dial_timeout 500ms
+				keepalive off
+			}
 		}
 	}
 	handle {
@@ -26,9 +59,23 @@
 		# scaled service to one container and retain stale addresses after a
 		# scale-down. Docker DNS returns every live `rsctf` replica here.
 		reverse_proxy {
-			dynamic a rsctf 8080
+			dynamic a rsctf 8080 {
+				# Docker's embedded DNS changes immediately when replicas leave,
+				# while Caddy's A-record cache otherwise lives for one minute.
+				refresh 1s
+				resolvers 127.0.0.11
+				versions ipv4
+			}
 			lb_policy random_choose 2
 			lb_try_duration 3s
+			lb_try_interval 100ms
+			# A removed container address can silently drop SYNs. Fail that dial
+			# soon enough to resolve the fresh replica set and retry the request.
+			transport http {
+				dial_timeout 500ms
+				# Limit stale idle sockets; idempotent requests are retried safely.
+				keepalive 30s
+			}
 		}
 	}
 

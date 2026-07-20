@@ -139,8 +139,21 @@ pub(super) async fn build_egress_scan(
 
 /// Windowed best-effort upsert of a `FlagEgressEvent`.
 pub(super) async fn record_flag_egress(scan: &EgressScan) {
+    let Ok(mut transaction) = scan.pool.begin().await else {
+        return;
+    };
+    let Ok(true) = crate::services::participation_evidence::lock_audit_insert_scope(
+        &mut transaction,
+        scan.game_id,
+        Some(scan.challenge_id),
+        &[scan.participation_id],
+    )
+    .await
+    else {
+        return;
+    };
     let now = chrono::Utc::now();
-    let _ = sqlx::query(RECORD_FLAG_EGRESS_SQL)
+    if sqlx::query(RECORD_FLAG_EGRESS_SQL)
         .bind(scan.game_id)
         .bind(scan.participation_id)
         .bind(scan.challenge_id)
@@ -148,8 +161,12 @@ pub(super) async fn record_flag_egress(scan: &EgressScan) {
         .bind(&scan.remote_ip)
         .bind(0_i32)
         .bind(now)
-        .execute(&scan.pool)
-        .await;
+        .execute(&mut *transaction)
+        .await
+        .is_ok()
+    {
+        let _ = transaction.commit().await;
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,18 @@
 //! edit: flag CRUD (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
 
+async fn cleanup_staged_flag_attachments(st: &SharedState, flags: &[(String, Option<i32>)]) {
+    for attachment_id in flags.iter().filter_map(|(_, attachment_id)| *attachment_id) {
+        if let Err(error) = delete_attachment(st, attachment_id).await {
+            tracing::warn!(
+                %error,
+                attachment_id,
+                "failed to clean an unpublished flag attachment"
+            );
+        }
+    }
+}
+
 /// `POST /api/edit/games/{id}/challenges/{cId}/flags` — void.
 pub async fn add_flags(
     State(st): State<SharedState>,
@@ -9,6 +21,7 @@ pub async fn add_flags(
     Json(models): Json<Vec<FlagCreateModel>>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
+    challenges::reject_pending_mutation(st.pg(), id, c_id).await?;
     load_challenge(&st, id, c_id).await?;
 
     // Attachment creation does not alter grading policy. Materialize it before
@@ -17,48 +30,67 @@ pub async fn add_flags(
     for m in models {
         // Each flag can carry its own hand-out attachment (RSCTF AddFlags).
         let attachment_id =
-            build_attachment(&st, m.attachment_type, m.file_hash, m.remote_url).await?;
+            match build_attachment(&st, m.attachment_type, m.file_hash, m.remote_url).await {
+                Ok(attachment_id) => attachment_id,
+                Err(error) => {
+                    cleanup_staged_flag_attachments(&st, &flags).await;
+                    return Err(error);
+                }
+            };
         flags.push((m.flag, attachment_id));
     }
 
-    let mut definition_lock =
-        crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
-    crate::utils::scoring::lock_jeopardy_flags_exclusive(definition_lock.transaction_mut(), c_id)
+    let mut definition_lock = match crate::services::challenge_workloads::acquire_definition_lock(
+        st.pg(),
+        id,
+        c_id,
+    )
+    .await
+    {
+        Ok(lock) => lock,
+        Err(error) => {
+            cleanup_staged_flag_attachments(&st, &flags).await;
+            return Err(AppError::internal(error.to_string()));
+        }
+    };
+    let mutation: AppResult<()> = async {
+        // Deletion may have won after the intentionally lock-free attachment
+        // staging. Recheck both durable fences in this retained transaction so
+        // their key-share row locks survive until every flag insert commits.
+        challenges::reject_pending_mutation(&mut **definition_lock.transaction_mut(), id, c_id)
+            .await?;
+        crate::utils::scoring::lock_jeopardy_flags_exclusive(
+            definition_lock.transaction_mut(),
+            c_id,
+        )
         .await?;
 
-    // Keep the parent alive until every insert commits. This also makes a
-    // concurrent challenge delete wait instead of turning a valid edit into a
-    // foreign-key error halfway through the batch.
-    let challenge_exists = sqlx::query_scalar::<_, i32>(
-        r#"SELECT id FROM "GameChallenges"
-            WHERE id = $1 AND game_id = $2
-            FOR KEY SHARE"#,
-    )
-    .bind(c_id)
-    .bind(id)
-    .fetch_optional(&mut **definition_lock.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .is_some();
-    if !challenge_exists {
-        return Err(AppError::not_found("Challenge not found"));
+        for (flag, attachment_id) in &flags {
+            sqlx::query(
+                r#"INSERT INTO "FlagContexts"
+                     (flag, is_occupied, challenge_id, attachment_id)
+                   VALUES ($1, FALSE, $2, $3)"#,
+            )
+            .bind(flag)
+            .bind(c_id)
+            .bind(*attachment_id)
+            .execute(&mut **definition_lock.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        Ok(())
     }
+    .await;
 
-    for (flag, attachment_id) in flags {
-        sqlx::query(
-            r#"INSERT INTO "FlagContexts"
-                 (flag, is_occupied, challenge_id, attachment_id)
-               VALUES ($1, FALSE, $2, $3)"#,
-        )
-        .bind(flag)
-        .bind(c_id)
-        .bind(attachment_id)
-        .execute(&mut **definition_lock.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Err(error) = mutation {
+        drop(definition_lock);
+        cleanup_staged_flag_attachments(&st, &flags).await;
+        return Err(error);
     }
-
-    definition_lock.release().await?;
+    if let Err(error) = definition_lock.release().await {
+        cleanup_staged_flag_attachments(&st, &flags).await;
+        return Err(AppError::internal(error.to_string()));
+    }
     Ok(MessageResponse::ok(""))
 }
 

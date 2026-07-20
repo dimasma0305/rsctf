@@ -54,6 +54,17 @@ pub(crate) async fn run_challenge_build(
     // `started` doubles as the enqueue instant — this port runs the build inline,
     // so it is enqueued and started in the same breath.
     let started = Utc::now();
+    if super::challenges::reject_pending_mutation(st.pg(), challenge.game_id, challenge.id)
+        .await
+        .is_err()
+    {
+        return (
+            superseded_build_outcome(
+                "Build cancelled because the challenge or its game is being deleted.",
+            ),
+            None,
+        );
+    }
     // Image tags are mutable daemon state. Serialize every writer of the same
     // canonical tag, including different challenges and different replicas.
     // The gate is distinct from provisioning because self-heal can be reached
@@ -97,11 +108,10 @@ pub(crate) async fn run_challenge_build(
         }
         Ok(None) => {
             let outcome = superseded_build_outcome(
-                "Build cancelled because the challenge was deleted before it acquired the image lock.",
+                "Build cancelled because the challenge or its game was deleted or fenced before it acquired the image lock.",
             );
             let _ = build_lock.release().await;
-            let record = record_build(st, challenge, trigger, attempt, started, &outcome).await;
-            return (outcome, record);
+            return (outcome, None);
         }
         Err(error) => {
             tracing::warn!(
@@ -221,9 +231,14 @@ pub(crate) async fn admin_reenqueue_build(
     st: &SharedState,
     challenge: &game_challenge::Model,
     attempt: i32,
-) -> Option<build_record::Model> {
+) -> AppResult<Option<build_record::Model>> {
+    super::challenges::reject_pending_mutation(st.pg(), challenge.game_id, challenge.id).await?;
     let (_outcome, record) = run_challenge_build(st, challenge, "AutoRetry", attempt).await;
-    record
+    // A deletion fence may have committed while slow image work ran. Do not let
+    // the admin endpoint turn the resulting absent audit row into a fresh queued
+    // record on a challenge that is already draining.
+    super::challenges::reject_pending_mutation(st.pg(), challenge.game_id, challenge.id).await?;
+    Ok(record)
 }
 
 /// Compact the (already 16 KiB-capped) build log to a ~4 KiB tail for the audit

@@ -22,12 +22,18 @@ async fn current_ad_pair(
     challenge_id: i32,
     self_hosted: bool,
 ) -> AppResult<Option<(participation::Model, game_challenge::Model)>> {
-    let game_exists = game::Entity::find()
-        .filter(game::Column::Id.eq(game_id))
-        .filter(game::Column::EndTimeUtc.gte(Utc::now()))
-        .one(&st.db)
-        .await?
-        .is_some();
+    let game_exists = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM "Games"
+              WHERE id = $1
+                AND deletion_pending = FALSE
+                AND end_time_utc >= clock_timestamp()
+           )"#,
+    )
+    .bind(game_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     if !game_exists {
         return Ok(None);
     }
@@ -40,6 +46,19 @@ async fn current_ad_pair(
     let Some(participation) = participation else {
         return Ok(None);
     };
+    let team_is_live = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM "Teams"
+              WHERE id = $1 AND deletion_pending = FALSE
+           )"#,
+    )
+    .bind(participation.team_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !team_is_live {
+        return Ok(None);
+    }
     let challenge = game_challenge::Entity::find()
         .filter(game_challenge::Column::Id.eq(challenge_id))
         .filter(game_challenge::Column::GameId.eq(game_id))
@@ -52,6 +71,20 @@ async fn current_ad_pair(
     else {
         return Ok(None);
     };
+    let challenge_is_live = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM "GameChallenges"
+              WHERE id = $1 AND game_id = $2 AND deletion_pending = FALSE
+           )"#,
+    )
+    .bind(challenge_id)
+    .bind(game_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !challenge_is_live {
+        return Ok(None);
+    }
     if !self_hosted && crate::services::challenge_images::runtime_image(st, &challenge).is_err() {
         return Ok(None);
     }
@@ -74,8 +107,7 @@ async fn deactivate_stale_pair(
     let backend_id = service.container_id.clone();
     crate::services::ad_vpn::deactivate_team_service(&st.db, service.id).await?;
     if let Some(backend_id) = backend_id {
-        crate::services::traffic::stop_container_capture(st, &backend_id).await?;
-        let _ = st.containers.destroy(&backend_id).await;
+        crate::services::traffic::destroy_container_after_capture_fence(st, &backend_id).await?;
     }
     Ok(())
 }
@@ -217,11 +249,13 @@ pub(crate) async fn ensure_ad_containers(
     if need_vpn {
         for c in &byoc {
             for p in &parts {
-                let lock_key = format!("ad-service:{}:{}", p.id, c.id);
-                let _local = crate::utils::single_flight::coalesce(&lock_key).await;
-                let distributed =
-                    crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &lock_key)
-                        .await?;
+                let distributed = crate::services::ad::service_lifecycle::acquire_publication_lock(
+                    st.pg(),
+                    game.id,
+                    p.id,
+                    c.id,
+                )
+                .await?;
                 let Some((p, c)) = current_ad_pair(st, game.id, p.id, c.id, true).await? else {
                     distributed.release().await?;
                     continue;
@@ -275,11 +309,11 @@ pub(crate) async fn ensure_ad_containers(
 
     for c in &challenges {
         for p in &parts {
-            let lock_key = format!("ad-service:{}:{}", p.id, c.id);
-            let _local = crate::utils::single_flight::coalesce(&lock_key).await;
-            let distributed = crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(
+            let distributed = crate::services::ad::service_lifecycle::acquire_publication_lock(
                 st.pg(),
-                &lock_key,
+                game.id,
+                p.id,
+                c.id,
             )
             .await?;
             let Some((p, c)) = current_ad_pair(st, game.id, p.id, c.id, false).await? else {
@@ -310,14 +344,13 @@ pub(crate) async fn ensure_ad_containers(
                     existing.as_ref().unwrap().id,
                 )
                 .await?;
+                crate::services::traffic::destroy_container_after_capture_fence(st, &cid).await?;
                 if let Some(row) = existing.as_mut() {
                     row.host.clear();
                     row.port = 0;
                     row.container_id = None;
                     row.status = crate::utils::enums::AdCheckStatus::Offline as i16;
                 }
-                crate::services::traffic::stop_container_capture(st, &cid).await?;
-                let _ = st.containers.destroy(&cid).await;
             }
             let team_hash =
                 crate::utils::flag_generator::team_challenge_hash(&salt, c.id, &p.token);
@@ -383,50 +416,125 @@ pub(crate) async fn ensure_ad_containers(
                 }
             };
             let backend_id = info.id.clone();
-            if current_ad_pair(st, game.id, p.id, c.id, false)
-                .await?
-                .is_none()
-            {
-                let _ = st.containers.destroy(&backend_id).await;
-                distributed.release().await?;
-                continue;
+            let retained = crate::services::ad::service_lifecycle::retain_created_backend_identity(
+                st.pg(),
+                game.id,
+                p.id,
+                c.id,
+                &backend_id,
+            )
+            .await;
+            match retained {
+                Ok(true) => {}
+                Ok(false) => {
+                    st.containers.destroy(&backend_id).await?;
+                    distributed.release().await?;
+                    continue;
+                }
+                Err(error) => {
+                    if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+                        tracing::error!(
+                            backend_id = %backend_id,
+                            %destroy_error,
+                            "failed to destroy A&D backend whose retry identity could not be retained"
+                        );
+                    }
+                    return Err(error);
+                }
             }
-            let persisted = match existing {
-                Some(s) => {
-                    let mut am: ad_team_service::ActiveModel = s.into();
-                    am.host = Set(info.ip);
-                    am.port = Set(info.port);
-                    am.container_id = Set(Some(info.id));
-                    am.status = Set(crate::utils::enums::AdCheckStatus::Ok as i16);
-                    am.update(&st.db).await.map(|_| ())
+            match current_ad_pair(st, game.id, p.id, c.id, false).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    crate::services::ad::service_lifecycle::rollback_created_backend(
+                        st,
+                        p.id,
+                        c.id,
+                        &backend_id,
+                    )
+                    .await?;
+                    distributed.release().await?;
+                    continue;
                 }
-                None => ad_team_service::ActiveModel {
-                    game_id: Set(game.id),
-                    participation_id: Set(p.id),
-                    challenge_id: Set(c.id),
-                    host: Set(info.ip),
-                    port: Set(info.port),
-                    status: Set(crate::utils::enums::AdCheckStatus::Ok as i16),
-                    container_id: Set(Some(info.id)),
-                    last_reset_at: Set(None),
-                    ..Default::default()
+                Err(error) => {
+                    crate::services::ad::service_lifecycle::rollback_created_backend(
+                        st,
+                        p.id,
+                        c.id,
+                        &backend_id,
+                    )
+                    .await?;
+                    return Err(error);
                 }
-                .insert(&st.db)
-                .await
-                .map(|_| ()),
+            }
+            let publication = crate::services::ad::service_lifecycle::ManagedBackendPublication {
+                game_id: game.id,
+                participation_id: p.id,
+                challenge_id: c.id,
+                host: &info.ip,
+                port: info.port,
+                backend_id: &backend_id,
             };
-            if let Err(err) = persisted {
-                crate::services::traffic::stop_container_capture(st, &backend_id).await?;
-                let _ = st.containers.destroy(&backend_id).await;
-                return Err(err.into());
+            let persisted =
+                crate::services::ad::service_lifecycle::publish_managed_backend_if_eligible(
+                    st.pg(),
+                    publication,
+                )
+                .await;
+            match persisted {
+                Ok(true) => {}
+                Ok(false) => {
+                    crate::services::ad::service_lifecycle::rollback_created_backend(
+                        st,
+                        p.id,
+                        c.id,
+                        &backend_id,
+                    )
+                    .await?;
+                    distributed.release().await?;
+                    continue;
+                }
+                Err(error) => {
+                    let rollback =
+                        crate::services::ad::service_lifecycle::rollback_created_backend(
+                            st,
+                            p.id,
+                            c.id,
+                            &backend_id,
+                        )
+                        .await;
+                    if let Err(rollback_error) = rollback {
+                        tracing::error!(
+                            backend_id = %backend_id,
+                            %rollback_error,
+                            "failed to destroy unpublished A&D container after persistence failure"
+                        );
+                    }
+                    return Err(error);
+                }
             }
-            if current_ad_pair(st, game.id, p.id, c.id, false)
-                .await?
-                .is_none()
-            {
-                deactivate_stale_pair(st, p.id, c.id).await?;
-                distributed.release().await?;
-                continue;
+            match current_ad_pair(st, game.id, p.id, c.id, false).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    crate::services::ad::service_lifecycle::rollback_created_backend(
+                        st,
+                        p.id,
+                        c.id,
+                        &backend_id,
+                    )
+                    .await?;
+                    distributed.release().await?;
+                    continue;
+                }
+                Err(error) => {
+                    crate::services::ad::service_lifecycle::rollback_created_backend(
+                        st,
+                        p.id,
+                        c.id,
+                        &backend_id,
+                    )
+                    .await?;
+                    return Err(error);
+                }
             }
             launched += 1;
             distributed.release().await?;

@@ -142,6 +142,15 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.exec(id, command).await
     }
 
+    async fn resolve_interactive_exec_target(&self, id: &str) -> AppResult<String> {
+        if Self::is_worker_id(id) {
+            return Err(AppError::bad_request(
+                "interactive exec is not supported for remote workers",
+            ));
+        }
+        self.local.resolve_interactive_exec_target(id).await
+    }
+
     async fn export(&self, id: &str) -> AppResult<Vec<u8>> {
         if Self::is_worker_id(id) {
             return Err(AppError::bad_request(

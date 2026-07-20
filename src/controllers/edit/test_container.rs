@@ -7,11 +7,7 @@ const MAX_ARCHIVE_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 200;
 const MAX_ARCHIVE_PATH_COMPONENTS: usize = 32;
 
-/// `POST /api/edit/games/{id}/challenges/{cId}/container` — spawn a throwaway
-/// test container for the challenge and persist it as the challenge's
-/// `TestContainer`. Mirrors `EditController.CreateTestContainer`. Degrades
-/// gracefully when no Docker backend is present (the manager returns a 400, not
-/// a 500).
+/// Spawn and persist the challenge's throwaway test container.
 pub async fn create_test_container(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -25,6 +21,7 @@ pub async fn create_test_container(
             .await?;
     let definition_lock =
         crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
+    super::challenges::reject_pending_mutation(st.pg(), id, c_id).await?;
     let mut challenge = load_challenge(&st, id, c_id).await?;
     if !challenge.challenge_type.is_container() {
         return Err(AppError::bad_request(
@@ -38,8 +35,7 @@ pub async fn create_test_container(
     let legacy_image = runtime.legacy_image;
     definition_lock.release().await?;
 
-    // Re-read under the cross-replica lock. Return only a live backend; stale or
-    // dangling pointers are cleared before replacement.
+    // Re-read under the cross-replica lock; clear stale pointers before replacement.
     if let Some(cuuid) = challenge.test_container_id {
         if let Some(c) = container::Entity::find_by_id(cuuid).one(&st.db).await? {
             if crate::services::challenge_workloads::existing_runtime_is_reusable(
@@ -54,12 +50,26 @@ pub async fn create_test_container(
                 distributed.release().await?;
                 return Ok(RequestResponse::ok(ContainerInfoModel::from(&c)));
             }
-            let _ = st.containers.destroy(&c.container_id).await;
-            container::Entity::delete_by_id(cuuid).exec(&st.db).await?;
+            super::helpers::destroy_test_container_with(
+                st.pg(),
+                c_id,
+                cuuid,
+                &c.container_id,
+                super::helpers::revoke_and_destroy_backend(&st, &c.container_id),
+            )
+            .await?;
+        } else {
+            sqlx::query(
+                r#"UPDATE "GameChallenges" SET test_container_id = NULL
+                    WHERE id = $1 AND test_container_id = $2"#,
+            )
+            .bind(c_id)
+            .bind(cuuid)
+            .execute(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         }
-        let mut am: game_challenge::ActiveModel = challenge.into();
-        am.test_container_id = Set(None);
-        challenge = am.update(&st.db).await?;
+        challenge.test_container_id = None;
     }
 
     let selected_static_flag = crate::services::challenge_workloads::load_selected_static_flag(
@@ -115,6 +125,9 @@ pub async fn create_test_container(
         let mut lock =
             crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id)
                 .await?;
+        // Persistence below uses its own transaction; take the canonical fence
+        // snapshot through the pool so this guard does not self-block that write.
+        super::challenges::reject_pending_mutation(st.pg(), id, c_id).await?;
         let current = load_challenge(&st, id, c_id).await?;
         let current_runtime = crate::services::challenge_workloads::resolve_runtime(&st, &current)?;
         crate::services::challenge_workloads::ensure_definition_unchanged(
@@ -142,8 +155,7 @@ pub async fn create_test_container(
     };
     let now = Utc::now();
     let stop_at = now + chrono::Duration::hours(2);
-    // PlatformProxy mode marks the instance proxied so `Container::entry()` returns
-    // the wsrx proxy guid; Default mode keeps a direct host:port entry.
+    // PlatformProxy returns the wsrx proxy guid; Default returns host:port.
     let is_proxy = st.containers.requires_proxy()
         || crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
     let persisted: AppResult<container::Model> = async {
@@ -177,10 +189,14 @@ pub async fn create_test_container(
     let c = match persisted {
         Ok(c) => c,
         Err(err) => {
-            let _ = st.containers.destroy(&backend_id).await;
-            let _ = container::Entity::delete_by_id(container_uuid)
-                .exec(&st.db)
-                .await;
+            super::helpers::destroy_test_container_with(
+                st.pg(),
+                c_id,
+                container_uuid,
+                &backend_id,
+                super::helpers::revoke_and_destroy_backend(&st, &backend_id),
+            )
+            .await?;
             return Err(err);
         }
     };
@@ -218,15 +234,33 @@ pub async fn destroy_test_container(
         return Ok(MessageResponse::ok(""));
     };
 
-    // Best-effort backend destroy, then drop the row + FK regardless (never 500).
-    if let Some(c) = container::Entity::find_by_id(cuuid).one(&st.db).await? {
-        let _ = st.containers.destroy(&c.container_id).await;
-        container::Entity::delete_by_id(cuuid).exec(&st.db).await?;
+    let teardown: AppResult<()> = async {
+        if let Some(c) = container::Entity::find_by_id(cuuid).one(&st.db).await? {
+            super::helpers::destroy_test_container_with(
+                st.pg(),
+                c_id,
+                cuuid,
+                &c.container_id,
+                super::helpers::revoke_and_destroy_backend(&st, &c.container_id),
+            )
+            .await?;
+        } else {
+            sqlx::query(
+                r#"UPDATE "GameChallenges" SET test_container_id = NULL
+                    WHERE id = $1 AND test_container_id = $2"#,
+            )
+            .bind(c_id)
+            .bind(cuuid)
+            .execute(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+        Ok(())
     }
-    let mut am: game_challenge::ActiveModel = challenge.into();
-    am.test_container_id = Set(None);
-    am.update(&st.db).await?;
-    distributed.release().await?;
+    .await;
+    let released = distributed.release().await;
+    teardown?;
+    released?;
 
     Ok(MessageResponse::ok(""))
 }
@@ -315,16 +349,45 @@ async fn import_from_dir(
     } else {
         crate::services::git_sync::ImportPolicy::PendingReview
     };
+    let mut build_jobs = Vec::new();
+    let mut archive_jobs = Vec::new();
     for manifest in manifests {
         match crate::services::git_sync::import_manifest(st, game_id, &manifest, policy).await {
-            // import_manifest is create-only, so every success is a new challenge.
-            Ok(id) => {
-                result.imported += 1;
+            Ok(imported) => {
+                if imported.created {
+                    result.imported += 1;
+                } else {
+                    result.updated += 1;
+                }
                 // Pending submissions already persisted their complete source
                 // archive before INSERT; approval depends on that immutable blob.
                 // Trusted imports retain the historical best-effort audit copy.
                 if matches!(policy, crate::services::git_sync::ImportPolicy::Trusted) {
-                    persist_challenge_archive(st, id, &manifest).await;
+                    archive_jobs.push((imported.challenge_id, manifest.clone()));
+                }
+                if imported.build_queued {
+                    build_jobs.push(imported.challenge_id);
+                }
+                if imported.runtime_update_deferred {
+                    result.failed += 1;
+                    result.messages.push(format!(
+                        "challenge #{}: the enabled live runtime was retained because imported runtime equivalence differs or could not be verified; disable, sync/build, then re-enable",
+                        imported.challenge_id
+                    ));
+                }
+                if imported.grading_update_deferred {
+                    result.failed += 1;
+                    result.messages.push(format!(
+                        "challenge #{}: grading/scoring changes were retained because the Jeopardy game has started or accepted evidence exists",
+                        imported.challenge_id
+                    ));
+                }
+                if !imported.attachment_synced {
+                    result.failed += 1;
+                    result.messages.push(format!(
+                        "challenge #{}: attachment synchronization failed",
+                        imported.challenge_id
+                    ));
                 }
             }
             Err(e) => {
@@ -343,8 +406,43 @@ async fn import_from_dir(
             .messages
             .push(format!("challenge import unlock failed: {error}"));
     }
-    if result.imported > 0 {
-        flush_ad_scoreboard(st, game_id).await;
+    for (challenge_id, manifest) in archive_jobs {
+        persist_challenge_archive(st, challenge_id, &manifest).await;
+    }
+    for challenge_id in build_jobs {
+        let challenge = match game_challenge::Entity::find_by_id(challenge_id)
+            .one(&st.db)
+            .await
+        {
+            Ok(Some(challenge)) => challenge,
+            Ok(None) => {
+                result.failed += 1;
+                result.messages.push(format!(
+                    "challenge #{challenge_id}: disappeared before build"
+                ));
+                continue;
+            }
+            Err(error) => {
+                result.failed += 1;
+                result.messages.push(format!(
+                    "challenge #{challenge_id}: build lookup failed: {error}"
+                ));
+                continue;
+            }
+        };
+        let (outcome, _) = run_challenge_build(st, &challenge, "Import", 1).await;
+        if outcome.status != ChallengeBuildStatus::Success {
+            result.failed += 1;
+            result.messages.push(format!(
+                "challenge #{challenge_id}: import build failed: {}",
+                outcome
+                    .log
+                    .unwrap_or_else(|| format!("{:?}", outcome.status))
+            ));
+        }
+    }
+    if result.imported > 0 || result.updated > 0 {
+        flush_game_scoreboards(st, game_id).await;
     }
     result
 }
@@ -651,7 +749,9 @@ async fn import_archive_bytes(
     auto_approve: bool,
 ) -> AppResult<ChallengeImportResult> {
     let tmp = std::env::temp_dir().join(format!("rsctf-import-{}", Uuid::new_v4()));
-    tokio::fs::create_dir_all(&tmp)
+    // Create only the unpredictable leaf and fail on any pre-existing entry;
+    // never follow a final-component symlink in a shared temporary directory.
+    tokio::fs::create_dir(&tmp)
         .await
         .map_err(|e| AppError::internal(format!("create temp dir: {e}")))?;
     // Keep the fallible work in one place so the temp-dir removal below always runs
@@ -773,7 +873,7 @@ pub async fn import_from_github(
     let subpath = validate_subpath(model.subpath.as_deref())?;
 
     let tmp = std::env::temp_dir().join(format!("rsctf-import-{}", Uuid::new_v4()));
-    tokio::fs::create_dir_all(&tmp)
+    tokio::fs::create_dir(&tmp)
         .await
         .map_err(|e| AppError::internal(format!("create temp dir: {e}")))?;
 
@@ -794,111 +894,4 @@ pub async fn import_from_github(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
-        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-        for (name, data) in entries {
-            zip.start_file(*name, options).unwrap();
-            zip.write_all(data).unwrap();
-        }
-        zip.finish().unwrap().into_inner()
-    }
-
-    fn limits() -> ArchiveLimits {
-        ArchiveLimits {
-            entries: 2,
-            file_bytes: 1_024,
-            total_bytes: 1_024,
-            compression_ratio: 20,
-            path_components: 4,
-        }
-    }
-
-    fn temp_dir(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("rsctf-{tag}-{}", Uuid::new_v4()))
-    }
-
-    #[test]
-    fn zip_limits_reject_entry_and_expansion_bombs() {
-        let dir = temp_dir("zip-limits");
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let too_many = archive(&[("a", b"a"), ("b", b"b"), ("c", b"c")]);
-        assert!(extract_zip_with_limits(&too_many, &dir, limits()).is_err());
-
-        let large = vec![b'x'; 1_025];
-        let expanded = archive(&[("large", &large)]);
-        assert!(extract_zip_with_limits(&expanded, &dir, limits()).is_err());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn zip_slip_entries_are_rejected_before_extraction() {
-        let dir = temp_dir("zip-slip");
-        std::fs::create_dir_all(&dir).unwrap();
-        let outside_name = format!("rsctf-zip-slip-outside-{}", Uuid::new_v4());
-        let outside = dir.parent().unwrap().join(&outside_name);
-        let escape = format!("../{outside_name}");
-        let bytes = archive(&[(&escape, b"nope"), ("ok/file", b"ok")]);
-
-        assert!(extract_zip_with_limits(&bytes, &dir, limits()).is_err());
-        assert!(!outside.exists());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn zip_noncanonical_entry_aliases_are_rejected() {
-        let dir = temp_dir("zip-noncanonical");
-        std::fs::create_dir_all(&dir).unwrap();
-        for name in [
-            "nested/../file",
-            "nested/./file",
-            "nested//file",
-            "nested\\file",
-        ] {
-            let bytes = archive(&[(name, b"nope")]);
-            assert!(
-                extract_zip_with_limits(&bytes, &dir, limits()).is_err(),
-                "noncanonical ZIP name was accepted: {name}"
-            );
-        }
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn repository_subpaths_are_canonical_descendants() {
-        let root = temp_dir("repo-subpath");
-        std::fs::create_dir_all(root.join("inside")).unwrap();
-
-        let rel = validate_subpath(Some("inside")).unwrap().unwrap();
-        assert_eq!(
-            resolve_subpath(&root, Some(&rel)).unwrap(),
-            std::fs::canonicalize(root.join("inside")).unwrap()
-        );
-        assert!(validate_subpath(Some("../outside")).is_err());
-        assert!(resolve_subpath(&root, Some(std::path::Path::new("missing"))).is_err());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn repository_subpaths_reject_symlink_escapes() {
-        use std::os::unix::fs::symlink;
-
-        let root = temp_dir("repo-subpath-root");
-        let outside = temp_dir("repo-subpath-outside");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        symlink(&outside, root.join("link")).unwrap();
-
-        let rel = validate_subpath(Some("link")).unwrap().unwrap();
-        assert!(resolve_subpath(&root, Some(&rel)).is_err());
-        let _ = std::fs::remove_dir_all(root);
-        let _ = std::fs::remove_dir_all(outside);
-    }
-}
+mod tests;

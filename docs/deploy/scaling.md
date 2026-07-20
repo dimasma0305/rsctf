@@ -236,7 +236,10 @@ interval. Size operational response procedures around this explicit bound.
 The included Compose files move the stable `rsctf-network` DNS alias from the
 all-in-one process to `rsctf-control` when the role overlay is enabled. Caddy
 resolves both that singleton alias and the web service dynamically, so recreated
-or scaled containers do not leave stale addresses behind. For another proxy,
+or scaled containers do not leave stale addresses behind. The shipped Caddyfile
+refreshes Docker's embedded DNS every second and bounds a retired-container dial
+to 500 milliseconds, leaving enough of the three-second retry budget to select a
+surviving replica. For another proxy,
 use an equivalent regex/path rule, preserve WebSocket upgrades, refresh service
 discovery during scale changes, and give agent connections a long idle timeout.
 
@@ -298,7 +301,7 @@ redis:
   enabled: false
 
 config:
-  dbMaxConnections: 21
+  dbMaxConnections: 26
 
 persistence:
   enabled: true
@@ -332,9 +335,9 @@ Install one `control` release for the simple topology, or install `engine` and
 Secret, PVC, challenge namespace, image tag, and backend configuration. Set
 `kubernetes.createChallengeNamespace: false` on every role; no role release owns
 the namespace resource. At the default concurrency settings, use
-`config.dbMaxConnections: 21` for each web replica and `13` for each engine;
-the example value `20` keeps headroom above the control/network minimum of 15
-without VPN or 18 with it.
+`config.dbMaxConnections: 26` for each web replica and `14` for each engine;
+the example value `20` keeps headroom above the control/network minimum of 16
+without VPN or 19 with it.
 
 When the deployment uses the A&D VPN, set `vpn.enabled: true` on every role so
 web/engine mutations participate in the durable network-policy acknowledgement.
@@ -447,8 +450,8 @@ helm upgrade rsctf-engine ./charts/rsctf --reuse-values --set replicaCount=4
 total application ceiling = sum(role replicas x role pool limit)
 ```
 
-For example, four web replicas at 21 connections, two engines at 13, and one
-network owner at 20 can open 130 connections. Leave capacity for migration,
+For example, four web replicas at 26 connections, two engines at 14, and one
+network owner at 20 can open 152 connections. Leave capacity for migration,
 administration, PostgreSQL workers, and failure overlap during rolling updates.
 Include every temporary `maxSurge` web/engine Pod in that rollout ceiling, not
 only the steady-state replica count.
@@ -457,17 +460,17 @@ limit blindly.
 
 Pool validation accounts for connections retained across nested operations. Let
 `R=RSCTF_REPO_SCAN_CONCURRENCY` and
-`P=RSCTF_PROVISIONING_CONCURRENCY`: use at least `4R+2P+1` for `engine`;
-one checker-bearing scan can briefly retain three guards plus its
-challenge-insert checkout. Web needs `4R+2P+9`, reserving eight additional
-connections for the bounded roster and account-lifecycle paths. A non-VPN
-`control`/`network` process needs `4R+2P+3` because network/BYOC and
+`P=RSCTF_PROVISIONING_CONCURRENCY`: use at least `5R+2P+1` for `engine`;
+one checker-bearing scan can briefly retain four guards plus its model-write
+checkout. Web needs `5R+2P+13`, reserving eight connections for the bounded
+roster/account-lifecycle paths and four for runtime transitions. A non-VPN
+`control`/`network` process needs `5R+2P+3` because network/BYOC and
 traffic-capture ownership each retain one session and another checkout must
-remain available for progress; with VPN enabled it needs `4R+2P+6`. The
-monolithic `all` role serves both surfaces and therefore needs `4R+2P+11`
-without VPN or `4R+2P+14` with it. The one-shot migration role needs two
-connections. At the defaults (`R=1`, `P=4`), those floors are 13 for engine, 21
-for web, 15/18 for control or network, and 23/26 for `all`; the Compose control
+remain available for progress; with VPN enabled it needs `5R+2P+6`. The
+monolithic `all` role serves both surfaces and therefore needs `5R+2P+15`
+without VPN or `5R+2P+18` with it. The one-shot migration role needs two
+connections. At the defaults (`R=1`, `P=4`), those floors are 14 for engine, 26
+for web, 16/19 for control or network, and 28/31 for `all`; the Compose control
 example uses 20 for headroom.
 
 ## Graceful scale-down

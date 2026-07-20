@@ -25,6 +25,225 @@ fn participation_edit_distinguishes_omitted_null_and_value_divisions() {
     assert_eq!(selected.division_id, Some(Some(7)));
 }
 
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_evidence() {
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!(
+        "rsctf_participation_sanction_{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    let options = PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"
+        CREATE TABLE "Games" (
+          id INTEGER PRIMARY KEY,
+          ad_scoring_start_round INTEGER,
+          koth_scoring_start_round INTEGER,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        CREATE TABLE "Teams" (
+          id INTEGER PRIMARY KEY,
+          locked BOOLEAN NOT NULL DEFAULT FALSE,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        CREATE TABLE "Divisions" (id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL);
+        CREATE TABLE "Participations" (
+          id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL,
+          team_id INTEGER NOT NULL,
+          status SMALLINT NOT NULL,
+          division_id INTEGER,
+          writeup_id INTEGER
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    crate::services::participation_evidence::create_test_evidence_tables(&pool)
+        .await
+        .unwrap();
+
+    // Advisory keys are database-wide. Random identities keep this regression
+    // independent when the ignored PostgreSQL suite runs concurrently.
+    let seed = (uuid::Uuid::new_v4().as_u128() % 100_000_000) as i32 + 1_000;
+    let identity = ParticipationIdentity {
+        id: seed + 2,
+        game_id: seed,
+        team_id: seed + 1,
+    };
+    let division_id = seed + 3;
+    sqlx::query(
+        r#"INSERT INTO "Games" (id, ad_scoring_start_round, koth_scoring_start_round)
+           VALUES ($1, NULL, NULL)"#,
+    )
+    .bind(identity.game_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO "Teams" VALUES ($1, TRUE, FALSE)"#)
+        .bind(identity.team_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "Divisions" VALUES ($1, $2)"#)
+        .bind(division_id)
+        .bind(identity.game_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "Participations" VALUES ($1, $2, $3, $4, $5)"#)
+        .bind(identity.id)
+        .bind(identity.game_id)
+        .bind(identity.team_id)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(division_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query(r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = $1"#)
+        .bind(identity.game_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut pending_game_review = ParticipationReviewLease::acquire(&pool, identity.team_id)
+        .await
+        .unwrap();
+    for error in [
+        persist_participation_status(
+            &mut pending_game_review,
+            identity,
+            ParticipationStatus::Suspended,
+            None,
+        )
+        .await
+        .expect_err("status review crossed the game deletion fence"),
+        update_division_only(&mut pending_game_review, identity, Some(None))
+            .await
+            .expect_err("division review crossed the game deletion fence"),
+    ] {
+        assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
+    }
+    pending_game_review.release().await.unwrap();
+    sqlx::query(r#"UPDATE "Games" SET deletion_pending = FALSE WHERE id = $1"#)
+        .bind(identity.game_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "Submissions" (participation_id) VALUES ($1)"#)
+        .bind(identity.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "FirstSolves" (participation_id) VALUES ($1)"#)
+        .bind(identity.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut lease = ParticipationReviewLease::acquire(&pool, identity.team_id)
+        .await
+        .unwrap();
+    for status in [
+        ParticipationStatus::Pending,
+        ParticipationStatus::Unsubmitted,
+    ] {
+        let error = persist_participation_status(&mut lease, identity, status, None)
+            .await
+            .expect_err("Jeopardy evidence was hidden behind a non-scoring status");
+        assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(error.to_string().contains("competition evidence"));
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i16>(r#"SELECT status FROM "Participations" WHERE id = $1"#)
+            .bind(identity.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        ParticipationStatus::Accepted as i16
+    );
+    sqlx::query(
+        r#"UPDATE "Games"
+              SET ad_scoring_start_round = 1, koth_scoring_start_round = 1
+            WHERE id = $1"#,
+    )
+    .bind(identity.game_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    persist_participation_status(&mut lease, identity, ParticipationStatus::Suspended, None)
+        .await
+        .expect("active roster could not be suspended");
+    persist_participation_status(&mut lease, identity, ParticipationStatus::Accepted, None)
+        .await
+        .expect("active suspended roster could not be reinstated");
+    persist_participation_status(&mut lease, identity, ParticipationStatus::Suspended, None)
+        .await
+        .expect("reinstated roster could not be suspended again");
+    let error =
+        persist_participation_status(&mut lease, identity, ParticipationStatus::Rejected, None)
+            .await
+            .expect_err("suspended solver was rejected and lost its scoring identity");
+    assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.to_string().contains("competition evidence"));
+    lease.release().await.unwrap();
+
+    let row: (i32, i32, i32, i16, Option<i32>) = sqlx::query_as(
+        r#"SELECT id, game_id, team_id, status, division_id
+             FROM "Participations" WHERE id = $1"#,
+    )
+    .bind(identity.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        row,
+        (
+            identity.id,
+            identity.game_id,
+            identity.team_id,
+            ParticipationStatus::Suspended as i16,
+            Some(division_id),
+        ),
+        "sanction transitions changed the immutable roster identity"
+    );
+    let evidence: (i64, i64) = sqlx::query_as(
+        r#"SELECT
+              (SELECT COUNT(*) FROM "Submissions" WHERE participation_id = $1),
+              (SELECT COUNT(*) FROM "FirstSolves" WHERE participation_id = $1)"#,
+    )
+    .bind(identity.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(evidence, (1, 1));
+
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+}
+
 /// Use an independent process-local key while retaining the real distributed
 /// roster key, modeling an opposing request served by another replica.
 async fn acquire_from_other_replica(pool: &sqlx::PgPool, team_id: i32) -> ParticipationReviewLease {
@@ -70,7 +289,8 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
         CREATE TABLE "Games" (
           id INTEGER PRIMARY KEY,
           ad_scoring_start_round INTEGER,
-          koth_scoring_start_round INTEGER
+          koth_scoring_start_round INTEGER,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
         CREATE TABLE "Teams" (
           id INTEGER PRIMARY KEY,
@@ -86,13 +306,17 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
           game_id INTEGER NOT NULL,
           team_id INTEGER NOT NULL,
           status SMALLINT NOT NULL,
-          division_id INTEGER
+          division_id INTEGER,
+          writeup_id INTEGER
         );
         "#,
     )
     .execute(&pool)
     .await
     .unwrap();
+    crate::services::participation_evidence::create_test_evidence_tables(&pool)
+        .await
+        .unwrap();
 
     // Advisory keys are database-wide rather than schema-scoped. Random IDs
     // keep this test independent when all ignored PostgreSQL tests run together.
@@ -104,11 +328,14 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
     };
     let division_id = seed + 3;
     let other_division_id = seed + 4;
-    sqlx::query(r#"INSERT INTO "Games" VALUES ($1, NULL, NULL)"#)
-        .bind(identity.game_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "Games" (id, ad_scoring_start_round, koth_scoring_start_round)
+           VALUES ($1, NULL, NULL)"#,
+    )
+    .bind(identity.game_id)
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query(r#"INSERT INTO "Teams" VALUES ($1, FALSE, FALSE)"#)
         .bind(identity.team_id)
         .execute(&pool)
@@ -376,6 +603,151 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
         .unwrap(),
         Some(other_division_id)
     );
+
+    // A submission that began before an opposing rejection holds FOR SHARE on
+    // the scoring identity. The review must wait, then see the committed row on
+    // its fresh snapshot and preserve both the Accepted status and its division.
+    let mut submission = pool.begin().await.unwrap();
+    sqlx::query(r#"SELECT id FROM "Participations" WHERE id = $1 FOR SHARE"#)
+        .bind(identity.id)
+        .fetch_one(&mut *submission)
+        .await
+        .unwrap();
+    let second_pool = pool.clone();
+    let mut rejection = tokio::spawn(async move {
+        let mut lease = acquire_from_other_replica(&second_pool, identity.team_id).await;
+        let result =
+            persist_participation_status(&mut lease, identity, ParticipationStatus::Rejected, None)
+                .await;
+        lease.release().await.unwrap();
+        result
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut rejection)
+            .await
+            .is_err(),
+        "rejection did not wait for the in-flight submission"
+    );
+    sqlx::query(r#"INSERT INTO "Submissions" (participation_id) VALUES ($1)"#)
+        .bind(identity.id)
+        .execute(&mut *submission)
+        .await
+        .unwrap();
+    submission.commit().await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(2), rejection)
+        .await
+        .expect("rejection remained blocked after submission commit")
+        .expect("rejection task failed")
+        .expect_err("accepted solver was rejected after evidence committed");
+    assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.to_string().contains("suspend it instead"));
+    assert_eq!(
+        sqlx::query_as::<_, (i16, Option<i32>)>(
+            r#"SELECT status, division_id FROM "Participations" WHERE id = $1"#,
+        )
+        .bind(identity.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        (
+            ParticipationStatus::Accepted as i16,
+            Some(other_division_id)
+        )
+    );
+
+    // Suspension must remain available even after an official engine boundary;
+    // unlike rejection, it is reversible and retains the scoring identity.
+    sqlx::query(r#"UPDATE "Games" SET ad_scoring_start_round = 1 WHERE id = $1"#)
+        .bind(identity.game_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut sanction = ParticipationReviewLease::acquire(&pool, identity.team_id)
+        .await
+        .unwrap();
+    persist_participation_status(
+        &mut sanction,
+        identity,
+        ParticipationStatus::Suspended,
+        None,
+    )
+    .await
+    .expect("scoring boundary blocked the administrative suspension");
+    sanction.release().await.unwrap();
+
+    // Each engine family independently freezes division interpretation, even
+    // when its official-start marker is absent (legacy/imported evidence).
+    sqlx::query(
+        r#"UPDATE "Games"
+              SET ad_scoring_start_round = NULL, koth_scoring_start_round = NULL
+            WHERE id = $1"#,
+    )
+    .bind(identity.game_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"UPDATE "Participations" SET status = $1 WHERE id = $2"#)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(identity.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut jeopardy_division = ParticipationReviewLease::acquire(&pool, identity.team_id)
+        .await
+        .unwrap();
+    let error = update_division_only(&mut jeopardy_division, identity, Some(Some(division_id)))
+        .await
+        .expect_err("Jeopardy evidence allowed a division move");
+    assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+    jeopardy_division.release().await.unwrap();
+
+    sqlx::query(r#"DELETE FROM "Submissions" WHERE participation_id = $1"#)
+        .bind(identity.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let service_id: i32 = sqlx::query_scalar(
+        r#"INSERT INTO "AdTeamServices" (participation_id) VALUES ($1) RETURNING id"#,
+    )
+    .bind(identity.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO "AdFlags" (team_service_id) VALUES ($1)"#)
+        .bind(service_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut ad_division = ParticipationReviewLease::acquire(&pool, identity.team_id)
+        .await
+        .unwrap();
+    let error = update_division_only(&mut ad_division, identity, Some(Some(division_id)))
+        .await
+        .expect_err("A&D evidence allowed a division move");
+    assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+    ad_division.release().await.unwrap();
+    sqlx::query(r#"DELETE FROM "AdFlags""#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"DELETE FROM "AdTeamServices""#)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query(r#"INSERT INTO "KothTokens" (participation_id) VALUES ($1)"#)
+        .bind(identity.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut koth_division = ParticipationReviewLease::acquire(&pool, identity.team_id)
+        .await
+        .unwrap();
+    let error = update_division_only(&mut koth_division, identity, Some(Some(division_id)))
+        .await
+        .expect_err("KotH evidence allowed a division move");
+    assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+    koth_division.release().await.unwrap();
 
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

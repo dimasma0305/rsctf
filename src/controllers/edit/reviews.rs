@@ -35,21 +35,20 @@ pub async fn update_poster(
         return Err(AppError::bad_request("File is too large"));
     }
 
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    require_game_mutable(control.transaction_mut(), id).await?;
     let old_hash = sqlx::query_as::<_, (Option<String>,)>(
         r#"SELECT poster_hash FROM "Games" WHERE id = $1 FOR UPDATE"#,
     )
     .bind(game.id)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?
     .0;
     let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
         st.storage.as_ref(),
-        &mut transaction,
+        control.transaction_mut(),
         "poster",
         &bytes,
     )
@@ -57,11 +56,11 @@ pub async fn update_poster(
     sqlx::query(r#"UPDATE "Games" SET poster_hash = $2 WHERE id = $1"#)
         .bind(game.id)
         .bind(&blob.hash)
-        .execute(&mut *transaction)
+        .execute(&mut **control.transaction_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    transaction
-        .commit()
+    control
+        .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     if let Some(old_hash) = old_hash {

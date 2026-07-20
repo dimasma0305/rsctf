@@ -88,7 +88,8 @@ Important behavior:
 
 - A repository must contain a `.gzevent`; standalone `challenge.yaml` files are not imported.
 - Each `.gzevent` defines one game and imports challenges beneath its directory.
-- A rescan preserves operator-edited game settings but clears and recreates that game's challenges from repository content.
+- A rescan preserves operator-edited game settings and updates challenges in place by binding-relative manifest path, retaining challenge IDs, submissions, first solves, counters, and scoring history.
+- Missing played manifests are retained as disabled tombstones, and unsafe removal is rejected while an active or unfinished event state still depends on the challenge.
 - Private repositories need a PAT. Push-on-edit needs a writable branch and write-capable PAT.
 - Tags or detached refs cannot receive push-back edits.
 - Interval fields are stored and displayed, but background interval scanning is not currently scheduled. Use the manual scan action after a repository change.

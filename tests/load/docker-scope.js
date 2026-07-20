@@ -19,3 +19,16 @@ export function dockerScopeFromContainerEnv(environment) {
   );
   return dockerWorkloadScope(values.get('RSCTF_DOCKER_SCOPE'), values.get('RSCTF_JWT_SECRET'));
 }
+
+export function dockerOwnershipLabelArgs(scope) {
+  const normalized = String(scope || '').trim();
+  if (!/^[a-f0-9]{32}$/.test(normalized)) {
+    throw new Error('Docker workload scope must be a 32-character lowercase hex identity');
+  }
+  return [
+    '--label',
+    `rsctf.managed=${normalized}`,
+    '--label',
+    `rsctf.scope=${normalized}`,
+  ];
+}

@@ -90,17 +90,18 @@ pub(super) async fn activate_tunnel(
     endpoint: Arc<RelayEndpoint>,
     handle: TunnelHandle,
 ) -> AppResult<()> {
-    let lock_key = format!("ad-service:{pid}:{cid}");
-    let local = crate::utils::single_flight::coalesce(&lock_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &lock_key)
-            .await?;
+    let distributed = crate::services::ad::service_lifecycle::acquire_publication_lock(
+        st.pg(),
+        game_id,
+        pid,
+        cid,
+    )
+    .await?;
     // Revalidate after taking the same lock used by credential rotation and
     // service teardown. This closes the authorize-then-publish race for pending
     // WebSockets during participation rejection, team deletion, or token rotation.
     if !live_tunnel_authorized(st, game_id, pid, cid, token).await {
         distributed.release().await?;
-        drop(local);
         return Err(AppError::Forbidden);
     }
     // Hold this shared gate through publication. Disconnect takes the write
@@ -114,18 +115,15 @@ pub(super) async fn activate_tunnel(
         Some(guard) => guard,
         None => {
             distributed.release().await?;
-            drop(local);
             return Err(AppError::Forbidden);
         }
     };
     if !live_tunnel_authorized(st, game_id, pid, cid, token).await {
         distributed.release().await?;
-        drop(local);
         return Err(AppError::Forbidden);
     }
     if !st.byoc.contains_endpoint(pid, cid, endpoint.id()).await {
         distributed.release().await?;
-        drop(local);
         return Err(AppError::Forbidden);
     }
     register_service(st, pid, cid, endpoint.host(), endpoint.port()).await?;
@@ -134,7 +132,6 @@ pub(super) async fn activate_tunnel(
         if let Err(error) = distributed.release().await {
             tracing::warn!(pid, cid, %error, "byoc: relay lock release failed after rejected attach");
         }
-        drop(local);
         drop(publication_guard);
         cleanup?;
         crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
@@ -147,7 +144,6 @@ pub(super) async fn activate_tunnel(
         if let Err(error) = distributed.release().await {
             tracing::warn!(pid, cid, %error, "byoc: relay lock release failed after revocation");
         }
-        drop(local);
         drop(publication_guard);
         if let Some(epoch) = deactivate_tunnel(st, pid, cid, handle.id, &endpoint).await {
             st.byoc
@@ -159,7 +155,6 @@ pub(super) async fn activate_tunnel(
     if let Err(error) = distributed.release().await {
         tracing::warn!(pid, cid, %error, "byoc: relay lock release failed after publication");
     }
-    drop(local);
     if let Err(error) = crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await {
         drop(publication_guard);
         if let Some(epoch) = deactivate_tunnel(st, pid, cid, handle.id, &endpoint).await {

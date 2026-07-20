@@ -257,3 +257,53 @@ async fn concurrent_duplicate_insert_has_exactly_one_winner() {
 
     fixture.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn insert_uses_statement_time_across_game_window_boundaries() {
+    let fixture = Fixture::create().await;
+
+    sqlx::query(
+        r#"UPDATE "Games"
+              SET start_time_utc = clock_timestamp() - interval '1 hour',
+                  end_time_utc = clock_timestamp() + interval '150 milliseconds'
+            WHERE id = $1"#,
+    )
+    .bind(GAME_ID)
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    let mut before_end = fixture.pool.begin().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    assert!(
+        insert_accepted_attack_on(&mut before_end, ATTACKER_ID, 200, 400, GAME_ID)
+            .await
+            .unwrap()
+            .is_none(),
+        "a transaction opened before game end must not admit a later statement"
+    );
+    before_end.rollback().await.unwrap();
+
+    sqlx::query(
+        r#"UPDATE "Games"
+              SET start_time_utc = clock_timestamp() + interval '150 milliseconds',
+                  end_time_utc = clock_timestamp() + interval '1 hour'
+            WHERE id = $1"#,
+    )
+    .bind(GAME_ID)
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    let mut before_start = fixture.pool.begin().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    assert!(
+        insert_accepted_attack_on(&mut before_start, ATTACKER_ID, 200, 401, GAME_ID)
+            .await
+            .unwrap()
+            .is_some(),
+        "a statement after game start must not inherit the transaction's earlier timestamp"
+    );
+    before_start.rollback().await.unwrap();
+
+    fixture.cleanup().await;
+}

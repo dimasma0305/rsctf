@@ -109,6 +109,72 @@ pub async fn deactivate_backend_endpoint(
     deactivate_backend_endpoints(db, &[backend_id.to_string()]).await
 }
 
+async fn stage_backend_endpoint_deactivation_retaining_identity_in(
+    connection: &mut sqlx::PgConnection,
+    backend_id: &str,
+) -> AppResult<(u64, Vec<i32>)> {
+    let services = sqlx::query(
+        r#"
+        UPDATE "AdTeamServices"
+           SET host = '', port = 0, status = 2
+         WHERE container_id = $1
+        "#,
+    )
+    .bind(backend_id)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    let game_ids = sqlx::query_scalar::<_, i32>(
+        r#"
+        UPDATE "KothTargets"
+           SET host = '', port = 0,
+               holder_participation_id = NULL, held_since = NULL
+         WHERE container_id = $1
+     RETURNING game_id
+        "#,
+    )
+    .bind(backend_id)
+    .fetch_all(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok((services + game_ids.len() as u64, game_ids))
+}
+
+/// Persist a restrictive endpoint snapshot without releasing any A&D/KotH
+/// backend identity. The caller must invalidate the returned games'
+/// live-hill snapshots and call [`ensure_hub_and_sync`] before destroying the
+/// backend. Splitting staging from reconciliation preserves DB -> cache ->
+/// kernel ordering even when policy application fails.
+pub(crate) async fn stage_backend_endpoint_deactivation_retaining_identity(
+    db: &DatabaseConnection,
+    backend_id: &str,
+) -> AppResult<Vec<i32>> {
+    if backend_id.is_empty() {
+        return Ok(Vec::new());
+    }
+    if enabled() {
+        // Mark intent before the database write. If reconciliation fails, the
+        // network owner must retry the restrictive policy instead of treating
+        // an unchanged endpoint fingerprint as clean.
+        SYNC_DIRTY.store(true, std::sync::atomic::Ordering::Release);
+    }
+    let mut transaction =
+        crate::utils::database::begin_sqlx_transaction(db.get_postgres_connection_pool())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    let (_, mut game_ids) =
+        stage_backend_endpoint_deactivation_retaining_identity_in(&mut transaction, backend_id)
+            .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    game_ids.sort_unstable();
+    game_ids.dedup();
+    Ok(game_ids)
+}
+
 /// Revoke every service owned by participations before team/roster deletion.
 /// Return backend ids only after the new empty endpoint set reaches the kernel.
 pub async fn deactivate_participation_services(
@@ -118,21 +184,23 @@ pub async fn deactivate_participation_services(
     if participation_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let backend_ids = sqlx::query_scalar::<_, Option<String>>(
-        r#"
+    let backend_ids = unique_backend_ids(
+        &sqlx::query_scalar::<_, Option<String>>(
+            r#"
         SELECT container_id
           FROM "AdTeamServices"
          WHERE participation_id = ANY($1)
            AND container_id IS NOT NULL
         "#,
-    )
-    .bind(participation_ids)
-    .fetch_all(db.get_postgres_connection_pool())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
+        )
+        .bind(participation_ids)
+        .fetch_all(db.get_postgres_connection_pool())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>(),
+    );
     if enabled() {
         SYNC_DIRTY.store(true, std::sync::atomic::Ordering::Release);
     }
@@ -209,7 +277,10 @@ pub async fn clear_stale_local_relays(db: &DatabaseConnection) -> AppResult<u64>
 
 #[cfg(test)]
 mod tests {
-    use super::{deactivate_backend_endpoints_in, unique_backend_ids};
+    use super::{
+        deactivate_backend_endpoints_in, stage_backend_endpoint_deactivation_retaining_identity_in,
+        unique_backend_ids,
+    };
 
     #[test]
     fn backend_identity_batch_drops_empty_values_and_duplicates() {
@@ -239,7 +310,8 @@ mod tests {
               container_id TEXT, status SMALLINT NOT NULL
             );
             CREATE TEMP TABLE "KothTargets" (
-              id INTEGER PRIMARY KEY, host TEXT NOT NULL, port INTEGER NOT NULL,
+              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+              host TEXT NOT NULL, port INTEGER NOT NULL,
               container_id TEXT, holder_participation_id INTEGER,
               held_since TIMESTAMPTZ
             );
@@ -247,8 +319,8 @@ mod tests {
               (1, '10.0.0.1', 80, 'runtime-a', 1),
               (2, '10.0.0.2', 80, 'runtime-c', 1);
             INSERT INTO "KothTargets" VALUES
-              (1, '10.0.0.3', 80, 'runtime-b', 9, clock_timestamp()),
-              (2, '10.0.0.4', 80, 'runtime-c', 10, clock_timestamp());
+              (1, 7, '10.0.0.3', 80, 'runtime-b', 9, clock_timestamp()),
+              (2, 8, '10.0.0.4', 80, 'runtime-c', 10, clock_timestamp());
             "#,
         )
         .execute(&mut connection)
@@ -334,6 +406,30 @@ mod tests {
             .await
             .unwrap(),
             2
+        );
+
+        let (changed, game_ids) =
+            stage_backend_endpoint_deactivation_retaining_identity_in(&mut connection, "runtime-c")
+                .await
+                .unwrap();
+        assert_eq!(changed, 2);
+        assert_eq!(game_ids, [8]);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM (
+                     SELECT container_id FROM "AdTeamServices"
+                      WHERE host = '' AND port = 0 AND status = 2
+                     UNION ALL
+                     SELECT container_id FROM "KothTargets"
+                      WHERE host = '' AND port = 0
+                        AND holder_participation_id IS NULL AND held_since IS NULL
+                   ) endpoint WHERE endpoint.container_id = 'runtime-c'"#,
+            )
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+            2,
+            "challenge teardown must keep both retry identities until destroy succeeds"
         );
     }
 }

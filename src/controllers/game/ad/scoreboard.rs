@@ -712,10 +712,10 @@ pub async fn reset_service(
     // Revoke the endpoint before teardown so a recycled Docker address cannot
     // remain reachable through this game's old policy.
     crate::services::ad_vpn::deactivate_team_service(&st.db, svc.id).await?;
-    // Stop its capture + destroy the old container (best-effort), then relaunch.
+    // Keep the persisted backend identity retryable until capture is fenced and
+    // the runtime confirms destruction.
     if let Some(cid) = &replacement.retired_container_id {
-        crate::services::traffic::stop_container_capture(&st, cid).await?;
-        let _ = st.containers.destroy(cid).await;
+        crate::services::traffic::destroy_container_after_capture_fence(&st, cid).await?;
     }
     let prepared_round_id = replacement.prepared_round_id;
     let flag = replacement.current_flag.unwrap_or_else(|| {
@@ -738,6 +738,26 @@ pub async fn reset_service(
         .await?;
 
     let backend_id = info.id.clone();
+    let retained = crate::services::ad::service_lifecycle::retain_created_backend_identity(
+        st.pg(),
+        id,
+        svc.participation_id,
+        svc.challenge_id,
+        &backend_id,
+    )
+    .await;
+    if let Err(error) = retained {
+        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
+            tracing::error!(%backend_id, %destroy_error,
+                "failed to destroy replacement whose retry identity could not be retained");
+        }
+        return Err(error);
+    }
+    if !retained.expect("retention error returned above") {
+        st.containers.destroy(&backend_id).await?;
+        distributed.release().await?;
+        return Err(AppError::Forbidden);
+    }
     let published = match crate::services::ad_engine::publish_service_reset(
         &st.db,
         id,
@@ -752,14 +772,24 @@ pub async fn reset_service(
     {
         Ok(published) => published,
         Err(error) => {
-            crate::services::traffic::stop_container_capture(&st, &backend_id).await?;
-            let _ = st.containers.destroy(&backend_id).await;
+            crate::services::ad::service_lifecycle::rollback_created_backend(
+                &st,
+                svc.participation_id,
+                svc.challenge_id,
+                &backend_id,
+            )
+            .await?;
             return Err(error);
         }
     };
     if !published {
-        crate::services::traffic::stop_container_capture(&st, &backend_id).await?;
-        let _ = st.containers.destroy(&backend_id).await;
+        crate::services::ad::service_lifecycle::rollback_created_backend(
+            &st,
+            svc.participation_id,
+            svc.challenge_id,
+            &backend_id,
+        )
+        .await?;
         distributed.release().await?;
         return Err(AppError::Forbidden);
     }

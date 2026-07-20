@@ -24,6 +24,15 @@ impl GameNoticeDetailModel {
             time: m.publish_time_utc,
         }
     }
+
+    fn from_normal_row(row: (i32, JsonValue, DateTime<Utc>)) -> Self {
+        Self {
+            id: row.0,
+            notice_type: NoticeType::Normal,
+            values: row.1,
+            time: row.2,
+        }
+    }
 }
 
 /// `GET /api/edit/games/{id}/notices`
@@ -61,34 +70,44 @@ pub async fn add_notice(
         Some(at) if at > now => at,
         _ => now,
     };
-    let am = game_notice::ActiveModel {
-        game_id: Set(id),
-        notice_type: Set(NoticeType::Normal),
-        values: Set(serde_json::json!([model.content])),
-        publish_time_utc: Set(publish),
-        ..Default::default()
-    };
-    let created = am.insert(&st.db).await?;
+    let values = serde_json::json!([model.content]);
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    require_game_mutable(control.transaction_mut(), id).await?;
+    let created: (i32, JsonValue, DateTime<Utc>) = sqlx::query_as(
+        r#"INSERT INTO "GameNotices" (game_id, "Type", values, publish_time_utc)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, values, publish_time_utc"#,
+    )
+    .bind(id)
+    .bind(NoticeType::Normal as i16)
+    .bind(&values)
+    .bind(publish)
+    .fetch_one(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    control
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let created = GameNoticeDetailModel::from_normal_row(created);
 
     // RSCTF broadcasts (IUserClient.ReceivedGameNotice) only when the notice is
     // already live — a future-dated notice is delivered by the scheduler later.
     if publish <= now {
         st.publish_event(
             "ReceivedGameNotice",
-            Some(created.game_id),
+            Some(id),
             serde_json::json!({
                 "type": created.notice_type,
                 "values": created.values.clone(),
                 "id": created.id,
-                "time": created.publish_time_utc,
+                "time": created.time,
             })
             .to_string(),
         );
     }
 
-    Ok(RequestResponse::ok(GameNoticeDetailModel::from_model(
-        created,
-    )))
+    Ok(RequestResponse::ok(created))
 }
 
 /// `PUT /api/edit/games/{id}/notices/{noticeId}`
@@ -99,22 +118,41 @@ pub async fn update_notice(
     Json(model): Json<GameNoticeModel>,
 ) -> AppResult<RequestResponse<GameNoticeDetailModel>> {
     manager_or_admin(&st, &user, id).await?;
-    let notice = game_notice::Entity::find()
-        .filter(game_notice::Column::Id.eq(notice_id))
-        .filter(game_notice::Column::GameId.eq(id))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Notice not found"))?;
-    if notice.notice_type != NoticeType::Normal {
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    require_game_mutable(control.transaction_mut(), id).await?;
+    let notice_type = sqlx::query_scalar::<_, i16>(
+        r#"SELECT "Type" FROM "GameNotices"
+            WHERE id = $1 AND game_id = $2
+            FOR UPDATE"#,
+    )
+    .bind(notice_id)
+    .bind(id)
+    .fetch_optional(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Notice not found"))?;
+    if notice_type != NoticeType::Normal as i16 {
         return Err(AppError::bad_request("System notices are not editable"));
     }
-    let mut am: game_notice::ActiveModel = notice.into();
-    am.values = Set(serde_json::json!([model.content]));
-    if let Some(at) = model.publish_at {
-        am.publish_time_utc = Set(at);
-    }
-    let updated = am.update(&st.db).await?;
-    Ok(RequestResponse::ok(GameNoticeDetailModel::from_model(
+    let updated: (i32, JsonValue, DateTime<Utc>) = sqlx::query_as(
+        r#"UPDATE "GameNotices"
+              SET values = $3,
+                  publish_time_utc = COALESCE($4, publish_time_utc)
+            WHERE id = $1 AND game_id = $2
+        RETURNING id, values, publish_time_utc"#,
+    )
+    .bind(notice_id)
+    .bind(id)
+    .bind(serde_json::json!([model.content]))
+    .bind(model.publish_at)
+    .fetch_one(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    control
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(RequestResponse::ok(GameNoticeDetailModel::from_normal_row(
         updated,
     )))
 }
@@ -126,18 +164,32 @@ pub async fn delete_notice(
     Path((id, notice_id)): Path<(i32, i32)>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
-    let notice = game_notice::Entity::find()
-        .filter(game_notice::Column::Id.eq(notice_id))
-        .filter(game_notice::Column::GameId.eq(id))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Notice not found"))?;
-    if notice.notice_type != NoticeType::Normal {
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    require_game_mutable(control.transaction_mut(), id).await?;
+    let notice_type = sqlx::query_scalar::<_, i16>(
+        r#"SELECT "Type" FROM "GameNotices"
+            WHERE id = $1 AND game_id = $2
+            FOR UPDATE"#,
+    )
+    .bind(notice_id)
+    .bind(id)
+    .fetch_optional(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Notice not found"))?;
+    if notice_type != NoticeType::Normal as i16 {
         return Err(AppError::bad_request("System notices are not deletable"));
     }
-    game_notice::Entity::delete_by_id(notice_id)
-        .exec(&st.db)
-        .await?;
+    sqlx::query(r#"DELETE FROM "GameNotices" WHERE id = $1 AND game_id = $2"#)
+        .bind(notice_id)
+        .bind(id)
+        .execute(&mut **control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    control
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(MessageResponse::ok(""))
 }
 

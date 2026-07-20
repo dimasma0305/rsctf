@@ -297,11 +297,24 @@ async fn destroy_old(st: &SharedState, cycle: &CycleRow) -> AppResult<()> {
     .execute(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    // Stop advertising the old address before the runtime destroy.
-    crate::controllers::game::ad::invalidate_live_hill_snapshot(st, cycle.game_id).await;
+    let mut invalidated_games = vec![cycle.game_id];
     if let Some(container_id) = cycle.old_container_id.as_deref() {
-        crate::services::ad_vpn::deactivate_backend_endpoint(&st.db, container_id).await?;
-        st.containers.destroy(container_id).await?;
+        invalidated_games.extend(
+            crate::services::ad_vpn::stage_backend_endpoint_deactivation_retaining_identity(
+                &st.db,
+                container_id,
+            )
+            .await?,
+        );
+    }
+    invalidated_games.sort_unstable();
+    invalidated_games.dedup();
+    for game_id in invalidated_games {
+        crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
+    }
+    crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    if let Some(container_id) = cycle.old_container_id.as_deref() {
+        crate::services::traffic::destroy_container_after_capture_fence(st, container_id).await?;
         sqlx::query(
             r#"WITH removed AS (
                  DELETE FROM "Containers" WHERE container_id = $1 RETURNING id
@@ -320,17 +333,14 @@ async fn destroy_old(st: &SharedState, cycle: &CycleRow) -> AppResult<()> {
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    sqlx::query(
-        r#"UPDATE "KothTargets" SET container_id = NULL
-            WHERE game_id = $1 AND challenge_id = $2
-              AND container_id IS NOT DISTINCT FROM $3"#,
+    let destroyed_container_ids = cycle.old_container_id.iter().cloned().collect::<Vec<_>>();
+    deadline::clear_destroyed_deadline_target(
+        &mut transaction,
+        cycle.game_id,
+        cycle.challenge_id,
+        &destroyed_container_ids,
     )
-    .bind(cycle.game_id)
-    .bind(cycle.challenge_id)
-    .bind(&cycle.old_container_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    .await?;
     set_phase(
         &mut transaction,
         cycle.id,

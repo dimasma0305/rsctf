@@ -119,7 +119,8 @@ async fn prepare_team_target(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     let row: Option<(Uuid, bool)> = sqlx::query_as(
-        r#"SELECT captain_id, deletion_pending FROM "Teams" WHERE id = $1 FOR UPDATE"#,
+        r#"SELECT captain_id, deletion_pending
+              FROM "Teams" WHERE id = $1 FOR UPDATE"#,
     )
     .bind(team_id)
     .fetch_optional(&mut **transaction)
@@ -158,6 +159,7 @@ async fn assign_team(
                 .await
                 .map_err(database_error)?;
             if !already_member {
+                crate::controllers::team::ensure_roster_change_allowed(transaction, id).await?;
                 let member_count: i64 = sqlx::query_scalar(
                     r#"SELECT COUNT(*)::bigint FROM (
                            SELECT captain_id AS user_id FROM "Teams" WHERE id = $1

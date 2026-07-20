@@ -8,6 +8,112 @@ pub(crate) async fn load_game(st: &SharedState, id: i32) -> AppResult<game::Mode
         .ok_or_else(|| AppError::not_found("Game not found"))
 }
 
+/// Lock the parent event in a caller-owned transaction and reject every child
+/// mutation after hard deletion reaches its durable point of no return.
+/// Callers also own the per-game advisory fence, so this snapshot and their
+/// child write linearize against both deletion phases on every replica.
+pub(crate) async fn require_game_mutable(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+) -> AppResult<()> {
+    let deletion_pending = sqlx::query_scalar::<_, bool>(
+        r#"SELECT deletion_pending FROM "Games" WHERE id = $1 FOR SHARE"#,
+    )
+    .bind(game_id)
+    .fetch_optional(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    match deletion_pending {
+        None => Err(AppError::not_found("Game not found")),
+        Some(true) => Err(AppError::conflict("Game is being deleted")),
+        Some(false) => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod mutable_game_tests {
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::require_game_mutable;
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn committed_and_inflight_game_deletion_fences_reject_child_mutations() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("rsctf_game_mutable_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(3)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"CREATE TABLE "Games" (
+                 id INTEGER PRIMARY KEY,
+                 deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+               );
+               INSERT INTO "Games" VALUES (1, FALSE), (2, TRUE);"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut committed = pool.acquire().await.unwrap();
+        let error = require_game_mutable(&mut committed, 2)
+            .await
+            .expect_err("child mutation crossed a committed game-deletion fence");
+        assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
+
+        let mut deletion = pool.begin().await.unwrap();
+        sqlx::query(r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = 1"#)
+            .execute(&mut *deletion)
+            .await
+            .unwrap();
+        let second_pool = pool.clone();
+        let mut child = tokio::spawn(async move {
+            let mut transaction = second_pool.begin().await.unwrap();
+            let result = require_game_mutable(&mut transaction, 1).await;
+            transaction.rollback().await.unwrap();
+            result
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut child)
+                .await
+                .is_err(),
+            "child mutation did not wait for the parent deletion decision"
+        );
+        deletion.commit().await.unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(2), child)
+            .await
+            .expect("child mutation remained blocked")
+            .unwrap()
+            .expect_err("child mutation crossed the newly committed deletion fence");
+        assert_eq!(error.status(), axum::http::StatusCode::CONFLICT);
+
+        drop(committed);
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+    }
+}
+
 pub(crate) fn validate_koth_crown_shape(
     epoch_ticks: i32,
     cycle_ticks: i32,
@@ -77,9 +183,19 @@ pub(crate) fn ensure_ad_roster_status_mutable(
     current: Option<ParticipationStatus>,
     requested: ParticipationStatus,
 ) -> AppResult<()> {
-    if scoring_started && current != Some(requested) {
+    let reversible_sanction = matches!(
+        (current, requested),
+        (
+            Some(ParticipationStatus::Accepted),
+            ParticipationStatus::Suspended
+        ) | (
+            Some(ParticipationStatus::Suspended),
+            ParticipationStatus::Accepted
+        )
+    );
+    if scoring_started && current != Some(requested) && !reversible_sanction {
         return Err(AppError::bad_request(
-            "Participation status cannot change after A&D epoch scoring has started.",
+            "Only suspension and reinstatement can change participation status after A&D/KotH epoch scoring has started.",
         ));
     }
     Ok(())
@@ -224,6 +340,33 @@ mod roster_status_tests {
 
     #[test]
     fn official_roster_is_immutable_after_scoring_starts() {
+        let statuses = [
+            ParticipationStatus::Pending,
+            ParticipationStatus::Accepted,
+            ParticipationStatus::Rejected,
+            ParticipationStatus::Suspended,
+            ParticipationStatus::Unsubmitted,
+        ];
+        for current in statuses {
+            for requested in statuses {
+                let expected = current == requested
+                    || matches!(
+                        (current, requested),
+                        (
+                            ParticipationStatus::Accepted,
+                            ParticipationStatus::Suspended
+                        ) | (
+                            ParticipationStatus::Suspended,
+                            ParticipationStatus::Accepted
+                        )
+                    );
+                assert_eq!(
+                    ensure_ad_roster_status_mutable(true, Some(current), requested).is_ok(),
+                    expected,
+                    "unexpected active-roster transition {current:?} -> {requested:?}"
+                );
+            }
+        }
         assert!(ensure_ad_roster_status_mutable(
             true,
             Some(ParticipationStatus::Accepted),
@@ -236,9 +379,21 @@ mod roster_status_tests {
         assert!(ensure_ad_roster_status_mutable(
             true,
             Some(ParticipationStatus::Accepted),
+            ParticipationStatus::Suspended,
+        )
+        .is_ok());
+        assert!(ensure_ad_roster_status_mutable(
+            true,
+            Some(ParticipationStatus::Suspended),
             ParticipationStatus::Accepted,
         )
         .is_ok());
+        assert!(ensure_ad_roster_status_mutable(
+            true,
+            Some(ParticipationStatus::Suspended),
+            ParticipationStatus::Rejected,
+        )
+        .is_err());
         assert!(ensure_ad_roster_status_mutable(
             false,
             Some(ParticipationStatus::Pending),
@@ -515,21 +670,36 @@ pub(crate) async fn delete_attachment(st: &SharedState, attachment_id: i32) -> A
     Ok(())
 }
 
-/// Best-effort teardown of every backend container the game owns: per-team
-/// instance containers plus per-challenge test/shared containers. The DB rows
-/// themselves cascade away with the game; here we only reap the live backend
-/// containers so nothing leaks. Never surfaces a 500 from the backend.
+pub(super) async fn revoke_and_destroy_backend(
+    st: &SharedState,
+    backend_id: &str,
+) -> AppResult<()> {
+    let game_ids = crate::services::ad_vpn::stage_backend_endpoint_deactivation_retaining_identity(
+        &st.db, backend_id,
+    )
+    .await?;
+    for game_id in game_ids {
+        crate::controllers::game::ad::invalidate_live_hill_snapshot(st, game_id).await;
+    }
+    crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
+    crate::services::traffic::destroy_container_after_capture_fence(st, backend_id).await
+}
+
+/// Fail-closed teardown of every backend container the game owns: per-team
+/// instance containers plus per-challenge test/shared containers. Durable
+/// owners remain attached until each backend has been fenced and destroyed, so
+/// a failed hard deletion is exactly retryable instead of leaking a runtime.
 pub(crate) async fn destroy_game_containers(st: &SharedState, game_id: i32) -> AppResult<()> {
     let mut container_ids: Vec<Uuid> = Vec::new();
 
-    // A&D/KotH rows store backend ids directly rather than through Containers.
-    let ad_backend_ids: Vec<String> = ad_team_service::Entity::find()
+    // The game-end marker is durable before this helper runs. Drain every
+    // first-publication transaction before snapshotting service rows; existing
+    // rows are then serialized by their narrower per-pair locks below.
+    crate::services::ad::service_lifecycle::drain_publications(st.pg(), [game_id]).await?;
+    let ad_services = ad_team_service::Entity::find()
         .filter(ad_team_service::Column::GameId.eq(game_id))
         .all(&st.db)
-        .await?
-        .into_iter()
-        .filter_map(|service| service.container_id)
-        .collect();
+        .await?;
     let koth_backends: Vec<(i32, String)> = koth_target::Entity::find()
         .filter(koth_target::Column::GameId.eq(game_id))
         .all(&st.db)
@@ -541,10 +711,20 @@ pub(crate) async fn destroy_game_containers(st: &SharedState, game_id: i32) -> A
                 .map(|backend_id| (target.challenge_id, backend_id))
         })
         .collect();
-    for backend_id in ad_backend_ids {
-        crate::services::ad_vpn::deactivate_backend_endpoint(&st.db, &backend_id).await?;
-        crate::services::traffic::stop_container_capture(st, &backend_id).await?;
-        let _ = st.containers.destroy(&backend_id).await;
+    for service in ad_services {
+        let key = crate::services::ad::service_lifecycle::service_lock_key(
+            service.participation_id,
+            service.challenge_id,
+        );
+        let _local = crate::utils::single_flight::coalesce(&key).await;
+        let distributed =
+            crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &key)
+                .await?;
+        let teardown =
+            crate::services::ad::service_lifecycle::destroy_persisted_service(st, service.id).await;
+        let released = distributed.release().await;
+        teardown?;
+        released?;
     }
 
     // Per-team instance containers, reached via the game's participations.
@@ -594,10 +774,61 @@ pub(crate) async fn destroy_game_containers(st: &SharedState, game_id: i32) -> A
         let distributed =
             crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &key)
                 .await?;
-        crate::services::ad_vpn::deactivate_backend_endpoint(&st.db, &backend_id).await?;
-        let _ = st.containers.destroy(&backend_id).await;
-        distributed.release().await?;
+        let teardown = async {
+            revoke_and_destroy_backend(st, &backend_id).await?;
+            sqlx::query(
+                r#"UPDATE "KothTargets"
+                      SET container_id = NULL
+                    WHERE game_id = $1 AND challenge_id = $2
+                      AND container_id = $3
+                      AND NULLIF(BTRIM(host), '') IS NULL AND port = 0"#,
+            )
+            .bind(game_id)
+            .bind(challenge_id)
+            .bind(&backend_id)
+            .execute(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            AppResult::Ok(())
+        }
+        .await;
+        let released = distributed.release().await;
+        teardown?;
+        released?;
     }
+    Ok(())
+}
+
+pub(super) async fn destroy_test_container_with<F>(
+    pool: &sqlx::PgPool,
+    challenge_id: i32,
+    container_id: Uuid,
+    backend_id: &str,
+    destroy: F,
+) -> AppResult<()>
+where
+    F: std::future::Future<Output = AppResult<()>>,
+{
+    destroy.await?;
+    sqlx::query(
+        r#"WITH owner AS (
+             SELECT id FROM "GameChallenges"
+              WHERE id = $1 AND test_container_id = $2
+           ), removed AS (
+             DELETE FROM "Containers" container USING owner
+              WHERE container.id = $2 AND container.container_id = $3
+              RETURNING container.id
+           )
+           UPDATE "GameChallenges"
+              SET test_container_id = NULL
+            WHERE id = $1 AND test_container_id IN (SELECT id FROM removed)"#,
+    )
+    .bind(challenge_id)
+    .bind(container_id)
+    .bind(backend_id)
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(())
 }
 
@@ -621,19 +852,15 @@ pub(crate) async fn destroy_game_test_containers_locked(
             .one(&st.db)
             .await?
         {
-            crate::services::ad_vpn::deactivate_backend_endpoint(&st.db, &container.container_id)
-                .await?;
-            crate::services::traffic::stop_container_capture(st, &container.container_id).await?;
-            if let Err(error) = st.containers.destroy(&container.container_id).await {
-                tracing::warn!(
-                    backend_id = %container.container_id,
-                    %error,
-                    "test container backend destroy failed during game deletion"
-                );
-            }
-            container::Entity::delete_by_id(container_id)
-                .exec(&st.db)
-                .await?;
+            destroy_test_container_with(
+                st.pg(),
+                challenge.id,
+                container_id,
+                &container.container_id,
+                revoke_and_destroy_backend(st, &container.container_id),
+            )
+            .await?;
+            continue;
         }
         sqlx::query(
             r#"UPDATE "GameChallenges"
@@ -648,6 +875,10 @@ pub(crate) async fn destroy_game_test_containers_locked(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "helpers_teardown_tests.rs"]
+mod teardown_tests;
 
 pub(crate) async fn load_flags(st: &SharedState, c_id: i32) -> AppResult<Vec<FlagInfoModel>> {
     let flags = flag_context::Entity::find()

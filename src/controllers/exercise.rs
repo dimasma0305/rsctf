@@ -124,6 +124,75 @@ async fn user_instance(
         .await?)
 }
 
+async fn clear_exercise_container_owner(
+    pool: &sqlx::PgPool,
+    instance_id: Option<i32>,
+    container_id: uuid::Uuid,
+    backend_id: &str,
+    created_flag_id: Option<i32>,
+) -> AppResult<()> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(instance_id) = instance_id {
+        sqlx::query(
+            r#"UPDATE "ExerciseInstances"
+                  SET container_id = NULL,
+                      is_loaded = FALSE,
+                      flag_id = CASE WHEN flag_id = $3 THEN NULL ELSE flag_id END
+                WHERE id = $1 AND container_id = $2"#,
+        )
+        .bind(instance_id)
+        .bind(container_id)
+        .bind(created_flag_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    sqlx::query(r#"DELETE FROM "Containers" WHERE id = $1 AND container_id = $2"#)
+        .bind(container_id)
+        .bind(backend_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(flag_id) = created_flag_id {
+        sqlx::query(
+            r#"DELETE FROM "FlagContexts" flag
+                WHERE flag.id = $1
+                  AND NOT EXISTS (
+                      SELECT 1 FROM "ExerciseInstances" instance
+                       WHERE instance.flag_id = flag.id
+                  )"#,
+        )
+        .bind(flag_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
+async fn destroy_owned_exercise_container_with<F>(
+    pool: &sqlx::PgPool,
+    instance_id: Option<i32>,
+    container_id: uuid::Uuid,
+    backend_id: &str,
+    created_flag_id: Option<i32>,
+    destroy: F,
+) -> AppResult<()>
+where
+    F: std::future::Future<Output = AppResult<()>>,
+{
+    // Await destruction before opening the cleanup transaction. A failed
+    // backend call therefore leaves every durable owner available for retry.
+    destroy.await?;
+    clear_exercise_container_owner(pool, instance_id, container_id, backend_id, created_flag_id)
+        .await
+}
+
 /// `GET /api/exercise/{id}` — exercise detail for the current user.
 pub async fn detail(
     State(st): State<SharedState>,
@@ -281,16 +350,32 @@ pub async fn create_container(
                     distributed.release().await?;
                     return Ok(RequestResponse::ok(current.entry()));
                 }
-                let _ = st.containers.destroy(&current.container_id).await;
-                container::Entity::delete_by_id(container_id)
-                    .exec(&st.db)
-                    .await?;
+                destroy_owned_exercise_container_with(
+                    st.pg(),
+                    Some(instance.id),
+                    container_id,
+                    &current.container_id,
+                    None,
+                    crate::services::traffic::destroy_container_after_capture_fence(
+                        &st,
+                        &current.container_id,
+                    ),
+                )
+                .await?;
+            } else {
+                sqlx::query(
+                    r#"UPDATE "ExerciseInstances"
+                          SET container_id = NULL, is_loaded = FALSE
+                        WHERE id = $1 AND container_id = $2"#,
+                )
+                .bind(instance.id)
+                .bind(container_id)
+                .execute(st.pg())
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
             }
-
-            let mut am: exercise_instance::ActiveModel = instance.clone().into();
-            am.container_id = Set(None);
-            am.is_loaded = Set(false);
-            *instance = am.update(&st.db).await?;
+            instance.container_id = None;
+            instance.is_loaded = false;
         }
     }
 
@@ -420,26 +505,24 @@ pub async fn create_container(
     let c = match persisted {
         Ok(c) => c,
         Err(err) => {
-            let _ = st.containers.destroy(&backend_id).await;
-            if let Some(instance_id) = linked_exercise_instance_id {
-                let _ = sqlx::query(
-                    r#"UPDATE "ExerciseInstances"
-                          SET container_id = NULL,
-                              is_loaded = FALSE,
-                              flag_id = CASE WHEN flag_id = $3 THEN NULL ELSE flag_id END
-                        WHERE id = $1 AND container_id = $2"#,
-                )
-                .bind(instance_id)
-                .bind(cuuid)
-                .bind(created_flag_id)
-                .execute(st.pg())
-                .await;
-            }
-            let _ = container::Entity::delete_by_id(cuuid).exec(&st.db).await;
-            if let Some(flag_id) = created_flag_id {
-                let _ = flag_context::Entity::delete_by_id(flag_id)
-                    .exec(&st.db)
-                    .await;
+            if let Err(destroy_error) = destroy_owned_exercise_container_with(
+                st.pg(),
+                linked_exercise_instance_id,
+                cuuid,
+                &backend_id,
+                created_flag_id,
+                crate::services::traffic::destroy_container_after_capture_fence(&st, &backend_id),
+            )
+            .await
+            {
+                tracing::error!(
+                    %backend_id,
+                    %destroy_error,
+                    "exercise publication rollback failed; retaining durable owner for retry"
+                );
+                return Err(AppError::internal(format!(
+                    "{err}; exercise rollback failed: {destroy_error}"
+                )));
             }
             return Err(err);
         }
@@ -464,14 +547,55 @@ pub async fn destroy_container(
         .ok_or_else(|| AppError::not_found("No instance"))?;
     if let Some(cuuid) = inst.container_id {
         if let Some(c) = container::Entity::find_by_id(cuuid).one(&st.db).await? {
-            let _ = st.containers.destroy(&c.container_id).await;
-            container::Entity::delete_by_id(cuuid).exec(&st.db).await?;
+            destroy_owned_exercise_container_with(
+                st.pg(),
+                Some(inst.id),
+                cuuid,
+                &c.container_id,
+                None,
+                crate::services::traffic::destroy_container_after_capture_fence(
+                    &st,
+                    &c.container_id,
+                ),
+            )
+            .await?;
+        } else {
+            sqlx::query(
+                r#"UPDATE "ExerciseInstances"
+                      SET container_id = NULL, is_loaded = FALSE
+                    WHERE id = $1 AND container_id = $2"#,
+            )
+            .bind(inst.id)
+            .bind(cuuid)
+            .execute(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         }
-        let mut am: exercise_instance::ActiveModel = inst.into();
-        am.container_id = Set(None);
-        am.is_loaded = Set(false);
-        am.update(&st.db).await?;
     }
     distributed.release().await?;
     Ok(MessageResponse::ok("Container destroyed"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_destroy_never_reaches_exercise_owner_cleanup() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://rsctf:rsctf@127.0.0.1:1/rsctf")
+            .unwrap();
+        let error = destroy_owned_exercise_container_with(
+            &pool,
+            Some(7),
+            uuid::Uuid::nil(),
+            "runtime-7",
+            None,
+            async { Err(AppError::internal("injected destroy failure")) },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "injected destroy failure");
+    }
 }

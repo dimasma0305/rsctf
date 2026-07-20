@@ -47,7 +47,6 @@ use async_trait::async_trait;
 use bollard::container::NetworkingConfig;
 use bollard::container::{
     Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions,
-    StartContainerOptions,
 };
 use bollard::image::CreateImageOptions;
 use bollard::models::{EndpointSettings, HostConfig, Ipam, IpamConfig, Network, PortBinding};
@@ -66,6 +65,9 @@ mod logging;
 mod naming;
 #[cfg(test)]
 mod tests;
+use self::docker::{
+    is_conflict, is_not_found, launch_spec_fingerprint, launch_spec_matches, LAUNCH_SPEC_LABEL,
+};
 use logging::bounded_log_config;
 use naming::{container_name, map_status};
 
@@ -497,28 +499,6 @@ impl DockerContainerManager {
     }
 }
 
-/// Whether a bollard error is a Docker "404 Not Found" (container/image gone).
-fn is_not_found(err: &bollard::errors::Error) -> bool {
-    matches!(
-        err,
-        bollard::errors::Error::DockerResponseServerError {
-            status_code: 404,
-            ..
-        }
-    )
-}
-
-/// Docker 409 Conflict — e.g. the container name is already taken.
-fn is_conflict(err: &bollard::errors::Error) -> bool {
-    matches!(
-        err,
-        bollard::errors::Error::DockerResponseServerError {
-            status_code: 409,
-            ..
-        }
-    )
-}
-
 #[async_trait]
 impl ContainerManager for DockerContainerManager {
     fn backend_kind(&self) -> ContainerBackendKind {
@@ -553,6 +533,7 @@ impl ContainerManager for DockerContainerManager {
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
         validate_docker_container_spec(&spec)?;
         let docker = self.client()?;
+        let launch_fingerprint = launch_spec_fingerprint(&spec);
 
         // 1. Pull the immutable reference only if it is not present locally.
         // Repository digests can be fetched without changing identity. A
@@ -615,6 +596,7 @@ impl ContainerManager for DockerContainerManager {
         };
 
         let mut labels = scoped_managed_labels(&self.scope);
+        labels.insert(LAUNCH_SPEC_LABEL.to_string(), launch_fingerprint.clone());
         if let Some(operation_id) = spec.operation_id.as_ref() {
             labels.insert(OPERATION_LABEL.to_string(), operation_id.clone());
         }
@@ -686,6 +668,7 @@ impl ContainerManager for DockerContainerManager {
                 if !scope_matches
                     || actual_operation != expected_operation
                     || actual_image != Some(spec.image.as_str())
+                    || !launch_spec_matches(&existing, &launch_fingerprint)
                 {
                     return Err(AppError::conflict(
                         "container operation identity is owned by a different workload",
@@ -716,38 +699,9 @@ impl ContainerManager for DockerContainerManager {
                 )));
             }
         };
-        // 6. Start.
-        let already_running = adopted
-            && docker
-                .inspect_container(&id, None)
-                .await
-                .ok()
-                .and_then(|info| info.state)
-                .and_then(|state| state.running)
-                == Some(true);
-        if !already_running {
-            if let Err(e) = docker
-                .start_container(&id, None::<StartContainerOptions<String>>)
-                .await
-            {
-                // Best-effort cleanup so a failed start doesn't leak a container.
-                if !adopted {
-                    let _ = docker
-                        .remove_container(
-                            &id,
-                            Some(RemoveContainerOptions {
-                                v: false,
-                                force: true,
-                                link: false,
-                            }),
-                        )
-                        .await;
-                }
-                return Err(AppError::internal(format!(
-                    "failed to start container: {e}"
-                )));
-            }
-        }
+        // 6. Start, reconciling an adopter that won the concurrent start race.
+        self.start_or_reconcile_container(docker, &id, spec.operation_id.is_some(), adopted)
+            .await?;
 
         // 7. Inspect to read back state + the published host port.
         let info = docker
@@ -814,9 +768,16 @@ impl ContainerManager for DockerContainerManager {
 
     async fn destroy(&self, id: &str) -> AppResult<()> {
         let docker = self.client()?;
+        let Some(info) = self.inspect_scoped_container(docker, id).await? else {
+            return Ok(());
+        };
+        let canonical_id = info
+            .id
+            .as_deref()
+            .ok_or_else(|| AppError::internal("inspected container has no backend identity"))?;
         match docker
             .remove_container(
-                id,
+                canonical_id,
                 Some(RemoveContainerOptions {
                     v: false,
                     force: true,
@@ -840,20 +801,21 @@ impl ContainerManager for DockerContainerManager {
 
     async fn query(&self, id: &str) -> AppResult<ContainerStatus> {
         let docker = self.client()?;
-        let info = docker.inspect_container(id, None).await.map_err(|e| {
-            if is_not_found(&e) {
-                AppError::not_found(format!("container not found: {id}"))
-            } else {
-                AppError::internal(format!("failed to inspect container: {e}"))
-            }
-        })?;
+        let info = self
+            .inspect_scoped_container(docker, id)
+            .await?
+            .ok_or_else(|| AppError::not_found(format!("container not found: {id}")))?;
 
         let status = map_status(info.state.as_ref().and_then(|s| s.status));
 
         // Resource sample from the Docker stats API. Degrades to `None` on any
         // failure (daemon gone, container stopped, malformed frame) so a stats
         // hiccup never turns a successful lifecycle query into an error.
-        let (memory_bytes, cpu_usage) = self.sample_stats(id).await;
+        let canonical_id = info
+            .id
+            .as_deref()
+            .ok_or_else(|| AppError::internal("inspected container has no backend identity"))?;
+        let (memory_bytes, cpu_usage) = self.sample_stats(canonical_id).await;
 
         Ok(ContainerStatus {
             id: id.to_string(),
@@ -866,14 +828,11 @@ impl ContainerManager for DockerContainerManager {
     /// Inspect-only liveness — no stats stream (unlike [`query`]).
     async fn inspect_liveness(&self, id: &str) -> AppResult<ContainerLiveness> {
         let docker = self.client()?;
-        match docker.inspect_container(id, None).await {
-            Ok(info) => Ok(docker::docker_liveness(
+        match self.inspect_scoped_container(docker, id).await? {
+            Some(info) => Ok(docker::docker_liveness(
                 info.state.as_ref().and_then(|state| state.status),
             )),
-            Err(error) if is_not_found(&error) => Ok(ContainerLiveness::Stopped),
-            Err(error) => Err(AppError::internal(format!(
-                "failed to inspect container liveness: {error}"
-            ))),
+            None => Ok(ContainerLiveness::Stopped),
         }
     }
 
@@ -881,7 +840,15 @@ impl ContainerManager for DockerContainerManager {
     /// from the Docker `changes` API (`docker diff`).
     async fn snapshot_changes(&self, id: &str) -> AppResult<Vec<FileChange>> {
         let docker = self.client()?;
-        let changes = docker.container_changes(id).await.map_err(|e| {
+        let info = self
+            .inspect_scoped_container(docker, id)
+            .await?
+            .ok_or_else(|| AppError::not_found(format!("container not found: {id}")))?;
+        let canonical_id = info
+            .id
+            .as_deref()
+            .ok_or_else(|| AppError::internal("inspected container has no backend identity"))?;
+        let changes = docker.container_changes(canonical_id).await.map_err(|e| {
             if is_not_found(&e) {
                 AppError::not_found(format!("container not found: {id}"))
             } else {
@@ -909,9 +876,17 @@ impl ContainerManager for DockerContainerManager {
     /// the combined output.
     async fn exec(&self, id: &str, cmd: Vec<String>) -> AppResult<String> {
         let docker = self.client()?;
+        let info = self
+            .inspect_scoped_container(docker, id)
+            .await?
+            .ok_or_else(|| AppError::not_found(format!("container not found: {id}")))?;
+        let canonical_id = info
+            .id
+            .as_deref()
+            .ok_or_else(|| AppError::internal("inspected container has no backend identity"))?;
         let exec = docker
             .create_exec(
-                id,
+                canonical_id,
                 bollard::exec::CreateExecOptions {
                     cmd: Some(cmd),
                     attach_stdout: Some(true),
@@ -940,11 +915,29 @@ impl ContainerManager for DockerContainerManager {
         Ok(out)
     }
 
+    async fn resolve_interactive_exec_target(&self, id: &str) -> AppResult<String> {
+        let docker = self.client()?;
+        let info = self
+            .inspect_scoped_container(docker, id)
+            .await?
+            .ok_or_else(|| AppError::not_found(format!("container not found: {id}")))?;
+        info.id
+            .ok_or_else(|| AppError::internal("inspected container has no backend identity"))
+    }
+
     /// Export the container's filesystem via the Docker `export` endpoint
     /// (`docker export`), folding the streamed TAR into a byte buffer. Used to
     /// serve the A&D post-game snapshot; the archive is uncompressed TAR.
     async fn export(&self, id: &str) -> AppResult<Vec<u8>> {
         let docker = self.client()?;
+        let info = self
+            .inspect_scoped_container(docker, id)
+            .await?
+            .ok_or_else(|| AppError::not_found(format!("container not found: {id}")))?;
+        let canonical_id = info
+            .id
+            .as_deref()
+            .ok_or_else(|| AppError::internal("inspected container has no backend identity"))?;
         let _permit = tokio::time::timeout(
             SNAPSHOT_EXPORT_ADMISSION_TIMEOUT,
             snapshot_export_slots().acquire(),
@@ -954,7 +947,7 @@ impl ContainerManager for DockerContainerManager {
         .map_err(|_| AppError::unavailable("snapshot export service is shutting down"))?;
 
         tokio::time::timeout(SNAPSHOT_EXPORT_MAX_DURATION, async {
-            let mut stream = docker.export_container(id);
+            let mut stream = docker.export_container(canonical_id);
             let mut out = Vec::new();
             while let Some(chunk) = stream.next().await {
                 let bytes = chunk.map_err(|e| {

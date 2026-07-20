@@ -85,9 +85,9 @@ pub async fn connect(url: &str) -> anyhow::Result<DatabaseConnection> {
 /// Conservative no-deadlock floor for operations that retain pool connections
 /// while awaiting nested work.
 ///
-/// A checker-bearing repository scan can retain checkout, game-control, and
-/// checker-publication locks while its model insert needs another checkout
-/// (4R).
+/// A checker-bearing repository scan can retain checkout, game-control,
+/// checker-publication, and challenge-definition locks while its model write
+/// leases another connection (5R).
 /// Provisioning can hold one advisory lock while issuing a query (2P). A
 /// network owner always retains the singleton BYOC ownership lease. When VPN
 /// is enabled it also retains a PgListener and needs room for nested kernel
@@ -102,7 +102,7 @@ fn required_pool_connections(
     if role == RuntimeRole::Migrate {
         return 2;
     }
-    let scans = repo_scan_concurrency.saturating_mul(4);
+    let scans = repo_scan_concurrency.saturating_mul(5);
     let provisioning = provisioning_concurrency.saturating_mul(2);
     let owner_connections = match (role.capabilities().network, vpn_enabled) {
         (true, true) => 6,
@@ -129,11 +129,17 @@ fn required_pool_connections(
     // deadlocks with roster teardown.
     let account_lifecycle = serves_player_api
         .then_some(crate::utils::single_flight::ACCOUNT_LIFECYCLE_CONCURRENCY.saturating_mul(2));
+    // A runtime eligibility transition can retain its outer transition, game,
+    // and definition transactions while one final query or model write makes
+    // progress. Its independent one-at-a-time admission gate therefore needs
+    // four connections only on roles that expose editor controllers.
+    let runtime_transition = serves_player_api.then_some(4usize);
     scans
         .saturating_add(provisioning)
         .saturating_add(owner_connections)
         .saturating_add(roster_access.unwrap_or_default())
         .saturating_add(account_lifecycle.unwrap_or_default())
+        .saturating_add(runtime_transition.unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -143,22 +149,22 @@ mod tests {
 
     #[test]
     fn connection_floor_accounts_for_nested_scan_provisioning_and_owner_work() {
-        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::Web), 21);
+        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::Web), 26);
         assert_eq!(
             required_pool_connections(4, 4, false, RuntimeRole::Engine),
-            25
+            29
         );
         assert_eq!(
             required_pool_connections(1, 4, false, RuntimeRole::Control),
-            15
+            16
         );
-        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::Web), 21);
+        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::Web), 26);
         assert_eq!(
             required_pool_connections(1, 4, true, RuntimeRole::Control),
-            18
+            19
         );
-        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::All), 23);
-        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::All), 26);
+        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::All), 28);
+        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::All), 31);
         assert_eq!(
             required_pool_connections(4, 16, true, RuntimeRole::Migrate),
             2

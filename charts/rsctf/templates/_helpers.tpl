@@ -168,7 +168,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and (eq $backend "worker") (ne $role "all") (ne $localBackend "none") -}}
 {{- fail "hybrid worker local backends currently require runtimeRole=all; split roles do not yet delegate local lifecycle requests from web to the singleton runtime owner" -}}
 {{- end -}}
-{{- $scanConnections := mul 4 .Values.config.repoScanConcurrency -}}
+{{- $scanConnections := mul 5 .Values.config.repoScanConcurrency -}}
 {{- $minimumConnections := add $scanConnections (mul 2 .Values.config.provisioningConcurrency) 1 -}}
 {{- if eq $role "migrate" -}}
   {{- $minimumConnections = 2 -}}
@@ -178,7 +178,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   {{- $minimumConnections = add $scanConnections (mul 2 .Values.config.provisioningConcurrency) 3 -}}
 {{- end -}}
 {{- if and (ne $role "migrate") (has $role (list "all" "web")) -}}
-  {{- $minimumConnections = add $minimumConnections 8 -}}
+  {{- $minimumConnections = add $minimumConnections 12 -}}
 {{- end -}}
 {{- if lt (int .Values.config.dbMaxConnections) (int $minimumConnections) -}}
 {{- fail (printf "runtimeRole=%s with vpn.enabled=%v, config.repoScanConcurrency=%v, and config.provisioningConcurrency=%v requires config.dbMaxConnections >= %v" $role .Values.vpn.enabled .Values.config.repoScanConcurrency .Values.config.provisioningConcurrency $minimumConnections) -}}

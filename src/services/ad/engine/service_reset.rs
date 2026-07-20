@@ -10,21 +10,25 @@ const PUBLISH_SERVICE_ENDPOINT_SQL: &str = r#"UPDATE "AdTeamServices" service
        SET host = $3, port = $4, container_id = $5,
            last_reset_at = clock_timestamp(), status = $8
       FROM "Participations" participation,
-           "GameChallenges" challenge, "Games" game
+           "Teams" team, "GameChallenges" challenge, "Games" game
      WHERE service.id = $1
        AND service.game_id = $2
        AND service.host = ''
        AND service.port = 0
-       AND service.container_id IS NULL
+       AND service.container_id = $5
        AND participation.id = service.participation_id
        AND participation.game_id = service.game_id
        AND participation.status = $6
+       AND team.id = participation.team_id
+       AND team.deletion_pending = FALSE
        AND challenge.id = service.challenge_id
        AND challenge.game_id = service.game_id
        AND challenge.is_enabled = TRUE
+       AND challenge.deletion_pending = FALSE
        AND challenge.review_status = $7
        AND challenge."Type" = $9
        AND game.id = service.game_id
+       AND game.deletion_pending = FALSE
        AND (
          SELECT latest.id
            FROM "AdRounds" latest
@@ -76,6 +80,7 @@ pub(crate) async fn prepare_service_reset(
              JOIN "Participations" participation
                ON participation.id = service.participation_id
               AND participation.game_id = service.game_id
+             JOIN "Teams" team ON team.id = participation.team_id
              JOIN "GameChallenges" challenge
                ON challenge.id = service.challenge_id
               AND challenge.game_id = service.game_id
@@ -93,10 +98,13 @@ pub(crate) async fn prepare_service_reset(
             WHERE service.id = $1
               AND service.game_id = $2
               AND participation.status = $3
+              AND team.deletion_pending = FALSE
+              AND game.deletion_pending = FALSE
               AND challenge.is_enabled = TRUE
+              AND challenge.deletion_pending = FALSE
               AND challenge.review_status = $4
               AND challenge."Type" = $5
-            FOR UPDATE OF service, participation, challenge, game"#,
+            FOR UPDATE OF service, participation, team, challenge, game"#,
     )
     .bind(service_id)
     .bind(game_id)
@@ -239,6 +247,9 @@ mod tests {
     #[test]
     fn reset_retains_old_identity_until_capture_fence_clears_it() {
         assert!(!RETIRE_SERVICE_ENDPOINT_SQL.contains("container_id = NULL"));
-        assert!(PUBLISH_SERVICE_ENDPOINT_SQL.contains("service.container_id IS NULL"));
+        assert!(PUBLISH_SERVICE_ENDPOINT_SQL.contains("service.container_id = $5"));
+        assert!(PUBLISH_SERVICE_ENDPOINT_SQL.contains("challenge.deletion_pending = FALSE"));
+        assert!(PUBLISH_SERVICE_ENDPOINT_SQL.contains("game.deletion_pending = FALSE"));
+        assert!(PUBLISH_SERVICE_ENDPOINT_SQL.contains("team.deletion_pending = FALSE"));
     }
 }

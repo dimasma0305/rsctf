@@ -56,11 +56,11 @@ maintenance drain. Stop competitive game orchestration, inspect legacy
 containers selected by `docker ps -a --filter label=rsctf.managed=true`, and
 remove only containers confirmed obsolete for this installation. Then set a
 stable `RSCTF_DOCKER_SCOPE` and start every replica with that same value. The
-scoped orphan sweeper deliberately ignores legacy unscoped containers: this
-prevents a new installation from adopting or deleting another installation's
-workloads on a shared daemon. Database-tracked legacy containers can still be
-destroyed through their stored IDs, but a pre-upgrade crash orphan requires
-this one-time operator review.
+scoped orphan sweeper and lifecycle API deliberately ignore legacy unscoped
+containers: this prevents a new installation from adopting or deleting another
+installation's workloads on a shared daemon. Manually remove every verified
+legacy workload during this drain; afterward, recreate any still-needed
+challenge instances so their containers carry the installation scope.
 
 That automatic migration applies only to the default `RSCTF_ROLE=all` process.
 For a split-role deployment, start PostgreSQL and Redis, run exactly one

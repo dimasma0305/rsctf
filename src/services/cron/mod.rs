@@ -607,11 +607,28 @@ async fn reap_ended_ad_backends(state: &SharedState) -> AppResult<u64> {
             if ended && (row.container_id.is_some() || !row.host.is_empty()) {
                 let backend_id = row.container_id.clone();
                 crate::services::ad_vpn::deactivate_team_service(&state.db, row.id).await?;
-                if let Some(backend_id) = backend_id {
-                    crate::services::traffic::stop_container_capture(state, &backend_id).await?;
-                    let _ = state.containers.destroy(&backend_id).await;
-                }
-                reaped += 1;
+                let cleaned = if let Some(backend_id) = backend_id {
+                    match crate::services::traffic::destroy_container_after_capture_fence(
+                        state,
+                        &backend_id,
+                    )
+                    .await
+                    {
+                        Ok(()) => true,
+                        Err(error) => {
+                            tracing::warn!(
+                                service_id = row.id,
+                                %backend_id,
+                                %error,
+                                "cron: ended A&D service destroy failed; retaining identity for retry"
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    true
+                };
+                reaped += u64::from(cleaned);
             }
         }
         distributed.release().await?;

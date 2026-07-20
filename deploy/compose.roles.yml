@@ -31,7 +31,7 @@ services:
       RSCTF_MIGRATE: "0"
       RSCTF_SHARED_STORAGE: "true"
       RSCTF_DISTRIBUTED_RATELIMIT: "true"
-      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_WEB_DB_MAX_CONNECTIONS:-21}
+      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_WEB_DB_MAX_CONNECTIONS:-26}
     networks:
       default:
         # The base service owns this alias in single-role mode. Remove it from

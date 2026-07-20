@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { dockerScopeFromContainerEnv, dockerWorkloadScope } from '../docker-scope.js';
+import {
+  dockerOwnershipLabelArgs,
+  dockerScopeFromContainerEnv,
+  dockerWorkloadScope,
+} from '../docker-scope.js';
 
 test('Docker scope is replica-stable and isolates installations', () => {
   const first = dockerWorkloadScope('event-a', 'ignored-secret');
@@ -22,4 +26,15 @@ test('container environment uses explicit scope before the JWT fallback', () => 
     dockerScopeFromContainerEnv(['RSCTF_JWT_SECRET=secret-a']),
     dockerScopeFromContainerEnv(['RSCTF_JWT_SECRET=secret-b']),
   );
+});
+
+test('external lifecycle containers carry both server ownership labels', () => {
+  const scope = dockerWorkloadScope('event-a', 'ignored-secret');
+  assert.deepEqual(dockerOwnershipLabelArgs(scope), [
+    '--label',
+    `rsctf.managed=${scope}`,
+    '--label',
+    `rsctf.scope=${scope}`,
+  ]);
+  assert.throws(() => dockerOwnershipLabelArgs('event-a'), /32-character lowercase hex/);
 });

@@ -276,7 +276,7 @@ pub async fn reenqueue_build(
         .await?
     {
         Some(challenge) => {
-            crate::controllers::edit::admin_reenqueue_build(&st, &challenge, attempt).await
+            crate::controllers::edit::admin_reenqueue_build(&st, &challenge, attempt).await?
         }
         None => None,
     };

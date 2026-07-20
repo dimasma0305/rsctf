@@ -602,6 +602,7 @@ mod tests {
                     capacity_memory_bytes BIGINT NOT NULL DEFAULT 0,
                     capacity_slots INTEGER NOT NULL DEFAULT 0,
                     certificate_serial TEXT NULL,
+                    certificate_fingerprint_sha256 BYTEA NULL,
                     certificate_expires_at TIMESTAMPTZ NULL,
                     session_id UUID NULL,
                     session_epoch BIGINT NOT NULL DEFAULT 0,

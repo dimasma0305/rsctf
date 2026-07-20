@@ -67,12 +67,14 @@ pub async fn rollout_workloads(
     headers: HeaderMap,
 ) -> AppResult<RequestResponse<WorkloadRolloutModel>> {
     manager_or_admin(&st, &user, game_id).await?;
-    let rollout_lock = crate::services::challenge_workloads::acquire_definition_lock(
+    let mut rollout_lock = crate::services::challenge_workloads::acquire_definition_lock(
         st.pg(),
         game_id,
         challenge_id,
     )
     .await?;
+    super::reject_pending_mutation(&mut **rollout_lock.transaction_mut(), game_id, challenge_id)
+        .await?;
     let challenge = load_challenge(&st, game_id, challenge_id).await?;
     let workload = crate::services::challenge_workloads::from_challenge(&challenge)?
         .ok_or_else(|| AppError::bad_request("no workloadSpec is saved"))?;
@@ -351,12 +353,18 @@ pub(super) async fn release_update_lock(lock: Option<PgAdvisoryLock>) -> AppResu
 /// use the same fence so switching between aggregate and legacy is ordered.
 pub(super) fn update_changes_runtime_definition(model: &super::ChallengeUpdateModel) -> bool {
     model.workload_spec.is_some()
+        || model.is_enabled.is_some()
         || model.container_image.is_some()
         || model.memory_limit.is_some()
         || model.cpu_count.is_some()
+        || model.storage_limit.is_some()
         || model.expose_port.is_some()
         || model.flag_template.is_some()
+        || model.enable_traffic_capture.is_some()
+        || model.ad_checker_image.is_some()
         || model.ad_allow_egress.is_some()
+        || model.ad_allow_self_reset.is_some()
+        || model.ad_ssh_requires_flag.is_some()
         || model.enable_shared_container.is_some()
         || model.ad_self_hosted.is_some()
 }
@@ -518,12 +526,18 @@ mod tests {
     fn runtime_update_predicate_covers_every_legacy_launch_field() {
         let fields = [
             "workloadSpec",
+            "isEnabled",
             "containerImage",
             "memoryLimit",
             "cpuCount",
+            "storageLimit",
             "exposePort",
             "flagTemplate",
+            "enableTrafficCapture",
+            "adCheckerImage",
             "adAllowEgress",
+            "adAllowSelfReset",
+            "adSshRequiresFlag",
             "enableSharedContainer",
             "adSelfHosted",
         ];
@@ -532,10 +546,19 @@ mod tests {
                 serde_json::Value::Null
             } else if matches!(
                 field,
-                "adAllowEgress" | "enableSharedContainer" | "adSelfHosted"
+                "isEnabled"
+                    | "enableTrafficCapture"
+                    | "adAllowEgress"
+                    | "adAllowSelfReset"
+                    | "adSshRequiresFlag"
+                    | "enableSharedContainer"
+                    | "adSelfHosted"
             ) {
                 serde_json::json!(true)
-            } else if matches!(field, "memoryLimit" | "cpuCount" | "exposePort") {
+            } else if matches!(
+                field,
+                "memoryLimit" | "cpuCount" | "storageLimit" | "exposePort"
+            ) {
                 serde_json::json!(1)
             } else {
                 serde_json::json!("value")

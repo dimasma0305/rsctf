@@ -1,6 +1,8 @@
 //! Team listing / search / CRUD.
 
 use super::*;
+use std::collections::HashMap;
+
 use sea_orm::sea_query::{Expr, Func};
 
 /// RSCTF `TeamModel` — compact nested team reference.
@@ -64,16 +66,7 @@ pub async fn teams(
         .all(&st.db)
         .await?;
 
-    // RSCTF `TeamRepository.GetTeams` eager-loads `Team.Members` and
-    // `TeamInfoModel.FromTeam` emits them; resolve each team's roster so the admin
-    // list isn't stuck with empty members arrays.
-    let mut data = Vec::with_capacity(rows.len());
-    for t in rows {
-        let members = team_members(&st, &t).await?;
-        let mut info = TeamInfoModel::from(t);
-        info.members = members;
-        data.push(info);
-    }
+    let data = teams_with_members(st.pg(), rows).await?;
     Ok(ArrayResponse::new(data, total))
 }
 
@@ -101,15 +94,7 @@ pub async fn search_teams(
         .all(&st.db)
         .await?;
 
-    // Same eager members resolution as the list endpoint (RSCTF `SearchTeams`
-    // also `.Include(t => t.Members)` before `TeamInfoModel.FromTeam`).
-    let mut data = Vec::with_capacity(rows.len());
-    for t in rows {
-        let members = team_members(&st, &t).await?;
-        let mut info = TeamInfoModel::from(t);
-        info.members = members;
-        data.push(info);
-    }
+    let data = teams_with_members(st.pg(), rows).await?;
     let total = data.len() as i64;
     Ok(ArrayResponse::new(data, total))
 }
@@ -188,7 +173,8 @@ pub async fn delete_team(
     // games' scoreboard caches BEFORE the cascade drops the participation/instance
     // rows the teardown keys off — otherwise the containers leak until the reaper
     // and the deleted team lingers on the cached board. Reuses the team-controller
-    // helpers so the two delete paths stay in step. Both are best-effort.
+    // helpers so the two delete paths stay in step. Runtime teardown is fail-closed;
+    // cache eviction remains best-effort because the cache is not authoritative.
     crate::controllers::team::destroy_team_containers(&st, team.id).await?;
     crate::controllers::team::flush_scoreboard_for_team(&st, team.id).await?;
 
@@ -197,38 +183,214 @@ pub async fn delete_team(
     Ok(RequestResponse::ok(id.to_string()))
 }
 
-/// Resolve a team's roster in the client `TeamUserInfoModel` shape
+#[derive(Debug, sqlx::FromRow)]
+struct TeamMemberProjection {
+    team_id: i32,
+    id: Uuid,
+    user_name: Option<String>,
+    bio: String,
+    avatar_hash: Option<String>,
+    captain: bool,
+}
+
+const TEAM_MEMBER_PROJECTION_SQL: &str = r#"
+    WITH roster AS (
+        SELECT team.id AS team_id,
+               team.captain_id,
+               team.captain_id AS user_id
+          FROM "Teams" team
+         WHERE team.id = ANY($1)
+        UNION
+        SELECT team.id AS team_id,
+               team.captain_id,
+               member.user_id
+          FROM "Teams" team
+          JOIN "TeamMembers" member ON member.team_id = team.id
+         WHERE team.id = ANY($1)
+    )
+    SELECT roster.team_id,
+           account.id,
+           account.user_name,
+           account.bio,
+           account.avatar_hash,
+           account.id = roster.captain_id AS captain
+      FROM roster
+      JOIN "AspNetUsers" account ON account.id = roster.user_id
+     ORDER BY roster.team_id, account.id
+"#;
+
+/// Resolve a page of team rosters in the client `TeamUserInfoModel` shape
 /// (`id`/`userName`/`bio`/`avatar`/`captain`). Mirrors RSCTF
 /// `TeamInfoModel.FromTeam`'s `Members` projection — which includes the captain
 /// (seeded into `Team.Members` on create), so we union the `team_member` rows with
 /// `captain_id`. `realName`/`studentNumber` are `[JsonIgnore]` in RSCTF and are
-/// intentionally omitted here too.
-async fn team_members(st: &SharedState, team: &team::Model) -> AppResult<Vec<Value>> {
-    let mut ids: Vec<Uuid> = team_member::Entity::find()
-        .filter(team_member::Column::TeamId.eq(team.id))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|r| r.user_id)
-        .collect();
-    ids.push(team.captain_id);
-    ids.sort_unstable();
-    ids.dedup();
+/// intentionally omitted here too. The narrow projection is deliberate: a
+/// roster render must not decode unrelated identity timestamps (legacy
+/// PostgreSQL `infinity` values cannot be represented by Chrono). Loading the
+/// whole page in one query also avoids two sequential queries per team.
+async fn teams_with_members(
+    pool: &sqlx::PgPool,
+    teams: Vec<team::Model>,
+) -> AppResult<Vec<TeamInfoModel>> {
+    let team_ids = teams.iter().map(|team| team.id).collect::<Vec<_>>();
+    let rows = if team_ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as::<_, TeamMemberProjection>(TEAM_MEMBER_PROJECTION_SQL)
+            .bind(&team_ids)
+            .fetch_all(pool)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+    };
+    let mut members = HashMap::<i32, Vec<Value>>::with_capacity(team_ids.len());
+    for row in rows {
+        let avatar = row.avatar_hash.map(|hash| format!("/assets/{hash}/avatar"));
+        members
+            .entry(row.team_id)
+            .or_default()
+            .push(serde_json::json!({
+                "id": row.id,
+                "userName": row.user_name,
+                "bio": row.bio,
+                "avatar": avatar,
+                "captain": row.captain,
+            }));
+    }
 
-    let users = user::Entity::find()
-        .filter(user::Column::Id.is_in(ids))
-        .all(&st.db)
-        .await?;
-    Ok(users
+    Ok(teams
         .into_iter()
-        .map(|u| {
-            serde_json::json!({
-                "id": u.id,
-                "userName": u.user_name,
-                "bio": u.bio,
-                "avatar": u.avatar_url(),
-                "captain": u.id == team.captain_id,
-            })
+        .map(|team| {
+            let team_id = team.id;
+            let mut info = TeamInfoModel::from(team);
+            info.members = members.remove(&team_id).unwrap_or_default();
+            info
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    #[test]
+    fn roster_projection_never_decodes_unrelated_identity_columns() {
+        let sql = TEAM_MEMBER_PROJECTION_SQL.to_ascii_lowercase();
+        assert!(!sql.contains("lockout_end"));
+        assert!(!sql.contains("last_signed_in_utc"));
+        assert!(!sql.contains("register_time_utc"));
+        assert!(sql.contains("account.avatar_hash"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn roster_projection_tolerates_legacy_infinite_lockouts() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("admin_team_roster_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE "AspNetUsers" (
+              id UUID PRIMARY KEY,
+              user_name TEXT,
+              bio TEXT NOT NULL DEFAULT '',
+              avatar_hash TEXT,
+              lockout_end TIMESTAMPTZ
+            );
+            CREATE TABLE "Teams" (
+              id INTEGER PRIMARY KEY,
+              name TEXT NOT NULL,
+              bio TEXT,
+              avatar_hash TEXT,
+              locked BOOLEAN NOT NULL DEFAULT FALSE,
+              deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
+              invite_token TEXT NOT NULL,
+              captain_id UUID NOT NULL
+            );
+            CREATE TABLE "TeamMembers" (
+              id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+              team_id INTEGER NOT NULL,
+              user_id UUID NOT NULL,
+              UNIQUE (team_id, user_id)
+            );
+            INSERT INTO "AspNetUsers"
+                (id, user_name, bio, avatar_hash, lockout_end)
+            VALUES
+                ('00000000-0000-0000-0000-000000000001',
+                 'captain', 'captain bio', 'captain-hash', 'infinity'),
+                ('00000000-0000-0000-0000-000000000002',
+                 'member', 'member bio', NULL, '-infinity');
+            INSERT INTO "Teams"
+                (id, name, bio, avatar_hash, locked, deletion_pending,
+                 invite_token, captain_id)
+            VALUES
+                (7, 'Infinite Lockouts', NULL, NULL, FALSE, FALSE, 'invite',
+                 '00000000-0000-0000-0000-000000000001');
+            INSERT INTO "TeamMembers" (team_id, user_id)
+            VALUES
+                (7, '00000000-0000-0000-0000-000000000001'),
+                (7, '00000000-0000-0000-0000-000000000002');
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let legacy_values = sqlx::query_scalar::<_, String>(
+            r#"SELECT lockout_end::TEXT FROM "AspNetUsers" ORDER BY id"#,
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(legacy_values, vec!["infinity", "-infinity"]);
+
+        let team = team::Model {
+            id: 7,
+            name: "Infinite Lockouts".to_owned(),
+            bio: None,
+            avatar_hash: None,
+            locked: false,
+            deletion_pending: false,
+            invite_token: "invite".to_owned(),
+            captain_id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+        };
+        let result = teams_with_members(&pool, vec![team]).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].members.len(), 2);
+        assert_eq!(result[0].members[0]["userName"], "captain");
+        assert_eq!(result[0].members[0]["captain"], true);
+        assert_eq!(
+            result[0].members[0]["avatar"],
+            "/assets/captain-hash/avatar"
+        );
+        assert_eq!(result[0].members[1]["userName"], "member");
+        assert_eq!(result[0].members[1]["captain"], false);
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
+    }
 }

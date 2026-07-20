@@ -3,9 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::storage::BlobStorage;
-use crate::utils::error::AppResult;
+use crate::utils::codec::sha256_hex;
+use crate::utils::enums::FileType;
+use crate::utils::error::{AppError, AppResult};
 
-use super::{database_error, lock_hash, purge_if_unreferenced, release_locked};
+use super::{acquire_locked, database_error, lock_hash, purge_if_unreferenced, release_locked};
 
 const SELECT_ORPHANS_SQL: &str = r#"
     SELECT attachment.id, attachment.local_file_id, file.hash
@@ -43,6 +45,152 @@ const DELETE_ORPHANS_SQL: &str = r#"
            )
      RETURNING attachment.id, attachment.local_file_id
 "#;
+
+/// Atomically replace (or clear) the attachment owned by one challenge. The
+/// owner FK swap, old Attachment deletion, and both Files reference mutations
+/// commit together; physical purges remain safe, retryable post-commit work.
+pub async fn store_and_replace_challenge_attachment(
+    pool: &sqlx::PgPool,
+    storage: &dyn BlobStorage,
+    challenge_id: i32,
+    artifact: Option<(&str, &[u8])>,
+    replace_existing: bool,
+) -> AppResult<()> {
+    let expected_hash = artifact.map(|(_, bytes)| sha256_hex(bytes));
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
+        .await
+        .map_err(database_error)?;
+    let operation: AppResult<Option<String>> = async {
+        let current = sqlx::query_as::<_, (Option<i32>, Option<i32>, Option<String>)>(
+            r#"SELECT challenge.attachment_id, attachment.local_file_id, file.hash
+                 FROM "GameChallenges" challenge
+                 LEFT JOIN "Attachments" attachment
+                   ON attachment.id = challenge.attachment_id
+                 LEFT JOIN "Files" file ON file.id = attachment.local_file_id
+                WHERE challenge.id = $1
+                FOR UPDATE OF challenge"#,
+        )
+        .bind(challenge_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| AppError::not_found("Challenge not found"))?;
+        let (old_attachment_id, _old_file_id, old_hash) = current;
+        let already_applied = match artifact {
+            Some(_) => {
+                old_attachment_id.is_some() && old_hash.as_deref() == expected_hash.as_deref()
+            }
+            None => old_attachment_id.is_none(),
+        };
+        if already_applied {
+            return Ok(None);
+        }
+        if old_attachment_id.is_some() && !replace_existing {
+            return Err(AppError::conflict(
+                "challenge attachment was populated concurrently",
+            ));
+        }
+
+        let mut hashes = BTreeSet::new();
+        hashes.extend(old_hash.iter().map(String::as_str));
+        hashes.extend(expected_hash.iter().map(String::as_str));
+        for hash in hashes {
+            lock_hash(&mut transaction, hash)
+                .await
+                .map_err(database_error)?;
+        }
+
+        let new_attachment_id = if let Some((name, bytes)) = artifact {
+            let blob = storage.store(name, bytes).await?;
+            if Some(blob.hash.as_str()) != expected_hash.as_deref() {
+                return Err(AppError::internal(
+                    "blob storage returned a hash that does not match its content",
+                ));
+            }
+            let file_id = acquire_locked(&mut transaction, &blob.hash, name, blob.size)
+                .await
+                .map_err(database_error)?;
+            Some(
+                sqlx::query_scalar::<_, i32>(
+                    r#"INSERT INTO "Attachments" ("Type", remote_url, local_file_id)
+                       VALUES ($1, NULL, $2)
+                       RETURNING id"#,
+                )
+                .bind(FileType::Local as i16)
+                .bind(file_id)
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(database_error)?,
+            )
+        } else {
+            None
+        };
+
+        sqlx::query(r#"UPDATE "GameChallenges" SET attachment_id = $2 WHERE id = $1"#)
+            .bind(challenge_id)
+            .bind(new_attachment_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+
+        let released_file = match old_attachment_id {
+            Some(old_attachment_id) => sqlx::query_scalar::<_, Option<i32>>(
+                r#"DELETE FROM "Attachments" attachment
+                    WHERE attachment.id = $1
+                      AND NOT EXISTS (
+                            SELECT 1 FROM "GameChallenges" challenge
+                             WHERE challenge.attachment_id = attachment.id
+                      )
+                      AND NOT EXISTS (
+                            SELECT 1 FROM "FlagContexts" flag
+                             WHERE flag.attachment_id = attachment.id
+                      )
+                      AND NOT EXISTS (
+                            SELECT 1 FROM "ExerciseChallenges" exercise
+                             WHERE exercise.attachment_id = attachment.id
+                      )
+                    RETURNING attachment.local_file_id"#,
+            )
+            .bind(old_attachment_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?
+            .flatten(),
+            None => None,
+        };
+        match released_file {
+            Some(file_id) => Ok(release_locked(&mut transaction, file_id)
+                .await
+                .map_err(database_error)?
+                .deleted_hash),
+            None => Ok(None),
+        }
+    }
+    .await;
+
+    let deleted_hash = match operation {
+        Ok(deleted_hash) => deleted_hash,
+        Err(error) => {
+            let _ = transaction.rollback().await;
+            if let Some(hash) = expected_hash.as_deref() {
+                let _ = purge_if_unreferenced(pool, storage, hash).await;
+            }
+            return Err(error);
+        }
+    };
+    if let Err(error) = transaction.commit().await.map_err(database_error) {
+        if let Some(hash) = expected_hash.as_deref() {
+            let _ = purge_if_unreferenced(pool, storage, hash).await;
+        }
+        return Err(error);
+    }
+    if let Some(hash) = deleted_hash {
+        if let Err(error) = purge_if_unreferenced(pool, storage, &hash).await {
+            tracing::warn!(%error, %hash, "replaced challenge attachment purge deferred");
+        }
+    }
+    Ok(())
+}
 
 /// Remove unowned attachment rows and consume exactly one blob reference for
 /// each returned local attachment in the same transaction. Physical deletion
