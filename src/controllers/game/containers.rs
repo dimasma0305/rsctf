@@ -248,6 +248,7 @@ pub async fn create_container(
                     memory_limit: challenge.memory_limit.unwrap_or(64),
                     cpu_count: challenge.cpu_count.unwrap_or(1),
                     expose_port: challenge.expose_port.unwrap_or(80),
+                    publish_port: true,
                     env: vec![("RSCTF_TEAM_ID".into(), participation.team_id.to_string())],
                     flag: Some(flag.clone()),
                     ad_network: None,
@@ -369,6 +370,7 @@ pub async fn create_container(
             public_port: Set(None),
             game_instance_id: Set(Some(instance.id)),
             exercise_instance_id: Set(None),
+            ad_team_service_id: Set(None),
         }
         .insert(&st.db)
         .await?;
@@ -545,7 +547,7 @@ pub async fn delete_container(
         .map(|c| c.title)
         .unwrap_or_default();
     crate::services::audit::info(
-        &st.db,
+        &st,
         "GameController",
         Some(user.name.clone()),
         None,
@@ -773,6 +775,7 @@ pub(crate) async fn get_or_create_shared_container_locked(
                     memory_limit: challenge.memory_limit.unwrap_or(64),
                     cpu_count: challenge.cpu_count.unwrap_or(1),
                     expose_port: challenge.expose_port.unwrap_or(80),
+                    publish_port: true,
                     env: Vec::new(),
                     flag: Some(flag),
                     ad_network,
@@ -826,6 +829,7 @@ pub(crate) async fn get_or_create_shared_container_locked(
             // Challenge-owned, not team-owned: no GameInstance link.
             game_instance_id: Set(None),
             exercise_instance_id: Set(None),
+            ad_team_service_id: Set(None),
         }
         .insert(&txn)
         .await?;

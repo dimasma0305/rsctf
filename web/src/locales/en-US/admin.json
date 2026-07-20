@@ -525,11 +525,11 @@
         },
         "ad_getflag_window_fraction": {
           "label": "A&D getflag jitter window",
-          "description": "Fraction of the tick within which the SLA check (getflag) may fire, after the grace period (default 0.5). Event-wide; each team's check still gets an independent random offset, so the check time can't be predicted."
+          "description": "Fraction of the tick used for the random SLA-check offset after the grace period (default 0.5). Runtime reserves a complete probe and persistence budget; every service gets an independent offset."
         },
         "ad_min_grace_period_seconds": {
           "label": "A&D min grace period (s)",
-          "description": "Seconds after a round starts (flags planted) before getflag may fire — lets services commit the flag first (default 3)."
+          "description": "Seconds after each service's immutable flag-delivery receipt before getflag may fire. The value must leave bounded publication, checker, and persistence runway (default 3)."
         },
         "ad_allow_snapshot_download": {
           "label": "A&D snapshot download",

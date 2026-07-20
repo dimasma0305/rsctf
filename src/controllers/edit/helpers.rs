@@ -686,11 +686,23 @@ pub(super) async fn revoke_and_destroy_backend(
 }
 
 /// Fail-closed teardown of every backend container the game owns: per-team
-/// instance containers plus per-challenge test/shared containers. Durable
+/// instance containers, service-owned inspectors, and per-challenge
+/// test/shared containers. Durable
 /// owners remain attached until each backend has been fenced and destroyed, so
 /// a failed hard deletion is exactly retryable instead of leaking a runtime.
 pub(crate) async fn destroy_game_containers(st: &SharedState, game_id: i32) -> AppResult<()> {
-    let mut container_ids: Vec<Uuid> = Vec::new();
+    let mut container_ids: Vec<Uuid> = sqlx::query_scalar(
+        r#"SELECT container.id
+             FROM "Containers" container
+             JOIN "AdTeamServices" service
+               ON service.id = container.ad_team_service_id
+            WHERE service.game_id = $1
+            ORDER BY container.id"#,
+    )
+    .bind(game_id)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
 
     // The game-end marker is durable before this helper runs. Drain every
     // first-publication transaction before snapshotting service rows; existing

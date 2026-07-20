@@ -18,6 +18,16 @@ const operation = (id, method, path, options = {}) =>
     mutation: options.mutation === true,
   });
 
+// Keep database assertions aligned with the Rust `ParticipationStatus` enum.
+// These values are storage-only; the HTTP wire contract remains string-valued.
+export const PARTICIPATION_STATUS = Object.freeze({
+  Pending: 0,
+  Accepted: 1,
+  Rejected: 2,
+  Suspended: 3,
+  Unsubmitted: 4,
+});
+
 // This catalog deliberately describes method/path operations rather than only
 // unique paths: several Axum routes expose independent GET/POST/PUT/DELETE
 // contracts. `/api/workers/enroll` belongs here because it completes the
@@ -187,7 +197,7 @@ export const ADMIN_OPERATIONS = Object.freeze([
   }),
   operation("admin_build_images_get", "GET", "/api/admin/builds/images", {
     poll: true,
-    responseKind: "array",
+    responseKind: "build-images",
   }),
   operation("admin_build_image_delete", "DELETE", "/api/admin/builds/images", {
     mutation: true,
@@ -347,6 +357,58 @@ export function assertExactFailedBuildPruneCandidates(records, expectedId) {
     );
   }
   return Object.freeze({ expectedId: fixtureId, candidates: Object.freeze([fixtureId]) });
+}
+
+function normalizedManagedImageTag(value) {
+  let tag = String(value || "").trim().toLowerCase();
+  tag = tag.replace(/^(?:docker\.io|index\.docker\.io)\//, "");
+  const slash = tag.lastIndexOf("/");
+  if (!tag.slice(slash + 1).includes(":")) tag += ":latest";
+  return tag;
+}
+
+function validBuildImage(image) {
+  return image !== null && typeof image === "object" && !Array.isArray(image) &&
+    /^sha256:[a-f0-9]{64}$/i.test(image.id) &&
+    Array.isArray(image.tags) && image.tags.every((tag) => typeof tag === "string" && tag.length > 0) &&
+    Number.isSafeInteger(image.sizeBytes) && image.sizeBytes >= 0 &&
+    (image.createdUtc === null || image.createdUtc === undefined || Number.isFinite(image.createdUtc)) &&
+    typeof image.referenced === "boolean" &&
+    Array.isArray(image.referencedBy) && image.referencedBy.every((title) => typeof title === "string") &&
+    typeof image.isChecker === "boolean";
+}
+
+export function assertBuildImageFixtureInventory(records, fixtures, { referenced } = {}) {
+  if (!Array.isArray(records) || !records.every(validBuildImage)) {
+    throw new Error("build image inventory contains an invalid record");
+  }
+  if (!Array.isArray(fixtures) || fixtures.length === 0 || typeof referenced !== "boolean") {
+    throw new Error("build image fixture assertion requires fixtures and an expected reference state");
+  }
+  const matches = fixtures.map((fixture) => {
+    if (!fixture || typeof fixture.title !== "string" || typeof fixture.imageRef !== "string") {
+      throw new Error("build image fixture identity is invalid");
+    }
+    const wanted = normalizedManagedImageTag(fixture.imageRef);
+    const matching = records.filter((image) =>
+      image.tags.some((tag) => normalizedManagedImageTag(tag) === wanted));
+    if (matching.length !== 1) {
+      throw new Error(`${fixture.imageRef} appears ${matching.length} times in owned image inventory`);
+    }
+    const image = matching[0];
+    if (image.referenced !== referenced) {
+      throw new Error(`${fixture.imageRef} reference state is ${image.referenced}, expected ${referenced}`);
+    }
+    const ownsTitle = image.referencedBy.includes(fixture.title);
+    if (ownsTitle !== referenced) {
+      throw new Error(`${fixture.imageRef} reference titles do not match ${fixture.title}`);
+    }
+    if (!referenced && image.referencedBy.length !== 0) {
+      throw new Error(`${fixture.imageRef} retained unrelated references: ${image.referencedBy.join(", ")}`);
+    }
+    return Object.freeze({ imageRef: fixture.imageRef, imageId: image.id });
+  });
+  return Object.freeze({ fixtures: Object.freeze(matches), records: records.length });
 }
 
 export function assertStableZeroResidualSnapshots(snapshots) {
@@ -779,6 +841,7 @@ export function validateAdminResponse(operationId, response) {
     case "build":
       return object(body) && Number.isSafeInteger(body.id) && Number.isSafeInteger(body.challengeId) &&
         typeof body.status === "string";
+    case "build-images": return Array.isArray(body) && body.every(validBuildImage);
     case "repo-scan-result": return validRepoScan(body);
     case "repo-binding":
       return object(body) && Number.isSafeInteger(body.id) && typeof body.repoUrl === "string" &&

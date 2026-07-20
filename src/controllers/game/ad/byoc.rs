@@ -41,41 +41,13 @@ use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::*;
+mod agent_image;
+use agent_image::{default_byoc_agent_image, immutable_agent_image};
 
-/// Source fallback; official images compile in their same-workflow agent digest.
-/// Never use a tag: the agent can receive root-equivalent team-host access.
-const DEFAULT_BYOC_AGENT_IMAGE: &str = "ghcr.io/dimasma0305/rsctf-byoc-agent@sha256:fa5243f7aea7cd1198668134f5c1bae99c339c773ba3a5902d633c2c56c6c490";
 /// Immutable multi-platform placeholder (amd64/arm64/arm/ppc64le/s390x).
 const DEFAULT_BYOC_FALLBACK_IMAGE: &str =
     "docker.io/alpine/socat@sha256:4e625a62c9ea40ccbce93b9a4fcc6b41740a9f308389c216f34c88ce3abb275b";
 const BYOC_SECRET_CACHE_CONTROL: &str = "private, no-store";
-
-fn default_byoc_agent_image() -> (&'static str, bool) {
-    let image = option_env!("RSCTF_DEFAULT_BYOC_AGENT_IMAGE")
-        .unwrap_or("")
-        .trim();
-    if image.is_empty() {
-        return (DEFAULT_BYOC_AGENT_IMAGE, true);
-    }
-    let multiarch = option_env!("RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH") == Some("true");
-    (image, !multiarch)
-}
-
-fn immutable_agent_image(value: &str) -> Option<String> {
-    let value = value.trim();
-    let (repository, digest) = value.rsplit_once("@sha256:")?;
-    if repository.is_empty()
-        || repository.chars().any(char::is_whitespace)
-        || digest.len() != 64
-        || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return None;
-    }
-    Some(format!(
-        "{repository}@sha256:{}",
-        digest.to_ascii_lowercase()
-    ))
-}
 
 /// Deterministic per-`(participation, challenge)` BYOC token, hex-encoded.
 /// `domain` domain-separates the agent/image tokens (mirrors RSCTF's
@@ -376,10 +348,17 @@ async fn resolve_byoc(
     // A mutable tag would turn registry or publisher compromise into code
     // execution on team hosts. Overrides are therefore accepted only by digest.
     let configured_agent_image = std::env::var("RSCTF_AD_BYOC_AGENT_IMAGE").ok();
-    let (default_agent_image, default_requires_amd64) = default_byoc_agent_image();
-    let agent_image_requires_amd64 = configured_agent_image.is_none() && default_requires_amd64;
-    let configured_agent_image =
-        configured_agent_image.unwrap_or_else(|| default_agent_image.to_string());
+    let (configured_agent_image, agent_image_requires_amd64) = match configured_agent_image {
+        Some(image) => (image, false),
+        None => {
+            let (image, requires_amd64) = default_byoc_agent_image().ok_or_else(|| {
+                AppError::unavailable(
+                    "this server build has no matching BYOC agent digest; set RSCTF_AD_BYOC_AGENT_IMAGE to the immutable digest built from this release",
+                )
+            })?;
+            (image.to_string(), requires_amd64)
+        }
+    };
     let agent_image = immutable_agent_image(&configured_agent_image).ok_or_else(|| {
         AppError::internal(
             "RSCTF_AD_BYOC_AGENT_IMAGE must be an immutable OCI sha256 digest reference",
@@ -516,12 +495,20 @@ pub async fn byoc_compose(
 pub async fn byoc_agent(
     State(st): State<SharedState>,
     Path((id, pid, cid, token)): Path<(i32, i32, i32, String)>,
+    headers: HeaderMap,
     ws: axum::extract::ws::WebSocketUpgrade,
 ) -> Response {
     if !st.config.runtime_role.capabilities().network {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "BYOC tunnel route reached a non-network replica; check stateful route configuration",
+        )
+            .into_response();
+    }
+    if !byoc_agent_protocol_offered(&headers) {
+        return (
+            StatusCode::UPGRADE_REQUIRED,
+            "BYOC agent protocol rsctf-byoc-v2 is required; update rsctf-byoc-agent before connecting",
         )
             .into_response();
     }
@@ -553,6 +540,15 @@ pub async fn byoc_agent(
             }
             crate::services::byoc_tunnel::serve_agent(st, id, pid, cid, token, socket).await;
         })
+}
+
+fn byoc_agent_protocol_offered(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(crate::services::byoc_tunnel::AGENT_PROTOCOL_HEADER)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|protocol| protocol.trim() == crate::services::byoc_tunnel::AGENT_PROTOCOL)
 }
 
 /// `GET /api/Game/{id}/Ad/Byoc/Image/{participationId}/{challengeId}/{token}` —

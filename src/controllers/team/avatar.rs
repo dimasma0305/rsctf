@@ -102,7 +102,7 @@ pub async fn avatar(
     // (TeamController, Success). The C# logs the first 8 chars of the blob hash.
     let hash8: String = blob.hash.chars().take(8).collect();
     crate::services::audit::info(
-        &st.db,
+        &st,
         "TeamController",
         Some(user.name.clone()),
         None,

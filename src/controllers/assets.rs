@@ -412,7 +412,7 @@ async fn serve_asset(
             // Warning-level, TaskStatus.NotFound, no acting user.
             let short = hash.get(..8).unwrap_or(hash);
             crate::services::audit::log(
-                &st.db,
+                st,
                 "Warning",
                 "AssetsController",
                 None,

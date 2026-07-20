@@ -175,6 +175,10 @@ fn named_policy_reuses_verified_session_partition_key() {
     // Anonymous-facing policies must remain source-IP partitioned even when a
     // verified session key is present.
     assert_eq!(partition_key(Policy::Login, &request), "192.0.2.10");
+    assert_eq!(
+        partition_key(Policy::PrivilegedHubAdmission, &request),
+        "192.0.2.10"
+    );
 }
 
 #[test]
@@ -387,6 +391,15 @@ fn high_source_ceilings_have_constant_size_state() {
     }
     assert!(redis_key(Policy::Global, "partition").starts_with("rl:0:"));
     assert!(redis_key(Policy::AdSubmit, "partition").starts_with("rl:tb:9:"));
+    assert!(redis_key(Policy::PrivilegedHubAdmission, "partition").starts_with("rl:tb:10:"));
+    assert!(matches!(
+        Policy::PrivilegedHubAdmission.kind(),
+        Kind::Bucket {
+            capacity: 120.0,
+            refill_per_sec: 10.0,
+        }
+    ));
+    assert_eq!(Policy::PrivilegedHubAdmission.fixed_window(), (120, 12_000));
 }
 
 /// Two `DistributedLimiter` instances = two replicas sharing one Redis. Proves

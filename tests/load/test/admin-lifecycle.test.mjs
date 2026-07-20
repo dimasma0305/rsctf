@@ -9,6 +9,8 @@ import {
   ADMIN_OPERATIONS,
   ADMIN_READ_OPERATIONS,
   ADMIN_SIGNALR_SURFACES,
+  PARTICIPATION_STATUS,
+  assertBuildImageFixtureInventory,
   assertCompleteCoverage,
   assertDirectAdminOriginBindings,
   assertDisposableComposeTopology,
@@ -23,8 +25,258 @@ import {
   stableReplicaProjection,
   validateAdminResponse,
 } from '../admin-lifecycle.js';
+import {
+  assertServerRuntimeIdentityUnchanged,
+  fetchWithBoundedTransportRetry,
+  inspectUnchangedServerRuntimeIdentity,
+  inspectUniformServerRuntimeIdentity,
+  originalServerRuntimeLogTargets,
+  repositoryCleanupRescheduleSql,
+  shouldRetainLifecycleManifest,
+} from '../admin-fixtures.mjs';
 
 const REPOSITORY = fileURLToPath(new URL('../../..', import.meta.url));
+
+test('lifecycle manifests survive failures and explicit audit retention', () => {
+  assert.equal(shouldRetainLifecycleManifest({ completed: false, cleanupVerified: true }), true);
+  assert.equal(shouldRetainLifecycleManifest({ completed: true, cleanupVerified: false }), true);
+  assert.equal(
+    shouldRetainLifecycleManifest({ completed: true, cleanupVerified: true, keep: '1' }),
+    true,
+  );
+  assert.equal(
+    shouldRetainLifecycleManifest({ completed: true, cleanupVerified: true, keep: '0' }),
+    false,
+  );
+});
+
+test('idempotent fetch retry is single-shot and transport-only', async () => {
+  let calls = 0;
+  const accepted = { status: 401 };
+  const retried = await fetchWithBoundedTransportRetry(async () => {
+    calls += 1;
+    if (calls === 1) {
+      throw new TypeError('fetch failed', { cause: { code: 'UND_ERR_SOCKET' } });
+    }
+    return accepted;
+  }, { networkRetries: 1, retryDelayMs: 0 });
+  assert.equal(calls, 2);
+  assert.deepEqual(retried, { response: accepted, attempts: 2 });
+
+  calls = 0;
+  const serverError = await fetchWithBoundedTransportRetry(async () => {
+    calls += 1;
+    return { status: 500 };
+  }, { networkRetries: 1, retryDelayMs: 0 });
+  assert.equal(calls, 1);
+  assert.equal(serverError.response.status, 500);
+
+  for (const error of [
+    new TypeError('fetch failed'),
+    Object.assign(new Error('timed out'), { name: 'TimeoutError', code: 'ETIMEDOUT' }),
+  ]) {
+    calls = 0;
+    await assert.rejects(
+      fetchWithBoundedTransportRetry(async () => {
+        calls += 1;
+        throw error;
+      }, { networkRetries: 1, retryDelayMs: 0 }),
+      (caught) => caught === error,
+    );
+    assert.equal(calls, 1);
+  }
+  await assert.rejects(
+    fetchWithBoundedTransportRetry(async () => accepted, { networkRetries: 2 }),
+    /networkRetries must be 0 or 1/,
+  );
+});
+
+test('repository cleanup reschedules only the exact disposable binding fixture', () => {
+  const statement = repositoryCleanupRescheduleSql(41, 7, 99, 'admcleanup123');
+  assert.match(statement, /WHERE game\.id=41/);
+  assert.match(statement, /game\.title='LOADTEST-ADMIN-REPO-admcleanup123'/);
+  assert.match(statement, /game\.repo_binding_id IS NULL/);
+  assert.match(statement, /challenge\.id=99/);
+  assert.match(statement, /challenge\.source_yaml_path LIKE 'binding\/7\/%'/);
+  assert.match(statement, /challenge\.source_yaml_path IS NULL/);
+  assert.match(statement, /challenge\.source_yaml_path NOT LIKE 'binding\/7\/%'/);
+  assert.match(statement, /game\.deletion_pending=FALSE/);
+  assert.match(statement, /start_time_utc=clock_timestamp\(\)\+interval '1 day'/);
+  for (const args of [
+    [0, 7, 99, 'admcleanup123'],
+    [41, 0, 99, 'admcleanup123'],
+    [41, 7, 0, 'admcleanup123'],
+    [41, 7, 99, "admcleanup123' OR TRUE--"],
+  ]) {
+    assert.throws(() => repositoryCleanupRescheduleSql(...args));
+  }
+});
+
+test('server runtime identity binds every role to one image and live binary', () => {
+  const names = ['web-1', 'web-2', 'control'];
+  const image = `sha256:${'a'.repeat(64)}`;
+  const binary = 'b'.repeat(64);
+  const startedAt = '2026-07-20T12:34:56.123456789Z';
+  const containerIds = Object.fromEntries(names.map((name, index) => [name, `${index + 1}`.repeat(64)]));
+  const fakeDockerSnapshot = ({
+    ids = containerIds,
+    starts = Object.fromEntries(names.map((name) => [name, startedAt])),
+    restarts = Object.fromEntries(names.map((name) => [name, 0])),
+    imageId = image,
+    binarySha = binary,
+    configured = Object.fromEntries(names.map((name) => [name, `rsctf:test-${name}`])),
+    mounts = {},
+  } = {}) => (args) => {
+    const name = args[1];
+    if (args[0] === 'inspect') {
+      return {
+        status: 0,
+        stdout: JSON.stringify([{
+          Id: ids[name],
+          Name: `/${name}`,
+          Image: imageId,
+          Config: { Image: configured[name] },
+          State: { Running: true, StartedAt: starts[name] },
+          RestartCount: restarts[name],
+          Mounts: mounts[name] || [],
+        }]),
+        stderr: '',
+      };
+    }
+    return { status: 0, stdout: `${binarySha}  /usr/local/bin/rsctf\n`, stderr: '' };
+  };
+  const fakeDocker = fakeDockerSnapshot();
+  assert.deepEqual(
+    inspectUniformServerRuntimeIdentity(names, fakeDocker),
+    {
+      imageId: image,
+      binarySha256: binary,
+      containers: [
+        {
+          name: 'web-1', actualName: 'web-1', containerId: '1'.repeat(64),
+          configuredImage: 'rsctf:test-web-1', imageId: image, binarySha256: binary,
+          startedAt, restartCount: 0, running: true, binaryMountShadowed: false,
+        },
+        {
+          name: 'web-2', actualName: 'web-2', containerId: '2'.repeat(64),
+          configuredImage: 'rsctf:test-web-2', imageId: image, binarySha256: binary,
+          startedAt, restartCount: 0, running: true, binaryMountShadowed: false,
+        },
+        {
+          name: 'control', actualName: 'control', containerId: '3'.repeat(64),
+          configuredImage: 'rsctf:test-control', imageId: image, binarySha256: binary,
+          startedAt, restartCount: 0, running: true, binaryMountShadowed: false,
+        },
+      ],
+    },
+  );
+
+  assert.throws(
+    () => inspectUniformServerRuntimeIdentity(['web', 'control'], (args) => {
+      if (args[0] === 'inspect') {
+        const suffix = args[1] === 'web' ? 'a' : 'c';
+        return {
+          status: 0,
+          stdout: JSON.stringify([{
+            Id: suffix.repeat(64), Name: `/${args[1]}`,
+            Image: `sha256:${suffix.repeat(64)}`, Config: { Image: 'rsctf:test' },
+            State: { Running: true, StartedAt: startedAt }, RestartCount: 0,
+          }]),
+          stderr: '',
+        };
+      }
+      return { status: 0, stdout: `${binary}  /usr/local/bin/rsctf\n`, stderr: '' };
+    }),
+    /different Docker image ids/,
+  );
+  assert.throws(
+    () => inspectUniformServerRuntimeIdentity(['web', 'control'], (args) => {
+      if (args[0] === 'inspect') {
+        return {
+          status: 0,
+          stdout: JSON.stringify([{
+            Id: (args[1] === 'web' ? '1' : '2').repeat(64), Name: `/${args[1]}`,
+            Image: image, Config: { Image: 'rsctf:test' },
+            State: { Running: true, StartedAt: startedAt }, RestartCount: 0,
+          }]),
+          stderr: '',
+        };
+      }
+      const hash = args[1] === 'web' ? 'b' : 'd';
+      return { status: 0, stdout: `${hash.repeat(64)}  /usr/local/bin/rsctf\n`, stderr: '' };
+    }),
+    /different live rsctf binaries/,
+  );
+  assert.throws(
+    () => inspectUniformServerRuntimeIdentity(['web'], (args) => {
+      if (args[0] === 'inspect') {
+        return {
+          status: 0,
+          stdout: JSON.stringify([{
+            Id: '1'.repeat(64),
+            Name: '/web',
+            Image: image,
+            Config: { Image: 'rsctf:test' },
+            State: { Running: true, StartedAt: startedAt },
+            RestartCount: 0,
+            Mounts: [{ Type: 'bind', Source: '/tmp/debug-rsctf', Destination: '/usr/local/bin/rsctf' }],
+          }]),
+          stderr: '',
+        };
+      }
+      return { status: 0, stdout: `${binary}  /usr/local/bin/rsctf\n`, stderr: '' };
+    }),
+    /shadows \/usr\/local\/bin\/rsctf/,
+  );
+
+  const before = inspectUniformServerRuntimeIdentity(names, fakeDockerSnapshot());
+  const stableAfter = inspectUnchangedServerRuntimeIdentity(before, names, fakeDockerSnapshot());
+  assert.deepEqual(stableAfter, before);
+  assert.deepEqual(
+    originalServerRuntimeLogTargets(before),
+    names.map((name) => ({ name, containerId: containerIds[name] })),
+  );
+
+  const replacements = [
+    {
+      label: 'containerId',
+      docker: fakeDockerSnapshot({ ids: { ...containerIds, 'web-1': 'f'.repeat(64) } }),
+      error: /changed containerId/,
+    },
+    {
+      label: 'startedAt',
+      docker: fakeDockerSnapshot({
+        starts: { ...Object.fromEntries(names.map((name) => [name, startedAt])), 'web-1': '2026-07-20T12:35:00Z' },
+      }),
+      error: /changed startedAt/,
+    },
+    {
+      label: 'restartCount',
+      docker: fakeDockerSnapshot({
+        restarts: { ...Object.fromEntries(names.map((name) => [name, 0])), 'web-1': 1 },
+      }),
+      error: /changed restartCount/,
+    },
+    {
+      label: 'imageId',
+      docker: fakeDockerSnapshot({ imageId: `sha256:${'c'.repeat(64)}` }),
+      error: /changed imageId/,
+    },
+    {
+      label: 'binarySha256',
+      docker: fakeDockerSnapshot({ binarySha: 'd'.repeat(64) }),
+      error: /changed binarySha256/,
+    },
+  ];
+  for (const { label, docker: endingDocker, error } of replacements) {
+    const after = inspectUniformServerRuntimeIdentity(names, endingDocker);
+    assert.throws(
+      () => assertServerRuntimeIdentityUnchanged(before, after),
+      error,
+      `${label} drift must invalidate acceptance`,
+    );
+  }
+});
 
 function rustFiles(root) {
   const files = [];
@@ -98,6 +350,16 @@ function sampleBody(kind, status) {
     case 'bulk-rebuild': return { enqueued: 0, skipped: 0, messages: [] };
     case 'prune': return { removed: 0, messages: [] };
     case 'build': return { id: 1, challengeId: 2, status: 'Queued' };
+    case 'build-images':
+      return [{
+        id: `sha256:${'a'.repeat(64)}`,
+        tags: ['rsctf/1/build:latest'],
+        sizeBytes: 0,
+        createdUtc: Date.now(),
+        referenced: true,
+        referencedBy: ['Build'],
+        isChecker: false,
+      }];
     case 'repo-scan-result':
       return {
         gamesCreated: 0,
@@ -187,6 +449,16 @@ test('authorization classes keep Admin, manager, and enrollment-token surfaces e
   );
 });
 
+test('participation storage values match the Rust enum used by lifecycle assertions', () => {
+  assert.deepEqual(PARTICIPATION_STATUS, {
+    Pending: 0,
+    Accepted: 1,
+    Rejected: 2,
+    Suspended: 3,
+    Unsubmitted: 4,
+  });
+});
+
 test('global failed-build prune guard requires one exact fixture and no active build', () => {
   assert.deepEqual(
     assertExactFailedBuildPruneCandidates([
@@ -206,6 +478,43 @@ test('global failed-build prune guard requires one exact fixture and no active b
   );
 });
 
+test('owned image fixture inventory binds canonical tags to exact reference state', () => {
+  const fixtures = [
+    { title: 'Delete image', imageRef: 'docker.io/rsctf/7/delete-image:latest' },
+    { title: 'Prune image', imageRef: 'rsctf/7/prune-image:latest' },
+  ];
+  const records = fixtures.map((fixture, index) => ({
+    id: `sha256:${String(index + 1).repeat(64)}`,
+    tags: [fixture.imageRef.replace('docker.io/', '')],
+    sizeBytes: 0,
+    createdUtc: null,
+    referenced: true,
+    referencedBy: [fixture.title],
+    isChecker: false,
+  }));
+  assert.equal(assertBuildImageFixtureInventory(records, fixtures, { referenced: true }).fixtures.length, 2);
+  assert.throws(
+    () => assertBuildImageFixtureInventory(records, fixtures, { referenced: false }),
+    /reference state/,
+  );
+  assert.throws(
+    () => assertBuildImageFixtureInventory([records[0]], fixtures, { referenced: true }),
+    /appears 0 times/,
+  );
+});
+
+test('owned image acceptance uses application import/build/delete flows without fixture ownership seeding', () => {
+  const orchestrator = readFileSync(join(REPOSITORY, 'tests/load/admin-lifecycle.mjs'), 'utf8');
+  const fixtures = readFileSync(join(REPOSITORY, 'tests/load/admin-fixtures.mjs'), 'utf8');
+  const source = `${orchestrator}\n${fixtures}`;
+  assert.match(orchestrator, /scratchChallengeArchive\(imageFixtures\)/);
+  assert.match(orchestrator, /\/api\/edit\/games\/\$\{authorizationGameId\}\/challenges\/import/);
+  assert.match(orchestrator, /deleteScratchBuildDefinition/);
+  assert.doesNotMatch(source, /\btagFixtureImage\b|\bremoveFixtureImage\b/);
+  assert.doesNotMatch(source, /docker\(\[\s*['"](?:image\s*,\s*)?tag|['"]container['"]\s*,\s*['"]commit['"]/);
+  assert.doesNotMatch(source, /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+['"`]BuildImageOwnerships/i);
+});
+
 test('cleanup acceptance requires two identical all-zero snapshots', () => {
   assert.deepEqual(
     assertStableZeroResidualSnapshots([{ users: 0, blobs: 0 }, { users: 0, blobs: 0 }]),
@@ -216,6 +525,15 @@ test('cleanup acceptance requires two identical all-zero snapshots', () => {
     /retained users/,
   );
   assert.throws(() => assertStableZeroResidualSnapshots([{ users: 0 }]), /exactly two/);
+  const source = readFileSync(join(REPOSITORY, 'tests/load/admin-lifecycle.mjs'), 'utf8');
+  const gate = source.slice(
+    source.indexOf('async function assertStableExactCleanup()'),
+    source.indexOf('async function cleanup()'),
+  );
+  assert.ok(
+    gate.indexOf('setTimeout(resolve, delayMs)') < gate.indexOf('exactResidualSnapshot()'),
+    'each admin cleanup sample must wait before reading residue',
+  );
 });
 
 test('read-origin matrix covers every live read on every eligible replica exactly once', () => {
@@ -416,6 +734,17 @@ test('destructive backing services require the same marker and Compose project b
   const orchestrator = readFileSync(join(REPOSITORY, 'tests/load/admin-lifecycle.mjs'), 'utf8');
   const main = orchestrator.slice(orchestrator.indexOf('async function main()'));
   assert.ok(main.indexOf('assertDisposableRuntimeMarker(targets);') < main.indexOf('acquireAdminLifecycleDatabaseLock()'));
+  assert.ok(
+    main.indexOf('inspectUniformServerRuntimeIdentity(serverContainers)') <
+      main.indexOf('acquireAdminLifecycleDatabaseLock()'),
+    'runtime image and binary identity must be fenced before the shared database lease',
+  );
+  assert.match(orchestrator, /RSCTF_ACCEPTANCE_REPORTABLE=1 requires ADMIN_REPOSITORY_EXPECTED_COMMIT/);
+  assert.match(orchestrator, /state\.evidence\.runtimeIdentity/);
+  assert.match(orchestrator, /runtimeIdentity\.after = inspectUnchangedServerRuntimeIdentity/);
+  assert.match(orchestrator, /originalServerRuntimeLogTargets\(startingRuntimeIdentity\)/);
+  assert.match(orchestrator, /countContainerFatalLogs\(containerId, runStartedAt\)/);
+  assert.match(orchestrator, /state\.evidence\.fatalLogAudit/);
 });
 
 test('direct admin origins bind one-to-one to declared server IPs, roles, and port 8080', () => {
@@ -655,7 +984,7 @@ test('k6 admin scenario holds a fixed rate, polls shared contracts only, and fai
   assert.match(source, /const WEB_TARGETS/);
   assert.match(source, /const CONTROL_TARGET/);
   assert.match(source, /assertAdminOriginAcknowledgements\(__ENV/);
-  assert.match(source, /RATE > 1/);
+  assert.match(source, /RATE > 2/);
   assert.match(source, /74-request setup matrix shares the 150\/min admin quota/);
   assert.match(source, /new Trend\(`\$\{operation\.id\}_ms`/);
   assert.match(source, /server_5xx: \['rate==0'\]/);
@@ -698,4 +1027,31 @@ test('orchestrator persists global configuration before its first mutation', () 
   const mutation = source.indexOf("await call('PUT', '/api/admin/config'", snapshot);
   assert.ok(snapshot >= 0 && persisted > snapshot && mutation > persisted);
   assert.match(source, /originalGlobalConfig \|\| state\.originalGlobalConfig/);
+});
+
+test('repository HTTP scan retries preserve the solved challenge identity and evidence', () => {
+  const source = readFileSync(join(REPOSITORY, 'tests/load/admin-lifecycle.mjs'), 'utf8');
+  assert.match(source, /dimasma0305\/rsctf-challenges\.git/);
+  assert.match(source, /ADMIN_REPOSITORY_EXPECTED_COMMIT/);
+  assert.match(source, /observedCommit\.toLowerCase\(\) === repositoryExpectedCommit\.toLowerCase\(\)/);
+  assert.match(source, /sourceIdentity = `binding\/\$\{repoBindingId\}\/Jeopardy\/Misc\/static-handout\/challenge\.yaml`/);
+  assert.match(source, /'firstSolveSubmissionId'/);
+  assert.match(source, /'acceptedCount'/);
+  assert.match(source, /solvedChallenges\?\.find/);
+  assert.match(source, /JSON\.stringify\(afterFirstScan\) === JSON\.stringify\(beforeScan\)/);
+  assert.match(source, /same-commit repository retry changed solve evidence/);
+  assert.match(source, /grading\\\/scoring changes were retained/);
+  assert.match(source, /deleteDisposableLoadGame\(deletingId, expectedTitle\)/);
+  assert.match(source, /attachmentType: 'None'/);
+});
+
+test('cleanup removes build history for every disposable game, including image fixtures', () => {
+  const source = readFileSync(join(REPOSITORY, 'tests/load/admin-lifecycle.mjs'), 'utf8');
+  const cleanup = source.slice(
+    source.indexOf('async function cleanup()'),
+    source.indexOf('async function main()'),
+  );
+  assert.match(cleanup, /DELETE FROM "BuildRecords" WHERE game_id=ANY\(\$\{ownedGameIds\}\)/);
+  assert.match(cleanup, /const ownedGameIds = integerArraySql\(state\.gameIds\)/);
+  assert.doesNotMatch(cleanup, /game_id=\$\{fixtureGame \|\| -1\}/);
 });

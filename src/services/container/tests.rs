@@ -4,8 +4,8 @@ use bollard::models::{
 };
 
 use super::docker::{
-    docker_liveness, failed_start_action, launch_spec_fingerprint, launch_spec_matches,
-    verify_container_scope, FailedStartAction, LAUNCH_SPEC_LABEL,
+    docker_liveness, docker_network_mode, failed_start_action, launch_spec_fingerprint,
+    launch_spec_matches, verify_container_scope, FailedStartAction, LAUNCH_SPEC_LABEL,
 };
 use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
@@ -53,6 +53,7 @@ fn fingerprint_spec() -> ContainerSpec {
         memory_limit: 256,
         cpu_count: 1,
         expose_port: 8080,
+        publish_port: true,
         env: vec![("TEAM".to_string(), "7".to_string())],
         flag: Some("flag-secret".to_string()),
         ad_network: Some("rsctf-ad".to_string()),
@@ -180,6 +181,9 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
     changed = spec.clone();
     changed.allow_egress = true;
     assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.publish_port = false;
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
 
     let mut labels = scoped_managed_labels("installation-a");
     labels.insert(LAUNCH_SPEC_LABEL.to_string(), expected.clone());
@@ -198,6 +202,64 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
         .expect("test labels")
         .remove(LAUNCH_SPEC_LABEL);
     assert!(!launch_spec_matches(&inspected, &expected));
+}
+
+#[test]
+fn publish_control_preserves_legacy_identity_and_isolates_inspectors() {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyDockerLaunchSpec<'a> {
+        revision: u8,
+        game_kind: rsctf_worker_protocol::GameKind,
+        image: &'a str,
+        memory_limit: i32,
+        cpu_count: i32,
+        expose_port: i32,
+        env: &'a [(String, String)],
+        flag: Option<&'a str>,
+        ad_network: Option<&'a str>,
+        allow_egress: bool,
+    }
+
+    let published = fingerprint_spec();
+    let legacy = LegacyDockerLaunchSpec {
+        revision: 1,
+        game_kind: published.game_kind,
+        image: &published.image,
+        memory_limit: published.memory_limit,
+        cpu_count: published.cpu_count,
+        expose_port: published.expose_port,
+        env: &published.env,
+        flag: published.flag.as_deref(),
+        ad_network: published.ad_network.as_deref(),
+        allow_egress: published.allow_egress,
+    };
+    let legacy_fingerprint = crate::utils::codec::sha256_hex(
+        &serde_json::to_vec(&legacy).expect("legacy launch spec serializes"),
+    );
+    assert_eq!(
+        launch_spec_fingerprint(&published),
+        legacy_fingerprint,
+        "adding inspector port policy must not break adoption of existing workloads"
+    );
+    assert_eq!(docker_network_mode(&published), None);
+
+    let mut inspector = published.clone();
+    inspector.publish_port = false;
+    inspector.ad_network = None;
+    assert_eq!(docker_network_mode(&inspector).as_deref(), Some("none"));
+    assert_ne!(
+        launch_spec_fingerprint(&inspector),
+        legacy_fingerprint,
+        "the isolated inspector shape needs its own adoption identity"
+    );
+
+    inspector.ad_network = Some("rsctf-internal".to_string());
+    assert_eq!(
+        docker_network_mode(&inspector),
+        None,
+        "an explicit internal network remains the caller's isolation boundary"
+    );
 }
 
 #[test]

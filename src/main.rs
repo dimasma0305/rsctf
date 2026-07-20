@@ -64,6 +64,9 @@ async fn async_main() -> anyhow::Result<()> {
     if role != RuntimeRole::Migrate {
         config.validate()?;
         rsctf::services::anti_cheat::validate_trusted_proxy_config()?;
+        if capabilities.round_engine {
+            rsctf::services::ad_engine::validate_flag_delivery_configuration()?;
+        }
     }
     tracing::info!(
         bind = %config.bind_addr,

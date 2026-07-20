@@ -137,87 +137,30 @@ impl GameInfoModel {
         }
     }
 
-    /// Mirror of `GameInfoModel.Validate` — freeze must sit strictly between
-    /// start and end when supplied.
+    fn configuration(&self) -> crate::services::game_config::GameConfiguration {
+        crate::services::game_config::GameConfiguration {
+            start_time_utc: self.start_time_utc,
+            end_time_utc: self.end_time_utc,
+            freeze_time_utc: self.freeze_time_utc,
+            team_member_count_limit: self.team_member_count_limit,
+            container_count_limit: self.container_count_limit,
+            ad_warmup_seconds: self.ad_warmup_seconds,
+            ad_snapshot_retention_days: self.ad_snapshot_retention_days,
+            ad_tick_seconds: self.ad_tick_seconds,
+            ad_flag_lifetime_ticks: self.ad_flag_lifetime_ticks,
+            ad_reset_cooldown_minutes: self.ad_reset_cooldown_minutes,
+            ad_getflag_window_fraction: self.ad_getflag_window_fraction,
+            ad_min_grace_period_seconds: self.ad_min_grace_period_seconds,
+            ad_epoch_ticks: self.ad_epoch_ticks.unwrap_or(8),
+            koth_epoch_ticks: self.koth_epoch_ticks.unwrap_or(12),
+            koth_cycle_ticks: self.koth_cycle_ticks.unwrap_or(3),
+            koth_champion_cooldown_ticks: self.koth_champion_cooldown_ticks.unwrap_or(1),
+            koth_claim_confirmation_ticks: self.koth_claim_confirmation_ticks.unwrap_or(2),
+        }
+    }
+
     fn validate(&self) -> AppResult<()> {
-        if let Some(freeze) = self.freeze_time_utc {
-            if freeze <= self.start_time_utc || freeze >= self.end_time_utc {
-                return Err(AppError::bad_request(
-                    "FreezeTimeUtc must be strictly between StartTimeUtc and EndTimeUtc.",
-                ));
-            }
-        }
-        if let Some(epoch_ticks) = self.ad_epoch_ticks {
-            if !(1..=64).contains(&epoch_ticks) {
-                return Err(AppError::bad_request(
-                    "A&D epoch ticks must be between 1 and 64.",
-                ));
-            }
-        }
-        if let Some(epoch_ticks) = self.koth_epoch_ticks {
-            if !(2..=64).contains(&epoch_ticks) {
-                return Err(AppError::bad_request(
-                    "KotH epoch ticks must be between 2 and 64.",
-                ));
-            }
-        }
-        if let Some(cycle_ticks) = self.koth_cycle_ticks {
-            if !(1..=64).contains(&cycle_ticks) {
-                return Err(AppError::bad_request(
-                    "KotH cycle ticks must be between 1 and 64.",
-                ));
-            }
-        }
-        if let Some(cooldown_ticks) = self.koth_champion_cooldown_ticks {
-            if !(0..=63).contains(&cooldown_ticks) {
-                return Err(AppError::bad_request(
-                    "KotH champion cooldown ticks must be between 0 and 63.",
-                ));
-            }
-        }
-        if let Some(confirmation_ticks) = self.koth_claim_confirmation_ticks {
-            if !(1..=64).contains(&confirmation_ticks) {
-                return Err(AppError::bad_request(
-                    "KotH claim confirmation ticks must be between 1 and 64.",
-                ));
-            }
-        }
-        if let Some(tick_seconds) = self.ad_tick_seconds {
-            if !(30..=600).contains(&tick_seconds) {
-                return Err(AppError::bad_request(
-                    "A&D tick duration must be between 30 and 600 seconds.",
-                ));
-            }
-        }
-        if let Some(warmup_seconds) = self.ad_warmup_seconds {
-            if !(0..=86_400).contains(&warmup_seconds) {
-                return Err(AppError::bad_request(
-                    "A&D warmup must be between 0 and 86400 seconds.",
-                ));
-            }
-        }
-        if let Some(lifetime_ticks) = self.ad_flag_lifetime_ticks {
-            if !(1..=50).contains(&lifetime_ticks) {
-                return Err(AppError::bad_request(
-                    "A&D flag lifetime must be between 1 and 50 ticks.",
-                ));
-            }
-        }
-        if let Some(window_fraction) = self.ad_getflag_window_fraction {
-            if !window_fraction.is_finite() || !(0.05..=0.9).contains(&window_fraction) {
-                return Err(AppError::bad_request(
-                    "A&D getflag window fraction must be between 0.05 and 0.9.",
-                ));
-            }
-        }
-        if let Some(grace_seconds) = self.ad_min_grace_period_seconds {
-            if !(1..=60).contains(&grace_seconds) {
-                return Err(AppError::bad_request(
-                    "A&D minimum grace period must be between 1 and 60 seconds.",
-                ));
-            }
-        }
-        Ok(())
+        self.configuration().validate()
     }
 }
 
@@ -291,6 +234,18 @@ pub async fn get_games(
     Ok(ArrayResponse::new(data, total))
 }
 
+fn apply_ad_creation_settings(model: &GameInfoModel, active: &mut game::ActiveModel) {
+    active.ad_warmup_seconds = Set(model.ad_warmup_seconds);
+    active.ad_snapshot_retention_days = Set(model.ad_snapshot_retention_days);
+    active.ad_tick_seconds = Set(model.ad_tick_seconds);
+    active.ad_flag_lifetime_ticks = Set(model.ad_flag_lifetime_ticks);
+    active.ad_reset_cooldown_minutes = Set(model.ad_reset_cooldown_minutes);
+    active.ad_allow_snapshot_download = Set(model.ad_allow_snapshot_download.unwrap_or(true));
+    active.ad_getflag_window_fraction = Set(model.ad_getflag_window_fraction);
+    active.ad_min_grace_period_seconds = Set(model.ad_min_grace_period_seconds);
+    active.ad_epoch_ticks = Set(model.ad_epoch_ticks.unwrap_or(8));
+}
+
 /// `POST /api/edit/games` — create with a fresh key pair + defaults.
 pub async fn add_game(
     State(st): State<SharedState>,
@@ -302,19 +257,13 @@ pub async fn add_game(
     let koth_cycle_ticks = model.koth_cycle_ticks.unwrap_or(3);
     let koth_champion_cooldown_ticks = model.koth_champion_cooldown_ticks.unwrap_or(1);
     let koth_claim_confirmation_ticks = model.koth_claim_confirmation_ticks.unwrap_or(2);
-    validate_koth_crown_shape(
-        koth_epoch_ticks,
-        koth_cycle_ticks,
-        koth_champion_cooldown_ticks,
-        koth_claim_confirmation_ticks,
-    )?;
 
     // NOTE: RSCTF generates an Ed25519 key pair here (Game.GenerateKeyPair).
     // The Ed25519 crate is not in this port's dependency set, so this is a
     // random placeholder — it is NOT a real signing key.
     let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
 
-    let am = game::ActiveModel {
+    let mut am = game::ActiveModel {
         title: Set(model.title.clone()),
         public_key: Set(public_key),
         private_key: Set(private_key),
@@ -335,8 +284,6 @@ pub async fn add_game(
         freeze_time_utc: Set(model.freeze_time_utc),
         writeup_note: Set(model.writeup_note.clone()),
         blood_bonus_value: Set(super::blood_bonus_from_value(model.blood_bonus_value)),
-        ad_allow_snapshot_download: Set(model.ad_allow_snapshot_download.unwrap_or(true)),
-        ad_epoch_ticks: Set(model.ad_epoch_ticks.unwrap_or(8)),
         koth_epoch_ticks: Set(koth_epoch_ticks),
         koth_cycle_ticks: Set(koth_cycle_ticks),
         koth_champion_cooldown_ticks: Set(koth_champion_cooldown_ticks),
@@ -347,6 +294,7 @@ pub async fn add_game(
         ad_scoring_paused: Set(false),
         ..Default::default()
     };
+    apply_ad_creation_settings(&model, &mut am);
     let created = am.insert(&st.db).await?;
     Ok(RequestResponse::ok(GameInfoModel::from_game(&created)))
 }
@@ -384,26 +332,35 @@ fn validate_scoring_transition(
             "A&D epoch length is locked after A&D scoring has started.",
         ));
     }
-    if current_start_round.is_some()
-        && requested_lifetime.is_some_and(|value| value != current_lifetime.unwrap_or(5))
-    {
+    if current_start_round.is_some() && requested_lifetime != current_lifetime {
         return Err(AppError::bad_request(
             "A&D flag lifetime is locked after epoch scoring has started.",
         ));
     }
-    if engine_scoring_started
-        && requested_tick_seconds.is_some_and(|value| Some(value) != current_tick_seconds)
-    {
+    if engine_scoring_started && requested_tick_seconds != current_tick_seconds {
         return Err(AppError::bad_request(
             "A&D/KotH tick timing is locked after epoch scoring has started.",
         ));
     }
     if engine_scoring_started
-        && (requested_getflag_fraction.is_some_and(|value| Some(value) != current_getflag_fraction)
-            || requested_grace_seconds.is_some_and(|value| Some(value) != current_grace_seconds))
+        && (requested_getflag_fraction != current_getflag_fraction
+            || requested_grace_seconds != current_grace_seconds)
     {
         return Err(AppError::bad_request(
             "A&D/KotH checker sampling timing is locked after epoch scoring has started.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_start_time_transition(
+    current: DateTime<Utc>,
+    requested: DateTime<Utc>,
+    scoring_started: bool,
+) -> AppResult<()> {
+    if scoring_started && requested != current {
+        return Err(AppError::bad_request(
+            "The event start is locked after A&D or KotH scoring starts.",
         ));
     }
     Ok(())
@@ -437,6 +394,7 @@ pub async fn update_game(
         current_koth_cycle_ticks,
         current_koth_champion_cooldown_ticks,
         current_koth_claim_confirmation_ticks,
+        current_start_time,
         current_end_time,
         deletion_pending,
     ) = sqlx::query_as::<
@@ -454,6 +412,7 @@ pub async fn update_game(
             i32,
             i32,
             DateTime<Utc>,
+            DateTime<Utc>,
             bool,
         ),
     >(
@@ -464,7 +423,7 @@ pub async fn update_game(
                       koth_epoch_ticks, koth_cycle_ticks,
                       koth_champion_cooldown_ticks,
                       koth_claim_confirmation_ticks,
-                      end_time_utc, deletion_pending
+                      start_time_utc, end_time_utc, deletion_pending
                  FROM "Games"
                 WHERE id = $1
                 FOR UPDATE"#,
@@ -507,7 +466,9 @@ pub async fn update_game(
         requested_koth_champion_cooldown_ticks,
         requested_koth_claim_confirmation_ticks,
     )?;
-    if model.end_time_utc != current_end_time {
+    let schedule_changed =
+        model.start_time_utc != current_start_time || model.end_time_utc != current_end_time;
+    let config_snapshotted = if schedule_changed {
         let config_snapshotted: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(SELECT 1 FROM "KothOfficialConfigs" WHERE game_id = $1)"#,
         )
@@ -515,12 +476,20 @@ pub async fn update_game(
         .fetch_one(&mut **tx)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        if config_snapshotted {
+        if model.end_time_utc != current_end_time && config_snapshotted {
             return Err(AppError::bad_request(
                 "The event deadline is locked after KotH crown scoring starts.",
             ));
         }
-    }
+        config_snapshotted
+    } else {
+        false
+    };
+    validate_start_time_transition(
+        current_start_time,
+        model.start_time_utc,
+        current_start_round.is_some() || current_koth_start_round.is_some() || config_snapshotted,
+    )?;
     if current_koth_start_round.is_some()
         && (requested_koth_epoch_ticks != current_koth_epoch_ticks
             || requested_koth_cycle_ticks != current_koth_cycle_ticks
@@ -561,14 +530,14 @@ pub async fn update_game(
                writeup_note = $14, writeup_required = $15,
                writeup_deadline = $16, freeze_time_utc = $17,
                blood_bonus_value = $18, discord_webhook = $19,
-               ad_warmup_seconds = COALESCE($20, ad_warmup_seconds),
-               ad_snapshot_retention_days = COALESCE($21, ad_snapshot_retention_days),
-               ad_tick_seconds = COALESCE($22, ad_tick_seconds),
-               ad_flag_lifetime_ticks = COALESCE($23, ad_flag_lifetime_ticks),
-               ad_reset_cooldown_minutes = COALESCE($24, ad_reset_cooldown_minutes),
+               ad_warmup_seconds = $20,
+               ad_snapshot_retention_days = $21,
+               ad_tick_seconds = $22,
+               ad_flag_lifetime_ticks = $23,
+               ad_reset_cooldown_minutes = $24,
                ad_allow_snapshot_download = COALESCE($25, ad_allow_snapshot_download),
-               ad_getflag_window_fraction = COALESCE($26, ad_getflag_window_fraction),
-               ad_min_grace_period_seconds = COALESCE($27, ad_min_grace_period_seconds),
+               ad_getflag_window_fraction = $26,
+               ad_min_grace_period_seconds = $27,
                ad_epoch_ticks = $28, ad_scoring_start_round = $29,
                koth_epoch_ticks = $30, koth_cycle_ticks = $31,
                koth_champion_cooldown_ticks = $32,
@@ -740,6 +709,16 @@ pub async fn get_hash_salt(
     Ok(RequestResponse::ok(salt))
 }
 
+fn apply_clone_challenge_defaults(clone: &mut game_challenge::ActiveModel) {
+    clone.enable_shared_container = Set(false);
+    clone.score_curve = Set(ScoreCurve::Standard);
+    clone.network_mode = Set(Some(NetworkMode::Open));
+    clone.ad_allow_egress = Set(false);
+    clone.ad_allow_self_reset = Set(false);
+    clone.ad_ssh_requires_flag = Set(false);
+    clone.ad_self_hosted = Set(false);
+}
+
 /// `POST /api/edit/games/{id}/Clone` — deep-copy a game (settings + challenges,
 /// static flags included) into a new **hidden** template. Contract: raw new
 /// game id (`number`). Mirrors `EditController.CloneGame`.
@@ -759,12 +738,11 @@ pub async fn clone_game(
     } else {
         Vec::new()
     };
-    validate_koth_crown_shape(
-        source.koth_epoch_ticks,
-        source.koth_cycle_ticks,
-        source.koth_champion_cooldown_ticks,
-        source.koth_claim_confirmation_ticks,
-    )?;
+    let mut clone_configuration = GameInfoModel::from_game(&source).configuration();
+    clone_configuration.start_time_utc = model.start_time_utc;
+    clone_configuration.end_time_utc = model.end_time_utc;
+    clone_configuration.freeze_time_utc = None;
+    clone_configuration.validate()?;
     source_control
         .release()
         .await
@@ -773,6 +751,9 @@ pub async fn clone_game(
     // Fresh key pair — copying the source's private key would collide the
     // TeamHashSalt across the two games. (Placeholder, as in add_game.)
     let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
+    // A clone is one aggregate. If any challenge or flag cannot be copied, do
+    // not leave a hidden, half-populated game behind.
+    let transaction = st.db.begin().await?;
 
     let new_game = game::ActiveModel {
         title: Set(model.title.trim().to_string()),
@@ -805,21 +786,23 @@ pub async fn clone_game(
         koth_champion_cooldown_ticks: Set(source.koth_champion_cooldown_ticks),
         koth_claim_confirmation_ticks: Set(source.koth_claim_confirmation_ticks),
         ad_warmup_seconds: Set(source.ad_warmup_seconds),
+        ad_snapshot_retention_days: Set(source.ad_snapshot_retention_days),
         ad_tick_seconds: Set(source.ad_tick_seconds),
         ad_flag_lifetime_ticks: Set(source
             .ad_flag_lifetime_ticks
             .map(|ticks| ticks.clamp(1, 50))),
         ad_getflag_window_fraction: Set(source.ad_getflag_window_fraction),
         ad_min_grace_period_seconds: Set(source.ad_min_grace_period_seconds),
+        ad_reset_cooldown_minutes: Set(source.ad_reset_cooldown_minutes),
         ad_scoring_start_round: Set(None),
         koth_scoring_start_round: Set(None),
         ad_scoring_paused: Set(false),
         ..Default::default()
     };
-    let new_game = new_game.insert(&st.db).await?;
+    let new_game = new_game.insert(&transaction).await?;
 
     for src in sources {
-        let clone = game_challenge::ActiveModel {
+        let mut clone = game_challenge::ActiveModel {
             game_id: Set(new_game.id),
             title: Set(src.title.clone()),
             content: Set(src.content.clone()),
@@ -854,12 +837,13 @@ pub async fn clone_game(
             // The official scoring weight is intentionally preserved above.
             ..Default::default()
         };
-        let clone = clone.insert(&st.db).await?;
+        apply_clone_challenge_defaults(&mut clone);
+        let clone = clone.insert(&transaction).await?;
 
         // Copy static flags (the flag text, not the attachment blob).
         let flags = flag_context::Entity::find()
             .filter(flag_context::Column::ChallengeId.eq(src.id))
-            .all(&st.db)
+            .all(&transaction)
             .await?;
         for f in flags {
             let am = flag_context::ActiveModel {
@@ -868,10 +852,11 @@ pub async fn clone_game(
                 challenge_id: Set(Some(clone.id)),
                 ..Default::default()
             };
-            am.insert(&st.db).await?;
+            am.insert(&transaction).await?;
         }
     }
 
+    transaction.commit().await?;
     Ok(RequestResponse::ok(new_game.id))
 }
 

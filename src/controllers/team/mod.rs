@@ -103,7 +103,7 @@ pub async fn create_team(
 
     // RSCTF `Team_Created` — "Create team {name}" (TeamController, Success).
     crate::services::audit::info(
-        &st.db,
+        &st,
         "TeamController",
         Some(user.name.clone()),
         None,
@@ -263,7 +263,7 @@ pub async fn delete_team(
 
     // RSCTF `Team_Deleted` — "Delete team {name}" (TeamController, Success).
     crate::services::audit::info(
-        &st.db,
+        &st,
         "TeamController",
         Some(user.name.clone()),
         None,
@@ -426,7 +426,7 @@ pub async fn accept(
 
     // RSCTF `Team_UserJoined` — "Join Team {name}" (TeamController, Success).
     crate::services::audit::info(
-        &st.db,
+        &st,
         "TeamController",
         Some(user.name.clone()),
         None,
@@ -477,7 +477,7 @@ pub async fn leave(
 
     // RSCTF `Team_UserLeft` — "Left the team {name}" (TeamController, Success).
     crate::services::audit::info(
-        &st.db,
+        &st,
         "TeamController",
         Some(user.name.clone()),
         None,
@@ -525,7 +525,7 @@ pub async fn kick_user(
         .and_then(|u| u.user_name)
         .unwrap_or_else(|| "null".to_string());
     crate::services::audit::info(
-        &st.db,
+        &st,
         "TeamController",
         Some(user.name.clone()),
         None,

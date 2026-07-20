@@ -14,9 +14,20 @@ Your proxy must:
 - Avoid caching authenticated API responses
 
 In a split-role deployment, send ordinary traffic to the web pool and route
-BYOC agent/image plus `/hub/containerExec` paths to the singleton
-control/network owner. The maintained path list and Caddy example are in
+BYOC agent/image, `/api/stateful/edit/.../koth/.../recover`, plus every
+`/hub/containerExec` path (including the `/games/{gameId}` manager-scoped
+terminal) to the singleton control/network owner. Avoid idle upstream pooling
+for stateful POST routes, or provide an equivalent stale-connection fence. The
+maintained path list and Caddy example are in
 [Scale the single binary](./scaling#route-stateful-connections-to-the-network-owner).
+Legacy KotH recovery clients routed through a prefix-only Ingress must follow
+the method-preserving HTTP 307 redirect; clients that disable redirects should
+use the `/api/stateful/edit/.../koth/.../recover` path directly.
+
+SignalR WebSocket clients send their session bearer in the `access_token`
+query parameter because browsers cannot attach an authorization header to the
+upgrade. Exclude every `/hub/*` request URI from proxy access logs (as the
+bundled Caddyfile does), or configure equivalent query-string redaction.
 
 Set `RSCTF_PUBLIC_URL` to the exact browser origin, for example:
 

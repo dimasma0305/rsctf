@@ -1,10 +1,10 @@
 //! The A&D SLA checker — the process-sandboxed checker executor, its
 //! exit-code → [`AdCheckStatus`] mapping, verdict persistence, and the pure
 //! in-memory scheduler marker used by the tests.
-use super::persistence::AdProbeResult;
 use super::*;
 use futures::StreamExt;
 
+mod ad;
 mod diagnostics;
 mod koth;
 pub(super) use diagnostics::{bounded_diagnostic, bounded_optional_diagnostic};
@@ -21,6 +21,168 @@ pub(super) fn checker_concurrency() -> usize {
                 .map_or(32, |cpus| cpus.get().saturating_mul(8))
                 .clamp(32, 128)
         })
+}
+
+pub(crate) const DEFAULT_CHECKER_GRACE_SECONDS: i32 = 3;
+const DEFAULT_CHECKER_WINDOW_FRACTION: f64 = 0.5;
+const CHECKER_PERSISTENCE_MARGIN: std::time::Duration = std::time::Duration::from_secs(2);
+const MIN_CHECKER_PROBE_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+const MIN_CHECKER_SCHEDULING_SLACK: std::time::Duration = std::time::Duration::from_secs(1);
+
+const CHECKER_TIMING_SQL: &str = r#"SELECT GREATEST(1, FLOOR(EXTRACT(EPOCH FROM
+                         (round.end_time_utc - round.start_time_utc))))::integer,
+                  game.ad_getflag_window_fraction,
+                  game.ad_min_grace_period_seconds
+             FROM "AdRounds" round
+             JOIN "Games" game ON game.id = round.game_id
+            WHERE round.id = $1 AND round.game_id = $2"#;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CheckerSchedule {
+    grace: std::time::Duration,
+    maximum_jitter: std::time::Duration,
+    probe_budget: std::time::Duration,
+}
+
+fn checker_schedule(
+    tick_seconds: i32,
+    grace_seconds: i32,
+    window_fraction: f64,
+    available_after_publication: std::time::Duration,
+    configured_probe_timeout: std::time::Duration,
+) -> Option<CheckerSchedule> {
+    let tick_millis = u64::try_from(tick_seconds.clamp(30, 600)).unwrap_or(60) * 1_000;
+    let grace_millis = u64::try_from(grace_seconds.clamp(1, 60)).unwrap_or(3) * 1_000;
+    let fraction = if window_fraction.is_finite() {
+        window_fraction.clamp(0.05, 0.9)
+    } else {
+        DEFAULT_CHECKER_WINDOW_FRACTION
+    };
+    let available_millis =
+        u64::try_from(available_after_publication.as_millis()).unwrap_or(u64::MAX);
+    let persistence_millis =
+        u64::try_from(CHECKER_PERSISTENCE_MARGIN.as_millis()).unwrap_or(u64::MAX);
+    let runway_millis = available_millis
+        .checked_sub(grace_millis)?
+        .checked_sub(persistence_millis)?;
+    let minimum_probe_millis =
+        u64::try_from(MIN_CHECKER_PROBE_BUDGET.as_millis()).unwrap_or(u64::MAX);
+    if runway_millis < minimum_probe_millis {
+        return None;
+    }
+    let configured_millis = u64::try_from(configured_probe_timeout.as_millis()).unwrap_or(u64::MAX);
+    let scheduling_slack_millis =
+        u64::try_from(MIN_CHECKER_SCHEDULING_SLACK.as_millis()).unwrap_or(u64::MAX);
+    let probe_millis = if runway_millis >= configured_millis.saturating_add(scheduling_slack_millis)
+    {
+        configured_millis
+    } else {
+        (runway_millis / 2).max(minimum_probe_millis)
+    };
+    let jitter_millis = (((tick_millis as f64) * fraction).floor() as u64)
+        .min(runway_millis.saturating_sub(probe_millis));
+    Some(CheckerSchedule {
+        grace: std::time::Duration::from_millis(grace_millis),
+        maximum_jitter: std::time::Duration::from_millis(jitter_millis),
+        probe_budget: std::time::Duration::from_millis(probe_millis),
+    })
+}
+
+fn checker_delay_from_entropy(schedule: CheckerSchedule, entropy: u64) -> std::time::Duration {
+    let jitter_millis = u64::try_from(schedule.maximum_jitter.as_millis()).unwrap_or(u64::MAX);
+    let jitter = entropy % jitter_millis.saturating_add(1);
+    schedule
+        .grace
+        .saturating_add(std::time::Duration::from_millis(jitter))
+}
+
+fn random_checker_delay(schedule: CheckerSchedule) -> std::time::Duration {
+    let mut entropy = [0_u8; 8];
+    rand::fill(&mut entropy);
+    checker_delay_from_entropy(schedule, u64::from_le_bytes(entropy))
+}
+
+fn checker_start_instant(
+    published_at: chrono::DateTime<Utc>,
+    delay: std::time::Duration,
+    wall_now: chrono::DateTime<Utc>,
+    monotonic_now: tokio::time::Instant,
+) -> tokio::time::Instant {
+    let requested = chrono::Duration::from_std(delay)
+        .ok()
+        .and_then(|delay| published_at.checked_add_signed(delay))
+        .unwrap_or(published_at);
+    let remaining = requested
+        .signed_duration_since(wall_now)
+        .to_std()
+        .unwrap_or_default();
+    monotonic_now + remaining
+}
+
+fn checker_available_after_delivery(
+    delivered_at: chrono::DateTime<Utc>,
+    wall_now: chrono::DateTime<Utc>,
+    monotonic_now: tokio::time::Instant,
+    effective_deadline: tokio::time::Instant,
+) -> std::time::Duration {
+    let remaining = effective_deadline.saturating_duration_since(monotonic_now);
+    match wall_now.signed_duration_since(delivered_at).to_std() {
+        Ok(delivery_age) => remaining.saturating_add(delivery_age),
+        Err(_) => delivered_at
+            .signed_duration_since(wall_now)
+            .to_std()
+            .map_or(std::time::Duration::ZERO, |until_delivery| {
+                remaining.saturating_sub(until_delivery)
+            }),
+    }
+}
+
+fn checker_probe_can_start(
+    effective_deadline: tokio::time::Instant,
+    probe_budget: std::time::Duration,
+    completion_margin: std::time::Duration,
+    now: tokio::time::Instant,
+) -> bool {
+    effective_deadline
+        .checked_duration_since(now)
+        .and_then(|remaining| remaining.checked_sub(completion_margin))
+        .is_some_and(|remaining| remaining >= probe_budget)
+}
+
+fn deadline_limited_probe_budget(
+    effective_deadline: tokio::time::Instant,
+    configured: std::time::Duration,
+    completion_margin: std::time::Duration,
+    now: tokio::time::Instant,
+) -> Option<std::time::Duration> {
+    let runway = effective_deadline
+        .checked_duration_since(now)?
+        .checked_sub(completion_margin)
+        .filter(|remaining| *remaining >= MIN_CHECKER_PROBE_BUDGET * 2)?;
+    if runway >= configured.saturating_add(MIN_CHECKER_SCHEDULING_SLACK) {
+        // Preserve the complete participant-attributed timeout whenever it
+        // fits, shrinking jitter/queue slack before weakening the SLA contract.
+        Some(configured)
+    } else {
+        // Recovery near a deadline gets one smaller platform-attributed pass
+        // and retains the other half for queueing and scheduler wake-up skew.
+        Some(runway / 2)
+    }
+}
+
+fn exhausted_budget_status(timeout_is_platform_limited: bool) -> AdCheckStatus {
+    if timeout_is_platform_limited {
+        AdCheckStatus::InternalError
+    } else {
+        AdCheckStatus::Offline
+    }
+}
+
+fn probe_budget_is_platform_limited(
+    planned: std::time::Duration,
+    nominal: std::time::Duration,
+) -> bool {
+    planned < nominal
 }
 
 /// Port of `AdRoundScheduler`: the 5s-cadence background loop that bootstraps
@@ -79,6 +241,8 @@ pub(crate) async fn run_checker(
     game_id: i32,
     round_id: i32,
     lease: &RoundFinishLease,
+    pipeline_deadline: tokio::time::Instant,
+    delivery_receipts: tokio::sync::mpsc::UnboundedReceiver<FlagDeliveryReceipt>,
 ) -> AppResult<()> {
     // Resolve the round; it must belong to this game. An unknown/foreign round
     // has nothing to check (warmup / bad id) — no-op rather than error.
@@ -104,124 +268,68 @@ pub(crate) async fn run_checker(
             .map(|c| (c.id, c.ad_checker_image.filter(|s| !s.trim().is_empty())))
             .collect();
     let timeout = std::time::Duration::from_secs(checker_timeout_secs());
+    let (tick_seconds, window_fraction, grace_seconds): (i32, Option<f64>, Option<i32>) =
+        sqlx::query_as(CHECKER_TIMING_SQL)
+            .bind(round_id)
+            .bind(game_id)
+            .fetch_one(db.get_postgres_connection_pool())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    let window_fraction = window_fraction.unwrap_or(DEFAULT_CHECKER_WINDOW_FRACTION);
+    let grace_seconds = grace_seconds.unwrap_or(DEFAULT_CHECKER_GRACE_SECONDS);
+    let wall_now = Utc::now();
+    let monotonic_now = tokio::time::Instant::now();
+    let round_remaining = round
+        .end_time_utc
+        .signed_duration_since(wall_now)
+        .to_std()
+        .unwrap_or_default();
+    let effective_deadline = pipeline_deadline.min(monotonic_now + round_remaining);
+    // The nominal schedule defines the participant-facing timeout contract for
+    // this game's tick/grace settings. Only a later runtime/deadline reduction
+    // is infrastructure-attributed; an expiry at this nominal budget is a real
+    // participant Offline verdict.
+    let nominal_schedule = checker_schedule(
+        tick_seconds,
+        grace_seconds,
+        window_fraction,
+        std::time::Duration::from_secs(u64::try_from(tick_seconds).unwrap_or(60)).saturating_sub(
+            std::time::Duration::from_secs(
+                FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS + CHECKER_SCHEDULER_OUTER_MARGIN_SECONDS,
+            ),
+        ),
+        timeout,
+    );
+    let nominal_probe_budget = nominal_schedule.map(|schedule| schedule.probe_budget);
+    let current_probe_cap = nominal_probe_budget.and_then(|nominal_budget| {
+        deadline_limited_probe_budget(
+            effective_deadline,
+            nominal_budget,
+            CHECKER_PERSISTENCE_MARGIN,
+            monotonic_now,
+        )
+    });
 
     // Run A&D and KotH passes concurrently. Sequential execution let a large A&D
     // field consume the per-game deadline before a shared hill was ever sampled.
-    let ad_pass = async {
-        if services.is_empty() {
-            return Ok::<(), AppError>(());
-        }
-        // This round's planted flags, batched in one query (was an N+1 per service).
-        let service_ids: Vec<i32> = services.iter().map(|s| s.id).collect();
-        let flags: std::collections::HashMap<i32, String> = ad_flag::Entity::find()
-            .filter(ad_flag::Column::RoundId.eq(round_id))
-            .filter(ad_flag::Column::TeamServiceId.is_in(service_ids))
-            .all(db)
-            .await?
-            .into_iter()
-            .map(|f| (f.team_service_id, f.flag))
-            .collect();
-        // A failed current-flag publication is platform evidence, not a service
-        // verdict. Its placeholder was completed as an immutable InternalError
-        // void in the publication transaction; do not spend checker capacity or
-        // risk attributing the platform's missing flag to the participant.
-        let delivery_voids: std::collections::HashSet<i32> = sqlx::query_scalar::<_, i32>(
-            r#"SELECT team_service_id
-                     FROM "AdFlagDeliveryResults"
-                    WHERE round_id = $1 AND delivered = FALSE"#,
-        )
-        .bind(round_id)
-        .fetch_all(db.get_postgres_connection_pool())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .into_iter()
-        .collect();
-
-        // Probe services with bounded concurrency. Sequentially, one offline service
-        // burning the full (up to 600s) timeout serializes behind every other, so a pass
-        // of N services could take N × timeout — blowing the round window AND blocking the
-        // single cron supervisor task (reaper, other games) for minutes.
-        let round_number = round.number;
-        // Owned per-service probe inputs — no borrows of `checker_dirs`/`flags`/`services`
-        // held across the concurrent await (keeps the future `Send` for the cron task).
-        #[allow(clippy::type_complexity)]
-        let inputs: Vec<(
-            i32,
-            String,
-            i32,
-            i32,
-            i32,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )> = services
-            .iter()
-            .filter(|svc| !delivery_voids.contains(&svc.id))
-            .map(|svc| {
-                (
-                    svc.id,
-                    svc.host.clone(),
-                    svc.port,
-                    svc.participation_id,
-                    svc.challenge_id,
-                    svc.container_id.clone(),
-                    checker_dirs.get(&svc.challenge_id).cloned().flatten(),
-                    flags.get(&svc.id).cloned(),
-                )
-            })
-            .collect();
-        // Run persistence and probe production as sibling futures owned by this
-        // checker pass. Cancelling the round pipeline drops both before its
-        // durable lease can be released; unresolved placeholders remain NULL so
-        // the next lease owner can recover them. No result writer may outlive its
-        // owning pipeline and race a replacement owner's real verdict.
-        let (result_tx, result_rx) = tokio::sync::mpsc::unbounded_channel();
-        let producer = async move {
-            let mut probes = futures::stream::iter(inputs)
-                .map(
-                    |(sid, host, port, team_id, chal_id, container_id, dir, flag)| async move {
-                        let flag_aware =
-                            dir.is_some() && flag.as_deref().is_some_and(|value| !value.is_empty());
-                        let (status, message) = run_check(
-                            dir.as_deref(),
-                            &host,
-                            port,
-                            round_number,
-                            team_id,
-                            chal_id,
-                            flag.as_deref(),
-                            timeout,
-                        )
-                        .await;
-                        let observed_at = Utc::now();
-                        AdProbeResult {
-                            service_id: sid,
-                            participation_id: team_id,
-                            challenge_id: chal_id,
-                            host,
-                            port,
-                            container_id,
-                            status,
-                            message,
-                            flag_verified: flag_aware && status == AdCheckStatus::Ok,
-                            observed_at,
-                        }
-                    },
-                )
-                .buffer_unordered(checker_concurrency());
-            while let Some(result) = probes.next().await {
-                result_tx.send(result).map_err(|_| {
-                    AppError::internal("A&D checker result writer stopped before probe completion")
-                })?;
-            }
-            Ok::<(), AppError>(())
-        };
-        let writer = super::persistence::record_check_result_batches(
-            db, game_id, round_id, lease, result_rx,
-        );
-        tokio::try_join!(producer, writer)?;
-        Ok(())
-    };
+    let ad_pass = ad::check_services(
+        db,
+        services,
+        game_id,
+        round_id,
+        lease,
+        checker_dirs.clone(),
+        ad::AdCheckerTiming {
+            round_number: round.number,
+            tick_seconds,
+            grace_seconds,
+            window_fraction,
+            current_probe_cap,
+            nominal_probe_budget,
+            effective_deadline,
+        },
+        delivery_receipts,
+    );
 
     let koth_pass = koth::check_hills(
         db,
@@ -231,6 +339,8 @@ pub(crate) async fn run_checker(
         &checker_dirs,
         timeout,
         lease,
+        effective_deadline,
+        tick_seconds,
     );
     let (ad_result, koth_result) = tokio::join!(ad_pass, koth_pass);
     ad_result?;
@@ -269,6 +379,7 @@ pub(crate) async fn validate_koth_functional_readiness(
         challenge_id,
         None,
         std::time::Duration::from_secs(checker_timeout_secs()),
+        false,
     )
     .await;
     (status, bounded_optional_diagnostic(message))
@@ -288,6 +399,7 @@ async fn run_check(
     challenge_id: i32,
     flag: Option<&str>,
     timeout: std::time::Duration,
+    timeout_is_platform_limited: bool,
 ) -> (AdCheckStatus, Option<String>) {
     let host = host.trim();
     if host.is_empty() || port <= 0 || port > 65535 {
@@ -296,10 +408,19 @@ async fn run_check(
     let port_u16 = port as u16;
 
     let Some(dir) = checker_dir else {
-        return if super::sandbox::tcp_probe(host, port_u16, timeout).await {
-            (AdCheckStatus::Ok, None)
-        } else {
-            (AdCheckStatus::Offline, Some("tcp probe failed".to_string()))
+        return match tokio::time::timeout(timeout, tokio::net::TcpStream::connect((host, port_u16)))
+            .await
+        {
+            Ok(Ok(_)) => (AdCheckStatus::Ok, None),
+            Ok(Err(_)) => (AdCheckStatus::Offline, Some("tcp probe failed".to_string())),
+            Err(_) if timeout_is_platform_limited => (
+                AdCheckStatus::InternalError,
+                Some("platform deadline exhausted the checker probe budget".to_string()),
+            ),
+            Err(_) => (
+                AdCheckStatus::Offline,
+                Some("tcp probe timed out".to_string()),
+            ),
         };
     };
 
@@ -333,12 +454,25 @@ async fn run_check(
     let target_ip = if let Ok(address) = host.parse::<std::net::IpAddr>() {
         address
     } else {
-        let resolved = tokio::time::timeout(timeout, tokio::net::lookup_host((host, port_u16)))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .and_then(|mut addresses| addresses.next());
-        let Some(address) = resolved else {
+        let address =
+            match tokio::time::timeout(timeout, tokio::net::lookup_host((host, port_u16))).await {
+                Ok(Ok(mut addresses)) => addresses.next(),
+                Ok(Err(_)) => None,
+                Err(_) => {
+                    return (
+                        exhausted_budget_status(timeout_is_platform_limited),
+                        Some(
+                            if timeout_is_platform_limited {
+                                "platform deadline exhausted target resolution"
+                            } else {
+                                "checker target resolution timed out"
+                            }
+                            .to_string(),
+                        ),
+                    );
+                }
+            };
+        let Some(address) = address else {
             return (
                 AdCheckStatus::Offline,
                 Some("checker target resolution failed".to_string()),
@@ -349,8 +483,15 @@ async fn run_check(
     let remaining = timeout.saturating_sub(started.elapsed());
     if remaining.is_zero() {
         return (
-            AdCheckStatus::Offline,
-            Some("checker target resolution timed out".to_string()),
+            exhausted_budget_status(timeout_is_platform_limited),
+            Some(
+                if timeout_is_platform_limited {
+                    "platform deadline exhausted target resolution"
+                } else {
+                    "checker target resolution timed out"
+                }
+                .to_string(),
+            ),
         );
     }
 
@@ -387,9 +528,17 @@ async fn run_check(
     )
     .await
     {
-        Ok(code) => (
+        Ok(super::sandbox::SandboxOutcome::Exit(code)) => (
             map_exit_code(code as i64, true),
             (code != 0).then(|| format!("checker exit {code}")),
+        ),
+        Ok(super::sandbox::SandboxOutcome::TimedOut) if timeout_is_platform_limited => (
+            AdCheckStatus::InternalError,
+            Some("platform deadline exhausted the checker probe budget".to_string()),
+        ),
+        Ok(super::sandbox::SandboxOutcome::TimedOut) => (
+            AdCheckStatus::Offline,
+            Some("checker timed out".to_string()),
         ),
         Err(e) => (
             AdCheckStatus::InternalError,
@@ -473,10 +622,328 @@ fn map_exit_code(exit_code: i64, use_custom: bool) -> AdCheckStatus {
 #[cfg(test)]
 mod scheduling_tests {
     use super::*;
+    use sqlx::{Connection, PgConnection};
 
     #[test]
     fn checker_parallelism_and_timeout_are_bounded() {
         assert!((1..=256).contains(&checker_concurrency()));
         assert!((1..=600).contains(&checker_timeout_secs()));
+    }
+
+    #[test]
+    fn checker_delay_has_a_grace_floor_and_bounded_independent_jitter() {
+        let available = std::time::Duration::from_secs(59);
+        let schedule =
+            checker_schedule(60, 3, 0.5, available, std::time::Duration::from_secs(30)).unwrap();
+        let minimum = checker_delay_from_entropy(schedule, 0);
+        let maximum = checker_delay_from_entropy(schedule, u64::MAX);
+        assert_eq!(minimum, std::time::Duration::from_secs(3));
+        assert!(maximum >= minimum);
+        assert!(maximum <= std::time::Duration::from_secs(33));
+        assert!(
+            maximum + schedule.probe_budget + CHECKER_PERSISTENCE_MARGIN <= available,
+            "the latest probe must retain its complete budget and persistence margin"
+        );
+        assert_ne!(
+            checker_delay_from_entropy(schedule, 1),
+            checker_delay_from_entropy(schedule, 2)
+        );
+    }
+
+    #[test]
+    fn nominal_timeout_expiry_remains_participant_attributed() {
+        let default = checker_schedule(
+            60,
+            3,
+            0.5,
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        assert_eq!(default.probe_budget, std::time::Duration::from_secs(30));
+
+        // Even an extreme accepted short-tick configuration defines its
+        // reduced budget nominally. It is not mislabeled as a runtime outage.
+        let short = checker_schedule(
+            30,
+            18,
+            0.5,
+            std::time::Duration::from_secs(22),
+            std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        assert_eq!(short.probe_budget, std::time::Duration::from_secs(1));
+        assert_eq!(
+            exhausted_budget_status(probe_budget_is_platform_limited(
+                short.probe_budget,
+                short.probe_budget,
+            )),
+            AdCheckStatus::Offline
+        );
+    }
+
+    #[test]
+    fn pending_roster_requires_unresolved_identity_matched_delivery() {
+        assert!(ad::PENDING_AD_SERVICES_SQL.contains("result.sla_credit IS NULL"));
+        assert!(ad::PENDING_AD_SERVICES_SQL.contains("delivery.delivered = TRUE"));
+        assert!(ad::PENDING_AD_SERVICES_SQL
+            .contains("delivery.container_id IS NOT DISTINCT FROM service.container_id"));
+    }
+
+    #[tokio::test]
+    async fn late_service_delivery_without_checker_runway_is_offline() {
+        let result = ad::classify_no_window_for_test(AdCheckStatus::Offline).await;
+        assert_eq!(result.status, AdCheckStatus::Offline);
+        assert_eq!(
+            result.message.as_deref(),
+            Some("flag delivery completed too late for a full checker probe")
+        );
+    }
+
+    #[test]
+    fn delayed_delivery_keeps_each_service_on_its_own_safe_window() {
+        let wall_now = Utc::now();
+        let monotonic_now = tokio::time::Instant::now();
+        // Six seconds of participant-controlled delivery latency leave 23s in
+        // a 30s tick. The validated max grace still retains the one-second
+        // nominal participant probe plus jitter, persistence, and the outer
+        // scheduler margin.
+        let deadline = monotonic_now + std::time::Duration::from_secs(23);
+        let nominal = checker_schedule(
+            30,
+            18,
+            0.5,
+            std::time::Duration::from_secs(22),
+            std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        let cap = deadline_limited_probe_budget(
+            deadline,
+            nominal.probe_budget,
+            CHECKER_PERSISTENCE_MARGIN,
+            monotonic_now,
+        )
+        .unwrap();
+        let delayed_available =
+            checker_available_after_delivery(wall_now, wall_now, monotonic_now, deadline);
+        let delayed = checker_schedule(30, 18, 0.5, delayed_available, cap).unwrap();
+        assert_eq!(delayed.probe_budget, nominal.probe_budget);
+        assert!(!probe_budget_is_platform_limited(
+            delayed.probe_budget,
+            nominal.probe_budget,
+        ));
+
+        // A service delivered six seconds earlier keeps its own larger jitter
+        // window; the slow service cannot shift or void it.
+        let early_available = checker_available_after_delivery(
+            wall_now - chrono::Duration::seconds(6),
+            wall_now,
+            monotonic_now,
+            deadline,
+        );
+        let early = checker_schedule(30, 18, 0.5, early_available, cap).unwrap();
+        assert!(early.maximum_jitter > delayed.maximum_jitter);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn recovery_roster_excludes_completed_replaced_and_midround_services() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
+        let mut connection = PgConnection::connect(&database_url).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TEMP TABLE "AdCheckResults" (
+              round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
+              sla_credit DOUBLE PRECISION
+            );
+            CREATE TEMP TABLE "AdFlags" (
+              round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL
+            );
+            CREATE TEMP TABLE "AdFlagDeliveryResults" (
+              round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
+              delivery_kind TEXT NOT NULL, container_id TEXT, delivered BOOLEAN NOT NULL,
+              completed_at TIMESTAMPTZ NOT NULL
+            );
+            CREATE TEMP TABLE "AdTeamServices" (
+              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, container_id TEXT
+            );
+            INSERT INTO "AdTeamServices" VALUES
+              (1,7,'one'), (2,7,'two'), (3,7,'replacement'), (4,7,NULL), (5,7,'five');
+            INSERT INTO "AdCheckResults" VALUES
+              (101,1,NULL), (101,2,1.0), (101,3,NULL), (101,4,NULL), (101,5,NULL);
+            INSERT INTO "AdFlags" VALUES (101,1), (101,2), (101,3), (101,4);
+            INSERT INTO "AdFlagDeliveryResults" VALUES
+              (101,1,'Managed','one',TRUE,clock_timestamp()),
+              (101,2,'Managed','two',TRUE,clock_timestamp()),
+              (101,3,'Managed','old-three',TRUE,clock_timestamp()),
+              (101,4,'External',NULL,TRUE,clock_timestamp());
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        let mut pending: Vec<i32> =
+            sqlx::query_as::<_, (i32, chrono::DateTime<Utc>)>(ad::PENDING_AD_SERVICES_SQL)
+                .bind(101_i32)
+                .bind(7_i32)
+                .fetch_all(&mut connection)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| row.0)
+                .collect();
+        pending.sort_unstable();
+        assert_eq!(pending, vec![1, 4]);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn checker_timing_uses_the_authoritative_round_duration() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
+        let mut connection = PgConnection::connect(&database_url).await.unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TEMP TABLE "Games" (
+              id INTEGER PRIMARY KEY, ad_tick_seconds INTEGER,
+              ad_getflag_window_fraction DOUBLE PRECISION,
+              ad_min_grace_period_seconds INTEGER
+            );
+            CREATE TEMP TABLE "AdRounds" (
+              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
+              start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
+            );
+            INSERT INTO "Games" VALUES (7, 600, 0.5, 3);
+            INSERT INTO "AdRounds" VALUES
+              (101, 7, TIMESTAMPTZ '2026-01-01 00:00:00+00',
+                       TIMESTAMPTZ '2026-01-01 00:00:30+00');
+            "#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+        let timing: (i32, Option<f64>, Option<i32>) = sqlx::query_as(CHECKER_TIMING_SQL)
+            .bind(101_i32)
+            .bind(7_i32)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(timing, (30, Some(0.5), Some(3)));
+    }
+
+    #[test]
+    fn checker_schedule_respects_short_ticks_and_the_outer_pipeline_cap() {
+        for (tick, grace, available) in [(30, 18, 22), (600, 60, 240)] {
+            let available = std::time::Duration::from_secs(available);
+            let schedule = checker_schedule(
+                tick,
+                grace,
+                0.9,
+                available,
+                std::time::Duration::from_secs(600),
+            )
+            .unwrap();
+            let latest = checker_delay_from_entropy(schedule, u64::MAX);
+            assert!(latest + schedule.probe_budget + CHECKER_PERSISTENCE_MARGIN <= available);
+            assert!(schedule.probe_budget >= MIN_CHECKER_PROBE_BUDGET);
+        }
+    }
+
+    #[test]
+    fn checker_schedule_rejects_a_window_without_a_real_probe_budget() {
+        assert!(checker_schedule(
+            30,
+            25,
+            0.5,
+            std::time::Duration::from_millis(27_999),
+            std::time::Duration::from_secs(30),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn checker_start_preserves_grace_even_when_the_round_deadline_is_too_close() {
+        let wall_now = Utc::now();
+        let monotonic_now = tokio::time::Instant::now();
+        let starts = checker_start_instant(
+            wall_now,
+            std::time::Duration::from_secs(30),
+            wall_now,
+            monotonic_now,
+        );
+        assert_eq!(starts, monotonic_now + std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    fn late_probe_is_rejected_instead_of_receiving_a_shortened_timeout() {
+        let now = tokio::time::Instant::now();
+        assert!(checker_probe_can_start(
+            now + std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(8),
+            CHECKER_PERSISTENCE_MARGIN,
+            now,
+        ));
+        assert!(!checker_probe_can_start(
+            now + std::time::Duration::from_secs(9),
+            std::time::Duration::from_secs(8),
+            CHECKER_PERSISTENCE_MARGIN,
+            now,
+        ));
+    }
+
+    #[test]
+    fn deadline_budget_is_planned_once_and_never_shortened_at_probe_start() {
+        let now = tokio::time::Instant::now();
+        let deadline = now + std::time::Duration::from_secs(20);
+        assert_eq!(
+            deadline_limited_probe_budget(
+                deadline,
+                std::time::Duration::from_secs(30),
+                CHECKER_PERSISTENCE_MARGIN,
+                now,
+            ),
+            Some(std::time::Duration::from_secs(9))
+        );
+        assert_eq!(
+            deadline_limited_probe_budget(
+                now + CHECKER_PERSISTENCE_MARGIN,
+                std::time::Duration::from_secs(30),
+                CHECKER_PERSISTENCE_MARGIN,
+                now,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn late_recovery_replans_one_safe_pass_from_the_remaining_runway() {
+        let now = tokio::time::Instant::now();
+        let deadline = now + std::time::Duration::from_secs(7);
+        let cap = deadline_limited_probe_budget(
+            deadline,
+            std::time::Duration::from_secs(30),
+            CHECKER_PERSISTENCE_MARGIN,
+            now,
+        )
+        .unwrap();
+        let schedule =
+            checker_schedule(60, 3, 0.5, std::time::Duration::from_secs(59), cap).unwrap();
+        assert_eq!(
+            schedule.probe_budget,
+            std::time::Duration::from_millis(2_500)
+        );
+        assert!(checker_probe_can_start(
+            deadline,
+            schedule.probe_budget,
+            CHECKER_PERSISTENCE_MARGIN,
+            now + std::time::Duration::from_millis(100),
+        ));
+    }
+
+    #[test]
+    fn deadline_limited_timeouts_are_platform_attributed() {
+        assert_eq!(exhausted_budget_status(true), AdCheckStatus::InternalError);
+        assert_eq!(exhausted_budget_status(false), AdCheckStatus::Offline);
     }
 }

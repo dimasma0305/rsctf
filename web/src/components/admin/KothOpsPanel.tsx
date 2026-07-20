@@ -177,7 +177,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
     setRetryingHill(hill.challengeId)
     try {
       await api.request({
-        path: `/api/edit/games/${gameId}/ad/koth/${hill.challengeId}/recover`,
+        path: `/api/stateful/edit/games/${gameId}/ad/koth/${hill.challengeId}/recover`,
         method: 'POST',
         format: 'json',
       })

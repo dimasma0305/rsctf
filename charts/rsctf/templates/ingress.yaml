@@ -24,7 +24,8 @@ spec:
         paths:
           {{- if and (eq $.Values.runtimeRole "web") $.Values.ingress.statefulRoutes.enabled }}
           # The narrow fixed prefix keeps hot /api/Game scoreboard/state/submit
-          # traffic on the scalable web pool while BYOC stays on its owner.
+          # traffic on the scalable web pool while BYOC and privileged KotH
+          # recovery stay on their owner.
           - path: /api/stateful
             pathType: Prefix
             backend:

@@ -20,7 +20,7 @@ use tokio::time::{interval, Duration};
 
 use crate::app_state::{HubEvent, SharedState};
 use crate::middlewares::privilege_authentication::{
-    authenticate_token, AdminUser, CurrentUser, SESSION_COOKIE,
+    authenticate_token, session_cookie_value, AdminUser, CurrentUser, MAX_SESSION_TOKEN_BYTES,
 };
 use crate::models::data::game;
 use crate::utils::enums::Role;
@@ -53,15 +53,12 @@ pub async fn admin_negotiate(_admin: AdminUser) -> impl IntoResponse {
 /// the session cookie. Invalid, revoked, deleted, or banned sessions are absent.
 pub fn hub_token(params: &HashMap<String, String>, headers: &HeaderMap) -> Option<String> {
     if let Some(t) = params.get("access_token").or_else(|| params.get("token")) {
-        return Some(t.clone());
+        return (!t.is_empty() && t.len() <= MAX_SESSION_TOKEN_BYTES).then(|| t.clone());
     }
     let cookies = headers.get(COOKIE).and_then(|v| v.to_str().ok())?;
-    for pair in cookies.split(';') {
-        if let Some(v) = pair.trim().strip_prefix(&format!("{SESSION_COOKIE}=")) {
-            return Some(v.to_string());
-        }
-    }
-    None
+    session_cookie_value(cookies)
+        .filter(|token| !token.is_empty() && token.len() <= MAX_SESSION_TOKEN_BYTES)
+        .map(str::to_owned)
 }
 
 pub async fn hub_identity(
@@ -230,5 +227,54 @@ pub async fn serve(
                 if tx.send(Message::Text(format!("{{\"type\":6}}{RS}").into())).await.is_err() { break; }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cookie_headers(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            format!("RSCTF_Token={token}")
+                .parse()
+                .expect("valid cookie"),
+        );
+        headers
+    }
+
+    #[test]
+    fn hub_tokens_match_the_http_session_size_boundary() {
+        let headers = HeaderMap::new();
+        let maximum = "a".repeat(MAX_SESSION_TOKEN_BYTES);
+        let oversized = "a".repeat(MAX_SESSION_TOKEN_BYTES + 1);
+
+        for key in ["access_token", "token"] {
+            let mut params = HashMap::new();
+            params.insert(key.to_string(), maximum.clone());
+            assert_eq!(hub_token(&params, &headers), Some(maximum.clone()));
+            params.insert(key.to_string(), oversized.clone());
+            assert_eq!(hub_token(&params, &headers), None);
+            params.insert(key.to_string(), String::new());
+            assert_eq!(hub_token(&params, &headers), None);
+        }
+
+        assert_eq!(
+            hub_token(&HashMap::new(), &cookie_headers(&maximum)),
+            Some(maximum)
+        );
+        assert_eq!(
+            hub_token(&HashMap::new(), &cookie_headers(&oversized)),
+            None
+        );
+        assert_eq!(hub_token(&HashMap::new(), &cookie_headers("")), None);
+    }
+
+    #[test]
+    fn invalid_explicit_query_token_never_falls_back_to_cookie() {
+        let params = HashMap::from([("access_token".to_string(), String::new())]);
+        assert_eq!(hub_token(&params, &cookie_headers("valid-cookie")), None);
     }
 }

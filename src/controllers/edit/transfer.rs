@@ -40,10 +40,10 @@ const GAME_IMPORT_LIMITS: GameImportLimits = GameImportLimits {
 // per-flag attachment. Both the metadata (type / hash / remote url / filename)
 // and — for `Local` files — the blob bytes are bundled under a `files/{hash}`
 // tree (deduped by content hash, exactly as `GameExportService.CopyAttachments`
-// does). On import the blobs are re-stored and their `Files` rows recreated so
-// the imported attachments re-link. Blob bundling is best-effort: a metadata
-// entry whose blob is absent from the package still imports (it links by hash to
-// any copy already present in this deployment) rather than aborting the import.
+// does). On import valid bundled blobs are re-stored and their `Files` rows are
+// recreated in the same transaction as the owning rows. A local attachment
+// whose blob is absent or hash-invalid is cleared instead of trusting an
+// unrelated deployment's metadata.
 
 /// `game.json` payload — the game settings needed to recreate the game.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +212,28 @@ impl ExportGameModel {
             divisions: Vec::new(),
         }
     }
+
+    fn configuration(&self) -> crate::services::game_config::GameConfiguration {
+        crate::services::game_config::GameConfiguration {
+            start_time_utc: self.start_time_utc,
+            end_time_utc: self.end_time_utc,
+            freeze_time_utc: self.freeze_time_utc,
+            team_member_count_limit: self.team_member_count_limit,
+            container_count_limit: self.container_count_limit,
+            ad_warmup_seconds: self.ad_warmup_seconds,
+            ad_snapshot_retention_days: self.ad_snapshot_retention_days,
+            ad_tick_seconds: self.ad_tick_seconds,
+            ad_flag_lifetime_ticks: self.ad_flag_lifetime_ticks,
+            ad_reset_cooldown_minutes: self.ad_reset_cooldown_minutes,
+            ad_getflag_window_fraction: self.ad_getflag_window_fraction,
+            ad_min_grace_period_seconds: self.ad_min_grace_period_seconds,
+            ad_epoch_ticks: self.ad_epoch_ticks,
+            koth_epoch_ticks: self.koth_epoch_ticks,
+            koth_cycle_ticks: self.koth_cycle_ticks,
+            koth_champion_cooldown_ticks: self.koth_champion_cooldown_ticks,
+            koth_claim_confirmation_ticks: self.koth_claim_confirmation_ticks,
+        }
+    }
 }
 
 /// One flag inside a `challenges/challenge-{id}.json` file.
@@ -358,8 +380,8 @@ impl ExportChallengeModel {
 }
 
 /// `POST /api/edit/games/import` — import a game ZIP package (multipart `file`);
-/// parses `game.json` + `challenges/*.json` and INSERTs a new hidden game with
-/// its challenges and flags. Returns the new game id (contract: raw `number`).
+/// parses `game.json` + `challenges/*.json` and atomically INSERTs a new hidden
+/// game with its challenges and flags. Returns the new game id (raw `number`).
 /// Mirrors `GameImportService.ImportGameAsync`.
 pub async fn import_game(
     State(st): State<SharedState>,
@@ -393,6 +415,7 @@ pub async fn import_game(
         .ok_or_else(|| AppError::bad_request("Missing game.json in import package"))?;
     let export_game: ExportGameModel = serde_json::from_str(game_json)
         .map_err(|e| AppError::bad_request(format!("Invalid game.json: {e}")))?;
+    export_game.configuration().validate()?;
     let challenge_names: Vec<String> = entries
         .keys()
         .filter(|name| {
@@ -410,13 +433,34 @@ pub async fn import_game(
     }
     // Deterministic order so the imported challenge ids follow the source ids.
     export_challenges.sort_by_key(|c| c.id);
-    for challenge in &export_challenges {
+    validate_import_challenges(&export_challenges)?;
+    let game_id =
+        import_persistence::persist_game_import(&st, &entries, &export_game, &export_challenges)
+            .await?;
+    Ok(RequestResponse::ok(game_id))
+}
+
+fn validate_import_challenges(challenges: &[ExportChallengeModel]) -> AppResult<()> {
+    let mut source_challenge_ids = BTreeSet::new();
+    for challenge in challenges {
+        if !source_challenge_ids.insert(challenge.id) {
+            return Err(AppError::bad_request(
+                "Game import contains duplicate challenge ids",
+            ));
+        }
         crate::utils::scoring::validate_challenge_scoring(
             challenge.original_score,
             challenge.min_score_rate,
             challenge.difficulty,
             challenge.submission_limit,
         )?;
+        if !challenge.ad_scoring_weight.is_finite()
+            || !(0.8..=1.2).contains(&challenge.ad_scoring_weight)
+        {
+            return Err(AppError::bad_request(
+                "Engine challenge scoring weight must be between 0.8 and 1.2.",
+            ));
+        }
         if let Some(spec) = challenge.workload_spec.clone() {
             crate::services::challenge_workloads::validate_json_for_challenge(
                 challenge.challenge_type,
@@ -424,189 +468,7 @@ pub async fn import_game(
             )?;
         }
     }
-    validate_koth_crown_shape(
-        export_game.koth_epoch_ticks,
-        export_game.koth_cycle_ticks,
-        export_game.koth_champion_cooldown_ticks,
-        export_game.koth_claim_confirmation_ticks,
-    )?;
-    let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
-    let new_game = game::ActiveModel {
-        title: Set(export_game.title.clone()),
-        public_key: Set(public_key),
-        private_key: Set(private_key),
-        // Import as a hidden template by default, mirroring GameImportService.
-        hidden: Set(true),
-        practice_mode: Set(false),
-        summary: Set(export_game.summary.clone()),
-        content: Set(export_game.content.clone()),
-        accept_without_review: Set(export_game.accept_without_review),
-        allow_user_submissions: Set(export_game.allow_user_submissions),
-        writeup_required: Set(export_game.writeup_required),
-        invite_code: Set(None),
-        team_member_count_limit: Set(export_game.team_member_count_limit),
-        discord_webhook: Set(export_game.discord_webhook.clone()),
-        container_count_limit: Set(export_game.container_count_limit),
-        start_time_utc: Set(export_game.start_time_utc),
-        end_time_utc: Set(export_game.end_time_utc),
-        writeup_deadline: Set(export_game.writeup_deadline),
-        freeze_time_utc: Set(export_game.freeze_time_utc),
-        writeup_note: Set(export_game.writeup_note.clone()),
-        blood_bonus_value: Set(export_game.blood_bonus_value),
-        poster_hash: Set(export_game.poster_hash.clone()),
-        ad_warmup_seconds: Set(export_game.ad_warmup_seconds),
-        ad_tick_seconds: Set(export_game.ad_tick_seconds),
-        ad_flag_lifetime_ticks: Set(export_game
-            .ad_flag_lifetime_ticks
-            .map(|ticks| ticks.clamp(1, 50))),
-        ad_reset_cooldown_minutes: Set(export_game.ad_reset_cooldown_minutes),
-        ad_getflag_window_fraction: Set(export_game.ad_getflag_window_fraction),
-        ad_min_grace_period_seconds: Set(export_game.ad_min_grace_period_seconds),
-        ad_allow_snapshot_download: Set(export_game.ad_allow_snapshot_download.unwrap_or(true)),
-        ad_snapshot_retention_days: Set(export_game.ad_snapshot_retention_days),
-        ad_epoch_ticks: Set(export_game.ad_epoch_ticks.clamp(1, 64)),
-        koth_epoch_ticks: Set(export_game.koth_epoch_ticks),
-        koth_cycle_ticks: Set(export_game.koth_cycle_ticks),
-        koth_champion_cooldown_ticks: Set(export_game.koth_champion_cooldown_ticks),
-        koth_claim_confirmation_ticks: Set(export_game.koth_claim_confirmation_ticks),
-        // Imported games are hidden templates. Do not freeze challenge
-        // configuration before a real A&D round has a complete roster.
-        ad_scoring_start_round: Set(None),
-        ad_scoring_paused: Set(false),
-        ..Default::default()
-    };
-    let new_game = new_game.insert(&st.db).await?;
-    // Remap source challenge ids for imported division permission configs.
-    let mut challenge_id_map: BTreeMap<i32, i32> = BTreeMap::new();
-
-    for src in &export_challenges {
-        // Recreate the challenge-level attachment. For a Local file, restore the
-        // bundled blob (+ its Files row) first so build_attachment can re-link by
-        // hash; set the resulting id on the challenge before insert.
-        let challenge_attachment_id = match src.attachment_type {
-            Some(ft) if ft != FileType::None => {
-                if ft == FileType::Local {
-                    if let Some(h) = &src.attachment_file_hash {
-                        import_blob(&st, &entries, h, src.attachment_file_name.as_deref()).await?;
-                    }
-                }
-                build_attachment(
-                    &st,
-                    src.attachment_type,
-                    src.attachment_file_hash.clone(),
-                    src.attachment_remote_url.clone(),
-                )
-                .await?
-            }
-            _ => None,
-        };
-
-        let challenge = game_challenge::ActiveModel {
-            game_id: Set(new_game.id),
-            attachment_id: Set(challenge_attachment_id),
-            title: Set(src.title.clone()),
-            content: Set(src.content.clone()),
-            category: Set(src.category),
-            challenge_type: Set(src.challenge_type),
-            hints: Set(src.hints.clone()),
-            flag_template: Set(src.flag_template.clone()),
-            file_name: Set(src.file_name.clone()),
-            container_image: Set(src.container_image.clone()),
-            memory_limit: Set(src.memory_limit),
-            storage_limit: Set(src.storage_limit),
-            cpu_count: Set(src.cpu_count),
-            expose_port: Set(src.expose_port),
-            workload_spec: Set(match src.workload_spec.clone() {
-                Some(value) => Some(crate::services::challenge_workloads::to_json(
-                    crate::services::challenge_workloads::validate_json_for_challenge(
-                        src.challenge_type,
-                        value,
-                    )?,
-                )?),
-                None => None,
-            }),
-            deadline_utc: Set(src.deadline_utc),
-            enable_traffic_capture: Set(src.enable_traffic_capture),
-            // Only StaticContainer honors a shared container (as in RSCTF import).
-            enable_shared_container: Set(
-                src.challenge_type == ChallengeType::StaticContainer && src.enable_shared_container
-            ),
-            disable_blood_bonus: Set(src.disable_blood_bonus),
-            original_score: Set(src.original_score),
-            min_score_rate: Set(src.min_score_rate),
-            difficulty: Set(src.difficulty),
-            score_curve: Set(src.score_curve),
-            submission_limit: Set(src.submission_limit),
-            // Import as disabled, review-active, unbuilt.
-            is_enabled: Set(false),
-            accepted_count: Set(0),
-            submission_count: Set(0),
-            review_status: Set(ChallengeReviewStatus::Active),
-            build_status: Set(ChallengeBuildStatus::None),
-            ad_checker_image: Set(src.ad_checker_image.clone()),
-            ad_allow_egress: Set(src.ad_allow_egress),
-            ad_allow_self_reset: Set(src.ad_allow_self_reset),
-            ad_ssh_requires_flag: Set(src.ad_ssh_requires_flag),
-            ad_self_hosted: Set(src.ad_self_hosted),
-            ad_scoring_weight: Set(src.ad_scoring_weight.clamp(0.8, 1.2)),
-            ..Default::default()
-        };
-        let challenge = challenge.insert(&st.db).await?;
-        challenge_id_map.insert(src.id, challenge.id);
-
-        for f in &src.flags {
-            // Restore the flag's bundled hand-out blob (+ its Files row) before
-            // recreating the attachment row, so a Local file re-links by hash.
-            if f.attachment_type == Some(FileType::Local) {
-                if let Some(h) = &f.file_hash {
-                    import_blob(&st, &entries, h, f.file_name.as_deref()).await?;
-                }
-            }
-            let attachment_id = build_attachment(
-                &st,
-                f.attachment_type,
-                f.file_hash.clone(),
-                f.remote_url.clone(),
-            )
-            .await?;
-            let am = flag_context::ActiveModel {
-                flag: Set(f.flag.clone()),
-                is_occupied: Set(false),
-                challenge_id: Set(Some(challenge.id)),
-                attachment_id: Set(attachment_id),
-                ..Default::default()
-            };
-            am.insert(&st.db).await?;
-        }
-    }
-
-    // Recreate the game's divisions and their per-challenge permission configs.
-    // Each config's source challenge id is remapped onto the new challenge; a
-    // config referencing a challenge that wasn't imported is skipped (FK safety).
-    for d in &export_game.divisions {
-        let division = division::ActiveModel {
-            game_id: Set(new_game.id),
-            name: Set(d.name.clone()),
-            invite_code: Set(d.invite_code.clone()),
-            default_permissions: Set(d.default_permissions),
-            ..Default::default()
-        };
-        let division = division.insert(&st.db).await?;
-
-        for cfg in &d.challenge_configs {
-            let Some(&new_cid) = challenge_id_map.get(&cfg.challenge_id) else {
-                continue;
-            };
-            let am = division_challenge_config::ActiveModel {
-                division_id: Set(division.id),
-                challenge_id: Set(new_cid),
-                permissions: Set(cfg.permissions),
-            };
-            am.insert(&st.db).await?;
-        }
-    }
-
-    Ok(RequestResponse::ok(new_game.id))
+    Ok(())
 }
 
 /// Expand an import package once before deserializing it. Both per-entry and
@@ -771,31 +633,6 @@ async fn resolve_export_attachment(
     Ok((Some(a.file_type), hash, a.remote_url, name))
 }
 
-/// Best-effort restore of a bundled blob: read `files/{hash}` from the package,
-/// store it (content-addressed) and record/refcount its `Files` row so a later
-/// `build_attachment(Local, hash)` re-links it. A missing entry or a hash
-/// mismatch is skipped (not fatal): the attachment still links by hash to any
-/// copy already present in this deployment. Mirrors `GameImportService.ImportFileAsync`.
-async fn import_blob(
-    st: &SharedState,
-    entries: &BTreeMap<String, Vec<u8>>,
-    hash: &str,
-    name: Option<&str>,
-) -> AppResult<()> {
-    let path = format!("files/{hash}");
-    let Some(bytes) = entries.get(&path) else {
-        return Ok(()); // not bundled — best-effort
-    };
-    let name = name.unwrap_or(hash);
-    // Reject tampered package bytes before storing or acquiring a reference.
-    if crate::utils::codec::sha256_hex(bytes) != hash {
-        return Ok(());
-    }
-    crate::services::blob_refs::store_and_acquire(st.pg(), st.storage.as_ref(), name, bytes)
-        .await?;
-    Ok(())
-}
-
 /// `POST /api/edit/games/{id}/export` — export a game as a ZIP package
 /// (`game.json` + `challenges/challenge-{id}.json`, flags inlined). Streams the
 /// bytes back as an `application/zip` attachment. Mirrors
@@ -945,3 +782,6 @@ pub async fn export_game(
 #[cfg(test)]
 #[path = "transfer_archive_tests.rs"]
 mod archive_tests;
+
+#[path = "transfer_import.rs"]
+mod import_persistence;

@@ -1254,6 +1254,7 @@ const GameChallengeEdit: FC = () => {
         size="min(72rem, calc(100vw - 2rem))"
         containerGuid={challenge?.testContainer?.id ?? null}
         containerTitle={`${challenge?.title} (test)`}
+        scopedGameId={numId}
         opened={execOpened}
         onClose={() => setExecOpened(false)}
       />

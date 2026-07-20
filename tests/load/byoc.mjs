@@ -15,16 +15,16 @@ async function main() {
   await byoc.startAgents(capabilities, svc);
   const waited = await byoc.waitTunnels(N);
   await sleep(3000);
-  console.log(`  ${byoc.tunnelsUp()}/${N} tunnels up (${waited < 0 ? 'timeout' : waited + 's'}); with ${N} idle tunnels: ${fmt(stat())}`);
+  console.log(`  ${byoc.tunnelsUp()}/${N} tunnels up (${waited}s); with ${N} idle tunnels: ${fmt(stat())}`);
 
   const L = byoc.listeners();
-  if (!L.length) throw new Error('no tunnel listeners registered');
   console.log(`flooding ${L.length} listeners ...`);
-  runK6('byoc-requests.js', {
+  const exitCode = runK6('byoc-requests.js', {
     LISTENERS: L.join(','),
     VUS: process.env.VUS || 250,
     DURATION: process.env.DURATION || '30s',
   });
+  if (exitCode !== 0) throw new Error(`BYOC request load failed with k6 status ${exitCode}`);
   console.log(`  rsctf after flood: ${fmt(stat())}`);
 }
 

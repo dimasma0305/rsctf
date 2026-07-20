@@ -17,10 +17,19 @@ import {
   assertObserverOutputOutsideRepository,
   createFreshObserverDirectory,
   gitWorktreeMetadata,
+  observerComposeProjectName,
   readUntrackedWorktreeFiles,
 } from "../observer-evidence.js";
 
 const revision = "0123456789abcdef0123456789abcdef01234567";
+
+test("binds container counts to one validated Compose project", () => {
+  assert.equal(observerComposeProjectName(), "rsctf");
+  assert.equal(observerComposeProjectName("rsctf-final-719b"), "rsctf-final-719b");
+  for (const value of ["", "RSCTF", "../rsctf", "rsctf final", "-rsctf"]) {
+    assert.throws(() => observerComposeProjectName(value), /invalid observer Compose project/);
+  }
+});
 
 test("creates one fresh observer directory and refuses to reuse it", async () => {
   const parent = mkdtempSync(join(tmpdir(), "rsctf-observer-evidence-test-"));

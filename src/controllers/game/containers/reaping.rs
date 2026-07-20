@@ -24,31 +24,41 @@ pub(super) async fn resolve_managed_container_owner(
         r#"SELECT lock_key, shared_challenge_id, test_challenge_id,
                   game_instance_id, exercise_instance_id
              FROM (
+                   SELECT 'ad-inspector:' || owned.ad_team_service_id::text AS lock_key,
+                          NULL::integer AS shared_challenge_id,
+                          NULL::integer AS test_challenge_id,
+                          NULL::integer AS game_instance_id,
+                          NULL::integer AS exercise_instance_id,
+                          0 AS priority
+                     FROM "Containers" owned
+                    WHERE owned.id = $1
+                      AND owned.ad_team_service_id IS NOT NULL
+                   UNION ALL
                    SELECT 'shared-container:' || challenge.id::text AS lock_key,
                           challenge.id AS shared_challenge_id,
                           NULL::integer AS test_challenge_id,
                           NULL::integer AS game_instance_id,
                           NULL::integer AS exercise_instance_id,
-                          0 AS priority
+                          1 AS priority
                      FROM "GameChallenges" challenge
                     WHERE challenge.shared_container_id = $1
                    UNION ALL
                    SELECT 'shared-container:' || target.challenge_id::text,
                           target.challenge_id, NULL::integer, NULL::integer,
-                          NULL::integer, 1
+                          NULL::integer, 2
                      FROM "KothTargets" target
                     WHERE target.container_id = $2
                    UNION ALL
                    SELECT 'test-containers-game:' || challenge.game_id::text,
                           NULL::integer, challenge.id, NULL::integer,
-                          NULL::integer, 2
+                          NULL::integer, 3
                      FROM "GameChallenges" challenge
                     WHERE challenge.test_container_id = $1
                    UNION ALL
                    SELECT 'game-container:' || instance.participation_id::text,
                           NULL::integer, NULL::integer, instance.id,
                           NULL::integer,
-                          CASE WHEN instance.id = $3 THEN 3 ELSE 4 END
+                          CASE WHEN instance.id = $3 THEN 4 ELSE 5 END
                      FROM "GameInstances" instance
                     WHERE instance.container_id = $1
                    UNION ALL
@@ -56,7 +66,7 @@ pub(super) async fn resolve_managed_container_owner(
                               instance.exercise_id::text,
                           NULL::integer, NULL::integer, NULL::integer,
                           instance.id,
-                          CASE WHEN instance.id = $4 THEN 5 ELSE 6 END
+                          CASE WHEN instance.id = $4 THEN 6 ELSE 7 END
                      FROM "ExerciseInstances" instance
                     WHERE instance.container_id = $1
              ) owner

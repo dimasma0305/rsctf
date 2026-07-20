@@ -2,6 +2,19 @@
 
 use super::*;
 
+#[derive(Debug, Clone)]
+struct PreparedAttachment {
+    file_type: FileType,
+    file_hash: Option<String>,
+    remote_url: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AttachmentSwap {
+    attachment_id: Option<i32>,
+    deleted_hash: Option<String>,
+}
+
 /// `POST /api/edit/games/{id}/challenges/{cId}/attachment` — set the canonical
 /// download attachment for a (non-dynamic) challenge. Returns the new attachment
 /// id (contract: `number`, `0` when cleared). Mirrors
@@ -13,56 +26,156 @@ pub async fn update_attachment(
     Json(model): Json<AttachmentCreateModel>,
 ) -> AppResult<RequestResponse<i32>> {
     manager_or_admin(&st, &user, id).await?;
-    let definition_lock =
+    let prepared = prepare_attachment(model.attachment_type, model.file_hash, model.remote_url)?;
+    let mut definition_lock =
         crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
-    let result: AppResult<RequestResponse<i32>> = async {
-        let challenge = load_challenge(&st, id, c_id).await?;
-        if challenge.challenge_type == ChallengeType::DynamicAttachment {
-            return Err(AppError::bad_request(
-                "Use the assets API for dynamic-attachment challenges",
-            ));
-        }
-
-        let new_id = build_attachment(
-            &st,
-            model.attachment_type,
-            model.file_hash,
-            model.remote_url,
-        )
-        .await?;
-
-        // Detach the challenge from its previous attachment FIRST, then release the
-        // orphaned attachment + its ref-counted blob (clear-FK-first).
-        let old_attachment_id = challenge.attachment_id;
-        let mut am: game_challenge::ActiveModel = challenge.into();
-        am.attachment_id = Set(new_id);
-        am.update(&st.db).await?;
-
-        if let Some(old) = old_attachment_id {
-            if Some(old) != new_id {
-                delete_attachment(&st, old).await?;
+    let swap = match replace_attachment_locked(
+        definition_lock.transaction_mut(),
+        id,
+        c_id,
+        prepared.as_ref(),
+    )
+    .await
+    {
+        Ok(swap) => swap,
+        Err(error) => {
+            if let Err(rollback_error) = definition_lock.rollback().await {
+                tracing::warn!(%rollback_error, c_id, "challenge attachment rollback failed");
             }
+            return Err(error);
         }
-
-        Ok(RequestResponse::ok(new_id.unwrap_or(0)))
-    }
-    .await;
-    let release = definition_lock
+    };
+    definition_lock
         .release()
         .await
-        .map_err(|error| AppError::internal(error.to_string()));
-    match result {
-        Ok(response) => {
-            release?;
-            Ok(response)
-        }
-        Err(error) => {
-            if let Err(release_error) = release {
-                tracing::warn!(%release_error, c_id, "challenge attachment unlock failed");
-            }
-            Err(error)
-        }
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    // Object deletion is retryable through the durable zero-reference Files
+    // tombstone. A storage outage after commit must not turn a successful,
+    // visible swap into an error response that an operator retries.
+    if let Some(hash) = swap.deleted_hash.as_deref() {
+        purge_replaced_attachment(st.pg(), st.storage.as_ref(), c_id, hash).await;
     }
+    Ok(RequestResponse::ok(swap.attachment_id.unwrap_or(0)))
+}
+
+async fn purge_replaced_attachment(
+    pool: &sqlx::PgPool,
+    storage: &dyn crate::storage::BlobStorage,
+    challenge_id: i32,
+    hash: &str,
+) {
+    if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(pool, storage, hash).await
+    {
+        tracing::warn!(%error, %hash, challenge_id, "replaced attachment blob purge deferred");
+    }
+}
+
+fn prepare_attachment(
+    file_type: Option<FileType>,
+    file_hash: Option<String>,
+    remote_url: Option<String>,
+) -> AppResult<Option<PreparedAttachment>> {
+    let file_type = file_type.unwrap_or(FileType::None);
+    if file_type == FileType::None {
+        return Ok(None);
+    }
+    let remote_url = match file_type {
+        FileType::Remote => Some(validate_remote_attachment_url(
+            remote_url.as_deref().unwrap_or_default(),
+        )?),
+        _ => None,
+    };
+    Ok(Some(PreparedAttachment {
+        file_type,
+        file_hash,
+        remote_url,
+    }))
+}
+
+/// Swap the owner FK, attachment row, and old local-file reference as one
+/// definition transaction. The retained game/challenge row locks linearize the
+/// mutation with durable hard-deletion fences on either row.
+async fn replace_attachment_locked(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+    challenge_id: i32,
+    prepared: Option<&PreparedAttachment>,
+) -> AppResult<AttachmentSwap> {
+    super::deletion::reject_pending_mutation(&mut **transaction, game_id, challenge_id).await?;
+    let (challenge_type, old_attachment_id) = sqlx::query_as::<_, (i16, Option<i32>)>(
+        r#"SELECT "Type", attachment_id
+                 FROM "GameChallenges"
+                WHERE id = $1 AND game_id = $2
+                FOR UPDATE"#,
+    )
+    .bind(challenge_id)
+    .bind(game_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Challenge not found"))?;
+    if challenge_type == ChallengeType::DynamicAttachment as i16 {
+        return Err(AppError::bad_request(
+            "Use the assets API for dynamic-attachment challenges",
+        ));
+    }
+
+    let new_attachment_id = if let Some(prepared) = prepared {
+        let local_file_id = match (prepared.file_type, prepared.file_hash.as_deref()) {
+            (FileType::Local, Some(hash)) if !hash.is_empty() => {
+                sqlx::query_scalar::<_, i32>(r#"SELECT id FROM "Files" WHERE hash = $1"#)
+                    .bind(hash)
+                    .fetch_optional(&mut **transaction)
+                    .await
+                    .map_err(|error| AppError::internal(error.to_string()))?
+            }
+            _ => None,
+        };
+        Some(
+            sqlx::query_scalar::<_, i32>(
+                r#"INSERT INTO "Attachments" ("Type", remote_url, local_file_id)
+                   VALUES ($1, $2, $3)
+                   RETURNING id"#,
+            )
+            .bind(prepared.file_type as i16)
+            .bind(prepared.remote_url.as_deref())
+            .bind(local_file_id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+
+    let updated = sqlx::query(
+        r#"UPDATE "GameChallenges"
+              SET attachment_id = $3
+            WHERE id = $1 AND game_id = $2
+              AND deletion_pending = FALSE"#,
+    )
+    .bind(challenge_id)
+    .bind(game_id)
+    .bind(new_attachment_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if updated.rows_affected() != 1 {
+        return Err(AppError::conflict("Challenge is being deleted"));
+    }
+
+    let deleted_hash = match old_attachment_id {
+        Some(old_attachment_id) if Some(old_attachment_id) != new_attachment_id => {
+            crate::services::blob_refs::delete_attachment_locked(transaction, old_attachment_id)
+                .await?
+        }
+        _ => None,
+    };
+    Ok(AttachmentSwap {
+        attachment_id: new_attachment_id,
+        deleted_hash,
+    })
 }
 
 /// Materialize an `Attachment` row from the wire model, resolving a `Local`
@@ -74,17 +187,10 @@ pub(crate) async fn build_attachment(
     file_hash: Option<String>,
     remote_url: Option<String>,
 ) -> AppResult<Option<i32>> {
-    let file_type = file_type.unwrap_or(FileType::None);
-    if file_type == FileType::None {
+    let Some(prepared) = prepare_attachment(file_type, file_hash, remote_url)? else {
         return Ok(None);
-    }
-    let remote_url = match file_type {
-        FileType::Remote => Some(validate_remote_attachment_url(
-            remote_url.as_deref().unwrap_or_default(),
-        )?),
-        _ => None,
     };
-    let local_file_id = match (file_type, file_hash) {
+    let local_file_id = match (prepared.file_type, prepared.file_hash) {
         (FileType::Local, Some(hash)) if !hash.is_empty() => local_file::Entity::find()
             .filter(local_file::Column::Hash.eq(hash))
             .one(&st.db)
@@ -93,8 +199,8 @@ pub(crate) async fn build_attachment(
         _ => None,
     };
     let am = attachment::ActiveModel {
-        file_type: Set(file_type),
-        remote_url: Set(remote_url),
+        file_type: Set(prepared.file_type),
+        remote_url: Set(prepared.remote_url),
         local_file_id: Set(local_file_id),
         ..Default::default()
     };
@@ -102,7 +208,7 @@ pub(crate) async fn build_attachment(
     Ok(Some(created.id))
 }
 
-fn validate_remote_attachment_url(raw: &str) -> AppResult<String> {
+pub(crate) fn validate_remote_attachment_url(raw: &str) -> AppResult<String> {
     let raw = raw.trim();
     let parsed = reqwest::Url::parse(raw)
         .map_err(|_| AppError::bad_request("remote attachment URL must be absolute http(s)"))?;
@@ -119,21 +225,5 @@ fn validate_remote_attachment_url(raw: &str) -> AppResult<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn remote_attachments_require_absolute_http_urls() {
-        assert!(validate_remote_attachment_url("https://files.example/challenge.zip").is_ok());
-        assert!(validate_remote_attachment_url("http://files.example/challenge.zip").is_ok());
-        for invalid in [
-            "javascript:alert(1)",
-            "data:text/html,pwn",
-            "/relative/file",
-            "https://user:pass@files.example/file",
-            "",
-        ] {
-            assert!(validate_remote_attachment_url(invalid).is_err());
-        }
-    }
-}
+#[path = "attachments_tests.rs"]
+mod tests;

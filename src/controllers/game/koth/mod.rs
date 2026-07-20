@@ -31,7 +31,7 @@ use std::collections::HashMap;
 
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{DateTime, Utc};
@@ -477,7 +477,7 @@ pub async fn koth_hill_state(
     }))
 }
 
-pub fn router() -> Router<SharedState> {
+fn common_router() -> Router<SharedState> {
     Router::new()
         // Player KotH board. Lowercase `/api/game/{id}/...` — distinct from the
         // A&D board's capitalized `/api/Game/{id}/...` (routing is case-sensitive),
@@ -501,13 +501,53 @@ pub fn router() -> Router<SharedState> {
             "/api/edit/games/{id}/ad/koth/{challengeId}/receipts",
             get(audit_receipts),
         )
+    // No capture endpoint: a team claims a hill by writing its minted token into the
+    // hill's /koth/king. The checker reads it each tick to elect the
+    // king — there is no platform-side capture call.
+}
+
+fn recovery_router() -> Router<SharedState> {
+    Router::new()
         .route(
             "/api/edit/games/{id}/ad/koth/{challengeId}/recover",
             post(recover_hill),
         )
-    // No capture endpoint: a team claims a hill by writing its minted token into the
-    // hill's /koth/king. The checker reads it each tick to elect the
-    // king — there is no platform-side capture call.
+        .route(
+            "/api/stateful/edit/games/{id}/ad/koth/{challengeId}/recover",
+            post(recover_hill),
+        )
+}
+
+/// Complete monolithic KotH surface. The historical recovery path stays
+/// byte-for-byte compatible when one `all` process owns both HTTP and checker
+/// execution.
+pub fn router() -> Router<SharedState> {
+    common_router().merge(recovery_router())
+}
+
+/// KotH surface for horizontally scaled, unprivileged web replicas.
+///
+/// A proxy that cannot match the parameterized legacy route can send it here;
+/// the temporary same-origin redirect preserves the POST while moving it under
+/// the fixed `/api/stateful` prefix understood by portable Kubernetes Ingress.
+pub fn web_router() -> Router<SharedState> {
+    common_router().route_service(
+        "/api/edit/games/{id}/ad/koth/{challengeId}/recover",
+        post(redirect_recover_hill),
+    )
+}
+
+/// Privileged singleton surface for lifecycle recovery. Custom checker probes
+/// install a short-lived uid-scoped firewall rule, so this must never execute
+/// on a capability-free web replica.
+pub fn stateful_router() -> Router<SharedState> {
+    recovery_router()
+}
+
+async fn redirect_recover_hill(Path((game_id, challenge_id)): Path<(i32, i32)>) -> Redirect {
+    Redirect::temporary(&format!(
+        "/api/stateful/edit/games/{game_id}/ad/koth/{challenge_id}/recover"
+    ))
 }
 
 #[cfg(test)]
@@ -579,6 +619,30 @@ mod token_cache_tests {
             Some("container-a"),
             Some("container-b")
         ));
+    }
+}
+
+#[cfg(test)]
+mod recovery_route_tests {
+    use axum::extract::Path;
+    use axum::response::IntoResponse;
+
+    #[tokio::test]
+    async fn web_recovery_redirect_preserves_method_and_uses_stateful_prefix() {
+        let response = super::redirect_recover_hill(Path((17, 23)))
+            .await
+            .into_response();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::TEMPORARY_REDIRECT
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::LOCATION)
+                .unwrap(),
+            "/api/stateful/edit/games/17/ad/koth/23/recover"
+        );
     }
 }
 

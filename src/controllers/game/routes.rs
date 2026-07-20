@@ -1,14 +1,17 @@
 use super::*;
 
 pub(super) fn router() -> Router<SharedState> {
-    router_with_ad(ad::router())
+    router_with_domains(ad::router(), koth::router())
 }
 
 pub(super) fn web_router() -> Router<SharedState> {
-    router_with_ad(ad::web_router())
+    router_with_domains(ad::web_router(), koth::web_router())
 }
 
-fn router_with_ad(ad_router: Router<SharedState>) -> Router<SharedState> {
+fn router_with_domains(
+    ad_router: Router<SharedState>,
+    koth_router: Router<SharedState>,
+) -> Router<SharedState> {
     Router::new()
         .route("/api/game", limited(Policy::Query, get(games)))
         .route(
@@ -100,5 +103,5 @@ fn router_with_ad(ad_router: Router<SharedState>) -> Router<SharedState> {
         )
         // Player-facing A&D + KotH controllers live under this game area.
         .merge(ad_router)
-        .merge(koth::router())
+        .merge(koth_router)
 }

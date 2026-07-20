@@ -16,9 +16,9 @@ must reject anonymous, User, and Monitor principals; participation and enrollmen
 their separate manager/token matrices. A passing execution must also retain zero unauthorized successes, server 5xx,
 invalid response models, HTTP 429 responses, dropped iterations, failed public/direct
 health probes, panic/fatal log records, and namespaced resources after cleanup. The
-positive flow includes real Docker pull/rebuild, image, and container mutations, a real
-repository binding scan, and one-time worker certificate enrollment; archive-build label
-stamping is separately unit-tested. These are not mocked route smokes.
+positive flow includes real Docker build/image/container mutations, a real repository
+binding scan, and one-time worker certificate enrollment; these are not mocked route
+smokes.
 
 The reproduction contract and exact destructive acknowledgements are documented in
 [`README.md`](README.md#exhaustive-admin-lifecycle-npm-run-admin-lifecycle). Every
@@ -46,7 +46,11 @@ only improved endpoints. The first current-tree execution record belongs immedia
 below this protocol after its isolated run; no unexecuted latency or CPU values are
 claimed here.
 
-## Exhaustive admin lifecycle acceptance — 20 July 2026
+## Archived exhaustive admin lifecycle acceptance — 20 July 2026
+
+This record is retained as historical performance and cleanup evidence. It predates the
+current expanded admin/edit/organizer harnesses and does not claim acceptance of the
+current tree; a fresh isolated run must replace it as the current execution record.
 
 This is the first execution under the protocol above. Production at `tcp.1pc.tf` was not
 used, restarted, migrated, or sent test traffic. Both measurements ran against the

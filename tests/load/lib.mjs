@@ -20,7 +20,9 @@ const b64url = (b) => Buffer.from(b).toString('base64url');
 
 /** Run a psql query in the DB container, return trimmed stdout. */
 export function sql(query) {
-  return execFileSync('docker', ['exec', PG, 'psql', '-U', PG_USER, '-d', PG_DATABASE, '-Atc', query], {
+  // Quiet mode suppresses INSERT/UPDATE/DELETE command tags. Callers compare
+  // RETURNING output as an exact identity; `uuid\nINSERT 0 1` is not a UUID.
+  return execFileSync('docker', ['exec', PG, 'psql', '-U', PG_USER, '-d', PG_DATABASE, '-qAtc', query], {
     encoding: 'utf8',
   }).trim();
 }

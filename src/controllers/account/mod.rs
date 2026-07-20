@@ -414,7 +414,7 @@ pub async fn register(
         format!("User {user_name} registered, waiting for approval")
     };
     crate::services::audit::info(
-        &st.db,
+        &st,
         "AccountController",
         Some(user_name.clone()),
         None,
@@ -645,7 +645,7 @@ pub async fn login(
     // attaches the submitted fingerprint to this row (`logger.Log(..., fingerprint:
     // fingerprint)`); it surfaces in the admin Logs table's `fingerprint` column.
     crate::services::audit::info_with_fingerprint(
-        &st.db,
+        &st,
         "AccountController",
         Some(user_name.clone()),
         current_ip.clone(),
@@ -848,7 +848,7 @@ pub async fn update(
 
     // RSCTF `AccountController` audit event (`Account_UserUpdated`). Best-effort.
     crate::services::audit::info(
-        &st.db,
+        &st,
         "AccountController",
         Some(user.name.clone()),
         None,
@@ -936,7 +936,7 @@ pub async fn avatar(
 
     // RSCTF `AccountController` audit event (`Account_AvatarUpdated`). Best-effort.
     crate::services::audit::info(
-        &st.db,
+        &st,
         "AccountController",
         Some(user.name.clone()),
         None,

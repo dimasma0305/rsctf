@@ -136,7 +136,7 @@ pub async fn submit_writeup(
         .map(|t| t.name)
         .unwrap_or_default();
     crate::services::audit::info(
-        &st.db,
+        &st,
         "GameController",
         Some(user.name.clone()),
         None,

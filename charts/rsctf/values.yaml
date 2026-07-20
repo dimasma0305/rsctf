@@ -168,8 +168,9 @@ ingress:
   annotations: {}
   # A split web release must name its control/network Service when it exposes
   # an Ingress. Standard Prefix paths route the narrow /api/stateful BYOC
-  # namespace, container proxy, and container-exec hub to the API-capable singleton,
-  # leaving polled game APIs on the scalable web pool.
+  # namespace (BYOC plus privileged KotH recovery), container proxy, and
+  # container-exec hub to the API-capable singleton, leaving polled game APIs
+  # on the scalable web pool.
   statefulRoutes:
     enabled: false
     serviceName: ""

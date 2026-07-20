@@ -1163,6 +1163,7 @@ const AdOps: FC = () => {
       <ContainerExecModal
         containerGuid={execTarget?.guid ?? null}
         containerTitle={execTarget?.title}
+        scopedGameId={numId}
         opened={execTarget != null}
         onClose={closeShell}
       />

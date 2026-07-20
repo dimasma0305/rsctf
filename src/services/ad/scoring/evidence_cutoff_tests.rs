@@ -73,7 +73,7 @@ async fn event_end_projects_late_checker_attack_and_round_boundaries() {
         );
         CREATE TEMP TABLE "AdFlagDeliveryResults" (
           round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
-          delivered BOOLEAN NOT NULL
+          delivered BOOLEAN NOT NULL, attempts SMALLINT NOT NULL
         );
         CREATE TEMP TABLE "AdAttacks" (
           round_id INTEGER NOT NULL, attacker_participation_id INTEGER NOT NULL,
@@ -325,7 +325,7 @@ async fn closing_sla_skips_platform_void_and_ineligible_later_history() {
         );
         CREATE TEMP TABLE "AdFlagDeliveryResults" (
           round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
-          delivered BOOLEAN NOT NULL
+          delivered BOOLEAN NOT NULL, attempts SMALLINT NOT NULL
         );
         CREATE TEMP TABLE "AdAttacks" (
           round_id INTEGER NOT NULL, attacker_participation_id INTEGER NOT NULL,
@@ -372,8 +372,8 @@ async fn closing_sla_skips_platform_void_and_ineligible_later_history() {
         r#"INSERT INTO "AdCheckResults" VALUES
              (1, 101, 0, NULL, $1, 1.0, TRUE),
              (1, 102, 0, NULL, $1, 1.0, TRUE),
-             (2, 101, 3, 'flag delivery failed', $2, 0.0, FALSE),
-             (2, 102, 0, NULL, $2, 1.0, TRUE),
+             (2, 101, 3, 'managed container backend unavailable', $2, 0.0, FALSE),
+             (2, 102, 2, 'participant rejected flag delivery', $2, 0.0, FALSE),
              (3, 101, 0, 'pending placeholder', $3, NULL, FALSE),
              (3, 102, 3, 'later infrastructure failure', $3, 0.0, FALSE)"#,
     )
@@ -385,9 +385,9 @@ async fn closing_sla_skips_platform_void_and_ineligible_later_history() {
     .unwrap();
     sqlx::query(
         r#"INSERT INTO "AdFlagDeliveryResults" VALUES
-             (1, 101, TRUE), (1, 102, TRUE),
-             (2, 101, FALSE), (2, 102, TRUE),
-             (3, 101, TRUE), (3, 102, TRUE)"#,
+             (1, 101, TRUE, 1), (1, 102, TRUE, 1),
+             (2, 101, FALSE, 0), (2, 102, FALSE, 1),
+             (3, 101, TRUE, 1), (3, 102, TRUE, 1)"#,
     )
     .execute(&mut connection)
     .await
@@ -409,27 +409,28 @@ async fn closing_sla_skips_platform_void_and_ineligible_later_history() {
     )
     .await
     .unwrap();
-    let failed_service = rows.iter().find(|row| row.participation_id == 11).unwrap();
-    let healthy_service = rows.iter().find(|row| row.participation_id == 12).unwrap();
-    // The failed-delivery verdict is a personal void. The later NULL-credit
-    // placeholder is absent from check history, so neither can replace the
-    // last eligible closing sample from round 1.
-    assert_eq!(failed_service.sla_tick_count, 2);
-    assert_eq!(failed_service.sla_credit_sum, 1.0);
+    let platform_void = rows.iter().find(|row| row.participation_id == 11).unwrap();
+    let attempted_failure = rows.iter().find(|row| row.participation_id == 12).unwrap();
+    // A typed backend/control-plane outage is persisted with attempts=0 and is
+    // therefore a platform-owned personal void. The later NULL-credit
+    // placeholder is absent from check history, so the outage neither lowers
+    // the SLA average nor replaces round 1 as the closing sample.
+    assert_eq!(platform_void.sla_tick_count, 2);
+    assert_eq!(platform_void.sla_credit_sum, 1.0);
     assert_eq!(
-        failed_service.closing_sla_status,
+        platform_void.closing_sla_status,
         Some(AdCheckStatus::Ok as i16)
     );
-    assert_eq!(failed_service.closing_sla_credit, Some(1.0));
-    // A later infrastructure verdict carries credit in the SLA timeline but
-    // has no non-infrastructure credit of its own. Closing state therefore
-    // remains the latest eligible round-2 verdict.
-    assert_eq!(healthy_service.sla_tick_count, 3);
-    assert_eq!(healthy_service.sla_credit_sum, 3.0);
+    assert_eq!(platform_void.closing_sla_credit, Some(1.0));
+    // attempts>0 is participant-attributed Offline zero and stays in the SLA
+    // denominator. The later infrastructure verdict carries that zero, while
+    // closing state remains the latest eligible non-infrastructure verdict.
+    assert_eq!(attempted_failure.sla_tick_count, 3);
+    assert_eq!(attempted_failure.sla_credit_sum, 1.0);
     assert_eq!(
-        healthy_service.closing_sla_status,
-        Some(AdCheckStatus::Ok as i16)
+        attempted_failure.closing_sla_status,
+        Some(AdCheckStatus::Offline as i16)
     );
-    assert_eq!(healthy_service.closing_sla_credit, Some(1.0));
-    assert_eq!(failed_service.eligible_flags_total, 3);
+    assert_eq!(attempted_failure.closing_sla_credit, Some(0.0));
+    assert_eq!(platform_void.eligible_flags_total, 2);
 }

@@ -49,6 +49,33 @@ pub(super) struct AdProbeResult {
     pub(super) observed_at: chrono::DateTime<Utc>,
 }
 
+impl AdProbeResult {
+    fn bind_to_authoritative_identity(
+        &mut self,
+        participation_id: i32,
+        challenge_id: i32,
+        host: &str,
+        port: i32,
+        container_id: &Option<String>,
+    ) -> bool {
+        if participation_id != self.participation_id || challenge_id != self.challenge_id {
+            return false;
+        }
+        if host != self.host || port != self.port || container_id != &self.container_id {
+            self.host = host.to_string();
+            self.port = port;
+            self.container_id.clone_from(container_id);
+            self.status = AdCheckStatus::Offline;
+            self.message = Some(
+                "service endpoint changed after flag publication; participant sample offline"
+                    .to_string(),
+            );
+            self.flag_verified = false;
+        }
+        true
+    }
+}
+
 /// Drain completed probes into small transactions owned by the caller's round
 /// pipeline. Closing the channel flushes the final partial batch; cancellation
 /// drops this future and leaves unresolved rows available to the next owner.
@@ -559,17 +586,22 @@ async fn record_check_results_transaction(
             authorized.insert(sid, (pid, cid, host, port, container_id));
         }
     }
-    results.retain(|result| {
-        authorized.get(&result.service_id).is_some_and(
-            |(participation_id, challenge_id, host, port, container_id)| {
-                *participation_id == result.participation_id
-                    && *challenge_id == result.challenge_id
-                    && host == &result.host
-                    && *port == result.port
-                    && container_id == &result.container_id
-            },
-        )
-    });
+    results = results
+        .into_iter()
+        .filter_map(|mut result| {
+            let (participation_id, challenge_id, host, port, container_id) =
+                authorized.get(&result.service_id)?;
+            result
+                .bind_to_authoritative_identity(
+                    *participation_id,
+                    *challenge_id,
+                    host,
+                    *port,
+                    container_id,
+                )
+                .then_some(result)
+        })
+        .collect();
     if results.is_empty() {
         return Ok(());
     }
@@ -689,6 +721,16 @@ mod batch_tests {
         assert!(AD_CHECK_RESULT_UPSERT_SQL
             .trim_end()
             .ends_with(r#"WHERE "AdCheckResults".sla_credit IS NULL"#));
+    }
+
+    #[test]
+    fn endpoint_churn_becomes_participant_offline_on_the_current_identity() {
+        let mut probe = result(7);
+        assert!(probe.bind_to_authoritative_identity(7, 1, "", 0, &None));
+        assert_eq!(probe.status, AdCheckStatus::Offline);
+        assert_eq!((probe.host.as_str(), probe.port), ("", 0));
+        assert!(!probe.flag_verified);
+        assert!(probe.message.unwrap().contains("endpoint changed"));
     }
 
     fn result(service_id: i32) -> AdProbeResult {

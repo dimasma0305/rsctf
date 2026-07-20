@@ -103,6 +103,7 @@ fn known_target(target: &str) -> Option<&'static str> {
     match target {
         "ReceivedAttack" => Some("ReceivedAttack"),
         "ReceivedGameNotice" => Some("ReceivedGameNotice"),
+        "ReceivedLog" => Some("ReceivedLog"),
         "ReceivedSubmissions" => Some("ReceivedSubmissions"),
         "InternalByocRevokeParticipation" => Some("InternalByocRevokeParticipation"),
         "InternalByocRevokeChallenge" => Some("InternalByocRevokeChallenge"),
@@ -345,6 +346,14 @@ mod tests {
         }
     }
 
+    fn received_log_event() -> HubEvent {
+        HubEvent {
+            target: "ReceivedLog",
+            game_id: None,
+            payload: r#"{"time":1784536800123,"level":"Information","msg":"audit"}"#.to_string(),
+        }
+    }
+
     #[test]
     fn wire_event_round_trips_and_rejects_unknown_targets_or_versions() {
         let origin = Uuid::new_v4();
@@ -385,6 +394,19 @@ mod tests {
     }
 
     #[test]
+    fn received_log_round_trips_through_the_distributed_wire_allowlist() {
+        let event = received_log_event();
+        let wire = WireEvent::from_hub(Uuid::new_v4(), &event);
+        let delivered = wire
+            .into_hub()
+            .expect("ReceivedLog must fan out to replicas");
+
+        assert_eq!(delivered.target, "ReceivedLog");
+        assert_eq!(delivered.game_id, None);
+        assert_eq!(delivered.payload, event.payload);
+    }
+
+    #[test]
     fn inbound_dedup_drops_self_echoes_and_duplicate_remote_ids() {
         let local_origin = Uuid::new_v4();
         let mut dedup = InboundDedup::new(local_origin);
@@ -413,6 +435,19 @@ mod tests {
         assert_eq!(received.payload, r#"{"kind":"koth"}"#);
     }
 
+    #[tokio::test]
+    async fn local_bus_delivers_received_log_without_redis() {
+        let bus = EventBus::local();
+        let mut receiver = bus.subscribe();
+        let event = received_log_event();
+        bus.publish(event.clone());
+
+        let received = receiver.recv().await.unwrap();
+        assert_eq!(received.target, "ReceivedLog");
+        assert_eq!(received.game_id, None);
+        assert_eq!(received.payload, event.payload);
+    }
+
     /// Run explicitly with `RSCTF_TEST_REDIS_URL=redis://... cargo test
     /// redis_bus_fans_out_once_between_processes -- --ignored --nocapture`.
     #[tokio::test]
@@ -427,7 +462,7 @@ mod tests {
 
         // Give both best-effort subscribers time to establish their subscriptions.
         tokio::time::sleep(Duration::from_millis(150)).await;
-        sender.publish(hub_event(r#"{"kind":"attack"}"#));
+        sender.publish(received_log_event());
 
         let local = tokio::time::timeout(Duration::from_secs(2), sender_local.recv())
             .await
@@ -437,6 +472,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(local.target, "ReceivedLog");
+        assert_eq!(remote.target, "ReceivedLog");
         assert_eq!(local.payload, remote.payload);
         assert!(
             tokio::time::timeout(Duration::from_millis(100), sender_local.recv())

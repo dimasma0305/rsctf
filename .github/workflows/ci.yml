@@ -23,6 +23,22 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rsctf_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rsctf_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -51,6 +67,16 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-targets --all-features --locked
+
+      - name: Regress legacy infinite-lockout team roster
+        run: >-
+          cargo test --locked roster_projection_tolerates_legacy_infinite_lockouts
+          -- --ignored --nocapture
+
+      - name: Regress repository solve preservation
+        run: >-
+          cargo test --locked repository_update_preserves_challenge_solves_and_refreshes_content
+          -- --ignored --nocapture
 
   byoc-agent:
     name: BYOC agent
@@ -228,6 +254,31 @@ jobs:
 
       - name: Build frontend
         run: pnpm --dir web build
+
+  load-harness-contracts:
+    name: Load harness contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tests/load
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+
+      - name: Verify route catalogs, safety guards, and harness contracts
+        env:
+          # Pure harness tests mint only local fixture JWTs. This is deliberately
+          # not a deployment secret and cannot authenticate to any installation.
+          RSCTF_JWT_SECRET: rsctf-load-harness-ci-only-secret
+        run: npm test
 
   docs:
     name: Documentation

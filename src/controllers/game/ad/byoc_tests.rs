@@ -19,26 +19,25 @@ fn context_with_hostile_values(marker: &std::path::Path) -> ByocContext {
 }
 
 #[test]
-fn compiled_or_source_agent_default_is_an_immutable_digest() {
-    let (image, requires_amd64) = default_byoc_agent_image();
-    assert_eq!(immutable_agent_image(image).as_deref(), Some(image));
-
+fn only_a_same_build_agent_digest_can_be_the_compiled_default() {
     let compiled = option_env!("RSCTF_DEFAULT_BYOC_AGENT_IMAGE")
         .unwrap_or("")
         .trim();
     let compiled_multiarch = option_env!("RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH") == Some("true");
-    assert_eq!(requires_amd64, compiled.is_empty() || !compiled_multiarch);
     if compiled.is_empty() {
-        assert_eq!(image, DEFAULT_BYOC_AGENT_IMAGE);
+        assert_eq!(default_byoc_agent_image(), None);
     } else {
+        let (image, requires_amd64) = default_byoc_agent_image().unwrap();
         assert_eq!(image, compiled);
+        assert_eq!(immutable_agent_image(image).as_deref(), Some(image));
+        assert_eq!(requires_amd64, !compiled_multiarch);
     }
 }
 
 #[test]
 fn built_in_agent_setup_fails_early_on_unsupported_architectures() {
     let mut ctx = context_with_hostile_values(std::path::Path::new("/tmp/not-created"));
-    ctx.agent_image = DEFAULT_BYOC_AGENT_IMAGE.to_string();
+    ctx.agent_image = format!("registry.example/agent@sha256:{}", "a".repeat(64));
     ctx.agent_image_requires_amd64 = true;
     let built_in = build_setup_script(7, 11, &ctx);
     assert!(built_in.contains("x86_64|amd64"));
@@ -49,6 +48,22 @@ fn built_in_agent_setup_fails_early_on_unsupported_architectures() {
     ctx.agent_image_requires_amd64 = false;
     let override_script = build_setup_script(7, 11, &ctx);
     assert!(!override_script.contains("currently supports Linux amd64 only"));
+}
+
+#[test]
+fn ack_capability_must_be_explicitly_offered() {
+    let mut headers = HeaderMap::new();
+    assert!(!byoc_agent_protocol_offered(&headers));
+    headers.insert(
+        crate::services::byoc_tunnel::AGENT_PROTOCOL_HEADER,
+        axum::http::HeaderValue::from_static("legacy, rsctf-byoc-v2"),
+    );
+    assert!(byoc_agent_protocol_offered(&headers));
+    headers.insert(
+        crate::services::byoc_tunnel::AGENT_PROTOCOL_HEADER,
+        axum::http::HeaderValue::from_static("rsctf-byoc-v20"),
+    );
+    assert!(!byoc_agent_protocol_offered(&headers));
 }
 
 #[test]

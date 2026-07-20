@@ -321,7 +321,10 @@ pub(super) async fn load_epoch_evidence(
                SELECT check_result.team_service_id, round.number AS round_number,
                       check_result.status, check_result.flag_verified,
                       check_result.checked_at,
-                      COALESCE(NOT delivery.delivered, FALSE) AS platform_void,
+                      COALESCE(
+                        NOT delivery.delivered AND delivery.attempts = 0,
+                        FALSE
+                      ) AS platform_void,
                       ($9::boolean AND $7::timestamptz IS NOT NULL
                         AND check_result.checked_at >= $7) AS settlement_zero,
                       ($9::boolean AND $7::timestamptz IS NOT NULL

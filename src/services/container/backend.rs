@@ -4,6 +4,19 @@ use rsctf_worker_protocol::ValidatedWorkloadSpec;
 use super::{ContainerInfo, ContainerSpec};
 use crate::utils::error::{AppError, AppResult};
 
+#[derive(Clone, Debug, Default)]
+pub struct ContainerExecAdmission(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl ContainerExecAdmission {
+    pub(crate) fn mark_admitted(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn is_admitted(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileChange {
@@ -32,6 +45,26 @@ pub enum ContainerLiveness {
     Running,
     Stopped,
     Unknown,
+}
+
+/// Typed attribution for a container exec failure. Callers that affect event
+/// scoring must distinguish a target controlled by the participant from an
+/// unavailable platform backend; the ordinary [`ContainerManager::exec`]
+/// method intentionally keeps its existing `AppResult` API.
+#[derive(Debug, thiserror::Error)]
+pub enum ContainerExecError {
+    #[error("participant container exec failed: {0}")]
+    Participant(#[source] AppError),
+    #[error("container backend exec failed: {0}")]
+    Platform(#[source] AppError),
+}
+
+impl ContainerExecError {
+    pub fn into_app_error(self) -> AppError {
+        match self {
+            Self::Participant(error) | Self::Platform(error) => error,
+        }
+    }
 }
 
 /// Pluggable lifecycle boundary shared by local and trusted-worker runtimes.
@@ -106,6 +139,21 @@ pub trait ContainerManager: Send + Sync {
         Err(AppError::bad_request(
             "exec is not supported by this backend",
         ))
+    }
+
+    /// Exec with failure attribution for scoring-sensitive internal callers.
+    /// Backends default to platform attribution so an unsupported or
+    /// unavailable control plane can never become participant evidence merely
+    /// because it was surfaced as a generic application error.
+    async fn exec_classified(
+        &self,
+        id: &str,
+        cmd: Vec<String>,
+        _admission: ContainerExecAdmission,
+    ) -> Result<String, ContainerExecError> {
+        self.exec(id, cmd)
+            .await
+            .map_err(ContainerExecError::Platform)
     }
 
     /// Resolve a local interactive-exec target to a backend-canonical identity

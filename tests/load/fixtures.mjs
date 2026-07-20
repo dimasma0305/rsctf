@@ -397,6 +397,17 @@ const KOTH_DOCKERFILE = [
   '',
 ].join('\n');
 
+const AD_DOCKERFILE = [
+  'ARG BASE_IMAGE',
+  'FROM ${BASE_IMAGE}',
+  'LABEL rsctf.load.fixture="managed-ad-v1"',
+  'COPY ad-service.py /opt/rsctf-load/ad-service.py',
+  'ENV FLAG_FILE=/flag',
+  'EXPOSE 8080',
+  'ENTRYPOINT ["python3", "/opt/rsctf-load/ad-service.py"]',
+  '',
+].join('\n');
+
 function writeFixture(path, contents) {
   writeFileSync(path, contents, { mode: 0o644 });
   chmodSync(path, 0o644);
@@ -408,17 +419,20 @@ export function materializeFixtures() {
   const kothChecker = `${ROOT}/koth-checker.py`;
   const service = `${ROOT}/ad-service.py`;
   const kothService = `${ROOT}/koth-service.py`;
+  const adDockerfile = `${ROOT}/Dockerfile.ad`;
   const kothDockerfile = `${ROOT}/Dockerfile.koth`;
   writeFixture(checker, CHECKER);
   writeFixture(kothChecker, KOTH_CHECKER);
   writeFixture(service, SERVICE);
   writeFixture(kothService, KOTH_SERVICE);
+  writeFixture(adDockerfile, AD_DOCKERFILE);
   writeFixture(kothDockerfile, KOTH_DOCKERFILE);
   return {
     checker,
     kothChecker,
     service,
     kothService,
+    adDockerfile,
     kothDockerfile,
     root: ROOT,
   };

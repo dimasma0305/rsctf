@@ -122,7 +122,7 @@ uses S3.
 | `RSCTF_AD_VPN_ALLOWED_IPS` | Derived routes | Optional explicit routes in player profiles |
 | `RSCTF_AD_SSH_PORT` | `2222` | A&D SSH bastion listen port |
 | `RSCTF_AD_SSH_PUBLIC_HOST` | Docker public entry | Host advertised for the SSH bastion |
-| `RSCTF_AD_BYOC_AGENT_IMAGE` | Same-release GHCR digest in official images; audited source fallback otherwise | Optional immutable `repository@sha256:...` relay-agent override. Tagged official server images embed the exact amd64/arm64 agent index produced by their workflow; direct source and local Docker builds retain an amd64-only fallback. |
+| `RSCTF_AD_BYOC_AGENT_IMAGE` | Same-release GHCR digest in official images; none in direct source/local builds | Immutable `repository@sha256:...` relay-agent override. Tagged official server images embed the exact amd64/arm64 agent index produced by their workflow. Direct builds fail BYOC bundle generation until this points to an agent built from the same ACK-capable release. |
 | `RSCTF_AD_TICK_SECONDS` | Engine/game setting | Default A&D tick timing override (`30..600` seconds); persisted round boundaries are anchored to this cadence |
 | `RSCTF_AD_CHECKER_TIMEOUT_SECONDS` | `30` | Per-check timeout; set deliberately below the event tick only after checker validation |
 | `RSCTF_AD_CHECKER_CONCURRENCY` | CPU-scaled, `32..128` | Maximum concurrent A&D/KotH probes (`1..256`) |
@@ -130,9 +130,18 @@ uses S3.
 | `RSCTF_CHECKER_PROCESS_BUDGET` | `32` | Reserved UID count and process-wide custom-checker concurrency bound (`1..256`); pool wait counts against the checker timeout |
 | `RSCTF_AD_GAME_CONCURRENCY` | `4` | Maximum games whose round pipelines run concurrently (`1..16`) |
 | `RSCTF_AD_FLAG_PUSH_CONCURRENCY` | `64` | Maximum concurrent managed/BYOC flag publications (`1..256`) |
-| `RSCTF_AD_FLAG_PUSH_ATTEMPTS` | `3` | Bounded flag-publication attempts per service (`1..5`) |
-| `RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS` | `2` | Timeout for one publication attempt (`1..10`) |
+| `RSCTF_AD_FLAG_PUSH_ATTEMPTS` | `3` | Bounded flag-publication attempts per service (`1..5`); attempts × timeout plus retry backoff must fit 6.5 seconds, preserving receipt-persistence time inside the seven-second phase |
+| `RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS` | `2` | Timeout for one publication attempt (`1..10`); startup rejects combinations that cannot fit the minimum 30-second tick |
 | `RSCTF_AD_CHECKER_MEM_MB` | Internal default | Checker sandbox memory cap |
+
+Flag-publication concurrency is a resource ceiling, not a guarantee that every
+unresponsive service can consume a full timeout. At the defaults, the 6.15-second
+work window can admit at most about 192 first attempts across three two-second admission waves if
+none returns early. Services that never reach admission are recorded as
+platform-attributed voids, while a started failed attempt is participant-attributed
+Offline evidence. Each publication randomizes target order so database/service ID
+order cannot repeatedly decide who reaches admission. Size concurrency only after
+load-testing the container runtime; increasing it blindly can overload Docker.
 
 `allowEgress: true` is supported only by the Kubernetes container backend,
 which creates a per-workload NetworkPolicy. The Docker backend rejects it for
@@ -203,10 +212,10 @@ VPN or 31 with it. Keep additional headroom for ordinary request bursts where
 practical.
 
 Checker and flag work is bounded by the persisted round deadline. Evidence that
-finishes at or after that deadline is excluded, unresolved samples become
-platform-attributed voids, and the next round keeps the authoritative cadence.
-If the scheduler was unavailable for more than a complete tick, the next round
-is re-anchored at recovery time; expired flag windows are never replayed.
+finishes at or after that deadline is excluded, and unresolved samples become
+platform-attributed voids. Managed readiness runs before a due round is stored;
+if scheduler or readiness work is late, the next round is re-anchored at its
+durable preparation time. Elapsed flag windows are never replayed.
 
 `GET /livez` checks process responsiveness without external I/O. `GET /healthz`
 checks PostgreSQL, blob storage, and the selected cache backend. With no `RSCTF_REDIS_URL`, the

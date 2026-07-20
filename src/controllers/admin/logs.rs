@@ -4,35 +4,7 @@ use super::*;
 use sea_orm::sea_query::{Expr, Func};
 use sea_orm::ColumnTrait;
 
-/// RSCTF `LogMessageModel` — one row of the structured audit log (`Logs` table).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LogMessageModel {
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub time: DateTime<Utc>,
-    pub level: Option<String>,
-    pub msg: Option<String>,
-    pub ip: Option<String>,
-    pub name: Option<String>,
-    pub status: Option<String>,
-    pub fingerprint: Option<String>,
-}
-
-impl From<log_entry::Model> for LogMessageModel {
-    fn from(l: log_entry::Model) -> Self {
-        Self {
-            time: l.time_utc,
-            level: Some(l.level),
-            msg: Some(l.message),
-            ip: l.remote_ip,
-            name: l.user_name,
-            status: l.status,
-            // RSCTF `LogModel.BrowserFingerprint`: the login-time fingerprint,
-            // rendered as the client Logs `fingerprint` column.
-            fingerprint: l.browser_fingerprint,
-        }
-    }
-}
+pub use crate::services::audit::LogMessageModel;
 
 /// Log listing query (`?level=&count=&skip=&search=`). Mirrors RSCTF's
 /// `Logs` action: `level` defaults to the `"All"` sentinel (no filter).

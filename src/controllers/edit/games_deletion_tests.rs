@@ -41,9 +41,15 @@ impl DeletionFenceHarness {
               hidden BOOLEAN NOT NULL DEFAULT FALSE,
               start_time_utc TIMESTAMPTZ NOT NULL,
               end_time_utc TIMESTAMPTZ NOT NULL,
+              freeze_time_utc TIMESTAMPTZ,
               deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
               ad_scoring_start_round INTEGER,
-              koth_scoring_start_round INTEGER
+              koth_scoring_start_round INTEGER,
+              CONSTRAINT ck_games_event_window CHECK (end_time_utc > start_time_utc),
+              CONSTRAINT ck_games_freeze_window CHECK (
+                freeze_time_utc IS NULL OR
+                (freeze_time_utc > start_time_utc AND freeze_time_utc < end_time_utc)
+              )
             );
             CREATE TABLE "GameChallenges" (
               id INTEGER PRIMARY KEY,
@@ -137,11 +143,12 @@ impl DeletionFenceHarness {
         let start_interval = if started { "-1 hour" } else { "1 hour" };
         sqlx::query(
             r#"INSERT INTO "Games"
-                 (id, practice_mode, start_time_utc, end_time_utc,
+                 (id, practice_mode, start_time_utc, end_time_utc, freeze_time_utc,
                   ad_scoring_start_round, koth_scoring_start_round)
                VALUES ($1, TRUE,
                        clock_timestamp() + $2::interval,
-                       clock_timestamp() + interval '2 hours', $3, NULL)"#,
+                       clock_timestamp() + interval '2 hours',
+                       clock_timestamp() + interval '90 minutes', $3, NULL)"#,
         )
         .bind(id)
         .bind(start_interval)
@@ -231,18 +238,20 @@ async fn game_deletion_fence_allows_only_future_games_without_evidence() {
         rejected.rollback().await.unwrap();
     }
 
-    let states: Vec<(i32, bool, bool, bool, bool)> = sqlx::query_as(
-        r#"SELECT id, practice_mode, end_time_utc < clock_timestamp(), deletion_pending, hidden
+    let states: Vec<(i32, bool, bool, bool, bool, bool)> = sqlx::query_as(
+        r#"SELECT id, practice_mode,
+                  end_time_utc = start_time_utc + interval '1 microsecond',
+                  deletion_pending, hidden, freeze_time_utc IS NULL
              FROM "Games" ORDER BY id"#,
     )
     .fetch_all(&harness.pool)
     .await
     .unwrap();
-    assert_eq!(states[0], (1, false, true, true, true));
+    assert_eq!(states[0], (1, false, true, true, true, true));
     for state in &states[1..] {
         assert_eq!(
-            (state.1, state.2, state.3, state.4),
-            (true, false, false, false)
+            (state.1, state.2, state.3, state.4, state.5),
+            (true, false, false, false, false)
         );
     }
     assert_eq!(
@@ -275,16 +284,9 @@ async fn authorized_game_deletion_survives_time_passage_but_not_late_evidence() 
         authorization.commit().await.unwrap();
     }
 
-    // Deterministically model the wall clock crossing the scheduled start
-    // while slow backend teardown is in progress.
-    sqlx::query(
-        r#"UPDATE "Games"
-              SET start_time_utc = clock_timestamp() - interval '1 microsecond'
-            WHERE id BETWEEN 10 AND 14"#,
-    )
-    .execute(&harness.pool)
-    .await
-    .unwrap();
+    // The committed fence is already an authoritative ended marker. Let its
+    // timestamp age before retrying, as slow backend teardown would.
+    tokio::time::sleep(Duration::from_millis(2)).await;
     sqlx::query(r#"INSERT INTO "Submissions" VALUES (111, 11, 110, 1100)"#)
         .execute(&harness.pool)
         .await
@@ -317,6 +319,20 @@ async fn authorized_game_deletion_survives_time_passage_but_not_late_evidence() 
         .await
         .expect("time passage invalidated a durable deletion authorization");
     no_evidence.commit().await.unwrap();
+    let retried: (bool, bool, bool, bool, bool) = sqlx::query_as(
+        r#"SELECT deletion_pending, hidden, NOT practice_mode,
+                  end_time_utc > start_time_utc,
+                  end_time_utc <= clock_timestamp()
+             FROM "Games" WHERE id = 10"#,
+    )
+    .fetch_one(&harness.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        retried,
+        (true, true, true, true, true),
+        "authorized retry weakened the durable deletion fence"
+    );
 
     for (game_id, label) in [
         (11, "submission"),
@@ -336,6 +352,20 @@ async fn authorized_game_deletion_survives_time_passage_but_not_late_evidence() 
         );
         retry.rollback().await.unwrap();
     }
+    let retained_fences: Vec<(bool, bool, bool, bool)> = sqlx::query_as(
+        r#"SELECT deletion_pending, hidden, NOT practice_mode,
+                  end_time_utc <= clock_timestamp()
+             FROM "Games" WHERE id BETWEEN 11 AND 15 ORDER BY id"#,
+    )
+    .fetch_all(&harness.pool)
+    .await
+    .unwrap();
+    assert!(
+        retained_fences
+            .iter()
+            .all(|state| *state == (true, true, true, true)),
+        "late-evidence rollback erased an already committed deletion fence"
+    );
     harness.cleanup().await;
 }
 
@@ -445,6 +475,43 @@ async fn concurrent_submission_commits_before_game_deletion_decision() {
     .await
     .unwrap();
     assert_eq!(retained, (true, true, 1));
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn game_deletion_waits_for_an_in_flight_challenge_definition() {
+    let harness = DeletionFenceHarness::new().await;
+    harness.add_game(16, false, false).await;
+    let definition =
+        crate::services::challenge_workloads::acquire_definition_lock(&harness.pool, 16, 160)
+            .await
+            .unwrap();
+    let mut deletion = tokio::spawn({
+        let pool = harness.pool.clone();
+        async move {
+            let mut transaction = pool.begin().await.unwrap();
+            fence_game_for_deletion(&mut transaction, 16).await.unwrap();
+            transaction.commit().await.unwrap();
+        }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut deletion)
+            .await
+            .is_err(),
+        "whole-game deletion did not acquire the challenge definition fence"
+    );
+    definition.release().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), deletion)
+        .await
+        .expect("game deletion did not resume after definition commit")
+        .unwrap();
+    assert!(
+        sqlx::query_scalar::<_, bool>(r#"SELECT deletion_pending FROM "Games" WHERE id = 16"#)
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap()
+    );
     harness.cleanup().await;
 }
 

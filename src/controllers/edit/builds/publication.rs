@@ -24,11 +24,24 @@ pub(super) const PUBLISH_BUILD_OUTCOME_SQL: &str = r#"UPDATE "GameChallenges" ch
       AND challenge.original_archive_blob_path IS NOT DISTINCT FROM $6
       AND challenge.build_context_subdir IS NOT DISTINCT FROM $7"#;
 
+pub(super) const UPSERT_IMAGE_OWNERSHIP_SQL: &str = r#"INSERT INTO "BuildImageOwnerships"
+ (installation_scope, canonical_ref, image_id, updated_at_utc)
+ VALUES ($1, $2, $3, clock_timestamp())
+ ON CONFLICT (installation_scope, canonical_ref) DO UPDATE
+ SET image_id=EXCLUDED.image_id, updated_at_utc=clock_timestamp()"#;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BuildFingerprint {
     pub(super) container_image: Option<String>,
     pub(super) original_archive_blob_path: Option<String>,
     pub(super) build_context_subdir: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BuildImageOwnership {
+    pub(super) installation_scope: String,
+    pub(super) canonical_ref: String,
+    pub(super) image_id: String,
 }
 
 impl BuildFingerprint {
@@ -57,6 +70,7 @@ pub(super) async fn publish_build_outcome(
     challenge: &game_challenge::Model,
     requested: &BuildFingerprint,
     outcome: &BuildOutcome,
+    ownership: Option<&BuildImageOwnership>,
 ) -> AppResult<u64> {
     let mut definition_lock = crate::services::challenge_workloads::acquire_definition_lock(
         st.pg(),
@@ -82,6 +96,17 @@ pub(super) async fn publish_build_outcome(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     let rows_affected = result.rows_affected();
+    if rows_affected == 1 {
+        if let Some(ownership) = ownership {
+            sqlx::query(UPSERT_IMAGE_OWNERSHIP_SQL)
+                .bind(&ownership.installation_scope)
+                .bind(&ownership.canonical_ref)
+                .bind(&ownership.image_id)
+                .execute(&mut **definition_lock.transaction_mut())
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+        }
+    }
     definition_lock.release().await?;
     Ok(rows_affected)
 }

@@ -863,10 +863,34 @@ async fn upsert_event_game(
     }
 
     let title = manifest.title.clone().unwrap_or_default();
+    let start_time_utc = manifest.start.unwrap_or(now + Duration::days(1));
+    let end_time_utc = manifest.end.unwrap_or(now + Duration::days(30));
+    let team_member_count_limit = manifest.team_member_count_limit.unwrap_or(0);
+    let container_count_limit = manifest.container_count_limit.unwrap_or(3);
+    let ad = manifest.ad.as_ref();
+    let configuration = crate::services::game_config::GameConfiguration {
+        start_time_utc,
+        end_time_utc,
+        freeze_time_utc: None,
+        team_member_count_limit,
+        container_count_limit,
+        ad_warmup_seconds: ad.and_then(|value| value.warmup_seconds),
+        ad_snapshot_retention_days: ad.and_then(|value| value.snapshot_retention_days),
+        ad_tick_seconds: ad.and_then(|value| value.tick_seconds),
+        ad_flag_lifetime_ticks: ad.and_then(|value| value.flag_lifetime_ticks),
+        ad_reset_cooldown_minutes: ad.and_then(|value| value.reset_cooldown_minutes),
+        ad_getflag_window_fraction: ad.and_then(|value| value.getflag_window_fraction),
+        ad_min_grace_period_seconds: ad.and_then(|value| value.min_grace_period_seconds),
+        ad_epoch_ticks: 8,
+        koth_epoch_ticks: 12,
+        koth_cycle_ticks: 3,
+        koth_champion_cooldown_ticks: 1,
+        koth_claim_confirmation_ticks: 2,
+    };
+    configuration.validate()?;
 
     // Create: seed all settings from the manifest (sparse → entity defaults).
     let (gpub, gpriv) = crate::utils::crypto_utils::generate_game_keypair();
-    let ad = manifest.ad.as_ref();
     let am = game::ActiveModel {
         title: Set(title),
         public_key: Set(gpub),
@@ -878,23 +902,21 @@ async fn upsert_event_game(
         accept_without_review: Set(manifest.accept_without_review.unwrap_or(false)),
         allow_user_submissions: Set(false),
         invite_code: Set(manifest.invite_code.clone().filter(|s| !s.is_empty())),
-        start_time_utc: Set(manifest.start.unwrap_or(now + Duration::days(1))),
-        end_time_utc: Set(manifest.end.unwrap_or(now + Duration::days(30))),
+        start_time_utc: Set(start_time_utc),
+        end_time_utc: Set(end_time_utc),
         writeup_deadline: Set(manifest
             .writeup_deadline
             .unwrap_or(now + Duration::days(30))),
         writeup_required: Set(manifest.writeup_required.unwrap_or(false)),
         writeup_note: Set(manifest.writeup_note.clone().unwrap_or_default()),
-        team_member_count_limit: Set(manifest.team_member_count_limit.unwrap_or(0)),
-        container_count_limit: Set(manifest.container_count_limit.unwrap_or(3)),
+        team_member_count_limit: Set(team_member_count_limit),
+        container_count_limit: Set(container_count_limit),
         blood_bonus_value: Set(manifest.blood_bonus.unwrap_or(DEFAULT_BLOOD_BONUS)),
         repo_binding_id: Set(Some(binding_id)),
         event_manifest_path: Set(Some(manifest_rel.to_string())),
         // A&D knobs: sparse — only set when the manifest's `ad:` names them.
         ad_tick_seconds: Set(ad.and_then(|a| a.tick_seconds)),
-        ad_flag_lifetime_ticks: Set(ad
-            .and_then(|a| a.flag_lifetime_ticks)
-            .map(|ticks| ticks.clamp(1, 50))),
+        ad_flag_lifetime_ticks: Set(ad.and_then(|a| a.flag_lifetime_ticks)),
         ad_warmup_seconds: Set(ad.and_then(|a| a.warmup_seconds)),
         ad_reset_cooldown_minutes: Set(ad.and_then(|a| a.reset_cooldown_minutes)),
         ad_snapshot_retention_days: Set(ad.and_then(|a| a.snapshot_retention_days)),

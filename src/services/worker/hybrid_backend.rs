@@ -8,8 +8,8 @@ use rsctf_worker_protocol::{GameKind, ValidatedWorkloadSpec};
 
 use super::{parse_worker_handle, WorkerContainerManager};
 use crate::services::container::{
-    ContainerBackendKind, ContainerInfo, ContainerLiveness, ContainerManager, ContainerSpec,
-    ContainerStatus, FileChange,
+    ContainerBackendKind, ContainerExecAdmission, ContainerExecError, ContainerInfo,
+    ContainerLiveness, ContainerManager, ContainerSpec, ContainerStatus, FileChange,
 };
 use crate::utils::error::{AppError, AppResult};
 
@@ -142,6 +142,20 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.exec(id, command).await
     }
 
+    async fn exec_classified(
+        &self,
+        id: &str,
+        command: Vec<String>,
+        admission: ContainerExecAdmission,
+    ) -> Result<String, ContainerExecError> {
+        if Self::is_worker_id(id) {
+            return Err(ContainerExecError::Platform(AppError::bad_request(
+                "exec is not supported for remote workers",
+            )));
+        }
+        self.local.exec_classified(id, command, admission).await
+    }
+
     async fn resolve_interactive_exec_target(&self, id: &str) -> AppResult<String> {
         if Self::is_worker_id(id) {
             return Err(AppError::bad_request(
@@ -172,6 +186,7 @@ mod tests {
             memory_limit: 64,
             cpu_count: 1,
             expose_port: 8080,
+            publish_port: true,
             env: Vec::new(),
             flag: None,
             ad_network: None,

@@ -104,6 +104,8 @@ fn terminal_publish_is_compare_and_swap_on_the_complete_definition() {
         PUBLISH_BUILD_OUTCOME_SQL.contains("original_archive_blob_path IS NOT DISTINCT FROM $6")
     );
     assert!(PUBLISH_BUILD_OUTCOME_SQL.contains("build_context_subdir IS NOT DISTINCT FROM $7"));
+    assert!(UPSERT_IMAGE_OWNERSHIP_SQL
+        .contains("ON CONFLICT (installation_scope, canonical_ref) DO UPDATE"));
 }
 
 #[test]

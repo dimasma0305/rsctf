@@ -148,7 +148,31 @@ pub(crate) async fn run_challenge_build(
     }
 
     let mut outcome = build_challenge_image(st, challenge).await;
-    let persisted = publish_build_outcome(st, challenge, &requested_fingerprint, &outcome).await;
+    let ownership = if outcome.status == ChallengeBuildStatus::Success {
+        match resolve_build_image_ownership(challenge, &outcome).await {
+            Ok(ownership) => ownership,
+            Err(error) => {
+                outcome = BuildOutcome {
+                    status: ChallengeBuildStatus::Failed,
+                    log: Some(format!(
+                        "The image operation completed, but rsctf could not prove durable ownership of its mutable tag: {error}"
+                    )),
+                    image_digest: None,
+                };
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let persisted = publish_build_outcome(
+        st,
+        challenge,
+        &requested_fingerprint,
+        &outcome,
+        ownership.as_ref(),
+    )
+    .await;
     let unlocked = build_lock.release().await;
     match (persisted, unlocked) {
         (Ok(1), Ok(())) => {}
@@ -186,6 +210,54 @@ pub(crate) async fn run_challenge_build(
     }
     let record = record_build(st, challenge, trigger, attempt, started, &outcome).await;
     (outcome, record)
+}
+
+async fn resolve_build_image_ownership(
+    challenge: &game_challenge::Model,
+    outcome: &BuildOutcome,
+) -> Result<Option<BuildImageOwnership>, String> {
+    let Some(configured) = challenge.container_image.as_deref() else {
+        return Ok(None);
+    };
+    let Some(canonical_ref) = canonical_managed_image_tag(configured) else {
+        return Ok(None);
+    };
+    let immutable_reference = outcome
+        .image_digest
+        .as_deref()
+        .ok_or_else(|| "successful build did not publish an immutable reference".to_string())?;
+    let docker = Docker::connect_with_local_defaults()
+        .map_err(|error| format!("Docker connection failed after the build: {error}"))?;
+    let inspected = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        docker.inspect_image(configured),
+    )
+    .await
+    .map_err(|_| "Docker image identity inspection timed out".to_string())?
+    .map_err(|error| format!("Docker image identity inspection failed: {error}"))?;
+    if !crate::services::challenge_images::inspect_matches_immutable_reference(
+        &inspected,
+        immutable_reference,
+    ) {
+        return Err(
+            "Docker's current tag identity does not match the immutable build result".to_string(),
+        );
+    }
+    let installation_scope = crate::services::container::docker_installation_scope();
+    crate::services::challenge_images::validate_image_ownership_labels(
+        &inspected,
+        &installation_scope,
+        &canonical_ref,
+        challenge.build_context_subdir.is_some(),
+    )?;
+    let image_id = crate::services::challenge_images::inspected_local_image_id(&inspected)
+        .ok_or_else(|| "Docker did not report a valid content-addressable image id".to_string())?
+        .to_string();
+    Ok(Some(BuildImageOwnership {
+        installation_scope,
+        canonical_ref,
+        image_id,
+    }))
 }
 
 /// Persist one build attempt as a `BuildRecords` audit row. A pending outcome

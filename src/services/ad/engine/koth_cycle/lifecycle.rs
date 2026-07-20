@@ -1,5 +1,6 @@
 use chrono::Utc;
 use serde_json::json;
+use std::future::Future;
 
 use crate::app_state::SharedState;
 use crate::services::container::ContainerSpec;
@@ -13,6 +14,7 @@ mod data;
 mod deadline;
 mod readiness;
 
+use super::state::CrownCyclePosition;
 use capability::mint_capabilities;
 #[cfg(test)]
 use capability::{rotate_capability_window, CapabilityWindow};
@@ -383,6 +385,7 @@ async fn create_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()>
             memory_limit: spec.memory_limit,
             cpu_count: spec.cpu_count,
             expose_port: spec.expose_port,
+            publish_port: true,
             env: Vec::new(),
             flag: None,
             ad_network: Some(crate::services::ad_vpn::services_network()),
@@ -638,6 +641,92 @@ pub(super) async fn drive_one_cycle(
     ))
 }
 
+/// Drive every snapshotted hill even when an earlier hill fails, then return
+/// the first error so the round pipeline retains its existing failure signal.
+/// Each hill's driver remains responsible for persisting its own error state.
+async fn drive_hills_fail_isolated<F, Fut, E>(challenge_ids: &[i32], mut drive: F) -> Result<(), E>
+where
+    F: FnMut(i32) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+{
+    let mut first_error = None;
+    for &challenge_id in challenge_ids {
+        if let Err(error) = drive(challenge_id).await {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+async fn drive_hill_cycle_transition(
+    st: &SharedState,
+    config: &OfficialConfig,
+    game_id: i32,
+    challenge_id: i32,
+    ad_round_id: i32,
+    round_number: i32,
+    position: CrownCyclePosition,
+) -> AppResult<()> {
+    let key = format!("shared-container:{challenge_id}");
+    let _local = crate::utils::single_flight::coalesce(&key).await;
+    let lock =
+        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &key).await?;
+    let planned_start =
+        config.scoring_start_round + (position.cycle_number - 1) * config.cycle_ticks;
+    let cycle_id = create_or_load_cycle(
+        st,
+        game_id,
+        challenge_id,
+        position.cycle_number,
+        position.epoch,
+        planned_start,
+        planned_start + config.cycle_ticks - 1,
+    )
+    .await?;
+    let recovery = super::rollover::resume_previous_cycle(
+        st,
+        config,
+        game_id,
+        challenge_id,
+        position.cycle_number,
+        ad_round_id,
+        round_number,
+    )
+    .await;
+    if let Err(error) = recovery {
+        sqlx::query(
+            r#"UPDATE "KothCrownCycles"
+                  SET last_error = $2, updated_at = clock_timestamp()
+                WHERE id = $1 AND phase = 'FinalizePending'"#,
+        )
+        .bind(cycle_id)
+        .bind(error.to_string())
+        .execute(st.pg())
+        .await
+        .map_err(|db_error| AppError::internal(db_error.to_string()))?;
+        lock.release().await?;
+        return Err(error);
+    }
+    super::rollover::refresh_old_container(st, cycle_id).await?;
+    let result = drive_one_cycle(st, config, cycle_id, ad_round_id, round_number).await;
+    if let Err(error) = &result {
+        sqlx::query(
+            r#"UPDATE "KothCrownCycles"
+                  SET last_error = $2, updated_at = clock_timestamp()
+                WHERE id = $1 AND phase NOT IN ('Active','Completed','Ended')"#,
+        )
+        .bind(cycle_id)
+        .bind(error.to_string())
+        .execute(st.pg())
+        .await
+        .map_err(|db_error| AppError::internal(db_error.to_string()))?;
+    }
+    lock.release().await?;
+    result
+}
+
 pub(crate) async fn drive_cycle_transitions(
     st: &SharedState,
     game_id: i32,
@@ -659,65 +748,31 @@ pub(crate) async fn drive_cycle_transitions(
     ) else {
         return Err(AppError::internal("invalid snapshotted KotH cycle shape"));
     };
-    for &challenge_id in &config.challenge_ids {
-        let key = format!("shared-container:{challenge_id}");
-        let _local = crate::utils::single_flight::coalesce(&key).await;
-        let lock = crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &key)
-            .await?;
-        let planned_start =
-            config.scoring_start_round + (position.cycle_number - 1) * config.cycle_ticks;
-        let cycle_id = create_or_load_cycle(
-            st,
-            game_id,
-            challenge_id,
-            position.cycle_number,
-            position.epoch,
-            planned_start,
-            planned_start + config.cycle_ticks - 1,
-        )
-        .await?;
-        let recovery = super::rollover::resume_previous_cycle(
-            st,
-            &config,
-            game_id,
-            challenge_id,
-            position.cycle_number,
-            ad_round_id,
-            round_number,
-        )
-        .await;
-        if let Err(error) = recovery {
-            sqlx::query(
-                r#"UPDATE "KothCrownCycles"
-                      SET last_error = $2, updated_at = clock_timestamp()
-                    WHERE id = $1 AND phase = 'FinalizePending'"#,
+    drive_hills_fail_isolated(&config.challenge_ids, |challenge_id| {
+        let config = &config;
+        async move {
+            let result = drive_hill_cycle_transition(
+                st,
+                config,
+                game_id,
+                challenge_id,
+                ad_round_id,
+                round_number,
+                position,
             )
-            .bind(cycle_id)
-            .bind(error.to_string())
-            .execute(st.pg())
-            .await
-            .map_err(|db_error| AppError::internal(db_error.to_string()))?;
-            lock.release().await?;
-            return Err(error);
+            .await;
+            if let Err(error) = &result {
+                tracing::warn!(
+                    game = game_id,
+                    challenge = challenge_id,
+                    %error,
+                    "KotH hill lifecycle transition failed"
+                );
+            }
+            result
         }
-        super::rollover::refresh_old_container(st, cycle_id).await?;
-        let result = drive_one_cycle(st, &config, cycle_id, ad_round_id, round_number).await;
-        if let Err(error) = &result {
-            sqlx::query(
-                r#"UPDATE "KothCrownCycles"
-                      SET last_error = $2, updated_at = clock_timestamp()
-                    WHERE id = $1 AND phase NOT IN ('Active','Completed','Ended')"#,
-            )
-            .bind(cycle_id)
-            .bind(error.to_string())
-            .execute(st.pg())
-            .await
-            .map_err(|db_error| AppError::internal(db_error.to_string()))?;
-        }
-        lock.release().await?;
-        result?;
-    }
-    Ok(())
+    })
+    .await
 }
 
 /// Resume crown-cycle teardown after an event deadline, independently of the
@@ -830,6 +885,7 @@ pub(crate) async fn recover_cycle(
     game_id: i32,
     challenge_id: i32,
 ) -> AppResult<(i32, String)> {
+    super::require_recovery_owner(st.config.runtime_role)?;
     let (round_id, round_number): (i32, i32) = sqlx::query_as(
         r#"SELECT id, number FROM "AdRounds"
             WHERE game_id = $1 ORDER BY number DESC LIMIT 1"#,

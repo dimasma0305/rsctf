@@ -27,6 +27,11 @@ pub(crate) async fn destroy_participation_ad_services(
         .all(&st.db)
         .await?;
     for service in services {
+        // Participation suspension/deletion is durable before this helper is
+        // called, so the inspector eligibility query cannot recreate the
+        // workload after this exact teardown.
+        crate::controllers::edit::destroy_service_inspector(st, service.id).await?;
+
         let lock_key = crate::services::ad::service_lifecycle::service_lock_key(
             service.participation_id,
             service.challenge_id,

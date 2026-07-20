@@ -17,6 +17,7 @@ target/
 /web/node_modules
 /web/build
 /web/.pnpm-store
+/tests/load/node_modules
 /docs/node_modules
 /docs/.vitepress/cache
 /docs/.vitepress/dist

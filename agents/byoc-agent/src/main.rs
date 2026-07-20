@@ -10,6 +10,8 @@ mod agent;
 pub(crate) const STREAM_SERVICE: u8 = b'S';
 pub(crate) const STREAM_FLAG: u8 = b'F';
 pub(crate) const STREAM_EXEC: u8 = b'E';
+pub(crate) const AGENT_PROTOCOL: &str = "rsctf-byoc-v2";
+pub(crate) const AGENT_PROTOCOL_HEADER: &str = "x-rsctf-byoc-protocol";
 
 pub(crate) fn yamux_config() -> yamux::Config {
     yamux::Config::default()

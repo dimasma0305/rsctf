@@ -420,7 +420,7 @@ pub async fn join_game(
         .await;
 
     crate::services::audit::info(
-        &st.db,
+        &st,
         "GameController",
         Some(user.name.clone()),
         None,

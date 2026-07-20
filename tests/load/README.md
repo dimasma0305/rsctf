@@ -10,6 +10,9 @@ scenarios. Run via npm:
 ```sh
 cd tests/load
       npm run admin-lifecycle # destructive, disposable-stack admin acceptance
+      npm run edit-lifecycle  # destructive, disposable-stack organizer acceptance
+      npm run multi-domain    # destructive 2×A&D + 2×KotH isolation/recovery acceptance
+      npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
@@ -34,7 +37,12 @@ tests/load/
   admin-fixtures.mjs focused SQL, HTTP, Docker-image, CSR, and recovery helpers for admin acceptance
   admin-lifecycle.js pure 61-operation admin catalog, response contracts, and target-safety rules
   admin-lifecycle.mjs destructive disposable admin lifecycle (npm run admin-lifecycle)
-  edit-lifecycle.js pure 64-operation /api/edit catalog and response contracts (source/contract test only)
+  edit-lifecycle.js exact 64-operation `/api/edit` catalog + wire validators
+  edit-lifecycle.mjs future/A&D/KotH organizer lifecycle (npm run edit-lifecycle)
+  multi-domain-acceptance.js pure two-service/two-hill isolation contracts
+  multi-domain-acceptance.mjs focused multi-domain acceptance (npm run multi-domain)
+  organizer-hubs.js pure SignalR, topology, and response contracts
+  organizer-hubs.mjs destructive AdminHub/containerExec lifecycle (npm run organizer-hubs)
   player-model.js   deterministic competitive player profiles and A&D/Jeopardy/KotH decisions
   team-clients.mjs  one WireGuard+k6 container per team, plus verified teardown
   observe.mjs       read-only health/resource/evidence sampler for long event runs
@@ -48,6 +56,8 @@ tests/load/
   worker-plane-local.mjs → isolated native-agent acceptance wrapper (npm run worker-local)
   k6/
     admin-lifecycle.js fixed-rate admin reads, SignalR connection, replica/control health
+    edit-lifecycle.js  fixed-rate organizer reads across future/A&D/KotH fixtures
+    organizer-hubs.js  fixed-rate privileged negotiate, WebSocket, and exec traffic
     player.js         A&D + KotH player: poll boards/timelines, tokens/state, submit flags
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable
@@ -85,6 +95,10 @@ hill fixture to be replaced independently of the Jeopardy `CONTAINER_IMAGE`. Lon
 `CHEAT_AT_FRACTION`, `RETAIN_EVENT`, and `LIFECYCLE_STATE_TAG`. Set
 `RSCTF_BYOC_AGENT_IMAGE` to test a specific local RSCTF agent tag or immutable digest;
 the network-fetched default is pinned to the attested GHCR digest used by the server.
+Standalone BYOC fleet runs also accept `RSCTF_BYOC_SERVICE_IMAGE` and
+`RSCTF_BYOC_RUN_ID`. The run id is a lowercase DNS-safe identifier and namespaces every
+relay/service container. Cleanup selects the exact run ownership labels and refuses a
+name/label mismatch; it never wildcard-removes every container matching `load_agent_*`.
 
 ### Exhaustive admin lifecycle (`npm run admin-lifecycle`)
 
@@ -110,13 +124,26 @@ rotates the same catalogued reads while `/livez` and `/healthz` are probed on ev
 
 The lifecycle creates and removes users, a team, an event, challenges, submissions,
 writeups, a live container, A&D state, anti-cheat evidence, build records, repository
-bindings, owned Docker image tags, and a worker identity. It also mutates global branding
-and configuration before restoring them. Build pull/rebuild, retry/delete/prune, image,
-container, and repository scan paths really run; archive-build label stamping is
-separately unit-tested. The worker enrollment token is really consumed and replay-rejected.
+bindings, owned Docker images, and a worker identity. Its image gate imports two trusted
+`FROM scratch` challenge archives into an unstarted disposable game and lets the normal
+builder publish their tags, reserved labels, immutable identities, and ownership rows.
+It proves that `force=true` deletion and global pruning cannot remove referenced images,
+deletes both challenge definitions through `/api/edit`, then exactly deletes one orphan
+and prunes the other. No Docker tag/commit or ownership-ledger seeding is used. It also
+mutates global branding and configuration before restoring them. Build retry/delete/prune
+and repository scan paths really run. The repository fixture links a solved challenge to
+its stable manifest identity, performs two real HTTP scans of the same retryable commit,
+and requires its challenge ID, submission, first-solve row, counters, flag, and scoreboard
+cell to remain equivalent. The worker enrollment token is really consumed and replay-rejected.
 Cleanup is attempted after success or failure. Two delayed, exact zero-resource snapshots
 must agree across fixture UUID/ID ledgers, Redis credential keys, blob metadata and local
 bytes, repository checkouts, build/evidence rows, worker state, and container identities.
+Each snapshot is preceded by `ADMIN_CLEANUP_STABILITY_MS` (default 2,000 ms).
+The audit manifest stores before/after identity snapshots for every declared server role:
+immutable container ID, Docker `StartedAt`, restart count, configured image, image ID, and
+the live `/usr/local/bin/rsctf` SHA-256. Completion fails if any field changes. The ending
+fatal-log audit addresses the original container IDs rather than replaceable Compose names,
+with unchanged-identity checks on both sides of that log read.
 This must never target production or a retained event.
 
 Run it only against a dedicated Compose project with its own PostgreSQL and Redis data,
@@ -135,7 +162,7 @@ web1_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{println 
 web2_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{end}}' \
   rsctf-admin-rsctf-2 | awk 'NF { print; exit }')
 control_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{end}}' \
-  rsctf-admin-control-1 | awk 'NF { print; exit }')
+  rsctf-admin-rsctf-control-1 | awk 'NF { print; exit }')
 export WEB_TARGETS="http://$web1_ip:8080,http://$web2_ip:8080"
 export CONTROL_TARGET="http://$control_ip:8080"
 export ADMIN_LIFECYCLE_DISPOSABLE=1
@@ -147,13 +174,20 @@ export CONFIRM_ADMIN_CONTROL_TARGET="$CONTROL_TARGET"
 export RSCTF_JWT_SECRET='the isolated stack JWT secret'
 export PG_CONTAINER=rsctf-admin-db-1
 export REDIS_CONTAINER=rsctf-admin-redis-1
-export PG_USER=postgres
+export PG_USER=rsctf
 export PG_DATABASE=rsctf
 export RSCTF_CONTAINER=rsctf-admin-rsctf-1
-export ADMIN_RSCTF_CONTAINERS=rsctf-admin-rsctf-2,rsctf-admin-control-1
+export ADMIN_RSCTF_CONTAINERS=rsctf-admin-rsctf-2,rsctf-admin-rsctf-control-1
+export ADMIN_REPOSITORY_URL=https://github.com/dimasma0305/rsctf-challenges.git
+export ADMIN_REPOSITORY_REF=main
+export ADMIN_REPOSITORY_EXPECTED_COMMIT="$(
+  git ls-remote "$ADMIN_REPOSITORY_URL" "refs/heads/$ADMIN_REPOSITORY_REF" |
+    awk 'NR == 1 { print $1 }'
+)"
 
 SUMMARY_JSON=/tmp/rsctf-admin-k6.json \
-  RATE=1 VUS=4 DURATION=30s npm run admin-lifecycle
+  RATE=1 VUS=4 DURATION=30s KEEP_ADMIN_MANIFEST=1 \
+  RSCTF_ACCEPTANCE_REPORTABLE=1 npm run admin-lifecycle
 ```
 
 The dedicated Compose override must inject
@@ -176,18 +210,32 @@ remote run; it does not make a shared or production installation safe. Every dec
 server must be a Compose service carrying the exact `RSCTF_ADMIN_LIFECYCLE_MARKER`, use
 the local disposable blob backend, and share one Compose project with the declared
 PostgreSQL and Redis services. A PostgreSQL session advisory lock excludes lifecycle
-runs started from other hosts in addition to the host-local process lock. Keep `RATE` at or
-below the enforced 1 request/s ceiling for the single polling administrator: the 74-request
-setup matrix consumes the same 150-request/minute account quota. Optional
+runs started from other hosts in addition to the host-local process lock. `RATE=2` is the
+enforced comparison ceiling for the fresh polling administrator; the runner rejects any
+higher rate and fails on the first 429 or dropped iteration. Keep the `RATE=1` example for
+lighter diagnostics. The 74-request setup matrix consumes the same 150-request/minute
+account quota, so a quota-policy change is intentionally fail-closed. Optional
 fixed-rate gates are `HEALTH_RATE`, `MAX_VUS`, `MAX_ADMIN_P95_MS`, and
 `MAX_HEALTH_P95_MS`. `ADMIN_CONTAINER_IMAGE` selects the local/pullable source image
 (default `nginx:alpine`).
 
+Every declared web/control container must expose the same Docker `.Image` id and the
+same live `sha256sum /usr/local/bin/rsctf`. Both identities and the configured image
+reference for each container are stored in the manifest. This rejects a stale rolling
+update and a bind-mounted debug binary even when its image metadata still matches.
+
 Three external integrations must be ready before the run:
 
-- Repository scan needs outbound HTTPS from the server to the read-only disposable
-  `ADMIN_REPOSITORY_URL` (default `https://github.com/octocat/Hello-World.git`); set
-  `ADMIN_REPOSITORY_REF` when a particular branch/tag is required.
+- Repository scan needs outbound HTTPS from the server to a read-only fixture containing
+  one `.gzevent` and `Jeopardy/Misc/static-handout/challenge.yaml`.
+  `ADMIN_REPOSITORY_URL` defaults to
+  `https://github.com/dimasma0305/rsctf-challenges.git`; set `ADMIN_REPOSITORY_REF`
+  to override its `main` ref. Reportable runs must set the full 40-character
+  `ADMIN_REPOSITORY_EXPECTED_COMMIT`; `RSCTF_ACCEPTANCE_REPORTABLE=1` rejects an omitted
+  value. The runner fails if the fetched commit differs and
+  records the observed SHA in its manifest. The repository grading deliberately differs
+  from the solved fixture, so each scan must report one protected grading update while
+  retaining the historical evidence.
 - Positive worker enrollment needs the control process to load a disposable issuer via
   `RSCTF_WORKER_CA_CERT`, `RSCTF_WORKER_CA_KEY`, and
   `RSCTF_WORKER_PUBLIC_ENDPOINT`. A full mTLS worker listener additionally uses the
@@ -200,7 +248,7 @@ Three external integrations must be ready before the run:
   email-diagnostic route is intentionally negative-path coverage: it always supplies an
   invalid sender and must return a controlled 400 with no mail sent.
 
-`openssl`, `docker`, `psql` inside `PG_CONTAINER`, Node, and k6 are required. The runner
+`openssl`, `zip`, `docker`, `psql` inside `PG_CONTAINER`, Node, and k6 are required. The runner
 exports the complete k6 distribution to `SUMMARY_JSON` (or a unique
 `/tmp/rsctf-admin-lifecycle-*-k6.json` by default), prints each one-shot route latency,
 and stores pre/post container resource snapshots in its recovery/audit manifest.
@@ -208,19 +256,292 @@ Interrupted and failed runs retain `/tmp/rsctf-admin-lifecycle-*.json`; successf
 remove it unless `KEEP_ADMIN_MANIFEST=1` is set. These manifests identify disposable
 resources for recovery and must not be committed.
 
-The post-k6 rejected-negotiate check may retry one idempotent request after a client-side
-transport failure caused by an idle pooled socket. It still requires the exact 401/403
-response, and the manifest records `evidence.signalRNegotiateNetworkRetries`; a persistent
-failure remains fatal.
-
 For a reportable performance comparison, retain the summary JSON and sample CPU/RAM
-throughout the exact fixed-rate window and use at least `DURATION=300s`; the 30-second
-example above is a functional smoke and is too sparse for per-endpoint tails. Pre/post
-point samples alone support functional acceptance, not a CPU claim. Record the
-source/image identity, topology, rate, VUs, duration, per-endpoint p50/p90/p95/p99/max,
-health and 5xx gates, aligned resource series, cleanup/leak result, and fatal-log result
-in [`REPORT.md`](REPORT.md). Add an optimization ledger row only when before and after use
-this same harness, fixture shape, and held rate.
+throughout the exact fixed-rate window. Pre/post point samples alone support functional
+acceptance, not a CPU claim. Record the source/image identity, topology, rate, VUs,
+duration, per-endpoint p50/p90/p95/p99/max, health and 5xx gates, aligned resource series,
+cleanup/leak result, and fatal-log result in [`REPORT.md`](REPORT.md). Add an optimization
+ledger row only when before and after use this same harness, fixture shape, and held rate.
+
+### Exhaustive organizer lifecycle (`npm run edit-lifecycle`)
+
+This destructive acceptance gate owns the separate `/api/edit` surface. Its catalog is
+checked bidirectionally against production controller source and currently contains all
+64 method/path operations (20 GET, 28 POST, 6 PUT, 10 DELETE). The runner creates one
+future mutable event, one active managed A&D event, and one active KotH event. It then
+validates every positive response contract and, for every route, proves missing-token
+rejection plus the exact Admin/game-manager/authenticated-user boundary. Real runtime
+coverage includes challenge rebuild and test-container teardown, A&D provisioning,
+filesystem drift/TAR export, service restart and checker override, and KotH durable-cycle
+recovery. A fixed-rate k6 phase polls organizer reads before destructive operations.
+Game creation is read back immediately and must preserve every supplied A&D/KotH timing
+and policy knob. The KotH fixture is provisioned only through the public organizer
+`EnsureContainers` route; acceptance follows its initial `KothTargets` → challenge →
+`Containers` ownership chain and each replacement's `KothTargets` → active
+`KothCrownCycles` chain, verifies the installation-scoped Docker labels and lack of a
+published host port, and records that backend identity for exact cleanup. It never
+creates or removes the host-global legacy `lckoth_hill` container. Game cloning also
+checks template settings, challenge and static-flag equivalence, fresh key material, and
+the absence of inherited live container or privileged A&D ownership. Game export/import
+is read back through the public editor API and compared against its source for portable
+game settings, challenge definitions, flags, and remote attachments; the imported poster
+and deployment-local checker must be cleared while portable A&D policy remains intact.
+The same run submits an archive whose duplicate division configuration fails after blob,
+game, challenge, attachment, flag, and division writes have been attempted, then proves
+that the transaction left zero matching database rows and no physical blob on any role.
+The active A&D field also retains checker timing evidence in the manifest: every
+successful service delivery must wait through its own configured grace period, at least two
+services must have independently timed observations, and completion must remain
+inside the configured jitter window plus the bounded checker execution allowance.
+The manual-check override is exercised against a completed result inside a real
+materialized epoch, and the replacement verdict is always different from the stored
+one. The runner reads `AdCheckResults` back authoritatively and requires the exact
+status, stamped note, and zeroed `sla_credit`; it also requires the affected
+`AdEpochRollups` suffix to disappear. Four fixture-game scoreboard keys are populated
+with run-specific Redis sentinels before the request and must all be absent afterward,
+while the game's PostgreSQL `xmin` must advance as the stale-fill publication fence.
+This proves authoritative evidence, durable-rollup, Redis L2, and revision-barrier
+invalidation. It does not introspect another replica's process-local L1 directly;
+cross-replica L1 convergence remains bounded by the tiered-cache TTL and its Rust unit
+tests.
+
+KotH recovery is no longer accepted merely because a cycle number exists. With its
+scoring clock paused, the runner compare-and-swaps only the run-tagged active cycle and
+its exact label-verified backend into durable `ReadinessPending`, stops that backend,
+and calls the public manager recovery route. Acceptance requires the same cycle to
+return to durable/visible `Active`, its reset attempt to advance, the stopped Docker
+identity to be gone, a different fully owned runtime to be published through
+`KothTargets`, and new-attempt receipts for `DestroyPending`, `CreatePending`,
+`PublishPending`, `CapabilityPending`, `ReadinessPending`, and `FirewallPending`.
+The direct phase fault is permitted only after the disposable-stack preflight and is
+CAS-scoped by the random game/challenge titles, IDs, active phase, and exact runtime
+identity; it is not a production-recovery procedure.
+
+Use the same isolated Compose topology, marker, direct replica origins, confirmations,
+JWT secret, PostgreSQL/Redis/container variables, and safety acknowledgements shown for
+`admin-lifecycle` above. The two runners share both host and PostgreSQL advisory locks and
+cannot overlap. The GitHub challenge-import route defaults to the public
+`dimasma0305/rsctf-challenges` repository's `Jeopardy/Misc/static-handout` example (the
+main repository only stores that repository as a Git submodule); override it with
+`EDIT_GITHUB_REPOSITORY`, `EDIT_GITHUB_REF`, and `EDIT_GITHUB_SUBPATH`. Runtime knobs are
+`EDIT_CONTAINER_IMAGE`, `EDIT_AD_IMAGE`,
+`EDIT_RATE`, `EDIT_VUS`, `EDIT_MAX_VUS`, `EDIT_DURATION`, and `EDIT_SUMMARY_JSON`.
+Every run must set a full 40-character `EDIT_GITHUB_EXPECTED_COMMIT`. The runner resolves
+the branch/tag with `git ls-remote` immediately before and after the HTTP import, requires
+both observations to equal that commit, and records them. Do not pass the raw commit as
+`EDIT_GITHUB_REF`: the current API clones with `git clone --branch`, so that field remains
+a branch or tag. The two remote observations close ordinary branch-movement races but
+cannot prove the server checkout against a move-away-and-back inside the request window;
+the manifest records that residual TOCTOU limitation.
+
+```sh
+export EDIT_GITHUB_REPOSITORY=https://github.com/dimasma0305/rsctf-challenges.git
+export EDIT_GITHUB_REF=main
+export EDIT_GITHUB_SUBPATH=Jeopardy/Misc/static-handout
+export EDIT_GITHUB_EXPECTED_COMMIT="$(
+  git ls-remote "$EDIT_GITHUB_REPOSITORY" "refs/heads/$EDIT_GITHUB_REF" |
+    awk 'NR == 1 { print $1 }'
+)"
+KEEP_EDIT_MANIFEST=1 EDIT_SUMMARY_JSON=/tmp/rsctf-edit-k6.json \
+  RSCTF_ACCEPTANCE_REPORTABLE=1 npm run edit-lifecycle
+```
+
+`SKIP_EDIT_K6=1` skips only fixed-rate polling, not endpoint acceptance, and sets
+`reportable:false`; `RSCTF_ACCEPTANCE_REPORTABLE=1` rejects the skip. Set
+`KEEP_EDIT_MANIFEST=1` to retain the successful run's recovery/audit manifest alongside
+`EDIT_SUMMARY_JSON`; failed runs always retain the manifest even when cleanup succeeds.
+The manifest records scenario, cleanup, and orchestration-lease failures separately so
+an aggregate failure cannot hide either the original endpoint error or recovery state.
+The runner also requires the `zip` command to materialize disposable challenge
+submission archives.
+The default held rate is 4 requests/s for 20 seconds so the acceptance calls and
+polling phase stay inside the per-account administrator/manager quotas; increase
+it only with correspondingly isolated polling identities or adjusted test limits.
+Cleanup finishes with two identical exact zero-residue snapshots, each preceded by
+`EDIT_CLEANUP_STABILITY_MS` (default 2,000 ms), and completion rejects a panic/fatal log
+record from any declared web/control container. Its manifest also retains exact before/after
+server identities (container ID, start/restart evidence, configured/image IDs, and binary
+hash); the final audit reads logs by the original IDs and rejects a replacement or restart.
+
+The gate intentionally fails rather than claiming coverage when an endpoint is a stub.
+In particular, an inspector create must return the persisted public `Containers.id`
+UUID, that row must resolve to an owned Docker backend with no published host port, and
+its paired delete must prove both identities are absent. Failed/interrupted runs retain
+an exact `/tmp/rsctf-edit-lifecycle-*.json` recovery manifest; successful cleanup removes
+it unless `KEEP_EDIT_MANIFEST=1` is set.
+
+### Multi-domain isolation (`npm run multi-domain`)
+
+This focused destructive gate closes the cardinality gap in the broad lifecycle: one
+fresh event contains exactly two enabled A&D challenges, two independent service
+endpoints, two accepted teams, and two enabled KotH hills. It requires the complete
+2×2 A&D service/flag matrix and the complete 2×2 hill-capability matrix, with unique
+flags and capabilities scoped through their service, target, and crown cycle. One real
+batch submits a different team's flag from both A&D challenges and proves that the two
+durable attacks retain their original challenge identity. Both of the caller's own flags
+must return `self_attack` without inserting a row.
+
+For KotH, the runner obtains the same team's two capabilities through different direct
+web replicas, writes hill 1's capability into hill 2, and waits for a healthy, scorable
+checker observation. Acceptance requires hill 2 to observe the marker but resolve no
+token, controller, or responsible team. That observation is bound to the exact destination
+cycle, container, reset attempt, A&D round, and planned cycle window. It then pauses
+scoring, moves both exact active
+cycles to `ReadinessPending`, and gives only the lower-ID hill a missing checker path.
+The historical public recovery URL must return a controlled 4xx for that hill while
+the higher-ID hill still returns to `Active`; after restoring the exact checker path,
+the fixed `/api/stateful` URL must recover the lower hill to `Active`. The later hill's
+readiness-failure counter may not change, and the server-log audit rejects any checker
+or iptables ownership failure on every role. This is the live regression for both a
+failed lower-ID hill starving later hills and a privileged recovery landing on a web
+replica.
+
+The runner has no k6 phase and makes no performance claim. It reuses the strict
+`admin-lifecycle` target acknowledgements, three-role Compose/marker proof, host and
+PostgreSQL locks, immutable server identity checks, and fatal-log audit. Every helper
+container has run/game/challenge/role ownership labels. Cleanup removes only identities
+whose labels still match, then requires two identical all-zero scoped database,
+checker-path, image, and Docker snapshots. The database snapshot enumerates the run's
+game, challenge, roster, A&D/KotH engine, rollup, build, event, notice, manager,
+division, credential, container, and anti-cheat identities; its fixed schema rejects
+missing or extra fields. Failed runs retain `/tmp/rsctf-multi-domain-<run>.json`; set
+`KEEP_MULTI_DOMAIN_MANIFEST=1` to retain a successful audit manifest.
+
+Use the same dedicated split-role stack described in the admin section. This is the
+complete required environment and invocation; replace only the project-specific names,
+origins, and secret:
+
+```sh
+cd tests/load
+export TARGET=http://127.0.0.1:58080
+export WEB_TARGETS=http://172.30.0.11:8080,http://172.30.0.12:8080
+export CONTROL_TARGET=http://172.30.0.13:8080
+export CONFIRM_ADMIN_TARGET="$TARGET"
+export CONFIRM_ADMIN_WEB_TARGETS="$WEB_TARGETS"
+export CONFIRM_ADMIN_CONTROL_TARGET="$CONTROL_TARGET"
+export ADMIN_LIFECYCLE_DISPOSABLE=1
+export ADMIN_LIFECYCLE_STACK_MARKER=replace-with-the-stack-marker
+export RSCTF_JWT_SECRET='replace-with-the-isolated-stack-secret'
+export PG_CONTAINER=rsctf-disposable-db-1
+export REDIS_CONTAINER=rsctf-disposable-redis-1
+export PG_USER=rsctf
+export PG_DATABASE=rsctf
+export RSCTF_CONTAINER=rsctf-disposable-rsctf-1
+export ADMIN_RSCTF_CONTAINERS=rsctf-disposable-rsctf-2,rsctf-disposable-rsctf-control-1
+export NET=rsctf-disposable_default
+export AD_NET=rsctf-disposable-ad
+KEEP_MULTI_DOMAIN_MANIFEST=1 npm run multi-domain
+```
+
+The marker must exist as `RSCTF_ADMIN_LIFECYCLE_MARKER` inside every declared server,
+PostgreSQL, and Redis container; exporting it only in the runner is insufficient. The
+direct origins must resolve one-to-one to the declared Docker containers. Optional
+`KOTH_CONTAINER_IMAGE` plus `KOTH_CONTAINER_PORT` selects an already-attested immutable
+hill fixture; both must be set together. Otherwise the runner builds the repository's
+local competitive hill fixture. Other bounded knobs are
+`MULTI_DOMAIN_OBSERVATION_TIMEOUT_SECONDS` (30–240, default 90),
+`MULTI_DOMAIN_CLEANUP_STABILITY_MS` (1,000–10,000, default 2,000), and a unique
+`MULTI_DOMAIN_RUN_ID` (lowercase DNS-safe, at most 32 characters).
+
+### Privileged organizer hubs (`npm run organizer-hubs`)
+
+This destructive gate exercises both privileged SignalR transports rather than only
+their negotiate responses. A runtime covered-set must contain each of the six registered
+method/path surfaces exactly once: AdminHub negotiate/upgrade, global containerExec
+negotiate/upgrade, and game-scoped containerExec negotiate/upgrade. It proves
+anonymous/User rejection and Admin acceptance, receives one real `ReceivedLog` event,
+runs `Open`/`Input`/`Resize`/`Close` against an
+exact installation-owned Docker container, rejects an arbitrary raw container id, and
+proves live sockets close after an Admin role/security-stamp rotation. It also creates a
+one-team disposable A&D event and exercises the BYOC `E` exec stream through the pinned
+agent artifact. An ordinary user is then granted exact `GameManagers` membership and
+uses `/hub/containerExec/games/{gameId}` for a real same-game BYOC shell. The scenario
+requires both negotiate and WebSocket GET to reject missing credentials, an unassigned
+ordinary user, a cross-game manager, and an Admin targeting a deletion-pending game. It
+also proves a cross-game public container and arbitrary raw host id are rejected,
+removes the membership while the shell is still active, observes its outbound
+`Closed(..., "authorization revoked")`, proves a post-revocation `Input` has no side
+effect, and requires renegotiation to return 403. Its fixed-rate phase covers repeated
+platform-Admin and game-manager negotiate, WebSocket, and complete exec traffic. Exact
+user, log, database, game, fleet, and Docker cleanup is checked in two delayed,
+identical zero-residual snapshots.
+
+`ORGANIZER_HUB_WEB_TARGETS` must contain at least two distinct direct web origins, with
+one matching container per origin. Every origin is probed directly: global and scoped
+containerExec negotiate routes must be absent, and their WebSocket upgrades must fail.
+The plain GET check accepts only a true unmatched response or the web replica's HTML SPA
+fallback. Conversely, the direct control origin must not expose AdminHub, `/api/admin`,
+or `/api/edit`. The admin target must bind directly to a disposable `web` container.
+The exec target must bind directly to the `control`/`network` container that owns the
+writable Docker socket and is attached to both acknowledged tunnel networks. Repeat
+every discovered value in its confirmation variable before any credential is sent:
+
+```sh
+cd tests/load
+export TARGET=http://172.30.253.131:8080
+export CONTROL_TARGET=http://172.30.253.130:8080
+export ORGANIZER_HUB_ADMIN_TARGET="$TARGET"
+export ORGANIZER_HUB_EXEC_TARGET="$CONTROL_TARGET"
+export ORGANIZER_HUB_WEB_TARGETS="http://172.30.253.131:8080,http://172.30.253.132:8080"
+export ORGANIZER_HUB_ADMIN_CONTAINER=rsctf-test-rsctf-1
+export ORGANIZER_HUB_EXEC_CONTAINER=rsctf-test-rsctf-control-1
+export ORGANIZER_HUB_WEB_CONTAINERS=rsctf-test-rsctf-1,rsctf-test-rsctf-2
+export ORGANIZER_HUB_PG_CONTAINER=rsctf-test-db-1
+export ORGANIZER_HUB_REDIS_CONTAINER=rsctf-test-redis-1
+export PG_CONTAINER="$ORGANIZER_HUB_PG_CONTAINER"
+export REDIS_CONTAINER="$ORGANIZER_HUB_REDIS_CONTAINER"
+export RSCTF_CONTAINER="$ORGANIZER_HUB_EXEC_CONTAINER"
+export NET=rsctf-test_default
+export AD_NET=rsctf-test_ad-services
+export RSCTF_JWT_SECRET='the isolated stack JWT secret'
+export ADMIN_LIFECYCLE_STACK_MARKER=organizer-stack-test-20260720
+
+export ORGANIZER_HUBS_DISPOSABLE=1
+export CONFIRM_ORGANIZER_HUB_ADMIN_TARGET="$ORGANIZER_HUB_ADMIN_TARGET"
+export CONFIRM_ORGANIZER_HUB_EXEC_TARGET="$ORGANIZER_HUB_EXEC_TARGET"
+export CONFIRM_ORGANIZER_HUB_WEB_TARGETS="$ORGANIZER_HUB_WEB_TARGETS"
+export CONFIRM_ORGANIZER_HUB_ADMIN_CONTAINER="$ORGANIZER_HUB_ADMIN_CONTAINER"
+export CONFIRM_ORGANIZER_HUB_EXEC_CONTAINER="$ORGANIZER_HUB_EXEC_CONTAINER"
+export CONFIRM_ORGANIZER_HUB_WEB_CONTAINERS="$ORGANIZER_HUB_WEB_CONTAINERS"
+export CONFIRM_ORGANIZER_HUB_PG_CONTAINER="$ORGANIZER_HUB_PG_CONTAINER"
+export CONFIRM_ORGANIZER_HUB_REDIS_CONTAINER="$ORGANIZER_HUB_REDIS_CONTAINER"
+export CONFIRM_ORGANIZER_HUB_COMPOSE_PROJECT=rsctf-test
+export CONFIRM_ORGANIZER_HUB_NETWORK="$NET"
+export CONFIRM_ORGANIZER_HUB_AD_NETWORK="$AD_NET"
+
+ORGANIZER_HUB_RATE=1 ORGANIZER_HUB_VUS=4 ORGANIZER_HUB_DURATION=20s \
+  RSCTF_ACCEPTANCE_REPORTABLE=1 ORGANIZER_HUB_REQUIRE_BYOC=1 \
+  KEEP_ORGANIZER_HUB_MANIFEST=1 \
+  SUMMARY_JSON=/tmp/rsctf-organizer-hubs.json npm run organizer-hubs
+```
+
+The dedicated Compose override must inject
+`RSCTF_ADMIN_LIFECYCLE_MARKER=${ADMIN_LIFECYCLE_STACK_MARKER}` into the declared web,
+control, PostgreSQL, and Redis containers. The runner inspects the exact value and one
+Compose project on every declared resource before it can issue SQL or mutate Docker;
+exporting the runner variable without placing the marker inside each container is insufficient.
+
+BYOC execution is required by default, so an unavailable pinned agent artifact fails the
+scenario. `ORGANIZER_HUB_DIAGNOSTIC_SKIP_BYOC=1` is the only BYOC opt-out: it substitutes
+an installation-owned local container only to diagnose scoped routing and marks the
+evidence non-reportable. The legacy `SKIP_ORGANIZER_HUB_BYOC` and an ambiguous
+`ORGANIZER_HUB_REQUIRE_BYOC=0` are rejected. `SKIP_ORGANIZER_HUB_LOAD=1` remains an
+explicit developer-only fixed-rate-load skip and also sets `reportable:false`.
+`RSCTF_ACCEPTANCE_REPORTABLE=1` rejects either diagnostic skip. The organizer gate now
+shares the host process lock and PostgreSQL advisory lease used by admin/edit, records
+before/after immutable container, start/restart, configured-image, image-ID, and live-binary
+identity for every declared server, and rejects any drift or panic/fatal log record before
+completion. Fatal logs are read from the original container IDs, with identity rechecked
+immediately before and after the audit. Its two exact zero-residue snapshots are each
+preceded by `ORGANIZER_HUB_CLEANUP_STABILITY_MS` (default 2,000 ms), and the delay is
+stored in the manifest.
+
+The runner writes a mode-0600 `/tmp/rsctf-organizer-hubs-*.json` recovery/audit
+manifest without bearer tokens or security stamps. Failures retain it even after a
+successful cleanup. Successful runs remove it unless
+`KEEP_ORGANIZER_HUB_MANIFEST=1` is set; retain it with `SUMMARY_JSON` for release
+evidence. Scenario, cleanup, and lease-release failures are stored separately so a
+cleanup problem never overwrites the organizer operation that failed first.
 
 ### Redis outage (`npm run redis-outage`)
 
@@ -628,6 +949,46 @@ That localhost comparison was dominated by expected rate-limit responses because
 direct `:8080` source is not the configured trusted proxy; it is retained only as a
 same-rate CPU/throughput comparison. Functional acceptance comes from the lifecycle gate,
 which exercises confirmed capture, reset, stale-token rejection, and integrity checks.
+
+### Standalone BYOC fleet and reconnect safety
+
+Diagnostic runs keep the legacy defaults (`nginx:alpine` for the shared target and the
+pinned default relay-agent digest), but still require exactly `N` distinct Accepted
+participations, relay containers, registered tunnels, and listener endpoints. Partial
+startup and cleanup failure are fatal. Set a unique `RSCTF_BYOC_RUN_ID` when multiple
+harnesses can share one Docker daemon; resource names and ownership labels are then
+disjoint even when the runs target the same game.
+
+A reportable `byoc` or `busy` run must pin both images by repository digest or local
+Docker image ID. It changes the k6 gates to exactly zero server 5xx, non-200 responses,
+and network/HTTP failures; the Node runner also rejects a non-zero k6 exit status.
+
+```sh
+export RSCTF_BYOC_RUN_ID=accept-byoc-20260720
+export RSCTF_BYOC_AGENT_IMAGE='ghcr.io/example/rsctf-byoc-agent@sha256:<64-hex-digest>'
+export RSCTF_BYOC_SERVICE_IMAGE='nginx@sha256:<64-hex-digest>'
+RSCTF_ACCEPTANCE_REPORTABLE=1 N=60 VUS=250 DURATION=60s npm run byoc
+```
+
+`worst-case` restarts one named web replica, so it additionally requires an exact
+acknowledgement. The target must inspect as a running Compose `rsctf` service. Reportable
+runs also bind it to `COMPOSE_PROJECT_NAME` and to the same in-container
+`RSCTF_ADMIN_LIFECYCLE_MARKER` used by the disposable admin/edit gates. The restart
+command, post-restart Docker identity/`StartedAt`, relay logs, and server fatal-log command
+are all checked. Completion requires exactly `N` database registrations plus a fresh
+`tunnel connected` record from every one of the `N` run-owned agents.
+
+```sh
+export RSCTF_CONTAINER=rsctf-test-rsctf-1
+export CONFIRM_RSCTF_RESTART="$RSCTF_CONTAINER"
+export COMPOSE_PROJECT_NAME=rsctf-test
+export ADMIN_LIFECYCLE_STACK_MARKER=isolated-stack-20260720
+RSCTF_ACCEPTANCE_REPORTABLE=1 N=120 npm run worst-case
+```
+
+Never use `worst-case` against production: its acknowledged action deliberately restarts
+the selected container. The `HOSTPORT` health target should address the same disposable
+stack through the path whose restart behavior is being measured.
 
 **BYOC scale — idle** (`npm run byoc`, `npm run scale`): idle tunnels are cheap and
 **linear** at ~0.08 % CPU/tunnel (median of many samples, 30→300: 3.4 % → 10.5 % → 20 %;

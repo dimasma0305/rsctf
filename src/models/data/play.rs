@@ -115,6 +115,9 @@ pub mod container {
         pub public_port: Option<i32>,
         pub game_instance_id: Option<i32>,
         pub exercise_instance_id: Option<i32>,
+        /// Set only for a short-lived A&D inspector container. The database
+        /// allows at most one live inspector row per team service.
+        pub ad_team_service_id: Option<i32>,
     }
 
     impl Model {

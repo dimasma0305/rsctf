@@ -205,6 +205,7 @@ pub async fn recover_hill(
     Path((game_id, challenge_id)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<RecoverKothHillModel>> {
     require_game_admin(&st, &user, game_id).await?;
+    crate::services::ad_engine::koth_cycle::require_recovery_owner(st.config.runtime_role)?;
     require_live_hill(&st, game_id, challenge_id).await?;
     let (cycle_number, phase) =
         crate::services::ad_engine::koth_cycle::recover_cycle(&st, game_id, challenge_id).await?;

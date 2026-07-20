@@ -82,6 +82,10 @@ mod m0072_koth_crown_cycle_defaults;
 mod m0073_finite_lockout_end;
 mod m0074_game_deletion_fence;
 mod m0075_challenge_deletion_fence;
+mod m0076_build_image_ownership;
+mod m0077_ad_inspector_ownership;
+mod m0078_game_manager_lookup_index;
+mod m0079_game_configuration_integrity;
 
 pub struct Migrator;
 
@@ -164,6 +168,10 @@ impl MigratorTrait for Migrator {
             Box::new(m0073_finite_lockout_end::Migration),
             Box::new(m0074_game_deletion_fence::Migration),
             Box::new(m0075_challenge_deletion_fence::Migration),
+            Box::new(m0076_build_image_ownership::Migration),
+            Box::new(m0077_ad_inspector_ownership::Migration),
+            Box::new(m0078_game_manager_lookup_index::Migration),
+            Box::new(m0079_game_configuration_integrity::Migration),
         ]
     }
 }

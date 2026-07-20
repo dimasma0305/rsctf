@@ -15,8 +15,12 @@ mod attachments;
 mod challenges;
 #[cfg(test)]
 mod poster_tests;
+mod seaorm;
 mod writeups;
-pub use attachments::{delete_orphan_attachments, store_and_replace_challenge_attachment};
+pub(crate) use attachments::delete_attachment_locked;
+pub use attachments::{
+    delete_attachment, delete_orphan_attachments, store_and_replace_challenge_attachment,
+};
 pub use challenges::{
     delete_challenge, delete_game_challenges, store_and_replace_challenge_archive,
     DeletedChallengeArtifacts,
@@ -24,6 +28,7 @@ pub use challenges::{
 pub(crate) use challenges::{
     delete_challenge_locked, delete_game_challenges_locked, purge_deleted_challenge_artifacts,
 };
+pub(crate) use seaorm::store_and_acquire_in_seaorm_transaction;
 #[cfg(test)]
 use writeups::replace_writeup;
 pub use writeups::{clear_game_writeups, store_and_replace_writeup};
@@ -211,77 +216,6 @@ async fn release_locked(
             deleted_hash: Some(hash),
         })
     }
-}
-
-/// Delete one attachment and release its local blob in the same transaction.
-/// Locking the attachment row makes concurrent idempotent deletes consume the
-/// reference exactly once.
-pub async fn delete_attachment(pool: &PgPool, attachment_id: i32) -> AppResult<Option<String>> {
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
-        .await
-        .map_err(database_error)?;
-    let file_id = sqlx::query_as::<_, (Option<i32>,)>(
-        r#"SELECT local_file_id
-             FROM "Attachments"
-            WHERE id = $1
-            FOR UPDATE"#,
-    )
-    .bind(attachment_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(database_error)?;
-    let Some((file_id,)) = file_id else {
-        transaction.commit().await.map_err(database_error)?;
-        return Ok(None);
-    };
-
-    let file = match file_id {
-        Some(id) => sqlx::query_scalar::<_, String>(r#"SELECT hash FROM "Files" WHERE id = $1"#)
-            .bind(id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(database_error)?
-            .map(|hash| (id, hash)),
-        None => None,
-    };
-    if let Some((_, hash)) = &file {
-        lock_hash(&mut transaction, hash)
-            .await
-            .map_err(database_error)?;
-    }
-    let deleted_file_id = sqlx::query_scalar::<_, Option<i32>>(
-        r#"DELETE FROM "Attachments" attachment
-            WHERE attachment.id = $1
-              AND NOT EXISTS (
-                    SELECT 1 FROM "GameChallenges" challenge
-                     WHERE challenge.attachment_id = attachment.id
-              )
-              AND NOT EXISTS (
-                    SELECT 1 FROM "FlagContexts" flag
-                     WHERE flag.attachment_id = attachment.id
-              )
-              AND NOT EXISTS (
-                    SELECT 1 FROM "ExerciseChallenges" exercise
-                     WHERE exercise.attachment_id = attachment.id
-              )
-            RETURNING attachment.local_file_id"#,
-    )
-    .bind(attachment_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(database_error)?;
-    let deleted_hash = match (deleted_file_id.flatten(), file) {
-        (Some(deleted_file_id), Some((selected_file_id, _))) => {
-            debug_assert_eq!(deleted_file_id, selected_file_id);
-            release_locked(&mut transaction, selected_file_id)
-                .await
-                .map_err(database_error)?
-                .deleted_hash
-        }
-        _ => None,
-    };
-    transaction.commit().await.map_err(database_error)?;
-    Ok(deleted_hash)
 }
 
 /// Release one reference selected by its content hash.

@@ -1377,7 +1377,7 @@ export interface GameInfoModel {
    */
   adSnapshotRetentionDays?: number | null;
   /**
-   * A&D — seconds per tick (global scoring unit; default 120).
+   * A&D — seconds per tick (global scoring unit; default 60).
    * @format int32
    */
   adTickSeconds?: number | null;
@@ -1407,10 +1407,10 @@ export interface GameInfoModel {
   adResetCooldownMinutes?: number | null;
   /** A&D — snapshot team containers at game end for download (default true). */
   adAllowSnapshotDownload?: boolean | null;
-  /** A&D — getflag jitter window as a fraction of the tick (default 0.5). */
+  /** A&D — getflag jitter window as a fraction of the tick; runtime reserves complete probe and persistence budgets (default 0.5). */
   adGetflagWindowFraction?: number | null;
   /**
-   * A&D — seconds after a round starts before getflag may fire (default 3).
+   * A&D — seconds after each service's immutable flag-delivery receipt before getflag may fire; must leave bounded publication, checker, and persistence runway (default 3).
    * @format int32
    */
   adMinGracePeriodSeconds?: number | null;

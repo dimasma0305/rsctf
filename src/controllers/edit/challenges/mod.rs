@@ -13,8 +13,8 @@ mod review;
 mod scoring;
 mod workload;
 
-pub(crate) use attachments::build_attachment;
 pub use attachments::update_attachment;
+pub(crate) use attachments::{build_attachment, validate_remote_attachment_url};
 pub use audit::{get_challenge_audit_meta, rebuild_challenge};
 pub(crate) use deletion::reject_pending_mutation;
 pub(crate) use lifecycle::destroy_challenge_containers;
@@ -748,7 +748,9 @@ pub async fn delete_challenge(
     // Release the now-orphaned attachment blobs (clear-FK-first: rows above are
     // already gone).
     for aid in deleted_artifacts.attachment_ids {
-        delete_attachment(&st, aid).await?;
+        if let Err(error) = delete_attachment(&st, aid).await {
+            tracing::warn!(%error, attachment_id = aid, "deleted challenge attachment cleanup deferred");
+        }
     }
     flush_game_scoreboards(&st, id).await;
     Ok(MessageResponse::ok(""))

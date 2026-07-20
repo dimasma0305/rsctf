@@ -7,7 +7,10 @@ use chrono::Utc;
 use futures::StreamExt;
 use sea_orm::DatabaseConnection;
 
-use super::{bounded_diagnostic, bounded_optional_diagnostic, checker_concurrency, run_check};
+use super::{
+    bounded_diagnostic, bounded_optional_diagnostic, checker_concurrency, checker_probe_can_start,
+    deadline_limited_probe_budget, probe_budget_is_platform_limited, run_check,
+};
 use crate::models::data::ad_round;
 use crate::services::ad::engine::{
     koth_auth,
@@ -25,6 +28,23 @@ enum ManagedHillLiveness {
     Dead(String),
     Unknown(String),
 }
+
+// One marker read follows the functional probe and the verdict still needs a
+// durable transaction. The pre-probe marker is guarded separately after it
+// completes, so it cannot consume this reserved tail.
+const KOTH_COMPLETION_MARGIN: Duration = Duration::from_secs(4);
+
+const PENDING_KOTH_CHALLENGES_SQL: &str = r#"SELECT (frozen.item->>'challengeId')::integer
+         FROM "KothOfficialConfigs" config
+         CROSS JOIN LATERAL jsonb_array_elements(config.hills_snapshot) frozen(item)
+        WHERE config.game_id = $1
+          AND NOT EXISTS (
+                SELECT 1 FROM "KothControlResults" result
+                 WHERE result.game_id = config.game_id
+                   AND result.challenge_id = (frozen.item->>'challengeId')::integer
+                   AND result.ad_round_id = $2
+              )
+        ORDER BY (frozen.item->>'challengeId')::integer"#;
 
 async fn inspect_liveness(
     containers: &dyn ContainerManager,
@@ -282,7 +302,9 @@ async fn check_one_hill(
     challenge_id: i32,
     round: &ad_round::Model,
     checker_dir: Option<&str>,
-    timeout: Duration,
+    planned_timeout: Option<Duration>,
+    configured_timeout: Duration,
+    effective_deadline: tokio::time::Instant,
     lease: &RoundFinishLease,
 ) -> AppResult<()> {
     // Runtime reset and checker ownership use the exact same hill lock. The
@@ -373,25 +395,63 @@ async fn check_one_hill(
             None,
         ),
         ManagedHillLiveness::Running => {
-            let before = read_koth_marker(containers, Some(&hill.container_id)).await;
-            let (status, message) = run_check(
-                checker_dir,
-                &hill.host,
-                hill.port,
-                round.number,
-                0,
-                challenge_id,
-                None,
-                timeout,
-            )
-            .await;
-            let after = read_koth_marker(containers, Some(&hill.container_id)).await;
-            let (marker, observed, error) = stable_koth_marker(before, after);
-            if let Some(error) = error {
-                let error = bounded_diagnostic(error);
-                tracing::warn!(challenge = challenge_id, %error, "KotH marker was unstable");
+            let can_start = planned_timeout.is_some_and(|budget| {
+                checker_probe_can_start(
+                    effective_deadline,
+                    budget,
+                    KOTH_COMPLETION_MARGIN,
+                    tokio::time::Instant::now(),
+                )
+            });
+            if !can_start {
+                (
+                    None,
+                    false,
+                    AdCheckStatus::InternalError,
+                    Some("KotH checker has no safe execution and persistence runway".to_string()),
+                    None,
+                )
+            } else {
+                let before = read_koth_marker(containers, Some(&hill.container_id)).await;
+                let timeout = planned_timeout.expect("checked above");
+                if !checker_probe_can_start(
+                    effective_deadline,
+                    timeout,
+                    KOTH_COMPLETION_MARGIN,
+                    tokio::time::Instant::now(),
+                ) {
+                    (
+                        None,
+                        false,
+                        AdCheckStatus::InternalError,
+                        Some(
+                            "KotH marker read consumed the safe checker execution runway"
+                                .to_string(),
+                        ),
+                        None,
+                    )
+                } else {
+                    let (status, message) = run_check(
+                        checker_dir,
+                        &hill.host,
+                        hill.port,
+                        round.number,
+                        0,
+                        challenge_id,
+                        None,
+                        timeout,
+                        probe_budget_is_platform_limited(timeout, configured_timeout),
+                    )
+                    .await;
+                    let after = read_koth_marker(containers, Some(&hill.container_id)).await;
+                    let (marker, observed, error) = stable_koth_marker(before, after);
+                    if let Some(error) = error {
+                        let error = bounded_diagnostic(error);
+                        tracing::warn!(challenge = challenge_id, %error, "KotH marker was unstable");
+                    }
+                    (marker, observed, status, message, None)
+                }
             }
-            (marker, observed, status, message, None)
         }
     };
     let message = bounded_optional_diagnostic(message);
@@ -636,6 +696,7 @@ async fn check_one_hill(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn check_hills(
     db: &DatabaseConnection,
     containers: &dyn ContainerManager,
@@ -644,18 +705,36 @@ pub(super) async fn check_hills(
     checker_dirs: &HashMap<i32, Option<String>>,
     timeout: Duration,
     lease: &RoundFinishLease,
+    effective_deadline: tokio::time::Instant,
+    tick_seconds: i32,
 ) -> AppResult<()> {
-    let challenge_ids: Vec<i32> = sqlx::query_scalar(
-        r#"SELECT (frozen.item->>'challengeId')::integer
-             FROM "KothOfficialConfigs" config
-             CROSS JOIN LATERAL jsonb_array_elements(config.hills_snapshot) frozen(item)
-            WHERE config.game_id = $1
-            ORDER BY (frozen.item->>'challengeId')::integer"#,
-    )
-    .bind(game_id)
-    .fetch_all(db.get_postgres_connection_pool())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    // Recovery must never re-run a completed hill. The immutable duplicate
+    // fence in `check_one_hill` remains necessary for concurrent owners, while
+    // this prefilter preserves capacity for genuinely unresolved hills.
+    let challenge_ids: Vec<i32> = sqlx::query_scalar(PENDING_KOTH_CHALLENGES_SQL)
+        .bind(game_id)
+        .bind(round.id)
+        .fetch_all(db.get_postgres_connection_pool())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    // All hills receive the same planned budget. A hill delayed behind local
+    // locks or bounded concurrency must still fit that complete budget at its
+    // actual start; otherwise its sample is platform-attributed and void.
+    let budget_now = tokio::time::Instant::now();
+    let nominal_timeout = deadline_limited_probe_budget(
+        budget_now + Duration::from_secs(u64::try_from(tick_seconds.clamp(30, 600)).unwrap_or(60)),
+        timeout,
+        KOTH_COMPLETION_MARGIN,
+        budget_now,
+    );
+    let planned_timeout = nominal_timeout.and_then(|nominal| {
+        deadline_limited_probe_budget(
+            effective_deadline,
+            nominal,
+            KOTH_COMPLETION_MARGIN,
+            budget_now,
+        )
+    });
     let outcomes = futures::stream::iter(challenge_ids)
         .map(|challenge_id| {
             let checker_dir = checker_dirs.get(&challenge_id).and_then(Option::as_deref);
@@ -667,7 +746,9 @@ pub(super) async fn check_hills(
                     challenge_id,
                     round,
                     checker_dir,
-                    timeout,
+                    planned_timeout,
+                    nominal_timeout.unwrap_or(timeout),
+                    effective_deadline,
                     lease,
                 )
                 .await
@@ -682,225 +763,5 @@ pub(super) async fn check_hills(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use sqlx::{Connection, PgConnection};
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn live_capability_field_excludes_a_banned_snapshot_team() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
-        let mut connection = PgConnection::connect(&database_url).await.unwrap();
-        sqlx::raw_sql(
-            r#"
-            CREATE TEMP TABLE "AspNetUsers" (
-              id UUID PRIMARY KEY, role SMALLINT NOT NULL
-            );
-            CREATE TEMP TABLE "Teams" (
-              id INTEGER PRIMARY KEY, captain_id UUID NOT NULL,
-              deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
-            );
-            CREATE TEMP TABLE "TeamMembers" (
-              team_id INTEGER NOT NULL, user_id UUID NOT NULL
-            );
-            CREATE TEMP TABLE "Participations" (
-              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-              team_id INTEGER NOT NULL, status SMALLINT NOT NULL
-            );
-            CREATE TEMP TABLE "Games" (
-              id INTEGER PRIMARY KEY, start_time_utc TIMESTAMPTZ NOT NULL,
-              end_time_utc TIMESTAMPTZ NOT NULL
-            );
-            CREATE TEMP TABLE "KothOfficialConfigs" (
-              game_id INTEGER PRIMARY KEY, claim_confirmation_ticks INTEGER NOT NULL,
-              roster_snapshot JSONB NOT NULL
-            );
-            CREATE TEMP TABLE "AdRounds" (
-              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, number INTEGER NOT NULL,
-              start_time_utc TIMESTAMPTZ NOT NULL,
-              end_time_utc TIMESTAMPTZ NOT NULL, finalized BOOLEAN NOT NULL
-            );
-            CREATE TEMP TABLE "KothTargets" (
-              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-              challenge_id INTEGER NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL,
-              container_id TEXT
-            );
-            CREATE TEMP TABLE "KothCrownCycles" (
-              id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
-              challenge_id INTEGER NOT NULL, cycle_number INTEGER NOT NULL,
-              planned_start_round INTEGER NOT NULL, planned_end_round INTEGER NOT NULL,
-              replacement_container_id TEXT, old_container_id TEXT,
-              reset_attempt INTEGER NOT NULL, phase TEXT NOT NULL
-            );
-            CREATE TEMP TABLE "KothTokens" (
-              id INTEGER PRIMARY KEY, cycle_id BIGINT NOT NULL,
-              challenge_id INTEGER NOT NULL, target_id INTEGER NOT NULL,
-              reset_attempt INTEGER NOT NULL, participation_id INTEGER NOT NULL,
-              revoked_at TIMESTAMPTZ
-            );
-            INSERT INTO "AspNetUsers" VALUES
-              ('00000000-0000-0000-0000-000000000021', 1),
-              ('00000000-0000-0000-0000-000000000022', 1),
-              ('00000000-0000-0000-0000-000000000023', 0);
-            INSERT INTO "Teams" (id, captain_id) VALUES
-              (21, '00000000-0000-0000-0000-000000000021'),
-              (22, '00000000-0000-0000-0000-000000000022'),
-              (23, '00000000-0000-0000-0000-000000000023');
-            INSERT INTO "Participations" VALUES
-              (11, 7, 21, 1), (12, 7, 22, 1), (13, 7, 23, 1);
-            INSERT INTO "Games" VALUES
-              (7, clock_timestamp() - interval '1 hour',
-                  clock_timestamp() + interval '1 hour');
-            INSERT INTO "KothOfficialConfigs" VALUES
-              (7, 2, '[11,12,13]'::jsonb);
-            INSERT INTO "AdRounds" VALUES
-              (101, 7, 5, clock_timestamp() - interval '10 seconds',
-                  clock_timestamp() + interval '20 seconds', FALSE);
-            INSERT INTO "KothTargets" VALUES
-              (3, 7, 9, '127.0.0.1', 8080, 'runtime-1');
-            INSERT INTO "KothCrownCycles" VALUES
-              (41, 7, 9, 1, 1, 10, 'runtime-1', NULL, 1, 'Active');
-            INSERT INTO "KothTokens" VALUES
-              (101, 41, 9, 3, 1, 11, NULL),
-              (102, 41, 9, 3, 1, 12, NULL),
-              (103, 41, 9, 3, 1, 13, NULL);
-            "#,
-        )
-        .execute(&mut connection)
-        .await
-        .unwrap();
-        let now = Utc::now();
-        let round = ad_round::Model {
-            id: 101,
-            game_id: 7,
-            number: 5,
-            start_time_utc: now - chrono::Duration::seconds(10),
-            end_time_utc: now + chrono::Duration::seconds(20),
-            finalized: false,
-        };
-
-        let live = load_live_hill(&mut connection, 7, 9, &round)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(live.eligible_roster, vec![11, 12]);
-        assert_eq!((live.token_count, live.roster_count), (2, 2));
-        assert!(live.has_complete_token_window());
-
-        sqlx::query(
-            r#"UPDATE "AspNetUsers" SET role = 0
-                WHERE id = '00000000-0000-0000-0000-000000000022'"#,
-        )
-        .execute(&mut connection)
-        .await
-        .unwrap();
-        let live = load_live_hill(&mut connection, 7, 9, &round)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(live.eligible_roster, vec![11]);
-        assert_eq!((live.token_count, live.roster_count), (1, 1));
-        assert!(!live.has_complete_token_window());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn missing_cycle_still_records_one_platform_void() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
-        let mut connection = PgConnection::connect(&database_url).await.unwrap();
-        sqlx::raw_sql(
-            r#"
-            CREATE TEMP TABLE "KothOfficialConfigs" (
-              game_id INTEGER NOT NULL
-            );
-            CREATE TEMP TABLE "KothCrownCycles" (
-              id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
-              challenge_id INTEGER NOT NULL,
-              cycle_number INTEGER NOT NULL, planned_start_round INTEGER NOT NULL,
-              planned_end_round INTEGER NOT NULL, replacement_container_id TEXT,
-              old_container_id TEXT, reset_attempt INTEGER NOT NULL
-            );
-            CREATE TEMP TABLE "KothControlResults" (
-              id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
-              challenge_id INTEGER NOT NULL, ad_round_id INTEGER NOT NULL,
-              controlling_participation_id INTEGER,
-              responsible_participation_id INTEGER,
-              marker_observed BOOLEAN NOT NULL, status SMALLINT NOT NULL,
-              error_message TEXT, checked_at TIMESTAMPTZ NOT NULL,
-              cycle_id BIGINT, container_id TEXT, confirmation_streak INTEGER,
-              is_scorable BOOLEAN NOT NULL, void_reason TEXT,
-              token_window_attempt INTEGER NOT NULL,
-              UNIQUE (game_id, challenge_id, ad_round_id)
-            );
-            "#,
-        )
-        .execute(&mut connection)
-        .await
-        .unwrap();
-        let now = Utc::now();
-        let round = ad_round::Model {
-            id: 101,
-            game_id: 7,
-            number: 4,
-            start_time_utc: now,
-            end_time_utc: now + chrono::Duration::seconds(30),
-            finalized: false,
-        };
-
-        insert_missing_cycle_void(&mut connection, 7, 9, &round)
-            .await
-            .unwrap();
-        let void: (Option<i64>, Option<String>, Option<i32>, bool, i16) = sqlx::query_as(
-            r#"SELECT cycle_id, container_id, confirmation_streak, is_scorable, status
-                 FROM "KothControlResults" WHERE ad_round_id = 101"#,
-        )
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
-        assert_eq!(
-            void,
-            (None, None, None, false, AdCheckStatus::InternalError as i16)
-        );
-
-        sqlx::query(r#"INSERT INTO "KothOfficialConfigs" VALUES (7)"#)
-            .execute(&mut connection)
-            .await
-            .unwrap();
-        sqlx::query(
-            r#"INSERT INTO "KothCrownCycles" VALUES
-                 (41,7,9,2,4,6,'replacement-41','old-41',3)"#,
-        )
-        .execute(&mut connection)
-        .await
-        .unwrap();
-        let scoped_round = ad_round::Model { id: 102, ..round };
-        insert_missing_cycle_void(&mut connection, 7, 9, &scoped_round)
-            .await
-            .unwrap();
-        insert_missing_cycle_void(&mut connection, 7, 9, &scoped_round)
-            .await
-            .unwrap();
-        let scoped: (Option<i64>, Option<String>, Option<i32>, i32) = sqlx::query_as(
-            r#"SELECT cycle_id, container_id, confirmation_streak, token_window_attempt
-                 FROM "KothControlResults" WHERE ad_round_id = 102"#,
-        )
-        .fetch_one(&mut connection)
-        .await
-        .unwrap();
-        assert_eq!(
-            scoped,
-            (Some(41), Some("replacement-41".to_string()), Some(0), 3)
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                r#"SELECT COUNT(*) FROM "KothControlResults" WHERE ad_round_id = 102"#,
-            )
-            .fetch_one(&mut connection)
-            .await
-            .unwrap(),
-            1
-        );
-    }
-}
+#[path = "koth_tests.rs"]
+mod tests;

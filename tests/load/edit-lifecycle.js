@@ -86,7 +86,7 @@ export const EDIT_OPERATIONS = Object.freeze([
     params: game, responseKind: 'page', query: 'count=100&skip=0',
   }),
   operation('edit_reviews_analytics_get', 'GET', '/api/edit/games/{id}/reviews/analytics', {
-    params: game, responseKind: 'object',
+    params: game, responseKind: 'review-analytics',
   }),
   operation('edit_pending_challenges_get', 'GET', '/api/edit/games/{id}/pendingchallenges', {
     params: game, responseKind: 'array',
@@ -254,6 +254,26 @@ export function resolveEditOperationPath(operationOrId, context = {}) {
   }
   if (/\{[^}]+\}/.test(path)) throw new Error(`${item.id} has an unresolved route parameter`);
   return `${path}${item.query ? `?${item.query}` : ''}`;
+}
+
+export function assertEditAdminProbeScope(operationOrId, context, managedGameIds) {
+  const item = typeof operationOrId === 'string' ? operationById.get(operationOrId) : operationOrId;
+  if (!item) throw new Error(`unknown edit operation ${operationOrId}`);
+  if (item.auth !== 'admin') return null;
+
+  const gameContextKey = item.params.id;
+  const isGameContext = gameContextKey === 'gameId' || gameContextKey?.endsWith('GameId');
+  if (!isGameContext) return null;
+  const gameId = context?.[gameContextKey];
+  if (gameId === undefined || gameId === null) {
+    throw new Error(`${item.id} requires edit context ${gameContextKey} for its Admin probe`);
+  }
+  if (!(managedGameIds instanceof Set) || !managedGameIds.has(gameId)) {
+    throw new Error(
+      `${item.id} Admin probe is not scoped to game ${gameId} managed by the probe identity`,
+    );
+  }
+  return gameId;
 }
 
 function routeKey({ method, path }) {
@@ -451,7 +471,10 @@ export function validateEditResponse(operationOrId, response) {
       break;
     case 'build':
       object();
-      if (typeof body.status !== 'string') throw new Error(`${item.id} invalid build result`);
+      if (typeof body.buildStatus !== 'string' || typeof body.archiveAvailable !== 'boolean' ||
+          !Array.isArray(body.files) || !isObject(body.previews)) {
+        throw new Error(`${item.id} invalid build/audit result`);
+      }
       break;
     case 'ad-state':
       object();
@@ -463,6 +486,17 @@ export function validateEditResponse(operationOrId, response) {
       object();
       if (typeof body.path !== 'string' || typeof body.containerRunning !== 'boolean') {
         throw new Error(`${item.id} invalid service file view`);
+      }
+      break;
+    case 'review-analytics':
+      object();
+      for (const key of ['total', 'likes', 'dislikes']) {
+        if (!Number.isSafeInteger(body[key]) || body[key] < 0) {
+          throw new Error(`${item.id} invalid review analytics`);
+        }
+      }
+      if (!Array.isArray(body.topLiked) || !Array.isArray(body.topDisliked)) {
+        throw new Error(`${item.id} invalid review analytics`);
       }
       break;
     case 'koth-state':

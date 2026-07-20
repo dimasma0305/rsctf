@@ -193,6 +193,10 @@ pub(crate) async fn destroy_challenge_containers(
         Vec::new()
     };
     for service in services {
+        let inspector =
+            crate::controllers::edit::ad::destroy_service_inspector(st, service.id).await;
+        handle_teardown_result(inspector, strict, challenge.id, "A&D inspector")?;
+
         let lock_key = crate::services::ad::service_lifecycle::service_lock_key(
             service.participation_id,
             service.challenge_id,

@@ -110,6 +110,7 @@ pub async fn create_test_container(
                     memory_limit: challenge.memory_limit.unwrap_or(64),
                     cpu_count: challenge.cpu_count.unwrap_or(1),
                     expose_port: challenge.expose_port.unwrap_or(80),
+                    publish_port: true,
                     env: Vec::new(),
                     flag: flag.clone(),
                     ad_network: None,
@@ -174,6 +175,7 @@ pub async fn create_test_container(
             public_port: Set(None),
             game_instance_id: Set(None),
             exercise_instance_id: Set(None),
+            ad_team_service_id: Set(None),
         }
         .insert(&txn)
         .await?;
@@ -204,7 +206,7 @@ pub async fn create_test_container(
 
     let log_id = format!("<{}> {}", &c.id.simple().to_string()[..12], c.container_id);
     crate::services::audit::info(
-        &st.db,
+        &st,
         "EditController",
         Some(user.name.clone()),
         None,

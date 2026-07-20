@@ -8,6 +8,8 @@ import http from 'k6/http';
 import { Trend, Rate } from 'k6/metrics';
 
 const LISTENERS = (__ENV.LISTENERS || '').split(',').filter(Boolean);
+if (!LISTENERS.length) throw new Error('LISTENERS must contain the exact registered BYOC fleet');
+const REPORTABLE = __ENV.RSCTF_ACCEPTANCE_REPORTABLE === '1';
 const lat = new Trend('byoc_req_ms', true);
 const server5xx = new Rate('server_5xx');
 const nonok = new Rate('non_200');
@@ -21,7 +23,13 @@ export const options = {
     },
   },
   summaryTrendStats: ['avg', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
-  thresholds: { server_5xx: ['rate<0.01'] },
+  thresholds: REPORTABLE
+    ? {
+        server_5xx: ['rate==0'],
+        non_200: ['rate==0'],
+        http_req_failed: ['rate==0'],
+      }
+    : { server_5xx: ['rate<0.01'] },
   // NOKEEPALIVE=1 → a fresh TCP per request, so each attack opens a new yamux 'S'
   // stream through the tunnel (stream-churn stress), not one stream reused by keep-alive.
   noConnectionReuse: __ENV.NOKEEPALIVE === '1',

@@ -1,7 +1,7 @@
 use super::{
-    classify_firewall_check_exit, compatible_path_access, firewall_jump_args,
-    install_checker_firewall, null_device_available, sandbox_write_paths, target_rule_args,
-    CheckerUidPool, CheckerUidRange, SandboxRunGuard,
+    acquire_checker_uid, checker_firewall_command_lock, classify_firewall_check_exit,
+    compatible_path_access, firewall_jump_args, install_checker_firewall, null_device_available,
+    sandbox_write_paths, target_rule_args, CheckerUidPool, CheckerUidRange, SandboxRunGuard,
 };
 use landlock::{AccessFs, ABI};
 
@@ -50,6 +50,17 @@ fn firewall_check_does_not_treat_operational_failure_as_absence() {
     assert!(!classify_firewall_check_exit(Some(1)).unwrap());
     assert!(classify_firewall_check_exit(Some(4)).is_err());
     assert!(classify_firewall_check_exit(None).is_err());
+}
+
+#[test]
+fn checker_firewall_commands_share_one_process_lock() {
+    let first = checker_firewall_command_lock();
+    let second = checker_firewall_command_lock();
+    assert!(std::ptr::eq(first, second));
+    let guard = first.lock().unwrap();
+    assert!(second.try_lock().is_err());
+    drop(guard);
+    assert!(second.try_lock().is_ok());
 }
 
 #[test]
@@ -103,4 +114,25 @@ async fn uid_pool_never_reuses_a_live_checker_identity() {
         .await
         .expect("released UID becomes available");
     assert_eq!(replacement.uid, released);
+}
+
+#[tokio::test]
+async fn saturated_uid_pool_is_an_explicit_platform_admission_timeout() {
+    let pool = Box::leak(Box::new(CheckerUidPool::new(CheckerUidRange {
+        base: 62_000,
+        count: 1,
+    })));
+    let held = pool.acquire().await;
+    let error = match acquire_checker_uid(pool, std::time::Duration::from_millis(10)).await {
+        Ok(_) => panic!("a saturated process pool must not look like a checker exit"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert!(error.to_string().contains("admission capacity"));
+    drop(held);
+    assert!(
+        acquire_checker_uid(pool, std::time::Duration::from_millis(50))
+            .await
+            .is_ok()
+    );
 }

@@ -203,6 +203,23 @@ split=(
   --set config.dbMaxConnections=26
 )
 helm template rsctf-web charts/rsctf "${split[@]}" >/dev/null
+split_ingress="$(helm template rsctf-web charts/rsctf "${split[@]}" \
+  --set ingress.enabled=true \
+  --set ingress.statefulRoutes.enabled=true \
+  --set ingress.statefulRoutes.serviceName=rsctf-control \
+  --show-only templates/ingress.yaml)"
+stateful_backend="$(awk '
+  $1 == "-" && $2 == "path:" { active = ($3 == "/api/stateful"); next }
+  active && $1 == "name:" { gsub(/"/, "", $2); print $2; exit }
+' <<<"$split_ingress")"
+web_backend="$(awk '
+  $1 == "-" && $2 == "path:" { active = ($3 == "/"); next }
+  active && $1 == "name:" { gsub(/"/, "", $2); print $2; exit }
+' <<<"$split_ingress")"
+[[ "$stateful_backend" == "rsctf-control" ]] \
+  || fail "split Ingress did not route /api/stateful to its configured singleton"
+[[ "$web_backend" == "rsctf-web" ]] \
+  || fail "split Ingress did not leave ordinary traffic on the web Service"
 vpn_web="$(helm template rsctf-web charts/rsctf "${split[@]}" \
   --set vpn.enabled=true \
   --set vpn.serverEndpoint=vpn.ctf.example:51820)"

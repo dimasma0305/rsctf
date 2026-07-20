@@ -3,7 +3,7 @@
 // HTTP/SQL fixture mechanics so route assertions remain readable.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -110,6 +110,173 @@ export async function acquireAdminLifecycleDatabaseLock({ timeoutMs = 10_000 } =
   });
 }
 
+const RUNTIME_IDENTITY_FIELDS = Object.freeze([
+  'actualName',
+  'containerId',
+  'configuredImage',
+  'imageId',
+  'binarySha256',
+  'startedAt',
+  'restartCount',
+  'running',
+  'binaryMountShadowed',
+]);
+
+/**
+ * Bind a replica acceptance run to one exact server container, image, and
+ * executable per declared role. Container id + StartedAt catch replacement and
+ * manual restart; RestartCount catches daemon-policy restarts; Docker's image id
+ * and the live binary hash catch stale or shadowed deployments. The returned
+ * value is safe to persist in an audit manifest.
+ */
+export function inspectUniformServerRuntimeIdentity(containers, dockerCommand = docker) {
+  const names = [...new Set((containers || []).map((name) => String(name || '').trim()).filter(Boolean))];
+  if (names.length === 0) throw new Error('at least one server container is required for runtime identity');
+
+  const records = names.map((name) => {
+    const inspected = dockerCommand(['inspect', name]);
+    if (inspected.status !== 0) {
+      throw new Error(`cannot inspect server runtime identity ${name}: ${String(inspected.stderr || '').trim()}`);
+    }
+    let models;
+    try {
+      models = JSON.parse(inspected.stdout);
+    } catch (error) {
+      throw new Error(`cannot parse server runtime identity ${name}: ${error.message}`);
+    }
+    if (!Array.isArray(models) || models.length !== 1) {
+      throw new Error(`server runtime identity ${name} inspection is ambiguous`);
+    }
+    const model = models[0];
+    const actualName = String(model?.Name || '').replace(/^\//, '').trim();
+    const containerId = String(model?.Id || '').trim();
+    const configuredImage = String(model?.Config?.Image || '').trim();
+    const imageId = String(model?.Image || '').trim();
+    const startedAt = String(model?.State?.StartedAt || '').trim();
+    const restartCount = Number(model?.RestartCount);
+    const running = model?.State?.Running === true;
+    if (!actualName) throw new Error(`server ${name} has no Docker container name`);
+    if (!/^[a-f0-9]{64}$/.test(containerId)) {
+      throw new Error(`server ${name} has invalid Docker container identity ${containerId || '<missing>'}`);
+    }
+    if (!configuredImage) throw new Error(`server ${name} has no configured Docker image`);
+    if (!/^sha256:[a-f0-9]{64}$/.test(imageId)) {
+      throw new Error(`server ${name} has invalid Docker image identity ${imageId || '<missing>'}`);
+    }
+    if (!startedAt || Number.isNaN(Date.parse(startedAt))) {
+      throw new Error(`server ${name} has invalid Docker StartedAt evidence ${startedAt || '<missing>'}`);
+    }
+    if (!Number.isSafeInteger(restartCount) || restartCount < 0) {
+      throw new Error(`server ${name} has invalid Docker restart count ${model?.RestartCount ?? '<missing>'}`);
+    }
+    if (!running) throw new Error(`server ${name} is not running`);
+    const binaryPath = '/usr/local/bin/rsctf';
+    const shadowingMount = (model?.Mounts || []).find((mount) => {
+      const destination = String(mount?.Destination || '').replace(/\/+$/, '') || '/';
+      return destination === '/' || destination === binaryPath || binaryPath.startsWith(`${destination}/`);
+    });
+    if (shadowingMount) {
+      throw new Error(
+        `server ${name} shadows ${binaryPath} with ${shadowingMount.Type || 'a'} mount ` +
+          `${shadowingMount.Source || '<unknown source>'}`,
+      );
+    }
+
+    const hashed = dockerCommand(['exec', name, 'sha256sum', binaryPath]);
+    if (hashed.status !== 0) {
+      throw new Error(`cannot hash live rsctf binary in ${name}: ${String(hashed.stderr || '').trim()}`);
+    }
+    const match = String(hashed.stdout || '').trim().match(/^([a-f0-9]{64})\s+\/usr\/local\/bin\/rsctf$/);
+    if (!match) throw new Error(`server ${name} returned an invalid live rsctf sha256sum`);
+    return Object.freeze({
+      name,
+      actualName,
+      containerId,
+      configuredImage,
+      imageId,
+      binarySha256: match[1],
+      startedAt,
+      restartCount,
+      running,
+      binaryMountShadowed: false,
+    });
+  });
+
+  const imageIds = new Set(records.map(({ imageId }) => imageId));
+  const binaryHashes = new Set(records.map(({ binarySha256 }) => binarySha256));
+  if (imageIds.size !== 1) {
+    throw new Error(`declared server roles use different Docker image ids: ${[...imageIds].join(', ')}`);
+  }
+  if (binaryHashes.size !== 1) {
+    throw new Error(`declared server roles use different live rsctf binaries: ${[...binaryHashes].join(', ')}`);
+  }
+  return Object.freeze({
+    imageId: records[0].imageId,
+    binarySha256: records[0].binarySha256,
+    containers: Object.freeze(records),
+  });
+}
+
+/** Fail when any declared server role changed between two acceptance snapshots. */
+export function assertServerRuntimeIdentityUnchanged(before, after) {
+  if (!before || !after || !Array.isArray(before.containers) || !Array.isArray(after.containers)) {
+    throw new Error('server runtime identity comparison requires complete before and after snapshots');
+  }
+  const beforeNames = before.containers.map(({ name }) => name);
+  const afterNames = after.containers.map(({ name }) => name);
+  if (new Set(beforeNames).size !== beforeNames.length || new Set(afterNames).size !== afterNames.length) {
+    throw new Error('server runtime identity contains duplicate declared roles');
+  }
+  if (beforeNames.length !== afterNames.length || beforeNames.some((name) => !afterNames.includes(name))) {
+    throw new Error(
+      `declared server roles changed during acceptance: before=${beforeNames.join(',')} after=${afterNames.join(',')}`,
+    );
+  }
+
+  const endingByName = new Map(after.containers.map((record) => [record.name, record]));
+  for (const starting of before.containers) {
+    const ending = endingByName.get(starting.name);
+    for (const field of RUNTIME_IDENTITY_FIELDS) {
+      if (starting[field] !== ending[field]) {
+        throw new Error(
+          `server role ${starting.name} changed ${field} during acceptance ` +
+            `(before=${JSON.stringify(starting[field])}, after=${JSON.stringify(ending[field])})`,
+        );
+      }
+    }
+  }
+  if (before.imageId !== after.imageId || before.binarySha256 !== after.binarySha256) {
+    throw new Error('uniform server image or binary identity changed during acceptance');
+  }
+  return after;
+}
+
+/**
+ * Reinspect the named roles and require that they still resolve to the exact
+ * starting containers. Call this on both sides of the ending fatal-log audit.
+ */
+export function inspectUnchangedServerRuntimeIdentity(
+  before,
+  containers,
+  dockerCommand = docker,
+) {
+  const after = inspectUniformServerRuntimeIdentity(containers, dockerCommand);
+  return assertServerRuntimeIdentityUnchanged(before, after);
+}
+
+/** Audit logs by immutable starting container id, never by a replaceable name. */
+export function originalServerRuntimeLogTargets(identity) {
+  if (!identity || !Array.isArray(identity.containers) || identity.containers.length === 0) {
+    throw new Error('server runtime log targets require a complete starting identity');
+  }
+  return identity.containers.map(({ name, containerId }) => {
+    if (!name || !/^[a-f0-9]{64}$/.test(String(containerId || ''))) {
+      throw new Error('server runtime identity contains an invalid original log target');
+    }
+    return Object.freeze({ name, containerId });
+  });
+}
+
 export const unwrap = (response) =>
   response?.json && Object.hasOwn(response.json, 'data') ? response.json.data : response?.json;
 
@@ -150,6 +317,41 @@ export async function adminApi(method, path, {
   return expectStatus(response, expected, label);
 }
 
+const RETRYABLE_FETCH_TRANSPORT_CODES = new Set([
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ETIMEDOUT',
+]);
+
+export function retryableFetchTransportError(error) {
+  const code = error?.cause?.code || error?.code;
+  return error instanceof TypeError &&
+    error.message === 'fetch failed' &&
+    RETRYABLE_FETCH_TRANSPORT_CODES.has(code);
+}
+
+export async function fetchWithBoundedTransportRetry(request, {
+  networkRetries = 0,
+  retryDelayMs = 100,
+} = {}) {
+  if (!Number.isSafeInteger(networkRetries) || networkRetries < 0 || networkRetries > 1) {
+    throw new Error(`networkRetries must be 0 or 1 (got ${networkRetries})`);
+  }
+  let attempt = 0;
+  for (;;) {
+    try {
+      return { response: await request(), attempts: attempt + 1 };
+    } catch (error) {
+      if (attempt >= networkRetries || !retryableFetchTransportError(error)) throw error;
+      attempt += 1;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+}
+
 export async function rawRequest(method, path, {
   baseUrl = TARGET,
   jwt = adminJwt(),
@@ -160,29 +362,18 @@ export async function rawRequest(method, path, {
   networkRetries = 0,
   retryDelayMs = 100,
 } = {}) {
-  if (!Number.isSafeInteger(networkRetries) || networkRetries < 0 || networkRetries > 1) {
-    throw new Error(`networkRetries must be 0 or 1 (got ${networkRetries})`);
-  }
   const requestHeaders = { ...headers };
   if (jwt) requestHeaders.authorization = `Bearer ${jwt}`;
   if (ip) requestHeaders['x-real-ip'] = ip;
-  let response;
-  let attempt = 0;
-  for (;;) {
-    try {
-      response = await fetch(`${baseUrl}${path}`, {
-        method,
-        headers: requestHeaders,
-        body,
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      break;
-    } catch (error) {
-      if (attempt >= networkRetries) throw error;
-      attempt += 1;
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-    }
-  }
+  const { response, attempts } = await fetchWithBoundedTransportRetry(
+    () => fetch(`${baseUrl}${path}`, {
+      method,
+      headers: requestHeaders,
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    }),
+    { networkRetries, retryDelayMs },
+  );
   const bytes = new Uint8Array(await response.arrayBuffer());
   const text = new TextDecoder().decode(bytes);
   let json;
@@ -191,7 +382,7 @@ export async function rawRequest(method, path, {
   } catch {
     json = undefined;
   }
-  return { status: response.status, headers: response.headers, bytes, text, json, attempts: attempt + 1 };
+  return { status: response.status, headers: response.headers, bytes, text, json, attempts };
 }
 
 export async function multipartRequest(path, {
@@ -203,11 +394,61 @@ export async function multipartRequest(path, {
   ip = '10.252.0.12',
   expected = 200,
   label = `multipart POST ${path}`,
+  timeoutMs = 120_000,
 } = {}) {
   const form = new FormData();
   form.append('file', new Blob([content], { type: contentType }), filename);
-  const response = await rawRequest('POST', path, { baseUrl, jwt, ip, body: form });
+  const response = await rawRequest('POST', path, { baseUrl, jwt, ip, body: form, timeoutMs });
   return expectStatus(response, expected, label);
+}
+
+/**
+ * Build a trusted-import package whose two conventional src/Dockerfile trees
+ * contain only `FROM scratch`. The application owns tag creation, reserved
+ * labels, immutable identity publication, and ownership-ledger persistence.
+ */
+export function scratchChallengeArchive(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error('scratch challenge archive requires at least one entry');
+  }
+  const root = mkdtempSync(join(tmpdir(), 'rsctf-admin-scratch-'));
+  const archive = `${root}.zip`;
+  try {
+    entries.forEach((entry, index) => {
+      if (!entry || typeof entry.title !== 'string' || typeof entry.flag !== 'string') {
+        throw new Error(`scratch challenge entry ${index} is invalid`);
+      }
+      const directory = join(root, `challenge-${index + 1}`);
+      mkdirSync(join(directory, 'src'), { recursive: true });
+      writeFileSync(join(directory, 'src', 'Dockerfile'), 'FROM scratch\n', { mode: 0o600 });
+      writeFileSync(
+        join(directory, 'challenge.yaml'),
+        [
+          `name: ${JSON.stringify(entry.title)}`,
+          'author: "admin lifecycle"',
+          'description: "Disposable owned-image acceptance fixture."',
+          'type: StaticContainer',
+          'category: Pwn',
+          'minScoreRate: 0.25',
+          'difficulty: 1',
+          'flags:',
+          `  - ${JSON.stringify(entry.flag)}`,
+          'container:',
+          '  memoryLimit: 64',
+          '  cpuCount: 1',
+          '  exposePort: 31337',
+          '  enableTrafficCapture: false',
+          '',
+        ].join('\n'),
+        { mode: 0o600 },
+      );
+    });
+    execFileSync('zip', ['-q', '-r', archive, '.'], { cwd: root, stdio: 'pipe' });
+    return readFileSync(archive);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(archive, { force: true });
+  }
 }
 
 export function userByEmail(email) {
@@ -238,7 +479,6 @@ export function insertBuildRecord({
   trigger = 'Bulk',
   kind = 'Challenge',
   attempt = 1,
-  imageRef = null,
   logTail = null,
 }) {
   const pending = status === 3 || status === 5;
@@ -251,12 +491,34 @@ export function insertBuildRecord({
           `${positiveId(challengeId, 'build challenge')},${positiveId(gameId, 'build game')},` +
           `${sqlLiteral(title)},clock_timestamp(),clock_timestamp(),` +
           `${pending ? 'NULL' : 'clock_timestamp()'},${sqlLiteral(trigger)},${sqlLiteral(kind)},` +
-          `${positiveId(attempt, 'build attempt')},${Number(status)},NULL,${sqlLiteral(imageRef)},` +
+          `${positiveId(attempt, 'build attempt')},${Number(status)},NULL,NULL,` +
           `${sqlLiteral(logTail)}) RETURNING id` +
         `) SELECT id FROM inserted`,
     ),
     'build record id',
   );
+}
+
+export function repositoryCleanupRescheduleSql(gameId, bindingId, challengeId, tag) {
+  const id = positiveId(gameId, 'repository cleanup game');
+  const binding = positiveId(bindingId, 'repository cleanup binding');
+  const protectedChallenge = positiveId(challengeId, 'repository cleanup protected challenge');
+  const namespace = String(tag);
+  if (!/^adm[a-z0-9]+$/.test(namespace)) {
+    throw new Error(`invalid repository cleanup namespace ${namespace}`);
+  }
+  return `UPDATE "Games" game SET ` +
+    `start_time_utc=clock_timestamp()+interval '1 day', ` +
+    `end_time_utc=clock_timestamp()+interval '2 days' ` +
+    `WHERE game.id=${id} AND game.title=${sqlLiteral(`LOADTEST-ADMIN-REPO-${namespace}`)} ` +
+    `AND game.repo_binding_id IS NULL AND game.deletion_pending=FALSE ` +
+    `AND EXISTS (SELECT 1 FROM "GameChallenges" challenge ` +
+      `WHERE challenge.game_id=game.id AND challenge.id=${protectedChallenge} ` +
+      `AND challenge.source_yaml_path LIKE ${sqlLiteral(`binding/${binding}/%`)}) ` +
+    `AND NOT EXISTS (SELECT 1 FROM "GameChallenges" challenge ` +
+      `WHERE challenge.game_id=game.id AND (` +
+        `challenge.source_yaml_path IS NULL OR challenge.source_yaml_path NOT LIKE ` +
+        `${sqlLiteral(`binding/${binding}/%`)})) RETURNING game.id`;
 }
 
 function disposableAdminGameIdentity(gameId, tag) {
@@ -268,26 +530,25 @@ function disposableAdminGameIdentity(gameId, tag) {
   return { id, title: `ADMIN-LIFECYCLE-${namespace}` };
 }
 
-function requireDisposableAdminGame(gameId, tag) {
-  const identity = disposableAdminGameIdentity(gameId, tag);
+function requireExactDisposableGame(identity, label) {
   const currentTitle = sql(`SELECT title FROM "Games" WHERE id=${identity.id}`);
   if (!currentTitle) return { ...identity, exists: false };
   if (currentTitle !== identity.title) {
     throw new Error(
-      `game ${identity.id} is ${currentTitle}, not the expected disposable admin fixture`,
+      `game ${identity.id} is ${currentTitle}, not the expected ${label}`,
     );
   }
   return { ...identity, exists: true };
 }
 
-/**
- * Snapshot every Docker runtime identity still reachable from the disposable
- * game's database graph. The caller takes this before evidence teardown so a
- * partially successful cleanup cannot erase the only durable runtime handle.
- */
-export function disposableAdminGameRuntimeIds(gameId, tag) {
-  const { id, exists } = requireDisposableAdminGame(gameId, tag);
-  if (!exists) return [];
+function requireDisposableAdminGame(gameId, tag) {
+  return requireExactDisposableGame(
+    disposableAdminGameIdentity(gameId, tag),
+    'disposable admin fixture',
+  );
+}
+
+function disposableGameRuntimeIds(id) {
   const raw = sql(
     `SELECT COALESCE(string_agg(DISTINCT owned.container_id, E'\\n'), '') FROM (` +
       `SELECT container.container_id FROM "Containers" container ` +
@@ -308,6 +569,17 @@ export function disposableAdminGameRuntimeIds(gameId, tag) {
     `) owned(container_id) WHERE owned.container_id IS NOT NULL AND owned.container_id<>''`,
   );
   return [...new Set(String(raw).split('\n').map((value) => value.trim()).filter(Boolean))];
+}
+
+/**
+ * Snapshot every Docker runtime identity still reachable from the disposable
+ * game's database graph. The caller takes this before evidence teardown so a
+ * partially successful cleanup cannot erase the only durable runtime handle.
+ */
+export function disposableAdminGameRuntimeIds(gameId, tag) {
+  const { id, exists } = requireDisposableAdminGame(gameId, tag);
+  if (!exists) return [];
+  return disposableGameRuntimeIds(id);
 }
 
 function assertDockerRuntimeAbsent(containerId) {
@@ -341,8 +613,7 @@ function assertCheckerDirectoryAbsent(gameId) {
 // endpoint must continue preserving started/scored events. The load harness
 // reaches this fallback only after proving its exact external runtimes are gone;
 // the transaction below removes only the validated disposable database graph.
-export function disposableAdminGameCleanupSql(gameId, tag) {
-  const { id, title } = disposableAdminGameIdentity(gameId, tag);
+function exactDisposableGameCleanupSql({ id, title }) {
   const expectedTitle = sqlLiteral(title);
   const gameControlLock = createHash('sha256')
     .update(`koth-control:${id}`)
@@ -522,107 +793,35 @@ END
 $admin_fixture_cleanup$`;
 }
 
-export function deleteDisposableAdminGame(gameId, tag, { runtimeIds = [] } = {}) {
-  const { id, exists } = requireDisposableAdminGame(gameId, tag);
+export function disposableAdminGameCleanupSql(gameId, tag) {
+  return exactDisposableGameCleanupSql(disposableAdminGameIdentity(gameId, tag));
+}
+
+function deleteExactDisposableGame(identity, { runtimeIds = [] } = {}) {
+  const { id, exists } = requireExactDisposableGame(identity, 'disposable load fixture');
   if (!exists) return false;
-  const ownedRuntimeIds = disposableAdminGameRuntimeIds(id, tag);
+  const ownedRuntimeIds = disposableGameRuntimeIds(id);
   for (const containerId of new Set([...runtimeIds, ...ownedRuntimeIds])) {
     if (containerId) assertDockerRuntimeAbsent(containerId);
   }
   assertCheckerDirectoryAbsent(id);
-  sql(disposableAdminGameCleanupSql(id, tag));
+  sql(exactDisposableGameCleanupSql(identity));
   const residual = Number(sql(`SELECT count(*) FROM "Games" WHERE id=${id}`));
-  if (residual !== 0) throw new Error(`disposable admin fixture ${id} survived exact SQL cleanup`);
+  if (residual !== 0) throw new Error(`disposable load fixture ${id} survived exact SQL cleanup`);
   return true;
 }
 
-export function tagFixtureImage(source, tag, managedContainerId) {
-  if (!/^rsctf\/admin-lifecycle-adm[a-z0-9]+:(?:single|prune)$/.test(tag)) {
-    throw new Error(`invalid disposable admin fixture image tag ${tag}`);
-  }
-  const canonicalTag = `docker.io/${tag}`;
-  if (!managedContainerId) {
-    throw new Error(`cannot create owned fixture image ${tag} without a managed container`);
-  }
-  const scopeInspection = docker([
-    'container',
-    'inspect',
-    managedContainerId,
-    '--format',
-    '{{json .Config.Labels}}',
-  ]);
-  if (scopeInspection.status !== 0) {
-    throw new Error(
-      `inspect managed fixture container ${managedContainerId}: ${scopeInspection.stderr.trim()}`,
-    );
-  }
-  let labels;
-  try {
-    labels = JSON.parse(scopeInspection.stdout);
-  } catch (error) {
-    throw new Error(`managed fixture container labels are invalid JSON: ${error.message}`);
-  }
-  const scope = labels?.['rsctf.scope'];
-  if (!scope || labels?.['rsctf.managed'] !== scope) {
-    throw new Error(`container ${managedContainerId} is not owned by one rsctf installation`);
-  }
-
-  const created = docker(['container', 'create', source]);
-  if (created.status !== 0) {
-    throw new Error(`create fixture image source container: ${created.stderr.trim()}`);
-  }
-  const temporaryContainer = created.stdout.trim();
-  let committed = false;
-  try {
-    const result = docker([
-      'container',
-      'commit',
-      '--change',
-      `LABEL rsctf.image.scope=${scope}`,
-      '--change',
-      `LABEL rsctf.image.ref=${canonicalTag}`,
-      temporaryContainer,
-      tag,
-    ]);
-    if (result.status !== 0) {
-      throw new Error(`create labeled fixture image ${tag}: ${result.stderr.trim()}`);
-    }
-    committed = true;
-  } finally {
-    const removed = docker(['container', 'rm', '-f', temporaryContainer]);
-    if (removed.status !== 0 && !/no such (?:container|object)/i.test(removed.stderr)) {
-      if (committed) docker(['image', 'rm', '-f', tag]);
-      throw new Error(`remove fixture image source container: ${removed.stderr.trim()}`);
-    }
-  }
-
-  const imageInspection = docker(['image', 'inspect', tag, '--format', '{{json .Config.Labels}}']);
-  if (imageInspection.status !== 0) {
-    removeFixtureImage(tag);
-    throw new Error(`inspect labeled fixture image ${tag}: ${imageInspection.stderr.trim()}`);
-  }
-  let imageLabels;
-  try {
-    imageLabels = JSON.parse(imageInspection.stdout);
-  } catch (error) {
-    removeFixtureImage(tag);
-    throw new Error(`fixture image ${tag} labels are invalid JSON: ${error.message}`);
-  }
-  if (
-    imageLabels?.['rsctf.image.scope'] !== scope ||
-    imageLabels?.['rsctf.image.ref'] !== canonicalTag
-  ) {
-    removeFixtureImage(tag);
-    throw new Error(`fixture image ${tag} does not carry its exact ownership labels`);
-  }
-  return tag;
+export function deleteDisposableAdminGame(gameId, tag, { runtimeIds = [] } = {}) {
+  return deleteExactDisposableGame(disposableAdminGameIdentity(gameId, tag), { runtimeIds });
 }
 
-export function removeFixtureImage(tag) {
-  const result = docker(['image', 'rm', '-f', tag]);
-  if (result.status !== 0 && !/no such image/i.test(result.stderr)) {
-    throw new Error(`remove fixture image ${tag}: ${result.stderr.trim()}`);
+export function deleteDisposableLoadGame(gameId, expectedTitle, { runtimeIds = [] } = {}) {
+  const id = positiveId(gameId, 'disposable load game');
+  const title = String(expectedTitle);
+  if (!/^(?:LOADTEST-[A-Za-z0-9-]+|MULTI-DOMAIN-[a-z0-9][a-z0-9-]{0,31})$/.test(title)) {
+    throw new Error(`invalid disposable load title ${title}`);
   }
+  return deleteExactDisposableGame({ id, title }, { runtimeIds });
 }
 
 export function createWorkerCsr() {
@@ -667,4 +866,8 @@ export function persistRecovery(path, state) {
 
 export function removeRecovery(path) {
   rmSync(path, { force: true });
+}
+
+export function shouldRetainLifecycleManifest({ completed, cleanupVerified, keep }) {
+  return !completed || !cleanupVerified || keep === '1';
 }

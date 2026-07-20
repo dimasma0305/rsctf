@@ -182,8 +182,12 @@ pub mod sandbox;
 mod service_reset;
 
 pub use checker::*;
+pub use flag_delivery::validate_flag_delivery_configuration;
 pub(crate) use flag_delivery::{
-    record_flag_delivery_outcomes, FlagDeliveryKind, FlagDeliveryOutcome,
+    record_flag_delivery_outcome_batch, settle_flag_delivery_outcomes, FlagDeliveryKind,
+    FlagDeliveryOutcome, FlagDeliveryPolicy, FlagDeliveryPublication, FlagDeliveryReceipt,
+    CHECKER_MINIMUM_RUNWAY_SECONDS, CHECKER_SCHEDULER_OUTER_MARGIN_SECONDS,
+    FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS, PUBLICATION_DEADLINE_REASON,
 };
 pub(crate) use koth_auth::{
     acquire_game_lock as acquire_ad_game_lock, clear_challenge_control, game_lock_key,

@@ -214,13 +214,37 @@ go to `control` or `network`, because they consume process-local tunnel state:
 ```text
 /api/stateful/Game/{gameId}/Ad/Byoc/Agent/...  # long-lived agent WebSocket
 /api/stateful/Game/{gameId}/Ad/Byoc/Image/...  # image exported by the owner
+/api/stateful/edit/games/{gameId}/ad/koth/{challengeId}/recover
+                                               # checker/firewall-owned recovery
 /hub/containerExec
-/hub/containerExec/negotiate          # BYOC/admin terminal hub
+/hub/containerExec/negotiate                  # platform Admin terminal hub
+/hub/containerExec/games/{gameId}
+/hub/containerExec/games/{gameId}/negotiate  # game-manager scoped terminal hub
 ```
 
 The control/network HTTP listener serves only these stateful endpoints plus
-health probes. Direct requests for account, admin, edit, or ordinary game APIs
-are rejected there; they must enter through the web service.
+health probes. The recovery endpoint is the sole edit mutation on that listener;
+all other account, admin, edit, and ordinary game APIs are rejected there and
+must enter through the web service. The historical
+`/api/edit/games/{gameId}/ad/koth/{challengeId}/recover` URL remains compatible:
+the bundled Caddy rule routes it directly to the owner, while a web replica
+returns a method-preserving same-origin redirect to the fixed stateful prefix.
+Clients behind a prefix-only Ingress must follow that HTTP 307 redirect while
+preserving the POST body; clients that disable redirects must call the fixed
+`/api/stateful/.../recover` path directly.
+The bundled Caddy transport does not pool idle connections to this low-volume,
+stateful upstream, preventing a recreated singleton's stale socket from turning
+a non-retryable recovery POST into a proxy-generated 502.
+
+Terminal admission is source-IP limited and bounded to 128 connections per
+network-owner process, with at most four connections per authenticated user and
+four sessions per connection. Game-manager membership is revalidated before
+each invocation. An `Open` resolves the database-owned target through the
+container backend to an installation-labelled canonical runtime ID; the target
+ownership rows are not re-read for every keystroke. Normal deletion destroys
+the backend before its ownership is released. Operators and custom lifecycle
+integrations must likewise destroy an old backend rather than reassigning a
+live runtime ID while a terminal is attached.
 
 The historical `/api/Game/{gameId}/Ad/Byoc/{Agent,Image}/...` paths remain
 available for previously downloaded bundles. The included Caddy configuration
@@ -426,7 +450,8 @@ ingress:
           pathType: Prefix
 ```
 
-The chart emits portable Prefix routes for `/api/stateful` and
+The chart emits portable Prefix routes for `/api/stateful` (including KotH
+recovery) and
 `/hub/containerExec` before the web route. Hot scoreboard, state, targets, and
 submit requests remain on the scalable web pool. Previously downloaded bundles
 that still use the historical `/api/Game/.../Byoc/...` path must be regenerated,

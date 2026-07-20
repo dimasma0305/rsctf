@@ -7,24 +7,31 @@
 //!
 //!   'S' service — dial the team's local service and pipe raw bytes.
 //!   'F' flag    — read [8-byte big-endian seq][flag] and atomically write the
-//!                 newest flag to the flag file (temp file + rename).
+//!                 newest flag to the flag file (temp file + rename), then send
+//!                 ['A'][the same seq] as its install acknowledgement.
 //!   'E' exec    — open an interactive shell in the configured service container.
 //!
 //! Only one outbound connection is needed; no inbound port / public IP / VPN.
 
 use std::io;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecResults};
 use bollard::Docker;
-use futures::io::{AsyncRead as FAsyncRead, AsyncReadExt, AsyncWrite as FAsyncWrite};
+use futures::io::{
+    AsyncRead as FAsyncRead, AsyncReadExt, AsyncWrite as FAsyncWrite,
+    AsyncWriteExt as FuturesAsyncWriteExt,
+};
 use futures::{future, Sink, Stream};
 use tokio::io::AsyncWriteExt as TokioAsyncWriteExt;
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::task::JoinSet;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
@@ -32,7 +39,8 @@ use tracing::{info, warn};
 use yamux::{Connection, Mode, Stream as YamuxStream};
 
 use crate::{
-    env, must_env, yamux_config, RECONNECT_DELAY, STREAM_EXEC, STREAM_FLAG, STREAM_SERVICE,
+    env, must_env, yamux_config, AGENT_PROTOCOL, AGENT_PROTOCOL_HEADER, RECONNECT_DELAY,
+    STREAM_EXEC, STREAM_FLAG, STREAM_SERVICE,
 };
 
 // ---------------------------------------------------------------------------
@@ -146,10 +154,46 @@ impl FAsyncWrite for WsByteStream {
 // agent driver
 // ---------------------------------------------------------------------------
 
-/// Serializes flag writes and drops stale (lower-seq) flags. Reset per connection
-/// so a relay restart (seq back to 0) still delivers.
+const MAX_FLAG_BYTES: usize = 4096;
+const FLAG_ACK: u8 = b'A';
+
+#[derive(Clone)]
+struct AppliedFlag {
+    sequence: u64,
+    value: Vec<u8>,
+}
+
+#[derive(Default)]
+struct FlagSinkState {
+    generation: u64,
+    applied: Option<AppliedFlag>,
+}
+
+/// Process-wide serializer for every connection generation. File replacement
+/// runs under this lock on a blocking worker, so beginning a newer generation
+/// strictly follows every older rename even when its async handler was aborted.
+#[derive(Default)]
 struct FlagSink {
-    last: Mutex<u64>,
+    state: std::sync::Mutex<FlagSinkState>,
+}
+
+impl FlagSink {
+    async fn begin_connection(self: &Arc<Self>) -> Result<u64, String> {
+        let sink = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut state = sink
+                .state
+                .lock()
+                .map_err(|_| "flag sink lock is poisoned".to_string())?;
+            state.generation = state
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| "flag sink exhausted its local connection generation".to_string())?;
+            Ok(state.generation)
+        })
+        .await
+        .map_err(|error| format!("flag sink generation task failed: {error}"))?
+    }
 }
 
 pub async fn run_agent() {
@@ -157,9 +201,27 @@ pub async fn run_agent() {
     let service = must_env("RSCTF_BYOC_SERVICE"); // host:port of the team's service
     let flag_file = env("RSCTF_BYOC_FLAG_FILE", "/flag"); // where to write the rotating flag
     let service_container = env("RSCTF_BYOC_SERVICE_CONTAINER", "");
+    let flag_sink = Arc::new(FlagSink::default());
 
     loop {
-        if let Err(e) = connect_once(&tunnel_url, &service, &flag_file, &service_container).await {
+        let generation = match flag_sink.begin_connection().await {
+            Ok(generation) => generation,
+            Err(error) => {
+                warn!(%error, "tunnel: could not begin flag connection generation");
+                tokio::time::sleep(RECONNECT_DELAY).await;
+                continue;
+            }
+        };
+        if let Err(e) = connect_once(
+            &tunnel_url,
+            &service,
+            &flag_file,
+            &service_container,
+            flag_sink.clone(),
+            generation,
+        )
+        .await
+        {
             warn!("tunnel: {e}; reconnecting in 3s");
         }
         tokio::time::sleep(RECONNECT_DELAY).await;
@@ -173,42 +235,57 @@ async fn connect_once(
     service: &str,
     flag_file: &str,
     service_container: &str,
+    flag_sink: Arc<FlagSink>,
+    generation: u64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (ws, _resp) = connect_async(tunnel_url).await?;
+    let (ws, _response) = connect_async(tunnel_request(tunnel_url)?).await?;
     let socket = WsByteStream::new(ws);
 
     let mut conn = Connection::new(socket, yamux_config(), Mode::Client);
     info!(service, "tunnel connected");
 
-    // Per-connection flag serializer: a monotonic seq + mutex so two flag streams
-    // (e.g. a reconnect replay racing a fresh push) can't let the older flag win
-    // the rename.
-    let sink = Arc::new(FlagSink {
-        last: Mutex::new(0),
-    });
+    let mut handlers = JoinSet::new();
 
     // The accept loop is also the driver: continuously polling `poll_next_inbound`
     // is what makes the whole yamux connection (and every accepted stream's I/O)
     // progress in yamux 0.13.
-    loop {
+    let result = loop {
         match future::poll_fn(|cx| conn.poll_next_inbound(cx)).await {
             Some(Ok(stream)) => {
                 let service = service.to_string();
                 let flag_file = flag_file.to_string();
                 let service_container = service_container.to_string();
-                let sink = sink.clone();
-                tokio::spawn(handle_stream(
+                let sink = flag_sink.clone();
+                handlers.spawn(handle_stream(
                     stream,
                     service,
                     flag_file,
                     service_container,
                     sink,
+                    generation,
                 ));
             }
-            Some(Err(e)) => return Err(Box::new(e)),
-            None => return Err("tunnel closed".into()),
+            Some(Err(error)) => {
+                break Err::<(), Box<dyn std::error::Error + Send + Sync>>(Box::new(error));
+            }
+            None => break Err("tunnel closed".into()),
         }
-    }
+    };
+    handlers.abort_all();
+    while handlers.join_next().await.is_some() {}
+    result
+}
+
+fn tunnel_request(
+    tunnel_url: &str,
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, tokio_tungstenite::tungstenite::Error>
+{
+    let mut request = tunnel_url.into_client_request()?;
+    request.headers_mut().insert(
+        HeaderName::from_static(AGENT_PROTOCOL_HEADER),
+        HeaderValue::from_static(AGENT_PROTOCOL),
+    );
+    Ok(request)
 }
 
 /// Dispatches one forwarded stream by its leading type byte.
@@ -218,6 +295,7 @@ async fn handle_stream(
     flag_file: String,
     service_container: String,
     sink: Arc<FlagSink>,
+    generation: u64,
 ) {
     let mut hdr = [0u8; 1];
     if stream.read_exact(&mut hdr).await.is_err() {
@@ -225,7 +303,7 @@ async fn handle_stream(
     }
     match hdr[0] {
         STREAM_SERVICE => dial_and_pipe(stream, &service).await,
-        STREAM_FLAG => write_flag(stream, &flag_file, &sink).await,
+        STREAM_FLAG => write_flag(stream, &flag_file, sink, generation).await,
         STREAM_EXEC => exec_shell(stream, &service_container).await,
         other => warn!("unknown stream type {:?}", other as char),
     }
@@ -340,11 +418,14 @@ async fn dial_and_pipe(stream: YamuxStream, service: &str) {
     let _ = tokio::io::copy_bidirectional(&mut svc, &mut server).await;
 }
 
-/// Reads [8-byte big-endian seq][flag] and, if seq is newer than any flag already
-/// applied, writes it atomically to the flag file (temp file + rename). The sink's
-/// mutex serializes the write+rename, so an older flag that raced a newer one can
-/// never win the rename.
-async fn write_flag(mut stream: YamuxStream, flag_file: &str, sink: &FlagSink) {
+/// Reads [8-byte big-endian seq][flag] and sends the exact sequence-bound ACK only
+/// after the atomic replacement succeeds (or the identical sequence/value was
+/// already installed successfully). The sink mutex prevents a stale concurrent
+/// stream from winning the rename.
+async fn write_flag<S>(mut stream: S, flag_file: &str, sink: Arc<FlagSink>, generation: u64)
+where
+    S: FAsyncRead + FAsyncWrite + Unpin,
+{
     let mut seq_buf = [0u8; 8];
     if stream.read_exact(&mut seq_buf).await.is_err() {
         return;
@@ -352,44 +433,142 @@ async fn write_flag(mut stream: YamuxStream, flag_file: &str, sink: &FlagSink) {
     let seq = u64::from_be_bytes(seq_buf);
 
     let mut flag = Vec::new();
-    let mut limited = stream.take(4096);
-    if limited.read_to_end(&mut flag).await.is_err() || flag.is_empty() {
+    let read_result = {
+        let mut limited = (&mut stream).take((MAX_FLAG_BYTES + 1) as u64);
+        limited.read_to_end(&mut flag).await
+    };
+    if read_result.is_err() || flag.is_empty() || flag.len() > MAX_FLAG_BYTES {
         return;
     }
 
-    let mut last = sink.last.lock().await;
-    if seq <= *last {
-        return; // a newer flag already landed
+    if !install_flag(flag_file, sink, generation, seq, &flag).await {
+        return;
     }
 
-    let tmp = format!("{flag_file}.tmp");
-    if let Some(parent) = std::path::Path::new(flag_file).parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                warn!("flag dir: {e}");
-                return;
-            }
+    let mut ack = [0_u8; 9];
+    ack[0] = FLAG_ACK;
+    ack[1..].copy_from_slice(&seq.to_be_bytes());
+    if stream.write_all(&ack).await.is_err()
+        || stream.flush().await.is_err()
+        || stream.close().await.is_err()
+    {
+        warn!(seq, "flag installed but acknowledgement could not be sent");
+    }
+}
+
+static NEXT_FLAG_TEMP_ID: AtomicU64 = AtomicU64::new(1);
+
+async fn install_flag(
+    flag_file: &str,
+    sink: Arc<FlagSink>,
+    generation: u64,
+    seq: u64,
+    flag: &[u8],
+) -> bool {
+    let flag_file = flag_file.to_string();
+    let flag = flag.to_vec();
+    match tokio::task::spawn_blocking(move || {
+        install_flag_blocking(&flag_file, &sink, generation, seq, &flag)
+    })
+    .await
+    {
+        Ok(installed) => installed,
+        Err(error) => {
+            warn!(%error, generation, seq, "flag install task failed");
+            false
         }
     }
-    if let Err(e) = tokio::fs::write(&tmp, &flag).await {
-        warn!("flag write: {e}");
-        return;
+}
+
+fn install_flag_blocking(
+    flag_file: &str,
+    sink: &FlagSink,
+    generation: u64,
+    seq: u64,
+    flag: &[u8],
+) -> bool {
+    use std::io::Write as _;
+
+    let mut state = match sink.state.lock() {
+        Ok(state) => state,
+        Err(_) => {
+            warn!(generation, seq, "flag sink lock is poisoned");
+            return false;
+        }
+    };
+    if state.generation != generation {
+        return false;
     }
-    if let Err(e) = tokio::fs::rename(&tmp, flag_file).await {
-        warn!("flag rename: {e}");
-        return;
+    if let Some(current) = state.applied.as_ref() {
+        if seq < current.sequence || (seq == current.sequence && current.value != flag) {
+            return false;
+        }
+        if seq == current.sequence
+            && std::fs::read(flag_file).is_ok_and(|installed| installed == flag)
+        {
+            return true;
+        }
     }
-    *last = seq;
-    info!("flag updated (seq {seq}, {} bytes)", flag.len());
+
+    let flag_path = std::path::Path::new(flag_file);
+    if let Some(parent) = flag_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            warn!(%error, generation, seq, "flag directory creation failed");
+            return false;
+        }
+    }
+    let operation = NEXT_FLAG_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let temporary = format!(
+        "{flag_file}.tmp.{}.{}.{}.{}",
+        std::process::id(),
+        generation,
+        seq,
+        operation
+    );
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        file.write_all(flag)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, flag_path)
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&temporary);
+        warn!(%error, generation, seq, "flag atomic replacement failed");
+        return false;
+    }
+    state.applied = Some(AppliedFlag {
+        sequence: seq,
+        value: flag.to_vec(),
+    });
+    info!(generation, seq, bytes = flag.len(), "flag updated");
+    true
 }
 
 #[cfg(test)]
 mod websocket_stream_tests {
     use super::*;
-    use futures::io::AsyncWriteExt as _;
     use futures::{SinkExt as _, StreamExt as _};
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+    use tokio_util::compat::TokioAsyncReadCompatExt;
+
+    fn test_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "rsctf-byoc-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 
     #[tokio::test]
     async fn byte_stream_flattens_frames_and_writes_binary_messages() {
@@ -408,7 +587,15 @@ mod websocket_stream_tests {
             assert_eq!(message, Message::Binary(Bytes::from_static(b"client")));
         });
 
-        let (websocket, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        // An old server accepts the offered capability without selecting it.
+        // This is the agent-first half of the rollout contract.
+        let request = tunnel_request(&format!("ws://{address}")).unwrap();
+        assert_eq!(
+            request.headers().get(AGENT_PROTOCOL_HEADER),
+            Some(&HeaderValue::from_static(AGENT_PROTOCOL))
+        );
+        let (websocket, response) = connect_async(request).await.unwrap();
+        assert!(response.headers().get(AGENT_PROTOCOL_HEADER).is_none());
         let mut stream = WsByteStream::new(websocket);
         let mut first = [0_u8; 3];
         stream.read_exact(&mut first).await.unwrap();
@@ -421,5 +608,113 @@ mod websocket_stream_tests {
         stream.write_all(b"client").await.unwrap();
         stream.flush().await.unwrap();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn flag_install_is_atomic_ordered_and_idempotent() {
+        let directory = test_path("flag-install");
+        let flag_file = directory.join("flag");
+        let sink = Arc::new(FlagSink::default());
+        let generation = sink.begin_connection().await.unwrap();
+        let path = flag_file.to_str().unwrap();
+
+        assert!(install_flag(path, sink.clone(), generation, 10, b"first").await);
+        assert_eq!(tokio::fs::read(&flag_file).await.unwrap(), b"first");
+        assert!(install_flag(path, sink.clone(), generation, 10, b"first").await);
+        assert!(!install_flag(path, sink.clone(), generation, 10, b"forged").await);
+        assert!(!install_flag(path, sink.clone(), generation, 9, b"stale").await);
+        assert_eq!(tokio::fs::read(&flag_file).await.unwrap(), b"first");
+        assert!(install_flag(path, sink, generation, 11, b"second").await);
+        assert_eq!(tokio::fs::read(&flag_file).await.unwrap(), b"second");
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconnect_keeps_monotonic_flag_state_and_fences_the_old_generation() {
+        let directory = test_path("flag-generation");
+        let flag_file = directory.join("flag");
+        let path = flag_file.to_str().unwrap();
+        let sink = Arc::new(FlagSink::default());
+        let old_generation = sink.begin_connection().await.unwrap();
+        assert!(install_flag(path, sink.clone(), old_generation, 80, b"old").await);
+
+        let new_generation = sink.begin_connection().await.unwrap();
+        assert!(install_flag(path, sink.clone(), new_generation, 80, b"old").await);
+        assert!(!install_flag(path, sink.clone(), new_generation, 79, b"stale").await);
+        assert!(install_flag(path, sink.clone(), new_generation, 81, b"new").await);
+        assert!(!install_flag(path, sink, old_generation, 82, b"late-old").await);
+        assert_eq!(tokio::fs::read(&flag_file).await.unwrap(), b"new");
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn equal_retry_repairs_mutated_or_deleted_flag_and_cleans_temporaries() {
+        let directory = test_path("flag-repair");
+        let flag_file = directory.join("flag");
+        let path = flag_file.to_str().unwrap();
+        let sink = Arc::new(FlagSink::default());
+        let generation = sink.begin_connection().await.unwrap();
+        assert!(install_flag(path, sink.clone(), generation, 9, b"expected").await);
+
+        tokio::fs::write(&flag_file, b"mutated").await.unwrap();
+        assert!(install_flag(path, sink.clone(), generation, 9, b"expected").await);
+        assert_eq!(tokio::fs::read(&flag_file).await.unwrap(), b"expected");
+
+        tokio::fs::remove_file(&flag_file).await.unwrap();
+        assert!(install_flag(path, sink, generation, 9, b"expected").await);
+        assert_eq!(tokio::fs::read(&flag_file).await.unwrap(), b"expected");
+        let entries = std::fs::read_dir(&directory).unwrap().count();
+        assert_eq!(entries, 1, "flag temporary files were not cleaned");
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn flag_stream_acks_only_after_install_with_the_exact_sequence() {
+        let directory = test_path("flag-ack");
+        let flag_file = directory.join("flag");
+        let path = flag_file.to_string_lossy().into_owned();
+        let sink = Arc::new(FlagSink::default());
+        let generation = sink.begin_connection().await.unwrap();
+        let (server, agent) = tokio::io::duplex(128);
+        let handler = tokio::spawn({
+            let sink = sink.clone();
+            async move { write_flag(agent.compat(), &path, sink, generation).await }
+        });
+        let mut server = server.compat();
+        server.write_all(&71_u64.to_be_bytes()).await.unwrap();
+        server.write_all(b"installed").await.unwrap();
+        server.close().await.unwrap();
+        let mut ack = [0_u8; 9];
+        server.read_exact(&mut ack).await.unwrap();
+        assert_eq!(ack[0], FLAG_ACK);
+        assert_eq!(u64::from_be_bytes(ack[1..].try_into().unwrap()), 71);
+        handler.await.unwrap();
+        assert_eq!(tokio::fs::read(&flag_file).await.unwrap(), b"installed");
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_flag_stream_sends_no_ack() {
+        let directory = test_path("flag-no-ack");
+        let flag_file = directory.join("flag");
+        let path = flag_file.to_string_lossy().into_owned();
+        let sink = Arc::new(FlagSink::default());
+        let generation = sink.begin_connection().await.unwrap();
+        let (server, agent) = tokio::io::duplex(128);
+        let handler = tokio::spawn({
+            let sink = sink.clone();
+            async move { write_flag(agent.compat(), &path, sink, generation).await }
+        });
+        let mut server = server.compat();
+        server.write_all(&72_u64.to_be_bytes()).await.unwrap();
+        server.close().await.unwrap();
+        let mut ack = [0_u8; 1];
+        assert_eq!(server.read(&mut ack).await.unwrap(), 0);
+        handler.await.unwrap();
+        assert!(!flag_file.exists());
     }
 }

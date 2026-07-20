@@ -25,13 +25,13 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use bollard::container::LogOutput;
-use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults};
+use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::Docker;
 use futures::{SinkExt, Stream, StreamExt};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -44,19 +44,58 @@ use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::hubs::signalr;
+use crate::middlewares::privilege_authentication::CurrentUser;
+use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::container;
 use crate::utils::codec::{base64_decode, base64_encode};
 use crate::utils::enums::Role;
 
 /// SignalR record separator (0x1E) that terminates every message.
 const RS: char = '\u{1e}';
+const MAX_WS_MESSAGE_BYTES: usize = 256 * 1024;
+const MAX_PACKED_INVOCATIONS: usize = 64;
+const MAX_SESSIONS_PER_CONNECTION: usize = 4;
+const MAX_TARGET_BYTES: usize = 256;
+const MAX_INPUT_BYTES: usize = 16 * 1024;
+const MAX_INPUT_BASE64_BYTES: usize = 4 * MAX_INPUT_BYTES.div_ceil(3);
+const MAX_OUTPUT_CHUNK_BYTES: usize = 16 * 1024;
+const MIN_TTY_COLS: u64 = 20;
+const MAX_TTY_COLS: u64 = 500;
+const MIN_TTY_ROWS: u64 = 5;
+const MAX_TTY_ROWS: u64 = 200;
+const EXEC_INPUT_QUEUE: usize = 8;
+const EXEC_OUTPUT_QUEUE: usize = 32;
+const TARGET_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(2);
+const WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+
+mod admission;
+mod scoped;
+mod session;
+#[cfg(test)]
+mod tests;
+
+use session::Session;
 
 pub fn router() -> Router<SharedState> {
     Router::new()
-        .route("/hub/containerExec", get(container_hub))
+        .route(
+            "/hub/containerExec",
+            limited(Policy::PrivilegedHubAdmission, get(container_hub)),
+        )
         .route(
             "/hub/containerExec/negotiate",
-            post(signalr::admin_negotiate),
+            limited(
+                Policy::PrivilegedHubAdmission,
+                post(signalr::admin_negotiate),
+            ),
+        )
+        .route(
+            "/hub/containerExec/games/{game_id}",
+            limited(Policy::PrivilegedHubAdmission, get(scoped_container_hub)),
+        )
+        .route(
+            "/hub/containerExec/games/{game_id}/negotiate",
+            limited(Policy::PrivilegedHubAdmission, post(scoped_negotiate)),
         )
 }
 
@@ -75,11 +114,123 @@ async fn container_hub(
             .into_response();
     }
     match signalr::hub_identity(&st, &params, &headers).await {
-        Some((user, token)) if user.is_admin() => ws
-            .on_upgrade(move |s| serve_exec(s, st, token))
-            .into_response(),
+        Some((user, token)) if user.is_admin() => {
+            let Some(connection_permit) = admission::try_connection_permit(user.id) else {
+                return StatusCode::TOO_MANY_REQUESTS.into_response();
+            };
+            ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+                .max_frame_size(MAX_WS_MESSAGE_BYTES)
+                .on_upgrade(move |s| {
+                    serve_exec(
+                        s,
+                        st,
+                        ExecAuthorization::PlatformAdmin { token },
+                        ExecScope::PlatformAdmin,
+                        connection_permit,
+                    )
+                })
+                .into_response()
+        }
         Some(_) => StatusCode::FORBIDDEN.into_response(),
         None => StatusCode::UNAUTHORIZED.into_response(),
+    }
+}
+
+/// Negotiate a terminal constrained to one game. Authentication comes from the
+/// normal HTTP extractor; the exact game membership is resolved from Postgres
+/// rather than inferred from a platform role or a stale token claim.
+async fn scoped_negotiate(
+    State(st): State<SharedState>,
+    Path(game_id): Path<i32>,
+    user: CurrentUser,
+) -> Response {
+    if !st.config.runtime_role.capabilities().network {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    match scoped::game_access(&st, &user, game_id).await {
+        Ok(true) => signalr::negotiate().await.into_response(),
+        Ok(false) => StatusCode::FORBIDDEN.into_response(),
+        Err(error) => {
+            tracing::error!(game_id, %error, "scoped container exec negotiation failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn scoped_container_hub(
+    ws: WebSocketUpgrade,
+    State(st): State<SharedState>,
+    Path(game_id): Path<i32>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    if !st.config.runtime_role.capabilities().network {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "container exec route reached a non-network replica; check stateful route configuration",
+        )
+            .into_response();
+    }
+    let Some((user, token)) = signalr::hub_identity(&st, &params, &headers).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    match scoped::game_access(&st, &user, game_id).await {
+        Ok(true) => {
+            let Some(connection_permit) = admission::try_connection_permit(user.id) else {
+                return StatusCode::TOO_MANY_REQUESTS.into_response();
+            };
+            ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+                .max_frame_size(MAX_WS_MESSAGE_BYTES)
+                .on_upgrade(move |socket| {
+                    serve_exec(
+                        socket,
+                        st,
+                        ExecAuthorization::Game { token, game_id },
+                        ExecScope::Game(game_id),
+                        connection_permit,
+                    )
+                })
+                .into_response()
+        }
+        Ok(false) => StatusCode::FORBIDDEN.into_response(),
+        Err(error) => {
+            tracing::error!(game_id, %error, "scoped container exec upgrade failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ExecScope {
+    PlatformAdmin,
+    Game(i32),
+}
+
+enum ExecAuthorization {
+    PlatformAdmin { token: String },
+    Game { token: String, game_id: i32 },
+}
+
+impl ExecAuthorization {
+    async fn is_valid(&self, st: &SharedState) -> bool {
+        match self {
+            Self::PlatformAdmin { token } => {
+                crate::middlewares::privilege_authentication::authenticate_token(st, token)
+                    .await
+                    .is_ok_and(|user| user.require_role(Role::Admin).is_ok())
+            }
+            Self::Game { token, game_id } => {
+                let Ok(user) =
+                    crate::middlewares::privilege_authentication::authenticate_token(st, token)
+                        .await
+                else {
+                    return false;
+                };
+                scoped::game_access(st, &user, *game_id)
+                    .await
+                    .unwrap_or(false)
+            }
+        }
     }
 }
 
@@ -89,54 +240,20 @@ type ExecOutput = Pin<Box<dyn Stream<Item = Result<LogOutput, bollard::errors::E
 /// A live exec, produced by [`open_exec`] before the pump is spawned.
 struct LiveExec {
     output: ExecOutput,
-    input_tx: mpsc::UnboundedSender<Vec<u8>>,
+    input_tx: mpsc::Sender<Vec<u8>>,
     input_task: JoinHandle<()>,
     exec_id: String,
     docker: Docker,
 }
 
-/// Per-session state kept by the connection loop (keyed by session id).
-struct Session {
-    /// stdin sink for the exec (`None` for a graceful idle session).
-    input_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
-    /// exec id + docker handle, for TTY resize (`None` when idle OR BYOC — the local
-    /// daemon can't resize a tunnel'd exec, so resize is a no-op there).
-    exec_id: Option<String>,
-    docker: Option<Docker>,
-    /// background tasks to abort on close/disconnect.
-    pump: Option<JoinHandle<()>>,
-    input_task: Option<JoinHandle<()>>,
-    /// Held for a BYOC session's life so the tunnel keeps fast-polling; dropped on
-    /// shutdown (its only job — never read). `None` for docker/idle sessions.
-    #[allow(dead_code)]
-    byoc_guard: Option<crate::services::byoc_tunnel::ExecGuard>,
-}
-
-impl Session {
-    fn idle() -> Self {
-        Session {
-            input_tx: None,
-            exec_id: None,
-            docker: None,
-            pump: None,
-            input_task: None,
-            byoc_guard: None,
-        }
-    }
-
-    /// Cancel every background task; dropping `input_tx` also closes stdin.
-    fn shutdown(self) {
-        if let Some(h) = self.pump {
-            h.abort();
-        }
-        if let Some(h) = self.input_task {
-            h.abort();
-        }
-    }
-}
-
 /// Drive one `/hub/containerExec` connection end to end.
-async fn serve_exec(socket: WebSocket, st: SharedState, token: String) {
+async fn serve_exec(
+    socket: WebSocket,
+    st: SharedState,
+    authorization: ExecAuthorization,
+    scope: ExecScope,
+    _connection_permit: admission::ConnectionPermit,
+) {
     let (mut tx, mut ws_rx) = socket.split();
 
     // Handshake: the client's first frame is `{"protocol":"json","version":1}`.
@@ -152,12 +269,11 @@ async fn serve_exec(socket: WebSocket, st: SharedState, token: String) {
         }
         _ => return,
     }
-
     // All outgoing frames funnel through one mpsc so the connection loop and the
     // per-session pump tasks never race on the socket sink. Frames already carry
     // the trailing record separator.
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
-    let writer = tokio::spawn(async move {
+    let (out_tx, mut out_rx) = mpsc::channel::<String>(EXEC_OUTPUT_QUEUE);
+    let mut writer = tokio::spawn(async move {
         while let Some(s) = out_rx.recv().await {
             if tx.send(Message::Text(s.into())).await.is_err() {
                 break;
@@ -166,29 +282,46 @@ async fn serve_exec(socket: WebSocket, st: SharedState, token: String) {
     });
 
     let mut sessions: HashMap<String, Session> = HashMap::new();
+    let mut open_budget = admission::OpenBudget::new();
     let mut ping = interval(Duration::from_secs(15));
+    let mut authorization_revoked = false;
 
-    loop {
+    'connection: loop {
         tokio::select! {
             incoming = ws_rx.next() => match incoming {
                 Some(Ok(Message::Text(t))) => {
-                    let still_admin = crate::middlewares::privilege_authentication::authenticate_token(
-                        &st,
-                        &token,
-                    )
-                    .await
-                    .is_ok_and(|user| user.require_role(Role::Admin).is_ok());
-                    if !still_admin {
-                        break;
-                    }
                     // A frame may pack several RS-separated messages.
+                    if packed_invocation_count(&t).is_none() {
+                        break 'connection;
+                    }
                     for part in t.split(RS) {
                         let part = part.trim();
                         if part.is_empty() {
                             continue;
                         }
+                        // Revalidate each packed invocation. An awaited Open may
+                        // overlap a membership or stamp revocation; the next
+                        // invocation in the same WebSocket frame must not inherit
+                        // the earlier authorization snapshot.
+                        if !authorization.is_valid(&st).await {
+                            authorization_revoked = true;
+                            break 'connection;
+                        }
                         if let Ok(msg) = serde_json::from_str::<Value>(part) {
-                            handle_invocation(&st, &out_tx, &mut sessions, msg).await;
+                            if !handle_invocation(
+                                &st,
+                                &authorization,
+                                &out_tx,
+                                &mut sessions,
+                                &mut open_budget,
+                                scope,
+                                msg,
+                            )
+                            .await
+                            {
+                                authorization_revoked = true;
+                                break 'connection;
+                            }
                         }
                     }
                 }
@@ -199,26 +332,35 @@ async fn serve_exec(socket: WebSocket, st: SharedState, token: String) {
                 Some(Err(_)) => break,
             },
             _ = ping.tick() => {
-                let still_admin = crate::middlewares::privilege_authentication::authenticate_token(
-                    &st,
-                    &token,
-                )
-                .await
-                .is_ok_and(|user| user.require_role(Role::Admin).is_ok());
-                if !still_admin {
+                if !authorization.is_valid(&st).await {
+                    authorization_revoked = true;
                     break;
                 }
-                if out_tx.send(format!("{{\"type\":6}}{RS}")).is_err() {
+                if out_tx.try_send(format!("{{\"type\":6}}{RS}")).is_err() {
                     break;
                 }
             }
         }
     }
 
-    for (_, sess) in sessions.drain() {
+    for (sid, sess) in sessions.drain() {
         sess.shutdown();
+        if authorization_revoked {
+            let _ = timeout(
+                Duration::from_millis(250),
+                out_tx.send(frame(&json!({
+                    "type": 1,
+                    "target": "Closed",
+                    "arguments": [sid, "authorization revoked"],
+                }))),
+            )
+            .await;
+        }
     }
-    writer.abort();
+    drop(out_tx);
+    if timeout(WRITER_DRAIN_TIMEOUT, &mut writer).await.is_err() {
+        writer.abort();
+    }
 }
 
 /// Serialize a hub message and append the record separator.
@@ -236,16 +378,42 @@ fn arg_u64(msg: &Value, i: usize) -> Option<u64> {
     msg.get("arguments")?.as_array()?.get(i)?.as_u64()
 }
 
+fn bounded_tty_dimension(value: Option<u64>, default: u64, min: u64, max: u64) -> u16 {
+    value.unwrap_or(default).clamp(min, max) as u16
+}
+
+fn bounded_input(chunk: &str) -> Result<Vec<u8>, &'static str> {
+    if chunk.len() > MAX_INPUT_BASE64_BYTES {
+        return Err("Container input limit exceeded");
+    }
+    let bytes = base64_decode(chunk).ok_or("Malformed container input")?;
+    if bytes.len() > MAX_INPUT_BYTES {
+        return Err("Container input limit exceeded");
+    }
+    Ok(bytes)
+}
+
+fn packed_invocation_count(text: &str) -> Option<usize> {
+    let count = text
+        .split(RS)
+        .filter(|part| !part.trim().is_empty())
+        .count();
+    (count <= MAX_PACKED_INVOCATIONS).then_some(count)
+}
+
 /// Dispatch one type-1 invocation. Non-invocations (pings, completions, close)
 /// need no action.
 async fn handle_invocation(
     st: &SharedState,
-    out_tx: &mpsc::UnboundedSender<String>,
+    authorization: &ExecAuthorization,
+    out_tx: &mpsc::Sender<String>,
     sessions: &mut HashMap<String, Session>,
+    open_budget: &mut admission::OpenBudget,
+    scope: ExecScope,
     msg: Value,
-) {
+) -> bool {
     if msg.get("type").and_then(Value::as_u64) != Some(1) {
-        return;
+        return true;
     }
     let target = msg.get("target").and_then(Value::as_str).unwrap_or("");
     // Echoed verbatim in the completion; absent for non-blocking sends.
@@ -253,70 +421,89 @@ async fn handle_invocation(
 
     match target {
         "Open" => {
+            if !open_budget.try_take() {
+                complete_error(out_tx, inv_id, "Container exec open rate limit exceeded");
+                return true;
+            }
             let guid = arg_str(&msg, 0);
             let shell = match arg_str(&msg, 1) {
                 Some("bash") => "bash",
                 _ => "sh",
             };
-            let sid = Uuid::new_v4().simple().to_string();
-
-            // A "byoc:<pid>:<cid>" guid is a self-hosted service — its container is on
-            // the team's box, so route the shell over their agent tunnel's 'E' stream
-            // instead of the local Docker daemon. Anything else is a raw docker id.
-            let (docker_live, byoc_live, welcome) = match guid.and_then(|g| g.strip_prefix("byoc:"))
+            if sessions.len() >= MAX_SESSIONS_PER_CONNECTION
+                || guid.is_none_or(|value| value.len() > MAX_TARGET_BYTES)
             {
-                Some(rest) => {
-                    let (b, w) = open_byoc_exec(st, rest).await;
-                    (None, b, w)
-                }
-                None => {
-                    let (d, w) = open_exec(st, guid, shell).await;
-                    (d, None, w)
-                }
+                complete_error(out_tx, inv_id, "Container exec connection limit exceeded");
+                return true;
+            }
+            let Some(active_permit) = admission::try_session_permit() else {
+                complete_error(out_tx, inv_id, "Container exec capacity exceeded");
+                return true;
             };
+            let Some((docker_live, byoc_live, welcome)) =
+                open_target(st, authorization, scope, guid, shell).await
+            else {
+                complete_error(
+                    out_tx,
+                    inv_id,
+                    "Target is not unambiguously owned by this game",
+                );
+                return true;
+            };
+            if !authorization.is_valid(st).await {
+                discard_open(docker_live, byoc_live);
+                return false;
+            }
+            let sid = Uuid::new_v4().simple().to_string();
 
             // The client only accepts frames for a session id it already knows,
             // and it learns the id from THIS completion — so the completion and
             // the welcome must be queued before any pump output. Since the queue
             // is FIFO and single-consumer, enqueue them, then spawn the pump.
             if let Some(id) = inv_id {
-                let _ = out_tx.send(frame(&json!({
-                    "type": 3, "invocationId": id, "result": sid.clone(),
-                })));
+                if out_tx
+                    .try_send(frame(&json!({
+                        "type": 3, "invocationId": id, "result": sid.clone(),
+                    })))
+                    .is_err()
+                {
+                    discard_open(docker_live, byoc_live);
+                    return true;
+                }
             }
-            let _ = out_tx.send(frame(&json!({
-                "type": 1, "target": "Receive",
-                "arguments": [sid.clone(), base64_encode(welcome.as_bytes())],
-            })));
+            if out_tx
+                .try_send(frame(&json!({
+                    "type": 1, "target": "Receive",
+                    "arguments": [sid.clone(), base64_encode(welcome.as_bytes())],
+                })))
+                .is_err()
+            {
+                discard_open(docker_live, byoc_live);
+                return true;
+            }
 
             let session = if let Some(le) = docker_live {
-                Session {
-                    input_tx: Some(le.input_tx),
-                    exec_id: Some(le.exec_id),
-                    docker: Some(le.docker),
-                    pump: Some(spawn_pump(le.output, sid.clone(), out_tx.clone())),
-                    input_task: Some(le.input_task),
-                    byoc_guard: None,
-                }
+                Session::docker(le, sid.clone(), out_tx.clone(), active_permit)
             } else if let Some(be) = byoc_live {
-                Session {
-                    input_tx: Some(be.input_tx),
-                    exec_id: None,
-                    docker: None,
-                    pump: Some(spawn_pump_reader(be.read, sid.clone(), out_tx.clone())),
-                    input_task: Some(be.input_task),
-                    byoc_guard: Some(be.guard),
-                }
+                Session::byoc(be, sid.clone(), out_tx.clone(), active_permit)
             } else {
-                Session::idle()
+                Session::idle(active_permit)
             };
             sessions.insert(sid, session);
         }
         "Input" => {
             if let (Some(sid), Some(chunk)) = (arg_str(&msg, 0), arg_str(&msg, 1)) {
                 if let Some(sess) = sessions.get(sid) {
-                    if let (Some(tx), Some(bytes)) = (&sess.input_tx, base64_decode(chunk)) {
-                        let _ = tx.send(bytes);
+                    let bytes = match bounded_input(chunk) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            complete_error(out_tx, inv_id, error);
+                            return true;
+                        }
+                    };
+                    if sess.input_rejected(bytes) {
+                        complete_error(out_tx, inv_id, "Container input limit exceeded");
+                        return true;
                     }
                 }
             }
@@ -325,25 +512,10 @@ async fn handle_invocation(
         "Resize" => {
             if let Some(sid) = arg_str(&msg, 0) {
                 // Client order is (cols, rows); bollard is (width, height).
-                let cols = arg_u64(&msg, 1).unwrap_or(80) as u16;
-                let rows = arg_u64(&msg, 2).unwrap_or(24) as u16;
+                let cols = bounded_tty_dimension(arg_u64(&msg, 1), 80, MIN_TTY_COLS, MAX_TTY_COLS);
+                let rows = bounded_tty_dimension(arg_u64(&msg, 2), 24, MIN_TTY_ROWS, MAX_TTY_ROWS);
                 if let Some(sess) = sessions.get(sid) {
-                    if let (Some(docker), Some(exec_id)) = (&sess.docker, &sess.exec_id) {
-                        let docker = docker.clone();
-                        let exec_id = exec_id.clone();
-                        // Off the read loop so a slow daemon can't stall input.
-                        tokio::spawn(async move {
-                            let _ = docker
-                                .resize_exec(
-                                    &exec_id,
-                                    ResizeExecOptions {
-                                        width: cols,
-                                        height: rows,
-                                    },
-                                )
-                                .await;
-                        });
-                    }
+                    sess.resize(cols, rows);
                 }
             }
             complete_void(out_tx, inv_id);
@@ -358,18 +530,107 @@ async fn handle_invocation(
         }
         _ => complete_void(out_tx, inv_id),
     }
+    true
 }
 
 /// Send a void (`result`-less) completion when the invocation expected one.
-fn complete_void(out_tx: &mpsc::UnboundedSender<String>, inv_id: Option<Value>) {
+fn complete_void(out_tx: &mpsc::Sender<String>, inv_id: Option<Value>) {
     if let Some(id) = inv_id {
-        let _ = out_tx.send(frame(&json!({ "type": 3, "invocationId": id })));
+        let _ = out_tx.try_send(frame(&json!({ "type": 3, "invocationId": id })));
     }
 }
 
-/// Resolve the container, connect to Docker, and open an attached exec.
-///
-/// Returns `(Some(live), welcome)` when a real exec was started, or
+fn complete_error(out_tx: &mpsc::Sender<String>, inv_id: Option<Value>, error: &str) {
+    if let Some(id) = inv_id {
+        let _ = out_tx.try_send(frame(&json!({
+            "type": 3, "invocationId": id, "error": error,
+        })));
+    }
+}
+
+fn discard_open(docker: Option<LiveExec>, byoc: Option<ByocExec>) {
+    if let Some(exec) = docker {
+        exec.input_task.abort();
+    }
+    if let Some(exec) = byoc {
+        exec.input_task.abort();
+    }
+}
+
+/// Authorize and resolve one `Open` target. The platform Admin branch retains
+/// the historical behavior. The game branch resolves one immutable backend id
+/// through [`scoped`] before Docker or the BYOC tunnel registry is touched.
+async fn open_target(
+    st: &SharedState,
+    authorization: &ExecAuthorization,
+    scope: ExecScope,
+    guid: Option<&str>,
+    shell: &str,
+) -> Option<(Option<LiveExec>, Option<ByocExec>, String)> {
+    match scope {
+        ExecScope::PlatformAdmin => {
+            if let Some(rest) = guid.and_then(|value| value.strip_prefix("byoc:")) {
+                let (byoc, welcome) = open_byoc_exec(st, rest).await;
+                Some((None, byoc, welcome))
+            } else {
+                let (docker, welcome) = open_exec(st, guid, shell).await;
+                Some((docker, None, welcome))
+            }
+        }
+        ExecScope::Game(game_id) => {
+            let authorized = match scoped::authorize_target(st, game_id, guid).await {
+                Ok(Some(target)) => target,
+                Ok(None) => return None,
+                Err(error) => {
+                    tracing::error!(game_id, %error, "scoped container target lookup failed");
+                    return None;
+                }
+            };
+            if !authorization.is_valid(st).await {
+                return None;
+            }
+            match authorized {
+                scoped::ScopedExecTarget::Docker(container_id) => {
+                    let canonical_id = match timeout(
+                        TARGET_RESOLUTION_TIMEOUT,
+                        st.containers.resolve_interactive_exec_target(&container_id),
+                    )
+                    .await
+                    {
+                        Ok(Ok(canonical_id)) => canonical_id,
+                        Err(error) => {
+                            tracing::warn!(
+                                game_id,
+                                %error,
+                                "scoped container backend rejected an interactive exec target"
+                            );
+                            return None;
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(
+                                game_id,
+                                %error,
+                                "scoped container backend rejected an interactive exec target"
+                            );
+                            return None;
+                        }
+                    };
+                    let (docker, welcome) = open_resolved_exec(&canonical_id, shell).await;
+                    Some((docker, None, welcome))
+                }
+                scoped::ScopedExecTarget::Byoc {
+                    participation_id,
+                    challenge_id,
+                } => {
+                    let (byoc, welcome) =
+                        open_byoc_exec_ids(st, participation_id, challenge_id).await;
+                    Some((None, byoc, welcome))
+                }
+            }
+        }
+    }
+}
+
 /// Whether `container_id` is a raw docker id owned by a game A&D team service or a
 /// KotH hill — the only raw ids the admin exec hub attaches to (never an arbitrary
 /// host container).
@@ -421,6 +682,26 @@ async fn open_exec(
         return (None, idle);
     };
 
+    let canonical_id = match timeout(
+        TARGET_RESOLUTION_TIMEOUT,
+        st.containers.resolve_interactive_exec_target(&container_id),
+    )
+    .await
+    {
+        Ok(Ok(canonical_id)) => canonical_id,
+        Ok(Err(_)) | Err(_) => return (None, idle),
+    };
+
+    open_resolved_exec(&canonical_id, shell).await
+}
+
+/// Open an already authorized Docker runtime id. Callers must never pass user
+/// input directly: the platform path resolves it through existing Admin rules,
+/// while the game path additionally verifies installation ownership through the
+/// configured container backend before reaching this function.
+async fn open_resolved_exec(container_id: &str, shell: &str) -> (Option<LiveExec>, String) {
+    let idle = "[rsctf] container backend unavailable — terminal is idle\r\n".to_string();
+
     // Connect to the local daemon directly: the ContainerManager trait doesn't
     // expose a raw handle, and this mirrors RSCTF's exec channel talking to the
     // engine straight. Every call is timeout-bounded so a dead DOCKER_HOST can't
@@ -436,7 +717,7 @@ async fn open_exec(
     }
 
     let create = docker.create_exec(
-        &container_id,
+        container_id,
         CreateExecOptions::<String> {
             attach_stdin: Some(true),
             attach_stdout: Some(true),
@@ -466,7 +747,7 @@ async fn open_exec(
 
     // stdin pump: own the write half, drain the channel, flush after each chunk
     // so keystrokes without a newline (tab-completion, Ctrl-C) reach the shell.
-    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(EXEC_INPUT_QUEUE);
     let input_task = tokio::spawn(async move {
         while let Some(bytes) = input_rx.recv().await {
             if input.write_all(&bytes).await.is_err() {
@@ -493,11 +774,7 @@ async fn open_exec(
 
 /// stdout/stderr pump: forward every exec chunk to the caller's `Receive`
 /// method (base64), then signal end-of-stream via `Closed`.
-fn spawn_pump(
-    mut output: ExecOutput,
-    sid: String,
-    out_tx: mpsc::UnboundedSender<String>,
-) -> JoinHandle<()> {
+fn spawn_pump(mut output: ExecOutput, sid: String, out_tx: mpsc::Sender<String>) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             match output.next().await {
@@ -506,27 +783,27 @@ fn spawn_pump(
                     if bytes.is_empty() {
                         continue;
                     }
-                    let f = frame(&json!({
-                        "type": 1, "target": "Receive",
-                        "arguments": [&sid, base64_encode(&bytes)],
-                    }));
-                    if out_tx.send(f).is_err() {
+                    if !send_receive_chunks(&out_tx, &sid, &bytes).await {
                         break;
                     }
                 }
                 Some(Err(e)) => {
                     // serde_json escapes the (possibly quote-bearing) error text.
-                    let _ = out_tx.send(frame(&json!({
-                        "type": 1, "target": "Closed",
-                        "arguments": [&sid, e.to_string()],
-                    })));
+                    let _ = out_tx
+                        .send(frame(&json!({
+                            "type": 1, "target": "Closed",
+                            "arguments": [&sid, e.to_string()],
+                        })))
+                        .await;
                     break;
                 }
                 None => {
-                    let _ = out_tx.send(frame(&json!({
-                        "type": 1, "target": "Closed",
-                        "arguments": [&sid, "eof"],
-                    })));
+                    let _ = out_tx
+                        .send(frame(&json!({
+                            "type": 1, "target": "Closed",
+                            "arguments": [&sid, "eof"],
+                        })))
+                        .await;
                     break;
                 }
             }
@@ -538,7 +815,7 @@ fn spawn_pump(
 /// agent tunnel's `'E'` stream. The read half is pumped to `Receive` like docker
 /// output; the write half is fed by `input_tx`. `guard` keeps the tunnel fast-polling.
 struct ByocExec {
-    input_tx: mpsc::UnboundedSender<Vec<u8>>,
+    input_tx: mpsc::Sender<Vec<u8>>,
     input_task: JoinHandle<()>,
     read: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
     guard: crate::services::byoc_tunnel::ExecGuard,
@@ -556,17 +833,26 @@ async fn open_byoc_exec(st: &SharedState, rest: &str) -> (Option<ByocExec>, Stri
     let Some((pid, cid)) = parsed else {
         return (None, notice);
     };
+    open_byoc_exec_ids(st, pid, cid).await
+}
+
+async fn open_byoc_exec_ids(st: &SharedState, pid: i32, cid: i32) -> (Option<ByocExec>, String) {
+    let notice =
+        "[rsctf] BYOC agent not connected — start the agent (setup.sh) and retry\r\n".to_string();
     // Default 80x24 — the 'E' header carries the initial size and admin resize is a
     // no-op over the tunnel (a v1 limitation; the SSH bastion path opens at PTY size).
-    let Some((stream, guard)) =
-        crate::services::byoc_tunnel::open_exec_stream(st, pid, cid, 80, 24).await
+    let Ok(Some((stream, guard))) = timeout(
+        Duration::from_secs(5),
+        crate::services::byoc_tunnel::open_exec_stream(st, pid, cid, 80, 24),
+    )
+    .await
     else {
         return (None, notice);
     };
     use tokio_util::compat::{FuturesAsyncReadCompatExt, FuturesAsyncWriteCompatExt};
     let (rd, wr) = futures::AsyncReadExt::split(stream);
     let mut wr = wr.compat_write();
-    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(EXEC_INPUT_QUEUE);
     let input_task = tokio::spawn(async move {
         use tokio::io::AsyncWriteExt;
         while let Some(bytes) = input_rx.recv().await {
@@ -593,7 +879,7 @@ async fn open_byoc_exec(st: &SharedState, rest: &str) -> (Option<ByocExec>, Stri
 fn spawn_pump_reader(
     mut read: std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
     sid: String,
-    out_tx: mpsc::UnboundedSender<String>,
+    out_tx: mpsc::Sender<String>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
@@ -601,21 +887,32 @@ fn spawn_pump_reader(
         loop {
             match read.read(&mut buf).await {
                 Ok(0) | Err(_) => {
-                    let _ = out_tx.send(frame(&json!({
-                        "type": 1, "target": "Closed", "arguments": [&sid, "eof"],
-                    })));
+                    let _ = out_tx
+                        .send(frame(&json!({
+                            "type": 1, "target": "Closed", "arguments": [&sid, "eof"],
+                        })))
+                        .await;
                     break;
                 }
                 Ok(n) => {
-                    let f = frame(&json!({
-                        "type": 1, "target": "Receive",
-                        "arguments": [&sid, base64_encode(&buf[..n])],
-                    }));
-                    if out_tx.send(f).is_err() {
+                    if !send_receive_chunks(&out_tx, &sid, &buf[..n]).await {
                         break;
                     }
                 }
             }
         }
     })
+}
+
+async fn send_receive_chunks(out_tx: &mpsc::Sender<String>, sid: &str, bytes: &[u8]) -> bool {
+    for chunk in bytes.chunks(MAX_OUTPUT_CHUNK_BYTES) {
+        let message = frame(&json!({
+            "type": 1, "target": "Receive",
+            "arguments": [sid, base64_encode(chunk)],
+        }));
+        if out_tx.send(message).await.is_err() {
+            return false;
+        }
+    }
+    true
 }

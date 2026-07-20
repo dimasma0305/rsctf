@@ -10,6 +10,7 @@ use crate::models::internal::configs::RuntimeRole;
 use crate::services::container::ContainerBackendKind;
 use crate::utils::enums::ChallengeBuildStatus;
 use crate::utils::error::{AppError, AppResult};
+use bollard::models::ImageInspect;
 use rsctf_worker_protocol::is_valid_registry_repository;
 use uuid::Uuid;
 
@@ -32,6 +33,62 @@ pub(crate) fn is_repository_digest(reference: &str) -> bool {
         return false;
     };
     is_valid_registry_repository(repository) && valid_sha256(digest)
+}
+
+pub(crate) fn inspected_local_image_id(inspected: &ImageInspect) -> Option<&str> {
+    inspected
+        .id
+        .as_deref()
+        .filter(|image_id| is_local_image_id(image_id))
+}
+
+pub(crate) fn inspect_matches_immutable_reference(
+    inspected: &ImageInspect,
+    immutable_reference: &str,
+) -> bool {
+    let immutable_reference = immutable_reference.trim();
+    if is_local_image_id(immutable_reference) {
+        return inspected_local_image_id(inspected)
+            .is_some_and(|image_id| image_id.eq_ignore_ascii_case(immutable_reference));
+    }
+    is_repository_digest(immutable_reference)
+        && inspected
+            .repo_digests
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .any(|digest| digest == immutable_reference)
+}
+
+/// Pulled images normally have neither reserved label and can be owned by the
+/// durable ledger. A partial/conflicting pair is always rejected; archive
+/// builds set `required` and must carry both exact values.
+pub(crate) fn validate_image_ownership_labels(
+    inspected: &ImageInspect,
+    installation_scope: &str,
+    canonical_ref: &str,
+    required: bool,
+) -> Result<(), String> {
+    let labels = inspected
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref());
+    let scope = labels.and_then(|labels| labels.get(crate::services::container::IMAGE_SCOPE_LABEL));
+    let reference =
+        labels.and_then(|labels| labels.get(crate::services::container::IMAGE_REFERENCE_LABEL));
+    match (scope, reference) {
+        (None, None) if !required => Ok(()),
+        (Some(scope), Some(reference))
+            if scope == installation_scope && reference == canonical_ref =>
+        {
+            Ok(())
+        }
+        (None, None) => Err("Docker image is missing its rsctf ownership labels".to_string()),
+        _ => Err(
+            "Docker image ownership labels conflict with this installation or canonical tag"
+                .to_string(),
+        ),
+    }
 }
 
 /// An immutable daemon-local image explicitly scoped to one enrolled worker.
@@ -194,6 +251,35 @@ mod tests {
         assert!(!is_local_image_id("sha256:not-hex"));
         assert!(worker_local_image(WORKER).is_some());
         assert!(worker_local_image("worker://invalid/sha256:short").is_none());
+    }
+
+    #[test]
+    fn ownership_inspect_requires_the_published_immutable_identity() {
+        let inspected = ImageInspect {
+            id: Some(ID.to_string()),
+            repo_digests: Some(vec![REPO.to_string()]),
+            ..Default::default()
+        };
+        assert!(inspect_matches_immutable_reference(&inspected, ID));
+        assert!(inspect_matches_immutable_reference(&inspected, REPO));
+        assert!(!inspect_matches_immutable_reference(
+            &inspected,
+            &format!("sha256:{}", "d".repeat(64))
+        ));
+        assert!(validate_image_ownership_labels(
+            &inspected,
+            "0123456789abcdef0123456789abcdef",
+            "docker.io/rsctf/game/app:latest",
+            false,
+        )
+        .is_ok());
+        assert!(validate_image_ownership_labels(
+            &inspected,
+            "0123456789abcdef0123456789abcdef",
+            "docker.io/rsctf/game/app:latest",
+            true,
+        )
+        .is_err());
     }
 
     #[test]

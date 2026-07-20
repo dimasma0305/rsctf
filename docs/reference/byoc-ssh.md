@@ -20,8 +20,58 @@ The rest of this doc is the reference for the wire format + the agent handler.
 
 ## Wire framing (rsctf → agent, over a fresh yamux stream)
 
-The tunnel already types every stream by a leading byte — `'S'` service, `'F'` flag.
-Add `'E'`:
+The tunnel types every stream by a leading byte — `'S'` service, `'F'` flag, and
+`'E'` exec. The flag stream is bidirectional so publication is never inferred
+from a successful socket write:
+
+```
+rsctf -> agent : 0x46 ('F') | u64 BE sequence | flag bytes | write-half close
+agent -> rsctf : 0x41 ('A') | the same u64 BE sequence
+```
+
+The agent sends the nine-byte ACK only after the temporary flag file has been
+renamed over the live file. A missing or mismatched ACK fails the bounded
+publication attempt. The sequence is the positive durable `AdRounds.id`, so it
+does not reset with an rsctf process. Identical retries keep the same sequence,
+and a relay endpoint retains at most one 4096-byte current value for immediate
+reconnect replay. After a server restart, activation loads the latest exact
+game/participation/challenge flag directly from durable round data; it does not
+require a prior successful-delivery receipt. A lower sequence cannot replace a
+newer concurrent push, and equal sequences must contain identical bytes.
+Participation/challenge revocation discards the retained value. Server and agent
+negotiate the `X-RSCTF-BYOC-Protocol: rsctf-byoc-v2` WebSocket
+upgrade header. A v2 server rejects an agent that does not offer that capability with HTTP 426 before it
+publishes a service endpoint. A replacement session is not available to service
+or exec forwarding until it ACKs the exact retained sequence; a late ACK from a
+superseded or revoked session is ignored.
+
+### Agent-first v2 rollout
+
+The transition is deliberately one-way compatible: a v2 agent sends the
+capability header but accepts an old server that ignores it. A v2
+server does not accept an old ACK-less agent. Roll out in this exact order:
+
+1. Publish the v2 agent image and record its immutable multi-platform digest.
+2. Before changing the server, replace the pinned agent digest in every running
+   team's Compose bundle and run `docker compose pull rsctf-agent` followed by
+   `docker compose up -d rsctf-agent`. Existing bundles are digest-pinned and do
+   not update themselves.
+3. Verify those agents reconnect and continue serving flags through the old
+   server. The old server ignores the offered header; this is expected.
+4. Deploy the server image compiled with that same workflow's agent digest.
+   Any missed old agent now gets HTTP 426 instead of being published and later
+   producing ambiguous delivery evidence. Regenerate its team's bundle with the
+   current agent digest.
+
+Official server images receive the matching digest through the image workflow's
+`RSCTF_DEFAULT_BYOC_AGENT_IMAGE` build argument. A direct source/local server
+build intentionally has no baked-in fallback. Set
+`RSCTF_AD_BYOC_AGENT_IMAGE=registry.example/rsctf-byoc-agent@sha256:<digest>` at
+runtime or compile with the same immutable build argument; otherwise the BYOC
+setup/Compose endpoints fail closed instead of emitting an older incompatible
+agent.
+
+The exec stream uses:
 
 ```
 byte 0        : 0x45  ('E')
@@ -41,7 +91,7 @@ func handleStream(s net.Conn, serviceContainer string, docker *client.Client) {
     if _, err := io.ReadFull(s, t[:]); err != nil { return }
     switch t[0] {
     case 'S': /* existing: dial the service, io.Copy both ways */
-    case 'F': /* existing: read seq+flag, write it into the service */
+    case 'F': /* existing: atomically install seq+flag, then ACK 'A'+seq */
     case 'E':
         var wh [4]byte
         if _, err := io.ReadFull(s, wh[:]); err != nil { return }

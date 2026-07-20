@@ -464,7 +464,7 @@ pub async fn import_users(
     }
 
     crate::services::audit::info(
-        &st.db,
+        &st,
         "AdminController",
         Some(caller.name.clone()),
         None,
@@ -622,7 +622,7 @@ pub async fn add_users(
 
     // RSCTF `AdminController` audit event (`Admin_UserBatchAdded`).
     crate::services::audit::info(
-        &st.db,
+        &st,
         "AdminController",
         Some(caller.name.clone()),
         None,

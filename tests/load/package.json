@@ -4,8 +4,11 @@
   "type": "module",
   "description": "rsctf load / stress tests — k6 HTTP scenarios (k6/) driven by Node orchestrators (*.mjs)",
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --check multi-domain-acceptance.mjs && node --import ./test/fixtures/test-env.mjs --test test/*.test.mjs",
     "admin-lifecycle": "node admin-lifecycle.mjs",
+    "edit-lifecycle": "node edit-lifecycle.mjs",
+    "multi-domain": "node multi-domain-acceptance.mjs",
+    "organizer-hubs": "node organizer-hubs.mjs",
     "player": "node player.mjs",
     "ad-submit-batch": "node ad-submit-batch.mjs",
     "redis-outage": "node redis-outage.mjs",

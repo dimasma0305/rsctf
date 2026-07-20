@@ -52,8 +52,8 @@ use kube::core::{ApiResource, DynamicObject, ErrorResponse};
 use kube::{Client, Config};
 
 use crate::services::container::{
-    ContainerBackendKind, ContainerInfo, ContainerLiveness, ContainerManager, ContainerSpec,
-    ContainerStatus,
+    ContainerBackendKind, ContainerExecAdmission, ContainerExecError, ContainerInfo,
+    ContainerLiveness, ContainerManager, ContainerSpec, ContainerStatus,
 };
 use crate::utils::codec::random_hex;
 use crate::utils::error::{AppError, AppResult};
@@ -901,6 +901,15 @@ impl ContainerManager for KubernetesContainerManager {
     /// other and deadlock the command.
     async fn exec(&self, id: &str, cmd: Vec<String>) -> AppResult<String> {
         exec::run(self.pods(), id, cmd).await
+    }
+
+    async fn exec_classified(
+        &self,
+        id: &str,
+        cmd: Vec<String>,
+        admission: ContainerExecAdmission,
+    ) -> Result<String, ContainerExecError> {
+        exec::run_classified(self.pods(), id, cmd, admission).await
     }
 }
 

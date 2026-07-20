@@ -5,8 +5,9 @@ use futures::StreamExt;
 use rsctf_worker_protocol::GameKind;
 
 use super::{
-    labels_match_scope, ContainerLiveness, ContainerManager, ContainerSpec, DockerContainerManager,
-    NoopContainerManager,
+    labels_match_scope, ContainerExecAdmission, ContainerExecError, ContainerLiveness,
+    ContainerManager, ContainerSpec, DockerContainerManager, NoopContainerManager,
+    MAX_EXEC_OUTPUT_BYTES,
 };
 use crate::utils::error::{AppError, AppResult};
 
@@ -21,10 +22,23 @@ struct DockerLaunchSpec<'a> {
     memory_limit: i32,
     cpu_count: i32,
     expose_port: i32,
+    #[serde(skip_serializing_if = "is_true")]
+    publish_port: bool,
     env: &'a [(String, String)],
     flag: Option<&'a str>,
     ad_network: Option<&'a str>,
     allow_egress: bool,
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+/// A no-publish local workload is reachable only through authenticated exec.
+/// Docker's default bridge would still grant outbound and east-west access, so
+/// attach no network unless the caller selected an explicit internal network.
+pub(super) fn docker_network_mode(spec: &ContainerSpec) -> Option<String> {
+    (!spec.publish_port && spec.ad_network.is_none()).then(|| "none".to_string())
 }
 
 /// Hash every launch-affecting caller input into a non-secret identity label.
@@ -32,12 +46,16 @@ struct DockerLaunchSpec<'a> {
 /// do not affect whether a crash retry represents the same workload.
 pub(super) fn launch_spec_fingerprint(spec: &ContainerSpec) -> String {
     let canonical = DockerLaunchSpec {
-        revision: 1,
+        // Preserve the exact v1 fingerprint for every pre-existing workload.
+        // Only the new no-publish shape needs the v2 identity, which keeps a
+        // rolling deploy able to adopt an older replica's in-flight create.
+        revision: if spec.publish_port { 1 } else { 2 },
         game_kind: spec.game_kind,
         image: &spec.image,
         memory_limit: spec.memory_limit,
         cpu_count: spec.cpu_count,
         expose_port: spec.expose_port,
+        publish_port: spec.publish_port,
         env: &spec.env,
         flag: spec.flag.as_deref(),
         ad_network: spec.ad_network.as_deref(),
@@ -69,6 +87,131 @@ pub(super) enum FailedStartAction {
 
 fn container_is_running(info: &ContainerInspectResponse) -> bool {
     info.state.as_ref().and_then(|state| state.status) == Some(ContainerStateStatusEnum::RUNNING)
+}
+
+fn docker_exec_target_error(error: &bollard::errors::Error) -> bool {
+    matches!(
+        error,
+        bollard::errors::Error::DockerResponseServerError {
+            status_code: 404 | 409,
+            ..
+        }
+    )
+}
+
+fn participant_exec_error(context: &str, error: impl std::fmt::Display) -> ContainerExecError {
+    ContainerExecError::Participant(AppError::internal(format!("{context}: {error}")))
+}
+
+fn platform_exec_error(context: &str, error: impl std::fmt::Display) -> ContainerExecError {
+    ContainerExecError::Platform(AppError::internal(format!("{context}: {error}")))
+}
+
+type DockerExecOutput = std::pin::Pin<
+    Box<
+        dyn futures::Stream<Item = Result<bollard::container::LogOutput, bollard::errors::Error>>
+            + Send,
+    >,
+>;
+
+fn attached_exec_output(
+    started: bollard::exec::StartExecResults,
+    admission: &ContainerExecAdmission,
+) -> Result<DockerExecOutput, ContainerExecError> {
+    let bollard::exec::StartExecResults::Attached { output, .. } = started else {
+        return Err(ContainerExecError::Platform(AppError::internal(
+            "Docker exec unexpectedly started without an attached process",
+        )));
+    };
+    admission.mark_admitted();
+    Ok(output)
+}
+
+impl DockerContainerManager {
+    /// Execute with scoring attribution. Docker's structured 404/409 responses
+    /// and an inspected non-running target belong to that service. Transport,
+    /// malformed-response, and otherwise-unattributed daemon failures belong
+    /// to the platform. A failed start is participant-owned only when Docker's
+    /// exec record proves a non-zero process result; no daemon message parsing
+    /// is used.
+    pub(super) async fn exec_with_attribution(
+        &self,
+        id: &str,
+        cmd: Vec<String>,
+        admission: ContainerExecAdmission,
+    ) -> Result<String, ContainerExecError> {
+        let docker = self.client().map_err(ContainerExecError::Platform)?;
+        let info = match docker.inspect_container(id, None).await {
+            Ok(info) => info,
+            Err(error) if is_not_found(&error) => {
+                return Err(ContainerExecError::Participant(AppError::not_found(
+                    format!("container not found: {id}"),
+                )));
+            }
+            Err(error) => return Err(platform_exec_error("inspect container", error)),
+        };
+        verify_container_scope(&info, &self.scope).map_err(ContainerExecError::Platform)?;
+        if !container_is_running(&info) {
+            return Err(ContainerExecError::Participant(AppError::conflict(
+                "container is not running",
+            )));
+        }
+        let canonical_id = info.id.as_deref().ok_or_else(|| {
+            ContainerExecError::Platform(AppError::internal(
+                "inspected container has no backend identity",
+            ))
+        })?;
+        let exec = docker
+            .create_exec(
+                canonical_id,
+                bollard::exec::CreateExecOptions {
+                    cmd: Some(cmd),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|error| {
+                if docker_exec_target_error(&error) {
+                    participant_exec_error("create_exec", error)
+                } else {
+                    platform_exec_error("create_exec", error)
+                }
+            })?;
+        let started = match docker.start_exec(&exec.id, None).await {
+            Ok(started) => started,
+            Err(error) => {
+                let process_failed = if docker_exec_target_error(&error) {
+                    true
+                } else {
+                    docker.inspect_exec(&exec.id).await.is_ok_and(|state| {
+                        state.running == Some(false)
+                            && state.exit_code.is_some_and(|code| code != 0)
+                    })
+                };
+                return Err(if process_failed {
+                    participant_exec_error("start_exec", error)
+                } else {
+                    platform_exec_error("start_exec", error)
+                });
+            }
+        };
+        let mut output = attached_exec_output(started, &admission)?;
+        let mut out = String::new();
+        while let Some(chunk) = output.next().await {
+            let msg =
+                chunk.map_err(|error| platform_exec_error("read container exec output", error))?;
+            let rendered = msg.to_string();
+            if out.len().saturating_add(rendered.len()) > MAX_EXEC_OUTPUT_BYTES {
+                return Err(ContainerExecError::Participant(AppError::internal(
+                    "container exec output exceeded 1 MiB",
+                )));
+            }
+            out.push_str(&rendered);
+        }
+        Ok(out)
+    }
 }
 
 /// Reconcile a failed Docker start without racing an idempotent adopter. A
@@ -315,4 +458,28 @@ pub fn from_env_required() -> AppResult<std::sync::Arc<dyn ContainerManager>> {
         "docker daemon reachable; using explicitly selected DockerContainerManager"
     );
     Ok(std::sync::Arc::new(manager))
+}
+
+#[cfg(test)]
+mod exec_admission_tests {
+    use super::*;
+
+    #[test]
+    fn docker_admission_begins_only_for_an_attached_exec() {
+        let detached_admission = ContainerExecAdmission::default();
+        let detached = attached_exec_output(
+            bollard::exec::StartExecResults::Detached,
+            &detached_admission,
+        );
+        assert!(matches!(detached, Err(ContainerExecError::Platform(_))));
+        assert!(!detached_admission.is_admitted());
+
+        let attached_admission = ContainerExecAdmission::default();
+        let attached = bollard::exec::StartExecResults::Attached {
+            output: Box::pin(futures::stream::empty()),
+            input: Box::pin(tokio::io::sink()),
+        };
+        assert!(attached_exec_output(attached, &attached_admission).is_ok());
+        assert!(attached_admission.is_admitted());
+    }
 }

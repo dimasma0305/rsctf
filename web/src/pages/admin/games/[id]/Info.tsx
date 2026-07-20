@@ -757,7 +757,7 @@ const GameInfoEdit: FC = () => {
                   label={t('admin.content.games.info.ad_getflag_window_fraction.label', 'A&D getflag jitter window')}
                   description={t(
                     'admin.content.games.info.ad_getflag_window_fraction.description',
-                    "Fraction of the tick within which the SLA check (getflag) may fire, after the grace period (default 0.5). Event-wide; each team's check still gets an independent random offset, so the check time can't be predicted."
+                    "Fraction of the tick used for the random SLA-check offset after the grace period (default 0.5). Runtime reserves a complete probe and persistence budget; every service gets an independent offset."
                   )}
                   disabled={disabled || engineScoringStarted}
                   min={0.05}
@@ -774,11 +774,11 @@ const GameInfoEdit: FC = () => {
                   label={t('admin.content.games.info.ad_min_grace_period_seconds.label', 'A&D min grace period (s)')}
                   description={t(
                     'admin.content.games.info.ad_min_grace_period_seconds.description',
-                    'Seconds after a round starts (flags planted) before getflag may fire — lets services commit the flag first (default 3).'
+                    "Seconds after each service's immutable flag-delivery receipt before getflag may fire. The value must leave bounded publication, checker, and persistence runway (default 3)."
                   )}
                   disabled={disabled || engineScoringStarted}
                   min={1}
-                  max={60}
+                  max={Math.min(60, Math.max(1, (game?.adTickSeconds ?? 60) - 12))}
                   value={game?.adMinGracePeriodSeconds ?? 3}
                   onChange={(e) => {
                     const n = getInputNumber(e)

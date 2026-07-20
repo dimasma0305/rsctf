@@ -112,10 +112,11 @@ Use this checklist before exposing rsctf to untrusted players.
 - Keep BYOC Docker-socket access opt-in and recommend disposable team hosts.
 - Keep the BYOC agent pinned by digest. Tagged official server images embed the
   exact amd64/arm64 agent index built in the same workflow. Direct source and
-  local Docker builds retain the audited amd64-only fallback; use
-  `RSCTF_AD_BYOC_AGENT_IMAGE` with an immutable multi-platform digest to replace
-  it when serving other worker architectures. Official image configs expose the
-  binding in the `org.opencontainers.image.rsctf.byoc-agent` OCI label.
+  local Docker builds have no fallback; set `RSCTF_AD_BYOC_AGENT_IMAGE` to an
+  immutable multi-platform digest built from the same release or BYOC bundle
+  generation fails closed. Official image configs expose the binding in the
+  `org.opencontainers.image.rsctf.byoc-agent` OCI label. Follow the agent-first
+  v2 rollout in the BYOC SSH reference before upgrading a live event.
 - BYOC image authorization is linearized through Docker producing the first
   archive chunk. A concurrent revocation waits for that bounded startup; an
   HTTP response that has already started may finish under its idle and absolute

@@ -9,6 +9,8 @@ updates:
       time: "04:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       kubernetes-client:
         patterns: ["kube", "k8s-openapi"]
@@ -34,10 +36,14 @@ updates:
       # kube 4 supports Kubernetes 1.32+, while the Helm chart supports 1.25+,
       # and it enables automatic retries for non-idempotent challenge creates.
       # Move this pair only in a dedicated backend compatibility migration.
+      # update-types affects routine version updates only, so a Dependabot
+      # security update remains eligible even when its fix crosses this fence.
       - dependency-name: kube
         update-types: ["version-update:semver-major"]
       - dependency-name: k8s-openapi
-        versions: [">= 0.24"]
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
 
   - package-ecosystem: npm
     directory: "/web"
@@ -58,8 +64,13 @@ updates:
     ignore:
       # react-pdf currently requires pdfjs-dist 5.4.296 exactly. Move both
       # together through a future react-pdf upgrade so its API and worker stay
-      # byte-for-byte aligned.
+      # byte-for-byte aligned. These version-update selectors preserve
+      # Dependabot security updates, unlike an unconditional dependency ignore.
       - dependency-name: pdfjs-dist
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
       # Keep compiler and Node declarations aligned with supported peers and
       # the Node 22 CI/runtime image.
       - dependency-name: typescript
@@ -75,6 +86,8 @@ updates:
       time: "04:10"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
       worker-protocol-minor-and-patch:
         patterns: ["*"]
@@ -88,6 +101,8 @@ updates:
       time: "04:20"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
       worker-agent-minor-and-patch:
         patterns: ["*"]
@@ -106,6 +121,8 @@ updates:
       time: "04:25"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
       byoc-agent-minor-and-patch:
         patterns: ["*"]
@@ -124,6 +141,8 @@ updates:
       time: "05:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       docs-minor-and-patch:
         patterns: ["*"]
@@ -142,6 +161,8 @@ updates:
       time: "05:30"
       timezone: Etc/UTC
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns: ["*"]

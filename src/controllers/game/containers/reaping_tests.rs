@@ -36,7 +36,11 @@ impl Harness {
             .unwrap();
         sqlx::raw_sql(
             r#"
-            CREATE TABLE "Containers" (id UUID PRIMARY KEY, container_id TEXT NOT NULL);
+            CREATE TABLE "Containers" (
+              id UUID PRIMARY KEY,
+              container_id TEXT NOT NULL,
+              ad_team_service_id INTEGER
+            );
             CREATE TABLE "GameChallenges" (
                 id INTEGER PRIMARY KEY,
                 game_id INTEGER NOT NULL,
@@ -235,5 +239,48 @@ async fn exercise_cleanup_does_not_detach_a_new_replacement() {
     .await
     .unwrap();
     assert_eq!(instance, (Some(harness.replacement), true));
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn inspector_reaper_uses_the_service_lock_and_clears_exact_identity() {
+    let harness = Harness::new().await;
+    sqlx::query(r#"UPDATE "Containers" SET ad_team_service_id = 77 WHERE id = $1"#)
+        .bind(harness.stale)
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+
+    let owner =
+        resolve_managed_container_owner(&harness.pool, harness.stale, "runtime-stale", None, None)
+            .await
+            .unwrap()
+            .expect("inspector row has a managed owner");
+    assert_eq!(owner.lock_key, "ad-inspector:77");
+
+    clear_destroyed_managed_container(
+        &harness.pool,
+        harness.stale,
+        "runtime-stale",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let remaining: i64 = sqlx::query_scalar(r#"SELECT COUNT(*) FROM "Containers""#)
+        .fetch_one(&harness.pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 1, "only the exact inspector row was removed");
+    let replacement_backend: String =
+        sqlx::query_scalar(r#"SELECT container_id FROM "Containers" WHERE id = $1"#)
+            .bind(harness.replacement)
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap();
+    assert_eq!(replacement_backend, "runtime-replacement");
     harness.cleanup().await;
 }

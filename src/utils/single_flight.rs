@@ -490,6 +490,16 @@ impl PgAdvisoryLock {
         Ok(())
     }
 
+    /// Roll back database work performed while the advisory lock was held.
+    /// Definition mutations use this when a later step fails, so dropping the
+    /// lock cannot accidentally commit an earlier staged row.
+    pub(crate) async fn rollback(mut self) -> anyhow::Result<()> {
+        if let Some(transaction) = self.transaction.take() {
+            transaction.rollback().await?;
+        }
+        Ok(())
+    }
+
     /// Acquire another transaction-scoped advisory lock on this guard's existing
     /// connection. Callers that need an ordered lock hierarchy can retain one
     /// transaction (and one pool connection) instead of nesting independent

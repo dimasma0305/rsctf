@@ -103,12 +103,47 @@ pub async fn remove_flag(
     Path((id, c_id, f_id)): Path<(i32, i32, i32)>,
 ) -> AppResult<RequestResponse<String>> {
     manager_or_admin(&st, &user, id).await?;
-    load_challenge(&st, id, c_id).await?;
-
     let mut definition_lock =
         crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
-    crate::utils::scoring::lock_jeopardy_flags_exclusive(definition_lock.transaction_mut(), c_id)
-        .await?;
+    let removal = match remove_flag_locked(definition_lock.transaction_mut(), id, c_id, f_id).await
+    {
+        Ok(removal) => removal,
+        Err(error) => {
+            if let Err(rollback_error) = definition_lock.rollback().await {
+                tracing::warn!(%rollback_error, f_id, "flag removal rollback failed");
+            }
+            return Err(error);
+        }
+    };
+    definition_lock
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some(deleted_hash) = removal else {
+        return Ok(RequestResponse::ok("NotFound".to_string()));
+    };
+    if let Some(hash) = deleted_hash {
+        if let Err(error) =
+            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
+                .await
+        {
+            tracing::warn!(%error, %hash, f_id, "removed flag attachment blob purge deferred");
+        }
+    }
+    Ok(RequestResponse::ok("Success".to_string()))
+}
+
+/// Delete the flag and consume its now-orphaned attachment reference in the
+/// retained definition transaction. `None` means the flag did not exist;
+/// `Some(None)` means it existed without a local blob requiring purge.
+pub(super) async fn remove_flag_locked(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+    challenge_id: i32,
+    flag_id: i32,
+) -> AppResult<Option<Option<String>>> {
+    challenges::reject_pending_mutation(&mut **transaction, game_id, challenge_id).await?;
+    crate::utils::scoring::lock_jeopardy_flags_exclusive(transaction, challenge_id).await?;
 
     // Capture the hand-out attachment in the same statement that removes the
     // flag. The exclusive advisory lock makes this deletion linearizable with
@@ -118,20 +153,21 @@ pub async fn remove_flag(
             WHERE id = $1 AND challenge_id = $2
             RETURNING attachment_id"#,
     )
-    .bind(f_id)
-    .bind(c_id)
-    .fetch_optional(&mut **definition_lock.transaction_mut())
+    .bind(flag_id)
+    .bind(challenge_id)
+    .fetch_optional(&mut **transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     let Some(attachment_id) = attachment_id else {
-        return Ok(RequestResponse::ok("NotFound".to_string()));
+        return Ok(None);
     };
-
-    definition_lock.release().await?;
-    if let Some(aid) = attachment_id {
-        delete_attachment(&st, aid).await?;
-    }
-    Ok(RequestResponse::ok("Success".to_string()))
+    let deleted_hash = match attachment_id {
+        Some(attachment_id) => {
+            crate::services::blob_refs::delete_attachment_locked(transaction, attachment_id).await?
+        }
+        None => None,
+    };
+    Ok(Some(deleted_hash))
 }
 
 // ============================================================================

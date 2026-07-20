@@ -9,6 +9,14 @@ export const MAX_UNTRACKED_TOTAL_BYTES = 64 * 1024 * 1024;
 export const MAX_UNTRACKED_FILES = 4_096;
 const UNTRACKED_READ_CONCURRENCY = 8;
 
+export function observerComposeProjectName(value) {
+  const project = value === undefined ? "rsctf" : String(value).trim();
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(project)) {
+    throw new Error(`invalid observer Compose project name ${project}`);
+  }
+  return project;
+}
+
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }

@@ -27,18 +27,34 @@ async function main() {
   console.log(`  idle @ ${N} tunnels: ${fmt(idle)}`);
 
   const L = byoc.listeners();
-  if (!L.length) throw new Error('no tunnel listeners registered');
   console.log(`  flooding ${L.length} listeners for ${DURATION}, sampling rsctf during…`);
 
   const k6 = spawn('k6', ['run', new URL('./k6/byoc-requests.js', import.meta.url).pathname], {
-    stdio: ['ignore', 'pipe', 'ignore'], // drop k6's per-request stderr warnings; keep stdout (the summary)
+    stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, LISTENERS: L.join(','), VUS: String(VUS), DURATION, NOKEEPALIVE: churn ? '1' : '' },
   });
   let out = '';
+  let stderr = '';
   k6.stdout.on('data', (b) => (out += b));
+  k6.stderr.on('data', (b) => {
+    stderr = `${stderr}${b}`.slice(-32 * 1024);
+  });
 
   let done = false;
-  k6.on('close', () => (done = true));
+  let k6Error;
+  let k6ExitCode;
+  const completion = new Promise((resolve) => {
+    k6.on('error', (error) => {
+      k6Error = error;
+      done = true;
+      resolve();
+    });
+    k6.on('close', (code) => {
+      k6ExitCode = code;
+      done = true;
+      resolve();
+    });
+  });
   const cpu = [];
   let ramMax = 0;
   await sleep(3000); // let the flood ramp before sampling
@@ -49,6 +65,13 @@ async function main() {
       ramMax = Math.max(ramMax, parseFloat(s.mem));
     } catch {}
     await sleep(400); // yield so k6's 'close' event can fire (stat() is synchronous/blocking)
+  }
+  await completion;
+  if (k6Error) throw k6Error;
+  if (k6ExitCode !== 0) {
+    throw new Error(
+      `BYOC busy load failed with k6 status ${k6ExitCode ?? 'unknown'}${stderr.trim() ? `: ${stderr.trim().slice(-500)}` : ''}`,
+    );
   }
 
   cpu.sort((a, b) => a - b);

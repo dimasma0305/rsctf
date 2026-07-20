@@ -4,11 +4,14 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { containerExecHubPath } from '@Utils/ContainerExec'
 import '@xterm/xterm/css/xterm.css'
 
 interface ContainerExecModalProps extends Omit<ModalProps, 'children'> {
   containerGuid?: string | null
   containerTitle?: string
+  /** Restrict this terminal to targets owned by one managed game. */
+  scopedGameId?: number
 }
 
 /**
@@ -26,7 +29,7 @@ interface ContainerExecModalProps extends Omit<ModalProps, 'children'> {
  * to switch, close the modal and reopen.
  */
 export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
-  const { containerGuid, containerTitle, opened, onClose, ...rest } = props
+  const { containerGuid, containerTitle, scopedGameId, opened, onClose, ...rest } = props
   const { t } = useTranslation()
   // Callback-ref so the effect below re-fires *after* the DOM node is
   // actually attached. A plain useRef misses the first attach because
@@ -176,7 +179,7 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
     }
     terminalEl.addEventListener('mouseup', onMouseUp)
 
-    const hub = new HubConnectionBuilder().withUrl('/hub/containerExec').withAutomaticReconnect().build()
+    const hub = new HubConnectionBuilder().withUrl(containerExecHubPath(scopedGameId)).withAutomaticReconnect().build()
     hubRef.current = hub
 
     // Server pushes terminal output via the "Receive" client method
@@ -298,7 +301,7 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
       term.dispose()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opened, containerGuid, terminalEl])
+  }, [opened, containerGuid, scopedGameId, terminalEl])
 
   return (
     <Modal

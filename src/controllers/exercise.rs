@@ -392,6 +392,7 @@ pub async fn create_container(
             memory_limit: e.memory_limit.unwrap_or(64),
             cpu_count: e.cpu_count.unwrap_or(1),
             expose_port: e.expose_port.unwrap_or(80),
+            publish_port: true,
             env: vec![],
             flag: Some(flag.clone()),
             ad_network: None,
@@ -432,6 +433,7 @@ pub async fn create_container(
             public_port: Set(None),
             game_instance_id: Set(None),
             exercise_instance_id: Set(existing_exercise_instance_id),
+            ad_team_service_id: Set(None),
         }
         .insert(&st.db)
         .await?;

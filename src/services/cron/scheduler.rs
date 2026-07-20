@@ -25,7 +25,9 @@ const DEFAULT_GAME_CONCURRENCY: usize = 4;
 struct ActiveGame {
     id: i32,
     start_time_utc: chrono::DateTime<Utc>,
+    end_time_utc: chrono::DateTime<Utc>,
     ad_warmup_seconds: Option<i32>,
+    ad_min_grace_period_seconds: Option<i32>,
     ad_scoring_paused: bool,
     network_bound: bool,
 }
@@ -71,6 +73,28 @@ fn required_network_bound(scope: RoundSchedulerScope) -> Option<bool> {
     }
 }
 
+fn minimum_round_runway_seconds(grace_seconds: Option<i32>) -> i64 {
+    i64::from(
+        grace_seconds
+            .unwrap_or(crate::services::ad_engine::DEFAULT_CHECKER_GRACE_SECONDS)
+            .clamp(1, 60),
+    ) + i64::try_from(
+        crate::services::ad_engine::FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS
+            + crate::services::ad_engine::CHECKER_MINIMUM_RUNWAY_SECONDS
+            + crate::services::ad_engine::CHECKER_SCHEDULER_OUTER_MARGIN_SECONDS,
+    )
+    .unwrap_or(i64::MAX)
+}
+
+fn has_minimum_round_runway(
+    event_end: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
+    grace_seconds: Option<i32>,
+) -> bool {
+    event_end.signed_duration_since(now)
+        >= Duration::seconds(minimum_round_runway_seconds(grace_seconds))
+}
+
 /// Advance every due game without allowing one slow game's checker pipeline to
 /// delay the rest of the event field.
 pub(super) async fn advance_ad_rounds(
@@ -79,7 +103,8 @@ pub(super) async fn advance_ad_rounds(
 ) -> AppResult<u64> {
     let now = Utc::now();
     let games = sqlx::query_as::<_, ActiveGame>(
-        r#"SELECT game.id, game.start_time_utc, game.ad_warmup_seconds,
+        r#"SELECT game.id, game.start_time_utc, game.end_time_utc,
+                  game.ad_warmup_seconds, game.ad_min_grace_period_seconds,
                   game.ad_scoring_paused,
                   EXISTS (
                     SELECT 1
@@ -214,6 +239,58 @@ async fn advance_game(
     if !due {
         return Ok(advanced);
     }
+    if !has_minimum_round_runway(
+        schedule.end_time_utc,
+        now,
+        schedule.ad_min_grace_period_seconds,
+    ) {
+        // A clipped terminal pseudo-round would make every participant's flag
+        // and checker sample platform-owned. Stop cleanly instead; event-end
+        // settlement closes the last real round.
+        return Ok(advanced);
+    }
+
+    // Readiness work can include a slow container-runtime call. Keep that delay
+    // outside the persisted scoring window so a healthy service still receives
+    // a truthful tick after the platform becomes ready. Preparation revalidates
+    // every service identity while holding the game lock.
+    let game = match game_model {
+        Some(game) => game,
+        None => load_game_model(state, schedule.id).await?,
+    };
+    let repair_failures = match crate::controllers::edit::ensure_ad_containers(
+        state, &game, None, false, false,
+    )
+    .await
+    {
+        Ok((_, failures)) => failures as usize,
+        Err(error) => {
+            tracing::warn!(
+                game = schedule.id,
+                %error,
+                "cron: managed A&D service readiness failed before round preparation"
+            );
+            1
+        }
+    };
+    if repair_failures > 0 {
+        tracing::warn!(
+            game = schedule.id,
+            failed = repair_failures,
+            "cron: managed A&D service readiness was incomplete before round preparation"
+        );
+    }
+    let now = Utc::now();
+    if !has_minimum_round_runway(
+        schedule.end_time_utc,
+        now,
+        schedule.ad_min_grace_period_seconds,
+    ) {
+        // Do not create a terminal pseudo-round when readiness consumed the
+        // remaining event window. The failed work is platform downtime, not a
+        // participant sample.
+        return Ok(advanced);
+    }
 
     let prepared = match crate::services::ad_engine::prepare_round(
         &state.db,
@@ -237,10 +314,6 @@ async fn advance_game(
     let round_id = prepared.id;
     let round_number = prepared.number;
     let budget = pipeline_budget(prepared.ends_at);
-    let game = match game_model {
-        Some(game) => game,
-        None => load_game_model(state, schedule.id).await?,
-    };
     match drive_round_pipeline(state, &game, round_id, Some(prepared), budget).await {
         Ok(PipelineDrive::Finished | PipelineDrive::Expired) => Ok(true),
         Ok(PipelineDrive::Complete | PipelineDrive::InFlight) => Ok(advanced),
@@ -310,6 +383,28 @@ mod tests {
     fn game_concurrency_default_is_bounded() {
         let value = game_concurrency();
         assert!((1..=16).contains(&value));
+    }
+
+    #[test]
+    fn terminal_round_runway_matches_the_validated_tick_reserve() {
+        assert_eq!(minimum_round_runway_seconds(None), 15);
+        assert_eq!(minimum_round_runway_seconds(Some(18)), 30);
+    }
+
+    #[test]
+    fn readiness_delay_is_rechecked_before_a_max_grace_round_is_created() {
+        let before_readiness = Utc::now();
+        let event_end = before_readiness + Duration::seconds(72);
+        assert!(has_minimum_round_runway(
+            event_end,
+            before_readiness,
+            Some(60)
+        ));
+        assert!(!has_minimum_round_runway(
+            event_end,
+            before_readiness + Duration::seconds(1),
+            Some(60)
+        ));
     }
 
     #[test]

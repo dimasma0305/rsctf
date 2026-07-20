@@ -1,10 +1,28 @@
 use super::{
     data::snapshot_ids,
     deadline::{action as deadline_action, Action as DeadlineAction},
-    record_receipt, rotate_capability_window, set_phase, CapabilityWindow, CrownPhase, CycleRow,
+    drive_hills_fail_isolated, record_receipt, rotate_capability_window, set_phase,
+    CapabilityWindow, CrownPhase, CycleRow,
 };
 use crate::utils::enums::ParticipationStatus;
 use serde_json::json;
+
+#[tokio::test]
+async fn failing_lower_id_hill_does_not_prevent_later_hill_from_advancing() {
+    let mut advanced = Vec::new();
+    let result = drive_hills_fail_isolated(&[9, 10], |challenge_id| {
+        advanced.push(challenge_id);
+        std::future::ready(if challenge_id == 9 {
+            Err("lower hill failed")
+        } else {
+            Ok(())
+        })
+    })
+    .await;
+
+    assert_eq!(advanced, vec![9, 10]);
+    assert_eq!(result, Err("lower hill failed"));
+}
 
 #[test]
 fn roster_snapshot_accepts_compact_and_object_forms() {

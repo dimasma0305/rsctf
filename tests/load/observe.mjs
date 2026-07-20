@@ -19,6 +19,7 @@ import {
   assertObserverOutputOutsideRepository,
   createFreshObserverDirectory,
   gitWorktreeMetadata,
+  observerComposeProjectName,
   readUntrackedWorktreeFiles,
 } from './observer-evidence.js';
 
@@ -32,6 +33,7 @@ if (!Number.isFinite(intervalSeconds) || intervalSeconds < 1) {
   throw new Error(`INTERVAL_SECONDS must be a finite number >= 1 (got ${process.env.INTERVAL_SECONDS})`);
 }
 const intervalMs = intervalSeconds * 1000;
+const composeProjectName = observerComposeProjectName(process.env.COMPOSE_PROJECT_NAME);
 
 const publicHealthUrl = healthUrlFromTarget(process.env.TARGET || 'http://127.0.0.1:8080');
 const localHealthUrl = safeUrl(process.env.HEALTH_URL || 'http://127.0.0.1:8080/livez');
@@ -265,6 +267,10 @@ const reproducibilityEnvKeys = Object.freeze([
   'NOKEEPALIVE',
   'CONTAINER_IMAGE',
   'RSCTF_BYOC_AGENT_IMAGE',
+  'RSCTF_BYOC_SERVICE_IMAGE',
+  'RSCTF_BYOC_RUN_ID',
+  'RSCTF_ACCEPTANCE_REPORTABLE',
+  'COMPOSE_PROJECT_NAME',
 ]);
 
 const summary = {
@@ -913,7 +919,8 @@ async function collectContainerCounts(timestamp) {
       String(row.Labels || '')
         .split(',')
         .includes(label);
-    const compose = (row) => hasLabel(row, 'com.docker.compose.project=rsctf');
+    const compose = (row) =>
+      hasLabel(row, `com.docker.compose.project=${composeProjectName}`);
     const managed = (row) =>
       String(row.Labels || '')
         .split(',')
@@ -922,7 +929,10 @@ async function collectContainerCounts(timestamp) {
     const lifecycleAgent = (row) => /^lcbyoc_\d+$/.test(row.Names || '');
     const isolatedService = (row) => /^lcbyoc_svc_\d+$/.test(row.Names || '');
     const attackClient = (row) => /^(?:lcattack_|lck6_|lcteam_)/.test(row.Names || '');
-    const loadAgent = (row) => /^load_agent_\d+$/.test(row.Names || '');
+    const loadAgent = (row) =>
+      /^load_agent_(?:[a-z0-9][a-z0-9-]{0,47}_)?\d+$/.test(row.Names || '') ||
+      (hasLabel(row, 'rsctf.load.byoc.owner=byoc-stress-v1') &&
+        hasLabel(row, 'rsctf.load.byoc.role=relay'));
     const namedKoth = (row) => /^lckoth_/.test(row.Names || '');
     await appendCsv(files.counts, [
       timestamp,

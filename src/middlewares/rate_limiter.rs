@@ -134,6 +134,10 @@ pub enum Policy {
     /// plausible flags in the request rather than one token per HTTP request.
     /// Appended to preserve every shipped Redis policy discriminant.
     AdSubmit,
+    /// Source-IP admission for privileged hub negotiation and WebSocket upgrade.
+    /// Frames inside an established connection are intentionally not charged.
+    /// Appended to preserve every shipped Redis policy discriminant.
+    PrivilegedHubAdmission,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -180,6 +184,10 @@ impl Policy {
             // campaign that deliberately needs a longer pre-funded window.
             Policy::AdSubmit => Kind::Bucket {
                 capacity: ad_submit_burst_flags() as f64,
+                refill_per_sec: 10.0,
+            },
+            Policy::PrivilegedHubAdmission => Kind::Bucket {
+                capacity: 120.0,
                 refill_per_sec: 10.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
@@ -432,7 +440,11 @@ fn partition_key(policy: Policy, req: &Request) -> String {
     // fresh brute-force/mail bucket for these anonymous-facing routes.
     if matches!(
         policy,
-        Policy::Login | Policy::Register | Policy::GlobalIpBackstop | Policy::CredentialIpAdmission
+        Policy::Login
+            | Policy::Register
+            | Policy::GlobalIpBackstop
+            | Policy::CredentialIpAdmission
+            | Policy::PrivilegedHubAdmission
     ) {
         return client_ip(req);
     }

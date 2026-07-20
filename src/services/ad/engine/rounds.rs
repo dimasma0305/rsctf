@@ -166,6 +166,7 @@ struct GameSettings {
     private_key: String,
     ad_tick_seconds: Option<i32>,
     ad_warmup_seconds: Option<i32>,
+    ad_min_grace_period_seconds: Option<i32>,
     start_time_utc: chrono::DateTime<Utc>,
     end_time_utc: chrono::DateTime<Utc>,
     ad_scoring_paused: bool,
@@ -254,16 +255,22 @@ fn playable_round_window(
     event_end: chrono::DateTime<Utc>,
     tick_seconds: i64,
     now: chrono::DateTime<Utc>,
-) -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>, bool) {
-    if nominal.1 <= now {
-        (
-            now,
-            (now + Duration::seconds(tick_seconds)).min(event_end),
-            true,
-        )
+    minimum_duration_seconds: i64,
+) -> Option<(chrono::DateTime<Utc>, chrono::DateTime<Utc>, bool)> {
+    // A nominal boundary that has already passed was platform downtime, not a
+    // playable slice of this round. Persist the actual durable preparation time
+    // so every ordinary round gets one complete, truthful tick instead of losing
+    // flag/checker runway to the scheduler's polling cadence.
+    let reanchored = nominal.0 < now;
+    let start = if reanchored { now } else { nominal.0 };
+    let end = if reanchored {
+        (start + Duration::seconds(tick_seconds)).min(event_end)
     } else {
-        (nominal.0, nominal.1, false)
-    }
+        nominal.1.min(event_end)
+    };
+    (end > start
+        && end.signed_duration_since(start) >= Duration::seconds(minimum_duration_seconds.max(1)))
+    .then_some((start, end, reanchored))
 }
 
 /// Atomically finalize the expected current round and prepare its successor.
@@ -318,6 +325,7 @@ async fn prepare_round_transaction(
 ) -> AppResult<AdvancedRound> {
     let game_settings: GameSettings = sqlx::query_as(
         r#"SELECT private_key, ad_tick_seconds, ad_warmup_seconds,
+                  ad_min_grace_period_seconds,
                   start_time_utc, end_time_utc,
                   ad_scoring_paused, ad_scoring_start_round,
                   koth_scoring_start_round
@@ -513,9 +521,9 @@ async fn prepare_round_transaction(
         .map(i64::from)
         .filter(|seconds| *seconds >= 0)
         .unwrap_or(defaults.warmup_seconds.max(0));
-    // Persist an authoritative clock derived from the game anchor and the prior
-    // boundary. Scheduler polling and checker latency may delay publication, but
-    // they can no longer stretch the nominal round duration or rewrite history.
+    // Derive the next identity from the prior boundary, then persist the actual
+    // durable preparation boundary when polling arrived late. A platform-delay
+    // interval is not presented to players as if it were playable round time.
     let (nominal_start, nominal_end) = authoritative_round_window(
         game_settings.start_time_utc,
         game_settings.end_time_utc,
@@ -524,22 +532,41 @@ async fn prepare_round_transaction(
         latest.as_ref().map(|round| round.3),
     )
     .ok_or_else(|| AppError::conflict("No scoring round remains before the event deadline"))?;
+    let grace_seconds = i64::from(
+        game_settings
+            .ad_min_grace_period_seconds
+            .unwrap_or(super::DEFAULT_CHECKER_GRACE_SECONDS)
+            .clamp(1, 60),
+    );
+    let minimum_duration_seconds = grace_seconds.saturating_add(
+        i64::try_from(
+            super::FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS
+                + super::CHECKER_MINIMUM_RUNWAY_SECONDS
+                + super::CHECKER_SCHEDULER_OUTER_MARGIN_SECONDS,
+        )
+        .unwrap_or(i64::MAX),
+    );
     let (scheduled_start, requested_ends_at, reanchored) = playable_round_window(
         (nominal_start, nominal_end),
         game_settings.end_time_utc,
         tick_seconds,
         now,
-    );
+        minimum_duration_seconds,
+    )
+    .ok_or_else(|| {
+        AppError::conflict(
+            "No scoring round remains with enough publication and checker runway before the event deadline",
+        )
+    })?;
     if reanchored {
-        // Do not replay fully elapsed slots with live flags and lifecycle work
-        // after a long outage. The visible boundary gap is field-wide platform
-        // downtime; the next playable round starts when durable ownership is
-        // recovered.
+        // Do not replay elapsed time with live flags and lifecycle work after
+        // scheduler delay. The visible boundary gap is field-wide platform
+        // downtime; the next playable round starts at durable preparation.
         tracing::warn!(
             game = game_id,
             skipped_from = %nominal_start,
             recovered_at = %now,
-            "re-anchoring A&D round after elapsed scheduler window"
+            "re-anchoring A&D round after scheduler delay"
         );
     }
     if scheduled_start > now {

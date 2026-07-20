@@ -3,9 +3,176 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 
-const UNAVAILABLE_DELIVERY_REASON: &str =
-    "flag delivery target became unavailable before publication completed";
+pub(crate) const MINIMUM_AD_TICK_SECONDS: u64 = 30;
+pub(crate) const FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS: u64 = 7;
+pub(crate) const CHECKER_SCHEDULER_OUTER_MARGIN_SECONDS: u64 = 1;
+pub(crate) const CHECKER_MINIMUM_RUNWAY_SECONDS: u64 = 4;
+
+const DEFAULT_FLAG_PUSH_CONCURRENCY: usize = 64;
+const DEFAULT_FLAG_PUSH_ATTEMPTS: usize = 3;
+const DEFAULT_FLAG_PUSH_TIMEOUT_SECONDS: u64 = 2;
+const FLAG_PUSH_RETRY_BACKOFF_MILLIS: u64 = 50;
+const FLAG_DELIVERY_RECEIPT_MARGIN_MILLIS: u64 = 500;
+
 const EXPIRED_DELIVERY_REASON: &str = "round pipeline expired before flag delivery completed";
+pub(crate) const PUBLICATION_DEADLINE_REASON: &str =
+    "platform publication deadline elapsed before flag delivery could start";
+const INCOMPLETE_ATTEMPT_REASON: &str =
+    "flag delivery attempt did not complete before the publication deadline";
+const REPLACED_AFTER_PUBLICATION_REASON: &str =
+    "service identity changed after immutable flag publication; participant sample offline";
+const CHANGED_DURING_DELIVERY_REASON: &str =
+    "service identity changed while flag delivery was in flight";
+
+/// One validated policy shared by delivery, checker scheduling, and event
+/// configuration validation. The seven-second publication reserve includes the
+/// default three two-second attempts, their bounded retry backoff, and durable
+/// receipt handoff. Configuration may reduce that work but cannot expand the
+/// phase and steal checker runway from a 30-second round.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FlagDeliveryPolicy {
+    concurrency: usize,
+    attempts: usize,
+    attempt_timeout: std::time::Duration,
+}
+
+impl Default for FlagDeliveryPolicy {
+    fn default() -> Self {
+        Self {
+            concurrency: DEFAULT_FLAG_PUSH_CONCURRENCY,
+            attempts: DEFAULT_FLAG_PUSH_ATTEMPTS,
+            attempt_timeout: std::time::Duration::from_secs(DEFAULT_FLAG_PUSH_TIMEOUT_SECONDS),
+        }
+    }
+}
+
+impl FlagDeliveryPolicy {
+    pub(crate) fn from_env() -> Result<Self, String> {
+        Self::from_values(
+            std::env::var("RSCTF_AD_FLAG_PUSH_CONCURRENCY")
+                .ok()
+                .as_deref(),
+            std::env::var("RSCTF_AD_FLAG_PUSH_ATTEMPTS").ok().as_deref(),
+            std::env::var("RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS")
+                .ok()
+                .as_deref(),
+        )
+    }
+
+    fn from_values(
+        concurrency: Option<&str>,
+        attempts: Option<&str>,
+        timeout_seconds: Option<&str>,
+    ) -> Result<Self, String> {
+        fn parse_bounded<T>(
+            name: &str,
+            value: Option<&str>,
+            default: T,
+            range: std::ops::RangeInclusive<T>,
+        ) -> Result<T, String>
+        where
+            T: Copy + Ord + std::str::FromStr + std::fmt::Display,
+        {
+            let Some(value) = value else {
+                return Ok(default);
+            };
+            let parsed = value.parse::<T>().map_err(|_| {
+                format!(
+                    "{name} must be an integer between {} and {}",
+                    range.start(),
+                    range.end()
+                )
+            })?;
+            if !range.contains(&parsed) {
+                return Err(format!(
+                    "{name} must be between {} and {}",
+                    range.start(),
+                    range.end()
+                ));
+            }
+            Ok(parsed)
+        }
+
+        let defaults = Self::default();
+        let policy = Self {
+            concurrency: parse_bounded(
+                "RSCTF_AD_FLAG_PUSH_CONCURRENCY",
+                concurrency,
+                defaults.concurrency,
+                1..=256,
+            )?,
+            attempts: parse_bounded(
+                "RSCTF_AD_FLAG_PUSH_ATTEMPTS",
+                attempts,
+                defaults.attempts,
+                1..=5,
+            )?,
+            attempt_timeout: std::time::Duration::from_secs(parse_bounded(
+                "RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS",
+                timeout_seconds,
+                defaults.attempt_timeout.as_secs(),
+                1..=10,
+            )?),
+        };
+        let required = policy.worst_case_attempt_window();
+        if required > policy.delivery_work_budget() {
+            return Err(format!(
+                "A&D flag push attempts and timeout require {:.3}s, exceeding the {:.3}s publication work budget required by the minimum {}s tick",
+                required.as_secs_f64(),
+                policy.delivery_work_budget().as_secs_f64(),
+                MINIMUM_AD_TICK_SECONDS,
+            ));
+        }
+        Ok(policy)
+    }
+
+    pub(crate) const fn concurrency(self) -> usize {
+        self.concurrency
+    }
+
+    pub(crate) const fn attempts(self) -> usize {
+        self.attempts
+    }
+
+    pub(crate) const fn attempt_timeout(self) -> std::time::Duration {
+        self.attempt_timeout
+    }
+
+    pub(crate) fn retry_backoff(self, completed_attempt: usize) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            FLAG_PUSH_RETRY_BACKOFF_MILLIS.saturating_mul(completed_attempt as u64),
+        )
+    }
+
+    pub(crate) const fn publication_reserve(self) -> std::time::Duration {
+        std::time::Duration::from_secs(FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS)
+    }
+
+    /// Hard upper bound accepted for network/container work. The actual
+    /// deadline uses [`Self::worst_case_attempt_window`], leaving the rounded
+    /// remainder of the seven-second phase for receipt persistence.
+    pub(crate) const fn delivery_work_budget(self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            FLAG_DELIVERY_PUBLICATION_RESERVE_SECONDS * 1_000 - FLAG_DELIVERY_RECEIPT_MARGIN_MILLIS,
+        )
+    }
+
+    pub(crate) fn worst_case_attempt_window(self) -> std::time::Duration {
+        let attempts = u32::try_from(self.attempts).unwrap_or(u32::MAX);
+        let timeout = self.attempt_timeout.saturating_mul(attempts);
+        let backoff_steps = self.attempts.saturating_sub(1);
+        let triangular = backoff_steps.saturating_mul(backoff_steps + 1) / 2;
+        timeout.saturating_add(std::time::Duration::from_millis(
+            FLAG_PUSH_RETRY_BACKOFF_MILLIS.saturating_mul(triangular as u64),
+        ))
+    }
+}
+
+pub fn validate_flag_delivery_configuration() -> anyhow::Result<()> {
+    FlagDeliveryPolicy::from_env()
+        .map(|_| ())
+        .map_err(anyhow::Error::msg)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FlagDeliveryKind {
@@ -75,6 +242,12 @@ pub(crate) struct FlagDeliveryPublication {
     pub(crate) failure_count: i32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FlagDeliveryReceipt {
+    pub(crate) team_service_id: i32,
+    pub(crate) completed_at: chrono::DateTime<Utc>,
+}
+
 fn validate_outcomes(outcomes: &[FlagDeliveryOutcome]) -> AppResult<()> {
     let mut service_ids = HashSet::with_capacity(outcomes.len());
     for outcome in outcomes {
@@ -108,7 +281,7 @@ async fn complete_failed_check_results(
 ) -> AppResult<()> {
     sqlx::query(
         r#"UPDATE "AdCheckResults" result
-              SET status = $2,
+              SET status = CASE WHEN delivery.attempts > 0 THEN $2 ELSE $3 END,
                   message = delivery.failure_reason,
                   checked_at = delivery.completed_at,
                   sla_credit = 0.0,
@@ -121,7 +294,45 @@ async fn complete_failed_check_results(
               AND result.sla_credit IS NULL"#,
     )
     .bind(round_id)
+    .bind(AdCheckStatus::Offline as i16)
     .bind(AdCheckStatus::InternalError as i16)
+    .execute(&mut **tx)
+    .await
+    .map(|_| ())
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
+async fn complete_replaced_service_results(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+    game_id: i32,
+    round_id: i32,
+) -> AppResult<()> {
+    sqlx::query(
+        r#"UPDATE "AdCheckResults" result
+                  SET status = $3,
+                  message = $4,
+                  checked_at = LEAST(clock_timestamp(), round.end_time_utc),
+                  sla_credit = 0.0,
+                  flag_verified = FALSE
+             FROM "AdFlagDeliveryResults" delivery
+             JOIN "AdTeamServices" service
+               ON service.id = delivery.team_service_id
+              AND service.game_id = $1
+             JOIN "AdRounds" round
+               ON round.id = delivery.round_id
+              AND round.game_id = service.game_id
+            WHERE delivery.round_id = $2
+              AND delivery.delivery_kind = 'Managed'
+              AND delivery.delivered = TRUE
+              AND delivery.container_id IS DISTINCT FROM service.container_id
+              AND result.round_id = delivery.round_id
+              AND result.team_service_id = delivery.team_service_id
+              AND result.sla_credit IS NULL"#,
+    )
+    .bind(game_id)
+    .bind(round_id)
+    .bind(AdCheckStatus::Offline as i16)
+    .bind(REPLACED_AFTER_PUBLICATION_REASON)
     .execute(&mut **tx)
     .await
     .map(|_| ())
@@ -133,6 +344,7 @@ async fn insert_missing_outcomes(
     game_id: i32,
     round_id: i32,
     reason: &str,
+    attempted_service_ids: &[i32],
     completed_at: chrono::DateTime<Utc>,
 ) -> AppResult<()> {
     sqlx::query(
@@ -142,7 +354,10 @@ async fn insert_missing_outcomes(
            SELECT flag.round_id, flag.team_service_id,
                   CASE WHEN challenge.ad_self_hosted THEN 'External' ELSE 'Managed' END,
                   CASE WHEN challenge.ad_self_hosted THEN NULL ELSE service.container_id END,
-                  FALSE, 0, $3, $4
+                  FALSE,
+                  CASE WHEN flag.team_service_id = ANY($4) THEN 1 ELSE 0 END,
+                  CASE WHEN flag.team_service_id = ANY($4) THEN $5 ELSE $3 END,
+                  $6
              FROM "AdFlags" flag
              JOIN "AdRounds" round ON round.id = flag.round_id
              JOIN "AdTeamServices" service ON service.id = flag.team_service_id
@@ -156,6 +371,8 @@ async fn insert_missing_outcomes(
     .bind(round_id)
     .bind(game_id)
     .bind(reason)
+    .bind(attempted_service_ids)
+    .bind(INCOMPLETE_ATTEMPT_REASON)
     .bind(completed_at)
     .execute(&mut **tx)
     .await
@@ -169,6 +386,10 @@ async fn settle_round_publication(
     round_id: i32,
     published_at: chrono::DateTime<Utc>,
 ) -> AppResult<FlagDeliveryPublication> {
+    // A successful push is bound to the exact managed-container identity that
+    // acknowledged it. Churn between that receipt and first settlement is
+    // participant-controlled evidence, not a missing platform sample.
+    complete_replaced_service_results(tx, game_id, round_id).await?;
     complete_failed_check_results(tx, round_id).await?;
     let row: Option<(i32,)> = sqlx::query_as(
         r#"UPDATE "AdRounds" round
@@ -210,6 +431,8 @@ async fn record_flag_delivery_outcomes_transaction(
     game_id: i32,
     round_id: i32,
     outcomes: &[FlagDeliveryOutcome],
+    settle_missing: Option<&str>,
+    attempted_service_ids: &[i32],
 ) -> AppResult<FlagDeliveryPublication> {
     validate_outcomes(outcomes)?;
     let round: Option<(
@@ -238,6 +461,7 @@ async fn record_flag_delivery_outcomes_transaction(
         ));
     };
     if published_at.is_some() {
+        complete_replaced_service_results(tx, game_id, round_id).await?;
         return Ok(FlagDeliveryPublication { failure_count });
     }
     let now: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
@@ -287,37 +511,59 @@ async fn record_flag_delivery_outcomes_transaction(
             .into_iter()
             .map(|(service_id, managed, container_id)| (service_id, (managed, container_id)))
             .collect();
-        if roster.len() != outcomes.len()
-            || outcomes.iter().any(|outcome| {
-                roster
-                    .get(&outcome.team_service_id)
-                    .is_none_or(|(managed, container_id)| {
-                        *managed != (outcome.kind == FlagDeliveryKind::Managed)
-                            || (*managed && container_id != &outcome.container_id)
-                    })
+        // Do not let one participant's reset/reconnect race roll back valid peer
+        // receipts in the same batch. A produced outcome for a stale identity is
+        // immutable participant evidence: that service began publication work,
+        // then changed its target before the result committed. Missing/deleted
+        // rows are skipped here and handled by final settlement without affecting
+        // authoritative peers.
+        let authoritative_outcomes: Vec<FlagDeliveryOutcome> = outcomes
+            .iter()
+            .filter_map(|outcome| {
+                let (managed, container_id) = roster.get(&outcome.team_service_id)?;
+                let identity_matches = *managed == (outcome.kind == FlagDeliveryKind::Managed)
+                    && (!*managed || container_id == &outcome.container_id);
+                if identity_matches {
+                    return Some(outcome.clone());
+                }
+                Some(FlagDeliveryOutcome {
+                    team_service_id: outcome.team_service_id,
+                    kind: outcome.kind,
+                    container_id: outcome.container_id.clone(),
+                    delivered: false,
+                    attempts: outcome.attempts.max(1),
+                    failure_reason: Some(CHANGED_DURING_DELIVERY_REASON.to_string()),
+                    completed_at: outcome.completed_at,
+                })
             })
-        {
-            return Err(AppError::conflict(
-                "flag-delivery batch no longer matches the authoritative service target",
-            ));
-        }
-        let kinds: Vec<&str> = outcomes
+            .collect();
+        let kinds: Vec<&str> = authoritative_outcomes
             .iter()
             .map(|outcome| outcome.kind.as_str())
             .collect();
-        let container_ids: Vec<Option<&str>> = outcomes
+        let container_ids: Vec<Option<&str>> = authoritative_outcomes
             .iter()
             .map(|outcome| outcome.container_id.as_deref())
             .collect();
-        let delivered: Vec<bool> = outcomes.iter().map(|outcome| outcome.delivered).collect();
-        let attempts: Vec<i16> = outcomes.iter().map(|outcome| outcome.attempts).collect();
-        let reasons: Vec<Option<&str>> = outcomes
+        let delivered: Vec<bool> = authoritative_outcomes
+            .iter()
+            .map(|outcome| outcome.delivered)
+            .collect();
+        let attempts: Vec<i16> = authoritative_outcomes
+            .iter()
+            .map(|outcome| outcome.attempts)
+            .collect();
+        let reasons: Vec<Option<&str>> = authoritative_outcomes
             .iter()
             .map(|outcome| outcome.failure_reason.as_deref())
             .collect();
-        let completed_at: Vec<chrono::DateTime<Utc>> = outcomes
+        let completed_at: Vec<chrono::DateTime<Utc>> = authoritative_outcomes
             .iter()
             .map(|outcome| outcome.completed_at)
+            .collect();
+        let service_ids: Vec<i32> = authoritative_outcomes
+            .iter()
+            .map(|outcome| outcome.team_service_id)
             .collect();
         sqlx::query(
             r#"INSERT INTO "AdFlagDeliveryResults"
@@ -348,22 +594,90 @@ async fn record_flag_delivery_outcomes_transaction(
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
 
-    insert_missing_outcomes(tx, game_id, round_id, UNAVAILABLE_DELIVERY_REASON, now).await?;
-    settle_round_publication(tx, game_id, round_id, now).await
+    if let Some(reason) = settle_missing {
+        insert_missing_outcomes(tx, game_id, round_id, reason, attempted_service_ids, now).await?;
+        settle_round_publication(tx, game_id, round_id, now).await
+    } else {
+        let failure_count = sqlx::query_scalar(
+            r#"SELECT COUNT(*)::integer FROM "AdFlagDeliveryResults"
+                WHERE round_id = $1 AND delivered = FALSE"#,
+        )
+        .bind(round_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        Ok(FlagDeliveryPublication { failure_count })
+    }
 }
 
-pub(crate) async fn record_flag_delivery_outcomes(
+/// Persist one immutable service receipt as soon as its push completes. A
+/// successful receipt is returned for the streaming checker handoff. Replays
+/// return the already-committed receipt and never mutate its timestamp.
+pub(crate) async fn record_flag_delivery_outcome_batch(
     db: &DatabaseConnection,
     game_id: i32,
     round_id: i32,
     outcomes: &[FlagDeliveryOutcome],
+) -> AppResult<Vec<FlagDeliveryReceipt>> {
+    if outcomes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
+    record_flag_delivery_outcomes_transaction(
+        control.transaction_mut(),
+        game_id,
+        round_id,
+        outcomes,
+        None,
+        &[],
+    )
+    .await?;
+    let service_ids: Vec<i32> = outcomes
+        .iter()
+        .map(|outcome| outcome.team_service_id)
+        .collect();
+    let receipts = sqlx::query_as::<_, (i32, chrono::DateTime<Utc>)>(
+        r#"SELECT team_service_id, completed_at
+             FROM "AdFlagDeliveryResults"
+            WHERE round_id = $1 AND team_service_id = ANY($2) AND delivered = TRUE
+            ORDER BY team_service_id"#,
+    )
+    .bind(round_id)
+    .bind(&service_ids)
+    .fetch_all(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .into_iter()
+    .map(|(team_service_id, completed_at)| FlagDeliveryReceipt {
+        team_service_id,
+        completed_at,
+    })
+    .collect();
+    control
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(receipts)
+}
+
+/// Close the bounded publication phase. Targets that never produced a receipt
+/// are platform-attributed (`attempts = 0`); a target that consumed at least
+/// one complete attempt already has an Offline receipt and stays in the SLA
+/// denominator.
+pub(crate) async fn settle_flag_delivery_outcomes(
+    db: &DatabaseConnection,
+    game_id: i32,
+    round_id: i32,
+    attempted_service_ids: &[i32],
 ) -> AppResult<FlagDeliveryPublication> {
     let mut control = super::koth_auth::acquire_game_lock(db, game_id).await?;
     let publication = record_flag_delivery_outcomes_transaction(
         control.transaction_mut(),
         game_id,
         round_id,
-        outcomes,
+        &[],
+        Some(PUBLICATION_DEADLINE_REASON),
+        attempted_service_ids,
     )
     .await?;
     control
@@ -394,176 +708,20 @@ pub(super) async fn complete_missing_flag_delivery_outcomes_transaction(
     let Some(completed_at) = completed_at else {
         return Ok(());
     };
-    insert_missing_outcomes(tx, game_id, round_id, EXPIRED_DELIVERY_REASON, completed_at).await?;
+    insert_missing_outcomes(
+        tx,
+        game_id,
+        round_id,
+        EXPIRED_DELIVERY_REASON,
+        &[],
+        completed_at,
+    )
+    .await?;
     settle_round_publication(tx, game_id, round_id, completed_at)
         .await
         .map(|_| ())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use sea_orm::{ConnectOptions, Database};
-
-    fn failure(service_id: i32) -> FlagDeliveryOutcome {
-        FlagDeliveryOutcome::failed(
-            service_id,
-            FlagDeliveryKind::Managed,
-            Some(format!("container-{service_id}")),
-            3,
-            "container exec failed",
-        )
-    }
-
-    #[test]
-    fn duplicate_service_outcomes_are_rejected_instead_of_double_counted() {
-        let outcomes = vec![failure(7), failure(7)];
-        assert!(matches!(
-            validate_outcomes(&outcomes),
-            Err(AppError::Conflict(_))
-        ));
-    }
-
-    #[test]
-    fn outcome_shape_rejects_false_success_and_external_container_identity() {
-        let mut outcome = FlagDeliveryOutcome::succeeded(
-            1,
-            FlagDeliveryKind::External,
-            Some("not-valid-for-external".into()),
-            1,
-        );
-        assert!(validate_outcomes(&[outcome.clone()]).is_err());
-        outcome.container_id = None;
-        outcome.attempts = 0;
-        assert!(validate_outcomes(&[outcome]).is_err());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn publication_is_idempotent_and_counts_each_failed_service_once() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
-        let mut options = ConnectOptions::new(database_url);
-        options.max_connections(1).min_connections(1);
-        let db = Database::connect(options).await.unwrap();
-        let pool = db.get_postgres_connection_pool();
-        sqlx::raw_sql(
-            r#"
-            CREATE TEMP TABLE "Games" (
-              id INTEGER PRIMARY KEY, end_time_utc TIMESTAMPTZ NOT NULL
-            );
-            CREATE TEMP TABLE "AdRounds" (
-              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-              start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL,
-              finalized BOOLEAN NOT NULL, flags_published_at TIMESTAMPTZ,
-              flag_delivery_failures INTEGER NOT NULL
-            );
-            CREATE TEMP TABLE "GameChallenges" (
-              id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
-              ad_self_hosted BOOLEAN NOT NULL
-            );
-            CREATE TEMP TABLE "AdTeamServices" (
-              id INTEGER PRIMARY KEY, challenge_id INTEGER NOT NULL,
-              game_id INTEGER NOT NULL, container_id TEXT
-            );
-            CREATE TEMP TABLE "AdFlags" (
-              round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
-              PRIMARY KEY (round_id, team_service_id)
-            );
-            CREATE TEMP TABLE "AdCheckResults" (
-              round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
-              status SMALLINT NOT NULL, message TEXT, checked_at TIMESTAMPTZ NOT NULL,
-              sla_credit DOUBLE PRECISION, flag_verified BOOLEAN NOT NULL,
-              PRIMARY KEY (round_id, team_service_id)
-            );
-            CREATE TEMP TABLE "AdFlagDeliveryResults" (
-              round_id INTEGER NOT NULL, team_service_id INTEGER NOT NULL,
-              delivery_kind TEXT NOT NULL, container_id TEXT, delivered BOOLEAN NOT NULL,
-              attempts SMALLINT NOT NULL, failure_reason TEXT,
-              completed_at TIMESTAMPTZ NOT NULL,
-              PRIMARY KEY (round_id, team_service_id)
-            );
-            INSERT INTO "GameChallenges" VALUES (4, 7, FALSE);
-            INSERT INTO "AdTeamServices" VALUES
-              (11, 4, 7, 'container-11'), (12, 4, 7, 'container-12');
-            INSERT INTO "AdFlags" VALUES (9, 11), (9, 12);
-            INSERT INTO "AdCheckResults" VALUES
-              (9, 11, 3, 'pending', clock_timestamp(), NULL, FALSE),
-              (9, 12, 3, 'pending', clock_timestamp(), NULL, FALSE);
-            "#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-        let now: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
-            .fetch_one(pool)
-            .await
-            .unwrap();
-        sqlx::query(r#"INSERT INTO "Games" VALUES (7, $1)"#)
-            .bind(now + chrono::Duration::minutes(5))
-            .execute(pool)
-            .await
-            .unwrap();
-        sqlx::query(r#"INSERT INTO "AdRounds" VALUES (9, 7, $1, $2, FALSE, NULL, 0)"#)
-            .bind(now - chrono::Duration::seconds(1))
-            .bind(now + chrono::Duration::minutes(1))
-            .execute(pool)
-            .await
-            .unwrap();
-
-        let outcomes = vec![
-            FlagDeliveryOutcome::failed(
-                11,
-                FlagDeliveryKind::Managed,
-                Some("container-11".into()),
-                3,
-                "repair and push both failed",
-            ),
-            FlagDeliveryOutcome::succeeded(
-                12,
-                FlagDeliveryKind::Managed,
-                Some("container-12".into()),
-                1,
-            ),
-        ];
-        let first = record_flag_delivery_outcomes(&db, 7, 9, &outcomes)
-            .await
-            .unwrap();
-        let replay = record_flag_delivery_outcomes(&db, 7, 9, &outcomes)
-            .await
-            .unwrap();
-        assert_eq!(first.failure_count, 1);
-        assert_eq!(replay.failure_count, 1);
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                r#"SELECT COUNT(*) FROM "AdFlagDeliveryResults" WHERE round_id = 9"#,
-            )
-            .fetch_one(pool)
-            .await
-            .unwrap(),
-            2
-        );
-        let failed_check: (i16, Option<String>, Option<f64>, bool) = sqlx::query_as(
-            r#"SELECT status, message, sla_credit, flag_verified
-                 FROM "AdCheckResults" WHERE round_id = 9 AND team_service_id = 11"#,
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        assert_eq!(failed_check.0, AdCheckStatus::InternalError as i16);
-        assert_eq!(
-            failed_check.1.as_deref(),
-            Some("repair and push both failed")
-        );
-        assert_eq!(failed_check.2, Some(0.0));
-        assert!(!failed_check.3);
-        let healthy_credit: Option<f64> = sqlx::query_scalar(
-            r#"SELECT sla_credit FROM "AdCheckResults"
-                WHERE round_id = 9 AND team_service_id = 12"#,
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        assert_eq!(healthy_credit, None);
-    }
-}
+#[path = "flag_delivery/tests.rs"]
+mod tests;

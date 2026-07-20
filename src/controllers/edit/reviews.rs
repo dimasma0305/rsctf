@@ -116,6 +116,40 @@ pub async fn get_game_admins(
 
 /// `POST /api/edit/games/{id}/admins/{userId}` — grant a user co-organizer
 /// rights (insert a `game_manager` row). Idempotent. Void.
+pub(super) const INSERT_GAME_MANAGER_SQL: &str = r#"
+INSERT INTO "GameManagers" (game_id, user_id)
+VALUES ($1, $2)
+ON CONFLICT (game_id, user_id) DO NOTHING
+"#;
+
+pub(super) async fn insert_game_manager_if_absent(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    user_id: Uuid,
+) -> AppResult<bool> {
+    let result = sqlx::query(INSERT_GAME_MANAGER_SQL)
+        .bind(game_id)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .map_err(map_game_manager_insert_error)?;
+    Ok(result.rows_affected() == 1)
+}
+
+fn map_game_manager_insert_error(error: sqlx::Error) -> AppError {
+    if matches!(
+        &error,
+        sqlx::Error::Database(database) if database.code().as_deref() == Some("23503")
+    ) {
+        // The game or user passed the preflight read but was deleted before the
+        // atomic grant. Keep that normal lifecycle race API-shaped instead of
+        // exposing a database failure as a 500.
+        AppError::not_found("Game or user not found")
+    } else {
+        AppError::internal(error.to_string())
+    }
+}
+
 pub async fn add_game_admin(
     State(st): State<SharedState>,
     _admin: AdminUser,
@@ -129,20 +163,7 @@ pub async fn add_game_admin(
     {
         return Err(AppError::not_found("User not found"));
     }
-    let already = game_manager::Entity::find()
-        .filter(game_manager::Column::GameId.eq(id))
-        .filter(game_manager::Column::UserId.eq(user_id))
-        .count(&st.db)
-        .await?
-        > 0;
-    if !already {
-        let am = game_manager::ActiveModel {
-            game_id: Set(id),
-            user_id: Set(user_id),
-            ..Default::default()
-        };
-        am.insert(&st.db).await?;
-    }
+    insert_game_manager_if_absent(st.pg(), id, user_id).await?;
     Ok(MessageResponse::ok(""))
 }
 

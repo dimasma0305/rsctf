@@ -173,9 +173,41 @@ fn elapsed_window_reanchors_without_replaying_live_flags() {
     let nominal_end = nominal_start + Duration::seconds(30);
     let recovered_at = nominal_end + Duration::seconds(75);
     let event_end = recovered_at + Duration::minutes(5);
-    let (start, end, reanchored) =
-        playable_round_window((nominal_start, nominal_end), event_end, 30, recovered_at);
+    let (start, end, reanchored) = playable_round_window(
+        (nominal_start, nominal_end),
+        event_end,
+        30,
+        recovered_at,
+        15,
+    )
+    .unwrap();
     assert!(reanchored);
     assert_eq!(start, recovered_at);
     assert_eq!(end - start, Duration::seconds(30));
+}
+
+#[test]
+fn late_poll_reanchors_a_full_tick_without_overlap() {
+    let prior_end = Utc::now();
+    let nominal = (prior_end, prior_end + Duration::seconds(30));
+    let prepared_at = prior_end + Duration::seconds(5);
+    let event_end = prepared_at + Duration::minutes(5);
+    let (start, end, reanchored) =
+        playable_round_window(nominal, event_end, 30, prepared_at, 15).unwrap();
+    assert!(reanchored);
+    assert_eq!(start, prepared_at);
+    assert_eq!(end - start, Duration::seconds(30));
+    assert!(start >= prior_end, "successor rounds must never overlap");
+}
+
+#[test]
+fn terminal_round_is_capped_only_when_minimum_runway_remains() {
+    let now = Utc::now();
+    let nominal = (now, now + Duration::seconds(30));
+    let playable_end = now + Duration::seconds(15);
+    let (start, end, _) = playable_round_window(nominal, playable_end, 30, now, 15).unwrap();
+    assert_eq!(start, now);
+    assert_eq!(end, playable_end);
+
+    assert!(playable_round_window(nominal, now + Duration::seconds(14), 30, now, 15,).is_none());
 }

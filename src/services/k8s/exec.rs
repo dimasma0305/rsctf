@@ -5,8 +5,9 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, AttachParams, AttachedProcess};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use super::is_not_found;
-use crate::services::container::MAX_EXEC_OUTPUT_BYTES;
+use crate::services::container::{
+    ContainerExecAdmission, ContainerExecError, MAX_EXEC_OUTPUT_BYTES,
+};
 use crate::utils::error::{AppError, AppResult};
 
 /// A backend-level deadline keeps callers other than the KotH checker from
@@ -27,17 +28,45 @@ impl From<std::io::Error> for DrainError {
 }
 
 impl DrainError {
-    fn into_app_error(self) -> AppError {
+    fn into_exec_error(self) -> ContainerExecError {
         match self {
-            Self::Read(error) => {
-                AppError::internal(format!("failed to read Kubernetes exec output: {error}"))
-            }
-            Self::OutputTooLarge => AppError::internal("container exec output exceeded 1 MiB"),
-            Self::MissingStatus => {
-                AppError::internal("Kubernetes exec ended without a process status")
-            }
+            Self::Read(error) => ContainerExecError::Platform(AppError::internal(format!(
+                "failed to read Kubernetes exec output: {error}"
+            ))),
+            Self::OutputTooLarge => ContainerExecError::Participant(AppError::internal(
+                "container exec output exceeded 1 MiB",
+            )),
+            Self::MissingStatus => ContainerExecError::Platform(AppError::internal(
+                "Kubernetes exec ended without a process status",
+            )),
         }
     }
+}
+
+fn classify_attach_error(id: &str, error: kube::Error) -> ContainerExecError {
+    let participant = matches!(
+        &error,
+        kube::Error::Api(response) if matches!(response.code, 400 | 404 | 409 | 422)
+    );
+    let app_error = if matches!(&error, kube::Error::Api(response) if response.code == 404) {
+        AppError::not_found(format!("pod not found: {id}"))
+    } else {
+        AppError::internal(format!("failed to start Kubernetes exec: {error}"))
+    };
+    if participant {
+        ContainerExecError::Participant(app_error)
+    } else {
+        ContainerExecError::Platform(app_error)
+    }
+}
+
+fn attach_timeout_error() -> ContainerExecError {
+    ContainerExecError::Platform(AppError::internal("Kubernetes exec admission timed out"))
+}
+
+fn admit_attached<T>(attached: T, admission: &ContainerExecAdmission) -> T {
+    admission.mark_admitted();
+    attached
 }
 
 /// Aborts kube's background websocket task when this request future is
@@ -80,7 +109,12 @@ where
 /// Run a command in the named challenge container and return deterministic
 /// stdout-then-stderr output. Kubernetes exposes the streams independently, so
 /// their exact interleaving is not available without allocating a TTY.
-pub(super) async fn run(pods: Api<Pod>, id: &str, cmd: Vec<String>) -> AppResult<String> {
+pub(super) async fn run_classified(
+    pods: Api<Pod>,
+    id: &str,
+    cmd: Vec<String>,
+    admission: ContainerExecAdmission,
+) -> Result<String, ContainerExecError> {
     let deadline = tokio::time::Instant::now() + EXEC_TIMEOUT;
     let params = AttachParams {
         // Admission controllers may inject sidecars. The challenge container is
@@ -90,27 +124,20 @@ pub(super) async fn run(pods: Api<Pod>, id: &str, cmd: Vec<String>) -> AppResult
     };
     let attached = tokio::time::timeout_at(deadline, pods.exec(id, cmd, &params))
         .await
-        .map_err(|_| AppError::internal("Kubernetes exec timed out"))?
-        .map_err(|error| {
-            if is_not_found(&error) {
-                AppError::not_found(format!("pod not found: {id}"))
-            } else {
-                AppError::internal(format!("failed to start Kubernetes exec: {error}"))
-            }
-        })?;
-    let mut process = ProcessGuard(attached);
-    let stdout = process
-        .0
-        .stdout()
-        .ok_or_else(|| AppError::internal("Kubernetes exec did not attach stdout"))?;
-    let stderr = process
-        .0
-        .stderr()
-        .ok_or_else(|| AppError::internal("Kubernetes exec did not attach stderr"))?;
-    let status = process
-        .0
-        .take_status()
-        .ok_or_else(|| AppError::internal("Kubernetes exec did not attach process status"))?;
+        .map_err(|_| attach_timeout_error())?
+        .map_err(|error| classify_attach_error(id, error))?;
+    let mut process = ProcessGuard(admit_attached(attached, &admission));
+    let stdout = process.0.stdout().ok_or_else(|| {
+        ContainerExecError::Platform(AppError::internal("Kubernetes exec did not attach stdout"))
+    })?;
+    let stderr = process.0.stderr().ok_or_else(|| {
+        ContainerExecError::Platform(AppError::internal("Kubernetes exec did not attach stderr"))
+    })?;
+    let status = process.0.take_status().ok_or_else(|| {
+        ContainerExecError::Platform(AppError::internal(
+            "Kubernetes exec did not attach process status",
+        ))
+    })?;
     let total_bytes = AtomicUsize::new(0);
 
     let drain = async {
@@ -128,14 +155,34 @@ pub(super) async fn run(pods: Api<Pod>, id: &str, cmd: Vec<String>) -> AppResult
 
     let output = tokio::time::timeout_at(deadline, drain)
         .await
-        .map_err(|_| AppError::internal("Kubernetes exec timed out"))?
-        .map_err(DrainError::into_app_error)?;
+        .map_err(|_| {
+            ContainerExecError::Participant(AppError::internal("Kubernetes exec timed out"))
+        })?
+        .map_err(DrainError::into_exec_error)?;
     Ok(String::from_utf8_lossy(&output).into_owned())
+}
+
+pub(super) async fn run(pods: Api<Pod>, id: &str, cmd: Vec<String>) -> AppResult<String> {
+    run_classified(pods, id, cmd, ContainerExecAdmission::default())
+        .await
+        .map_err(ContainerExecError::into_app_error)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kubernetes_attach_timeout_is_platform_and_admission_waits_for_attach() {
+        assert!(matches!(
+            attach_timeout_error(),
+            ContainerExecError::Platform(_)
+        ));
+        let admission = ContainerExecAdmission::default();
+        assert!(!admission.is_admitted());
+        admit_attached((), &admission);
+        assert!(admission.is_admitted());
+    }
 
     #[tokio::test]
     async fn streams_share_one_output_budget() {

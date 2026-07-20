@@ -5,15 +5,20 @@
 {$RSCTF_DOMAIN} {
 	encode zstd gzip
 
-	# BYOC agents and BYOC admin terminals depend on process-local tunnel state.
+	# BYOC agents and BYOC admin terminals depend on process-local tunnel state;
+	# KotH recovery must execute beside the checker firewall owner.
 	# The rsctf-network alias belongs to rsctf in single-role mode and is moved
 	# to rsctf-control by compose.roles.yml. Resolve it for every request so a
 	# recreated singleton cannot leave Caddy pinned to a stale container address.
-	@network path_regexp network ^(?:/api/(?:stateful/)?Game/[0-9]+/Ad/Byoc/(?:Agent|Image)/.*|/api/proxy(?:/.*)?|/api/workers/enroll|/api/admin/workers(?:/.*)?|/hub/containerExec(?:/negotiate)?)$
+	@network path_regexp network ^(?:/api/(?:stateful/)?Game/[0-9]+/Ad/Byoc/(?:Agent|Image)/.*|/api/stateful/edit/games/[1-9][0-9]*/ad/koth/[1-9][0-9]*/recover|/api/edit/games/[1-9][0-9]*/ad/koth/[1-9][0-9]*/recover|/api/proxy(?:/.*)?|/api/workers/enroll|/api/admin/workers(?:/.*)?|/hub/containerExec(?:/games/[1-9][0-9]*)?(?:/negotiate)?)$
 	# Agent/Image URLs contain bearer capabilities in their path. Never write
 	# those request URIs to the access log.
 	@byocCapability path_regexp byocCapability ^/api/(?:stateful/)?Game/[0-9]+/Ad/Byoc/(?:Agent|Image)/.*$
 	log_skip @byocCapability
+	# SignalR WebSocket clients carry their bearer in the access_token query.
+	# Exclude hub request URIs so proxy logs cannot retain that credential.
+	@hubBearer path /hub/*
+	log_skip @hubBearer
 	handle @network {
 		reverse_proxy {
 			dynamic a {$RSCTF_NETWORK_UPSTREAM_HOST:rsctf-network} {$RSCTF_NETWORK_UPSTREAM_PORT:8080} {
@@ -25,10 +30,10 @@
 			lb_try_interval 100ms
 			transport http {
 				dial_timeout 500ms
-				# Retire pooled sockets before axum/hyper's upstream idle
-				# timeout. Reusing a socket the server already closed turns a
-				# non-retryable POST into a proxy-generated 502.
-				keepalive 30s
+				# Stateful traffic is low-volume or long-lived. A fresh upstream
+				# connection prevents stale pooled sockets from turning its POST
+				# mutations into proxy-generated 502s.
+				keepalive off
 			}
 		}
 	}

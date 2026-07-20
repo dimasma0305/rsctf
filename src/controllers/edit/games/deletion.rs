@@ -1,5 +1,33 @@
 use super::*;
 
+/// Extend the caller's per-game control transaction with every existing
+/// challenge definition key in stable id order. This is deliberately done
+/// before the game row is locked: an attachment writer that already owns a
+/// definition key can finish its retained game-row check instead of forming a
+/// definition <-> row-lock cycle. New children are excluded by the caller's
+/// per-game control lock.
+async fn acquire_game_definition_locks(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+) -> AppResult<()> {
+    let challenge_ids = sqlx::query_scalar::<_, i32>(
+        r#"SELECT id FROM "GameChallenges" WHERE game_id = $1 ORDER BY id"#,
+    )
+    .bind(game_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    for challenge_id in challenge_ids {
+        crate::utils::single_flight::acquire_transaction_advisory_lock(
+            tx,
+            &crate::services::challenge_workloads::definition_lock_key(game_id, challenge_id),
+        )
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Establish a durable deny-new-play marker and prove that hard deletion cannot
 /// erase competition history. The caller owns the per-game control lock.
 /// Updating the game row before taking every challenge JFLG fence matches
@@ -12,8 +40,9 @@ pub(super) async fn fence_game_for_deletion(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     game_id: i32,
 ) -> AppResult<()> {
-    let already_pending = sqlx::query_scalar::<_, bool>(
-        r#"SELECT deletion_pending
+    acquire_game_definition_locks(tx, game_id).await?;
+    let (already_pending, scheduled_start) = sqlx::query_as::<_, (bool, chrono::DateTime<Utc>)>(
+        r#"SELECT deletion_pending, start_time_utc
               FROM "Games"
              WHERE id = $1
              FOR UPDATE"#,
@@ -23,18 +52,26 @@ pub(super) async fn fence_game_for_deletion(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?;
+    let fence_at = sqlx::query_scalar::<_, chrono::DateTime<Utc>>("SELECT clock_timestamp()")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let fenced = sqlx::query(
         r#"UPDATE "Games"
-              SET end_time_utc = LEAST(
-                      end_time_utc,
-                      clock_timestamp() - interval '1 microsecond'
+              SET start_time_utc = LEAST(
+                      start_time_utc, $2 - interval '2 microseconds'
                   ),
+                  end_time_utc = LEAST(
+                      end_time_utc, $2 - interval '1 microsecond'
+                  ),
+                  freeze_time_utc = NULL,
                   practice_mode = FALSE,
                   hidden = TRUE,
                   deletion_pending = TRUE
             WHERE id = $1"#,
     )
     .bind(game_id)
+    .bind(fence_at)
     .execute(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -66,7 +103,7 @@ pub(super) async fn fence_game_for_deletion(
     .map_err(|error| AppError::internal(error.to_string()))?;
 
     let mut protected = sqlx::query_scalar::<_, bool>(
-        r#"SELECT (NOT $2 AND game.start_time_utc <= clock_timestamp())
+        r#"SELECT (NOT $2 AND $3 <= clock_timestamp())
                   OR game.ad_scoring_start_round IS NOT NULL
                   OR game.koth_scoring_start_round IS NOT NULL
                   OR EXISTS (
@@ -110,6 +147,7 @@ pub(super) async fn fence_game_for_deletion(
     )
     .bind(game_id)
     .bind(already_pending)
+    .bind(scheduled_start)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?

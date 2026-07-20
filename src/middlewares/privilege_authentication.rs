@@ -15,7 +15,7 @@ use crate::utils::error::AppError;
 
 /// Cookie used by browser sessions.
 pub const SESSION_COOKIE: &str = "RSCTF_Token";
-const MAX_SESSION_TOKEN_BYTES: usize = 4_096;
+pub(crate) const MAX_SESSION_TOKEN_BYTES: usize = 4_096;
 /// Live authorization is deliberately much shorter-lived than ordinary read
 /// caches. A ban, role edit, or security-stamp rotation can therefore remain
 /// visible for at most one second on a replica that just served a cache hit.

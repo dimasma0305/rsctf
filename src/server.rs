@@ -80,13 +80,15 @@ pub fn web_api_router() -> Router<SharedState> {
 }
 
 /// Narrow HTTP surface for the privileged singleton network/control owner.
-/// Reverse proxies route only BYOC agent/image traffic and the container-exec
-/// hub here; all ordinary APIs remain exclusive to the scalable web pool.
+/// Reverse proxies route BYOC agent/image traffic, the container-exec hub, and
+/// explicit lifecycle-recovery mutations here; ordinary APIs remain exclusive
+/// to the scalable web pool.
 pub fn stateful_api_router() -> Router<SharedState> {
     Router::new()
         .route("/livez", get(crate::services::health::liveness))
         .route("/healthz", get(crate::services::health::readiness))
         .merge(controllers::game::ad::stateful_router())
+        .merge(controllers::game::koth::stateful_router())
         .merge(controllers::workers::router())
         .merge(controllers::proxy::router())
         .merge(hubs::container::router())

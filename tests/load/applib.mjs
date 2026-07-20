@@ -175,6 +175,30 @@ export async function deleteGame(gid) {
   });
 }
 
+const LOAD_GAME_TITLE_RE = /^(?:LOADTEST-[A-Za-z0-9-]+|MULTI-DOMAIN-[a-z0-9][a-z0-9-]{0,31})$/;
+
+function isDeletionProtectedByEvidence(response) {
+  const detail = (typeof response?.json?.detail === 'string' ? response.json.detail : response?.text) || '';
+  const body = String(detail).toLowerCase();
+  return body.includes('cannot be permanently deleted') || body.includes('competition evidence');
+}
+
+async function exactLoadGameCleanup(gameId, title, runtimeIds = []) {
+  const { deleteDisposableLoadGame } = await import('./admin-fixtures.mjs');
+  return deleteDisposableLoadGame(gameId, title, { runtimeIds });
+}
+
+async function retryProtectedDeletion(gameId, response) {
+  let last = response;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await sleep(500 + attempt * 300);
+    last = await deleteGame(gameId);
+    if (last.status < 300) return last;
+    if (!isDeletionProtectedByEvidence(last)) return last;
+  }
+  return last;
+}
+
 /** Idempotently pause/resume the official A&D/KotH scoring clock through its admin API. */
 export async function setAdScoringPaused(gid, desired) {
   const gameId = Number(gid);
@@ -582,72 +606,58 @@ export async function teardownNamespace(gameIds) {
   // concurrent scheduler/checker can make this return a transient 5xx; the exact
   // namespace cleanup below is idempotent, then the public delete is retried and
   // verified instead of silently leaving an empty load-test game behind.
-  for (const g of ids) await deleteGame(g);
-  for (const containerId of kothOperationContainerIds(kothScope.cycleIds)) managedKothContainers.add(containerId);
-  removeManagedKothContainers(managedKothContainers);
-  const inList = ids.join(',');
   for (const g of ids) {
-    sql(
-      `DELETE FROM "AdFlagDeliveryResults" WHERE round_id IN ` +
-        `(SELECT id FROM "AdRounds" WHERE game_id=${g}) OR team_service_id IN ` +
-        `(SELECT id FROM "AdTeamServices" WHERE game_id=${g})`
-    );
-    sql(`DELETE FROM "AdAttacks" a USING "AdRounds" r WHERE a.round_id=r.id AND r.game_id=${g}`);
-    sql(
-      `DELETE FROM "AdCheckResults" WHERE round_id IN ` +
-        `(SELECT id FROM "AdRounds" WHERE game_id=${g}) OR team_service_id IN ` +
-        `(SELECT id FROM "AdTeamServices" WHERE game_id=${g})`
-    );
-    sql(`DELETE FROM "AdFlags" WHERE round_id IN (SELECT id FROM "AdRounds" WHERE game_id=${g})`);
-    sql(
-      `DELETE FROM "KothAcquisitions" acquisition USING "KothCrownCycles" cycle WHERE cycle.id=acquisition.cycle_id AND cycle.game_id=${g}`
-    );
-    sql(`DELETE FROM "KothCrownCycles" WHERE game_id=${g}`);
-    sql(`DELETE FROM "KothOfficialConfigs" WHERE game_id=${g}`);
-    sql(`DELETE FROM "KothTokens" WHERE participation_id IN (SELECT id FROM "Participations" WHERE game_id=${g})`);
-    for (const t of ['AdRounds', 'KothControlResults', 'KothTargets', 'AdTeamServices'])
-      sql(`DELETE FROM "${t}" WHERE game_id=${g}`);
+    let response = await deleteGame(g);
+    if (response.status < 300) continue;
+    if (response.status === 400 && isDeletionProtectedByEvidence(response)) {
+      response = await retryProtectedDeletion(g, response);
+    }
+    if (response.status < 300) continue;
+    const title = sql(`SELECT title FROM "Games" WHERE id=${g}`);
+    if (!title) continue;
+    if (!LOAD_GAME_TITLE_RE.test(title)) {
+      throw new Error(`teardown blocked for non-load game ${g}: ${response.text}`);
+    }
+    const runtimeIds = [...managedKothContainers].filter((containerId) => containerId);
+    removeManagedKothContainers(runtimeIds);
     mustDocker(
       docker(['exec', RSCTF, 'rm', '-rf', `/data/files/checkers/load/${g}`]),
-      `remove checker directory for game ${g}`
+      `remove checker directory for game ${g}`,
     );
-  }
-  // Catch a replacement that was created by an in-flight reset after the first
-  // snapshot but before its cycle rows were removed.
-  removeManagedKothContainers(kothOperationContainerIds(kothScope.cycleIds));
-  // These legacy audit tables have no game foreign key, so deleting the owning
-  // game cannot cascade into them. Keep teardown exact to this run's validated
-  // game ids instead of leaving anti-cheat evidence from a disposable fixture.
-  for (const t of ['SuspicionEvents', 'HoneypotHits'])
-    sql(`DELETE FROM "${t}" WHERE game_id IN (${inList})`);
-  sql(`DELETE FROM "UserParticipations" WHERE game_id IN (${inList})`);
-  sql(`DELETE FROM "TeamMembers" tm USING "Participations" p WHERE p.team_id=tm.team_id AND p.game_id IN (${inList})`);
-  sql(`DELETE FROM "Participations" WHERE game_id IN (${inList})`);
-  sql(
-    `DELETE FROM "Teams" team WHERE (team.name LIKE 'LT%\\_%' OR team.name LIKE 'ltlive%') ` +
-      `AND NOT EXISTS (SELECT 1 FROM "Participations" participation WHERE participation.team_id=team.id)`
-  );
-  sql(
-    `DELETE FROM "AspNetUsers" user_account WHERE user_account.email LIKE '%@load.test' ` +
-      `AND NOT EXISTS (SELECT 1 FROM "TeamMembers" member WHERE member.user_id=user_account.id) ` +
-      `AND NOT EXISTS (SELECT 1 FROM "UserParticipations" participation WHERE participation.user_id=user_account.id)`
-  );
-  // Runtime teardown is intentionally handled by the exact lifecycle owners
-  // (`teardownFleet`, `teardownHill`, and `teardownVpnTeamClients`). A broad
-  // `name=load_` sweep can delete containers owned by an independent load run
-  // and is not evidence that those containers belong to these game ids.
-  for (const g of ids) {
-    if (Number(sql(`SELECT count(*) FROM "Games" WHERE id=${g}`)) > 0) {
-      await must(await deleteGame(g), `deleteGame retry (${g})`);
+    if (response.status !== 400 || !isDeletionProtectedByEvidence(response)) {
+      throw new Error(`teardown unexpected delete status ${response.status} for game ${g}: ${response.text}`);
+    }
+    await exactLoadGameCleanup(g, title, { runtimeIds });
+    if (Number(sql(`SELECT count(*) FROM "Games" WHERE id=${g}`)) !== 0) {
+      throw new Error(`teardown fallback did not remove game ${g}`);
     }
   }
-  // These audit/config rows intentionally have no game FK in older schemas, so
-  // remove any load-namespace orphans after the owning game is gone.
-  for (const t of ['GameEvents', 'GameNotices', 'GameChallenges']) {
-    sql(`DELETE FROM "${t}" WHERE game_id IN (${inList})`);
+  for (const containerId of kothOperationContainerIds(kothScope.cycleIds)) managedKothContainers.add(containerId);
+  removeManagedKothContainers(managedKothContainers);
+  for (const g of ids) {
+    if (Number(sql(`SELECT count(*) FROM "Games" WHERE id=${g}`)) === 0) {
+      continue;
+    }
+    const title = sql(`SELECT title FROM "Games" WHERE id=${g}`);
+    if (!title) continue;
+    const response = await deleteGame(g);
+    if (response.status < 300) continue;
+    if (response.status === 400 && isDeletionProtectedByEvidence(response) && LOAD_GAME_TITLE_RE.test(title)) {
+      removeManagedKothContainers(managedKothContainers);
+      mustDocker(
+        docker(['exec', RSCTF, 'rm', '-rf', `/data/files/checkers/load/${g}`]),
+        `remove checker directory for game ${g}`,
+      );
+      await exactLoadGameCleanup(g, title, { runtimeIds: [...managedKothContainers] });
+      continue;
+    }
+    throw new Error(`teardownNamespace cleanup failed for game ${g}: ${response.status} ${response.text}`);
   }
-  const residual = Number(sql(`SELECT count(*) FROM "Games" WHERE id IN (${inList})`));
-  if (residual !== 0) throw new Error(`teardown left ${residual} load-test game(s)`);
+  for (const g of ids) {
+    if (Number(sql(`SELECT count(*) FROM "Games" WHERE id=${g}`)) !== 0) {
+      throw new Error(`teardown left ${g} load-game row`);
+    }
+  }
 }
 
 // ── Attachments (upload a real local file → serve it at /assets/{hash}) ─────────

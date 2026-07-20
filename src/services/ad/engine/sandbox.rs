@@ -32,6 +32,17 @@ const DEFAULT_CHECKER_UID_BASE: u32 = 60_000;
 const DEFAULT_CHECKER_PROCESS_BUDGET: u32 = 32;
 const MAX_CHECKER_PROCESS_BUDGET: u32 = 256;
 const CHECKER_EGRESS_CHAIN: &str = "RSCTF_CHECKER_EGRESS";
+const FIREWALL_LOCK_WAIT_SECONDS: &str = "5";
+
+/// Checker leases mutate one shared netfilter chain. Serialize their short
+/// command sequences in-process so a checker burst does not fill the kernel's
+/// xtables wait queue and time out otherwise valid fail-closed rule checks.
+/// VPN reconciliation remains a separate process-wide caller; `-w` covers
+/// that bounded cross-component contention.
+fn checker_firewall_command_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn compatible_path_access(
     requested: landlock::BitFlags<landlock::AccessFs>,
@@ -482,9 +493,12 @@ fn ipv6_is_available() -> bool {
 }
 
 fn firewall_status(program: &str, args: &[&str]) -> Result<bool, String> {
+    let _guard = checker_firewall_command_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::process::Command::new(program)
         .arg("-w")
-        .arg("2")
+        .arg(FIREWALL_LOCK_WAIT_SECONDS)
         .args(args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -507,9 +521,12 @@ fn classify_firewall_check_exit(code: Option<i32>) -> Result<bool, String> {
 /// not-present status. Preserve every other failure so cleanup cannot recycle a
 /// checker UID while an indeterminate ACCEPT rule may still exist.
 fn firewall_rule_exists(program: &str, args: &[&str]) -> Result<bool, String> {
+    let _guard = checker_firewall_command_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let status = std::process::Command::new(program)
         .arg("-w")
-        .arg("2")
+        .arg(FIREWALL_LOCK_WAIT_SECONDS)
         .args(args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -789,10 +806,31 @@ impl Drop for SandboxRunGuard {
 
 /// Spawn the sandboxed checker (`venv_python run_py …`) via the self-re-exec
 /// launcher, grant its leased UID only `target:target_port`, enforce a wall-clock
-/// `timeout`, and return the checker's exit code.
+/// `timeout`, and return the checker's exit code or an explicit wall-time
+/// exhaustion. Keeping timeout distinct lets callers attribute a shortened
+/// platform deadline to infrastructure rather than to the participant.
 /// `read_paths`/`exec_paths` are the Landlock allowlist; `env` is the exact set
 /// passed to the checker (the caller passes only the `RSCTF_*` contract — every
 /// other host env var, incl. rsctf's secrets, is stripped by `env_clear`).
+pub enum SandboxOutcome {
+    Exit(i32),
+    TimedOut,
+}
+
+async fn acquire_checker_uid(
+    pool: &'static CheckerUidPool,
+    timeout: Duration,
+) -> std::io::Result<CheckerUidLease> {
+    tokio::time::timeout(timeout, pool.acquire())
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "checker admission capacity exhausted before execution",
+            )
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     venv_python: &str,
@@ -804,13 +842,10 @@ pub async fn run(
     env: &[(String, String)],
     mem_mb: u64,
     timeout: Duration,
-) -> std::io::Result<i32> {
+) -> std::io::Result<SandboxOutcome> {
     let started = tokio::time::Instant::now();
     let pool = checker_uid_pool().map_err(std::io::Error::other)?;
-    let uid_lease = match tokio::time::timeout(timeout, pool.acquire()).await {
-        Ok(lease) => lease,
-        Err(_) => return Ok(SANDBOX_FAIL_EXIT),
-    };
+    let uid_lease = acquire_checker_uid(pool, timeout).await?;
     let remaining = timeout.saturating_sub(started.elapsed());
     let egress = tokio::task::spawn_blocking(move || {
         CheckerEgressLease::install(uid_lease, target, target_port)
@@ -821,7 +856,12 @@ pub async fn run(
         Ok(Err(error)) => return Err(std::io::Error::other(error.to_string())),
         // The detached blocking task still owns the UID. If it completes an
         // insertion, dropping its unobserved output removes the rule first.
-        Err(_) => return Ok(SANDBOX_FAIL_EXIT),
+        Err(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "checker egress admission exhausted before execution",
+            ));
+        }
     };
     let self_exe = std::env::current_exe()?;
     let cpu_s = timeout.as_secs().max(1) + 2; // CPU rlimit ≥ wall timeout
@@ -861,14 +901,16 @@ pub async fn run(
     // a round merely because another game saturated this process's budget.
     let remaining = timeout.saturating_sub(started.elapsed());
     let result = match tokio::time::timeout(remaining, child.wait()).await {
-        Ok(Ok(status)) => Ok(status.code().unwrap_or(SANDBOX_FAIL_EXIT)),
+        Ok(Ok(status)) => Ok(SandboxOutcome::Exit(
+            status.code().unwrap_or(SANDBOX_FAIL_EXIT),
+        )),
         Ok(Err(error)) => Err(error),
         Err(_) => {
             // Timed out — kill the process group. A checker that can't complete
             // in the window means the service didn't respond → Offline (exit 2).
             cleanup.kill_group();
             let _ = child.kill().await;
-            Ok(2)
+            Ok(SandboxOutcome::TimedOut)
         }
     };
     // Clean up any daemonized descendants even after the main checker exits.

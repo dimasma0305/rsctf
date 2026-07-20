@@ -70,3 +70,38 @@ fn game_import_archive_counts_actual_bytes_across_forged_entries() {
     };
     assert!(read_game_import_archive_with_limits(&archive, limits).is_err());
 }
+
+fn valid_import_challenge(id: i32) -> ExportChallengeModel {
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "originalScore": 100,
+        "minScoreRate": 0.2,
+        "difficulty": 5.0,
+        "submissionLimit": 0,
+        "adScoringWeight": 1.0
+    }))
+    .unwrap()
+}
+
+#[test]
+fn archive_import_reuses_shared_schedule_validation() {
+    let mut model: ExportGameModel = serde_json::from_value(serde_json::json!({})).unwrap();
+    model.start_time_utc = chrono::Utc::now();
+    model.end_time_utc = model.start_time_utc + chrono::Duration::hours(1);
+    assert!(model.configuration().validate().is_ok());
+
+    model.end_time_utc = model.start_time_utc;
+    assert!(model.configuration().validate().is_err());
+}
+
+#[test]
+fn archive_import_rejects_duplicate_ids_and_invalid_engine_weights() {
+    let challenge = valid_import_challenge(9);
+    assert!(validate_import_challenges(std::slice::from_ref(&challenge)).is_ok());
+    assert!(validate_import_challenges(&[challenge.clone(), challenge.clone()]).is_err());
+
+    let mut invalid = challenge;
+    invalid.id = 10;
+    invalid.ad_scoring_weight = f64::NAN;
+    assert!(validate_import_challenges(&[invalid]).is_err());
+}

@@ -7,6 +7,8 @@ import * as A from './applib.mjs';
 import {
   ADMIN_OPERATIONS,
   ADMIN_SIGNALR_SURFACES,
+  PARTICIPATION_STATUS,
+  assertBuildImageFixtureInventory,
   assertCompleteCoverage,
   assertDirectAdminOriginBindings,
   assertDisposableComposeTopology,
@@ -21,17 +23,22 @@ import {
   acquireAdminLifecycleDatabaseLock,
   createWorkerCsr,
   deleteDisposableAdminGame,
+  deleteDisposableLoadGame,
   disposableAdminGameRuntimeIds,
   expectStatus,
+  inspectUnchangedServerRuntimeIdentity,
   insertBuildRecord,
+  inspectUniformServerRuntimeIdentity,
   multipartRequest,
+  originalServerRuntimeLogTargets,
   persistRecovery,
   positiveId,
   rawRequest,
-  removeFixtureImage,
   removeRecovery,
+  repositoryCleanupRescheduleSql,
+  shouldRetainLifecycleManifest,
+  scratchChallengeArchive,
   sqlLiteral,
-  tagFixtureImage,
   teamByName,
   unwrap,
   userByEmail,
@@ -51,7 +58,16 @@ const webTargets = (rawWebTargets.startsWith('[') ? JSON.parse(rawWebTargets) : 
   .filter(Boolean);
 const controlTarget = String(process.env.CONTROL_TARGET || TARGET).replace(/\/$/, '');
 const containerImage = process.env.ADMIN_CONTAINER_IMAGE || 'nginx:alpine';
-const repositoryUrl = process.env.ADMIN_REPOSITORY_URL || 'https://github.com/octocat/Hello-World.git';
+const repositoryUrl = process.env.ADMIN_REPOSITORY_URL || 'https://github.com/dimasma0305/rsctf-challenges.git';
+const repositoryRef = process.env.ADMIN_REPOSITORY_REF || 'main';
+const repositoryExpectedCommit = String(process.env.ADMIN_REPOSITORY_EXPECTED_COMMIT || '').trim();
+const reportableAcceptance = process.env.RSCTF_ACCEPTANCE_REPORTABLE === '1';
+if (repositoryExpectedCommit && !/^[0-9a-f]{40}$/i.test(repositoryExpectedCommit)) {
+  throw new Error('ADMIN_REPOSITORY_EXPECTED_COMMIT must be a full 40-character Git commit');
+}
+if (reportableAcceptance && !repositoryExpectedCommit) {
+  throw new Error('RSCTF_ACCEPTANCE_REPORTABLE=1 requires ADMIN_REPOSITORY_EXPECTED_COMMIT');
+}
 const redisContainer = process.env.REDIS_CONTAINER || PG.replace(/-db-(\d+)$/, '-redis-$1');
 const runStartedAt = Date.now();
 const serverContainers = [...new Set([
@@ -63,18 +79,19 @@ const serverContainers = [...new Set([
 ])];
 
 const state = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   tag,
   target: TARGET,
   startedAt: runStartedAt,
   completed: false,
+  reportable: reportableAcceptance,
   gameIds: [],
   userIds: [],
   teamIds: [],
   workerIds: [],
   repoBindingIds: [],
   buildRecordIds: [],
-  imageTags: [],
+  buildImageFixtures: [],
   credentialCacheKeys: [],
   participationIds: [],
   containerIds: [],
@@ -96,6 +113,8 @@ let fixtureParticipation = null;
 let fixtureUsers = null;
 let workerId = null;
 let repoBindingId = null;
+let repoGameId = null;
+let repoChallengeId = null;
 let antiCheatBlockId = null;
 let containerGuid = null;
 let containerRuntimeId = null;
@@ -230,6 +249,11 @@ async function assertGlobalAdminMutationBaseline() {
     `global build-prune baseline is not empty (failed=${failed}, building/queued=${active})`,
   );
   const inventory = await adminApi('GET', '/api/admin/builds/images');
+  expectStatus(inventory, 200, 'global owned-image baseline');
+  requireCondition(
+    validateAdminResponse('admin_build_images_get', inventory),
+    'global owned-image baseline returned a malformed inventory',
+  );
   const orphaned = (inventory.json || []).filter(
     (image) => !Array.isArray(image.referencedBy) || image.referencedBy.length === 0,
   );
@@ -254,6 +278,184 @@ function buildRecordInventory(predicate = 'TRUE') {
 
 function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function normalizedManagedImageTag(value) {
+  let image = String(value || '').trim().toLowerCase();
+  image = image.replace(/^(?:docker\.io|index\.docker\.io)\//, '');
+  const slash = image.lastIndexOf('/');
+  if (!image.slice(slash + 1).includes(':')) image += ':latest';
+  return image;
+}
+
+function canonicalManagedImageTag(value) {
+  const normalized = normalizedManagedImageTag(value);
+  return normalized ? `docker.io/${normalized}` : '';
+}
+
+function imageSlug(title) {
+  const slug = String(title)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'challenge';
+}
+
+function scratchBuildImagePlan(gameId) {
+  const id = positiveId(gameId, 'scratch build game');
+  return [
+    { role: 'delete', title: `Admin Image Delete ${tag}`, flag: `flag{admin_image_delete_${tag}}` },
+    { role: 'prune', title: `Admin Image Prune ${tag}`, flag: `flag{admin_image_prune_${tag}}` },
+  ].map((fixture) => ({
+    ...fixture,
+    gameId: id,
+    challengeId: null,
+    imageRef: `rsctf/${id}/${imageSlug(fixture.title)}:latest`,
+    archiveHash: null,
+    definitionDeleted: false,
+    imageRemoved: false,
+  }));
+}
+
+function imageInventoryHas(records, imageRef) {
+  const wanted = normalizedManagedImageTag(imageRef);
+  return Array.isArray(records) && records.some((image) =>
+    Array.isArray(image.tags) && image.tags.some((candidate) =>
+      normalizedManagedImageTag(candidate) === wanted));
+}
+
+async function ownedImageInventory() {
+  const response = await adminApi('GET', '/api/admin/builds/images');
+  expectStatus(response, 200, 'owned build image inventory');
+  requireCondition(
+    validateAdminResponse('admin_build_images_get', response),
+    'owned build image inventory returned malformed records',
+  );
+  return response.json;
+}
+
+function scratchBuildRows(fixtures) {
+  const titles = fixtures.map((fixture) => sqlLiteral(fixture.title)).join(',');
+  return JSON.parse(sql(
+    `SELECT COALESCE(json_agg(json_build_object(` +
+      `'id',id,'title',title,'status',build_status,'imageRef',container_image,` +
+      `'digest',build_image_digest,'archiveHash',original_archive_blob_path,` +
+      `'log',last_build_log) ORDER BY id),'[]'::json)::text ` +
+      `FROM "GameChallenges" WHERE game_id=${positiveId(fixtures[0].gameId, 'scratch build game')} ` +
+      `AND title IN (${titles})`,
+  ) || '[]');
+}
+
+async function waitForOwnedScratchBuilds(fixtures, timeoutMs = 180_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = 'no challenge rows';
+  while (Date.now() <= deadline) {
+    const rows = scratchBuildRows(fixtures);
+    const failed = rows.find((row) => [2, 4, 6].includes(Number(row.status)));
+    if (failed) throw new Error(`scratch image build failed for ${failed.title}: ${failed.log || `status ${failed.status}`}`);
+    if (
+      rows.length === fixtures.length &&
+      rows.every((row) => Number(row.status) === 1 && typeof row.digest === 'string' && row.digest.length > 0)
+    ) {
+      for (const fixture of fixtures) {
+        const row = rows.find((candidate) => candidate.title === fixture.title);
+        requireCondition(row, `scratch build row omitted ${fixture.title}`);
+        requireCondition(
+          normalizedManagedImageTag(row.imageRef) === normalizedManagedImageTag(fixture.imageRef),
+          `${fixture.title} published unexpected image ${row.imageRef}`,
+        );
+        fixture.challengeId = positiveId(row.id, `${fixture.role} scratch challenge`);
+        fixture.imageRef = row.imageRef;
+        requireCondition(
+          typeof row.archiveHash === 'string' && /^[a-f0-9]{64}$/.test(row.archiveHash),
+          `${fixture.title} did not retain its trusted source archive`,
+        );
+        fixture.archiveHash = row.archiveHash;
+      }
+      saveRecovery();
+      const inventory = await ownedImageInventory();
+      try {
+        assertBuildImageFixtureInventory(inventory, fixtures, { referenced: true });
+        return inventory;
+      } catch (error) {
+        last = error.message;
+      }
+    } else {
+      last = JSON.stringify(rows);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`scratch builds did not publish owned inventory within ${timeoutMs} ms: ${last}`);
+}
+
+async function deleteScratchBuildDefinition(fixture) {
+  const rows = String(sql(
+    `SELECT id FROM "GameChallenges" WHERE game_id=${positiveId(fixture.gameId, 'scratch build game')} ` +
+      `AND title=${sqlLiteral(fixture.title)} ORDER BY id`,
+  ) || '').split('\n').filter(Boolean).map(Number);
+  requireCondition(rows.length <= 1, `scratch challenge title is ambiguous: ${fixture.title}`);
+  if (rows.length === 0) {
+    fixture.definitionDeleted = true;
+    return false;
+  }
+  const challengeId = positiveId(rows[0], `${fixture.role} scratch challenge`);
+  if (fixture.challengeId) {
+    requireCondition(challengeId === fixture.challengeId, `${fixture.title} identity changed before deletion`);
+  }
+  const response = await A.api(
+    'DELETE',
+    `/api/edit/games/${positiveId(fixture.gameId, 'scratch build game')}/challenges/${challengeId}`,
+    { jwt: A.adminJwt(), timeoutMs: 180_000 },
+  );
+  expectStatus(response, 200, `delete scratch challenge ${fixture.title}`);
+  requireCondition(
+    Number(sql(`SELECT count(*) FROM "GameChallenges" WHERE id=${challengeId}`)) === 0,
+    `scratch challenge ${fixture.title} survived normal application deletion`,
+  );
+  if (fixture.archiveHash) {
+    requireCondition(
+      Number(sql(`SELECT count(*) FROM "Files" WHERE hash=${sqlLiteral(fixture.archiveHash)}`)) === 0,
+      `scratch challenge ${fixture.title} retained source-archive metadata`,
+    );
+    const blobPath = `/data/files/${fixture.archiveHash.slice(0, 2)}/${fixture.archiveHash.slice(2, 4)}/${fixture.archiveHash}`;
+    requireCondition(
+      docker(['exec', RSCTF, 'test', '!', '-e', blobPath]).status === 0,
+      `scratch challenge ${fixture.title} retained source-archive bytes`,
+    );
+  }
+  fixture.challengeId = challengeId;
+  fixture.definitionDeleted = true;
+  saveRecovery();
+  return true;
+}
+
+async function cleanupOwnedScratchImage(fixture) {
+  const inventory = await ownedImageInventory();
+  if (!imageInventoryHas(inventory, fixture.imageRef)) {
+    requireCondition(
+      docker(['image', 'inspect', fixture.imageRef]).status !== 0,
+      `${fixture.imageRef} exists outside the installation-owned inventory`,
+    );
+    fixture.imageRemoved = true;
+    return false;
+  }
+  const response = await adminApi(
+    'DELETE',
+    `/api/admin/builds/images?tag=${encodeURIComponent(fixture.imageRef)}&force=false`,
+    { timeoutMs: 180_000 },
+  );
+  requireCondition(
+    response.status === 200 && response.json?.removed === 1,
+    `cleanup could not remove owned image ${fixture.imageRef}: ${response.text}`,
+  );
+  requireCondition(
+    docker(['image', 'inspect', fixture.imageRef]).status !== 0,
+    `owned image ${fixture.imageRef} survived application cleanup`,
+  );
+  fixture.imageRemoved = true;
+  saveRecovery();
+  return true;
 }
 
 function websocketUrl(baseUrl, path) {
@@ -300,10 +502,9 @@ async function assertAdminSignalRAuth(baseUrl, { adminToken, ordinaryToken, moni
       headers: { 'content-type': 'text/plain;charset=UTF-8', connection: 'close' },
       body: '',
       timeoutMs: 10_000,
-      // This runs after a five-minute child k6 process. Undici may retain one
-      // now-stale proxy keep-alive socket from fixture setup; one bounded retry
-      // distinguishes that client transport race from a persistent auth-path
-      // outage without accepting an incorrect HTTP response.
+      // This probe follows a five-minute child k6 process. One stale Undici
+      // socket may race Caddy's idle close; retry only an approved pre-response
+      // transport error, never a timeout or an HTTP response.
       networkRetries: 1,
     });
     state.evidence.signalRNegotiateNetworkRetries =
@@ -454,7 +655,8 @@ async function authorizationMatrix(fixture) {
     `cross-game manager authorization returned ${crossGameMutation.status}`,
   );
   requireCondition(
-    Number(sql(`SELECT status FROM "Participations" WHERE id=${fixture.participationId}`)) === 1,
+    Number(sql(`SELECT status FROM "Participations" WHERE id=${fixture.participationId}`)) ===
+      PARTICIPATION_STATUS.Accepted,
     'cross-game manager changed participation state despite rejection',
   );
 
@@ -823,12 +1025,18 @@ async function eventFixture() {
     `/api/admin/participation/${fixtureParticipation}`,
     { jwt: managerJwt, body: { status: 'Suspended' }, ip: '10.252.20.2' },
   );
+  requireCondition(
+    Number(sql(`SELECT status FROM "Participations" WHERE id=${fixtureParticipation}`)) ===
+      PARTICIPATION_STATUS.Suspended,
+    'same-game manager mutation returned success without persisting Suspended',
+  );
   await adminApi('PUT', `/api/admin/participation/${fixtureParticipation}`, {
     body: { status: 'Accepted' },
     ip: '10.252.20.3',
   });
   requireCondition(
-    Number(sql(`SELECT status FROM "Participations" WHERE id=${fixtureParticipation}`)) === 1,
+    Number(sql(`SELECT status FROM "Participations" WHERE id=${fixtureParticipation}`)) ===
+      PARTICIPATION_STATUS.Accepted,
     'participation did not return to Accepted',
   );
 
@@ -1276,57 +1484,108 @@ async function buildLifecycle() {
     'failed-build pruning changed unrelated build inventory',
   );
 
-  const singleTag = `rsctf/admin-lifecycle-${tag}:single`;
-  const pruneTag = `rsctf/admin-lifecycle-${tag}:prune`;
-  tagFixtureImage(containerImage, singleTag, containerRuntimeId);
-  state.imageTags.push(singleTag);
+  // Build two real installation-owned images through the trusted import path.
+  // The future authorization game is deliberately unstarted, so normal
+  // challenge deletion can later release each reference without SQL shortcuts.
+  const imageFixtures = scratchBuildImagePlan(authorizationGameId);
+  state.buildImageFixtures = imageFixtures;
   saveRecovery();
-  tagFixtureImage(containerImage, pruneTag, containerRuntimeId);
-  state.imageTags.push(pruneTag);
-  saveRecovery();
-  const singleTagAudit = insertBuildRecord({
-    challengeId: fixtureContainerChallenge,
-    gameId: fixtureGame,
-    title: `admin-image-single-${tag}`,
-    status: 1,
-    attempt: 50,
-    imageRef: singleTag,
-  });
-  const pruneTagAudit = insertBuildRecord({
-    challengeId: fixtureContainerChallenge,
-    gameId: fixtureGame,
-    title: `admin-image-prune-${tag}`,
-    status: 1,
-    attempt: 51,
-    imageRef: pruneTag,
-  });
-  state.buildRecordIds.push(singleTagAudit, pruneTagAudit);
-  saveRecovery();
+  const sourceArchive = scratchChallengeArchive(imageFixtures);
+  const importedImages = await multipartRequest(
+    `/api/edit/games/${authorizationGameId}/challenges/import`,
+    {
+      filename: `${tag}-owned-images.zip`,
+      content: sourceArchive,
+      contentType: 'application/zip',
+      timeoutMs: 300_000,
+      label: 'trusted FROM-scratch image import',
+    },
+  );
+  requireCondition(
+    importedImages.json?.imported === 2 && importedImages.json?.updated === 0 && importedImages.json?.failed === 0,
+    `trusted scratch import failed: ${importedImages.text}`,
+  );
+  await waitForOwnedScratchBuilds(imageFixtures);
 
   const images = await call('GET', '/api/admin/builds/images', '/api/admin/builds/images');
-  const visibleTags = new Set((images.json || []).flatMap((image) => image.tags || []));
-  requireCondition(visibleTags.has(singleTag) && visibleTags.has(pruneTag), 'owned fixture images are not visible');
+  assertBuildImageFixtureInventory(images.json, imageFixtures, { referenced: true });
+  const visibleTags = new Set((images.json || []).flatMap((image) => image.tags || []).map(normalizedManagedImageTag));
   requireCondition(
-    !visibleTags.has('rsctf/67/twin-tokens:latest'),
+    !visibleTags.has(normalizedManagedImageTag('rsctf/67/twin-tokens:latest')),
     'image inventory crossed the installation ownership boundary',
   );
+
+  const deleteFixture = imageFixtures.find((fixture) => fixture.role === 'delete');
+  const pruneFixture = imageFixtures.find((fixture) => fixture.role === 'prune');
+  requireCondition(deleteFixture && pruneFixture, 'scratch image roles are incomplete');
+
+  // `force=true` is advisory only: an exact live definition must still block
+  // deletion, and global pruning must preserve both referenced images.
+  const protectedDelete = await adminApi(
+    'DELETE',
+    `/api/admin/builds/images?tag=${encodeURIComponent(deleteFixture.imageRef)}&force=true`,
+    { timeoutMs: 180_000 },
+  );
+  requireCondition(
+    validateAdminResponse('admin_build_image_delete', protectedDelete) &&
+      protectedDelete.json?.removed === 0 &&
+      protectedDelete.json?.messages?.some((message) =>
+        /still referenced/i.test(message) && message.includes(deleteFixture.title)),
+    `force bypassed a referenced image or returned weak evidence: ${protectedDelete.text}`,
+  );
+  const protectedPrune = await adminApi('POST', '/api/admin/builds/pruneimages', { timeoutMs: 180_000 });
+  const protectedMessages = (protectedPrune.json?.messages || []).join('\n');
+  requireCondition(
+    validateAdminResponse('admin_build_images_prune', protectedPrune) &&
+      protectedPrune.json?.removed === 0 &&
+      imageFixtures.every((fixture) => protectedMessages.includes(fixture.title)),
+    `prune did not protect both referenced images: ${protectedPrune.text}`,
+  );
+  for (const fixture of imageFixtures) {
+    requireCondition(
+      docker(['image', 'inspect', fixture.imageRef]).status === 0,
+      `referenced image ${fixture.imageRef} disappeared during protection checks`,
+    );
+  }
+
+  for (const fixture of imageFixtures) await deleteScratchBuildDefinition(fixture);
+  const orphanedInventory = await ownedImageInventory();
+  assertBuildImageFixtureInventory(orphanedInventory, imageFixtures, { referenced: false });
+
   const deletedImage = await call(
     'DELETE',
     '/api/admin/builds/images',
-    `/api/admin/builds/images?tag=${encodeURIComponent(singleTag)}&force=true`,
+    `/api/admin/builds/images?tag=${encodeURIComponent(deleteFixture.imageRef)}&force=false`,
   );
-  requireCondition(deletedImage.json?.removed > 0, `exact owned image delete failed: ${deletedImage.text}`);
-  requireCondition(docker(['image', 'inspect', singleTag]).status !== 0, 'single image tag still exists');
-  state.imageTags = state.imageTags.filter((image) => image !== singleTag);
+  requireCondition(deletedImage.json?.removed === 1, `exact owned image delete failed: ${deletedImage.text}`);
+  requireCondition(
+    docker(['image', 'inspect', deleteFixture.imageRef]).status !== 0,
+    'exactly deleted image tag still exists',
+  );
+  deleteFixture.imageRemoved = true;
+  saveRecovery();
 
   const prunedImages = await call(
     'POST',
     '/api/admin/builds/pruneimages',
     '/api/admin/builds/pruneimages',
   );
-  requireCondition(prunedImages.json?.removed > 0, `owned orphan image prune failed: ${prunedImages.text}`);
-  requireCondition(docker(['image', 'inspect', pruneTag]).status !== 0, 'pruned image tag still exists');
-  state.imageTags = state.imageTags.filter((image) => image !== pruneTag);
+  requireCondition(prunedImages.json?.removed === 1, `owned orphan image prune was not exact: ${prunedImages.text}`);
+  requireCondition(
+    docker(['image', 'inspect', pruneFixture.imageRef]).status !== 0,
+    'pruned image tag still exists',
+  );
+  pruneFixture.imageRemoved = true;
+  const finalInventory = await ownedImageInventory();
+  requireCondition(
+    imageFixtures.every((fixture) => !imageInventoryHas(finalInventory, fixture.imageRef)),
+    'owned image inventory retained a deleted scratch fixture',
+  );
+  const ownershipRefs = imageFixtures.map((fixture) => sqlLiteral(canonicalManagedImageTag(fixture.imageRef))).join(',');
+  requireCondition(
+    Number(sql(`SELECT count(*) FROM "BuildImageOwnerships" WHERE canonical_ref IN (${ownershipRefs})`)) === 0,
+    'owned image cleanup retained a durable ownership row',
+  );
   saveRecovery();
 }
 
@@ -1336,7 +1595,7 @@ async function repositoryLifecycle() {
   const created = await call('POST', '/api/admin/repobindings', '/api/admin/repobindings', {
     body: {
       repoUrl: repositoryUrl,
-      ref: process.env.ADMIN_REPOSITORY_REF || null,
+      ref: repositoryRef,
       intervalSeconds: 300,
       runImmediately: false,
     },
@@ -1347,6 +1606,121 @@ async function repositoryLifecycle() {
     'repository binding',
   );
   state.repoBindingIds.push(repoBindingId);
+  saveRecovery();
+
+  // Build one solved event around the repository's stable manifest identities.
+  // The first real HTTP scan must update this challenge in place; the historical
+  // delete-and-recreate implementation erased the rows asserted below.
+  const now = A.nowMs();
+  const repoTitle = `LOADTEST-ADMIN-REPO-${tag}`;
+  repoGameId = await A.createGame({
+    title: repoTitle,
+    hidden: false,
+    practiceMode: false,
+    acceptWithoutReview: true,
+    start: now - 60_000,
+    end: now + 3_600_000,
+    teamMemberCountLimit: 0,
+    containerCountLimit: 0,
+    allowUserSubmissions: false,
+  });
+  state.gameIds.push(repoGameId);
+  repoChallengeId = await A.createChallenge(repoGameId, {
+    title: `repo-solve-${tag}`,
+    category: 'Misc',
+    type: 'StaticAttachment',
+  });
+  await A.setChallenge(repoGameId, repoChallengeId, {
+    content: `repository solve preservation ${tag}`,
+    originalScore: 777,
+    minScoreRate: 0.4,
+    difficulty: 9,
+    submissionLimit: 7,
+    disableBloodBonus: true,
+  });
+  const repoFlag = `flag{repository_preservation_${tag}}`;
+  await A.addFlags(repoGameId, repoChallengeId, [repoFlag]);
+  await A.setChallenge(repoGameId, repoChallengeId, { isEnabled: true });
+  const repoCohort = A.seedCohort(repoGameId, 1);
+  state.userIds.push(...repoCohort.userIds);
+  state.teamIds.push(...repoCohort.teamIds);
+  state.participationIds.push(...repoCohort.partIds);
+  const repoPlayerStamp = sql(
+    `SELECT security_stamp FROM "AspNetUsers" WHERE id=${sqlLiteral(repoCohort.userIds[0])}::uuid`,
+  );
+  const repoPlayerJwt = mintJwt(repoCohort.userIds[0], repoPlayerStamp, 1);
+  const solved = await A.api(
+    'POST',
+    `/api/game/${repoGameId}/challenges/${repoChallengeId}`,
+    { jwt: repoPlayerJwt, ip: '10.252.24.1', body: { flag: repoFlag } },
+  );
+  expectStatus(solved, 200, 'repository preservation solve');
+  const repoSubmissionId = positiveId(solved.json?.data ?? solved.json, 'repository submission');
+  const sourceIdentity = `binding/${repoBindingId}/Jeopardy/Misc/static-handout/challenge.yaml`;
+  sql(
+    `UPDATE "Games" SET repo_binding_id=${repoBindingId}, event_manifest_path='.gzevent' ` +
+      `WHERE id=${repoGameId}; ` +
+      `UPDATE "GameChallenges" SET source_yaml_path=${sqlLiteral(sourceIdentity)} ` +
+      `WHERE id=${repoChallengeId} AND game_id=${repoGameId};`,
+  );
+  state.evidence.repositorySolve = {
+    gameId: repoGameId,
+    challengeId: repoChallengeId,
+    participationId: repoCohort.partIds[0],
+    teamId: repoCohort.teamIds[0],
+    submissionId: repoSubmissionId,
+    sourceIdentity,
+    title: repoTitle,
+  };
+  const solveSnapshot = async () => {
+    const database = JSON.parse(
+      sql(
+        `SELECT json_build_object(` +
+          `'challengeId',challenge.id,` +
+          `'acceptedCount',challenge.accepted_count,` +
+          `'submissionCount',challenge.submission_count,` +
+          `'submissionRows',(SELECT count(*) FROM "Submissions" submission ` +
+            `WHERE submission.game_id=${repoGameId} AND submission.challenge_id=challenge.id),` +
+          `'submissionId',(SELECT min(id) FROM "Submissions" submission ` +
+            `WHERE submission.game_id=${repoGameId} AND submission.challenge_id=challenge.id),` +
+          `'firstSolveRows',(SELECT count(*) FROM "FirstSolves" first_solve ` +
+            `WHERE first_solve.challenge_id=challenge.id),` +
+          `'firstSolveSubmissionId',(SELECT min(submission_id) FROM "FirstSolves" first_solve ` +
+            `WHERE first_solve.challenge_id=challenge.id),` +
+          `'flags',COALESCE((SELECT json_agg(flag.flag ORDER BY flag.flag) FROM "FlagContexts" flag ` +
+            `WHERE flag.challenge_id=challenge.id),'[]'::json),` +
+          `'sourceIdentity',challenge.source_yaml_path` +
+        `)::text FROM "GameChallenges" challenge ` +
+        `WHERE challenge.id=${repoChallengeId} AND challenge.game_id=${repoGameId}`,
+      ),
+    );
+    const board = await A.api('GET', `/api/game/${repoGameId}/scoreboard`, {
+      jwt: A.adminJwt(),
+      ip: '10.252.24.2',
+    });
+    expectStatus(board, 200, 'repository preservation scoreboard');
+    const item = board.json?.items?.find((candidate) => candidate.id === repoCohort.teamIds[0]);
+    const cell = item?.solvedChallenges?.find((candidate) => candidate.id === repoChallengeId);
+    requireCondition(item && cell, 'repository preservation solve is missing from the scoreboard');
+    return {
+      database,
+      scoreboard: {
+        teamId: item.id,
+        score: item.score,
+        solvedCount: item.solvedCount,
+        challengeId: cell.id,
+        challengeScore: cell.score,
+      },
+    };
+  };
+  const beforeScan = await solveSnapshot();
+  requireCondition(
+    beforeScan.database.submissionId === repoSubmissionId &&
+      beforeScan.database.firstSolveSubmissionId === repoSubmissionId &&
+      beforeScan.database.acceptedCount === 1 &&
+      beforeScan.database.submissionCount === 1,
+    `repository solve fixture is incomplete: ${JSON.stringify(beforeScan)}`,
+  );
   saveRecovery();
 
   const bindings = await call('GET', '/api/admin/repobindings', '/api/admin/repobindings');
@@ -1368,13 +1742,60 @@ async function repositoryLifecycle() {
     `/api/admin/repobindings/${repoBindingId}/scan`,
     { timeoutMs: 300_000 },
   );
-  requireCondition(scan.json?.failures === 0, `manual repository scan failed: ${scan.text}`);
+  requireCondition(
+    scan.json?.gamesUpdated === 1 &&
+      scan.json?.challengesUpdated >= 1 &&
+      scan.json?.failures === 1 &&
+      scan.json?.messages?.some((message) =>
+        message.includes(`challenge #${repoChallengeId}`) && /grading\/scoring changes were retained/i.test(message)),
+    `repository scan did not report the one intentional solved-grading fence: ${scan.text}`,
+  );
+  const observedCommit = sql(
+    `SELECT COALESCE(last_commit_sha,'') FROM "RepoBindings" WHERE id=${repoBindingId}`,
+  );
+  requireCondition(/^[0-9a-f]{40}$/i.test(observedCommit), 'repository scan omitted its exact commit identity');
+  requireCondition(
+    !repositoryExpectedCommit || observedCommit.toLowerCase() === repositoryExpectedCommit.toLowerCase(),
+    `repository scan resolved ${observedCommit}, expected ${repositoryExpectedCommit}`,
+  );
+  const afterFirstScan = await solveSnapshot();
+  requireCondition(
+    JSON.stringify(afterFirstScan) === JSON.stringify(beforeScan),
+    `repository scan changed solve evidence: ${JSON.stringify({ beforeScan, afterFirstScan })}`,
+  );
+
+  // A failed-to-apply grading mutation is deliberately retryable at the same
+  // commit. Exercise that real HTTP retry too; it must remain idempotent and
+  // preserve the exact evidence a second time.
+  const retriedScan = await adminApi('POST', `/api/admin/repobindings/${repoBindingId}/scan`, {
+    timeoutMs: 300_000,
+  });
+  requireCondition(
+    validateAdminResponse('admin_repo_binding_scan', retriedScan) &&
+      retriedScan.json?.failures === 1 &&
+      retriedScan.json?.gamesUpdated === 1,
+    `same-commit repository retry was not controlled: ${retriedScan.text}`,
+  );
+  const afterRetry = await solveSnapshot();
+  requireCondition(
+    JSON.stringify(afterRetry) === JSON.stringify(beforeScan),
+    `same-commit repository retry changed solve evidence: ${JSON.stringify({ beforeScan, afterRetry })}`,
+  );
+  state.evidence.repositorySolve = {
+    ...state.evidence.repositorySolve,
+    beforeScan,
+    afterFirstScan,
+    afterRetry,
+    firstScan: scan.json,
+    retriedScan: retriedScan.json,
+    commit: observedCommit,
+  };
   const history = await call(
     'GET',
     '/api/admin/repobindings/{id}/scans',
     `/api/admin/repobindings/${repoBindingId}/scans`,
   );
-  requireCondition(history.json?.length >= 1, 'repository scan history stayed empty');
+  requireCondition(history.json?.length >= 2, 'repository scan retry history is incomplete');
   // Retain the scanned binding through the all-origin read matrix. Cleanup
   // performs the catalogued delete and verifies its checkout is gone.
   saveRecovery();
@@ -1675,6 +2096,13 @@ function exactResidualSnapshot() {
   const gameIds = integerArraySql(state.gameIds);
   const workerIds = uuidArraySql(state.workerIds);
   const evidence = state.evidence || {};
+  const buildImageFixtures = Array.isArray(state.buildImageFixtures) ? state.buildImageFixtures : [];
+  const buildTitles = buildImageFixtures.map((fixture) => sqlLiteral(fixture.title));
+  const buildCanonicalRefs = buildImageFixtures.map((fixture) =>
+    sqlLiteral(canonicalManagedImageTag(fixture.imageRef)));
+  const buildArchiveHashes = buildImageFixtures
+    .map((fixture) => String(fixture.archiveHash || ''))
+    .filter((hash) => /^[a-f0-9]{64}$/.test(hash));
   const writeupHash = String(evidence.writeup?.hash || '');
   const writeupPath = /^[0-9a-f]{64}$/.test(writeupHash)
     ? `/data/files/${writeupHash.slice(0, 2)}/${writeupHash.slice(2, 4)}/${writeupHash}`
@@ -1714,6 +2142,24 @@ function exactResidualSnapshot() {
     gameBuildRecords: Number(
       sql(`SELECT count(*) FROM "BuildRecords" WHERE game_id=ANY(${gameIds})`),
     ),
+    scratchBuildDefinitions: buildTitles.length
+      ? Number(sql(`SELECT count(*) FROM "GameChallenges" WHERE title IN (${buildTitles.join(',')})`))
+      : 0,
+    scratchBuildOwnerships: buildCanonicalRefs.length
+      ? Number(sql(
+          `SELECT count(*) FROM "BuildImageOwnerships" ` +
+            `WHERE canonical_ref IN (${buildCanonicalRefs.join(',')})`,
+        ))
+      : 0,
+    scratchBuildDockerTags: buildImageFixtures.filter(
+      (fixture) => docker(['image', 'inspect', fixture.imageRef]).status === 0,
+    ).length,
+    scratchBuildArchiveFiles: buildArchiveHashes.length
+      ? Number(sql(`SELECT count(*) FROM "Files" WHERE hash IN (${buildArchiveHashes.map(sqlLiteral).join(',')})`))
+      : 0,
+    physicalScratchBuildArchives: buildArchiveHashes.filter((hash) =>
+      containerPathExists(`/data/files/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}`),
+    ).length,
     containers: exactIdCount('Containers', state.containerIds, { uuid: true }),
     runtimeContainers: state.runtimeContainerIds.filter(
       (id) => docker(['container', 'inspect', id]).status === 0,
@@ -1750,9 +2196,9 @@ async function assertStableExactCleanup() {
   );
   const passes = [];
   for (let pass = 0; pass < 2; pass += 1) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
     const snapshot = exactResidualSnapshot();
     passes.push(snapshot);
-    if (pass === 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
   state.cleanupAudit = { delayMs, passes };
   saveRecovery();
@@ -1796,24 +2242,207 @@ async function cleanup() {
   await attempt('repository binding', async () => {
     if (!repoBindingId) return;
     const deletingId = repoBindingId;
-    if (covered.has('admin_repo_binding_delete')) {
-      await adminApi('DELETE', `/api/admin/repobindings/${deletingId}`, { timeoutMs: 300_000 });
-    } else {
-      await call(
-        'DELETE',
-        '/api/admin/repobindings/{id}',
-        `/api/admin/repobindings/${deletingId}`,
-        { timeoutMs: 300_000 },
+    let bindingDeleted = false;
+    if (repoGameId && Number(sql(`SELECT count(*) FROM "Games" WHERE id=${repoGameId}`)) > 0) {
+      const currentTitle = sql(`SELECT title FROM "Games" WHERE id=${repoGameId}`);
+      requireCondition(
+        currentTitle === `LOADTEST-ADMIN-REPO-${tag}`,
+        `repository fixture ${repoGameId} changed identity to ${currentTitle}`,
+      );
+      requireCondition(
+        Number(
+          sql(
+            `SELECT count(*) FROM "Games" WHERE id=${repoGameId} ` +
+              `AND repo_binding_id=${deletingId}`,
+          ),
+        ) === 1,
+        `repository fixture ${repoGameId} does not exclusively own binding ${deletingId}`,
+      );
+      const foreignBoundGames = Number(
+        sql(
+          `SELECT count(*) FROM "Games" WHERE repo_binding_id=${deletingId} ` +
+            `AND id<>${repoGameId}`,
+        ),
+      );
+      requireCondition(
+        foreignBoundGames === 0,
+        `repository binding ${deletingId} unexpectedly owns ${foreignBoundGames} other game(s)`,
+      );
+
+      const imported = JSON.parse(
+        sql(
+          `SELECT COALESCE(json_agg(json_build_object(` +
+            `'id',id,'sourcePath',source_yaml_path,'imageRef',container_image,` +
+            `'archiveHash',original_archive_blob_path,` +
+            `'attachmentHash',(SELECT file.hash FROM "Attachments" attachment ` +
+              `JOIN "Files" file ON file.id=attachment.local_file_id ` +
+              `WHERE attachment.id="GameChallenges".attachment_id)` +
+          `) ORDER BY id),'[]'::json)::text FROM "GameChallenges" ` +
+          `WHERE game_id=${repoGameId} AND source_yaml_path LIKE ` +
+            `${sqlLiteral(`binding/${deletingId}/%`)}`,
+        ) || '[]',
+      );
+      requireCondition(Array.isArray(imported), 'repository cleanup inventory is malformed');
+      const totalChallengeCount = Number(
+        sql(`SELECT count(*) FROM "GameChallenges" WHERE game_id=${repoGameId}`),
+      );
+      requireCondition(
+        imported.length > 0 && imported.length === totalChallengeCount,
+        `repository fixture ${repoGameId} has ${totalChallengeCount} challenge(s), but only ` +
+          `${imported.length} belong to binding ${deletingId}`,
+      );
+      requireCondition(
+        imported.filter((challenge) => Number(challenge.id) === Number(repoChallengeId)).length === 1,
+        `repository fixture ${repoGameId} does not contain exactly one protected challenge ` +
+          `${repoChallengeId}`,
+      );
+      requireCondition(
+        imported.every((challenge) =>
+          String(challenge.sourcePath || '').startsWith(`binding/${deletingId}/`)),
+        `repository fixture ${repoGameId} contains an unexpected source path`,
+      );
+      state.evidence.repositoryArtifacts = imported;
+      saveRecovery();
+
+      // Stop every future scan and detach the retained game before changing
+      // its disposable cleanup schedule or any imported definition.
+      if (covered.has('admin_repo_binding_delete')) {
+        await adminApi('DELETE', `/api/admin/repobindings/${deletingId}`, { timeoutMs: 300_000 });
+      } else {
+        await call(
+          'DELETE',
+          '/api/admin/repobindings/{id}',
+          `/api/admin/repobindings/${deletingId}`,
+          { timeoutMs: 300_000 },
+        );
+      }
+      requireCondition(
+        Number(sql(`SELECT count(*) FROM "RepoBindings" WHERE id=${deletingId}`)) === 0,
+        'repository binding delete did not persist',
+      );
+      requireCondition(
+        Number(sql(`SELECT count(*) FROM "Games" WHERE id=${repoGameId} AND repo_binding_id IS NULL`)) === 1,
+        'repository binding delete did not detach its retained fixture game',
+      );
+      const checkout = docker([
+        'exec', RSCTF, 'test', '!', '-e', `/data/files/repos/${deletingId}`,
+      ]);
+      requireCondition(
+        checkout.status === 0,
+        `repository checkout ${deletingId} survived binding delete`,
+      );
+      bindingDeleted = true;
+
+      // Challenge hard-deletion correctly protects every Jeopardy definition
+      // once its event has started. This exact, manifest-owned fixture still
+      // needs application deletion to release unsolved attachments and source
+      // archives before the evidence-preserving SQL fallback can remove the
+      // one solved challenge. Move only this disposable schedule back to the
+      // pre-start state; the solved challenge remains protected by its durable
+      // submission and first-solve evidence.
+      const rescheduled = sql(
+        repositoryCleanupRescheduleSql(repoGameId, deletingId, repoChallengeId, tag),
+      );
+      requireCondition(
+        Number(rescheduled) === repoGameId,
+        `repository fixture ${repoGameId} could not be safely rescheduled for cleanup`,
+      );
+
+      for (const challenge of imported) {
+        const challengeId = positiveId(challenge.id, 'repository cleanup challenge');
+        if (challengeId === repoChallengeId) continue;
+        const response = await A.api(
+          'DELETE',
+          `/api/edit/games/${repoGameId}/challenges/${challengeId}`,
+          { jwt: A.adminJwt(), timeoutMs: 180_000 },
+        );
+        expectStatus(response, 200, `repository challenge ${challengeId} cleanup`);
+        requireCondition(
+          Number(sql(`SELECT count(*) FROM "GameChallenges" WHERE id=${challengeId}`)) === 0,
+          `repository challenge ${challengeId} survived application cleanup`,
+        );
+      }
+
+      if (
+        repoChallengeId &&
+        Number(sql(`SELECT count(*) FROM "GameChallenges" WHERE id=${repoChallengeId}`)) > 0
+      ) {
+        const detached = await A.api(
+          'POST',
+          `/api/edit/games/${repoGameId}/challenges/${repoChallengeId}/attachment`,
+          { jwt: A.adminJwt(), body: { attachmentType: 'None' }, timeoutMs: 120_000 },
+        );
+        expectStatus(detached, 200, 'repository solved-challenge attachment detach');
+        requireCondition(
+          Number(
+            sql(
+              `SELECT count(*) FROM "GameChallenges" ` +
+                `WHERE id=${repoChallengeId} AND attachment_id IS NOT NULL`,
+            ),
+          ) === 0,
+          'repository solved challenge retained attachment metadata',
+        );
+      }
+
+      const imageRefs = [...new Set(imported.map((row) => row.imageRef).filter(Boolean))];
+      for (const imageRef of imageRefs) {
+        await cleanupOwnedScratchImage({ imageRef, imageRemoved: false });
+      }
+      for (const row of imported) {
+        for (const hash of [row.archiveHash, row.attachmentHash].map(String)) {
+          if (!/^[0-9a-f]{64}$/.test(hash)) continue;
+          requireCondition(
+            Number(sql(`SELECT count(*) FROM "Files" WHERE hash=${sqlLiteral(hash)}`)) === 0,
+            `repository challenge cleanup retained blob metadata ${hash}`,
+          );
+          requireCondition(
+            docker([
+              'exec',
+              RSCTF,
+              'test',
+              '!',
+              '-e',
+              `/data/files/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}`,
+            ]).status === 0,
+            `repository challenge cleanup retained blob bytes ${hash}`,
+          );
+        }
+      }
+      const checkerCleanup = docker([
+        'exec',
+        RSCTF,
+        'rm',
+        '-rf',
+        `/data/files/checkers/load/${repoGameId}`,
+      ]);
+      requireCondition(
+        checkerCleanup.status === 0,
+        `repository checker cleanup failed: ${checkerCleanup.stderr.trim()}`,
       );
     }
-    requireCondition(
-      Number(sql(`SELECT count(*) FROM "RepoBindings" WHERE id=${deletingId}`)) === 0,
-      'repository binding delete did not persist',
-    );
-    const checkout = docker([
-      'exec', RSCTF, 'test', '!', '-e', `/data/files/repos/${deletingId}`,
-    ]);
-    requireCondition(checkout.status === 0, `repository checkout ${deletingId} survived binding delete`);
+    if (!bindingDeleted) {
+      if (covered.has('admin_repo_binding_delete')) {
+        await adminApi('DELETE', `/api/admin/repobindings/${deletingId}`, { timeoutMs: 300_000 });
+      } else {
+        await call(
+          'DELETE',
+          '/api/admin/repobindings/{id}',
+          `/api/admin/repobindings/${deletingId}`,
+          { timeoutMs: 300_000 },
+        );
+      }
+      requireCondition(
+        Number(sql(`SELECT count(*) FROM "RepoBindings" WHERE id=${deletingId}`)) === 0,
+        'repository binding delete did not persist',
+      );
+      const checkout = docker([
+        'exec', RSCTF, 'test', '!', '-e', `/data/files/repos/${deletingId}`,
+      ]);
+      requireCondition(
+        checkout.status === 0,
+        `repository checkout ${deletingId} survived binding delete`,
+      );
+    }
     repoBindingId = null;
   });
   await attempt('worker rows', async () => {
@@ -1823,13 +2452,60 @@ async function cleanup() {
     }
   });
   await attempt('admin build records', async () => {
-    sql(
-      `DELETE FROM "BuildRecords" WHERE game_id=${fixtureGame || -1} ` +
-        `AND (challenge_title LIKE ${sqlLiteral(`%${tag}%`)} OR attempt>=40)`,
-    );
+    const ownedGameIds = integerArraySql(state.gameIds);
+    sql(`DELETE FROM "BuildRecords" WHERE game_id=ANY(${ownedGameIds})`);
   });
-  await attempt('fixture Docker tags', async () => {
-    for (const image of state.imageTags) removeFixtureImage(image);
+  await attempt('owned scratch build images', async () => {
+    for (const fixture of state.buildImageFixtures) {
+      await deleteScratchBuildDefinition(fixture);
+    }
+    for (const fixture of state.buildImageFixtures) {
+      await cleanupOwnedScratchImage(fixture);
+    }
+  });
+  await attempt('repository solve event', async () => {
+    if (!repoGameId) return;
+    const deletingId = repoGameId;
+    const expectedTitle = `LOADTEST-ADMIN-REPO-${tag}`;
+    const currentTitle = sql(`SELECT title FROM "Games" WHERE id=${deletingId}`);
+    if (!currentTitle) {
+      repoGameId = null;
+      repoChallengeId = null;
+      return;
+    }
+    requireCondition(
+      currentTitle === expectedTitle,
+      `repository solve game ${deletingId} is ${currentTitle}, not ${expectedTitle}`,
+    );
+    const remainingChallenges = JSON.parse(
+      sql(
+        `SELECT COALESCE(json_agg(json_build_object('id',id,'sourcePath',source_yaml_path) ` +
+          `ORDER BY id),'[]'::json)::text FROM "GameChallenges" ` +
+          `WHERE game_id=${deletingId}`,
+      ) || '[]',
+    );
+    const capturedChallenge = state.evidence.repositoryArtifacts?.filter(
+      (challenge) => Number(challenge.id) === Number(repoChallengeId),
+    ) ?? [];
+    requireCondition(
+      repoChallengeId &&
+        capturedChallenge.length === 1 &&
+        remainingChallenges.length === 1 &&
+        Number(remainingChallenges[0]?.id) === Number(repoChallengeId) &&
+        remainingChallenges[0]?.sourcePath === capturedChallenge[0]?.sourcePath,
+      `repository solve fallback does not exclusively own its remaining challenge: ` +
+        `${JSON.stringify(remainingChallenges)}`,
+    );
+    const protectedDeletion = await A.deleteGame(deletingId);
+    requireCondition(
+      protectedDeletion.status === 400 &&
+        /cannot be permanently deleted after it has started/i.test(protectedDeletion.text),
+      `repository solve retention policy changed: ${protectedDeletion.status} ` +
+        `${protectedDeletion.text.slice(0, 300)}`,
+    );
+    deleteDisposableLoadGame(deletingId, expectedTitle);
+    repoGameId = null;
+    repoChallengeId = null;
   });
   await attempt('cross-game manager fixture', async () => {
     if (!authorizationGameId) return;
@@ -1973,6 +2649,10 @@ async function cleanup() {
 async function main() {
   const targets = assertSafeAdminTarget(process.env);
   assertDisposableRuntimeMarker(targets);
+  state.evidence.runtimeIdentity = {
+    before: inspectUniformServerRuntimeIdentity(serverContainers),
+    after: null,
+  };
   requireCondition(webTargets.length >= 2, 'WEB_TARGETS must name at least two direct web replicas');
   saveRecovery();
   lock = await acquireExclusiveProcessLock(loadOrchestrationLockPath, {
@@ -2041,13 +2721,32 @@ async function main() {
 
   const completion = assertCompleteCoverage(covered, { includeSignalR: true });
   requireCondition(completion !== false, 'admin operation coverage is incomplete');
-  const runtimeContainers = [
-    RSCTF,
-    ...String(process.env.ADMIN_RSCTF_CONTAINERS || '').split(',').map((name) => name.trim()).filter(Boolean),
-  ];
-  const fatalLogs = [...new Set(runtimeContainers)]
-    .reduce((count, container) => count + countContainerFatalLogs(container, runStartedAt), 0);
+  const startingRuntimeIdentity = state.evidence.runtimeIdentity.before;
+  state.evidence.runtimeIdentity.after = inspectUnchangedServerRuntimeIdentity(
+    startingRuntimeIdentity,
+    serverContainers,
+  );
+  saveRecovery();
+  const fatalLogsByContainer = Object.fromEntries(
+    originalServerRuntimeLogTargets(startingRuntimeIdentity).map(({ name, containerId }) => [
+      name,
+      {
+        containerId,
+        fatalLineCount: countContainerFatalLogs(containerId, runStartedAt),
+      },
+    ]),
+  );
+  state.evidence.fatalLogAudit = fatalLogsByContainer;
+  const fatalLogs = Object.values(fatalLogsByContainer)
+    .reduce((count, value) => count + value.fatalLineCount, 0);
   requireCondition(fatalLogs === 0, `runtime log audit found ${fatalLogs} panic/fatal records`);
+  // Close the replacement/restart race around the log read itself. Names must
+  // still resolve to the exact starting container ids after their immutable-id
+  // logs have been consumed.
+  state.evidence.runtimeIdentity.after = inspectUnchangedServerRuntimeIdentity(
+    startingRuntimeIdentity,
+    serverContainers,
+  );
   state.completed = true;
   state.completedAt = Date.now();
   state.coveredOperations = [...covered].sort();
@@ -2071,5 +2770,9 @@ try {
 } finally {
   await databaseLock?.release();
   await lock?.release();
-  if (state.completed && process.env.KEEP_ADMIN_MANIFEST !== '1') removeRecovery(recoveryPath);
+  if (!shouldRetainLifecycleManifest({
+    completed: state.completed,
+    cleanupVerified: state.completed,
+    keep: process.env.KEEP_ADMIN_MANIFEST,
+  })) removeRecovery(recoveryPath);
 }

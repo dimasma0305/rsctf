@@ -6,7 +6,8 @@
 //! makes to the team's service, rsctf opens a yamux stream, writes the `'S'` type
 //! byte, and pipes bytes to the agent, which forwards them to the team's real
 //! service. Rotating flags are pushed over an `'F'` stream (`'F'` + u64 BE seq,
-//! then the flag bytes).
+//! then the flag bytes); delivery succeeds only when the agent replies with
+//! `'A'` plus that sequence after its atomic flag-file replacement.
 //!
 //! This replaces RSCTF's separate relay CONTAINER with an in-process tunnel
 //! (chosen divergence — see the ad-vpn-in-process-decision memory). rsctf exposes
@@ -33,6 +34,8 @@ use crate::utils::error::{AppError, AppResult};
 mod authorization;
 mod control;
 mod endpoint;
+mod flag;
+mod framing;
 mod lifecycle;
 use authorization::live_tunnel_authorized;
 pub use control::start_control_listener;
@@ -44,6 +47,11 @@ const STREAM_FLAG: u8 = b'F';
 /// Interactive exec-shell stream (BYOC SSH): `'E'` + u16 cols + u16 rows (BE), then
 /// raw PTY bytes both ways. The agent docker-exec's a shell in its service container.
 const STREAM_EXEC: u8 = b'E';
+/// Explicit capability required by the ACK/replay wire contract. Old servers
+/// harmlessly ignore the header sent by new agents; new servers reject agents
+/// that did not offer it.
+pub(crate) const AGENT_PROTOCOL: &str = "rsctf-byoc-v2";
+pub(crate) const AGENT_PROTOCOL_HEADER: &str = "x-rsctf-byoc-protocol";
 
 /// Per-tunnel concurrency + flow-control ceiling. yamux's default receive window
 /// is 1 GiB/connection; cap it so one team flooding its own tunnel can't inflate
@@ -82,8 +90,6 @@ struct TunnelHandle {
     /// this before reporting success so old yamux streams cannot outlive a
     /// rotated capability.
     closed: tokio::sync::watch::Receiver<bool>,
-    /// Latest flag pushed, so a reconnecting agent re-receives it.
-    seq: Arc<std::sync::atomic::AtomicU64>,
     /// Live held-open streams ('S' service pipes + 'E' shells) — the driver
     /// fast-polls only while this is nonzero. An open shell must bump it (like a
     /// live service pipe) or keystroke I/O gets 50ms-batched.
@@ -139,8 +145,12 @@ impl Registry {
     }
 
     async fn get(&self, pid: i32, cid: i32) -> Option<TunnelHandle> {
-        let endpoint = self.endpoints.lock().await.get(&(pid, cid)).cloned()?;
+        let endpoint = self.endpoint(pid, cid).await?;
         endpoint.current().await
+    }
+
+    async fn endpoint(&self, pid: i32, cid: i32) -> Option<Arc<RelayEndpoint>> {
+        self.endpoints.lock().await.get(&(pid, cid)).cloned()
     }
 
     async fn reserve_endpoint(
@@ -536,9 +546,15 @@ pub async fn serve_agent(
     // wrapper here intermittently dropped read wakeups, stalling yamux
     // request/response round-trips for seconds — a silently-dead agent is instead
     // reaped by the connection close / supersede paths.)
-    let mapped = stream.map(|m| match m {
-        Ok(msg) => Ok(msg.into_data()),
-        Err(e) => Err(std::io::Error::other(e)),
+    let mapped = stream.filter_map(|message| {
+        future::ready(match message {
+            Ok(message) => match framing::message_payload(message) {
+                Ok(Some(payload)) => Some(Ok(payload)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            },
+            Err(error) => Some(Err(std::io::Error::other(error))),
+        })
     });
     let reader = tokio_util::io::StreamReader::new(Box::pin(mapped));
     let writer = tokio_util::io::SinkWriter::new(tokio_util::io::CopyToBytes::new(
@@ -589,7 +605,6 @@ pub async fn serve_agent(
         open: open_tx,
         shutdown: shutdown.clone(),
         closed: closed_rx,
-        seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         active: active.clone(),
     };
     if let Err(error) = activate_tunnel(
@@ -613,6 +628,24 @@ pub async fn serve_agent(
     }
     drop(activation);
     tracing::info!(pid, cid, %host, port, "byoc: agent tunnel up");
+
+    // The endpoint, rather than a WebSocket generation, retains the current
+    // flag. Start its replay before entering the driver loop; the open request
+    // is serviced as soon as `drive` is polled below. A simultaneous newer push
+    // has a higher sequence, so the agent cannot let this replay overwrite it.
+    if let Some(retained) = endpoint.retained_flag().await {
+        let replay_handle = handle.clone();
+        let replay_endpoint = endpoint.clone();
+        tokio::spawn(async move {
+            let acknowledged = flag::replay(&replay_handle, &retained).await
+                && replay_endpoint
+                    .mark_flag_ready(replay_handle.id, &retained)
+                    .await;
+            if !acknowledged {
+                tracing::warn!(pid, cid, "byoc: reconnect flag replay was not acknowledged");
+            }
+        });
+    }
 
     let authorization_lease = async {
         loop {
@@ -662,23 +695,26 @@ pub async fn serve_agent(
 }
 
 /// Push a rotating flag to the team's agent (writes it into the service's flag
-/// file). Returns whether a live tunnel took it.
-pub async fn push_flag(st: &SharedState, pid: i32, cid: i32, flag: &str) -> bool {
-    let Some(handle) = st.byoc.get(pid, cid).await else {
+/// file). Returns success only after the agent acknowledges the exact sequence
+/// following its atomic file replacement. The endpoint retains one bounded
+/// current value so an authorized reconnect receives it immediately. The
+/// database round identity is the wire sequence, so process restarts cannot
+/// reset or reuse sequence numbers for different flags.
+pub async fn push_flag(st: &SharedState, pid: i32, cid: i32, round_id: i32, flag: &str) -> bool {
+    let Some(endpoint) = st.byoc.endpoint(pid, cid).await else {
         return false;
     };
-    let Some(mut stream) = handle.open_stream().await else {
+    let Ok(sequence) = u64::try_from(round_id) else {
         return false;
     };
-    let seq = handle.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    let mut hdr = [0u8; 9];
-    hdr[0] = STREAM_FLAG;
-    hdr[1..].copy_from_slice(&seq.to_be_bytes());
-    if stream.write_all(&hdr).await.is_err() || stream.write_all(flag.as_bytes()).await.is_err() {
+    let retained = match endpoint.retain_flag(sequence, flag).await {
+        Ok(flag::FlagRetention::Accepted(retained)) => retained,
+        Ok(flag::FlagRetention::Stale(_)) | Err(_) => return false,
+    };
+    let Some(handle) = endpoint.raw_current().await else {
         return false;
-    }
-    let _ = stream.close().await;
-    true
+    };
+    flag::deliver(&handle, &retained).await && endpoint.mark_flag_ready(handle.id, &retained).await
 }
 
 /// Held for the life of an interactive exec (`'E'`) stream so the driver keeps

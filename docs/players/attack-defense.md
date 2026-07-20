@@ -241,16 +241,18 @@ checker work. Heavy load can delay the exact opening time. Player automation
 should read `currentRound` and `roundEndsAt` from the API instead of assuming
 that every round starts on an exact wall-clock second [[1]](#ref-1).
 
-Such a delay does not change epoch weight. rsctf counts scoring rounds that it
-successfully opened and stored; it does not count elapsed minutes.
+Managed-container readiness runs before a due round is stored. If polling or
+readiness is late, rsctf starts the next playable round at the durable preparation
+time rather than replaying an elapsed flag window. A short visible gap is platform
+downtime. Such a delay does not change epoch weight: rsctf counts scoring rounds
+that it successfully opened and stored, not elapsed minutes.
 
 ### 2.3 Per-round state transition
 
-1. **The platform prepares the round.** rsctf creates the official rotating-flag
-   records and publishes each team's assigned targets. For BYOC, it attempts to
-   deliver the flag through the relay's shared file. For a managed container
-   that is already running, it records the flag but does not inject the value
-   into the service.
+1. **The platform prepares the round.** After managed-service readiness, rsctf
+   creates the official rotating-flag records and publishes each team's assigned
+   targets. It attempts to write the flag to the exact managed container identity
+   or, for BYOC, through the authenticated relay.
 2. **The checker tests every service.** rsctf sets `RSCTF_ACTION=check`, provides
    the recorded flag as `RSCTF_FLAG`, and exports compatibility aliases for
    older checker images. rsctf trusts the checker's exit status. An `Ok` exit
@@ -1036,17 +1038,21 @@ network conditions, incident response, retained audit evidence, and enforcement
 against flag sharing, withholding, collusion, and target-specific exceptions.
 
 Flag delivery has a specific implementation boundary. For BYOC, rsctf retries
-the relay stream within a bounded publication phase. A successful stream write
-shows that the relay accepted the payload, but no application-level
-acknowledgement proves that the defended service later read the shared file. A
-mid-round reconnect does not replay a phase that has already settled. For a
+within a hard seven-second publication phase. A delivery succeeds only after the
+agent atomically replaces its local flag file and acknowledges the exact stream
+sequence; the sequence is the durable round identity, and reconnect activation
+reloads the latest exact flag before service forwarding resumes. A missing or
+mismatched acknowledgement fails that attempt. For a
 running Docker- or Kubernetes-managed service, rsctf writes the current value to
 `RSCTF_FLAG_FILE` (`/flag` by default) through the container runtime and reads it
 back before checking the service. An image without `sh` or a writable flag path
-fails this verification. The round stores both the publication timestamp and
-the number of failed deliveries; checker adjudication then records the service
-outcome. The player-facing `flagsReady` field means that this bounded
-publication phase has settled, not that every offline participant acknowledged
+fails this verification. Each immutable service receipt is persisted in a small
+batch and handed directly to that service's randomized checker schedule, so a
+slow peer does not hold every checker behind a global publication barrier. A
+target whose attempt began but timed out is an Offline participant sample; only
+a target that platform capacity never started before the absolute deadline is
+an infrastructure void. The player-facing `flagsReady` field means that the
+bounded phase has settled, not that every offline participant acknowledged
 delivery.
 
 rsctf scores accepted flags and checker results without requiring replay
@@ -1285,10 +1291,10 @@ registry lookup; if the local identity cannot be verified, setup uses the
 digest-pinned placeholder instead.
 Tagged official server images embed the exact Linux amd64/arm64 relay-agent
 index built in the same release workflow. Direct source and local Docker builds
-retain the audited amd64-only fallback, whose setup script stops early on other
-architectures. Organizers may replace either default via
-`RSCTF_AD_BYOC_AGENT_IMAGE`, but the override must still be an immutable
-`repository@sha256:...` reference.
+have no agent fallback because pairing a new server with an older ACK-less agent
+would invalidate flag-delivery evidence. Organizers must set
+`RSCTF_AD_BYOC_AGENT_IMAGE` to the immutable `repository@sha256:...` reference
+built from the same release before serving a BYOC setup bundle.
 The optional BYOC SSH/admin shell requires deliberately uncommenting a Docker
 socket mount; leave it disabled unless that root-equivalent host access is
 acceptable on the dedicated worker.

@@ -204,7 +204,7 @@ pub async fn change_password(
     invalidate_password_reset_tokens(&st, user.id).await;
 
     crate::services::audit::info(
-        &st.db,
+        &st,
         "AccountController",
         Some(user.name.clone()),
         None,
@@ -299,7 +299,7 @@ pub async fn recovery(
             let sender = crate::services::mail::MailSender::from_env();
             let _ = sender.send(&user_email, &subject, &body).await;
             crate::services::audit::info(
-                &background.db,
+                &background,
                 "AccountController",
                 None,
                 None,
@@ -403,7 +403,7 @@ pub async fn password_reset(
 
     // RSCTF `AccountController` audit event (`Account_PasswordReset`). Best-effort.
     crate::services::audit::info(
-        &st.db,
+        &st,
         "AccountController",
         Some(name.clone()),
         None,
@@ -446,7 +446,7 @@ pub async fn verify(
                 // RSCTF `AccountController` audit event (`Account_EmailVerified`).
                 // Best-effort.
                 crate::services::audit::info(
-                    &st.db,
+                    &st,
                     "AccountController",
                     Some(name.clone()),
                     None,
@@ -574,7 +574,7 @@ pub async fn change_email(
     }
 
     crate::services::audit::info(
-        &st.db,
+        &st,
         "AccountController",
         Some(user.name.clone()),
         None,
@@ -683,7 +683,7 @@ pub async fn mail_change_confirm(
     }
 
     crate::services::audit::info(
-        &st.db,
+        &st,
         "AccountController",
         Some(name.clone()),
         None,

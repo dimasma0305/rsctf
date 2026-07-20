@@ -36,7 +36,11 @@ impl Harness {
             .unwrap();
         sqlx::raw_sql(
             r#"
-            CREATE TABLE "Containers" (id UUID PRIMARY KEY, container_id TEXT NOT NULL);
+            CREATE TABLE "Containers" (
+              id UUID PRIMARY KEY,
+              container_id TEXT NOT NULL,
+              ad_team_service_id INTEGER
+            );
             CREATE TABLE "GameChallenges" (
               id INTEGER PRIMARY KEY, test_container_id UUID REFERENCES "Containers"(id)
             );
@@ -46,11 +50,14 @@ impl Harness {
         .await
         .unwrap();
         let container_id = uuid::Uuid::new_v4();
-        sqlx::query(r#"INSERT INTO "Containers" VALUES ($1, 'runtime-test')"#)
-            .bind(container_id)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "Containers" (id, container_id)
+               VALUES ($1, 'runtime-test')"#,
+        )
+        .bind(container_id)
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(r#"INSERT INTO "GameChallenges" VALUES (7, $1)"#)
             .bind(container_id)
             .execute(&pool)

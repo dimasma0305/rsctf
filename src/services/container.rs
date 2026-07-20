@@ -66,14 +66,15 @@ mod naming;
 #[cfg(test)]
 mod tests;
 use self::docker::{
-    is_conflict, is_not_found, launch_spec_fingerprint, launch_spec_matches, LAUNCH_SPEC_LABEL,
+    docker_network_mode, is_conflict, is_not_found, launch_spec_fingerprint, launch_spec_matches,
+    LAUNCH_SPEC_LABEL,
 };
 use logging::bounded_log_config;
 use naming::{container_name, map_status};
 
 pub use backend::{
-    ContainerBackendKind, ContainerLiveness, ContainerManager, ContainerStatus, FileChange,
-    NoopContainerManager,
+    ContainerBackendKind, ContainerExecAdmission, ContainerExecError, ContainerLiveness,
+    ContainerManager, ContainerStatus, FileChange, NoopContainerManager,
 };
 pub use docker::{from_env, from_env_required};
 
@@ -241,6 +242,11 @@ pub struct ContainerSpec {
     pub cpu_count: i32,
     /// Port the challenge process listens on inside the container.
     pub expose_port: i32,
+    /// Whether the backend may publish the exposed port outside the workload.
+    /// Interactive inspectors disable this because their sole entry point is
+    /// the authenticated exec hub. Docker also gives a no-publish workload no
+    /// network when `ad_network` is absent, preventing default-bridge egress.
+    pub publish_port: bool,
     /// Additional environment variables injected at creation time.
     pub env: Vec<(String, String)>,
     /// Optional dynamic flag baked into the container environment.
@@ -290,6 +296,7 @@ impl ContainerSpec {
             memory_limit,
             cpu_count,
             expose_port,
+            publish_port: true,
             env: vec![(TEAM_ENV.into(), team_id.to_string())],
             flag: Some(flag),
             ad_network: Some(crate::services::ad_vpn::services_network()),
@@ -581,10 +588,11 @@ impl ContainerManager for DockerContainerManager {
         // an A&D-over-VPN container (`ad_network`) we publish NO host port — the
         // service is reachable only via its in-VPN IP over the tunnel.
         let port_key = format!("{}/tcp", spec.expose_port);
-        let exposed_ports: HashMap<String, HashMap<(), ()>> =
-            HashMap::from([(port_key.clone(), HashMap::new())]);
+        let exposed_ports = spec
+            .publish_port
+            .then(|| HashMap::from([(port_key.clone(), HashMap::new())]));
         let port_bindings: Option<HashMap<String, Option<Vec<PortBinding>>>> =
-            if spec.ad_network.is_some() {
+            if spec.ad_network.is_some() || !spec.publish_port {
                 None
             } else {
                 Some(HashMap::from([(
@@ -604,6 +612,7 @@ impl ContainerManager for DockerContainerManager {
             pids_limit: Some(512),
             log_config: Some(bounded_log_config()),
             port_bindings,
+            network_mode: docker_network_mode(&spec),
             ..Default::default()
         };
 
@@ -630,7 +639,7 @@ impl ContainerManager for DockerContainerManager {
         let config = Config {
             image: Some(spec.image.clone()),
             env: Some(env),
-            exposed_ports: Some(exposed_ports),
+            exposed_ports,
             labels: Some(labels),
             host_config: Some(host_config),
             networking_config,
@@ -887,44 +896,18 @@ impl ContainerManager for DockerContainerManager {
     /// Exec a command in the container (KotH token plant/read-back), returning
     /// the combined output.
     async fn exec(&self, id: &str, cmd: Vec<String>) -> AppResult<String> {
-        let docker = self.client()?;
-        let info = self
-            .inspect_scoped_container(docker, id)
-            .await?
-            .ok_or_else(|| AppError::not_found(format!("container not found: {id}")))?;
-        let canonical_id = info
-            .id
-            .as_deref()
-            .ok_or_else(|| AppError::internal("inspected container has no backend identity"))?;
-        let exec = docker
-            .create_exec(
-                canonical_id,
-                bollard::exec::CreateExecOptions {
-                    cmd: Some(cmd),
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    ..Default::default()
-                },
-            )
+        self.exec_with_attribution(id, cmd, ContainerExecAdmission::default())
             .await
-            .map_err(|e| AppError::internal(format!("create_exec: {e}")))?;
-        let mut out = String::new();
-        if let bollard::exec::StartExecResults::Attached { mut output, .. } = docker
-            .start_exec(&exec.id, None)
-            .await
-            .map_err(|e| AppError::internal(format!("start_exec: {e}")))?
-        {
-            while let Some(chunk) = output.next().await {
-                if let Ok(msg) = chunk {
-                    let rendered = msg.to_string();
-                    if out.len().saturating_add(rendered.len()) > MAX_EXEC_OUTPUT_BYTES {
-                        return Err(AppError::internal("container exec output exceeded 1 MiB"));
-                    }
-                    out.push_str(&rendered);
-                }
-            }
-        }
-        Ok(out)
+            .map_err(ContainerExecError::into_app_error)
+    }
+
+    async fn exec_classified(
+        &self,
+        id: &str,
+        cmd: Vec<String>,
+        admission: ContainerExecAdmission,
+    ) -> Result<String, ContainerExecError> {
+        self.exec_with_attribution(id, cmd, admission).await
     }
 
     async fn resolve_interactive_exec_target(&self, id: &str) -> AppResult<String> {

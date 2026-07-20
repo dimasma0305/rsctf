@@ -4,7 +4,9 @@ use axum::response::IntoResponse;
 
 use super::*;
 
+mod inspector;
 mod provision;
+pub use inspector::*;
 pub use provision::*;
 
 /// A&D admin — force round-advance result (`Api.ts` `AdAdvanceRoundResult`).
@@ -646,28 +648,6 @@ pub async fn ad_service_file(
 #[derive(Debug, Deserialize)]
 pub struct AdFileQuery {
     pub path: String,
-}
-
-/// `POST /api/edit/games/{id}/ad/Services/{adTeamServiceId}/Inspector` ->
-/// `AdInspectorModel`.
-pub async fn ad_spawn_inspector(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path((game_id, _ats_id)): Path<(i32, i32)>,
-) -> AppResult<RequestResponse<JsonValue>> {
-    manager_or_admin(&st, &user, game_id).await?;
-    Ok(RequestResponse::ok(json!({ "containerGuid": "" })))
-}
-
-/// `DELETE /api/edit/games/{id}/ad/Services/{adTeamServiceId}/Inspector/{containerGuid}`
-/// -> void.
-pub async fn ad_destroy_inspector(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path((game_id, _ats_id, _container_guid)): Path<(i32, i32, String)>,
-) -> AppResult<MessageResponse> {
-    manager_or_admin(&st, &user, game_id).await?;
-    Ok(MessageResponse::ok(""))
 }
 
 /// `POST /api/edit/games/{id}/ad/Services/{adTeamServiceId}/Restart` -> void.

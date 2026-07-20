@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set,
+    QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -851,6 +851,8 @@ mod helpers;
 mod notices;
 mod posts;
 mod reviews;
+#[cfg(test)]
+mod reviews_tests;
 mod test_container;
 mod transfer;
 
