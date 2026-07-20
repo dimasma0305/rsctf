@@ -54,7 +54,10 @@ const RS: char = '\u{1e}';
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route("/hub/containerExec", get(container_hub))
-        .route("/hub/containerExec/negotiate", post(signalr::negotiate))
+        .route(
+            "/hub/containerExec/negotiate",
+            post(signalr::admin_negotiate),
+        )
 }
 
 /// Admin-only, mirroring the C# hub's `OnConnectedAsync` abort of non-admins.
@@ -75,7 +78,8 @@ async fn container_hub(
         Some((user, token)) if user.is_admin() => ws
             .on_upgrade(move |s| serve_exec(s, st, token))
             .into_response(),
-        _ => StatusCode::UNAUTHORIZED.into_response(),
+        Some(_) => StatusCode::FORBIDDEN.into_response(),
+        None => StatusCode::UNAUTHORIZED.into_response(),
     }
 }
 

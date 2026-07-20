@@ -548,6 +548,11 @@ pub(super) async fn assert_binding_update_and_delete_fences(
     .execute(state.pg())
     .await
     .unwrap();
+    let checkout_sentinel = checkout.join(".admin-delete-sentinel");
+    tokio::fs::create_dir_all(&checkout).await.unwrap();
+    tokio::fs::write(&checkout_sentinel, b"remove after binding delete")
+        .await
+        .unwrap();
     let delete_fence = git_sync::lock_checkout_distributed(state.pg(), &checkout)
         .await
         .unwrap();
@@ -570,12 +575,14 @@ pub(super) async fn assert_binding_update_and_delete_fences(
         .unwrap(),
         Some(binding_id)
     );
+    assert!(tokio::fs::try_exists(&checkout_sentinel).await.unwrap());
     drop(delete_fence);
     assert!(tokio::time::timeout(Duration::from_secs(3), &mut delete)
         .await
         .expect("binding delete proceeds after scan")
         .unwrap()
         .unwrap());
+    assert!(!tokio::fs::try_exists(&checkout).await.unwrap());
     assert_eq!(
         sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "RepoBindings" WHERE id = $1"#)
             .bind(binding_id)
@@ -584,6 +591,16 @@ pub(super) async fn assert_binding_update_and_delete_fences(
             .unwrap(),
         0
     );
+    tokio::fs::create_dir_all(&checkout).await.unwrap();
+    tokio::fs::write(&checkout_sentinel, b"orphan from interrupted cleanup")
+        .await
+        .unwrap();
+    assert!(
+        !crate::controllers::admin::delete_repo_binding_record(state, binding_id)
+            .await
+            .unwrap()
+    );
+    assert!(!tokio::fs::try_exists(&checkout).await.unwrap());
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(*) FROM "RepoBindingScans" WHERE binding_id = $1"#,

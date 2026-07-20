@@ -132,6 +132,28 @@ impl MailSender {
             return Ok(());
         };
 
+        Self::send_configured(cfg, to, subject, html_body).await
+    }
+
+    /// Send mail for a workflow whose response explicitly promises delivery.
+    ///
+    /// Ordinary account notifications retain rsctf's best-effort behavior via
+    /// [`Self::send`]. Admin diagnostics and credential distribution must not
+    /// report `sent: true` when SMTP is disabled or its configuration could not
+    /// be constructed, so those paths use this fail-closed variant.
+    pub async fn send_required(&self, to: &str, subject: &str, html_body: &str) -> AppResult<()> {
+        let cfg = self.inner.as_ref().ok_or_else(|| {
+            AppError::unavailable("SMTP is not configured; the message was not sent")
+        })?;
+        Self::send_configured(cfg, to, subject, html_body).await
+    }
+
+    async fn send_configured(
+        cfg: &Configured,
+        to: &str,
+        subject: &str,
+        html_body: &str,
+    ) -> AppResult<()> {
         let to_mbox: Mailbox = to
             .parse()
             .map_err(|e| AppError::bad_request(format!("invalid recipient address {to}: {e}")))?;
@@ -310,6 +332,17 @@ mod tests {
     fn unconfigured_sender_is_noop() {
         let s = MailSender { inner: None };
         assert!(!s.is_configured());
+    }
+
+    #[tokio::test]
+    async fn required_delivery_rejects_an_unconfigured_sender() {
+        let sender = MailSender { inner: None };
+        let error = sender
+            .send_required("user@example.test", "subject", "<p>body</p>")
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("SMTP is not configured"));
     }
 
     #[test]

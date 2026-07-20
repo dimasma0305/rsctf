@@ -83,6 +83,11 @@ pub use docker::{from_env, from_env_required};
 const MANAGED_LABEL: &str = "rsctf.managed";
 const OPERATION_LABEL: &str = "rsctf.operation";
 const SCOPE_LABEL: &str = "rsctf.scope";
+/// Ownership metadata stamped on images built from rsctf-managed archives.
+/// Pulled and legacy images deliberately carry neither label and therefore
+/// remain outside the admin image-deletion boundary.
+pub(crate) const IMAGE_SCOPE_LABEL: &str = "rsctf.image.scope";
+pub(crate) const IMAGE_REFERENCE_LABEL: &str = "rsctf.image.ref";
 const DOCKER_SCOPE_ENV: &str = "RSCTF_DOCKER_SCOPE";
 const JWT_SECRET_ENV: &str = "RSCTF_JWT_SECRET";
 
@@ -139,6 +144,16 @@ fn docker_workload_scope(explicit: Option<&str>, jwt_secret: Option<&str>) -> St
         // used. Keeping it deterministic makes isolated manager tests useful.
         .unwrap_or(("development", "rsctf"));
     crate::utils::codec::sha256_str(&format!("{source}\0{identity}"))[..32].to_string()
+}
+
+/// Stable, non-secret installation identity shared by replicas that address
+/// one Docker daemon. Image administration uses the same boundary as managed
+/// containers and networks so two databases cannot claim each other's tags.
+pub(crate) fn docker_installation_scope() -> String {
+    docker_workload_scope(
+        std::env::var(DOCKER_SCOPE_ENV).ok().as_deref(),
+        std::env::var(JWT_SECRET_ENV).ok().as_deref(),
+    )
 }
 
 fn scoped_managed_labels(scope: &str) -> HashMap<String, String> {
@@ -388,10 +403,7 @@ impl DockerContainerManager {
         Ok(Self {
             endpoint: std::env::var("DOCKER_HOST").ok(),
             public_entry: std::env::var("RSCTF_DOCKER_PUBLIC_ENTRY").ok(),
-            scope: docker_workload_scope(
-                std::env::var(DOCKER_SCOPE_ENV).ok().as_deref(),
-                std::env::var(JWT_SECRET_ENV).ok().as_deref(),
-            ),
+            scope: docker_installation_scope(),
             docker: Some(docker),
         })
     }

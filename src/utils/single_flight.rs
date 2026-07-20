@@ -509,6 +509,19 @@ impl PgAdvisoryLock {
 }
 
 impl PgSessionAdvisoryLock {
+    /// Serialize one synchronous admin bulk-build request per game across all
+    /// replicas. The session lease spans slow Docker work without an open
+    /// transaction; close-on-drop releases it if the HTTP request is cancelled.
+    pub(crate) async fn acquire_build_batch(
+        pool: &sqlx::PgPool,
+        key: &str,
+    ) -> anyhow::Result<Self> {
+        static GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+            std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+        let permit = GATE.clone().acquire_owned().await?;
+        Self::acquire_with_permit(pool, key, Some(permit)).await
+    }
+
     /// Serialize a multi-stage account deletion with admin updates that could
     /// otherwise unban or rename the account between its durable fence and
     /// external roster teardown. Keep this gate independent from roster access:

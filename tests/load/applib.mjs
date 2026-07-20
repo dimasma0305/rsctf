@@ -69,7 +69,7 @@ export async function api(method, path, { jwt, ip, body, timeoutMs = 30_000, bas
   } catch {
     json = undefined;
   }
-  return { status: r.status, json, text };
+  return { status: r.status, json, text, headers: r.headers };
 }
 
 // ── Admin identity ──────────────────────────────────────────────────────────────

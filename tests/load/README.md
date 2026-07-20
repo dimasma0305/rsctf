@@ -9,6 +9,7 @@ scenarios. Run via npm:
 
 ```sh
 cd tests/load
+      npm run admin-lifecycle # destructive, disposable-stack admin acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
@@ -30,6 +31,10 @@ tests/load/
   lib.mjs           shared: config, docker/psql shells, JWT + BYOC-token minting, discovery, k6 runner
   byoc-agents.mjs   BYOC tunnel fleet: seed rows, start/stop N relay agents, list listeners
   fixtures.mjs      materializes the exact checker + shared flag service used by lifecycle
+  admin-fixtures.mjs focused SQL, HTTP, Docker-image, CSR, and recovery helpers for admin acceptance
+  admin-lifecycle.js pure 61-operation admin catalog, response contracts, and target-safety rules
+  admin-lifecycle.mjs destructive disposable admin lifecycle (npm run admin-lifecycle)
+  edit-lifecycle.js pure 64-operation /api/edit catalog and response contracts (source/contract test only)
   player-model.js   deterministic competitive player profiles and A&D/Jeopardy/KotH decisions
   team-clients.mjs  one WireGuard+k6 container per team, plus verified teardown
   observe.mjs       read-only health/resource/evidence sampler for long event runs
@@ -42,6 +47,7 @@ tests/load/
   worker-plane.mjs  → trusted worker lifecycle  (npm run worker)
   worker-plane-local.mjs → isolated native-agent acceptance wrapper (npm run worker-local)
   k6/
+    admin-lifecycle.js fixed-rate admin reads, SignalR connection, replica/control health
     player.js         A&D + KotH player: poll boards/timelines, tokens/state, submit flags
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable
@@ -79,6 +85,142 @@ hill fixture to be replaced independently of the Jeopardy `CONTAINER_IMAGE`. Lon
 `CHEAT_AT_FRACTION`, `RETAIN_EVENT`, and `LIFECYCLE_STATE_TAG`. Set
 `RSCTF_BYOC_AGENT_IMAGE` to test a specific local RSCTF agent tag or immutable digest;
 the network-fetched default is pinned to the attested GHCR digest used by the server.
+
+### Exhaustive admin lifecycle (`npm run admin-lifecycle`)
+
+This is the destructive privileged-admin acceptance gate. Its catalog is checked against
+the registered routers and covers all **61 HTTP method/path operations** under
+`/api/admin`, `/api/ad/admin`, `/api/admin/workers`, and the one-time
+`/api/workers/enroll` surface, plus both admin
+SignalR surfaces (`POST /hub/admin/negotiate` and the authenticated `/hub/admin`
+WebSocket connection). It does not claim complete `/api/edit` organizer-plane coverage;
+the whole-platform lifecycle exercises that separate, broader surface. It validates the
+positive response contract for every catalogued operation, then proves that all 59
+administrator-only HTTP operations reject a missing token, an ordinary User, and a
+Monitor. Participation review separately proves same-game manager success plus unrelated
+and cross-game manager rejection; enrollment separately proves invalid and replayed
+tokens return 401. SignalR negotiate and WebSocket upgrade reject missing, User, and
+Monitor credentials before an Admin handshake succeeds.
+
+Before timing begins, k6 executes the finite 74-pair read matrix exactly once: 24 web
+reads against the public origin and both direct web replicas (72 pairs), plus the worker
+inventory read against the public and direct control origins (2 pairs). Its sample-count
+threshold makes an omitted operation/origin pair fail the run. The later fixed-rate phase
+rotates the same catalogued reads while `/livez` and `/healthz` are probed on every origin.
+
+The lifecycle creates and removes users, a team, an event, challenges, submissions,
+writeups, a live container, A&D state, anti-cheat evidence, build records, repository
+bindings, owned Docker image tags, and a worker identity. It also mutates global branding
+and configuration before restoring them. Build pull/rebuild, retry/delete/prune, image,
+container, and repository scan paths really run; archive-build label stamping is
+separately unit-tested. The worker enrollment token is really consumed and replay-rejected.
+Cleanup is attempted after success or failure. Two delayed, exact zero-resource snapshots
+must agree across fixture UUID/ID ledgers, Redis credential keys, blob metadata and local
+bytes, repository checkouts, build/evidence rows, worker state, and container identities.
+This must never target production or a retained event.
+
+Run it only against a dedicated Compose project with its own PostgreSQL and Redis data,
+at least two web replicas, one singleton control replica, and a Docker backend allowed to
+create the disposable fixture container. `TARGET` is the public/proxy origin;
+`WEB_TARGETS` is a comma-separated list or JSON array of at least two distinct direct
+web-replica origins; `CONTROL_TARGET` is the distinct direct control origin. All four
+origins must reach the same isolated installation. The runner fails closed unless all of
+the following acknowledgements are exact:
+
+```sh
+cd tests/load
+export TARGET=http://127.0.0.1:58080
+web1_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{end}}' \
+  rsctf-admin-rsctf-1 | awk 'NF { print; exit }')
+web2_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{end}}' \
+  rsctf-admin-rsctf-2 | awk 'NF { print; exit }')
+control_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{println .IPAddress}}{{end}}' \
+  rsctf-admin-control-1 | awk 'NF { print; exit }')
+export WEB_TARGETS="http://$web1_ip:8080,http://$web2_ip:8080"
+export CONTROL_TARGET="http://$control_ip:8080"
+export ADMIN_LIFECYCLE_DISPOSABLE=1
+export ADMIN_LIFECYCLE_STACK_MARKER=admin-stack-test-20260720
+export CONFIRM_ADMIN_TARGET="$TARGET"
+export CONFIRM_ADMIN_WEB_TARGETS="$WEB_TARGETS"
+export CONFIRM_ADMIN_CONTROL_TARGET="$CONTROL_TARGET"
+
+export RSCTF_JWT_SECRET='the isolated stack JWT secret'
+export PG_CONTAINER=rsctf-admin-db-1
+export REDIS_CONTAINER=rsctf-admin-redis-1
+export PG_USER=postgres
+export PG_DATABASE=rsctf
+export RSCTF_CONTAINER=rsctf-admin-rsctf-1
+export ADMIN_RSCTF_CONTAINERS=rsctf-admin-rsctf-2,rsctf-admin-control-1
+
+SUMMARY_JSON=/tmp/rsctf-admin-k6.json \
+  RATE=1 VUS=4 DURATION=30s npm run admin-lifecycle
+```
+
+The dedicated Compose override must inject
+`RSCTF_ADMIN_LIFECYCLE_MARKER=${ADMIN_LIFECYCLE_STACK_MARKER}` into every `rsctf`,
+`rsctf-control`, `db`, and `redis` container (and configure each server with
+`RSCTF_STORAGE_BACKEND=local`). The runner inspects these values itself: PostgreSQL and
+Redis must carry the same exact marker and Compose project labels as the declared server
+containers before the first database lock or SQL statement can run. An exported runner
+variable alone is insufficient.
+
+A bearer token is sent to the public origin, every direct web origin, and the direct
+control origin. The runner and standalone k6 phase therefore require all three
+`CONFIRM_ADMIN_*` values above and compare canonical origins in order before sending any
+credential. Direct origins additionally bind one-to-one to the inspected server containers:
+each must use plain HTTP, one of that container's Docker network IPs, and port 8080; web
+origins must map to every declared `rsctf` replica and the control origin to the sole
+`rsctf-control` replica. A non-loopback disposable target requires the additional exact acknowledgement
+`ALLOW_REMOTE_ADMIN_LIFECYCLE="$TARGET"`. That variable only prevents an accidental
+remote run; it does not make a shared or production installation safe. Every declared
+server must be a Compose service carrying the exact `RSCTF_ADMIN_LIFECYCLE_MARKER`, use
+the local disposable blob backend, and share one Compose project with the declared
+PostgreSQL and Redis services. A PostgreSQL session advisory lock excludes lifecycle
+runs started from other hosts in addition to the host-local process lock. Keep `RATE` at or
+below the enforced 1 request/s ceiling for the single polling administrator: the 74-request
+setup matrix consumes the same 150-request/minute account quota. Optional
+fixed-rate gates are `HEALTH_RATE`, `MAX_VUS`, `MAX_ADMIN_P95_MS`, and
+`MAX_HEALTH_P95_MS`. `ADMIN_CONTAINER_IMAGE` selects the local/pullable source image
+(default `nginx:alpine`).
+
+Three external integrations must be ready before the run:
+
+- Repository scan needs outbound HTTPS from the server to the read-only disposable
+  `ADMIN_REPOSITORY_URL` (default `https://github.com/octocat/Hello-World.git`); set
+  `ADMIN_REPOSITORY_REF` when a particular branch/tag is required.
+- Positive worker enrollment needs the control process to load a disposable issuer via
+  `RSCTF_WORKER_CA_CERT`, `RSCTF_WORKER_CA_KEY`, and
+  `RSCTF_WORKER_PUBLIC_ENDPOINT`. A full mTLS worker listener additionally uses the
+  server certificate/key and listen settings documented in
+  [`../../docs/deploy/workers.md`](../../docs/deploy/workers.md).
+- With no mail sender, the default assertion requires credential delivery to report a
+  truthful per-recipient failure. To exercise successful delivery, point the isolated
+  stack at a capture-only SMTP sink and set `ADMIN_REQUIRE_SMTP=1`; do not use a real
+  mailbox. This switch affects the credential-delivery branch only. The separate
+  email-diagnostic route is intentionally negative-path coverage: it always supplies an
+  invalid sender and must return a controlled 400 with no mail sent.
+
+`openssl`, `docker`, `psql` inside `PG_CONTAINER`, Node, and k6 are required. The runner
+exports the complete k6 distribution to `SUMMARY_JSON` (or a unique
+`/tmp/rsctf-admin-lifecycle-*-k6.json` by default), prints each one-shot route latency,
+and stores pre/post container resource snapshots in its recovery/audit manifest.
+Interrupted and failed runs retain `/tmp/rsctf-admin-lifecycle-*.json`; successful runs
+remove it unless `KEEP_ADMIN_MANIFEST=1` is set. These manifests identify disposable
+resources for recovery and must not be committed.
+
+The post-k6 rejected-negotiate check may retry one idempotent request after a client-side
+transport failure caused by an idle pooled socket. It still requires the exact 401/403
+response, and the manifest records `evidence.signalRNegotiateNetworkRetries`; a persistent
+failure remains fatal.
+
+For a reportable performance comparison, retain the summary JSON and sample CPU/RAM
+throughout the exact fixed-rate window and use at least `DURATION=300s`; the 30-second
+example above is a functional smoke and is too sparse for per-endpoint tails. Pre/post
+point samples alone support functional acceptance, not a CPU claim. Record the
+source/image identity, topology, rate, VUs, duration, per-endpoint p50/p90/p95/p99/max,
+health and 5xx gates, aligned resource series, cleanup/leak result, and fatal-log result
+in [`REPORT.md`](REPORT.md). Add an optimization ledger row only when before and after use
+this same harness, fixture shape, and held rate.
 
 ### Redis outage (`npm run redis-outage`)
 

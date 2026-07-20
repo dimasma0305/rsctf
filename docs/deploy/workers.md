@@ -426,7 +426,10 @@ verification; reserve that weaker mode for controlled recovery or development.
 
 On a trusted admin workstation, create a worker through the RSCTF admin API.
 The returned enrollment token is nested at `.enrollment.token`, is shown once,
-and expires after 15 minutes:
+and expires after 15 minutes. Responses containing a one-time worker token or a
+newly issued certificate carry `Cache-Control: private, no-store`; continue to
+treat the response as a secret even though compliant browsers and proxies will
+not retain it:
 
 ```bash
 set -o pipefail

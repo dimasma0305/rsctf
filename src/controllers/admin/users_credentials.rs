@@ -308,7 +308,8 @@ async fn send_one_credential(
     // At most CREDENTIAL_SEND_CONCURRENCY distinct user rows are fenced; no
     // global lock or database connection is monopolized indefinitely.
     let (transaction, delivery) =
-        deliver_while_recipient_locked(transaction, sender.send(&email, &subject, &body)).await;
+        deliver_while_recipient_locked(transaction, sender.send_required(&email, &subject, &body))
+            .await;
 
     match delivery {
         Ok(()) => {

@@ -4,13 +4,8 @@
 //! the documented frontend contract exactly — all lowercase except the `MyIp`
 //! diagnostic, which the client requests with capitalised casing.
 //!
-//! Core endpoints (Config, Users, Teams, Logs, Dashboard, Instances, Reviews,
-//! Writeups, SubmissionTrend) are implemented faithfully against the sea-orm
-//! entities. The long-tail admin surface (auto-build pipeline, repo bindings,
-//! anti-cheat, cheat reports, captcha/SMTP diagnostics, files, logo upload,
-//! bulk rebuild, container stats) is registered and returns a VALID, WELL-TYPED
-//! empty/default success (never a 4xx) so the UI stays functional — see the
-//! per-route `// TODO` notes.
+//! Core and operational endpoints are grouped into focused sibling modules;
+//! the router below preserves the existing React client paths and wire models.
 
 pub mod ad;
 mod flag_egress;
@@ -27,8 +22,6 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use bollard::image::{ListImagesOptions, RemoveImageOptions};
-use bollard::Docker;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
     QuerySelect, Set,
@@ -682,7 +675,7 @@ fn sanitize_entry(name: &str) -> String {
         .collect()
 }
 
-// ─── Auto-build / repo-binding typed stubs ──────────────────────────────────────
+// ─── Auto-build / repo-binding wire models ─────────────────────────────────────
 
 /// RSCTF `BulkRebuildResultModel`.
 #[derive(Debug, Serialize)]
@@ -705,12 +698,6 @@ pub struct ChallengeAuditModel {
     pub last_build_log: Option<String>,
 }
 
-/// Generic empty-array success for `Model[]` endpoints that aren't backed here.
-// TODO: implement the auto-build / repo-binding / anti-cheat pipelines.
-pub async fn empty_array(_admin: AdminUser) -> RequestResponse<Vec<Value>> {
-    RequestResponse::ok(Vec::new())
-}
-
 /// Generic `void` success (200, empty envelope).
 pub async fn void_ok(_admin: AdminUser) -> MessageResponse {
     MessageResponse::ok("")
@@ -720,18 +707,6 @@ pub async fn void_ok(_admin: AdminUser) -> MessageResponse {
 pub async fn prune_result(_admin: AdminUser) -> RequestResponse<PruneResultModel> {
     RequestResponse::ok(PruneResultModel {
         removed: 0,
-        messages: Vec::new(),
-    })
-}
-
-/// Default `BulkRebuildResultModel` success.
-pub async fn bulk_rebuild(
-    _admin: AdminUser,
-    Path(_game_id): Path<i32>,
-) -> RequestResponse<BulkRebuildResultModel> {
-    RequestResponse::ok(BulkRebuildResultModel {
-        enqueued: 0,
-        skipped: 0,
         messages: Vec::new(),
     })
 }

@@ -843,60 +843,68 @@ pub async fn logo_delete(
     State(st): State<SharedState>,
     _admin: AdminUser,
 ) -> AppResult<MessageResponse> {
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
+    let old_hashes = clear_branding_hashes(st.pg()).await?;
+    for old_hash in old_hashes {
+        if let Err(error) = crate::services::blob_refs::purge_if_unreferenced(
+            st.pg(),
+            st.storage.as_ref(),
+            &old_hash,
+        )
+        .await
+        {
+            tracing::warn!(%error, hash = %old_hash, "deleted branding blob purge failed");
+        }
+    }
+    Ok(MessageResponse::ok(""))
+}
+
+/// Clear the two config keys owned by one branding upload and return each old
+/// logical blob reference exactly once. Upload acquires one reference even
+/// though both keys point at it, so deleting a shared hash must likewise
+/// release it once rather than once per key.
+async fn clear_branding_hashes(
+    pool: &sqlx::PgPool,
+) -> AppResult<std::collections::BTreeSet<String>> {
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('rsctf:branding-logo', 0))")
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let old_hash = sqlx::query_scalar::<_, Option<String>>(
-        r#"SELECT value FROM "Configs" WHERE config_key = 'GlobalConfig:LogoHash' FOR UPDATE"#,
+    let old_hashes = sqlx::query_scalar::<_, String>(
+        r#"SELECT value
+             FROM "Configs"
+            WHERE config_key IN ('GlobalConfig:LogoHash', 'GlobalConfig:FaviconHash')
+              AND value IS NOT NULL
+            FOR UPDATE"#,
     )
-    .fetch_optional(&mut *transaction)
+    .fetch_all(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
-    .flatten();
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
     sqlx::query(
-        r#"INSERT INTO "Configs" (config_key, value, cache_keys)
-           VALUES ('GlobalConfig:LogoHash', NULL, NULL)
+        r#"INSERT INTO "Configs" (config_key, value, cache_keys) VALUES
+               ('GlobalConfig:LogoHash', NULL, NULL),
+               ('GlobalConfig:FaviconHash', NULL, NULL)
            ON CONFLICT (config_key) DO UPDATE SET value = NULL"#,
     )
     .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let still_used = match &old_hash {
-        Some(hash) => sqlx::query_scalar::<_, bool>(
-            r#"SELECT EXISTS(
-                    SELECT 1 FROM "Configs"
-                     WHERE config_key = 'GlobalConfig:FaviconHash' AND value = $1
-               )"#,
-        )
-        .bind(hash)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?,
-        None => false,
-    };
+    for old_hash in &old_hashes {
+        crate::services::blob_refs::release_direct_hash_locked(&mut transaction, old_hash).await?;
+    }
     transaction
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    if !still_used {
-        if let Some(old_hash) = old_hash {
-            if let Err(error) = crate::services::blob_refs::release_and_purge(
-                st.pg(),
-                st.storage.as_ref(),
-                &old_hash,
-            )
-            .await
-            {
-                tracing::warn!(%error, hash = %old_hash, "deleted logo blob purge failed");
-            }
-        }
-    }
-    Ok(MessageResponse::ok(""))
+    Ok(old_hashes)
 }
+
+#[cfg(test)]
+mod branding_tests;
 
 #[cfg(test)]
 mod tests {
