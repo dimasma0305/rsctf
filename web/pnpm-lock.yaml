@@ -183,7 +183,7 @@ importers:
         version: 19.2.3(@types/react@19.2.17)
       '@vitejs/plugin-react':
         specifier: ^6.0.3
-        version: 6.0.3(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0))
+        version: 6.0.3(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0))
       esbuild:
         specifier: ^0.28.1
         version: 0.28.1
@@ -191,14 +191,14 @@ importers:
         specifier: ^1.73.0
         version: 1.73.0
       postcss:
-        specifier: ^8.5.18
-        version: 8.5.18
+        specifier: ^8.5.19
+        version: 8.5.19
       postcss-preset-mantine:
         specifier: ^1.18.0
-        version: 1.18.0(postcss@8.5.18)
+        version: 1.18.0(postcss@8.5.19)
       postcss-simple-vars:
         specifier: ^7.0.1
-        version: 7.0.1(postcss@8.5.18)
+        version: 7.0.1(postcss@8.5.19)
       prettier:
         specifier: ^3.9.5
         version: 3.9.5
@@ -216,22 +216,22 @@ importers:
         version: 6.0.3
       vite:
         specifier: ^8.1.4
-        version: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0)
+        version: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0)
       vite-plugin-banner:
         specifier: ^0.8.1
         version: 0.8.1
       vite-plugin-optimize-css-modules:
         specifier: ^1.4.0
-        version: 1.4.0(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0))
+        version: 1.4.0(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0))
       vite-plugin-pages:
         specifier: ^0.33.3
-        version: 0.33.3(react-router@8.2.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0))
+        version: 0.33.3(react-router@8.2.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0))
       vite-plugin-webfont-dl:
         specifier: ^3.12.0
-        version: 3.12.0(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0))
+        version: 3.12.0(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0))
       vite-tsconfig-paths:
         specifier: ^6.1.1
-        version: 6.1.1(typescript@6.0.3)(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0))
+        version: 6.1.1(typescript@6.0.3)(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0))
 
 packages:
 
@@ -2027,8 +2027,8 @@ packages:
     peerDependencies:
       postcss: ^8.2.1
 
-  postcss@8.5.18:
-    resolution: {integrity: sha512-xdB1oSLHbz1vRWgCDalrCqEFTWzFlhqFC5tIHLMOSUIjhm3XXQ1qrFy8S/ESr1JYRRXqM3c1QFiMZUJdUTqyMQ==}
+  postcss@8.5.19:
+    resolution: {integrity: sha512-Mz8SaolMd8nB+G13WkORcxQKHZ/NE4xXevtkJHVuG+guo9/wYKlIMTKAqGdEmYOXR2ijPjTYNHssizdaVSUNdQ==}
     engines: {node: ^10 || ^12 || >=14}
 
   prettier-plugin-sort-json@4.2.0:
@@ -3282,10 +3282,10 @@ snapshots:
 
   '@ungap/structured-clone@1.3.1': {}
 
-  '@vitejs/plugin-react@6.0.3(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0))':
+  '@vitejs/plugin-react@6.0.3(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0))':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
-      vite: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0)
+      vite: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0)
 
   '@webgpu/types@0.1.70': {}
 
@@ -4148,40 +4148,40 @@ snapshots:
       exsolve: 1.1.0
       pathe: 2.0.3
 
-  postcss-js@4.1.0(postcss@8.5.18):
+  postcss-js@4.1.0(postcss@8.5.19):
     dependencies:
       camelcase-css: 2.0.1
-      postcss: 8.5.18
+      postcss: 8.5.19
 
-  postcss-mixins@12.1.2(postcss@8.5.18):
+  postcss-mixins@12.1.2(postcss@8.5.19):
     dependencies:
-      postcss: 8.5.18
-      postcss-js: 4.1.0(postcss@8.5.18)
-      postcss-simple-vars: 7.0.1(postcss@8.5.18)
-      sugarss: 5.0.1(postcss@8.5.18)
+      postcss: 8.5.19
+      postcss-js: 4.1.0(postcss@8.5.19)
+      postcss-simple-vars: 7.0.1(postcss@8.5.19)
+      sugarss: 5.0.1(postcss@8.5.19)
       tinyglobby: 0.2.17
 
-  postcss-nested@7.0.2(postcss@8.5.18):
+  postcss-nested@7.0.2(postcss@8.5.19):
     dependencies:
-      postcss: 8.5.18
+      postcss: 8.5.19
       postcss-selector-parser: 7.1.1
 
-  postcss-preset-mantine@1.18.0(postcss@8.5.18):
+  postcss-preset-mantine@1.18.0(postcss@8.5.19):
     dependencies:
-      postcss: 8.5.18
-      postcss-mixins: 12.1.2(postcss@8.5.18)
-      postcss-nested: 7.0.2(postcss@8.5.18)
+      postcss: 8.5.19
+      postcss-mixins: 12.1.2(postcss@8.5.19)
+      postcss-nested: 7.0.2(postcss@8.5.19)
 
   postcss-selector-parser@7.1.1:
     dependencies:
       cssesc: 3.0.0
       util-deprecate: 1.0.2
 
-  postcss-simple-vars@7.0.1(postcss@8.5.18):
+  postcss-simple-vars@7.0.1(postcss@8.5.19):
     dependencies:
-      postcss: 8.5.18
+      postcss: 8.5.19
 
-  postcss@8.5.18:
+  postcss@8.5.19:
     dependencies:
       nanoid: 3.3.16
       picocolors: 1.1.1
@@ -4462,9 +4462,9 @@ snapshots:
 
   stylis@4.2.0: {}
 
-  sugarss@5.0.1(postcss@8.5.18):
+  sugarss@5.0.1(postcss@8.5.19):
     dependencies:
-      postcss: 8.5.18
+      postcss: 8.5.19
 
   supports-preserve-symlinks-flag@1.0.0: {}
 
@@ -4634,11 +4634,11 @@ snapshots:
 
   vite-plugin-banner@0.8.1: {}
 
-  vite-plugin-optimize-css-modules@1.4.0(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0)):
+  vite-plugin-optimize-css-modules@1.4.0(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0)):
     dependencies:
-      vite: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0)
+      vite: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0)
 
-  vite-plugin-pages@0.33.3(react-router@8.2.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0)):
+  vite-plugin-pages@0.33.3(react-router@8.2.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0)):
     dependencies:
       '@types/debug': 4.1.13
       debug: 4.4.3
@@ -4649,39 +4649,39 @@ snapshots:
       micromatch: 4.0.8
       picocolors: 1.1.1
       tinyglobby: 0.2.17
-      vite: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0)
+      vite: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0)
       yaml: 2.9.0
     optionalDependencies:
       react-router: 8.2.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
     transitivePeerDependencies:
       - supports-color
 
-  vite-plugin-webfont-dl@3.12.0(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0)):
+  vite-plugin-webfont-dl@3.12.0(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0)):
     dependencies:
       axios: 1.18.1
       clean-css: 5.3.3
       flat-cache: 6.1.22
       picocolors: 1.1.1
-      vite: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0)
+      vite: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0)
     transitivePeerDependencies:
       - debug
       - supports-color
 
-  vite-tsconfig-paths@6.1.1(typescript@6.0.3)(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0)):
+  vite-tsconfig-paths@6.1.1(typescript@6.0.3)(vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0)):
     dependencies:
       debug: 4.4.3
       globrex: 0.1.2
       tsconfck: 3.1.6(typescript@6.0.3)
-      vite: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0)
+      vite: 8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0)
     transitivePeerDependencies:
       - supports-color
       - typescript
 
-  vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.18))(yaml@2.9.0):
+  vite@8.1.4(@types/node@22.13.14)(esbuild@0.28.1)(jiti@2.7.0)(sugarss@5.0.1(postcss@8.5.19))(yaml@2.9.0):
     dependencies:
       lightningcss: 1.32.0
       picomatch: 4.0.5
-      postcss: 8.5.18
+      postcss: 8.5.19
       rolldown: 1.1.5
       tinyglobby: 0.2.17
     optionalDependencies:
@@ -4689,7 +4689,7 @@ snapshots:
       esbuild: 0.28.1
       fsevents: 2.3.3
       jiti: 2.7.0
-      sugarss: 5.0.1(postcss@8.5.18)
+      sugarss: 5.0.1(postcss@8.5.19)
       yaml: 2.9.0
 
   void-elements@3.1.0: {}
