@@ -2,6 +2,9 @@
 
 use super::*;
 
+mod images;
+pub use images::{build_images, delete_build_image, prune_images};
+
 /// RSCTF `PruneResultModel`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,6 +158,160 @@ pub struct DeleteImageQuery {
     pub force: bool,
 }
 
+#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+struct BulkRebuildCandidate {
+    challenge_id: i32,
+}
+
+fn bulk_rebuild_lock_key(game_id: i32) -> String {
+    format!("admin-bulk-build:{game_id}")
+}
+
+/// Snapshot eligible work only after the caller owns the session-level batch
+/// lease. No row is preclaimed: cancellation leaves every unstarted challenge
+/// in its original retryable state.
+async fn bulk_rebuild_candidates(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+) -> AppResult<Vec<BulkRebuildCandidate>> {
+    let deletion_pending =
+        sqlx::query_scalar::<_, bool>(r#"SELECT deletion_pending FROM "Games" WHERE id = $1"#)
+            .bind(game_id)
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    match deletion_pending {
+        None => return Err(AppError::not_found("Game not found")),
+        Some(true) => return Err(AppError::conflict("Game is being deleted")),
+        Some(false) => {}
+    }
+
+    let candidates = sqlx::query_as::<_, BulkRebuildCandidate>(
+        r#"SELECT challenge.id AS challenge_id
+             FROM "GameChallenges" challenge
+            WHERE challenge.game_id = $1
+              AND challenge.deletion_pending = FALSE
+              AND challenge.build_status IN ($2, $3)
+            ORDER BY challenge.id"#,
+    )
+    .bind(game_id)
+    .bind(ChallengeBuildStatus::Failed as i16)
+    .bind(ChallengeBuildStatus::MissingDockerfile as i16)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(candidates)
+}
+
+/// `POST /api/admin/games/{gameId}/bulkrebuild` — retry every failed or
+/// missing-Dockerfile build in the game through the same coordinated build
+/// seam as an interactive rebuild. Challenges already fenced for deletion are
+/// reported as skipped and never reach Docker.
+pub async fn bulk_rebuild(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Path(game_id): Path<i32>,
+) -> AppResult<RequestResponse<BulkRebuildResultModel>> {
+    let mut batch_lock = crate::utils::single_flight::PgSessionAdvisoryLock::acquire_build_batch(
+        st.pg(),
+        &bulk_rebuild_lock_key(game_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let candidates = bulk_rebuild_candidates(batch_lock.connection_mut(), game_id).await?;
+    let mut enqueued = 0;
+    let mut skipped = 0;
+    let mut messages = Vec::new();
+
+    for candidate in candidates {
+        let eligible = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS (
+                   SELECT 1
+                     FROM "GameChallenges" challenge
+                     JOIN "Games" game ON game.id = challenge.game_id
+                    WHERE challenge.id = $1
+                      AND challenge.game_id = $2
+                      AND challenge.deletion_pending = FALSE
+                      AND game.deletion_pending = FALSE
+                      AND challenge.build_status IN ($3, $4)
+               )"#,
+        )
+        .bind(candidate.challenge_id)
+        .bind(game_id)
+        .bind(ChallengeBuildStatus::Failed as i16)
+        .bind(ChallengeBuildStatus::MissingDockerfile as i16)
+        .fetch_one(batch_lock.connection_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if !eligible {
+            skipped += 1;
+            messages.push(format!(
+                "challenge #{}: skipped because it changed, completed, or entered deletion after the batch snapshot",
+                candidate.challenge_id
+            ));
+            continue;
+        }
+
+        // The existing build seam accepts the canonical entity model. Loading
+        // it here avoids duplicating its large, evolving schema in a raw SQL
+        // projection; eligibility and attempt calculation remain raw sqlx.
+        let Some(challenge) = game_challenge::Entity::find_by_id(candidate.challenge_id)
+            .one(&st.db)
+            .await?
+            .filter(|challenge| {
+                challenge.game_id == game_id
+                    && matches!(
+                        challenge.build_status,
+                        ChallengeBuildStatus::Failed | ChallengeBuildStatus::MissingDockerfile
+                    )
+            })
+        else {
+            skipped += 1;
+            messages.push(format!(
+                "challenge #{}: skipped because it changed, completed, or entered deletion after the batch snapshot",
+                candidate.challenge_id
+            ));
+            continue;
+        };
+
+        let attempt = sqlx::query_scalar::<_, i32>(
+            r#"SELECT COALESCE(MAX(attempt), 0) + 1
+                 FROM "BuildRecords"
+                WHERE challenge_id = $1"#,
+        )
+        .bind(challenge.id)
+        .fetch_one(batch_lock.connection_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+        enqueued += 1;
+        let (outcome, _record) =
+            crate::controllers::edit::run_challenge_build(&st, &challenge, "Bulk", attempt).await;
+        let detail = outcome
+            .log
+            .unwrap_or_else(|| "build returned no detail".to_string());
+        messages.push(format!(
+            "challenge #{} ({}): {:?}: {}",
+            challenge.id, challenge.title, outcome.status, detail
+        ));
+    }
+
+    if enqueued == 0 && skipped == 0 {
+        messages.push("No failed or missing-Dockerfile builds require rebuilding.".to_string());
+    }
+
+    batch_lock
+        .release()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    Ok(RequestResponse::ok(BulkRebuildResultModel {
+        enqueued,
+        skipped,
+        messages,
+    }))
+}
+
 /// `GET /api/admin/builds` — paginated build history, newest first. Optional
 /// `status` / `gameId` filters mirror the generated client; the page ships the
 /// raw `ChallengeBuildAuditModel[]` (the UI filters/paginates in-memory).
@@ -255,9 +412,9 @@ pub async fn bulk_delete_builds(
 
 /// `POST /api/admin/builds/{auditId}/reenqueue` — re-run the build for the
 /// challenge owning this audit row (same seam as an interactive rebuild, tagged
-/// `AutoRetry`) and echo back the freshly-recorded audit row. Falls back to
-/// recording a fresh `Queued` row from the old snapshot when the challenge is
-/// gone (or the seam's own audit write failed).
+/// `AutoRetry`) and echo back the freshly-recorded audit row. Missing/fenced
+/// challenges and failed audit persistence are reported truthfully; no queued
+/// row is fabricated because this binary has no background queue consumer.
 pub async fn reenqueue_build(
     State(st): State<SharedState>,
     _admin: AdminUser,
@@ -270,189 +427,182 @@ pub async fn reenqueue_build(
 
     let attempt = record.attempt + 1;
 
-    // The challenge may have been deleted since the original build ran.
-    let new_record = match game_challenge::Entity::find_by_id(record.challenge_id)
+    let challenge = game_challenge::Entity::find_by_id(record.challenge_id)
         .one(&st.db)
         .await?
-    {
-        Some(challenge) => {
-            crate::controllers::edit::admin_reenqueue_build(&st, &challenge, attempt).await?
-        }
-        None => None,
-    };
-
-    let model = match new_record {
-        Some(m) => m,
-        None => {
-            build_record::ActiveModel {
-                challenge_id: Set(record.challenge_id),
-                game_id: Set(record.game_id),
-                challenge_title: Set(record.challenge_title.clone()),
-                enqueued_at_utc: Set(Utc::now()),
-                started_at_utc: Set(None),
-                finished_at_utc: Set(None),
-                trigger: Set("AutoRetry".to_string()),
-                kind: Set(record.kind.clone()),
-                attempt: Set(attempt),
-                status: Set(ChallengeBuildStatus::Queued),
-                digest: Set(None),
-                image_ref: Set(None),
-                log_tail: Set(Some("Re-enqueued from the admin Builds page.".to_string())),
-                ..Default::default()
-            }
-            .insert(&st.db)
-            .await?
-        }
-    };
+        .ok_or_else(reenqueue_missing_challenge_error)?;
+    let model = crate::controllers::edit::admin_reenqueue_build(&st, &challenge, attempt)
+        .await?
+        .ok_or_else(reenqueue_missing_audit_error)?;
 
     Ok(RequestResponse::ok(model.into()))
 }
 
-/// Connect to the local docker daemon and confirm a short-timeout ping. Returns
-/// `None` when the daemon is absent/unreachable so the image endpoints degrade
-/// to an empty inventory instead of erroring.
-async fn reachable_docker() -> Option<Docker> {
-    let docker = Docker::connect_with_local_defaults().ok()?;
-    match tokio::time::timeout(std::time::Duration::from_secs(2), docker.ping()).await {
-        Ok(Ok(_)) => Some(docker),
-        _ => None,
-    }
+fn reenqueue_missing_challenge_error() -> AppError {
+    AppError::not_found("The challenge for this build record no longer exists")
 }
 
-/// Query the daemon for `rsctf/*` images and cross-reference them against
-/// the challenges still pointing at them. Isolated so any bollard/DB error maps
-/// to an empty inventory at the call site (never a fabricated list).
-async fn collect_build_images(
-    st: &SharedState,
-    docker: &Docker,
-) -> Result<Vec<BuildImageModel>, ()> {
-    let images = docker
-        .list_images(Some(ListImagesOptions::<String> {
-            all: false,
-            ..Default::default()
-        }))
-        .await
-        .map_err(|_| ())?;
+fn reenqueue_missing_audit_error() -> AppError {
+    AppError::conflict(
+        "The synchronous rebuild returned without a durable audit row; no queued work was created",
+    )
+}
 
-    // Map every image ref a challenge still references (service + A&D checker)
-    // to the owning challenge title, for the "referenced by" column.
-    let challenges = game_challenge::Entity::find()
-        .all(&st.db)
+#[cfg(test)]
+mod bulk_rebuild_tests {
+    use super::*;
+
+    #[test]
+    fn reenqueue_never_fabricates_unconsumable_queued_work() {
+        assert!(matches!(
+            reenqueue_missing_challenge_error(),
+            AppError::NotFound(_)
+        ));
+        assert!(matches!(
+            reenqueue_missing_audit_error(),
+            AppError::Conflict(_)
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn bulk_lease_serializes_requests_and_cancellation_strands_no_rows() {
+        use std::str::FromStr;
+
+        use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("admin_bulk_build_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(3)
+            .connect_with(options)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE "Games" (
+              id INTEGER PRIMARY KEY,
+              deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TABLE "GameChallenges" (
+              id INTEGER PRIMARY KEY,
+              game_id INTEGER NOT NULL,
+              build_status SMALLINT NOT NULL,
+              deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TABLE "BuildRecords" (
+              id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+              challenge_id INTEGER NOT NULL,
+              attempt INTEGER NOT NULL
+            );
+            INSERT INTO "Games" (id, deletion_pending) VALUES (1, FALSE), (2, TRUE);
+            INSERT INTO "GameChallenges" (id, game_id, build_status, deletion_pending) VALUES
+              (10, 1, 2, FALSE),
+              (11, 1, 6, FALSE),
+              (12, 1, 1, FALSE),
+              (13, 1, 2, TRUE);
+            INSERT INTO "BuildRecords" (challenge_id, attempt) VALUES
+              (10, 1), (10, 2), (11, 4);
+            "#,
+        )
+        .execute(&pool)
         .await
-        .map_err(|_| ())?;
-    let mut ref_titles: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for c in &challenges {
-        for img in [c.container_image.as_deref(), c.ad_checker_image.as_deref()] {
-            if let Some(img) = img.filter(|s| !s.is_empty()) {
-                ref_titles
-                    .entry(img.to_string())
-                    .or_default()
-                    .push(c.title.clone());
+        .unwrap();
+
+        let mut connection = pool.acquire().await.unwrap();
+        let candidates = bulk_rebuild_candidates(&mut connection, 1).await.unwrap();
+        assert_eq!(
+            candidates,
+            vec![
+                BulkRebuildCandidate { challenge_id: 10 },
+                BulkRebuildCandidate { challenge_id: 11 },
+            ]
+        );
+        assert!(matches!(
+            bulk_rebuild_candidates(&mut connection, 999).await,
+            Err(AppError::NotFound(_))
+        ));
+        assert!(matches!(
+            bulk_rebuild_candidates(&mut connection, 2).await,
+            Err(AppError::Conflict(_))
+        ));
+        drop(connection);
+
+        let acquired = std::sync::Arc::new(tokio::sync::Notify::new());
+        let owner = tokio::spawn({
+            let pool = pool.clone();
+            let acquired = acquired.clone();
+            async move {
+                let _lock =
+                    crate::utils::single_flight::PgSessionAdvisoryLock::acquire_build_batch(
+                        &pool,
+                        &bulk_rebuild_lock_key(1),
+                    )
+                    .await
+                    .unwrap();
+                acquired.notify_one();
+                std::future::pending::<()>().await;
             }
-        }
-    }
-
-    let mut out = Vec::new();
-    for img in images {
-        let tags: Vec<String> = img
-            .repo_tags
-            .into_iter()
-            .filter(|t| t.starts_with("rsctf/"))
-            .collect();
-        if tags.is_empty() {
-            continue;
-        }
-        let referenced_by: Vec<String> = tags
-            .iter()
-            .filter_map(|t| ref_titles.get(t))
-            .flatten()
-            .cloned()
-            .collect();
-        let is_checker = tags.iter().any(|t| t.contains("checker"));
-        let created_utc = DateTime::<Utc>::from_timestamp(img.created, 0);
-        out.push(BuildImageModel {
-            id: img.id,
-            referenced: !referenced_by.is_empty(),
-            referenced_by,
-            is_checker,
-            size_bytes: img.size,
-            created_utc,
-            tags,
         });
-    }
-    Ok(out)
-}
-
-/// `GET /api/admin/builds/images` — `rsctf/*` images on the local docker
-/// daemon. Docker-gated: an absent/unreachable daemon yields an empty inventory
-/// (never a 5xx, never a fabricated list).
-pub async fn build_images(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-) -> RequestResponse<Vec<BuildImageModel>> {
-    let images = match reachable_docker().await {
-        Some(docker) => collect_build_images(&st, &docker).await.unwrap_or_default(),
-        None => Vec::new(),
-    };
-    RequestResponse::ok(images)
-}
-
-/// `DELETE /api/admin/builds/images?tag=&force=` — remove one image from the
-/// local docker daemon by tag. Docker-gated / best-effort.
-pub async fn delete_build_image(
-    _admin: AdminUser,
-    Query(q): Query<DeleteImageQuery>,
-) -> RequestResponse<PruneResultModel> {
-    let removed = match reachable_docker().await {
-        Some(docker) => {
-            let opts = RemoveImageOptions {
-                force: q.force,
-                ..Default::default()
-            };
-            docker
-                .remove_image(&q.tag, Some(opts), None)
+        acquired.notified().await;
+        let mut waiter = tokio::spawn({
+            let pool = pool.clone();
+            async move {
+                crate::utils::single_flight::PgSessionAdvisoryLock::acquire_build_batch(
+                    &pool,
+                    &bulk_rebuild_lock_key(1),
+                )
                 .await
-                .map(|items| items.len() as i32)
-                .unwrap_or(0)
-        }
-        None => 0,
-    };
-    RequestResponse::ok(PruneResultModel {
-        removed,
-        messages: Vec::new(),
-    })
-}
-
-/// `POST /api/admin/builds/pruneimages` — GC every `rsctf/*` image no
-/// challenge still references. Docker-gated / best-effort.
-pub async fn prune_images(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-) -> RequestResponse<PruneResultModel> {
-    let Some(docker) = reachable_docker().await else {
-        return RequestResponse::ok(PruneResultModel {
-            removed: 0,
-            messages: Vec::new(),
-        });
-    };
-    let images = collect_build_images(&st, &docker).await.unwrap_or_default();
-    let mut removed = 0i32;
-    let mut messages = Vec::new();
-    for img in images {
-        if img.referenced {
-            continue;
-        }
-        for tag in img.tags {
-            let opts = RemoveImageOptions {
-                force: false,
-                ..Default::default()
-            };
-            match docker.remove_image(&tag, Some(opts), None).await {
-                Ok(items) => removed += items.len() as i32,
-                Err(e) => messages.push(format!("{tag}: {e}")),
             }
-        }
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut waiter)
+                .await
+                .is_err()
+        );
+        owner.abort();
+        let _ = owner.await;
+        let second_lock = tokio::time::timeout(std::time::Duration::from_secs(2), &mut waiter)
+            .await
+            .expect("cancelled owner must release the batch lease")
+            .unwrap()
+            .unwrap();
+        second_lock.release().await.unwrap();
+
+        assert_eq!(
+            sqlx::query_as::<_, (i32, i16)>(
+                r#"SELECT id, build_status FROM "GameChallenges" ORDER BY id"#,
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap(),
+            vec![
+                (10, ChallengeBuildStatus::Failed as i16),
+                (11, ChallengeBuildStatus::MissingDockerfile as i16),
+                (12, ChallengeBuildStatus::Success as i16),
+                (13, ChallengeBuildStatus::Failed as i16),
+            ]
+        );
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
     }
-    RequestResponse::ok(PruneResultModel { removed, messages })
 }

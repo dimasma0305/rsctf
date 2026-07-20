@@ -5,6 +5,276 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## Exhaustive admin lifecycle reporting protocol
+
+`npm run admin-lifecycle` is the destructive, disposable-stack acceptance gate for the
+privileged namespaces `/api/admin`, `/api/ad/admin`, `/api/admin/workers`, and
+`/api/workers/enroll`; it does not claim complete `/api/edit` organizer coverage. The
+pure catalog is source-checked against those registered routers and requires **61/61 HTTP
+method/path operations** plus both admin SignalR surfaces. All 59 Admin-only operations
+must reject anonymous, User, and Monitor principals; participation and enrollment use
+their separate manager/token matrices. A passing execution must also retain zero unauthorized successes, server 5xx,
+invalid response models, HTTP 429 responses, dropped iterations, failed public/direct
+health probes, panic/fatal log records, and namespaced resources after cleanup. The
+positive flow includes real Docker pull/rebuild, image, and container mutations, a real
+repository binding scan, and one-time worker certificate enrollment; archive-build label
+stamping is separately unit-tested. These are not mocked route smokes.
+
+The reproduction contract and exact destructive acknowledgements are documented in
+[`README.md`](README.md#exhaustive-admin-lifecycle-npm-run-admin-lifecycle). Every
+accepted execution is recorded here with all of the following evidence:
+
+1. Source commit plus tracked/untracked source fingerprint and exact release image/binary
+   identity.
+2. Isolated topology: public origin, two direct web replicas, singleton control replica,
+   PostgreSQL, Redis, Docker backend, worker issuer, repository fixture, and SMTP mode.
+3. One-shot route coverage count and latency p50/p95/max; the 59-operation Admin
+   authorization matrix; manager/enrollment matrices; SignalR negotiate/connect result;
+   all 74 read/origin preflight pairs; replica-projection result; fatal-log count; and both
+   stable cleanup/leak snapshots.
+4. The retained `SUMMARY_JSON` distribution: scheduled/achieved rate, VUs, duration,
+   request/check counts, 5xx/429/unexpected/invalid/dropped counts, and admin/health plus
+   per-operation p50/p90/p95/p99/max.
+5. An aligned CPU/RAM time series for every web/control replica, PostgreSQL, Redis, and
+   proxy over the same fixed-rate window when making any performance claim.
+
+The one-shot destructive route timings and pre/post resource points are functional
+diagnostics, not an optimization comparison. Do not add an optimization-ledger row until
+one isolated fixture has been run before and after at the same fixed arrival rate and the
+same workload shape. Retain regressions and secondary-metric costs rather than reporting
+only improved endpoints. The first current-tree execution record belongs immediately
+below this protocol after its isolated run; no unexecuted latency or CPU values are
+claimed here.
+
+## Exhaustive admin lifecycle acceptance — 20 July 2026
+
+This is the first execution under the protocol above. Production at `tcp.1pc.tf` was not
+used, restarted, migrated, or sent test traffic. Both measurements ran against the
+marker-fenced `rsctf-final-719b` Compose project at `http://127.0.0.1:58080`, with two web
+replicas, one singleton control replica, the same PostgreSQL/Redis/Caddy containers, and
+the same disposable Docker and repository fixtures.
+
+### Exact artifacts and topology
+
+| Artifact | Exact identity |
+| --- | --- |
+| Source commit | `97e602d3285cacaa774570d69adbe019b3aac30d` (dirty measured tree) |
+| Before application image | `rsctf-local:admin-lifecycle-20260720` / `sha256:b02801ce8a2af3f090d581aa1b5732312eaea76804725c5338f9aa85b16c9170` |
+| Before image binary | `sha256:607262393890b75ce51dd1c131efc05cb7bea02803e06867c59410e48ac2043c` |
+| After application image | `rsctf-local:admin-lifecycle-20260720-final` / `sha256:0eaa0bdf179d7c735eeb009f0de939db35d36d02fe7a81c6bb828e055375953f` |
+| After image binary | `sha256:364eacc5e3271ed15d50cac79ee39cc83724fe010bfca10b3e6c74edd9ec1abf` |
+| Frozen after build source | tracked `48889190e490a0085fe3a73f44d6d64a1d1daf3e37f4af296296ed23b7803a4b`; untracked `7eca72a98c83ab5be350483f9dd5eb72854b3158c41e8a23b555a045043f8a39` |
+| Accepted harness worktree | observer `gitWorktreeSha256=a16c0caecdd29f2716cf6d849a5078aa437a57ae0923e871d4b043b4e3b65b9d` |
+| PostgreSQL | `postgres:18.4-alpine3.24` / `sha256:bd1890816ae0b8ad4644f05728570d4be774e1f1490d7232f5084b52ea335183` |
+| Redis | `redis:7-alpine` / `sha256:487efc0616382465781b8fdc3d6d1db449e6fd80ae23bf48432a2da6b6929908` |
+| Caddy | `caddy:2-alpine` / `sha256:af555904a0961945f16bb323a501457b13a4f7e9bde969b145b97da80b38ecbe` |
+| Host | Linux `6.8.0-124-generic`, Docker `28.4.0`, 8 logical CPUs, 31.34 GiB RAM |
+| Isolation marker | `final-719b-admin-20260720` on both application roles, PostgreSQL, and Redis |
+| Origins | public `127.0.0.1:58080`; web `172.30.253.131:8080`, `172.30.253.132:8080`; control `172.30.253.130:8080` |
+| Before evidence | `/tmp/rsctf-admin-rate1-before-20260720.json`; manifest `admmrsvia2j`; load `06:59:41.260–07:04:45.447 UTC` |
+| Accepted after evidence | `/tmp/rsctf-admin-rate1-after-20260720.json`; manifest `admmrswu5id`; load `07:36:34.597–07:41:38.318 UTC` |
+
+The after image was built with the repository Dockerfile: the React production
+type-check/bundle and Rust `cargo build --release --locked` both passed. A bounded
+SignalR-probe transport retry and this report were changed after the image freeze; they
+are load-harness/documentation changes and are not copied into the server image. The
+accepted observer fingerprint identifies the worktree at observer start. The current
+executable admin-harness files still match their recorded per-file hashes; this report
+and its README were updated afterward. The older image's source fingerprint was not
+retained, so its exact image and binary digests—not an invented source digest—identify
+the baseline.
+
+### Functional and security result
+
+The accepted candidate run completed all **63/63** catalogued HTTP and realtime
+surfaces. All 60 applicable operations rejected missing and ordinary-user credentials;
+all 59 Admin-only operations rejected Monitor credentials. Same-game manager access
+succeeded while unrelated/cross-game manager access failed, enrollment rejected invalid
+and replayed tokens, and anonymous/User/Monitor SignalR clients were rejected before an
+Admin JSON handshake completed.
+
+The finite 74-operation/origin matrix passed exactly. The whole k6 execution completed
+1,054/1,054 checks and 2,783 HTTP requests with zero 5xx, 429, unexpected statuses,
+invalid response bodies, health failures, SignalR failures, dropped iterations, or
+failed HTTP requests. The fixed-rate scenarios contributed 2,709 requests and 903
+checks; setup contributed 74 requests and 148 checks, and SignalR contributed three
+checks/sessions. Each of the three independent observers recorded 195/195 public
+liveness, direct liveness, and direct readiness successes with no collector error. A
+separate post-run Docker inspection reported zero restarts and zero OOM kills for every
+application/support container; the three server logs contained zero panic/fatal records
+from the run window.
+
+Cleanup produced two delayed, identical all-zero snapshots. In particular, the old
+image left one repository checkout and two credential-cache keys after its otherwise
+complete load phase; the candidate left zero of both, along with zero games, users,
+teams, participations, workers/workloads, bindings, build records, containers,
+submissions, anti-cheat evidence, blobs, and checker directories. The old residuals were
+then removed by their exact manifest identities. The candidate also returned HTTP 401
+for anonymous admin SignalR negotiate. The old post-load authorization probe did not
+produce a trustworthy status because its Node connection failed, so no old HTTP status
+is inferred from that transport error.
+
+Static verification for the measured tree also passed: `npm test` 217/217; `cargo fmt
+--all -- --check`; `cargo check --locked --all-targets`; `cargo clippy --locked
+--all-targets -- -D warnings`; and the full `cargo test --locked` run (626 library tests
+plus the main/checker/logic/routes/storage integration suites, with only declared ignored
+tests). The release Docker build completed with zero Rust warnings and performed the
+frontend production build.
+
+The first candidate measurement completed the full 300-second k6 phase and zero-resource
+cleanup, but the outer Node gate then reused one stale proxy keep-alive socket. The
+harness now permits one retry only for the idempotent rejected-negotiate request and
+still requires the exact 401/403 response. The accepted rerun recorded one such retry;
+k6 and all observers recorded zero network/health failures. This is retained as harness
+evidence rather than silently discarded.
+
+### Same-shape fixed-rate before and after
+
+Both runs used `RATE=1 HEALTH_RATE=1 VUS=4 MAX_VUS=4 DURATION=300s`. The scheduled
+admin-read and platform-health scenarios each ran at one iteration/s; an iteration makes
+multiple requests. Including the finite setup matrix, each k6 execution made the same
+2,783 requests at an aggregate rate of about 9.23 requests/s. Values are milliseconds.
+The before k6 phase completed cleanly, but its manifest remained `completed=false` after
+the later authorization/cleanup failures, so it is a performance baseline—not an
+accepted functional run.
+
+| Metric | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Aggregate k6 HTTP rate | 9.228 req/s | 9.235 req/s | +0.1% |
+| Checks | 1,054/1,054 | 1,054/1,054 | unchanged |
+| Overall HTTP avg | 7.579 | 4.598 | -39.3% |
+| Overall HTTP p50 | 2.983 | 1.608 | -46.1% |
+| Overall HTTP p90 | 12.976 | 7.989 | -38.4% |
+| Overall HTTP p95 | 19.915 | 13.601 | -31.7% |
+| Overall HTTP p99 | 91.896 | 48.861 | -46.8% |
+| Overall HTTP max | 1,333.743 | 691.305 | -48.2% |
+| Admin-read avg | 31.169 | 20.022 | -35.8% |
+| Admin-read p50 | 13.349 | 7.656 | -42.7% |
+| Admin-read p90 | 52.589 | 40.875 | -22.3% |
+| Admin-read p95 | 139.635 | 65.373 | -53.2% |
+| Admin-read p99 | 223.955 | 171.824 | -23.3% |
+| Admin-read max | 1,333.743 | 691.305 | -48.2% |
+| 74-pair matrix p95 | 59.846 | 51.364 | -14.2% |
+| Health p95 | 17.891 | 13.617 | -23.9% |
+| SignalR handshake p95 | 5.000 | 7.500 | +50.0% (three samples) |
+
+Individual endpoint trends receive only about 12–13 steady samples in 300 seconds, so
+their tail percentiles are diagnostics rather than standalone capacity claims. The
+aggregate admin-read trend is the reliable comparison. Regressions are included below;
+the table is not filtered to favorable endpoints.
+
+| Metric | Before p50/p90/p95/p99/max | After p50/p90/p95/p99/max | p95 change |
+| --- | ---: | ---: | ---: |
+| `ad_admin_rounds_get_ms` | 13.99 / 27.52 / 116.10 / 202.38 / 223.95 | 7.07 / 12.53 / 17.76 / 22.80 / 24.06 | -84.7% |
+| `ad_admin_services_get_ms` | 13.82 / 21.62 / 30.33 / 38.77 / 40.88 | 7.28 / 11.93 / 15.80 / 19.56 / 20.50 | -47.9% |
+| `admin_anticheat_blocks_get_ms` | 8.37 / 19.14 / 23.79 / 27.95 / 28.99 | 5.36 / 8.85 / 19.44 / 29.61 / 32.15 | -18.3% |
+| `admin_build_images_get_ms` | 62.16 / 107.67 / 660.11 / 1,199.02 / 1,333.74 | 47.84 / 67.27 / 103.45 / 138.62 / 147.41 | -84.3% |
+| `admin_builds_get_ms` | 9.65 / 21.80 / 36.92 / 50.73 / 54.18 | 4.69 / 7.88 / 8.50 / 9.11 / 9.26 | -77.0% |
+| `admin_builds_inprogress_get_ms` | 11.25 / 15.56 / 16.53 / 17.29 / 17.47 | 5.59 / 10.95 / 19.37 / 27.43 / 29.45 | +17.2% |
+| `admin_cheat_reports_get_ms` | 179.85 / 237.30 / 254.69 / 269.52 / 273.22 | 136.48 / 224.97 / 438.06 / 640.66 / 691.31 | +72.0% |
+| `admin_config_get_ms` | 8.88 / 14.72 / 17.35 / 19.86 / 20.49 | 6.71 / 11.34 / 14.05 / 16.54 / 17.16 | -19.0% |
+| `admin_dashboard_get_ms` | 23.36 / 35.33 / 38.72 / 41.58 / 42.30 | 19.34 / 34.23 / 41.35 / 48.03 / 49.71 | +6.8% |
+| `admin_files_get_ms` | 10.15 / 16.18 / 16.51 / 16.75 / 16.81 | 6.76 / 9.03 / 10.06 / 11.05 / 11.29 | -39.1% |
+| `admin_flag_egress_get_ms` | 14.37 / 22.55 / 26.13 / 29.05 / 29.79 | 9.43 / 13.31 / 18.33 / 23.12 / 24.32 | -29.8% |
+| `admin_game_writeups_get_ms` | 14.33 / 29.10 / 38.74 / 47.94 / 50.24 | 8.17 / 10.65 / 10.83 / 10.95 / 10.99 | -72.0% |
+| `admin_instance_stats_get_ms` | 17.74 / 34.81 / 66.47 / 95.93 / 103.29 | 10.98 / 26.10 / 37.66 / 48.10 / 50.71 | -43.3% |
+| `admin_instances_get_ms` | 12.31 / 23.91 / 32.33 / 40.30 / 42.29 | 7.04 / 12.15 / 13.31 / 14.06 / 14.25 | -58.8% |
+| `admin_logs_get_ms` | 9.88 / 14.25 / 16.46 / 18.57 / 19.10 | 6.52 / 10.67 / 11.43 / 12.08 / 12.25 | -30.6% |
+| `admin_my_ip_get_ms` | 5.33 / 8.70 / 75.36 / 155.35 / 175.34 | 4.23 / 22.15 / 27.10 / 30.39 / 31.21 | -64.0% |
+| `admin_repo_binding_scans_get_ms` | 10.82 / 19.02 / 88.09 / 155.42 / 172.25 | 6.50 / 9.68 / 28.14 / 45.97 / 50.42 | -68.1% |
+| `admin_repo_bindings_get_ms` | 10.86 / 20.10 / 60.66 / 99.91 / 109.72 | 7.58 / 16.20 / 22.54 / 28.23 / 29.65 | -62.8% |
+| `admin_reviews_get_ms` | 11.73 / 16.50 / 18.11 / 19.55 / 19.92 | 7.79 / 14.08 / 23.46 / 32.48 / 34.73 | +29.5% |
+| `admin_submission_trend_get_ms` | 45.59 / 96.34 / 103.71 / 106.20 / 106.82 | 31.07 / 57.64 / 109.30 / 159.32 / 171.82 | +5.4% |
+| `admin_teams_get_ms` | 15.02 / 24.07 / 25.35 / 26.38 / 26.63 | 9.47 / 16.55 / 36.24 / 55.15 / 59.88 | +42.9% |
+| `admin_user_get_ms` | 11.65 / 18.48 / 31.74 / 44.26 / 47.39 | 6.57 / 10.87 / 12.15 / 13.12 / 13.36 | -61.7% |
+| `admin_users_get_ms` | 12.43 / 16.46 / 23.97 / 31.27 / 33.09 | 8.04 / 12.94 / 13.28 / 13.58 / 13.66 | -44.6% |
+| `admin_workers_get_ms` | 12.65 / 36.45 / 45.22 / 52.74 / 54.61 | 7.45 / 8.94 / 15.91 / 22.66 / 24.34 | -64.8% |
+| `admin_writeups_get_ms` | 12.20 / 20.35 / 21.55 / 22.60 / 22.86 | 7.13 / 9.39 / 22.08 / 34.49 / 37.59 | +2.5% |
+
+### CPU and memory at the held rate
+
+Docker CPU percentages use one logical core as 100%. The application total below is the
+sum of the three process means; per-process p95 values are not added because their sample
+timestamps are independent. Support-service values come only from the web-1 observer so
+the same PostgreSQL/Redis/Caddy container is not counted three times.
+
+| Process | Before CPU avg/p95/max | After CPU avg/p95/max | Before RAM avg/max | After RAM avg/max |
+| --- | ---: | ---: | ---: | ---: |
+| Web replica 1 | 1.708 / 11.750 / 21.790% | 1.877 / 10.320 / 15.750% | 59.844 / 71.940 MiB | 71.812 / 81.390 MiB |
+| Web replica 2 | 2.466 / 12.300 / 86.590% | 1.918 / 10.270 / 17.640% | 35.304 / 41.700 MiB | 41.456 / 49.740 MiB |
+| Control replica | 2.114 / 11.510 / 21.720% | 2.635 / 12.140 / 20.130% | 42.948 / 47.960 MiB | 33.452 / 35.340 MiB |
+| Application total | 6.288% mean | 6.430% mean (+2.3%) | 138.096 MiB mean / 161.600 MiB summed peaks | 146.720 MiB mean / 166.470 MiB summed peaks |
+| PostgreSQL | 13.179 / 25.220 / 120.160% | 4.627 / 16.470 / 55.360% | 166.130 / 189.200 MiB | 184.172 / 201.800 MiB |
+| Redis | 5.968 / 10.220 / 63.560% | 1.733 / 4.240 / 31.840% | 3.790 / 4.035 MiB | 4.318 / 4.570 MiB |
+| Caddy | 0.647 / 1.380 / 3.980% | 0.358 / 0.640 / 4.980% | 28.708 / 33.000 MiB | 40.965 / 44.970 MiB |
+
+Application CPU is effectively flat at this low held rate; this is not a CPU optimization
+claim. Application mean RAM increased 8.624 MiB (+6.2%) and the sum of process peaks
+increased 4.870 MiB (+3.0%). PostgreSQL and proxy processes were not restarted between
+runs, while application processes were recreated for the candidate; their RAM levels are
+therefore descriptive and include process-age/cache effects. The lower database/Redis CPU
+and improved aggregate latency are directionally consistent with less work, but only an
+isolated optimization experiment should attribute those changes to one code path.
+
+Thirty-second aligned series follow. Each cell is mean CPU / mean RAM for that bucket;
+the final 300–304/305 second buckets are partial tails and are not weighted as full
+intervals.
+
+| Before offset s | Web 1 | Web 2 | Control | PostgreSQL | Redis | Caddy |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0–30 | 5.65% / 61.5 MiB | 8.08% / 35.8 MiB | 2.56% / 42.6 MiB | 25.17% / 184.1 MiB | 8.11% / 3.8 MiB | 0.79% / 30.7 MiB |
+| 30–60 | 2.77% / 59.4 MiB | 3.42% / 35.6 MiB | 0.79% / 42.7 MiB | 13.89% / 154.6 MiB | 6.12% / 3.8 MiB | 0.57% / 31.6 MiB |
+| 60–90 | 1.38% / 59.5 MiB | 2.03% / 36.6 MiB | 0.84% / 42.8 MiB | 13.50% / 143.3 MiB | 6.33% / 3.8 MiB | 0.56% / 31.2 MiB |
+| 90–120 | 1.37% / 59.6 MiB | 0.28% / 34.3 MiB | 1.01% / 42.9 MiB | 11.28% / 156.4 MiB | 5.31% / 3.8 MiB | 0.79% / 30.9 MiB |
+| 120–150 | 0.26% / 59.0 MiB | 1.26% / 35.3 MiB | 2.60% / 43.2 MiB | 12.79% / 163.2 MiB | 5.43% / 3.8 MiB | 0.61% / 29.1 MiB |
+| 150–180 | 0.39% / 59.1 MiB | 1.72% / 34.5 MiB | 4.06% / 43.0 MiB | 10.51% / 166.5 MiB | 5.09% / 3.8 MiB | 0.78% / 27.5 MiB |
+| 180–210 | 2.57% / 59.8 MiB | 2.69% / 34.0 MiB | 2.20% / 43.0 MiB | 11.81% / 169.7 MiB | 5.44% / 3.8 MiB | 0.48% / 26.6 MiB |
+| 210–240 | 1.74% / 60.7 MiB | 4.21% / 35.9 MiB | 1.92% / 43.1 MiB | 11.83% / 172.3 MiB | 6.70% / 3.8 MiB | 0.76% / 26.6 MiB |
+| 240–270 | 0.62% / 60.7 MiB | 1.71% / 34.6 MiB | 1.46% / 43.1 MiB | 12.27% / 174.8 MiB | 6.50% / 3.8 MiB | 0.62% / 26.6 MiB |
+| 270–300 | 0.49% / 59.2 MiB | 0.51% / 36.2 MiB | 4.08% / 43.1 MiB | 9.83% / 176.4 MiB | 5.17% / 3.8 MiB | 0.51% / 26.8 MiB |
+| 300–305 | 3.48% / 60.6 MiB | 0.55% / 36.5 MiB | 0.35% / 43.1 MiB | 15.77% / 177.6 MiB | 4.14% / 3.8 MiB | 0.62% / 26.4 MiB |
+
+| After offset s | Web 1 | Web 2 | Control | PostgreSQL | Redis | Caddy |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0–30 | 3.63% / 71.6 MiB | 2.28% / 40.7 MiB | 4.27% / 33.1 MiB | 9.61% / 173.4 MiB | 1.93% / 4.3 MiB | 0.66% / 42.1 MiB |
+| 30–60 | 2.15% / 71.5 MiB | 2.42% / 40.2 MiB | 2.93% / 33.2 MiB | 2.67% / 175.0 MiB | 1.26% / 4.3 MiB | 0.24% / 42.6 MiB |
+| 60–90 | 2.02% / 72.3 MiB | 1.74% / 39.9 MiB | 2.75% / 33.2 MiB | 3.02% / 176.9 MiB | 1.01% / 4.3 MiB | 0.25% / 44.2 MiB |
+| 90–120 | 1.08% / 71.4 MiB | 2.48% / 39.9 MiB | 3.38% / 33.2 MiB | 3.25% / 180.5 MiB | 1.30% / 4.3 MiB | 0.26% / 44.9 MiB |
+| 120–150 | 0.21% / 70.0 MiB | 2.30% / 40.8 MiB | 2.23% / 33.2 MiB | 5.26% / 182.3 MiB | 2.53% / 4.3 MiB | 0.38% / 39.3 MiB |
+| 150–180 | 3.01% / 70.3 MiB | 1.71% / 41.3 MiB | 1.63% / 33.2 MiB | 3.85% / 183.9 MiB | 1.28% / 4.3 MiB | 0.39% / 39.3 MiB |
+| 180–210 | 2.35% / 72.5 MiB | 2.04% / 41.3 MiB | 1.55% / 33.2 MiB | 5.74% / 185.3 MiB | 1.89% / 4.3 MiB | 0.24% / 39.3 MiB |
+| 210–240 | 0.33% / 72.1 MiB | 2.64% / 43.2 MiB | 4.11% / 33.2 MiB | 2.79% / 189.7 MiB | 1.39% / 4.3 MiB | 0.41% / 39.5 MiB |
+| 240–270 | 1.05% / 72.8 MiB | 0.90% / 43.2 MiB | 2.21% / 33.5 MiB | 6.30% / 195.3 MiB | 3.37% / 4.3 MiB | 0.34% / 39.4 MiB |
+| 270–300 | 2.39% / 73.5 MiB | 0.42% / 43.4 MiB | 1.53% / 35.3 MiB | 2.74% / 197.9 MiB | 1.46% / 4.3 MiB | 0.27% / 39.2 MiB |
+| 300–304 | 4.75% / 72.8 MiB | 3.37% / 46.4 MiB | 0.88% / 35.3 MiB | 10.28% / 200.2 MiB | 0.71% / 4.3 MiB | 1.21% / 39.3 MiB |
+
+### One-shot orchestration cost and remaining limits
+
+The accepted run's one-shot route median was 277.83 ms, p95 1,254.14 ms, and maximum
+5,405.67 ms. The slowest operations were build re-enqueue (5,405.67 ms), game bulk
+rebuild (2,389.53 ms), repository scan (1,254.14 ms), cheat-report read (894.71 ms),
+and container deletion (757.52 ms). These execute real Docker/git work and are outside
+the steady read window.
+
+Bulk rebuild is intentionally truthful but currently synchronous. It is safe under a
+per-game session advisory lease and leaves unstarted records retryable on cancellation,
+but a large game can exceed an HTTP/proxy timeout. The scalable follow-up is a durable
+database-backed job claimed by the singleton control worker; an in-memory background task
+would break cancellation and multi-replica ownership guarantees.
+
+The source-checked `/api/edit` catalog covers all 64 registered method/path operations and
+all response contracts in unit tests, but it is not yet a live exhaustive organizer
+runner. The whole-platform lifecycle exercises many of those routes, not all 64. Archive
+image label stamping is unit-tested; this admin lifecycle's positive image flow uses a
+real pull/rebuild plus real image/container mutations. SMTP-disabled delivery and the
+negative diagnostic path are live-covered; successful SMTP delivery requires a
+capture-only sink. These boundaries are explicit so “all admin endpoints” is not
+misreported as “all organizer endpoints.”
+
+No optimization-ledger row is added for this mixed correctness/security change set.
+Aggregate latency improved, but application CPU was flat and individual endpoint tails
+are sparse; a ledger entry should follow only an isolated optimization experiment.
+
 ## Repository-sync and event-integrity acceptance — 19 July 2026
 
 This is the current incident-focused acceptance record. Production inspection

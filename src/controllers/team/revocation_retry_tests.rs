@@ -279,7 +279,8 @@ async fn roster_removal_retains_scoring_attribution_and_blocks_physical_user_del
         CREATE TABLE "AspNetUsers" (
           id UUID PRIMARY KEY,
           role SMALLINT NOT NULL,
-          security_stamp TEXT
+          security_stamp TEXT,
+          normalized_email TEXT
         );
         CREATE TABLE "Teams" (
           id INTEGER PRIMARY KEY,

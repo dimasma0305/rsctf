@@ -242,7 +242,7 @@
           "title": "Ouch! 这个比赛还没有题目"
         },
         "enable": "你确定要启用题目 {{name}} 吗？",
-        "bulk_rebuild_confirm": "是否对 {{count}} 个失败或缺少 Dockerfile 的题目重新触发构建？",
+        "bulk_rebuild_confirm": "是否立即重建 {{count}} 个失败或缺少 Dockerfile 的题目？请求会等待每个 Docker 构建完成，可能需要几分钟。",
         "delete_selected_confirm": "确定删除所选的 {{count}} 个题目吗？这会永久删除它们及其 flag/实例，且不可恢复。",
         "activate_selected_confirm": "启用所选的 {{count}} 个题目？未设置 flag 的题目将被跳过。",
         "deactivate_selected_confirm": "停用所选的 {{count}} 个题目？在重新启用前它们将停止计分。",
@@ -1158,7 +1158,7 @@
       "summary": "比赛 {{games}}，题目 {{challenges}}，失败 {{failures}}"
     },
     "builds": {
-      "bulk_enqueued": "已加入 {{count}} 个构建任务",
+      "bulk_enqueued": "已完成 {{count}} 个构建尝试",
       "enqueued": "构建已触发",
       "pruned": "已清理 {{count}} 条记录",
       "images_pruned": "已清理 {{count}} 个孤立镜像"

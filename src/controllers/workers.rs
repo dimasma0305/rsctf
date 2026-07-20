@@ -6,6 +6,8 @@
 //! token plus CSR for a client-only certificate signed by the worker CA.
 
 use axum::extract::{Path, State};
+use axum::http::header::{CACHE_CONTROL, PRAGMA};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
@@ -29,6 +31,7 @@ const ENROLLMENT_TOKEN_LIFETIME_MINUTES: i64 = 15;
 const MAX_WORKER_NAME_CHARS: usize = 128;
 const MAX_ENROLLMENT_TOKEN_CHARS: usize = 1_024;
 const MAX_CSR_BYTES: usize = 64 * 1024;
+const WORKER_SECRET_CACHE_CONTROL: &str = "private, no-store";
 
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -196,7 +199,7 @@ pub async fn create_worker(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Json(model): Json<CreateWorkerModel>,
-) -> AppResult<Json<CreatedWorkerModel>> {
+) -> AppResult<Response> {
     require_issuer(&st)?;
     let name = validate_worker_name(model.name)?;
     let worker_id = Uuid::now_v7();
@@ -212,10 +215,10 @@ pub async fn create_worker(
         .await
         .map_err(store_error)?;
 
-    Ok(Json(CreatedWorkerModel {
+    Ok(worker_secret_response(Json(CreatedWorkerModel {
         worker: worker.into(),
         enrollment,
-    }))
+    })))
 }
 
 /// `POST /api/admin/workers/{id}/token` — invalidate any unused token and
@@ -225,7 +228,7 @@ pub async fn issue_enrollment_token(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Path(worker_id): Path<Uuid>,
-) -> AppResult<Json<EnrollmentTokenModel>> {
+) -> AppResult<Response> {
     require_issuer(&st)?;
     let enrollment = new_enrollment_token(worker_id)?;
     let updated = st
@@ -240,7 +243,7 @@ pub async fn issue_enrollment_token(
     if !updated {
         return Err(AppError::not_found("Worker not found"));
     }
-    Ok(Json(enrollment))
+    Ok(worker_secret_response(Json(enrollment)))
 }
 
 /// `PUT /api/admin/workers/{id}/state` — draining keeps the active route but
@@ -283,7 +286,7 @@ pub async fn update_worker_state(
 pub async fn enroll_worker(
     State(st): State<SharedState>,
     Json(request): Json<EnrollmentRequest>,
-) -> AppResult<Json<EnrollmentResponse>> {
+) -> AppResult<Response> {
     validate_enrollment_request(&request)?;
     let issuer = require_issuer(&st)?.clone();
     let token_hash = hash_enrollment_token(&request.token);
@@ -329,14 +332,27 @@ pub async fn enroll_worker(
         service.registry().disconnect(worker_id).await;
     }
 
-    Ok(Json(EnrollmentResponse {
+    Ok(worker_secret_response(Json(EnrollmentResponse {
         worker_id,
         control_address: issuer.public_endpoint().to_owned(),
         data_address: issuer.public_endpoint().to_owned(),
         server_name: issuer.server_name().to_owned(),
         certificate_pem: issued.certificate_pem,
         ca_pem: issued.ca_certificate_pem,
-    }))
+    })))
+}
+
+/// Enrollment tokens and newly-issued certificate material are one-time
+/// operator secrets. Browsers and intermediary caches must never retain them.
+fn worker_secret_response(body: impl IntoResponse) -> Response {
+    (
+        [
+            (CACHE_CONTROL, WORKER_SECRET_CACHE_CONTROL),
+            (PRAGMA, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 fn require_issuer(
@@ -434,5 +450,17 @@ mod tests {
             csr_pem: "csr".into(),
         };
         assert!(validate_enrollment_request(&oversized).is_err());
+    }
+
+    #[test]
+    fn one_time_worker_material_is_private_and_never_cached() {
+        let response = worker_secret_response(Json(serde_json::json!({
+            "token": "one-time-secret",
+        })));
+        assert_eq!(
+            response.headers().get(CACHE_CONTROL).unwrap(),
+            WORKER_SECRET_CACHE_CONTROL
+        );
+        assert_eq!(response.headers().get(PRAGMA).unwrap(), "no-cache");
     }
 }

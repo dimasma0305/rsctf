@@ -234,7 +234,7 @@
           "title": "Ouch! This game has no challenge yet."
         },
         "enable": "Are you sure you want to enable challenge {{name}}?",
-        "bulk_rebuild_confirm": "Enqueue rebuilds for the {{count}} challenge(s) with a Failed or Missing-Dockerfile status?",
+        "bulk_rebuild_confirm": "Rebuild the {{count}} challenge(s) with a Failed or Missing-Dockerfile status now? This request waits for each Docker build to finish and may take several minutes.",
         "delete_selected_confirm": "Delete {{count}} selected challenge(s)? This permanently removes them and their flags/instances and cannot be undone.",
         "activate_selected_confirm": "Activate {{count}} selected challenge(s)? Any without a flag set will be skipped.",
         "deactivate_selected_confirm": "Deactivate {{count}} selected challenge(s)? Scoring stops for them until re-activated.",
@@ -1243,7 +1243,7 @@
       "summary": "{{games}} games, {{challenges}} challenges, {{failures}} failures"
     },
     "builds": {
-      "bulk_enqueued": "Enqueued {{count}} build(s)",
+      "bulk_enqueued": "Completed {{count}} build attempt(s)",
       "enqueued": "Build triggered",
       "pruned": "Cleared {{count}} audit row(s)",
       "images_pruned": "Removed {{count}} orphaned image tag(s)"

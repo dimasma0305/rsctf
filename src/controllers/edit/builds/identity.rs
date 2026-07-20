@@ -4,7 +4,7 @@ use bollard::Docker;
 
 use crate::models::data::game_challenge;
 
-pub(super) fn canonical_image_reference(image: Option<&str>) -> String {
+pub(crate) fn canonical_image_reference(image: Option<&str>) -> String {
     let Some(image) = image.map(str::trim).filter(|image| !image.is_empty()) else {
         return "<none>".to_string();
     };
@@ -40,11 +40,29 @@ pub(super) fn canonical_image_reference(image: Option<&str>) -> String {
     format!("{}{suffix}", parts.join("/"))
 }
 
+pub(crate) fn image_build_lock_key(image: Option<&str>) -> String {
+    format!("challenge-build:image:{}", canonical_image_reference(image))
+}
+
 pub(super) fn build_lock_key(challenge: &game_challenge::Model) -> String {
-    format!(
-        "challenge-build:image:{}",
-        canonical_image_reference(challenge.container_image.as_deref())
-    )
+    image_build_lock_key(challenge.container_image.as_deref())
+}
+
+/// Canonical mutable tag managed by the local rsctf build pipeline. Registry
+/// digests, worker references, and daemon IDs are immutable runtime identities,
+/// not local tags that the admin image GC may remove.
+pub(crate) fn canonical_managed_image_tag(image: &str) -> Option<String> {
+    let image = image.trim();
+    if crate::services::challenge_images::is_local_image_id(image)
+        || crate::services::challenge_images::is_repository_digest(image)
+        || crate::services::challenge_images::worker_local_image(image).is_some()
+    {
+        return None;
+    }
+    let canonical = canonical_image_reference(Some(image));
+    canonical
+        .starts_with("docker.io/rsctf/")
+        .then_some(canonical)
 }
 
 fn canonical_image_repository(image: &str) -> Option<String> {

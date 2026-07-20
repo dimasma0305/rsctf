@@ -20,7 +20,7 @@ use tokio::time::{interval, Duration};
 
 use crate::app_state::{HubEvent, SharedState};
 use crate::middlewares::privilege_authentication::{
-    authenticate_token, CurrentUser, SESSION_COOKIE,
+    authenticate_token, AdminUser, CurrentUser, SESSION_COOKIE,
 };
 use crate::models::data::game;
 use crate::utils::enums::Role;
@@ -39,6 +39,13 @@ pub async fn negotiate() -> impl IntoResponse {
             { "transport": "WebSockets", "transferFormats": ["Text", "Binary"] }
         ]
     }))
+}
+
+/// SignalR negotiation for organizer-only hubs. Keep the authorization
+/// boundary identical across every privileged transport entry point instead
+/// of advertising an admin transport to anonymous callers.
+pub async fn admin_negotiate(_admin: AdminUser) -> impl IntoResponse {
+    negotiate().await
 }
 
 /// Resolve the caller from live account state for a hub connection. SignalR

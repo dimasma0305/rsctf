@@ -4,7 +4,12 @@ use super::*;
 mod archive;
 use archive::zip_bytes_to_tar;
 mod identity;
-use identity::*;
+#[cfg(test)]
+use identity::immutable_image_reference;
+use identity::{build_lock_key, inspect_immutable_image, ImageOperation};
+pub(crate) use identity::{
+    canonical_image_reference, canonical_managed_image_tag, image_build_lock_key,
+};
 mod publication;
 use publication::*;
 #[cfg(test)]
@@ -554,10 +559,25 @@ async fn build_from_context(
         }
     };
 
+    let labels = canonical_managed_image_tag(image)
+        .map(|reference| {
+            std::collections::HashMap::from([
+                (
+                    crate::services::container::IMAGE_SCOPE_LABEL.to_string(),
+                    crate::services::container::docker_installation_scope(),
+                ),
+                (
+                    crate::services::container::IMAGE_REFERENCE_LABEL.to_string(),
+                    reference,
+                ),
+            ])
+        })
+        .unwrap_or_default();
     let options = BuildImageOptions::<String> {
         t: image.to_string(),
         dockerfile: "Dockerfile".to_string(),
         rm: true,
+        labels,
         ..Default::default()
     };
 

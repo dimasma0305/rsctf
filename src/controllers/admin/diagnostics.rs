@@ -103,7 +103,7 @@ pub async fn test_email(
             .unwrap_or_else(|| "noreply@rsctf".to_string()),
     };
     crate::services::mail::MailSender::new(cfg)
-        .send(
+        .send_required(
             recipient,
             "rsctf SMTP test",
             "<p>This is a test email from rsctf. If you received it, your SMTP settings are correct.</p>",

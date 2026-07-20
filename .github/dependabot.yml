@@ -24,6 +24,13 @@ updates:
       # removed from the remaining data-access paths.
       - dependency-name: sqlx
         update-types: ["version-update:semver-major"]
+      # SeaORM is being removed in favor of direct SQLx. Its 2.x crates cannot
+      # be upgraded independently without splitting the ORM, migration, and
+      # direct SQLx type systems across incompatible major versions.
+      - dependency-name: sea-orm
+        update-types: ["version-update:semver-major"]
+      - dependency-name: sea-orm-migration
+        update-types: ["version-update:semver-major"]
       # kube 4 supports Kubernetes 1.32+, while the Helm chart supports 1.25+,
       # and it enables automatic retries for non-idempotent challenge creates.
       # Move this pair only in a dedicated backend compatibility migration.

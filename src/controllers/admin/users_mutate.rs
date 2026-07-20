@@ -59,8 +59,13 @@ async fn validate_admin_update(
 /// teardown begins. Locking the account row closes the hand-off with team
 /// invite acceptance: an accept either retains a share lock and commits before
 /// this update (so the later snapshot sees it), or observes the banned role and
-/// is rejected.
-pub(crate) async fn fence_user_for_deletion(pool: &sqlx::PgPool, user_id: Uuid) -> AppResult<()> {
+/// is rejected. The normalized email is returned from the same locked snapshot
+/// so deletion can invalidate import-only plaintext without racing an email
+/// mutation.
+pub(crate) async fn fence_user_for_deletion(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+) -> AppResult<Option<String>> {
     let mut transaction = pool
         .begin()
         .await
@@ -74,13 +79,17 @@ pub(crate) async fn fence_user_for_deletion(pool: &sqlx::PgPool, user_id: Uuid) 
     // PostgreSQL statement keeps the snapshot it took before waiting for this
     // row lock; combining the EXISTS with FOR UPDATE could therefore miss a
     // roster link committed by the transaction that just released the row.
-    let role: Option<i16> =
-        sqlx::query_scalar(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#)
-            .bind(user_id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some(role) = role else {
+    let account: Option<(i16, Option<String>)> = sqlx::query_as(
+        r#"SELECT role, normalized_email
+             FROM "AspNetUsers"
+            WHERE id = $1
+            FOR UPDATE"#,
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((role, normalized_email)) = account else {
         return Err(AppError::not_found("User not found"));
     };
     if role == Role::Admin as i16 {
@@ -133,6 +142,21 @@ pub(crate) async fn fence_user_for_deletion(pool: &sqlx::PgPool, user_id: Uuid) 
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(normalized_email)
+}
+
+async fn fence_user_identity_for_deletion(
+    pool: &sqlx::PgPool,
+    cache: &dyn crate::services::cache::Cache,
+    user_id: Uuid,
+) -> AppResult<()> {
+    let normalized_email = fence_user_for_deletion(pool, user_id).await?;
+    if let Some(email) = normalized_email {
+        // The durable ban and stamp rotation now make the cached password
+        // ineligible for delivery. Compare by immutable user id so an
+        // overlapping account replacement can never lose its newer secret.
+        super::users_credentials::invalidate_import_credential(cache, user_id, &email).await;
+    }
     Ok(())
 }
 
@@ -286,7 +310,7 @@ pub async fn delete_user(
     // Fresh sessions fail the live role/stamp check, and team invite acceptance
     // synchronizes through a share lock on this row. The fence also rejects any
     // existing team/participation link before changing the account.
-    fence_user_for_deletion(st.pg(), userid).await?;
+    fence_user_identity_for_deletion(st.pg(), st.cache.as_ref(), userid).await?;
 
     // ApiToken.Creator is ON DELETE RESTRICT — clear the user's tokens first.
     api_token::Entity::delete_many()
@@ -358,6 +382,7 @@ pub async fn reset_password(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::cache::{Cache, InMemoryCache};
     use std::str::FromStr;
 
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -528,7 +553,8 @@ mod tests {
             CREATE TABLE "AspNetUsers" (
               id UUID PRIMARY KEY,
               role SMALLINT NOT NULL,
-              security_stamp TEXT
+              security_stamp TEXT,
+              normalized_email TEXT
             );
             CREATE TABLE "Teams" (
               id INTEGER PRIMARY KEY,
@@ -562,12 +588,14 @@ mod tests {
             (participant, Role::User),
             (newly_linked_member, Role::User),
         ] {
+            let normalized_email = (id == ordinary).then_some("ORDINARY@EXAMPLE.TEST");
             sqlx::query(
-                r#"INSERT INTO "AspNetUsers" (id, role, security_stamp)
-                   VALUES ($1, $2, 'old-stamp')"#,
+                r#"INSERT INTO "AspNetUsers" (id, role, security_stamp, normalized_email)
+                   VALUES ($1, $2, 'old-stamp', $3)"#,
             )
             .bind(id)
             .bind(role as i16)
+            .bind(normalized_email)
             .execute(&pool)
             .await
             .unwrap();
@@ -594,7 +622,28 @@ mod tests {
         .await
         .unwrap();
 
-        fence_user_for_deletion(&pool, ordinary).await.unwrap();
+        let credential_cache = InMemoryCache::new();
+        super::super::users_credentials::cache_import_credential(
+            &credential_cache,
+            ordinary,
+            "ordinary@example.test",
+            "ordinary",
+            "old-stamp",
+            "temporary-secret",
+        )
+        .await
+        .unwrap();
+        let credential_key =
+            super::super::users_credentials::credential_cache_key("ordinary@example.test");
+        assert!(credential_cache.get(&credential_key).await.is_some());
+
+        fence_user_identity_for_deletion(&pool, &credential_cache, ordinary)
+            .await
+            .unwrap();
+        assert!(
+            credential_cache.get(&credential_key).await.is_none(),
+            "deletion left the imported plaintext credential cached"
+        );
         let fenced: (i16, Option<String>) =
             sqlx::query_as(r#"SELECT role, security_stamp FROM "AspNetUsers" WHERE id = $1"#)
                 .bind(ordinary)
