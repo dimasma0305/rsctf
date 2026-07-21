@@ -7,7 +7,6 @@ type DefinitionSnapshot = (
     Option<ValidatedWorkloadSpec>,
     String,
     String,
-    Option<String>,
 );
 
 /// Take the definition used by a per-team launch while ordered against a
@@ -32,7 +31,6 @@ pub(super) async fn load_playable_definition_snapshot(
         runtime.workload,
         runtime.identity,
         runtime.publication_fence,
-        runtime.legacy_image,
     ))
 }
 
@@ -87,7 +85,6 @@ pub(super) async fn load_shared_definition_snapshot(
         runtime.workload,
         runtime.identity,
         runtime.publication_fence,
-        runtime.legacy_image,
     ))
 }
 

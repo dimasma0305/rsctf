@@ -138,7 +138,7 @@ pub async fn create_container(
         .one(&st.db)
         .await?
         .ok_or_else(|| AppError::not_found("Game not found"))?;
-    let (challenge, workload, identity, publication_fence, legacy_image) =
+    let (challenge, workload, identity, publication_fence) =
         load_playable_definition_snapshot(&st, id, cid).await?;
 
     // Look up any prior instance for this challenge. A live (Running) container is a
@@ -168,7 +168,6 @@ pub async fn create_container(
                         &c.container_id,
                         &c.image,
                         &identity,
-                        legacy_image.is_some(),
                     )
                     .await?
                 {
@@ -237,25 +236,9 @@ pub async fn create_container(
                 .await?
         }
         None => {
-            st.containers
-                .create(ContainerSpec {
-                    game_kind: crate::services::container::game_kind_for_challenge(
-                        challenge.challenge_type,
-                    ),
-                    image: legacy_image
-                        .clone()
-                        .expect("a legacy definition has an immutable launch image"),
-                    memory_limit: challenge.memory_limit.unwrap_or(64),
-                    cpu_count: challenge.cpu_count.unwrap_or(1),
-                    expose_port: challenge.expose_port.unwrap_or(80),
-                    publish_port: true,
-                    env: vec![("RSCTF_TEAM_ID".into(), participation.team_id.to_string())],
-                    flag: Some(flag.clone()),
-                    ad_network: None,
-                    allow_egress: true,
-                    operation_id,
-                })
-                .await?
+            return Err(AppError::bad_request(
+                "container launch requires workloadSpec; legacy single-container runtime is no longer supported",
+            ));
         }
     };
 
@@ -430,18 +413,35 @@ pub async fn create_container(
         Err(error) => Some(error),
     };
     if let Some(error) = stale_error {
-        let instance_id = c
-            .game_instance_id
-            .expect("team container publication always has an instance owner");
-        let cleanup = revoke_published_team_container(
-            &st,
-            &backend_id,
-            container_uuid,
-            instance_id,
-            created_instance_id,
-            created_flag_id,
-        )
-        .await;
+        let cleanup = match c.game_instance_id {
+            Some(instance_id) => {
+                revoke_published_team_container(
+                    &st,
+                    &backend_id,
+                    container_uuid,
+                    instance_id,
+                    created_instance_id,
+                    created_flag_id,
+                )
+                .await
+            }
+            None => {
+                tracing::warn!(
+                    backend_id = %backend_id,
+                    container_id = %container_uuid,
+                    "team container publication missing instance owner; using fallback cleanup"
+                );
+                revoke_failed_team_container_publication(
+                    &st,
+                    &backend_id,
+                    container_uuid,
+                    None,
+                    created_instance_id,
+                    created_flag_id,
+                )
+                .await
+            }
+        };
         let unlock = distributed
             .release()
             .await
@@ -694,7 +694,7 @@ pub(crate) async fn get_or_create_shared_container_locked(
     challenge: &game_challenge::Model,
 ) -> AppResult<container::Model> {
     let game_id = challenge.game_id;
-    let (challenge, workload, identity, publication_fence, legacy_image) =
+    let (challenge, workload, identity, publication_fence) =
         load_shared_definition_snapshot(st, game_id, challenge.id).await?;
 
     // Reuse the shared container ONLY if its docker container is actually alive — a
@@ -707,7 +707,6 @@ pub(crate) async fn get_or_create_shared_container_locked(
                 &existing.container_id,
                 &existing.image,
                 &identity,
-                legacy_image.is_some(),
             )
             .await?
             {
@@ -764,25 +763,9 @@ pub(crate) async fn get_or_create_shared_container_locked(
                 .await?
         }
         None => {
-            st.containers
-                .create(ContainerSpec {
-                    game_kind: crate::services::container::game_kind_for_challenge(
-                        challenge.challenge_type,
-                    ),
-                    image: legacy_image
-                        .clone()
-                        .expect("a legacy definition has an immutable launch image"),
-                    memory_limit: challenge.memory_limit.unwrap_or(64),
-                    cpu_count: challenge.cpu_count.unwrap_or(1),
-                    expose_port: challenge.expose_port.unwrap_or(80),
-                    publish_port: true,
-                    env: Vec::new(),
-                    flag: Some(flag),
-                    ad_network,
-                    allow_egress: challenge.ad_allow_egress,
-                    operation_id,
-                })
-                .await?
+            return Err(AppError::bad_request(
+                "shared container launch requires workloadSpec; legacy single-container runtime is no longer supported",
+            ));
         }
     };
 

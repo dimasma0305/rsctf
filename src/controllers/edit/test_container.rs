@@ -32,7 +32,6 @@ pub async fn create_test_container(
     let workload = runtime.workload;
     let identity = runtime.identity;
     let publication_fence = runtime.publication_fence;
-    let legacy_image = runtime.legacy_image;
     definition_lock.release().await?;
 
     // Re-read under the cross-replica lock; clear stale pointers before replacement.
@@ -43,7 +42,6 @@ pub async fn create_test_container(
                 &c.container_id,
                 &c.image,
                 &identity,
-                legacy_image.is_some(),
             )
             .await?
             {
@@ -99,25 +97,9 @@ pub async fn create_test_container(
                 .await?
         }
         None => {
-            st.containers
-                .create(ContainerSpec {
-                    game_kind: crate::services::container::game_kind_for_challenge(
-                        challenge.challenge_type,
-                    ),
-                    image: legacy_image
-                        .clone()
-                        .expect("a legacy definition has an immutable launch image"),
-                    memory_limit: challenge.memory_limit.unwrap_or(64),
-                    cpu_count: challenge.cpu_count.unwrap_or(1),
-                    expose_port: challenge.expose_port.unwrap_or(80),
-                    publish_port: true,
-                    env: Vec::new(),
-                    flag: flag.clone(),
-                    ad_network: None,
-                    allow_egress: true,
-                    operation_id,
-                })
-                .await?
+            return Err(AppError::bad_request(
+                "test container launch requires workloadSpec; legacy single-container runtime is no longer supported",
+            ));
         }
     };
 

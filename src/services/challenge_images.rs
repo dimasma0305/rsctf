@@ -189,38 +189,6 @@ pub(crate) fn runtime_image(
     )
 }
 
-/// Resolve a legacy single-container image that will be scheduled on the
-/// trusted worker plane. Hybrid deployments deliberately use worker semantics
-/// here even though their local A&D/KotH backend remains Docker/Kubernetes.
-pub(crate) fn runtime_worker_image(
-    st: &SharedState,
-    challenge: &game_challenge::Model,
-) -> AppResult<String> {
-    if !st.containers.supports_worker_workloads() {
-        return runtime_image(st, challenge);
-    }
-    if challenge.build_status != ChallengeBuildStatus::Success {
-        return Err(AppError::bad_request(
-            "The challenge image has not completed a successful immutable build/pull.",
-        ));
-    }
-    let reference = challenge
-        .build_image_digest
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            AppError::bad_request(
-                "The successful legacy build has no immutable image digest; rebuild it before provisioning.",
-            )
-        })?;
-    validate_runtime_reference(
-        reference,
-        ContainerBackendKind::Worker,
-        st.config.runtime_role,
-        false,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

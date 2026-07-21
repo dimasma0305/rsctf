@@ -348,9 +348,9 @@ pub(super) async fn release_update_lock(lock: Option<PgAdvisoryLock>) -> AppResu
     Ok(())
 }
 
-/// Fields whose presence can change a legacy single-service launch or its
-/// ownership topology. Aggregate workloads retain their protocol identity, but
-/// use the same fence so switching between aggregate and legacy is ordered.
+/// Fields whose presence can change a workload definition or its ownership
+/// topology. Aggregate workloads retain their protocol identity, and this
+/// fence keeps definition updates ordered with running containers.
 pub(super) fn update_changes_runtime_definition(model: &super::ChallengeUpdateModel) -> bool {
     model.workload_spec.is_some()
         || model.is_enabled.is_some()

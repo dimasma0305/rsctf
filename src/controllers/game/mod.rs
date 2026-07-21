@@ -39,7 +39,6 @@ use crate::models::data::{
     game, game_challenge, game_event, game_instance, game_manager, game_notice, local_file,
     participation, submission, suspicion_event, team, team_member, user, user_participation,
 };
-use crate::services::container::ContainerSpec;
 use crate::utils::crypto_utils::ct_eq;
 use crate::utils::enums::{
     AnswerResult, ChallengeCategory, ChallengeReviewStatus, ChallengeType, ContainerStatus,
