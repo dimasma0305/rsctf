@@ -32,11 +32,100 @@ export function docker(args, opts = {}) {
   return spawnSync('docker', args, { encoding: 'utf8', ...opts });
 }
 
+function containerEnvVar(name) {
+  try {
+    const envList = JSON.parse(
+      execFileSync('docker', ['inspect', '-f', '{{json .Config.Env}}', name], { encoding: 'utf8' }).trim(),
+    );
+    return Array.isArray(envList) ? envList : [];
+  } catch {
+    return [];
+  }
+}
+
+function containerRole(name) {
+  const env = containerEnvVar(name);
+  for (const entry of env) {
+    const [key, value] = String(entry).split('=');
+    if (key === 'RSCTF_ROLE') return (value || '').toLowerCase();
+  }
+  return '';
+}
+
+function containerProject(name) {
+  try {
+    const value = execFileSync('docker', ['inspect', '-f', '{{index .Config.Labels "com.docker.compose.project"}}', name], {
+      encoding: 'utf8',
+    }).trim();
+    return value || '';
+  } catch {
+    return '';
+  }
+}
+
+function candidatesFromProject(project) {
+  if (!project) return [];
+  try {
+    const output = execFileSync(
+      'docker',
+      ['ps', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Names}}'],
+      { encoding: 'utf8' },
+    )
+      .trim()
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return output;
+  } catch {
+    return [];
+  }
+}
+
+function containerExists(name) {
+  try {
+    execFileSync('docker', ['inspect', name], { encoding: 'utf8' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveByocContainer() {
+  const candidates = [
+    process.env.RSCTF_BYOC_CONTAINER,
+    process.env.RSCTF_CONTROL_CONTAINER,
+    process.env.RSCTF_CONTROL,
+    RSCTF,
+  ].filter((value, index, all) => value && all.indexOf(value) === index);
+
+  for (const candidate of candidates) {
+    if (!containerExists(candidate)) continue;
+    if (containerRole(candidate) !== 'web') return candidate;
+  }
+
+  const project = containerProject(RSCTF);
+  const projectContainers = candidatesFromProject(project);
+  for (const candidate of projectContainers) {
+    if (!candidate || candidate === RSCTF) continue;
+    if (!containerExists(candidate)) continue;
+    if (containerRole(candidate) !== 'web') return candidate;
+  }
+
+  return candidates[0] || RSCTF;
+}
+
+const BYOC_CONTAINER = resolveByocContainer();
+
 /** rsctf container's IP on NET (for agents to dial ws://IP:8080). */
-export function rsctfIp() {
-  return execFileSync('docker', ['inspect', RSCTF, '-f', `{{(index .NetworkSettings.Networks "${NET}").IPAddress}}`], {
+export function rsctfIp(container = RSCTF) {
+  return execFileSync('docker', ['inspect', container, '-f', `{{(index .NetworkSettings.Networks "${NET}").IPAddress}}`], {
     encoding: 'utf8',
   }).trim();
+}
+
+/** rsctf container that owns stateful/BYOC routes (falls back to RSCTF). */
+export function byocRsctfIp() {
+  return rsctfIp(BYOC_CONTAINER);
 }
 
 /** One rsctf resource sample: { cpu: number%, mem: 'NNMiB' }. */

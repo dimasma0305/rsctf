@@ -73,6 +73,64 @@ function mustDocker(result, what) {
   return result;
 }
 
+function isIpLikeHost(hostname) {
+  if (typeof hostname !== 'string' || !hostname) return false;
+  if (
+    /^(\d{1,3})(?:\.(\d{1,3})){3}$/.test(hostname) &&
+    hostname
+      .split('.')
+      .every((octet) => Number(octet) >= 0 && Number(octet) <= 255)
+  ) return true;
+  return hostname.includes(':');
+}
+
+function normalizedIpTargetPort(protocol, port) {
+  const parsed = Number(port);
+  if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) {
+    return port;
+  }
+  if (protocol === 'http:') return '80';
+  if (protocol === 'https:') return '443';
+  return '';
+}
+
+function distributedEventTarget(rawTarget, proxyAlias, proxyIp) {
+  const parsed = new URL(rawTarget);
+  const hostname = parsed.hostname;
+  const isIpTarget = isIpLikeHost(hostname);
+  const requestedPort = parsed.port || '';
+  const fallbackPort =
+    isIpTarget && requestedPort === '8080'
+      ? (() => {
+          const configuredFallback = process.env.DISTRIBUTED_IP_PROXY_FALLBACK_PORT;
+          if (configuredFallback) {
+            const parsedFallback = Number(configuredFallback);
+            if (
+              Number.isSafeInteger(parsedFallback) &&
+              parsedFallback > 0 &&
+              parsedFallback <= 65535
+            ) {
+              return String(parsedFallback);
+            }
+            throw new Error(`DISTRIBUTED_IP_PROXY_FALLBACK_PORT must be 1-65535 (got ${configuredFallback})`);
+          }
+          return normalizedIpTargetPort(parsed.protocol, requestedPort);
+        })()
+      : requestedPort;
+  const port = fallbackPort ? `:${fallbackPort}` : '';
+  const baseTarget = `${parsed.protocol}//${hostname}${port}`.replace(/\/+$/, '');
+  if (!isIpTarget) {
+    return {
+      target: baseTarget,
+      addHost: `${hostname}:${proxyIp}`,
+    };
+  }
+  return {
+    target: `${parsed.protocol}//${proxyAlias}${port}`.replace(/\/+$/, ''),
+    addHost: `${proxyAlias}:${proxyIp}`,
+  };
+}
+
 function distinctPositiveIntegers(values, label) {
   if (
     !Array.isArray(values) ||
@@ -435,7 +493,7 @@ function broadCidrContains(address, candidate) {
 }
 
 async function downloadVpnConfig(gameId, userId, securityStamp, step) {
-  const baseUrl = process.env.VPN_CONFIG_TARGET || 'http://127.0.0.1:8080';
+  const baseUrl = process.env.VPN_CONFIG_TARGET || TARGET;
   for (let attempt = 0; attempt < 20; attempt++) {
     const response = await step(() =>
       api('GET', `/api/Game/${gameId}/Ad/Vpn/Config`, {
@@ -455,7 +513,7 @@ async function downloadVpnConfig(gameId, userId, securityStamp, step) {
 }
 
 async function rotateAdToken(gameId, userId, securityStamp, step) {
-  const baseUrl = process.env.VPN_CONFIG_TARGET || 'http://127.0.0.1:8080';
+  const baseUrl = process.env.VPN_CONFIG_TARGET || TARGET;
   for (let attempt = 0; attempt < 20; attempt++) {
     const response = await step(() =>
       api('POST', `/api/Game/${gameId}/Ad/Token`, {
@@ -481,7 +539,7 @@ async function rotateAdToken(gameId, userId, securityStamp, step) {
 }
 
 async function ensureAdToken(gameId, userId, securityStamp, token, step) {
-  const baseUrl = process.env.VPN_CONFIG_TARGET || 'http://127.0.0.1:8080';
+  const baseUrl = process.env.VPN_CONFIG_TARGET || TARGET;
   return ensureValidTeamToken({
     token,
     probe: (candidate) =>
@@ -567,7 +625,9 @@ export async function startVpnTeamClients({
     : null;
   const outputDirectory = await step(() => prepareEvidenceDirectory(evidenceDir, runBinding, teamCount));
   const eventTarget = process.env.TARGET || TARGET;
-  if (new URL(eventTarget).protocol !== 'https:') {
+  const allowInsecureDistributedTarget =
+    process.env.ALLOW_INSECURE_DISTRIBUTED_TARGET === '1';
+  if (!allowInsecureDistributedTarget && new URL(eventTarget).protocol !== 'https:') {
     throw new Error(`distributed team clients require an HTTPS TARGET (got ${eventTarget})`);
   }
 
@@ -579,6 +639,8 @@ export async function startVpnTeamClients({
     process.env.TRAEFIK_CONTAINER || (await step(() => containerForComposeService('traefik')));
   if (!traefik) throw new Error('could not discover the Traefik container');
   const proxyIp = await step(() => containerNetworkIp(traefik, 'traefik'));
+  const proxyAlias = `rsctf-load-proxy-${scope.runId}`;
+  const resolvedTarget = distributedEventTarget(eventTarget, proxyAlias, proxyIp);
   const rsctfEnvironment = await step(() =>
     mustDocker(
       docker(['inspect', RSCTF, '--format', '{{range .Config.Env}}{{println .}}{{end}}']),
@@ -691,7 +753,7 @@ export async function startVpnTeamClients({
               attachmentPath: null,
             }))
           : [],
-      target: eventTarget,
+      target: resolvedTarget.target,
       duration,
       thinkSeconds: profiles?.[index].thinkSeconds ?? Number(thinkSeconds),
       realisticCompetition,
@@ -768,7 +830,7 @@ export async function startVpnTeamClients({
           '64',
           ...dockerLabelArgs(teamClientLabels(scope, scope.participationIds[index], index)),
           '--add-host',
-          `${new URL(eventTarget).hostname}:${proxyIp}`,
+          resolvedTarget.addHost,
           '-v',
           `${configs[index]}:/config:ro`,
           '-v',

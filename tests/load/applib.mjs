@@ -11,6 +11,7 @@ import {
   docker,
   mintJwt,
   byocCapabilitiesForPids,
+  byocRsctfIp,
   rsctfIp,
   sleep,
   DEFAULT_BYOC_AGENT_IMAGE,
@@ -183,6 +184,25 @@ function isDeletionProtectedByEvidence(response) {
   return body.includes('cannot be permanently deleted') || body.includes('competition evidence');
 }
 
+function retryAfterSeconds(response) {
+  const retryAfter = response?.headers?.get?.("retry-after");
+  if (!retryAfter) return 0;
+  const numeric = Number(retryAfter);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+}
+
+async function deleteGameWithRetry(gid, { attempts = 6, jitterMs = 250 } = {}) {
+  let last;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    last = await deleteGame(gid);
+    if (last.status < 300) return last;
+    if (last.status !== 429) return last;
+    const backoff = 250 + retryAfterSeconds(last) * 1000 + attempt * jitterMs * 5;
+    await sleep(backoff);
+  }
+  return last;
+}
+
 async function exactLoadGameCleanup(gameId, title, runtimeIds = []) {
   const { deleteDisposableLoadGame } = await import('./admin-fixtures.mjs');
   return deleteDisposableLoadGame(gameId, title, { runtimeIds });
@@ -191,8 +211,9 @@ async function exactLoadGameCleanup(gameId, title, runtimeIds = []) {
 async function retryProtectedDeletion(gameId, response) {
   let last = response;
   for (let attempt = 0; attempt < 6; attempt += 1) {
-    await sleep(500 + attempt * 300);
-    last = await deleteGame(gameId);
+    const backoff = 500 + attempt * 300;
+    await sleep(backoff);
+    last = await deleteGameWithRetry(gameId, { attempts: 3 });
     if (last.status < 300) return last;
     if (!isDeletionProtectedByEvidence(last)) return last;
   }
@@ -607,7 +628,7 @@ export async function teardownNamespace(gameIds) {
   // namespace cleanup below is idempotent, then the public delete is retried and
   // verified instead of silently leaving an empty load-test game behind.
   for (const g of ids) {
-    let response = await deleteGame(g);
+    let response = await deleteGameWithRetry(g);
     if (response.status < 300) continue;
     if (response.status === 400 && isDeletionProtectedByEvidence(response)) {
       response = await retryProtectedDeletion(g, response);
@@ -640,7 +661,7 @@ export async function teardownNamespace(gameIds) {
     }
     const title = sql(`SELECT title FROM "Games" WHERE id=${g}`);
     if (!title) continue;
-    const response = await deleteGame(g);
+    const response = await deleteGameWithRetry(g);
     if (response.status < 300) continue;
     if (response.status === 400 && isDeletionProtectedByEvidence(response) && LOAD_GAME_TITLE_RE.test(title)) {
       removeManagedKothContainers(managedKothContainers);
@@ -1004,7 +1025,7 @@ export function startFleetForPids(gameId, cid, pids, svcAddr) {
     `UPDATE "AdTeamServices" SET host='',port=0,status=2 WHERE game_id=${gameId} AND challenge_id=${cid} ` +
       `AND participation_id IN (${capabilities.map(({ pid }) => pid).join(',')})`
   );
-  const ip = rsctfIp();
+  const ip = byocRsctfIp();
   try {
     const isolatedServices = startIsolatedFleetServices(capabilities, gameId);
     capabilities.forEach((capability, i) => {
@@ -1060,6 +1081,14 @@ export function tunnelsUpFor(gameId, cid, pids) {
 
 /** Wait until every requested participation owns a live tunnel endpoint. */
 export async function waitForFleetReady(gameId, cid, pids, timeoutSeconds = 40) {
+  const dynamicTimeout = Number(
+    process.env.BYOC_FLEET_READY_TIMEOUT_SECONDS || timeoutSeconds
+  );
+  if (!Number.isSafeInteger(dynamicTimeout) || dynamicTimeout < 0) {
+    throw new Error(
+      `invalid BYOC_FLEET_READY_TIMEOUT_SECONDS (got ${process.env.BYOC_FLEET_READY_TIMEOUT_SECONDS})`
+    );
+  }
   const gid = Number(gameId);
   const challengeId = Number(cid);
   const participationIds = Array.isArray(pids) ? pids.map(Number) : [];
@@ -1079,12 +1108,14 @@ export async function waitForFleetReady(gameId, cid, pids, timeoutSeconds = 40) 
     );
   }
   let up = 0;
-  for (let waited = 0; waited <= timeoutSeconds; waited++) {
+  for (let waited = 0; waited <= dynamicTimeout; waited++) {
     up = tunnelsUpFor(gid, challengeId, participationIds);
     if (up === participationIds.length) return up;
-    if (waited < timeoutSeconds) await sleep(1000);
+    if (waited < dynamicTimeout) await sleep(1000);
   }
-  throw new Error(`BYOC fleet did not become ready (${up}/${participationIds.length} tunnels)`);
+  throw new Error(
+    `BYOC fleet did not become ready (${up}/${participationIds.length} tunnels) after ${dynamicTimeout}s`
+  );
 }
 
 /** Exact delivery/checker evidence for the selected fleet's current round. */
@@ -1138,10 +1169,13 @@ export async function waitForFleetExactEvidence(
   pids,
   {
     afterRound = 0,
+    allowCurrentRoundEvidence = false,
     timeoutSeconds = Number(process.env.EPOCH_READY_TIMEOUT_SECONDS || 360),
   } = {}
 ) {
   const requiredServices = Array.isArray(pids) ? pids.length : 0;
+  const canReuseCurrentRound =
+    allowCurrentRoundEvidence && afterRound > 0;
   if (
     !Number.isSafeInteger(afterRound) ||
     afterRound < 0 ||
@@ -1154,7 +1188,9 @@ export async function waitForFleetExactEvidence(
   for (let waited = 0; waited <= timeoutSeconds; waited++) {
     snapshot = fleetExactReadiness(gameId, cid, pids);
     const ready =
-      snapshot.liveRound > afterRound &&
+      (canReuseCurrentRound
+        ? snapshot.liveRound >= afterRound
+        : snapshot.liveRound > afterRound) &&
       snapshot.requestedServices === requiredServices &&
       snapshot.plantedFlags === requiredServices &&
       snapshot.deliveredFlags === requiredServices &&

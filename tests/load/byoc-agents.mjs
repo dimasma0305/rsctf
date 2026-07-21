@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import {
   sql,
   docker,
-  rsctfIp,
+  byocRsctfIp,
   byocCapabilities,
   DEFAULT_BYOC_AGENT_IMAGE,
   GAME,
@@ -118,7 +118,7 @@ export function startSharedService() {
 export async function startAgents(capabilities, svcAddr) {
   activeCapabilities = validatedCapabilities(capabilities);
   sql(`UPDATE "AdTeamServices" SET host='',port=0,status=2 WHERE game_id=${GAME} AND ${fleetPredicate()}`);
-  const ip = rsctfIp();
+  const ip = byocRsctfIp();
   const limit = Math.min(40, activeCapabilities.length);
   const queue = activeCapabilities.map((capability, i) => ({ capability, i }));
   const errors = [];
@@ -184,22 +184,28 @@ export function tunnelsUp() {
 /** Await exactly N registered tunnels; partial or oversized fleets fail closed. */
 export async function waitTunnels(n, timeoutS = 40) {
   assertExactTunnelCount(activeCapabilities.length, n, 'requested BYOC tunnel count');
+  const dynamicTimeout = Number(process.env.BYOC_FLEET_READY_TIMEOUT_SECONDS || timeoutS);
+  if (!Number.isSafeInteger(dynamicTimeout) || dynamicTimeout < 0) {
+    throw new Error(
+      `invalid BYOC_FLEET_READY_TIMEOUT_SECONDS (got ${process.env.BYOC_FLEET_READY_TIMEOUT_SECONDS})`
+    );
+  }
   let observed = 0;
-  for (let t = 0; t <= timeoutS; t++) {
+  for (let t = 0; t <= dynamicTimeout; t++) {
     observed = tunnelsUp();
     if (observed === n) return t;
     if (observed > n) {
       throw new Error(`BYOC tunnel count exceeded the exact fleet: expected ${n}, observed ${observed}`);
     }
-    if (t === timeoutS) break;
+    if (t === dynamicTimeout) break;
     await sleep(1000);
   }
-  throw new Error(`timed out waiting for exactly ${n} BYOC tunnels; observed ${observed}`);
+  throw new Error(`timed out waiting for exactly ${n} BYOC tunnels after ${dynamicTimeout}s; observed ${observed}`);
 }
 
 /** "ip:port" for every selected live listener (reachable from the host via the bridge). */
 export function listeners() {
-  const ip = rsctfIp();
+  const ip = byocRsctfIp();
   const endpoints = (sql(
     `SELECT string_agg(port::text, ',' ORDER BY participation_id) FROM "AdTeamServices" ` +
       `WHERE game_id=${GAME} AND ${fleetPredicate()} AND port>0`

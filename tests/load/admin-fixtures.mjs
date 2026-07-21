@@ -801,7 +801,8 @@ function deleteExactDisposableGame(identity, { runtimeIds = [] } = {}) {
   const { id, exists } = requireExactDisposableGame(identity, 'disposable load fixture');
   if (!exists) return false;
   const ownedRuntimeIds = disposableGameRuntimeIds(id);
-  for (const containerId of new Set([...runtimeIds, ...ownedRuntimeIds])) {
+  const safeRuntimeIds = Array.isArray(runtimeIds) ? runtimeIds : [];
+  for (const containerId of new Set([...safeRuntimeIds, ...ownedRuntimeIds])) {
     if (containerId) assertDockerRuntimeAbsent(containerId);
   }
   assertCheckerDirectoryAbsent(id);

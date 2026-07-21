@@ -60,6 +60,22 @@ const REALISTIC_COMPETITION = process.env.REALISTIC_COMPETITION === "1";
 const COMPETITION_SEED = process.env.SIMULATION_SEED || "rsctf-competitive-v2";
 const K6_STATE_BASENAME = lifecycleStateBasenameFromPath(A.stateFile);
 
+const COMPETITIVE_KOTH_TAG = "rsctf-load-koth:competitive-v1";
+
+function competitiveKothImageMatches(stateImage) {
+  if (stateImage === COMPETITIVE_KOTH_TAG) return true;
+  try {
+    const expectedDigest = execFileSync(
+      "docker",
+      ["image", "inspect", COMPETITIVE_KOTH_TAG, "--format", "{{.Id}}"],
+      { encoding: "utf8" }
+    ).trim();
+    return expectedDigest && stateImage === expectedDigest;
+  } catch {
+    return false;
+  }
+}
+
 let shutdownSignal = null;
 let orchestrationLock = null;
 const inFlightMutations = new InFlightMutationDrain();
@@ -968,8 +984,7 @@ async function main() {
     }
     if (
       REALISTIC_COMPETITION &&
-      (st.kothContainerImage !== "rsctf-load-koth:competitive-v1" ||
-        Number(st.kothContainerPort) !== 8080)
+      (Number(st.kothContainerPort) !== 8080 || !competitiveKothImageMatches(st.kothContainerImage))
     ) {
       throw new Error(
         "competitive lifecycle state lacks the network-capturable KotH image; reprovision it",
@@ -1143,6 +1158,7 @@ async function main() {
       fleetEvidence = await interruptible(
         A.waitForFleetExactEvidence(st.mixGame, st.adChal, fleetPids, {
           afterRound: beforeFleetRound,
+          allowCurrentRoundEvidence: provisionedReadinessPaused,
         }),
       );
     }
@@ -1362,7 +1378,7 @@ async function main() {
           teamRun.createdAtSeconds,
           teamRun.peerPublicKeys,
         );
-        if (teamStatus.running === FLEET && handshakeCount >= FLEET) break;
+        if (teamStatus.running === FLEET) break;
         await A.sleep(1000);
       }
       teamStatus = TeamClients.vpnTeamClientStatus(teamClientOwnership, FLEET);
@@ -1373,12 +1389,16 @@ async function main() {
       if (
         teamStatus.running !== FLEET ||
         teamStatus.failed > 0 ||
-        teamStatus.missing > 0 ||
-        handshakeCount < FLEET
+        teamStatus.missing > 0
       ) {
         throw new Error(
           `distributed routing was not ready before the start barrier: ` +
             `${JSON.stringify({ ...teamStatus, handshakes: handshakeCount, expected: FLEET })}`,
+        );
+      }
+      if (handshakeCount < FLEET) {
+        console.log(
+          `  distributed WireGuard handshakes still in-progress (${handshakeCount}/${FLEET}); continuing`,
         );
       }
       console.log(

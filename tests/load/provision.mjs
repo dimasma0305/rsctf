@@ -32,6 +32,8 @@ const CONTAINER_IMAGE = process.env.CONTAINER_IMAGE || 'nginx:alpine';
 const EVENT_DURATION_SECONDS = positiveIntegerEnv('EVENT_DURATION_SECONDS', 7 * 86400);
 const REALISTIC_COMPETITION = process.env.REALISTIC_COMPETITION === '1';
 const COMPETITION_SEED = process.env.SIMULATION_SEED || 'rsctf-competitive-v2';
+const SKIP_JEO_CONTAINER_REBUILD = process.env.SKIP_JEO_CONTAINER_REBUILD === '1';
+const SKIP_KOTH_REBUILD = process.env.SKIP_KOTH_REBUILD === '1';
 const KOTH_CONTAINER_OVERRIDE = kothContainerOverride(process.env);
 const KOTH_CONFIG = Object.freeze({
   kothEpochTicks: 12,
@@ -367,9 +369,13 @@ async function main() {
     exposePort: 80,
     enableTrafficCapture: false,
   }));
-  await interruptibleMutation(
-    A.rebuildChallengeImage(jeoGame, containerChal, CONTAINER_IMAGE, 'Jeopardy container challenge')
-  );
+  if (!SKIP_JEO_CONTAINER_REBUILD) {
+    await interruptibleMutation(
+      A.rebuildChallengeImage(jeoGame, containerChal, CONTAINER_IMAGE, 'Jeopardy container challenge')
+    );
+  } else {
+    console.log('  skipping Jeopardy container challenge immutable rebuild (skip flag set)');
+  }
   const containerFlag = `flag{loadtest_${containerChal}}`;
   await interruptibleMutation(A.addFlags(jeoGame, containerChal, [containerFlag]));
   await interruptibleMutation(A.setChallenge(jeoGame, containerChal, { isEnabled: true }));
@@ -445,9 +451,13 @@ async function main() {
     adAllowEgress: false,
     adCheckerImage: kothCheckerDir,
   }));
-  await interruptibleMutation(
-    A.rebuildChallengeImage(mixGame, kothChal, kothImage, 'KotH challenge')
-  );
+  if (!SKIP_KOTH_REBUILD) {
+    await interruptibleMutation(
+      A.rebuildChallengeImage(mixGame, kothChal, kothImage, 'KotH challenge')
+    );
+  } else {
+    console.log('  skipping KotH challenge immutable rebuild (skip flag set)');
+  }
   await interruptibleMutation(A.addFlags(mixGame, kothChal, ['flag{koth_placeholder}']));
   await interruptibleMutation(A.setChallenge(mixGame, kothChal, { isEnabled: true }));
   console.log(`  A&D chal ${adChal} + KotH chal ${kothChal}`);

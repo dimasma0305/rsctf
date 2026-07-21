@@ -29,7 +29,7 @@ import {
   NET,
   PG,
   RSCTF,
-  rsctfIp,
+  byocRsctfIp,
   runK6,
   sleep,
   sql,
@@ -970,7 +970,7 @@ async function replaceFleetRelayWithExecEnabled(gameId, challengeId, capability,
   );
   dockerMust(['rm', '-f', relay.Id], 'stop non-exec BYOC relay');
   await waitFleetOffline(gameId, challengeId, capability.pid);
-  const endpoint = `ws://${rsctfIp()}:8080/api/Game/${gameId}/Ad/Byoc/Agent/` +
+  const endpoint = `ws://${byocRsctfIp()}:8080/api/Game/${gameId}/Ad/Byoc/Agent/` +
     `${capability.pid}/${challengeId}/${capability.token}`;
   const image = process.env.RSCTF_BYOC_AGENT_IMAGE || DEFAULT_BYOC_AGENT_IMAGE;
   dockerMust([
