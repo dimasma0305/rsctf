@@ -1,10 +1,9 @@
 # RSCTF trusted worker agent
 
-The worker agent connects a dedicated Linux Docker host or VM outbound to
-RSCTF. It does not open a public listener and does not expose the Docker API
-through the tunnel. Tagged releases publish static Linux AMD64 and ARM64
-archives. There is no native Windows artifact or runtime; use a dedicated Linux
-VM with outbound NAT when the physical host is a Windows PC.
+The worker agent connects a dedicated Docker host or VM outbound to RSCTF. It
+does not open a public listener and does not expose the Docker API through the
+tunnel. Tagged releases publish static Linux AMD64/ARM64 archives and a Windows
+AMD64 archive for native Windows-container hosts.
 
 The service account's access to the Docker socket (normally through the
 `docker` group) is host-root-equivalent. A compromised agent can control the
@@ -23,16 +22,24 @@ curl -fsSL https://ctf.example/install/worker | \
   sudo bash -s -- --server-url https://ctf.example
 ```
 
-Downloading or running the bootstrap grants no worker access without a valid
-15-minute enrollment token. The command requires a tagged release, Docker,
-systemd, `gh attestation verify`, and a dedicated Linux host or VM.
+On a native Windows-container host, use Administrator PowerShell:
 
-Beginning with tagged releases, the one-command installer downloads the latest
-release, verifies `SHA256SUMS` and GitHub build provenance, and installs the
-binary plus an enabled (but not started) systemd service. Install a current
-system-wide GitHub CLI with `gh attestation verify` support first. Download and
-verify the installer release asset before running it as root. The release's
-local attestation bundle means no GitHub login or token is needed on the worker:
+```powershell
+& ([scriptblock]::Create((Invoke-RestMethod https://ctf.example/install/worker.ps1))) -ServerUrl https://ctf.example
+```
+
+Downloading or running the bootstrap grants no worker access without a valid
+15-minute enrollment token. The command requires a tagged release, Docker, and
+a dedicated worker host. Linux additionally requires systemd. Neither one-line
+bootstrap requires the GitHub CLI. A fresh enrollment requires typing
+`DEDICATED` before the hidden token prompt; do not bypass this boundary on a
+daily-use computer or a machine containing unrelated secrets.
+
+The one-command bootstrap downloads the latest tagged release over HTTPS and
+verifies the worker archive against that release's `SHA256SUMS`. For an
+independent GitHub Actions provenance check, use the advanced flow below from a
+trusted admin workstation with a current `gh attestation verify`; no GitHub
+login or token is needed because the release carries its attestation bundle:
 
 ```bash
 (
@@ -166,10 +173,12 @@ The installed systemd unit supplies those production arguments. Check it with
 
 ## Manual verification and source build
 
-Tagged releases use the stable installer asset `install-worker.sh`, local
+Tagged releases use the stable installer assets `install-worker.sh` and
+`install-worker.ps1`, local
 attestation bundle `rsctf-worker-agent-attestation.json`, and archive names
 `rsctf-worker-agent-linux-amd64.tar.gz` and
-`rsctf-worker-agent-linux-arm64.tar.gz`. Verify a downloaded archive against
+`rsctf-worker-agent-linux-arm64.tar.gz`, plus
+`rsctf-worker-agent-windows-amd64.zip`. Verify a downloaded archive against
 the release's `SHA256SUMS` and its build provenance:
 
 ```bash
@@ -210,9 +219,9 @@ but cannot advertise more than the detected safe CPU, memory, or isolated
 workload-network capacity. Replica capacity is advertised separately from the
 smallest detected Docker network endpoint budget.
 Placement labels use repeated `--label key=value` arguments. Production also
-requires a quota-capable writable layer (for example
-`overlay2` on XFS with `pquota`); `--allow-unbounded-storage` is only for trusted
-disposable tests.
+requires a quota-capable writable layer (`overlay2` on XFS with `pquota` on
+Linux or `windowsfilter` on Windows); `--allow-unbounded-storage` is only for
+trusted disposable tests.
 
 The agent requires TLS 1.3 mutual authentication and distinct control/data ALPNs. A
 bounded control queue carries reconciliation commands. The data lane uses yamux and
@@ -232,8 +241,12 @@ Docker execution supports immutable registry digests and worker-local image IDs,
 multi-service workloads, stateless Jeopardy replicas, inventory/adoption,
 generation replacement, unpublished internal-network ports, cached TCP
 forwarding, and a fenced flag-write runtime primitive reserved for future
-competitive-mode integration. Docker internal networks block routed
-LAN/Internet egress but still expose the Linux bridge's host-side gateway; the
-mandatory acknowledgement means the agent must run on a dedicated, firewalled
-host or VM. Interactive exec, local image build, Kubernetes workload execution,
-and native Windows containers are not advertised.
+competitive-mode integration. Linux uses Docker internal networks. Windows uses
+a per-workload NAT network whose DNS resolver has no external upstream, plus
+HCN endpoint ACLs that allow only the workload subnet and deny every other
+outbound destination. The agent applies and reads back the ACL before starting
+a container and re-audits adopted endpoints after restart. A workload can still
+address its Docker host-side gateway, so the mandatory acknowledgement requires
+a dedicated, firewalled host or VM. Windows containers additionally use Hyper-V
+isolation. Interactive exec, local image build, and Kubernetes workload
+execution are not advertised.

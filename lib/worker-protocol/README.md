@@ -1,9 +1,8 @@
 # RSCTF worker protocol
 
 This crate is the runtime-independent wire contract between the RSCTF network owner
-and trusted workers. The shipped worker agent and execution backend support Linux
-Docker workers only. Windows enum/build fields remain protocol-future metadata; they
-do not indicate a usable Windows worker runtime. The crate intentionally contains no
+and trusted workers. The shipped worker supports Linux Docker Engine and native
+Windows Docker Engine in Windows-container mode. The crate intentionally contains no
 Docker, Kubernetes, database, or HTTP implementation.
 
 - TLS 1.3 with mutual authentication is required by the two endpoints using this

@@ -26,13 +26,18 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
                 .to_string(),
         ));
     }
-    if !(64 * 1024 * 1024..=16 * 1024 * 1024 * 1024).contains(&arguments.writable_layer_bytes)
+    let maximum_writable_layer_bytes = if cfg!(windows) {
+        256 * 1024 * 1024 * 1024
+    } else {
+        16 * 1024 * 1024 * 1024
+    };
+    if !(64 * 1024 * 1024..=maximum_writable_layer_bytes).contains(&arguments.writable_layer_bytes)
         || arguments.minimum_free_bytes < 1024 * 1024 * 1024
     {
-        return Err(ClientError::Configuration(
-            "writable-layer quota must be 64 MiB..16 GiB and minimum free space at least 1 GiB"
-                .to_string(),
-        ));
+        return Err(ClientError::Configuration(format!(
+            "writable-layer quota must be 64 MiB..{} GiB and minimum free space at least 1 GiB",
+            maximum_writable_layer_bytes / (1024 * 1024 * 1024)
+        )));
     }
     let state_dir = arguments
         .config

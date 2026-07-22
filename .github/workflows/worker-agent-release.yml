@@ -134,9 +134,56 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-windows:
+    name: Build Windows AMD64
+    needs: [verify]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: -Dwarnings -C target-feature=+crt-static
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Restore worker build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: agents/worker-agent -> target
+          shared-key: worker-agent-release-x86_64-pc-windows-msvc
+
+      - name: Build release executable
+        run: >-
+          cargo build --manifest-path agents/worker-agent/Cargo.toml
+          --release --target x86_64-pc-windows-msvc --locked
+
+      - name: Package release archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageRoot = 'package/rsctf-worker-agent'
+          New-Item -ItemType Directory -Path $packageRoot, 'dist' -Force | Out-Null
+          Copy-Item 'agents/worker-agent/target/x86_64-pc-windows-msvc/release/rsctf-worker-agent.exe' "$packageRoot/rsctf-worker-agent.exe"
+          Copy-Item 'LICENSE.txt', 'NOTICE' -Destination $packageRoot
+          Compress-Archive -Path $packageRoot -DestinationPath 'dist/rsctf-worker-agent-windows-amd64.zip' -CompressionLevel Optimal
+
+      - name: Upload Windows archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: worker-agent-windows-amd64
+          path: dist/rsctf-worker-agent-windows-amd64.zip
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish verified rsctf release assets
-    needs: [build-linux]
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 190
     permissions:
@@ -151,10 +198,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download Linux release archives
+      - name: Download worker release archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: worker-agent-linux-*
+          pattern: worker-agent-*
           path: dist
           merge-multiple: true
 
@@ -255,6 +302,7 @@ jobs:
       - name: Stage release installers
         run: |
           install -m 0755 scripts/install-worker.sh dist/install-worker.sh
+          install -m 0644 scripts/install-worker.ps1 dist/install-worker.ps1
           install -m 0755 scripts/install.sh dist/install.sh
 
       - name: Generate release checksums
@@ -263,7 +311,9 @@ jobs:
           sha256sum
           rsctf-worker-agent-linux-amd64.tar.gz
           rsctf-worker-agent-linux-arm64.tar.gz
+          rsctf-worker-agent-windows-amd64.zip
           install-worker.sh
+          install-worker.ps1
           install.sh
           rsctf-deployment-bundle.tar.gz
           > SHA256SUMS
@@ -290,7 +340,9 @@ jobs:
           for artifact in \
             rsctf-worker-agent-linux-amd64.tar.gz \
             rsctf-worker-agent-linux-arm64.tar.gz \
+            rsctf-worker-agent-windows-amd64.zip \
             install-worker.sh \
+            install-worker.ps1 \
             install.sh \
             rsctf-deployment-bundle.tar.gz; do
             gh attestation verify "dist/${artifact}" \
@@ -344,7 +396,9 @@ jobs:
           assets=(
             rsctf-worker-agent-linux-amd64.tar.gz
             rsctf-worker-agent-linux-arm64.tar.gz
+            rsctf-worker-agent-windows-amd64.zip
             install-worker.sh
+            install-worker.ps1
             install.sh
             rsctf-deployment-bundle.tar.gz
             SHA256SUMS
@@ -390,12 +444,14 @@ jobs:
           trap 'rm -f "$expected_assets" "$actual_assets"' EXIT
           printf '%s\n' \
             SHA256SUMS \
+            install-worker.ps1 \
             install-worker.sh \
             install.sh \
             rsctf-deployment-bundle.tar.gz \
             rsctf-worker-agent-attestation.json \
             rsctf-worker-agent-linux-amd64.tar.gz \
             rsctf-worker-agent-linux-arm64.tar.gz \
+            rsctf-worker-agent-windows-amd64.zip \
             > "$expected_assets"
 
           if ! gh api \

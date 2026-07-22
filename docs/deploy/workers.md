@@ -1,11 +1,10 @@
-# Private Linux workers
+# Private workers
 
 RSCTF workers run challenge containers on Docker hosts that cannot accept
 inbound Internet connections. The native agent opens long-lived, mutually
-authenticated TLS 1.3 connections to the singleton RSCTF network owner. A
-Windows PC behind NAT can host a dedicated Linux VM for the worker; neither the
-PC nor VM needs a public IP, port forward, VPN, or shared private network with
-the server.
+authenticated TLS 1.3 connections to the singleton RSCTF network owner. Linux
+and native Windows-container workers need only outbound connectivity; neither
+needs a public IP, port forward, VPN, or shared private network with the server.
 
 Workers are trusted infrastructure, not team-owned BYOC agents. The agent's
 Docker socket access (normally through membership in the host's `docker` group)
@@ -17,13 +16,18 @@ Internet.
 
 ## Supported runtime and topology
 
-The worker agent manages Linux containers on a Linux Docker Engine. Tagged
-releases publish static Linux binaries for AMD64 and ARM64; there is no native
-Windows artifact or runtime. Docker's Windows network backend cannot enforce
-the same internal-network boundary used by the Linux runtime. On a Windows PC,
-run the Linux agent in a dedicated Linux VM instead. The RSCTF server itself
+The worker agent manages Linux containers on Linux Docker Engine and Windows
+containers on native Windows Docker Engine. Tagged releases publish static
+Linux binaries for AMD64/ARM64 and a Windows AMD64 executable. Linux workloads
+use an internal bridge. Windows workloads use a per-workload NAT network with
+no external DNS upstream and a fail-closed HCN endpoint ACL: only the workload
+subnet is allowed, then all other outbound IPv4 destinations are denied. The
+agent reads the policy back before starting a container. Windows also requires
+`windowsfilter` writable-layer limits and Hyper-V container isolation. Docker
+Desktop Linux-container mode is not a native Windows runtime; use a dedicated
+Linux VM for that mode. The RSCTF server itself
 may run as a single binary under Docker Compose or Kubernetes, but the worker
-agent does **not** schedule Kubernetes Pods and does not use the Kubernetes API.
+agent does **not** schedule Kubernetes Pods or use the Kubernetes API.
 One agent represents one Docker daemon. If the agent is containerized, it must
 still run beside a Docker-capable host with deliberate access to that daemon;
 the native binary is the preferred installation.
@@ -342,10 +346,20 @@ curl -fsSL https://ctf.example/install/worker | \
   sudo bash -s -- --server-url https://ctf.example
 ```
 
-The public bootstrap installs an attested release, prompts for the separately
-displayed one-use token through `/dev/tty`, enrolls, and starts the service. It
-never accepts enrollment credentials in a URL, command argument, or environment
-variable. Running it without a valid 15-minute token cannot authorize a worker.
+For a native Windows-container host, open Administrator PowerShell:
+
+```powershell
+& ([scriptblock]::Create((Invoke-RestMethod https://ctf.example/install/worker.ps1))) -ServerUrl https://ctf.example
+```
+
+The public bootstraps use standard platform tools and verify the worker archive
+against the release SHA-256 checksum. They prompt privately for the separately
+displayed one-use token, enroll, and start the service/task. A fresh enrollment
+also requires typing `DEDICATED` to acknowledge the host boundary. Neither accepts
+enrollment credentials in a URL, command argument, or environment variable.
+Running one without a valid 15-minute token cannot authorize a new worker. A
+repeat run upgrades the binary and preserves an existing mTLS identity instead
+of overwriting it or consuming another token.
 
 Beginning with tagged releases, the
 [worker installer](https://github.com/dimasma0305/rsctf/blob/main/scripts/install-worker.sh)
@@ -430,9 +444,10 @@ VERSION=vX.Y.Z
 ```
 
 An untagged checkout does not have corresponding downloadable assets. Releases
-contain `install-worker.sh`, both Linux worker archives, the Docker deployment
-`install.sh` and `rsctf-deployment-bundle.tar.gz`, their shared `SHA256SUMS`,
-and `rsctf-worker-agent-attestation.json`. The exact asset set is checked before
+contain `install-worker.sh`, `install-worker.ps1`, the two Linux archives, the
+Windows AMD64 archive, the Docker deployment `install.sh` and
+`rsctf-deployment-bundle.tar.gz`, their shared `SHA256SUMS`, and
+`rsctf-worker-agent-attestation.json`. The exact asset set is checked before
 publication. The explicit
 `--skip-attestation` installer option falls back to co-hosted HTTPS and checksum
 verification; reserve that weaker mode for controlled recovery or development.
@@ -565,20 +580,25 @@ The source build changes only how the binary is obtained. Use the same
 dedicated account, state ownership, enrollment, and systemd configuration as a
 release installation.
 
-### Windows PC through a Linux VM
+### Native Windows worker
 
-V1 does not execute Windows containers. On a Windows PC, create a dedicated
-Linux VM (for example with Hyper-V), install Docker Engine and the Linux worker
-binary inside it, and use the Linux enrollment/run commands above. The VM may
-use ordinary NAT: it only needs outbound access to the HTTPS enrollment URL and
-worker TCP endpoint. Do not forward an inbound port to the VM.
+Open Administrator PowerShell on a dedicated Windows container host and run the
+command shown by `/admin/workers`. The installer verifies the Windows archive's
+SHA-256 checksum, protects program and identity directories with SYSTEM/admin-only
+ACLs, enrolls through a hidden token prompt, and installs an auto-restarting
+SYSTEM scheduled task. Docker must report `OSType=windows`; Linux-container mode
+is rejected. The Windows host needs outbound access to HTTPS and the worker TCP
+endpoint, with no inbound forwarding.
 
-Keep the VM dedicated to challenge workloads. Docker Desktop's hidden utility
-VM is not a supported installation target because the agent needs a durable
-service identity, state directory, Docker socket, storage quotas, and an
-operator-controlled host firewall. Native Windows support requires a separate
-HNS/VFP isolation backend and will not be advertised until that boundary has
-its own integration and adversarial tests.
+Windows worker archives use a 32 GiB writable-layer ceiling by default because
+Windows base images are substantially larger than Linux images. The runtime
+still enforces a free-space floor, bounded logs, memory/CPU limits, Hyper-V
+isolation, and HCN endpoint ACL verification before container start. A failed
+or unidentifiable ACL keeps a new container stopped and removes an unsafe
+adopted container so the server can recreate it. To schedule ordinary registry
+images to Windows workers, set
+`RSCTF_WORKER_DEFAULT_OS=windows` on the RSCTF control process; a worker-local
+image automatically targets its owning worker's reported platform.
 
 ## Capacity and placement labels
 
@@ -738,9 +758,9 @@ sessions and delayed commands cannot publish a route or delete a replacement.
 ## Current limitations
 
 - The agent runtime is Docker only. It does not manage Kubernetes Pods.
-- Native Windows-container execution is disabled and no Windows worker artifact
-  is released. A Windows PC can host the supported Linux agent in a dedicated
-  Linux VM with outbound-only NAT.
+- Windows workers are AMD64-only and require native Windows-container mode,
+  `windowsfilter`, Hyper-V isolation, and HCN v2 endpoint ACL support. The
+  runtime fails closed when it cannot apply and read back its deny-egress ACL.
 - The existing one-container compatibility path launches Jeopardy workloads.
   Remote-worker A&D/KotH networking is not enabled; configure
   `workerBackend.localBackend`/`RSCTF_WORKER_LOCAL_BACKEND` as Docker or
@@ -764,10 +784,11 @@ sessions and delayed commands cannot publish a route or delete a replacement.
 - Interactive container exec and automatic worker-certificate renewal are not
   implemented. Re-enroll deliberately during a maintenance window when an
   identity must be replaced.
-- Every workload receives a dedicated Docker `internal` network. The agent
-  reaches named service ports directly on that network; no host port is
-  published, and routed egress to the LAN or Internet is blocked. On Linux,
-  Docker still makes the bridge's host-side gateway addressable from a
-  container. The mandatory acknowledgement and dedicated firewalled host/VM are
-  therefore part of the security boundary. Registry images are pulled through
-  the host Docker daemon before containers start.
+- Every workload receives a dedicated Docker network. Linux marks it
+  `internal`; Windows combines a private NAT network with a verified HCN
+  deny-egress ACL and a resolver without external DNS forwarding. The agent
+  reaches named service ports directly on that network, and no host port is
+  published. Docker still makes the network's host-side gateway addressable
+  from a container. The mandatory acknowledgement and dedicated firewalled
+  host/VM are therefore part of the security boundary. Registry images are
+  pulled through the host Docker daemon before containers start.

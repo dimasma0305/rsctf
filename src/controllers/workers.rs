@@ -33,9 +33,12 @@ const MAX_ENROLLMENT_TOKEN_CHARS: usize = 1_024;
 const MAX_CSR_BYTES: usize = 64 * 1024;
 const WORKER_SECRET_CACHE_CONTROL: &str = "private, no-store";
 const WORKER_BOOTSTRAP: &str = include_str!("../../scripts/bootstrap-worker.sh");
+const WINDOWS_WORKER_BOOTSTRAP: &str = include_str!("../../scripts/bootstrap-worker.ps1");
 
 pub fn public_router() -> Router<SharedState> {
-    Router::new().route("/install/worker", get(worker_bootstrap))
+    Router::new()
+        .route("/install/worker", get(worker_bootstrap))
+        .route("/install/worker.ps1", get(windows_worker_bootstrap))
 }
 
 pub fn router() -> Router<SharedState> {
@@ -68,6 +71,16 @@ async fn worker_bootstrap() -> impl IntoResponse {
             (CACHE_CONTROL, "public, max-age=300"),
         ],
         WORKER_BOOTSTRAP,
+    )
+}
+
+async fn windows_worker_bootstrap() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (CACHE_CONTROL, "public, max-age=300"),
+        ],
+        WINDOWS_WORKER_BOOTSTRAP,
     )
 }
 
@@ -451,6 +464,11 @@ mod tests {
         assert!(WORKER_BOOTSTRAP.contains("--token-stdin"));
         assert!(!WORKER_BOOTSTRAP.contains("--token \"$ENROLLMENT_TOKEN\""));
         assert!(!WORKER_BOOTSTRAP.contains("?token="));
+        assert!(WINDOWS_WORKER_BOOTSTRAP
+            .contains("Read-Host 'One-time enrollment token' -AsSecureString"));
+        assert!(WINDOWS_WORKER_BOOTSTRAP.contains("--token-stdin"));
+        assert!(!WINDOWS_WORKER_BOOTSTRAP.contains("--token $plainToken"));
+        assert!(!WINDOWS_WORKER_BOOTSTRAP.contains("?token="));
     }
 
     #[tokio::test]
@@ -465,6 +483,20 @@ mod tests {
             .await
             .expect("bootstrap body");
         assert_eq!(body.as_ref(), WORKER_BOOTSTRAP.as_bytes());
+
+        let windows_response = windows_worker_bootstrap().await.into_response();
+        assert_eq!(
+            windows_response.headers()[CONTENT_TYPE],
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(
+            windows_response.headers()[CACHE_CONTROL],
+            "public, max-age=300"
+        );
+        let windows_body = axum::body::to_bytes(windows_response.into_body(), 1024 * 1024)
+            .await
+            .expect("Windows bootstrap body");
+        assert_eq!(windows_body.as_ref(), WINDOWS_WORKER_BOOTSTRAP.as_bytes());
     }
 
     #[test]

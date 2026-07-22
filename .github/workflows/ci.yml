@@ -179,9 +179,11 @@ jobs:
             docker_workload_lifecycle_when_image_is_configured -- --nocapture
 
   worker-plane-windows:
-    name: Worker compatibility (Windows; runtime disabled)
+    name: Worker compatibility (Windows)
     runs-on: windows-latest
     timeout-minutes: 25
+    env:
+      RUSTFLAGS: -Dwarnings -C target-feature=+crt-static
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -222,6 +224,31 @@ jobs:
 
       - name: Build release worker executable
         run: cargo build --manifest-path agents/worker-agent/Cargo.toml --release --target x86_64-pc-windows-msvc --locked
+
+      - name: Validate Windows installer scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($script in @('scripts/bootstrap-worker.ps1', 'scripts/install-worker.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error $_ }
+              throw "$script contains PowerShell syntax errors"
+            }
+          }
+          $bootstrap = Get-Content -LiteralPath 'scripts/bootstrap-worker.ps1' -Raw
+          if ($bootstrap -notmatch "Read-Host 'One-time enrollment token' -AsSecureString") { throw 'Windows token prompt is not hidden' }
+          if ($bootstrap -notmatch "Read-Host 'Type DEDICATED to continue'") { throw 'Windows bootstrap does not require the host-boundary acknowledgement' }
+          if ($bootstrap -notmatch '--token-stdin') { throw 'Windows enrollment does not use stdin' }
+          if ($bootstrap -match '--token\s+\$plainToken|\?token=') { throw 'Windows bootstrap exposes the enrollment token' }
+          $installer = Get-Content -LiteralPath 'scripts/install-worker.ps1' -Raw
+          if ($installer -notmatch 'New-ScheduledTaskTrigger -AtStartup') { throw 'Windows worker is not configured to start after reboot' }
+          if (-not $installer.Contains('$dockerDriver -ne ''windowsfilter''')) { throw 'Windows installer does not require enforceable storage quotas' }
+          if (-not $installer.Contains('$acl.SetAccessRuleProtection($true, $false)')) { throw 'Windows installer does not remove inherited ACLs' }
+          if ($installer -notmatch 'Protect-WorkerDirectory -Path \$stateDirectory -OwnerSid ''S-1-5-18''') { throw 'Windows state is not assigned to SYSTEM' }
+          if ($installer -match 'icacls\.exe') { throw 'Windows installer uses locale-sensitive ACL tooling' }
 
       - name: Smoke-test worker executable
         shell: pwsh
@@ -383,6 +410,8 @@ jobs:
           fi
           test -x scripts/install-worker.sh
           test -x scripts/bootstrap-worker.sh
+          test -f scripts/install-worker.ps1
+          test -f scripts/bootstrap-worker.ps1
           test "$(stat -c '%a' scripts/bootstrap-worker.sh)" = "755"
           test "$(stat -c '%a' scripts/install-worker.sh)" = "755"
           test "$(stat -c '%a' agents/worker-agent/rsctf-worker-agent.service)" = "644"

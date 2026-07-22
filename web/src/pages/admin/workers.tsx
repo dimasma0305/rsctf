@@ -22,7 +22,7 @@ import { FC, useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { showErrorMsg } from '@Utils/Shared'
-import { workerInstallCommand } from '@Utils/WorkerInstall'
+import { workerInstallCommand, workerWindowsInstallCommand } from '@Utils/WorkerInstall'
 import api, { ContentType } from '@Api'
 
 dayjs.extend(relativeTime)
@@ -88,8 +88,11 @@ const Workers: FC = () => {
     return () => window.clearInterval(timer)
   }, [loadWorkers])
 
-  const installCommand = useMemo(() => {
-    return workerInstallCommand(window.location.origin)
+  const installCommands = useMemo(() => {
+    return {
+      linux: workerInstallCommand(window.location.origin),
+      windows: workerWindowsInstallCommand(window.location.origin),
+    }
   }, [])
 
   const createWorker = async () => {
@@ -270,11 +273,15 @@ const Workers: FC = () => {
       >
         <Stack gap="md">
           <Text size="sm">
-            Run this on a dedicated Linux host or Linux VM. It installs the verified release and privately prompts for
-            the token below.
+            Run one command on a dedicated Linux or Windows-container host. It verifies the release and privately
+            prompts for a dedicated-host acknowledgement and the token below. Do not use a daily-use computer or a
+            machine containing unrelated secrets.
           </Text>
-          <Code block>{installCommand}</Code>
-          <CopyButton value={installCommand} timeout={1500}>
+          <Text size="sm" fw={500}>
+            Linux
+          </Text>
+          <Code block>{installCommands.linux}</Code>
+          <CopyButton value={installCommands.linux} timeout={1500}>
             {({ copy }) => (
               <Button
                 variant="light"
@@ -285,6 +292,25 @@ const Workers: FC = () => {
                 }}
               >
                 Copy Linux command
+              </Button>
+            )}
+          </CopyButton>
+
+          <Text size="sm" fw={500}>
+            Windows (Administrator PowerShell)
+          </Text>
+          <Code block>{installCommands.windows}</Code>
+          <CopyButton value={installCommands.windows} timeout={1500}>
+            {({ copy }) => (
+              <Button
+                variant="light"
+                leftSection={<Icon path={mdiContentCopy} size={0.8} />}
+                onClick={() => {
+                  copy()
+                  copied('Windows install command copied')
+                }}
+              >
+                Copy Windows command
               </Button>
             )}
           </CopyButton>
@@ -310,7 +336,8 @@ const Workers: FC = () => {
           </CopyButton>
           <Text size="xs" c="dimmed">
             The token is shown once, expires after 15 minutes, and is consumed by the first successful enrollment.
-            Windows PCs must run this command inside a dedicated Linux VM; native Windows containers remain disabled.
+            Native Windows workers require Docker in Windows-container mode. Docker Desktop Linux-container mode must
+            use the Linux command inside a dedicated Linux VM.
           </Text>
         </Stack>
       </Modal>

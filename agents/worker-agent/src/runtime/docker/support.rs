@@ -17,6 +17,9 @@ use uuid::Uuid;
 
 use crate::runtime::RuntimeError;
 
+use super::windows_acl::{
+    workload_network_driver, WINDOWS_DNS_SERVERS_OPTION, WINDOWS_HNS_ID_OPTION,
+};
 use super::{
     LABEL_ASSIGNMENT, LABEL_GENERATION, LABEL_MANAGED, LABEL_REPLICA, LABEL_SERVICE,
     LABEL_SPEC_HASH, LABEL_WORKER, LABEL_WORKLOAD,
@@ -28,7 +31,6 @@ const DAEMON_OWNER_VOLUME: &str = "rsctf-worker-owner";
 const LABEL_DAEMON_OWNER: &str = "io.rsctf.worker.daemon-owner";
 
 /// Atomically reserve one Docker daemon for one durable worker identity.
-///
 /// Docker serializes creation of a fixed volume name. Inspecting the durable
 /// label after create-or-return closes the empty-daemon race between two fresh
 /// agents without consuming an address-pool subnet.
@@ -143,7 +145,7 @@ pub(super) fn workload_replica_capacity(max_network_endpoints: usize) -> u16 {
 
 pub(super) fn storage_quota_supported(info: &SystemInfo) -> bool {
     match info.driver.as_deref() {
-        Some("btrfs" | "zfs") => true,
+        Some("btrfs" | "zfs" | "windowsfilter") => true,
         Some("overlay2") => info
             .driver_status
             .as_ref()
@@ -309,10 +311,18 @@ pub(super) fn validate_workload_network(
     let workload = fence.workload_id.to_string();
     let assignment = fence.assignment_id.to_string();
     let generation = fence.generation.to_string();
-    let expected_driver = if operating_system == OperatingSystem::Windows {
-        "nat"
-    } else {
-        "bridge"
+    let expected_driver = workload_network_driver(operating_system);
+    let network_is_isolated = match operating_system {
+        OperatingSystem::Linux => network.internal == Some(true),
+        OperatingSystem::Windows => {
+            network.internal != Some(true)
+                && network.options.as_ref().is_some_and(|options| {
+                    options.get(WINDOWS_DNS_SERVERS_OPTION).map(String::as_str) == Some("127.0.0.1")
+                        && options
+                            .get(WINDOWS_HNS_ID_OPTION)
+                            .is_some_and(|value| Uuid::parse_str(value).is_ok())
+                })
+        }
     };
     let valid = label(labels, LABEL_MANAGED) == Some("true")
         && label(labels, LABEL_WORKER) == Some(worker.as_str())
@@ -321,7 +331,7 @@ pub(super) fn validate_workload_network(
         && label(labels, LABEL_GENERATION) == Some(generation.as_str())
         && label(labels, LABEL_SPEC_HASH) == Some(spec_hash)
         && network.driver.as_deref() == Some(expected_driver)
-        && network.internal == Some(true)
+        && network_is_isolated
         && network.attachable != Some(true)
         && network.ingress != Some(true)
         && network.enable_ipv6 != Some(true)
@@ -373,7 +383,7 @@ fn valid_ipv4_ipam(network: &Network) -> bool {
     })
 }
 
-fn parse_ipv4_cidr(value: &str) -> Option<(u32, u32)> {
+pub(super) fn parse_ipv4_cidr(value: &str) -> Option<(u32, u32)> {
     let (address, prefix) = value.split_once('/')?;
     let address = u32::from(address.parse::<std::net::Ipv4Addr>().ok()?);
     let prefix = prefix.parse::<u32>().ok()?;
@@ -449,9 +459,10 @@ pub(super) fn workload_host_config(
     let memory_limit = memory_bytes.min(i64::MAX as u64) as i64;
     HostConfig {
         memory: Some(memory_limit),
-        // Docker otherwise permits additional swap beyond the reservation,
-        // invalidating scheduler accounting under memory pressure.
-        memory_swap: Some(memory_limit),
+        // Linux Docker otherwise permits additional swap beyond the
+        // reservation, invalidating scheduler accounting under memory pressure.
+        // Windows enforces the memory cap through HCS and rejects MemorySwap.
+        memory_swap: (operating_system == OperatingSystem::Linux).then_some(memory_limit),
         nano_cpus: Some(i64::from(cpu_millis) * 1_000_000),
         pids_limit: (operating_system == OperatingSystem::Linux).then_some(512),
         log_config: Some(bounded_log_config()),
@@ -681,6 +692,15 @@ mod tests {
     }
 
     #[test]
+    fn windowsfilter_supports_per_container_writable_layer_limits() {
+        let info = SystemInfo {
+            driver: Some("windowsfilter".to_string()),
+            ..Default::default()
+        };
+        assert!(storage_quota_supported(&info));
+    }
+
+    #[test]
     fn linux_workloads_replace_defaults_with_only_bind_service() {
         let config = workload_host_config(
             OperatingSystem::Linux,
@@ -692,6 +712,7 @@ mod tests {
 
         assert_eq!(config.cap_drop, Some(vec!["ALL".to_string()]));
         assert_eq!(config.cap_add, Some(vec!["NET_BIND_SERVICE".to_string()]));
+        assert_eq!(config.memory_swap, config.memory);
         assert_eq!(
             config.security_opt,
             Some(vec!["no-new-privileges:true".to_string()])
@@ -711,6 +732,12 @@ mod tests {
         assert_eq!(config.cap_drop, None);
         assert_eq!(config.cap_add, None);
         assert_eq!(config.security_opt, None);
+        assert_eq!(config.memory_swap, None);
+        assert_eq!(config.isolation, Some(HostConfigIsolationEnum::HYPERV));
+        assert_eq!(
+            config.storage_opt,
+            Some(HashMap::from([("size".to_string(), "64M".to_string())]))
+        );
     }
 
     #[test]
@@ -858,6 +885,57 @@ mod tests {
             OperatingSystem::Linux,
         )
         .is_err());
+
+        let windows_network = Network {
+            driver: Some("nat".into()),
+            enable_ipv6: Some(false),
+            internal: Some(false),
+            attachable: Some(false),
+            ingress: Some(false),
+            ipam: Some(Ipam {
+                driver: Some("default".into()),
+                config: Some(vec![IpamConfig {
+                    subnet: Some("172.31.1.0/24".into()),
+                    gateway: Some("172.31.1.1".into()),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            labels: Some(base_labels(worker_id, fence, "aabb")),
+            options: Some(HashMap::from([
+                (
+                    WINDOWS_DNS_SERVERS_OPTION.to_string(),
+                    "127.0.0.1".to_string(),
+                ),
+                (
+                    WINDOWS_HNS_ID_OPTION.to_string(),
+                    Uuid::new_v4().to_string(),
+                ),
+            ])),
+            ..Default::default()
+        };
+        assert!(validate_workload_network(
+            &windows_network,
+            worker_id,
+            fence,
+            "aabb",
+            OperatingSystem::Windows,
+        )
+        .is_ok());
+
+        let mut windows_with_external_dns = windows_network;
+        windows_with_external_dns.options.as_mut().unwrap().insert(
+            WINDOWS_DNS_SERVERS_OPTION.to_string(),
+            "8.8.8.8".to_string(),
+        );
+        assert!(validate_workload_network(
+            &windows_with_external_dns,
+            worker_id,
+            fence,
+            "aabb",
+            OperatingSystem::Windows,
+        )
+        .is_err());
     }
 
     #[test]
@@ -873,6 +951,21 @@ mod tests {
                 operating_system: OperatingSystem::Linux,
                 architecture: "amd64".to_string(),
                 windows_build: None,
+            }
+        );
+
+        let windows = SystemInfo {
+            os_type: Some("windows".to_string()),
+            architecture: Some("x86_64".to_string()),
+            os_version: Some("10.0.20348".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            daemon_platform(&windows).unwrap(),
+            Platform {
+                operating_system: OperatingSystem::Windows,
+                architecture: "amd64".to_string(),
+                windows_build: windows.os_version,
             }
         );
     }

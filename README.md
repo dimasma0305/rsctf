@@ -80,48 +80,28 @@ The generic deployment defaults to platform-only mode. Dynamic Docker challenges
 
 ## Trusted workers
 
-Dedicated Linux Docker hosts can connect outbound to RSCTF without a public IP
-or inbound port. Beginning with tagged releases, configure the server worker
-plane, install a current system-wide GitHub CLI with attestation support, then
-download and verify the release installer before running it as root. No GitHub
-login or token is required on the worker:
+Dedicated Linux and native Windows-container Docker hosts can connect outbound
+to RSCTF without a public IP or inbound port. After configuring the server
+worker plane, use the command shown in `/admin/workers`. The bootstrap verifies
+the release checksum and privately prompts for the one-use token; no GitHub CLI,
+login, or token in the command is required:
 
 ```bash
-(
-  set -euo pipefail
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
-  curl_args=(--disable --fail --silent --show-error --location \
-    --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 \
-    --max-time 300 --retry 5 --retry-all-errors --retry-max-time 300 \
-    --speed-limit 1024 --speed-time 30)
-  version="$(curl "${curl_args[@]}" --max-filesize 1048576 \
-    -o /dev/null -w '%{url_effective}' \
-    https://github.com/dimasma0305/rsctf/releases/latest)"
-  version="${version##*/}"
-  [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-  base="https://github.com/dimasma0305/rsctf/releases/download/${version}"
-  curl "${curl_args[@]}" --max-filesize 1048576 \
-    -o "$tmp/install-worker.sh" "$base/install-worker.sh"
-  curl "${curl_args[@]}" --max-filesize 16777216 \
-    -o "$tmp/attestation.json" \
-    "$base/rsctf-worker-agent-attestation.json"
-  gh attestation verify "$tmp/install-worker.sh" \
-    --bundle "$tmp/attestation.json" \
-    --hostname github.com \
-    --repo dimasma0305/rsctf \
-    --signer-workflow dimasma0305/rsctf/.github/workflows/worker-agent-release.yml \
-    --source-ref "refs/tags/$version" \
-    --deny-self-hosted-runners
-  sudo bash "$tmp/install-worker.sh" --version "$version"
-)
+curl -fsSL https://ctf.example/install/worker | sudo bash -s -- --server-url https://ctf.example
 ```
 
-Tagged releases publish checksum-verified Linux AMD64 and ARM64 archives on
-[GitHub Releases](https://github.com/dimasma0305/rsctf/releases). There is no
-native Windows worker; a Windows PC can host the Linux agent in a dedicated VM
-using outbound NAT. See the [trusted-worker deployment guide](docs/deploy/workers.md)
-for server setup, enrollment, provenance verification, and source builds.
+```powershell
+& ([scriptblock]::Create((Invoke-RestMethod https://ctf.example/install/worker.ps1))) -ServerUrl https://ctf.example
+```
+
+Tagged releases publish checksum-verified Linux AMD64/ARM64 archives and a
+Windows AMD64 archive on
+[GitHub Releases](https://github.com/dimasma0305/rsctf/releases). The admin page
+supplies one copyable command for Linux and one for Administrator PowerShell;
+both require a dedicated-host acknowledgement and prompt for the one-use token
+without putting it in history or process arguments. See the
+[trusted-worker deployment guide](docs/deploy/workers.md) for
+server setup, enrollment, provenance verification, and source builds.
 
 ## Repository layout
 
@@ -133,6 +113,7 @@ deploy/              Generic image-based Docker deployment
 charts/rsctf/        Kubernetes Helm chart
 scripts/install.sh          Interactive installation wizard
 scripts/install-worker.sh   Linux worker-agent installer
+scripts/install-worker.ps1  Windows worker-agent installer
 .github/workflows/   CI, docs deployment, and image publishing
 ```
 

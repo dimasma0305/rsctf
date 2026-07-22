@@ -161,12 +161,17 @@ $account = $env:RSCTF_ACL_ACCOUNT
 if ([string]::IsNullOrWhiteSpace($account)) {
   $account = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 }
-$accountSid = (New-Object System.Security.Principal.NTAccount($account)).Translate([System.Security.Principal.SecurityIdentifier])
+if ($account -match '^S-1-[0-9-]+$') {
+  $accountSid = New-Object System.Security.Principal.SecurityIdentifier($account)
+} else {
+  $accountSid = (New-Object System.Security.Principal.NTAccount($account)).Translate([System.Security.Principal.SecurityIdentifier])
+}
 $systemSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
 $adminSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
 if ($env:RSCTF_ACL_RESET -eq '1') {
   $acl = New-Object System.Security.AccessControl.DirectorySecurity
   $acl.SetAccessRuleProtection($true, $false)
+  $acl.SetOwner($accountSid)
   $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
   foreach ($sid in @($accountSid, $systemSid, $adminSid)) {
     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow')
@@ -176,6 +181,7 @@ if ($env:RSCTF_ACL_RESET -eq '1') {
 }
 $check = [System.IO.Directory]::GetAccessControl($path)
 if (-not $check.AreAccessRulesProtected) { throw 'state directory still inherits ACLs' }
+if ($check.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $accountSid.Value) { throw 'state directory has an unexpected owner' }
 $allowed = @($accountSid.Value, $systemSid.Value, $adminSid.Value)
 $present = @{}
 foreach ($rule in $check.Access) {
@@ -188,6 +194,17 @@ foreach ($sid in $allowed) {
   if (-not $present.ContainsKey($sid)) { throw "required ACL principal $sid is missing" }
 }
 "#;
+
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let metadata = tokio::fs::symlink_metadata(path).await?;
+    if !metadata.file_type().is_dir()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(permission_denied(
+            "state path must be a real directory, not a reparse point",
+        ));
+    }
 
     let path = path.to_owned();
     let account = windows_service_account.unwrap_or_default().to_string();
@@ -219,14 +236,61 @@ foreach ($sid in $allowed) {
 
 #[cfg(windows)]
 async fn verify_platform_file(path: &Path) -> Result<(), SecurityError> {
+    const SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$path = $env:RSCTF_ACL_PATH
+$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$systemSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
+$adminSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+$allowed = @($currentSid.Value, $systemSid.Value, $adminSid.Value) | Select-Object -Unique
+$present = @{}
+$acl = [System.IO.File]::GetAccessControl($path)
+foreach ($rule in $acl.Access) {
+  if ($rule.AccessControlType -ne 'Allow') { continue }
+  $sid = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+  if ($allowed -notcontains $sid) { throw "unexpected file ACL principal $sid" }
+  if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq [System.Security.AccessControl.FileSystemRights]::FullControl) {
+    $present[$sid] = $true
+  }
+}
+foreach ($sid in $allowed) {
+  if (-not $present.ContainsKey($sid)) { throw "required full-control file ACL for $sid is missing" }
+}
+"#;
+
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
     let metadata = tokio::fs::symlink_metadata(path).await?;
-    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+    if !metadata.file_type().is_file()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
         return Err(permission_denied(
             "worker state file must be a regular file, not a reparse point",
         ));
     }
-    // The protected parent directory ACL is the authority on Windows. Files
-    // created inside inherit only the service account, SYSTEM, and Administrators.
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let status = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                SCRIPT,
+            ])
+            .env("RSCTF_ACL_PATH", &path)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("PowerShell file ACL verification exited with {status}"),
+            ))
+        }
+    })
+    .await??;
     Ok(())
 }
 
@@ -262,6 +326,9 @@ mod windows_tests {
         let path = std::env::temp_dir().join(format!("rsctf-worker-acl-{}", Uuid::new_v4()));
         prepare_state_dir(&path, None, None).await.unwrap();
         verify_state_dir(&path).await.unwrap();
+        let state_file = path.join("worker.json");
+        tokio::fs::write(&state_file, b"{}").await.unwrap();
+        verify_state_file(&state_file).await.unwrap();
         let _ = tokio::fs::remove_dir_all(path).await;
     }
 }

@@ -29,9 +29,11 @@ mod endpoints;
 mod inventory;
 mod support;
 mod tombstones;
+mod windows_acl;
 use endpoints::{EndpointCacheKey, EndpointTarget};
 use support::*;
 use tombstones::TombstoneStore;
+use windows_acl::{workload_network_driver, workload_network_options};
 
 #[cfg(test)]
 mod integration_tests;
@@ -94,12 +96,7 @@ impl DockerRuntime {
             .await
             .map_err(|error| docker_error("read Docker daemon information", error))?;
         let platform = daemon_platform(&info)?;
-        if platform.operating_system == OperatingSystem::Windows {
-            return Err(RuntimeError::unsupported(
-                "native Windows Docker workload isolation is not supported yet; run the Linux agent in a dedicated Linux VM instead",
-            ));
-        }
-        if cfg!(windows) {
+        if cfg!(windows) && platform.operating_system == OperatingSystem::Linux {
             return Err(RuntimeError::unsupported(
                 "a Windows agent cannot safely proxy a Linux Docker daemon's private bridge addresses; run the Linux agent inside the Docker VM",
             ));
@@ -114,7 +111,7 @@ impl DockerRuntime {
             None
         } else {
             return Err(RuntimeError::unsupported(
-                "Docker storage driver cannot enforce per-container writable-layer quotas; configure overlay2 on XFS with project quotas or use --allow-unbounded-storage only for trusted development fixtures",
+                "Docker storage driver cannot enforce per-container writable-layer quotas; configure overlay2 on XFS with project quotas or native Windows windowsfilter, or use --allow-unbounded-storage only for trusted development fixtures",
             ));
         };
         let docker_root = info
@@ -137,7 +134,7 @@ impl DockerRuntime {
             version: info.server_version.clone(),
             endpoint_kind: Some(endpoint_kind),
         };
-        Ok(Self {
+        let runtime = Self {
             docker,
             worker_id,
             descriptor,
@@ -152,7 +149,9 @@ impl DockerRuntime {
             ready_containers: DashSet::new(),
             flag_sequences: DashMap::new(),
             tombstones: TombstoneStore::new(state_dir),
-        })
+        };
+        runtime.audit_windows_endpoints().await?;
+        Ok(runtime)
     }
 
     async fn ensure_image(&self, image: &ImageIdentity) -> Result<String, RuntimeError> {
@@ -235,15 +234,12 @@ impl DockerRuntime {
             .create_network(CreateNetworkOptions {
                 name: name.clone(),
                 check_duplicate: true,
-                driver: if operating_system == OperatingSystem::Windows {
-                    "nat".to_string()
-                } else {
-                    "bridge".to_string()
-                },
+                driver: workload_network_driver(operating_system).to_string(),
                 // The agent joins no external network and dials the container's
                 // private address directly. This keeps challenge egress denied
                 // without publishing host ports or mutating the host firewall.
-                internal: true,
+                internal: operating_system == OperatingSystem::Linux,
+                options: workload_network_options(operating_system),
                 labels: base_labels(self.worker_id, fence, spec_hash),
                 ..Default::default()
             })
@@ -434,10 +430,18 @@ impl DockerRuntime {
             )
             .await
             .map_err(|error| docker_error("create workload container", error))?;
+        if operating_system == OperatingSystem::Windows {
+            self.secure_new_windows_container(&created.id, network)
+                .await?;
+        }
         self.docker
             .start_container(&created.id, None::<StartContainerOptions<String>>)
             .await
             .map_err(|error| docker_error("start workload container", error))?;
+        if operating_system == OperatingSystem::Windows {
+            self.verify_started_windows_container(&created.id, network)
+                .await?;
+        }
         Ok(created.id)
     }
 

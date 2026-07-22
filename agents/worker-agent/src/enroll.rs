@@ -12,18 +12,31 @@ const ENROLLMENT_PATH: &str = "/api/workers/enroll";
 
 pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
     let server_url = enrollment_url(&arguments.server_url, arguments.allow_insecure_enrollment)?;
-    let token = read_token(&arguments).await?;
-    if token.expose_secret().is_empty() {
-        return Err(EnrollmentError::InvalidResponse(
-            "enrollment token must not be empty".to_string(),
-        ));
-    }
     crate::security::prepare_state_dir(
         &arguments.state_dir,
         arguments.windows_service_account.as_deref(),
         arguments.unix_service_uid,
     )
     .await?;
+
+    let key_path = arguments.state_dir.join("worker-key.pem");
+    let cert_path = arguments.state_dir.join("worker-cert.pem");
+    let ca_path = arguments.state_dir.join("worker-ca.pem");
+    let config_path = arguments.state_dir.join("worker.json");
+    let identity_paths = [
+        key_path.as_path(),
+        cert_path.as_path(),
+        ca_path.as_path(),
+        config_path.as_path(),
+    ];
+    require_new_identity(&identity_paths).await?;
+
+    let token = read_token(&arguments).await?;
+    if token.expose_secret().is_empty() {
+        return Err(EnrollmentError::InvalidResponse(
+            "enrollment token must not be empty".to_string(),
+        ));
+    }
 
     let (private_key, csr_pem) = generate_csr()?;
     let request = EnrollmentRequest {
@@ -42,15 +55,6 @@ pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
         .json::<EnrollmentResponse>()
         .await?;
     validate_response(&response)?;
-
-    let key_path = arguments.state_dir.join("worker-key.pem");
-    let cert_path = arguments.state_dir.join("worker-cert.pem");
-    let ca_path = arguments.state_dir.join("worker-ca.pem");
-    let config_path = arguments.state_dir.join("worker.json");
-
-    write_private_key(&key_path, private_key.as_bytes()).await?;
-    write_new_file(&cert_path, response.certificate_pem.as_bytes()).await?;
-    write_new_file(&ca_path, response.ca_pem.as_bytes()).await?;
     let config = AgentConfig {
         worker_id: response.worker_id,
         control_address: response.control_address,
@@ -63,15 +67,75 @@ pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
         labels: Default::default(),
     };
     let config_json = serde_json::to_vec_pretty(&config)?;
-    write_new_file(&config_path, &config_json).await?;
-    for path in [&key_path, &cert_path, &ca_path, &config_path] {
-        crate::security::transfer_state_file(path, arguments.unix_service_uid)?;
-    }
+    let public_files = [
+        (&cert_path as &Path, response.certificate_pem.as_bytes()),
+        (&ca_path as &Path, response.ca_pem.as_bytes()),
+        (&config_path as &Path, config_json.as_slice()),
+    ];
+    persist_identity(
+        &key_path,
+        private_key.as_bytes(),
+        &public_files,
+        arguments.unix_service_uid,
+    )
+    .await?;
     tracing::info!(
         worker_id = %config.worker_id,
         config = %config_path.display(),
         "worker enrollment completed"
     );
+    Ok(())
+}
+
+async fn require_new_identity(paths: &[&Path]) -> Result<(), EnrollmentError> {
+    for path in paths {
+        match tokio::fs::symlink_metadata(path).await {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => {
+                return Err(EnrollmentError::InvalidResponse(format!(
+                    "worker identity already exists at {}; revoke it and remove the state deliberately before re-enrolling",
+                    path.display()
+                )))
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn persist_identity(
+    key_path: &Path,
+    private_key: &[u8],
+    public_files: &[(&Path, &[u8])],
+    unix_service_uid: Option<u32>,
+) -> Result<(), EnrollmentError> {
+    let mut created = Vec::with_capacity(4);
+    let result = async {
+        write_private_key(key_path, private_key).await?;
+        created.push(key_path);
+        crate::security::transfer_state_file(key_path, unix_service_uid)?;
+
+        for &(path, contents) in public_files {
+            write_new_file(path, contents).await?;
+            created.push(path);
+            crate::security::transfer_state_file(path, unix_service_uid)?;
+        }
+        Ok::<(), EnrollmentError>(())
+    }
+    .await;
+
+    if let Err(error) = result {
+        let original = error.to_string();
+        for path in created.into_iter().rev() {
+            if let Err(cleanup_error) = tokio::fs::remove_file(path).await {
+                return Err(EnrollmentError::Persistence(format!(
+                    "{original}; additionally could not remove partial state {}: {cleanup_error}",
+                    path.display()
+                )));
+            }
+        }
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -162,23 +226,28 @@ async fn write_new_file(path: &Path, contents: &[u8]) -> Result<(), std::io::Err
         options.mode(0o600);
     }
     let mut file = options.open(path).await?;
-    tokio::io::AsyncWriteExt::write_all(&mut file, contents).await?;
-    tokio::io::AsyncWriteExt::flush(&mut file).await
+    let result = async {
+        tokio::io::AsyncWriteExt::write_all(&mut file, contents).await?;
+        tokio::io::AsyncWriteExt::flush(&mut file).await?;
+        file.sync_all().await
+    }
+    .await;
+    drop(file);
+    if let Err(error) = result {
+        return match tokio::fs::remove_file(path).await {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(std::io::Error::other(format!(
+                "{error}; additionally could not remove partial state {}: {cleanup_error}",
+                path.display()
+            ))),
+        };
+    }
+    Ok(())
 }
 
-#[cfg(unix)]
 async fn write_private_key(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create_new(true).mode(0o600);
-    let mut file = options.open(path).await?;
-    tokio::io::AsyncWriteExt::write_all(&mut file, contents).await?;
-    tokio::io::AsyncWriteExt::flush(&mut file).await
-}
-
-#[cfg(not(unix))]
-async fn write_private_key(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
-    // Windows inherits the state directory ACL. Installations should grant access
-    // only to the dedicated worker service account.
+    // All identity files are mode 0600 on Unix and inherit the protected state
+    // directory ACL on Windows.
     write_new_file(path, contents).await
 }
 
@@ -192,6 +261,8 @@ pub enum EnrollmentError {
     Io(#[from] std::io::Error),
     #[error("enrollment configuration encoding failed: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("enrollment state persistence failed: {0}")]
+    Persistence(String),
     #[error(transparent)]
     Security(#[from] crate::security::SecurityError),
     #[error("invalid enrollment response: {0}")]
@@ -209,5 +280,42 @@ mod tests {
         assert!(enrollment_url("http://ctf.example", false).is_err());
         assert!(enrollment_url("http://127.0.0.1:8080", true).is_ok());
         assert!(enrollment_url("https://user@ctf.example", false).is_err());
+    }
+
+    #[tokio::test]
+    async fn identity_preflight_rejects_existing_state_before_enrollment() {
+        let directory = std::env::temp_dir().join(format!("rsctf-enroll-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let key = directory.join("worker-key.pem");
+        let cert = directory.join("worker-cert.pem");
+        require_new_identity(&[key.as_path(), cert.as_path()])
+            .await
+            .unwrap();
+        tokio::fs::write(&cert, b"existing").await.unwrap();
+        assert!(require_new_identity(&[key.as_path(), cert.as_path()])
+            .await
+            .is_err());
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_identity_persistence_removes_only_files_it_created() {
+        let directory = std::env::temp_dir().join(format!("rsctf-enroll-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let key = directory.join("worker-key.pem");
+        let cert = directory.join("worker-cert.pem");
+        tokio::fs::write(&cert, b"existing").await.unwrap();
+
+        let result = persist_identity(
+            &key,
+            b"private",
+            &[(cert.as_path(), b"replacement".as_slice())],
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!key.exists());
+        assert_eq!(tokio::fs::read(&cert).await.unwrap(), b"existing");
+        tokio::fs::remove_dir_all(directory).await.unwrap();
     }
 }

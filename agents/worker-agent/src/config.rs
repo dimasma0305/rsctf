@@ -42,7 +42,7 @@ pub struct RunArgs {
     #[arg(long, env = "RSCTF_WORKER_RUNTIME_CONCURRENCY", default_value_t = 8)]
     pub runtime_concurrency: usize,
     /// Maximum writable container layer in bytes. Requires a quota-capable
-    /// Docker storage driver (for example overlay2 on XFS with project quotas).
+    /// Docker storage driver (overlay2 on XFS with project quotas or windowsfilter).
     #[arg(
         long,
         env = "RSCTF_WORKER_WRITABLE_LAYER_BYTES",
