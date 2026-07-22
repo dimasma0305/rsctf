@@ -172,9 +172,9 @@ if ($env:RSCTF_ACL_RESET -eq '1') {
     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', $inherit, 'None', 'Allow')
     [void]$acl.AddAccessRule($rule)
   }
-  Set-Acl -LiteralPath $path -AclObject $acl
+  [System.IO.Directory]::SetAccessControl($path, $acl)
 }
-$check = Get-Acl -LiteralPath $path
+$check = [System.IO.Directory]::GetAccessControl($path)
 if (-not $check.AreAccessRulesProtected) { throw 'state directory still inherits ACLs' }
 $allowed = @($accountSid.Value, $systemSid.Value, $adminSid.Value)
 $present = @{}
