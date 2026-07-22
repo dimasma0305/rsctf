@@ -89,7 +89,7 @@ jobs:
           load: true
           push: false
           cache-from: type=gha,scope=rsctf-image
-          cache-to: type=gha,mode=max,scope=rsctf-image
+          cache-to: type=gha,mode=max,scope=rsctf-image,ignore-error=true
 
       - name: Build BYOC agent image without pushing
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -101,7 +101,7 @@ jobs:
           push: false
           tags: rsctf-byoc-agent:ci
           cache-from: type=gha,scope=rsctf-byoc-agent
-          cache-to: type=gha,mode=max,scope=rsctf-byoc-agent
+          cache-to: type=gha,mode=max,scope=rsctf-byoc-agent,ignore-error=true
 
       - name: Smoke test BYOC agent image
         shell: bash
@@ -122,7 +122,7 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: [validate-release, quality]
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     permissions:
       contents: read
       packages: write
@@ -231,7 +231,7 @@ jobs:
           tags: ${{ steps.agent-metadata.outputs.tags }}
           labels: ${{ steps.agent-metadata.outputs.labels }}
           cache-from: type=gha,scope=rsctf-byoc-agent
-          cache-to: type=gha,mode=max,scope=rsctf-byoc-agent
+          cache-to: type=gha,mode=max,scope=rsctf-byoc-agent,ignore-error=true
           provenance: mode=max
           sbom: true
 
@@ -249,7 +249,7 @@ jobs:
             RSCTF_DEFAULT_BYOC_AGENT_IMAGE=${{ steps.image.outputs.ghcr_agent }}@${{ steps.agent-build.outputs.digest }}
             RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH=${{ github.ref_type == 'tag' && 'true' || 'false' }}
           cache-from: type=gha,scope=rsctf-image
-          cache-to: type=gha,mode=max,scope=rsctf-image
+          cache-to: type=gha,mode=max,scope=rsctf-image,ignore-error=true
           provenance: mode=max
           sbom: true
 

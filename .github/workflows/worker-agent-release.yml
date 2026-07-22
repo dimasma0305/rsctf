@@ -185,7 +185,7 @@ jobs:
     name: Publish verified rsctf release assets
     needs: [build-linux, build-windows]
     runs-on: ubuntu-24.04
-    timeout-minutes: 190
+    timeout-minutes: 250
     permissions:
       artifact-metadata: write
       attestations: write
@@ -226,7 +226,7 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           version="${GITHUB_REF_NAME#v}"
           tagged_ref="${image}:${version}"
-          deadline=$((SECONDS + 10800))
+          deadline=$((SECONDS + 14400))
           pinned_ref=""
 
           echo "Waiting for the image workflow to publish and attest ${tagged_ref}."
@@ -255,7 +255,7 @@ jobs:
           done
 
           if [[ -z "$pinned_ref" ]]; then
-            echo "::error::The matching tagged server image and trusted image-workflow attestation were not available within three hours; refusing to publish a mutable deployment bundle."
+            echo "::error::The matching tagged server image and trusted image-workflow attestation were not available within four hours; refusing to publish a mutable deployment bundle."
             exit 1
           fi
           printf 'pinned=%s\n' "$pinned_ref" >> "$GITHUB_OUTPUT"
