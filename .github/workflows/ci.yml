@@ -179,7 +179,7 @@ jobs:
             docker_workload_lifecycle_when_image_is_configured -- --nocapture
 
   worker-plane-windows:
-    name: Worker source check (Windows; runtime disabled)
+    name: Worker compatibility (Windows; runtime disabled)
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -191,16 +191,49 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          components: clippy, rustfmt
           targets: x86_64-pc-windows-msvc
 
       - name: Restore Windows worker build cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          workspaces: agents/worker-agent -> target
+          workspaces: |
+            lib/worker-protocol -> target
+            agents/worker-agent -> target
           shared-key: worker-plane-windows
+
+      - name: Check protocol formatting
+        run: cargo fmt --manifest-path lib/worker-protocol/Cargo.toml --all -- --check
+
+      - name: Check agent formatting
+        run: cargo fmt --manifest-path agents/worker-agent/Cargo.toml --all -- --check
 
       - name: Check Windows target
         run: cargo check --manifest-path agents/worker-agent/Cargo.toml --all-targets --target x86_64-pc-windows-msvc --locked
+
+      - name: Run Windows Clippy
+        run: cargo clippy --manifest-path agents/worker-agent/Cargo.toml --all-targets --target x86_64-pc-windows-msvc --locked -- -D warnings
+
+      - name: Test protocol on Windows
+        run: cargo test --manifest-path lib/worker-protocol/Cargo.toml --all-targets --target x86_64-pc-windows-msvc --locked
+
+      - name: Test agent on Windows
+        run: cargo test --manifest-path agents/worker-agent/Cargo.toml --all-targets --target x86_64-pc-windows-msvc --locked
+
+      - name: Build release worker executable
+        run: cargo build --manifest-path agents/worker-agent/Cargo.toml --release --target x86_64-pc-windows-msvc --locked
+
+      - name: Smoke-test worker executable
+        shell: pwsh
+        run: |
+          $binary = "agents/worker-agent/target/x86_64-pc-windows-msvc/release/rsctf-worker-agent.exe"
+          $version = & $binary --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "worker executable --version failed with exit code $LASTEXITCODE"
+          }
+          if ($version -notmatch '^rsctf-worker-agent ') {
+            throw "worker executable returned an unexpected version string: $version"
+          }
 
   helm-chart:
     name: Helm chart
