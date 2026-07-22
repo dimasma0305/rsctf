@@ -13,6 +13,20 @@ be a dedicated event host or VM with no unrelated workloads or secrets.
 
 ## Install
 
+After creating a worker in `/admin/workers`, the admin page shows a public
+bootstrap command and the separate one-use enrollment token. The command
+installs the verified release and reads the token from a hidden terminal
+prompt, so the secret never enters the URL, shell history, or process list:
+
+```bash
+curl -fsSL https://ctf.example/install/worker | \
+  sudo bash -s -- --server-url https://ctf.example
+```
+
+Downloading or running the bootstrap grants no worker access without a valid
+15-minute enrollment token. The command requires a tagged release, Docker,
+systemd, `gh attestation verify`, and a dedicated Linux host or VM.
+
 Beginning with tagged releases, the one-command installer downloads the latest
 release, verifies `SHA256SUMS` and GitHub build provenance, and installs the
 binary plus an enabled (but not started) systemd service. Install a current

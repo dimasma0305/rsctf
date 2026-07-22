@@ -20,6 +20,7 @@ import {
   mdiShieldAlertOutline,
   mdiSitemapOutline,
   mdiSourceBranch,
+  mdiServerNetwork,
   mdiViewDashboard,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
@@ -52,6 +53,11 @@ export const WithAdminTab: FC<AdminTabProps> = ({ head, headProps, isLoading, ch
       icon: mdiPackageVariantClosed,
       title: t('admin.tab.instances'),
       path: 'instances',
+    },
+    {
+      icon: mdiServerNetwork,
+      title: t('admin.tab.workers', 'Workers'),
+      path: 'workers',
     },
     {
       icon: mdiSourceBranch,

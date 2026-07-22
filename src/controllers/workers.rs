@@ -6,7 +6,7 @@
 //! token plus CSR for a client-only certificate signed by the worker CA.
 
 use axum::extract::{Path, State};
-use axum::http::header::{CACHE_CONTROL, PRAGMA};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, PRAGMA};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -32,6 +32,11 @@ const MAX_WORKER_NAME_CHARS: usize = 128;
 const MAX_ENROLLMENT_TOKEN_CHARS: usize = 1_024;
 const MAX_CSR_BYTES: usize = 64 * 1024;
 const WORKER_SECRET_CACHE_CONTROL: &str = "private, no-store";
+const WORKER_BOOTSTRAP: &str = include_str!("../../scripts/bootstrap-worker.sh");
+
+pub fn public_router() -> Router<SharedState> {
+    Router::new().route("/install/worker", get(worker_bootstrap))
+}
 
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -52,6 +57,18 @@ pub fn router() -> Router<SharedState> {
             "/api/workers/enroll",
             limited(Policy::Register, post(enroll_worker)),
         )
+}
+
+/// Public installer bootstrap. Downloading software grants no worker access;
+/// enrollment still requires a short-lived, one-use token and then mTLS.
+async fn worker_bootstrap() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "text/x-shellscript; charset=utf-8"),
+            (CACHE_CONTROL, "public, max-age=300"),
+        ],
+        WORKER_BOOTSTRAP,
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -426,6 +443,28 @@ mod tests {
         assert!(token.token.len() >= 43);
         assert_eq!(hash_enrollment_token(&token.token).len(), 32);
         assert!(token.expires_at > Utc::now() + Duration::minutes(14));
+    }
+
+    #[test]
+    fn bootstrap_keeps_enrollment_secrets_out_of_process_arguments() {
+        assert!(WORKER_BOOTSTRAP.contains("read -r -s ENROLLMENT_TOKEN </dev/tty"));
+        assert!(WORKER_BOOTSTRAP.contains("--token-stdin"));
+        assert!(!WORKER_BOOTSTRAP.contains("--token \"$ENROLLMENT_TOKEN\""));
+        assert!(!WORKER_BOOTSTRAP.contains("?token="));
+    }
+
+    #[tokio::test]
+    async fn public_bootstrap_has_script_content_type_and_cache_policy() {
+        let response = worker_bootstrap().await.into_response();
+        assert_eq!(
+            response.headers()[CONTENT_TYPE],
+            "text/x-shellscript; charset=utf-8"
+        );
+        assert_eq!(response.headers()[CACHE_CONTROL], "public, max-age=300");
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("bootstrap body");
+        assert_eq!(body.as_ref(), WORKER_BOOTSTRAP.as_bytes());
     }
 
     #[test]

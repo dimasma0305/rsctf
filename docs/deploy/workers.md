@@ -334,6 +334,19 @@ identity.
 
 ## Install and enroll a worker
 
+The simplest supported path is the command shown after creating a worker at
+`/admin/workers`:
+
+```bash
+curl -fsSL https://ctf.example/install/worker | \
+  sudo bash -s -- --server-url https://ctf.example
+```
+
+The public bootstrap installs an attested release, prompts for the separately
+displayed one-use token through `/dev/tty`, enrolls, and starts the service. It
+never accepts enrollment credentials in a URL, command argument, or environment
+variable. Running it without a valid 15-minute token cannot authorize a worker.
+
 Beginning with tagged releases, the
 [worker installer](https://github.com/dimasma0305/rsctf/blob/main/scripts/install-worker.sh)
 detects Linux AMD64 or ARM64 and downloads the latest tagged archive from

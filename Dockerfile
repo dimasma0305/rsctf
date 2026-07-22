@@ -20,6 +20,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* build.rs ./
 COPY lib/worker-protocol ./lib/worker-protocol
+COPY scripts/bootstrap-worker.sh ./scripts/bootstrap-worker.sh
 COPY src ./src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \

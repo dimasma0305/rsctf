@@ -23,6 +23,7 @@ fn each_controller_router_builds() {
     let _ = rsctf::controllers::assets::router();
     let _ = rsctf::controllers::api_token::router();
     let _ = rsctf::controllers::workers::router();
+    let _ = rsctf::controllers::workers::public_router();
     let _ = rsctf::controllers::game::ad::router();
     let _ = rsctf::controllers::game::ad::web_router();
     let _ = rsctf::controllers::game::ad::stateful_router();

@@ -369,13 +369,21 @@ jobs:
       - name: Validate worker installer packaging
         shell: bash
         run: |
-          bash -n scripts/install-worker.sh
+          bash -n scripts/bootstrap-worker.sh scripts/install-worker.sh
+          scripts/bootstrap-worker.sh --help >/dev/null
+          if scripts/bootstrap-worker.sh \
+            --server-url 'https://user@example.com' >/dev/null 2>&1; then
+            echo "::error::The worker bootstrap accepted credentials in its server URL."
+            exit 1
+          fi
           scripts/install-worker.sh --help >/dev/null
           if scripts/install-worker.sh --version latest >/dev/null 2>&1; then
             echo "::error::The worker installer accepted an invalid release version."
             exit 1
           fi
           test -x scripts/install-worker.sh
+          test -x scripts/bootstrap-worker.sh
+          test "$(stat -c '%a' scripts/bootstrap-worker.sh)" = "755"
           test "$(stat -c '%a' scripts/install-worker.sh)" = "755"
           test "$(stat -c '%a' agents/worker-agent/rsctf-worker-agent.service)" = "644"
           systemd-analyze security --offline=yes \

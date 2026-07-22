@@ -58,6 +58,7 @@ fn common_api_router(game_router: Router<SharedState>) -> Router<SharedState> {
         .merge(controllers::exercise::router())
         .merge(controllers::honeypot::router())
         .merge(controllers::oauth::router())
+        .merge(controllers::workers::public_router())
         // --- realtime hubs (SignalR; mirror RSCTF Hubs/) ---
         .merge(hubs::monitor::router())
         .merge(hubs::user::router())
