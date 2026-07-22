@@ -384,7 +384,9 @@ fn apply_seccomp_denylist() -> Result<(), String> {
         libc::SYS_swapoff,
         libc::SYS_acct,
         libc::SYS_quotactl,
+        #[cfg(target_arch = "x86_64")]
         libc::SYS_ioperm,
+        #[cfg(target_arch = "x86_64")]
         libc::SYS_iopl,
     ];
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> =
@@ -394,8 +396,11 @@ fn apply_seccomp_denylist() -> Result<(), String> {
     // UID pool plus the outer container's PID cgroup the real aggregate bound,
     // without relying solely on a per-real-UID RLIMIT that may be shared by
     // multiple Pods on a node.
-    for syscall in [libc::SYS_fork, libc::SYS_vfork] {
-        rules.insert(syscall, Vec::new());
+    #[cfg(target_arch = "x86_64")]
+    {
+        for syscall in [libc::SYS_fork, libc::SYS_vfork] {
+            rules.insert(syscall, Vec::new());
+        }
     }
     let non_thread_clone = SeccompCondition::new(
         0,
