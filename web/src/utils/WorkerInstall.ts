@@ -9,9 +9,14 @@ const workerInstallOrigin = (origin: string): string => {
   return parsed.origin
 }
 
+const workerUnixCommand = (origin: string, arguments_: string): string => {
+  const safeOrigin = workerInstallOrigin(origin)
+  return `(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" ${safeOrigin}/install/worker && sh "$t" ${arguments_})`
+}
+
 export const workerInstallCommand = (origin: string): string => {
   const safeOrigin = workerInstallOrigin(origin)
-  return `(set -o pipefail; wget -qO- --https-only --secure-protocol=TLSv1_2 ${safeOrigin}/install/worker | sudo bash -s -- --server-url ${safeOrigin})`
+  return workerUnixCommand(safeOrigin, `--server-url ${safeOrigin}`)
 }
 
 export const workerWindowsInstallCommand = (origin: string): string => {
@@ -20,8 +25,7 @@ export const workerWindowsInstallCommand = (origin: string): string => {
 }
 
 export const workerUninstallCommand = (origin: string): string => {
-  const safeOrigin = workerInstallOrigin(origin)
-  return `(set -o pipefail; wget -qO- --https-only --secure-protocol=TLSv1_2 ${safeOrigin}/install/worker | sudo bash -s -- --uninstall)`
+  return workerUnixCommand(origin, '--uninstall')
 }
 
 export const workerWindowsUninstallCommand = (origin: string): string => {

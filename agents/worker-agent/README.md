@@ -17,9 +17,8 @@ bootstrap command and the separate one-use enrollment token. The command
 installs the verified release and reads the token from a hidden terminal
 prompt, so the secret never enters the URL, shell history, or process list:
 
-```bash
-curl -fsSL https://ctf.example/install/worker | \
-  sudo bash -s -- --server-url https://ctf.example
+```sh
+(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --server-url https://ctf.example)
 ```
 
 On a native Windows-container host, use Administrator PowerShell:
@@ -30,7 +29,9 @@ On a native Windows-container host, use Administrator PowerShell:
 
 Downloading or running the bootstrap grants no worker access without a valid
 15-minute enrollment token. The command requires a tagged release, Docker, and
-a dedicated worker host. Linux additionally requires systemd. Neither one-line
+a dedicated worker host. Linux additionally requires systemd. Its installer
+runs with POSIX `sh`, uses only the download flags shared by GNU and BusyBox
+`wget`, and elevates through `sudo` or `doas` when needed. Neither one-line
 bootstrap requires the GitHub CLI. A fresh enrollment requires typing
 `DEDICATED` before the hidden token prompt; do not bypass this boundary on a
 daily-use computer or a machine containing unrelated secrets.
@@ -68,7 +69,7 @@ login or token is needed because the release carries its attestation bundle:
     --signer-workflow dimasma0305/rsctf/.github/workflows/worker-agent-release.yml \
     --source-ref "refs/tags/$version" \
     --deny-self-hosted-runners
-  sudo bash "$tmp/install-worker.sh" --version "$version"
+  sudo sh "$tmp/install-worker.sh" --version "$version"
 )
 ```
 
@@ -102,7 +103,7 @@ VERSION=vX.Y.Z
     --source-ref "refs/tags/$VERSION" \
     --deny-self-hosted-runners
   less "$tmp/install-worker.sh"
-  sudo bash "$tmp/install-worker.sh" --version "$VERSION"
+  sudo sh "$tmp/install-worker.sh" --version "$VERSION"
 )
 ```
 

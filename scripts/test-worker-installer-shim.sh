@@ -7,18 +7,19 @@ case "${0##*/}" in
     printf '%s\n' "$*" >> /tmp/wget.log
     url=""
     spider=false
+    output="-"
     while (($# > 0)); do
       case "$1" in
-        --max-redirect | --output-document | --read-timeout | --secure-protocol | \
-          --timeout | --tries)
+        -O)
+          (($# >= 2))
+          output="$2"
+          shift 2
+          ;;
+        -T)
           (($# >= 2))
           shift 2
           ;;
-        --max-redirect=* | --output-document=* | --read-timeout=* | \
-          --secure-protocol=* | --timeout=* | --tries=*)
-          shift
-          ;;
-        --https-only | --no-verbose | --retry-connrefused | --server-response)
+        -q | -S)
           shift
           ;;
         --spider)
@@ -40,13 +41,25 @@ case "${0##*/}" in
       printf '  Location: https://github.com/dimasma0305/rsctf/releases/tag/v0.1.0\n' >&2
     elif [[ "$url" == */healthz ]]; then
       if [[ "${RSCTF_TEST_HEALTHY:-1}" == 1 ]]; then
-        printf 'ok'
+        if [[ "$output" == "-" ]]; then
+          printf 'ok'
+        else
+          printf 'ok' > "$output"
+        fi
       else
-        printf 'unavailable'
+        if [[ "$output" == "-" ]]; then
+          printf 'unavailable'
+        else
+          printf 'unavailable' > "$output"
+        fi
         exit 8
       fi
     else
-      cat "/fixture/${url##*/}"
+      if [[ "$output" == "-" ]]; then
+        cat "/fixture/${url##*/}"
+      else
+        cat "/fixture/${url##*/}" > "$output"
+      fi
     fi
     ;;
   docker)
@@ -142,6 +155,10 @@ case "${0##*/}" in
       printf '%s\n' \
         "${RSCTF_TEST_WORKER_DIAGNOSTIC:-worker control session failed: fixture unavailable}"
     fi
+    ;;
+  sudo)
+    printf '%s\n' "$*" > /tmp/sudo.log
+    exit 73
     ;;
   *)
     printf 'unsupported worker installer test shim command: %s\n' "${0##*/}" >&2

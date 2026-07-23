@@ -86,8 +86,8 @@ worker plane, use the command shown in `/admin/workers`. The bootstrap verifies
 the release checksum and privately prompts for the one-use token; no GitHub CLI,
 login, or token in the command is required:
 
-```bash
-curl -fsSL https://ctf.example/install/worker | sudo bash -s -- --server-url https://ctf.example
+```sh
+(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --server-url https://ctf.example)
 ```
 
 ```powershell

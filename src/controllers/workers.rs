@@ -460,7 +460,10 @@ mod tests {
 
     #[test]
     fn bootstrap_keeps_enrollment_secrets_out_of_process_arguments() {
-        assert!(WORKER_BOOTSTRAP.contains("read -r -s ENROLLMENT_TOKEN </dev/tty"));
+        assert!(WORKER_BOOTSTRAP.contains("TERMINAL_SETTINGS=$(stty -g </dev/tty)"));
+        assert!(WORKER_BOOTSTRAP.contains("stty -echo </dev/tty"));
+        assert!(WORKER_BOOTSTRAP.contains("IFS= read -r ENROLLMENT_TOKEN </dev/tty"));
+        assert!(WORKER_BOOTSTRAP.contains("restore_terminal"));
         assert!(WORKER_BOOTSTRAP.contains("--token-stdin"));
         assert!(!WORKER_BOOTSTRAP.contains("--token \"$ENROLLMENT_TOKEN\""));
         assert!(!WORKER_BOOTSTRAP.contains("?token="));

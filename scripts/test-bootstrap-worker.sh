@@ -9,6 +9,22 @@ readonly TEST_IMAGE="${RSCTF_INSTALLER_TEST_IMAGE:-ubuntu@sha256:4fbb8e6a8395de5
 TEMP_DIRECTORY="$(mktemp -d)"
 trap 'rm -rf -- "$TEMP_DIRECTORY"' EXIT
 
+# A non-root POSIX-shell invocation must re-exec through an available privilege
+# tool without putting enrollment credentials in that command line.
+docker run --rm \
+  --user 65534:65534 \
+  --volume "$REPOSITORY_ROOT/scripts/bootstrap-worker.sh:/bootstrap.sh:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/sudo:ro" \
+  "$TEST_IMAGE" \
+  bash -ceu '
+    status=0
+    dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 ||
+      status=$?
+    test "$status" -eq 73
+    grep -qx "sh /bootstrap.sh --server-url https://ctf.example --version v0.1.0" \
+      /tmp/sudo.log
+  '
+
 run_uninstall_fixture() {
   local managed_containers="$1"
   local assertions="$2"
@@ -36,7 +52,7 @@ run_uninstall_fixture 0 '
     /etc/systemd/system/rsctf-worker-agent.service \
     /usr/local/share/doc/rsctf-worker-agent/LICENSE.txt
 
-  printf "REMOVE\n" | script -qec "bash /bootstrap.sh --uninstall" /dev/null \
+  printf "REMOVE\n" | script -qec "dash /bootstrap.sh --uninstall" /dev/null \
     >/tmp/uninstall-output 2>&1
 
   test ! -e /var/lib/rsctf-worker
@@ -54,7 +70,7 @@ run_uninstall_fixture 1 '
   mkdir -p /var/lib/rsctf-worker /usr/local/bin
   touch /var/lib/rsctf-worker/worker.json /usr/local/bin/rsctf-worker-agent
 
-  if script -qec "bash /bootstrap.sh --uninstall" /dev/null \
+  if script -qec "dash /bootstrap.sh --uninstall" /dev/null \
       >/tmp/uninstall-output 2>&1; then
     printf "uninstall accepted a host with a managed workload\n" >&2
     exit 1
@@ -70,14 +86,34 @@ docker run --rm \
   --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/wget:ro" \
   "$TEST_IMAGE" \
   bash -ceu '
-    if bash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
+    if dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
         >/tmp/bootstrap-output 2>&1; then
       printf "bootstrap accepted an unhealthy RSCTF server\n" >&2
       exit 1
     fi
-    grep -q "health check failed" /tmp/bootstrap-output
+    grep -q "download failed" /tmp/bootstrap-output
     test "$(wc -l < /tmp/wget.log)" -eq 1
     grep -q "https://ctf.example/healthz$" /tmp/wget.log
+  '
+
+# BusyBox-style wget flags must get far enough to produce the intended
+# unsupported-host diagnostic in a minimal container. The internal container
+# shell is not itself a persistent worker host.
+docker run --rm \
+  --env RSCTF_TEST_HEALTHY=1 \
+  --volume "$REPOSITORY_ROOT/scripts/bootstrap-worker.sh:/bootstrap.sh:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/wget:ro" \
+  "$TEST_IMAGE" \
+  bash -ceu '
+    if dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
+        >/tmp/bootstrap-output 2>&1; then
+      printf "bootstrap accepted a container without systemd\n" >&2
+      exit 1
+    fi
+    grep -q "systemd is not active" /tmp/bootstrap-output
+    grep -q "not a container or Docker Desktop internal VM" /tmp/bootstrap-output
+    grep -q "^-q -S -T 30 -O " /tmp/wget.log
+    ! grep -Eq -- "--https-only|--secure-protocol|--output-document" /tmp/wget.log
   '
 
 readonly BOOTSTRAP_PACKAGE="$TEMP_DIRECTORY/package"
@@ -143,7 +179,7 @@ readonly PREPARE_ENROLLED_WORKER='
 # shellcheck disable=SC2016
 run_connection_fixture 1 1 "$PREPARE_ENROLLED_WORKER"'
   RSCTF_WORKER_CONNECTION_TIMEOUT_SECONDS=6 \
-    bash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
+    dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
     >/tmp/bootstrap-output 2>&1
   grep -q "Worker health check passed: mTLS control session accepted" \
     /tmp/bootstrap-output
@@ -157,7 +193,7 @@ run_connection_fixture 1 1 "$PREPARE_ENROLLED_WORKER"'
 # shellcheck disable=SC2016
 run_connection_fixture 0 1 "$PREPARE_ENROLLED_WORKER"'
   if RSCTF_WORKER_CONNECTION_TIMEOUT_SECONDS=1 \
-      bash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
+      dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
       >/tmp/bootstrap-output 2>&1; then
     printf "bootstrap accepted a worker without an mTLS control session\n" >&2
     exit 1
@@ -172,7 +208,7 @@ run_connection_fixture 0 1 "$PREPARE_ENROLLED_WORKER"'
 # shellcheck disable=SC2016
 run_connection_fixture 0 0 "$PREPARE_ENROLLED_WORKER"'
   if RSCTF_WORKER_CONNECTION_TIMEOUT_SECONDS=5 \
-      bash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
+      dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
       >/tmp/bootstrap-output 2>&1; then
     printf "bootstrap accepted a stopped worker service\n" >&2
     exit 1

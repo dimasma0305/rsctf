@@ -71,7 +71,7 @@ make_fixture "$VALID_FIXTURE" "$VALID_PACKAGE"
 run_fixture "$VALID_FIXTURE" 0 '
   mkdir -p /run/systemd/system
   groupadd --system docker
-  bash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1
+  dash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1
 
   worker_record="$(getent passwd rsctf-worker)"
   IFS=: read -r worker _ uid gid _ home shell <<< "$worker_record"
@@ -92,9 +92,23 @@ run_fixture "$VALID_FIXTURE" 0 '
   grep -qx "enable rsctf-worker-agent.service" /tmp/systemctl.log
   ! grep -q "^restart " /tmp/systemctl.log
   test "$(wc -l < /tmp/wget.log)" -eq 2
-  grep -c -- "^--https-only --secure-protocol=TLSv1.2 --max-redirect=5 --timeout=30 --read-timeout=30 --tries=5 --retry-connrefused --no-verbose --output-document=- " /tmp/wget.log | grep -qx 2
+  grep -c "^-q -S -T 30 -O " /tmp/wget.log | grep -qx 2
+  ! grep -Eq -- "--https-only|--secure-protocol|--output-document" /tmp/wget.log
   grep -q -- "https://github.com/dimasma0305/rsctf/releases/download/v0.1.0/rsctf-worker-agent-linux-amd64.tar.gz$" /tmp/wget.log
   grep -q -- "https://github.com/dimasma0305/rsctf/releases/download/v0.1.0/SHA256SUMS$" /tmp/wget.log
+'
+
+# The latest-release lookup uses only the --spider and -S options supported by
+# BusyBox wget, and accepts only the expected HTTPS GitHub tag redirect.
+# shellcheck disable=SC2016
+run_fixture "$VALID_FIXTURE" 0 '
+  mkdir -p /run/systemd/system
+  groupadd --system docker
+  dash /installer.sh --skip-attestation >/tmp/installer-output 2>&1
+  grep -qx -- "-q -S -T 30 --spider https://github.com/dimasma0305/rsctf/releases/latest" \
+    /tmp/wget.log
+  grep -q "Downloading rsctf-worker-agent-linux-amd64.tar.gz from v0.1.0" \
+    /tmp/installer-output
 '
 
 # Public bootstrap mode retains verification and installation output without
@@ -103,7 +117,7 @@ run_fixture "$VALID_FIXTURE" 0 '
 run_fixture "$VALID_FIXTURE" 0 '
   mkdir -p /run/systemd/system
   groupadd --system docker
-  bash /installer.sh --version v0.1.0 --skip-attestation --bootstrap \
+  dash /installer.sh --version v0.1.0 --skip-attestation --bootstrap \
     >/tmp/installer-output 2>&1
   grep -q "bootstrap will now validate Docker and enroll" /tmp/installer-output
   ! grep -q "Enroll this worker" /tmp/installer-output
@@ -114,7 +128,7 @@ run_fixture "$VALID_FIXTURE" 0 '
 RSCTF_TEST_ATTESTATION_SUCCESS=1 run_fixture "$VALID_FIXTURE" 0 '
   mkdir -p /run/systemd/system
   groupadd --system docker
-  bash /installer.sh --version v0.1.0 >/tmp/installer-output 2>&1
+  dash /installer.sh --version v0.1.0 >/tmp/installer-output 2>&1
   grep -q -- "--bundle .*rsctf-worker-agent-attestation.json" /tmp/gh.log
   grep -q -- "--hostname github.com" /tmp/gh.log
   grep -q -- "--repo dimasma0305/rsctf" /tmp/gh.log
@@ -135,7 +149,7 @@ run_fixture "$VALID_FIXTURE" 1 '
     --no-create-home --shell /usr/sbin/nologin rsctf-worker
   before="$(getent passwd rsctf-worker)"
 
-  bash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1
+  dash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1
 
   test "$(getent passwd rsctf-worker)" = "$before"
   grep -qw docker <<< "$(id -nG rsctf-worker)"
@@ -169,7 +183,7 @@ assert_upgrade_rollback() {
     license_before="$(sha256sum /usr/local/share/doc/rsctf-worker-agent/LICENSE.txt)"
     notice_before="$(sha256sum /usr/local/share/doc/rsctf-worker-agent/NOTICE)"
 
-    if bash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1; then
+    if dash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1; then
       printf "installer accepted a failed systemd activation\n" >&2
       exit 1
     fi
@@ -212,7 +226,7 @@ RSCTF_TEST_FAIL_ENABLES=1 run_fixture "$VALID_FIXTURE" 0 '
   mkdir -p /run/systemd/system
   groupadd --system docker
 
-  if bash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1; then
+  if dash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1; then
     printf "installer accepted a failed fresh activation\n" >&2
     exit 1
   fi
@@ -235,7 +249,7 @@ run_fixture "$VALID_FIXTURE" 0 '
     --no-create-home --shell /bin/bash rsctf-worker
   before="$(getent passwd rsctf-worker)"
 
-  if bash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1; then
+  if dash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1; then
     printf "installer accepted a mismatched pre-existing account\n" >&2
     exit 1
   fi
@@ -254,7 +268,7 @@ printf '%064d  %s\n' 0 "$ASSET" > "$BAD_CHECKSUM_FIXTURE/SHA256SUMS"
 run_fixture "$BAD_CHECKSUM_FIXTURE" 0 '
   mkdir -p /run/systemd/system
   groupadd --system docker
-  if bash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1; then
+  if dash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1; then
     printf "installer accepted a bad checksum\n" >&2
     exit 1
   fi
@@ -265,7 +279,7 @@ run_fixture "$BAD_CHECKSUM_FIXTURE" 0 '
 run_fixture "$VALID_FIXTURE" 0 '
   mkdir -p /run/systemd/system
   groupadd --system docker
-  if bash /installer.sh --version v0.1.0 >/tmp/installer-output 2>&1; then
+  if dash /installer.sh --version v0.1.0 >/tmp/installer-output 2>&1; then
     printf "installer accepted a failed artifact attestation\n" >&2
     exit 1
   fi
@@ -283,7 +297,7 @@ make_fixture "$LINK_FIXTURE" "$LINK_PACKAGE"
 run_fixture "$LINK_FIXTURE" 0 '
   mkdir -p /run/systemd/system
   groupadd --system docker
-  if bash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1; then
+  if dash /installer.sh --version v0.1.0 --skip-attestation >/tmp/installer-output 2>&1; then
     printf "installer accepted a link in the release archive\n" >&2
     exit 1
   fi

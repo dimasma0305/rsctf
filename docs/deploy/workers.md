@@ -341,10 +341,8 @@ identity.
 The simplest supported path is the command shown after creating a worker at
 `/admin/workers`:
 
-```bash
-(set -o pipefail; wget -qO- --https-only --secure-protocol=TLSv1_2 \
-  https://ctf.example/install/worker | \
-  sudo bash -s -- --server-url https://ctf.example)
+```sh
+(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --server-url https://ctf.example)
 ```
 
 For a native Windows-container host, open Administrator PowerShell:
@@ -353,20 +351,22 @@ For a native Windows-container host, open Administrator PowerShell:
 & ([scriptblock]::Create((Invoke-RestMethod https://ctf.example/install/worker.ps1))) -ServerUrl https://ctf.example
 ```
 
-The Linux bootstrap uses GNU `wget`; the Windows bootstrap uses built-in
-PowerShell HTTP support. Before changing the host or asking for a token, each
-bootstrap requires the RSCTF `/healthz` readiness check to return HTTP 200 with
-the exact body `ok`. They verify the worker archive against the release SHA-256
-checksum, prompt privately for the separately displayed one-use token, enroll,
-and start the service/task. After startup, the agent creates its protected local
-readiness marker only after RSCTF accepts the authenticated mTLS control session;
-it removes the marker when that session ends. The bootstrap waits for that marker
-to remain stable before reporting success. A process that merely starts, exits
-after a few seconds, or keeps retrying an unreachable control endpoint is reported
-as offline with service diagnostics instead of as a successful installation. A
-fresh enrollment also requires typing `DEDICATED` to acknowledge the host
-boundary. Neither accepts enrollment credentials in a URL, command argument,
-or environment variable.
+The Linux bootstrap uses POSIX `sh` and the flags shared by GNU and BusyBox
+`wget`; it automatically uses `sudo` or `doas` when the current account is not
+root. The Windows bootstrap uses built-in PowerShell HTTP support. Before
+changing the host or asking for a token, each bootstrap requires the RSCTF
+`/healthz` readiness check to return HTTP 200 with the exact body `ok`. They
+verify the worker archive against the release SHA-256 checksum, prompt privately
+for the separately displayed one-use token, enroll, and start the service/task.
+After startup, the agent creates its protected local readiness marker only after
+RSCTF accepts the authenticated mTLS control session; it removes the marker when
+that session ends. The bootstrap waits for that marker to remain stable before
+reporting success. A process that merely starts, exits after a few seconds, or
+keeps retrying an unreachable control endpoint is reported as offline with
+service diagnostics instead of as a successful installation. A fresh enrollment
+also requires typing `DEDICATED` to acknowledge the host boundary. Neither
+accepts enrollment credentials in a URL, command argument, or environment
+variable.
 Running one without a valid 15-minute token cannot authorize a new worker. A
 repeat run upgrades the binary and preserves an existing mTLS identity instead
 of overwriting it or consuming another token. Before prompting for that token,
@@ -381,9 +381,8 @@ to `Disabled` in `/admin/workers`. Then run the matching one-line command.
 
 Linux:
 
-```bash
-(set -o pipefail; wget -qO- --https-only --secure-protocol=TLSv1_2 \
-  https://ctf.example/install/worker | sudo bash -s -- --uninstall)
+```sh
+(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --uninstall)
 ```
 
 Windows, from Administrator PowerShell:
@@ -436,7 +435,7 @@ means the worker does not need a GitHub login or token:
     --signer-workflow dimasma0305/rsctf/.github/workflows/worker-agent-release.yml \
     --source-ref "refs/tags/$version" \
     --deny-self-hosted-runners
-  sudo bash "$tmp/install-worker.sh" --version "$version"
+  sudo sh "$tmp/install-worker.sh" --version "$version"
 )
 ```
 
@@ -476,7 +475,7 @@ VERSION=vX.Y.Z
     --source-ref "refs/tags/$VERSION" \
     --deny-self-hosted-runners
   less "$tmp/install-worker.sh"
-  sudo bash "$tmp/install-worker.sh" --version "$VERSION"
+  sudo sh "$tmp/install-worker.sh" --version "$VERSION"
 )
 ```
 

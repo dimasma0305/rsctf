@@ -381,12 +381,17 @@ jobs:
   repository-conventions:
     name: Repository conventions
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+
+      - name: Install POSIX shell compatibility checker
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends busybox-static
 
       - name: Enforce Rust file size limit
         shell: bash
@@ -402,9 +407,21 @@ jobs:
       - name: Validate worker installer packaging
         shell: bash
         run: |
-          bash -n scripts/bootstrap-worker.sh scripts/install-worker.sh
-          scripts/bootstrap-worker.sh --help >/dev/null
+          dash -n scripts/bootstrap-worker.sh scripts/install-worker.sh
+          busybox sh -n scripts/bootstrap-worker.sh
+          busybox sh -n scripts/install-worker.sh
+          dash scripts/bootstrap-worker.sh --help >/dev/null
+          busybox sh scripts/bootstrap-worker.sh --help >/dev/null
+          dash scripts/install-worker.sh --help >/dev/null
+          busybox sh scripts/install-worker.sh --help >/dev/null
+          head -n 1 scripts/bootstrap-worker.sh | grep -qx '#!/bin/sh'
+          head -n 1 scripts/install-worker.sh | grep -qx '#!/bin/sh'
           grep -q '"${SERVER_URL}/healthz"' scripts/bootstrap-worker.sh
+          if grep -Eq '\[\[|PIPESTATUS|BASH_SOURCE|mapfile|<<<|set -euo pipefail|--https-only|--secure-protocol' \
+              scripts/bootstrap-worker.sh scripts/install-worker.sh; then
+            echo "::error::The Linux worker lifecycle contains a Bash- or GNU-wget-only construct."
+            exit 1
+          fi
           if grep -Eq '(^|[[:space:]])curl([[:space:]]|$)' \
               scripts/bootstrap-worker.sh scripts/install-worker.sh; then
             echo "::error::The Linux worker lifecycle still requires curl instead of wget."
@@ -415,7 +432,6 @@ jobs:
             echo "::error::The worker bootstrap accepted credentials in its server URL."
             exit 1
           fi
-          scripts/install-worker.sh --help >/dev/null
           if scripts/install-worker.sh --version latest >/dev/null 2>&1; then
             echo "::error::The worker installer accepted an invalid release version."
             exit 1
