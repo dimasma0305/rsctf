@@ -359,7 +359,33 @@ also requires typing `DEDICATED` to acknowledge the host boundary. Neither accep
 enrollment credentials in a URL, command argument, or environment variable.
 Running one without a valid 15-minute token cannot authorize a new worker. A
 repeat run upgrades the binary and preserves an existing mTLS identity instead
-of overwriting it or consuming another token.
+of overwriting it or consuming another token. Before prompting for that token,
+the installed agent runs `doctor`, which verifies Docker connectivity, the
+daemon platform, and enforceable writable-layer storage. A failed preflight does
+not consume the enrollment token.
+
+## Uninstall a worker
+
+First drain the worker, wait for its managed workloads to be removed, and set it
+to `Disabled` in `/admin/workers`. Then run the matching one-line command.
+
+Linux:
+
+```bash
+curl -fsSL https://ctf.example/install/worker | sudo bash -s -- --uninstall
+```
+
+Windows, from Administrator PowerShell:
+
+```powershell
+& ([scriptblock]::Create((Invoke-RestMethod https://ctf.example/install/worker.ps1))) -Uninstall
+```
+
+Both commands refuse to proceed while RSCTF-managed containers or networks
+remain and require typing `REMOVE`. They stop and unregister the service/task,
+remove the executable and local mTLS identity, and remove the worker's Docker
+ownership marker. The server-side worker row remains as audit history; keep it
+`Disabled` so its issued certificate is rejected.
 
 Beginning with tagged releases, the
 [worker installer](https://github.com/dimasma0305/rsctf/blob/main/scripts/install-worker.sh)

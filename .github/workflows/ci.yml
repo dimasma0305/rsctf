@@ -243,6 +243,9 @@ jobs:
           if ($bootstrap -notmatch "Read-Host 'Type DEDICATED to continue'") { throw 'Windows bootstrap does not require the host-boundary acknowledgement' }
           if ($bootstrap -notmatch '--token-stdin') { throw 'Windows enrollment does not use stdin' }
           if ($bootstrap -match '--token\s+\$plainToken|\?token=') { throw 'Windows bootstrap exposes the enrollment token' }
+          if ($bootstrap -notmatch "Read-Host 'Type REMOVE to uninstall this worker'") { throw 'Windows uninstall does not require confirmation' }
+          if ($bootstrap -notmatch 'RSCTF-managed containers or networks still exist') { throw 'Windows uninstall does not protect managed workloads' }
+          if ($bootstrap -notmatch '& \$agentPath doctor') { throw 'Windows bootstrap does not run the worker preflight' }
           $installer = Get-Content -LiteralPath 'scripts/install-worker.ps1' -Raw
           if ($installer -notmatch 'New-ScheduledTaskTrigger -AtStartup') { throw 'Windows worker is not configured to start after reboot' }
           if (-not $installer.Contains('$dockerDriver -ne ''windowsfilter''')) { throw 'Windows installer does not require enforceable storage quotas' }
@@ -410,6 +413,7 @@ jobs:
           fi
           test -x scripts/install-worker.sh
           test -x scripts/bootstrap-worker.sh
+          test -x scripts/test-bootstrap-worker.sh
           test -f scripts/install-worker.ps1
           test -f scripts/bootstrap-worker.ps1
           test "$(stat -c '%a' scripts/bootstrap-worker.sh)" = "755"
@@ -418,6 +422,7 @@ jobs:
           systemd-analyze security --offline=yes \
             agents/worker-agent/rsctf-worker-agent.service >/dev/null
           scripts/test-install-worker.sh
+          scripts/test-bootstrap-worker.sh
 
       - name: Validate deployment installer bootstrap
         shell: bash

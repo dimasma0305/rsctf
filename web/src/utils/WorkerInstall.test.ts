@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { workerInstallCommand, workerWindowsInstallCommand } from './WorkerInstall'
+import {
+  workerInstallCommand,
+  workerUninstallCommand,
+  workerWindowsInstallCommand,
+  workerWindowsUninstallCommand,
+} from './WorkerInstall'
 
 test('worker install command contains only the public HTTPS origin', () => {
   assert.equal(
@@ -16,6 +21,17 @@ test('Windows worker command contains only the public HTTPS origin', () => {
   )
 })
 
+test('worker uninstall commands contain only the public HTTPS origin', () => {
+  assert.equal(
+    workerUninstallCommand('https://tcp.1pc.tf'),
+    'curl -fsSL https://tcp.1pc.tf/install/worker | sudo bash -s -- --uninstall'
+  )
+  assert.equal(
+    workerWindowsUninstallCommand('https://tcp.1pc.tf'),
+    '& ([scriptblock]::Create((Invoke-RestMethod https://tcp.1pc.tf/install/worker.ps1))) -Uninstall'
+  )
+})
+
 test('worker install command rejects credentials, paths, insecure origins, and shell syntax', () => {
   for (const origin of [
     'http://tcp.1pc.tf',
@@ -25,5 +41,7 @@ test('worker install command rejects credentials, paths, insecure origins, and s
   ]) {
     assert.throws(() => workerInstallCommand(origin))
     assert.throws(() => workerWindowsInstallCommand(origin))
+    assert.throws(() => workerUninstallCommand(origin))
+    assert.throws(() => workerWindowsUninstallCommand(origin))
   }
 })

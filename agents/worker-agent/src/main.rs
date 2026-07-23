@@ -39,6 +39,9 @@ async fn main() {
         Command::Enroll(arguments) => enroll::run(arguments)
             .await
             .map_err(|error| Box::new(error) as Box<dyn std::error::Error>),
+        Command::Doctor(arguments) => runtime::doctor(arguments)
+            .await
+            .map_err(|error| Box::new(error) as Box<dyn std::error::Error>),
     };
     if let Err(error) = result {
         tracing::error!(%error, "worker agent stopped");

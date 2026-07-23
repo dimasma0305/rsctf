@@ -12,6 +12,8 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
+use crate::config::DoctorArgs;
+
 pub use docker::DockerRuntime;
 
 #[async_trait]
@@ -104,6 +106,14 @@ pub async fn runtime_for(
     Ok(Arc::new(
         DockerRuntime::connect(worker_id, endpoint, state_dir, options).await?,
     ))
+}
+
+pub async fn doctor(arguments: DoctorArgs) -> Result<(), RuntimeError> {
+    docker::preflight(
+        arguments.docker_endpoint.as_deref(),
+        arguments.allow_unbounded_storage,
+    )
+    .await
 }
 
 #[cfg(test)]

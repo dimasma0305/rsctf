@@ -97,6 +97,19 @@ run_fixture "$VALID_FIXTURE" 0 '
   grep -q -- "--max-filesize 1048576 https://github.com/dimasma0305/rsctf/releases/download/v0.1.0/SHA256SUMS$" /tmp/curl.log
 '
 
+# Public bootstrap mode retains verification and installation output without
+# printing obsolete manual enrollment commands in the middle of the one-line flow.
+# shellcheck disable=SC2016
+run_fixture "$VALID_FIXTURE" 0 '
+  mkdir -p /run/systemd/system
+  groupadd --system docker
+  bash /installer.sh --version v0.1.0 --skip-attestation --bootstrap \
+    >/tmp/installer-output 2>&1
+  grep -q "bootstrap will now validate Docker and enroll" /tmp/installer-output
+  ! grep -q "Enroll this worker" /tmp/installer-output
+  test -x /usr/local/bin/rsctf-worker-agent
+'
+
 # shellcheck disable=SC2016
 RSCTF_TEST_ATTESTATION_SUCCESS=1 run_fixture "$VALID_FIXTURE" 0 '
   mkdir -p /run/systemd/system

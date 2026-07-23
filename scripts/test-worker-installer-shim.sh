@@ -37,7 +37,36 @@ case "${0##*/}" in
     cp "/fixture/${url##*/}" "$destination"
     ;;
   docker)
-    exit 0
+    case "${1:-}" in
+      info)
+        exit 0
+        ;;
+      ps)
+        [[ "${RSCTF_TEST_MANAGED_CONTAINERS:-0}" == 0 ]] || printf 'managed-container\n'
+        exit 0
+        ;;
+      network)
+        [[ "${2:-}" == ls ]] || exit 1
+        [[ "${RSCTF_TEST_MANAGED_NETWORKS:-0}" == 0 ]] || printf 'managed-network\n'
+        exit 0
+        ;;
+      volume)
+        case "${2:-}" in
+          inspect)
+            [[ "${RSCTF_TEST_OWNER_VOLUME:-0}" == 0 ]] || printf 'worker-id\n'
+            exit 0
+            ;;
+          rm)
+            printf '%s\n' "$*" >> /tmp/docker.log
+            exit 0
+            ;;
+        esac
+        ;;
+      "")
+        exit 0
+        ;;
+    esac
+    exit 1
     ;;
   gh)
     if [[ "$*" == "attestation verify --help" ]]; then

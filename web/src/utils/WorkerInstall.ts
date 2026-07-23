@@ -18,3 +18,13 @@ export const workerWindowsInstallCommand = (origin: string): string => {
   const safeOrigin = workerInstallOrigin(origin)
   return `& ([scriptblock]::Create((Invoke-RestMethod ${safeOrigin}/install/worker.ps1))) -ServerUrl ${safeOrigin}`
 }
+
+export const workerUninstallCommand = (origin: string): string => {
+  const safeOrigin = workerInstallOrigin(origin)
+  return `curl -fsSL ${safeOrigin}/install/worker | sudo bash -s -- --uninstall`
+}
+
+export const workerWindowsUninstallCommand = (origin: string): string => {
+  const safeOrigin = workerInstallOrigin(origin)
+  return `& ([scriptblock]::Create((Invoke-RestMethod ${safeOrigin}/install/worker.ps1))) -Uninstall`
+}

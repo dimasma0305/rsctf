@@ -62,8 +62,8 @@ pub fn router() -> Router<SharedState> {
         )
 }
 
-/// Public installer bootstrap. Downloading software grants no worker access;
-/// enrollment still requires a short-lived, one-use token and then mTLS.
+/// Public install/uninstall bootstrap. Downloading software grants no worker
+/// access; enrollment still requires a short-lived, one-use token and then mTLS.
 async fn worker_bootstrap() -> impl IntoResponse {
     (
         [

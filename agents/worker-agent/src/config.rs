@@ -19,6 +19,22 @@ pub enum Command {
     Run(RunArgs),
     /// Exchange a one-time enrollment token for a locally generated mTLS identity.
     Enroll(EnrollArgs),
+    /// Validate Docker compatibility without enrolling or changing daemon state.
+    Doctor(DoctorArgs),
+}
+
+#[derive(Clone, Args)]
+pub struct DoctorArgs {
+    /// Override the Docker endpoint (`local` or a Unix socket in v1).
+    #[arg(long, env = "RSCTF_WORKER_DOCKER_ENDPOINT")]
+    pub docker_endpoint: Option<String>,
+    /// Development-only escape hatch for storage drivers without layer quotas.
+    #[arg(
+        long,
+        env = "RSCTF_WORKER_ALLOW_UNBOUNDED_STORAGE",
+        default_value_t = false
+    )]
+    pub allow_unbounded_storage: bool,
 }
 
 #[derive(Clone, Args)]

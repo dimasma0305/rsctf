@@ -17,6 +17,7 @@ readonly DOCUMENTATION_DIRECTORY="/usr/local/share/doc/rsctf-worker-agent"
 VERSION=""
 TEMP_DIRECTORY=""
 SKIP_ATTESTATION=false
+BOOTSTRAP_MODE=false
 SERVICE_WAS_ACTIVE=false
 SERVICE_WAS_ENABLED=false
 SERVICE_ENABLE_SUCCEEDED=false
@@ -39,13 +40,15 @@ usage() {
 Install the RSCTF worker agent on a systemd-based Linux host.
 
 Usage:
-  install-worker.sh [--version vX.Y.Z] [--skip-attestation]
+  install-worker.sh [--version vX.Y.Z] [--skip-attestation] [--bootstrap]
   install-worker.sh --help
 
 Options:
   --version vX.Y.Z    Install a specific GitHub release instead of the latest.
   --skip-attestation Install with HTTPS and SHA-256 verification only. This
                      weakens release authenticity and is not recommended.
+  --bootstrap        Continue into enrollment through the verified public
+                     bootstrap instead of printing manual enrollment steps.
   -h, --help          Show this help message.
 
 The installer never accepts an enrollment token. A fresh installation enables
@@ -99,6 +102,11 @@ while (($# > 0)); do
     --skip-attestation)
       [[ "$SKIP_ATTESTATION" == "false" ]] || die "--skip-attestation may only be specified once"
       SKIP_ATTESTATION=true
+      shift
+      ;;
+    --bootstrap)
+      [[ "$BOOTSTRAP_MODE" == "false" ]] || die "--bootstrap may only be specified once"
+      BOOTSTRAP_MODE=true
       shift
       ;;
     -h | --help)
@@ -592,6 +600,10 @@ else
   INSTALL_TRANSACTION_ACTIVE=false
   printf '\nRSCTF worker agent installed at %s.\n' "$BINARY_PATH"
   printf 'The service is enabled but has not been started.\n\n'
+  if [[ "$BOOTSTRAP_MODE" == "true" ]]; then
+    printf 'The verified bootstrap will now validate Docker and enroll this worker.\n'
+    exit 0
+  fi
   cat <<'EOF'
 Enroll this worker (replace the URL and enter the one-time token when prompted):
 

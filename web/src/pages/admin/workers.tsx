@@ -22,7 +22,12 @@ import { FC, useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { showErrorMsg } from '@Utils/Shared'
-import { workerInstallCommand, workerWindowsInstallCommand } from '@Utils/WorkerInstall'
+import {
+  workerInstallCommand,
+  workerUninstallCommand,
+  workerWindowsInstallCommand,
+  workerWindowsUninstallCommand,
+} from '@Utils/WorkerInstall'
 import api, { ContentType } from '@Api'
 
 dayjs.extend(relativeTime)
@@ -92,6 +97,8 @@ const Workers: FC = () => {
     return {
       linux: workerInstallCommand(window.location.origin),
       windows: workerWindowsInstallCommand(window.location.origin),
+      linuxUninstall: workerUninstallCommand(window.location.origin),
+      windowsUninstall: workerWindowsUninstallCommand(window.location.origin),
     }
   }, [])
 
@@ -261,6 +268,38 @@ const Workers: FC = () => {
               </Table.Tbody>
             </Table>
           </Table.ScrollContainer>
+        </Paper>
+
+        <Paper withBorder radius="md" p="md">
+          <Stack gap="sm">
+            <Title order={4}>Uninstall worker software</Title>
+            <Text size="sm" c="dimmed">
+              First set the worker to Disabled above. Uninstall refuses to remove a host that still has managed
+              workloads and asks for confirmation before deleting its local certificate and configuration.
+            </Text>
+            <Text size="sm" fw={500}>
+              Linux
+            </Text>
+            <Code block>{installCommands.linuxUninstall}</Code>
+            <CopyButton value={installCommands.linuxUninstall} timeout={1500}>
+              {({ copy }) => (
+                <Button variant="light" leftSection={<Icon path={mdiContentCopy} size={0.8} />} onClick={copy}>
+                  Copy Linux uninstall command
+                </Button>
+              )}
+            </CopyButton>
+            <Text size="sm" fw={500}>
+              Windows (Administrator PowerShell)
+            </Text>
+            <Code block>{installCommands.windowsUninstall}</Code>
+            <CopyButton value={installCommands.windowsUninstall} timeout={1500}>
+              {({ copy }) => (
+                <Button variant="light" leftSection={<Icon path={mdiContentCopy} size={0.8} />} onClick={copy}>
+                  Copy Windows uninstall command
+                </Button>
+              )}
+            </CopyButton>
+          </Stack>
         </Paper>
       </Stack>
 

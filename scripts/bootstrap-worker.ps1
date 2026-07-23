@@ -1,11 +1,12 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
     [ValidatePattern('^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?$')]
     [string]$ServerUrl,
 
     [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+$')]
-    [string]$Version
+    [string]$Version,
+
+    [switch]$Uninstall
 )
 
 $ErrorActionPreference = 'Stop'
@@ -121,11 +122,64 @@ function Assert-WorkerTaskRunning {
     }
 }
 
+function Uninstall-Worker {
+    if (-not (Get-Command docker.exe -ErrorAction SilentlyContinue)) {
+        throw 'Docker must be available so uninstall can verify that no managed workloads remain'
+    }
+    & docker.exe info *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Docker must be running so uninstall can verify that no managed workloads remain'
+    }
+    $managedContainers = @(& docker.exe ps --all --quiet --filter 'label=io.rsctf.worker.managed=true')
+    if ($LASTEXITCODE -ne 0) { throw 'could not inspect RSCTF-managed containers' }
+    $managedNetworks = @(& docker.exe network ls --quiet --filter 'label=io.rsctf.worker.managed=true')
+    if ($LASTEXITCODE -ne 0) { throw 'could not inspect RSCTF-managed networks' }
+    if ($managedContainers.Count -ne 0 -or $managedNetworks.Count -ne 0) {
+        throw 'RSCTF-managed containers or networks still exist; drain this worker and remove its workloads before uninstalling'
+    }
+
+    Write-Warning 'This permanently deletes the local worker certificate and configuration.'
+    Write-Warning 'Disable this worker in RSCTF Admin first so its certificate is rejected.'
+    $confirmation = Read-Host 'Type REMOVE to uninstall this worker'
+    if ($confirmation -cne 'REMOVE') { throw 'worker uninstall was cancelled' }
+    $confirmation = $null
+
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task) {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    }
+    foreach ($directory in @((Split-Path -Parent $agentPath), $stateDirectory)) {
+        if (-not (Test-Path -LiteralPath $directory)) { continue }
+        $item = Get-Item -LiteralPath $directory -Force
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "$directory is not a real directory; refusing recursive removal"
+        }
+        Remove-Item -LiteralPath $directory -Recurse -Force
+    }
+
+    $ownerLabel = (& docker.exe volume inspect --format '{{ index .Labels "io.rsctf.worker.daemon-owner" }}' rsctf-worker-owner 2>$null)
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($ownerLabel)) {
+        & docker.exe volume rm rsctf-worker-owner | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'could not remove the RSCTF Docker ownership marker' }
+    }
+    Write-Host 'RSCTF worker software and local identity were removed.' -ForegroundColor Green
+    Write-Host 'The Admin worker record is retained for audit history; keep it Disabled.'
+}
+
 try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw 'run this command from an Administrator PowerShell window'
+    }
+    if ($Uninstall) {
+        if ($ServerUrl -or $Version) { throw '-Uninstall cannot be combined with -ServerUrl or -Version' }
+        Uninstall-Worker
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($ServerUrl)) {
+        throw '-ServerUrl is required unless -Uninstall is used'
     }
     $presentIdentityNames = @($identityNames | Where-Object {
         Test-Path -LiteralPath (Join-Path $stateDirectory $_) -PathType Leaf
@@ -160,6 +214,10 @@ try {
     if ($actualHash -ne $expectedHash) { throw 'SHA-256 verification failed for install-worker.ps1' }
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $installerPath -Version $Version
     if ($LASTEXITCODE -ne 0) { throw "worker installer exited with code $LASTEXITCODE" }
+    & $agentPath doctor
+    if ($LASTEXITCODE -ne 0) {
+        throw 'worker runtime preflight failed before enrollment; fix Docker storage/runtime configuration and rerun this command'
+    }
 
     if (-not $existingEnrollment) {
         Write-Warning 'This host/VM must be dedicated to RSCTF challenge workloads and must not hold unrelated secrets.'

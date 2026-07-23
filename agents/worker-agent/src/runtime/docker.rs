@@ -27,10 +27,12 @@ use super::{RuntimeError, RuntimeOptions, WorkerRuntime};
 
 mod endpoints;
 mod inventory;
+mod preflight;
 mod support;
 mod tombstones;
 mod windows_acl;
 use endpoints::{EndpointCacheKey, EndpointTarget};
+pub(super) use preflight::run as preflight;
 use support::*;
 use tombstones::TombstoneStore;
 use windows_acl::{workload_network_driver, workload_network_options};

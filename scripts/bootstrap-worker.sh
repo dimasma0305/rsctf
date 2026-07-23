@@ -13,22 +13,101 @@ VERSION=""
 TEMP_DIRECTORY=""
 ENROLLMENT_TOKEN=""
 EXISTING_ENROLLMENT=false
+UNINSTALL=false
 
 usage() {
   cat <<'EOF'
-Install and enroll an RSCTF Linux worker.
+Install, update, or uninstall an RSCTF Linux worker.
 
 Usage:
   bootstrap-worker.sh --server-url https://ctf.example [--version vX.Y.Z]
+  bootstrap-worker.sh --uninstall
 
 The enrollment token is read privately from the controlling terminal. It is
 never accepted in a URL, command-line argument, or environment variable.
+
+Uninstall refuses to continue while RSCTF-managed workloads exist, then removes
+the local service, identity, binary, and dedicated service account. Disable the
+worker in RSCTF Admin before uninstalling it.
 EOF
 }
 
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
+}
+
+uninstall_worker() {
+  local managed_containers managed_networks owner_label worker_record
+
+  [[ -r /dev/tty && -w /dev/tty ]] || \
+    die "an interactive terminal is required for uninstall confirmation"
+  for command in docker getent groupdel rm systemctl userdel; do
+    command -v "$command" >/dev/null 2>&1 || die "required command is missing: $command"
+  done
+  docker info >/dev/null 2>&1 || \
+    die "Docker must be running so uninstall can verify that no managed workloads remain"
+  managed_containers="$(docker ps --all --quiet \
+    --filter label=io.rsctf.worker.managed=true)"
+  managed_networks="$(docker network ls --quiet \
+    --filter label=io.rsctf.worker.managed=true)"
+  if [[ -n "$managed_containers" || -n "$managed_networks" ]]; then
+    die "RSCTF-managed containers or networks still exist; drain this worker and remove its workloads before uninstalling"
+  fi
+  if [[ -L "$STATE_DIRECTORY" || (-e "$STATE_DIRECTORY" && ! -d "$STATE_DIRECTORY") ]]; then
+    die "${STATE_DIRECTORY} is not a real directory; refusing recursive removal"
+  fi
+  if [[ -L "/usr/local/share/doc/rsctf-worker-agent" || \
+    (-e "/usr/local/share/doc/rsctf-worker-agent" && \
+      ! -d "/usr/local/share/doc/rsctf-worker-agent") ]]; then
+    die "the worker documentation path is not a real directory; refusing recursive removal"
+  fi
+
+  printf '%s\n' \
+    'This permanently deletes the local worker certificate and configuration.' \
+    'Disable this worker in RSCTF Admin first so its certificate is rejected.' \
+    >/dev/tty
+  printf 'Type REMOVE to uninstall this worker: ' >/dev/tty
+  IFS= read -r confirmation </dev/tty
+  [[ "$confirmation" == "REMOVE" ]] || die "worker uninstall was cancelled"
+  confirmation=""
+
+  systemctl disable --now rsctf-worker-agent.service >/dev/null 2>&1 || true
+  rm -f -- /etc/systemd/system/rsctf-worker-agent.service \
+    /usr/local/bin/rsctf-worker-agent
+  if [[ -d /usr/local/share/doc/rsctf-worker-agent ]]; then
+    rm -rf -- /usr/local/share/doc/rsctf-worker-agent
+  fi
+  if [[ -d "$STATE_DIRECTORY" ]]; then
+    rm -rf -- "$STATE_DIRECTORY"
+  fi
+  systemctl daemon-reload
+  systemctl reset-failed rsctf-worker-agent.service >/dev/null 2>&1 || true
+
+  owner_label="$(docker volume inspect --format \
+    '{{ index .Labels "io.rsctf.worker.daemon-owner" }}' \
+    rsctf-worker-owner 2>/dev/null || true)"
+  if [[ -n "$owner_label" ]]; then
+    docker volume rm rsctf-worker-owner >/dev/null
+  fi
+
+  if worker_record="$(getent passwd rsctf-worker 2>/dev/null)"; then
+    IFS=: read -r worker_name _ worker_uid _ _ worker_home worker_shell <<< "$worker_record"
+    if [[ "$worker_name" == "rsctf-worker" && "$worker_uid" =~ ^[0-9]+$ && \
+      "$worker_uid" -ne 0 && "$worker_home" == "$STATE_DIRECTORY" && \
+      "$worker_shell" == */nologin ]]; then
+      userdel rsctf-worker
+    else
+      printf 'WARNING: retained unexpected rsctf-worker account; inspect it manually.\n' >&2
+    fi
+  fi
+  if getent group rsctf-worker >/dev/null 2>&1; then
+    groupdel rsctf-worker 2>/dev/null || \
+      printf 'WARNING: retained non-empty rsctf-worker group; inspect it manually.\n' >&2
+  fi
+
+  printf 'RSCTF worker software and local identity were removed.\n'
+  printf 'The Admin worker record is retained for audit history; keep it Disabled.\n'
 }
 
 cleanup() {
@@ -57,6 +136,11 @@ while (($# > 0)); do
       VERSION="$2"
       shift 2
       ;;
+    --uninstall)
+      [[ "$UNINSTALL" == "false" ]] || die "--uninstall may only be specified once"
+      UNINSTALL=true
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -67,12 +151,19 @@ while (($# > 0)); do
   esac
 done
 
+[[ "${EUID:-$(id -u)}" -eq 0 ]] || die "run this bootstrap through sudo"
+[[ "$(uname -s)" == "Linux" ]] || die "the worker runtime requires a dedicated Linux host or VM"
+if [[ "$UNINSTALL" == "true" ]]; then
+  [[ -z "$SERVER_URL" && -z "$VERSION" ]] || \
+    die "--uninstall cannot be combined with --server-url or --version"
+  uninstall_worker
+  exit 0
+fi
+
 [[ "$SERVER_URL" =~ ^https://([A-Za-z0-9-]+\.)*[A-Za-z0-9-]+(:[0-9]{1,5})?$ ]] || \
   die "--server-url must be an HTTPS origin without a path, query, or credentials"
 [[ -z "$VERSION" || "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
   die "--version must have the form vX.Y.Z"
-[[ "${EUID:-$(id -u)}" -eq 0 ]] || die "run this bootstrap through sudo"
-[[ "$(uname -s)" == "Linux" ]] || die "the worker runtime requires a dedicated Linux host or VM"
 
 for command in curl docker runuser sha256sum systemctl; do
   command -v "$command" >/dev/null 2>&1 || die "required command is missing: $command"
@@ -147,12 +238,27 @@ actual_installer_hash="${actual_installer_hash,,}"
 # SHA256SUMS asset. Keep this public one-line flow independent of GitHub CLI
 # versions; operators who need provenance verification can use the installer's
 # explicit attestation mode after downloading it separately.
-bash "$INSTALLER" --version "$VERSION" --skip-attestation
+bash "$INSTALLER" --version "$VERSION" --skip-attestation --bootstrap
+
+if ! runuser -u rsctf-worker -- \
+    /usr/local/bin/rsctf-worker-agent doctor; then
+  die "worker runtime preflight failed before enrollment; fix Docker storage/runtime configuration and rerun this command"
+fi
+
+assert_service_running() {
+  systemctl is-active --quiet rsctf-worker-agent.service || \
+    die "the worker service did not start"
+  sleep 3
+  if ! systemctl is-active --quiet rsctf-worker-agent.service; then
+    systemctl --no-pager --full status rsctf-worker-agent.service >&2 || true
+    journalctl --no-pager --unit rsctf-worker-agent.service --lines 30 >&2 || true
+    die "the worker service exited during its startup check"
+  fi
+}
 
 if [[ "$EXISTING_ENROLLMENT" == "true" ]]; then
   systemctl enable --now rsctf-worker-agent.service
-  systemctl is-active --quiet rsctf-worker-agent.service || \
-    die "the updated worker service did not remain active"
+  assert_service_running
   systemctl --no-pager --full status rsctf-worker-agent.service
   printf 'RSCTF worker updated and restarted; the existing mTLS identity was preserved.\n'
   exit 0
@@ -182,5 +288,6 @@ fi
 ENROLLMENT_TOKEN=""
 
 systemctl enable --now rsctf-worker-agent.service
+assert_service_running
 systemctl --no-pager --full status rsctf-worker-agent.service
 printf 'RSCTF worker installed, enrolled, and started successfully.\n'
