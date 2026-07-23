@@ -99,7 +99,12 @@ Windows AMD64 archive on
 [GitHub Releases](https://github.com/dimasma0305/rsctf/releases). The admin page
 supplies one copyable command for Linux and one for Administrator PowerShell;
 both require a dedicated-host acknowledgement and prompt for the one-use token
-without putting it in history or process arguments. See the
+without putting it in history or process arguments. On Linux, the same command
+uses a native systemd service when systemd is active and otherwise creates a
+Docker-supervised agent container with a durable, labeled identity volume.
+Safe production use still requires a quota-capable Docker storage driver; the
+explicit unbounded-storage escape hatch is only for trusted disposable
+development workers. See the
 [trusted-worker deployment guide](docs/deploy/workers.md) for
 server setup, enrollment, provenance verification, and source builds.
 

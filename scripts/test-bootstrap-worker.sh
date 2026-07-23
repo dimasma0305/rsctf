@@ -80,6 +80,47 @@ run_uninstall_fixture 1 '
   grep -q "managed containers or networks still exist" /tmp/uninstall-output
 '
 
+# Docker-supervised uninstall works without systemd and removes only objects
+# carrying the exact RSCTF ownership labels.
+docker run --rm \
+  --env RSCTF_TEST_MANAGED_CONTAINERS=0 \
+  --env RSCTF_TEST_OWNER_VOLUME=1 \
+  --env RSCTF_TEST_STATE_VOLUME=1 \
+  --env RSCTF_TEST_EXISTING_AGENT_CONTAINER=1 \
+  --env RSCTF_TEST_WORKER_IMAGES=1 \
+  --volume "$REPOSITORY_ROOT/scripts/bootstrap-worker.sh:/bootstrap.sh:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/docker:ro" \
+  "$TEST_IMAGE" \
+  bash -ceu '
+    test ! -d /run/systemd/system
+    printf "REMOVE\n" | script -qec "dash /bootstrap.sh --uninstall" /dev/null \
+      >/tmp/uninstall-output 2>&1
+
+    grep -qx "container rm --force rsctf-worker-agent" /tmp/docker.log
+    grep -qx "volume rm rsctf-worker-state" /tmp/docker.log
+    grep -qx "volume rm rsctf-worker-owner" /tmp/docker.log
+    grep -q "^image rm sha256:aa" /tmp/docker.log
+    grep -q "local identity were removed" /tmp/uninstall-output
+  '
+
+# A same-name foreign container is never deleted.
+docker run --rm \
+  --env RSCTF_TEST_MANAGED_CONTAINERS=0 \
+  --env RSCTF_TEST_EXISTING_AGENT_CONTAINER=1 \
+  --env RSCTF_TEST_AGENT_LABEL=false \
+  --volume "$REPOSITORY_ROOT/scripts/bootstrap-worker.sh:/bootstrap.sh:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/docker:ro" \
+  "$TEST_IMAGE" \
+  bash -ceu '
+    if script -qec "dash /bootstrap.sh --uninstall" /dev/null \
+        >/tmp/uninstall-output 2>&1; then
+      printf "uninstall removed an unlabeled container collision\n" >&2
+      exit 1
+    fi
+    grep -q "without the RSCTF agent label" /tmp/uninstall-output
+    ! grep -q "^container rm " /tmp/docker.log
+  '
+
 docker run --rm \
   --env RSCTF_TEST_HEALTHY=0 \
   --volume "$REPOSITORY_ROOT/scripts/bootstrap-worker.sh:/bootstrap.sh:ro" \
@@ -96,9 +137,8 @@ docker run --rm \
     grep -q "https://ctf.example/healthz$" /tmp/wget.log
   '
 
-# BusyBox-style wget flags must get far enough to produce the intended
-# unsupported-host diagnostic in a minimal container. The internal container
-# shell is not itself a persistent worker host.
+# BusyBox-style wget flags must work before the bootstrap reports a genuinely
+# missing runtime dependency in a minimal container.
 docker run --rm \
   --env RSCTF_TEST_HEALTHY=1 \
   --volume "$REPOSITORY_ROOT/scripts/bootstrap-worker.sh:/bootstrap.sh:ro" \
@@ -107,11 +147,10 @@ docker run --rm \
   bash -ceu '
     if dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
         >/tmp/bootstrap-output 2>&1; then
-      printf "bootstrap accepted a container without systemd\n" >&2
+      printf "bootstrap accepted a host without Docker\n" >&2
       exit 1
     fi
-    grep -q "systemd is not active" /tmp/bootstrap-output
-    grep -q "not a container or Docker Desktop internal VM" /tmp/bootstrap-output
+    grep -q "required command is missing: docker" /tmp/bootstrap-output
     grep -q "^-q -S -T 30 -O " /tmp/wget.log
     ! grep -Eq -- "--https-only|--secure-protocol|--output-document" /tmp/wget.log
   '
@@ -215,6 +254,91 @@ run_connection_fixture 0 0 "$PREPARE_ENROLLED_WORKER"'
   fi
   grep -q "service stopped before connecting" /tmp/bootstrap-output
   grep -q "fixture control connection refused" /tmp/bootstrap-output
+'
+
+run_docker_connection_fixture() {
+  local installation_status="$1"
+  local connected="$2"
+  local container_running="$3"
+  local assertions="$4"
+
+  docker run --rm \
+    --env "RSCTF_TEST_INSTALLATION_STATUS=$installation_status" \
+    --env "RSCTF_TEST_CONTROL_CONNECTED=$connected" \
+    --env "RSCTF_TEST_CONTAINER_RUNNING=$container_running" \
+    --env RSCTF_TEST_DOCTOR_SUCCESS=1 \
+    --env RSCTF_TEST_WORKER_DIAGNOSTIC="fixture Docker control connection refused" \
+    --volume "$REPOSITORY_ROOT/scripts/bootstrap-worker.sh:/bootstrap.sh:ro" \
+    --volume "$BOOTSTRAP_FIXTURE:/fixture:ro" \
+    --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/docker:ro" \
+    --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/wget:ro" \
+    "$TEST_IMAGE" \
+    bash -ceu "$assertions"
+}
+
+# Without systemd, Docker provides restart supervision and the worker identity
+# remains in a labeled named volume. The health gate still requires a stable,
+# server-accepted mTLS session.
+# shellcheck disable=SC2016
+run_docker_connection_fixture enrolled 1 1 '
+  test ! -d /run/systemd/system
+  RSCTF_WORKER_CONNECTION_TIMEOUT_SECONDS=6 \
+    dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
+    >/tmp/bootstrap-output 2>&1
+
+  grep -q "Selected docker worker service mode" /tmp/bootstrap-output
+  grep -q "Worker health check passed: mTLS control session accepted" \
+    /tmp/bootstrap-output
+  grep -q "updated and restarted" /tmp/bootstrap-output
+  grep -q "^import " /tmp/docker.log
+  grep -q "^volume create --label io.rsctf.worker.state=true rsctf-worker-state$" \
+    /tmp/docker.log
+  grep -q -- "--restart unless-stopped" /tmp/docker.log
+  grep -q -- "--network host" /tmp/docker.log
+  grep -q -- "--cap-drop ALL" /tmp/docker.log
+  grep -q -- "--security-opt no-new-privileges:true" /tmp/docker.log
+  grep -q "src=rsctf-worker-state,dst=/var/lib/rsctf-worker" /tmp/docker.log
+  grep -q "src=/var/run/docker.sock,dst=/var/run/docker.sock" /tmp/docker.log
+  grep -q "src=/var/lib/docker,dst=/var/lib/docker,readonly" /tmp/docker.log
+  test -f /tmp/rsctf-test-worker-state-volume
+  test -f /tmp/rsctf-test-container-rsctf-worker-agent
+  test ! -e /etc/systemd/system/rsctf-worker-agent.service
+  test ! -e /usr/local/bin/rsctf-worker-agent
+'
+
+# A fresh Docker-supervised installation reads the token only from the
+# controlling terminal, passes it on stdin, and never puts it in Docker argv.
+# shellcheck disable=SC2016
+run_docker_connection_fixture empty 1 1 '
+  printf "DEDICATED\nfixture-secret-token\n" |
+    script -qec \
+      "RSCTF_WORKER_CONNECTION_TIMEOUT_SECONDS=6 dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0" \
+      /dev/null >/tmp/bootstrap-output 2>&1
+
+  grep -q "installed, enrolled, and started successfully" /tmp/bootstrap-output
+  grep -q " enroll --server-url https://ctf.example --token-stdin " /tmp/docker.log
+  ! grep -q "fixture-secret-token" /tmp/docker.log
+'
+
+# A failed upgrade restores the previously supervised container instead of
+# leaving the worker on a known-bad image.
+# shellcheck disable=SC2016
+run_docker_connection_fixture enrolled 0 1 '
+  touch /tmp/rsctf-test-container-rsctf-worker-agent
+  if RSCTF_WORKER_CONNECTION_TIMEOUT_SECONDS=1 \
+      dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
+      >/tmp/bootstrap-output 2>&1; then
+    printf "bootstrap accepted an offline Docker-supervised worker\n" >&2
+    exit 1
+  fi
+
+  grep -q "previous container was restored" /tmp/bootstrap-output
+  grep -q "^rename rsctf-worker-agent rsctf-worker-agent-rollback-" \
+    /tmp/docker.log
+  grep -q "^rename rsctf-worker-agent-rollback-.* rsctf-worker-agent$" \
+    /tmp/docker.log
+  grep -q "fixture Docker control connection refused" /tmp/bootstrap-output
+  test -f /tmp/rsctf-test-container-rsctf-worker-agent
 '
 
 printf 'Worker bootstrap lifecycle tests passed.\n'

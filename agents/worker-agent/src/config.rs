@@ -21,6 +21,16 @@ pub enum Command {
     Enroll(EnrollArgs),
     /// Validate Docker compatibility without enrolling or changing daemon state.
     Doctor(DoctorArgs),
+    /// Inspect installer-owned identity state without exposing its contents.
+    #[command(hide = true)]
+    InstallationStatus(InstallationStatusArgs),
+}
+
+#[derive(Clone, Args)]
+pub struct InstallationStatusArgs {
+    /// Directory containing the worker identity.
+    #[arg(long, default_value = ".")]
+    pub state_dir: PathBuf,
 }
 
 #[derive(Clone, Args)]

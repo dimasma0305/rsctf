@@ -66,6 +66,27 @@ readonly VALID_FIXTURE="$TEMP_DIRECTORY/valid-fixture"
 make_package "$VALID_PACKAGE"
 make_fixture "$VALID_FIXTURE" "$VALID_PACKAGE"
 
+# On a Linux Docker host without systemd, auto mode imports the same verified
+# static binary as a minimal local image. It must not create host accounts,
+# service files, or a plaintext host state directory.
+# shellcheck disable=SC2016
+run_fixture "$VALID_FIXTURE" 0 '
+  test ! -d /run/systemd/system
+  dash /installer.sh --version v0.1.0 --skip-attestation --bootstrap \
+    >/tmp/installer-output 2>&1
+
+  grep -q "image imported as rsctf-worker-agent-local:0.1.0" \
+    /tmp/installer-output
+  grep -q "Docker-supervised service" /tmp/installer-output
+  grep -q "^import " /tmp/docker.log
+  grep -q "io.rsctf.worker.agent.image=true" /tmp/docker.log
+  grep -q "rsctf-worker-agent-local:0.1.0$" /tmp/docker.log
+  ! getent passwd rsctf-worker >/dev/null
+  test ! -e /var/lib/rsctf-worker
+  test ! -e /usr/local/bin/rsctf-worker-agent
+  test ! -e /etc/systemd/system/rsctf-worker-agent.service
+'
+
 # The quoted body is evaluated by Bash inside the disposable container.
 # shellcheck disable=SC2016
 run_fixture "$VALID_FIXTURE" 0 '

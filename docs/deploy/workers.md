@@ -9,10 +9,10 @@ needs a public IP, port forward, VPN, or shared private network with the server.
 Workers are trusted infrastructure, not team-owned BYOC agents. The agent's
 Docker socket access (normally through membership in the host's `docker` group)
 is host-root-equivalent: compromise of the agent can become compromise of the
-entire Docker host despite the systemd sandbox. Every production worker must
-therefore be a dedicated event host or VM with no unrelated workloads or
-secrets. Never expose the Docker Unix socket or Docker TCP API to RSCTF or the
-Internet.
+entire Docker host despite service or container hardening. Every production
+worker must therefore be a dedicated event host or VM with no unrelated
+workloads or secrets. Never expose the Docker Unix socket or Docker TCP API to
+RSCTF or the Internet.
 
 ## Supported runtime and topology
 
@@ -24,13 +24,14 @@ no external DNS upstream and a fail-closed HCN endpoint ACL: only the workload
 subnet is allowed, then all other outbound IPv4 destinations are denied. The
 agent reads the policy back before starting a container. Windows also requires
 `windowsfilter` writable-layer limits and Hyper-V container isolation. Docker
-Desktop Linux-container mode is not a native Windows runtime; use a dedicated
-Linux VM for that mode. The RSCTF server itself
+Desktop Linux-container mode is not a native Windows runtime; it uses the Linux
+worker in Docker-supervised mode inside Docker's Linux VM. The RSCTF server itself
 may run as a single binary under Docker Compose or Kubernetes, but the worker
 agent does **not** schedule Kubernetes Pods or use the Kubernetes API.
 One agent represents one Docker daemon. If the agent is containerized, it must
-still run beside a Docker-capable host with deliberate access to that daemon;
-the native binary is the preferred installation.
+still run beside a Docker-capable host with deliberate access to that daemon.
+The one-line Linux bootstrap selects a native systemd service when available
+and a hardened Docker-supervised container otherwise.
 
 A Jeopardy worker workload can contain multiple services. Multiple replicas are
 allowed only for explicitly stateless Jeopardy services. The protocol already
@@ -353,11 +354,17 @@ For a native Windows-container host, open Administrator PowerShell:
 
 The Linux bootstrap uses POSIX `sh` and the flags shared by GNU and BusyBox
 `wget`; it automatically uses `sudo` or `doas` when the current account is not
-root. The Windows bootstrap uses built-in PowerShell HTTP support. Before
-changing the host or asking for a token, each bootstrap requires the RSCTF
-`/healthz` readiness check to return HTTP 200 with the exact body `ok`. They
-verify the worker archive against the release SHA-256 checksum, prompt privately
-for the separately displayed one-use token, enroll, and start the service/task.
+root. When systemd is active, it installs the native binary under a dedicated
+account. Without systemd, it imports that same verified static binary into a
+minimal local image, stores identity in the labeled `rsctf-worker-state` volume,
+and starts `rsctf-worker-agent` with Docker's `unless-stopped` supervision,
+bounded logs, a read-only root filesystem, dropped capabilities, and
+`no-new-privileges`. The Windows bootstrap uses built-in PowerShell HTTP
+support. Before changing the host or asking for a token, each bootstrap requires
+the RSCTF `/healthz` readiness check to return HTTP 200 with the exact body
+`ok`. They verify the worker archive against the release SHA-256 checksum,
+prompt privately for the separately displayed one-use token, enroll, and start
+the service, supervised container, or scheduled task.
 After startup, the agent creates its protected local readiness marker only after
 RSCTF accepts the authenticated mTLS control session; it removes the marker when
 that session ends. The bootstrap waits for that marker to remain stable before
@@ -373,6 +380,22 @@ of overwriting it or consuming another token. Before prompting for that token,
 the installed agent runs `doctor`, which verifies Docker connectivity, the
 daemon platform, and enforceable writable-layer storage. A failed preflight does
 not consume the enrollment token.
+
+Docker-supervised mode uses host networking because the agent must dial private
+challenge-container bridge addresses. Docker Desktop 4.34 or newer must have
+host networking enabled in Settings before enrollment. Docker Desktop's Linux
+`overlayfs` storage normally does not provide the per-container writable-layer
+quota required for an adversarial event. Keep the safe default for production.
+Only a dedicated, disposable development worker may explicitly bypass that one
+check:
+
+```sh
+(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --server-url https://ctf.example --allow-unbounded-storage)
+```
+
+The free-space floor remains active, but without a per-container quota one
+challenge can consume the daemon's shared storage. Do not use the bypass for a
+real event.
 
 ## Uninstall a worker
 
@@ -393,17 +416,21 @@ Windows, from Administrator PowerShell:
 
 Both commands refuse to proceed while RSCTF-managed containers or networks
 remain and require typing `REMOVE`. They stop and unregister the service/task,
-remove the executable and local mTLS identity, and remove the worker's Docker
-ownership marker. The server-side worker row remains as audit history; keep it
-`Disabled` so its issued certificate is rejected.
+or the labeled Docker-supervised agent, remove its executable or local image,
+delete the local mTLS identity directory or named volume, and remove the
+worker's Docker ownership marker. Name collisions without the expected RSCTF
+labels are never deleted. The server-side worker row remains as audit history;
+keep it `Disabled` so its issued certificate is rejected.
 
 Beginning with tagged releases, the
 [worker installer](https://github.com/dimasma0305/rsctf/blob/main/scripts/install-worker.sh)
 detects Linux AMD64 or ARM64 and downloads the latest tagged archive from
 [GitHub Releases](https://github.com/dimasma0305/rsctf/releases), verifies its
-SHA-256 checksum and GitHub build attestation, creates the dedicated
-`rsctf-worker` account, state directory, and systemd unit, then enables the unit
-without starting it. Install a current system-wide GitHub CLI with
+SHA-256 checksum and GitHub build attestation, then installs the selected
+service mode. Systemd mode creates the dedicated `rsctf-worker` account, state
+directory, and unit. Docker mode imports a minimal labeled image; the bootstrap
+then creates its labeled state volume and supervised container. Install a
+current system-wide GitHub CLI with
 `gh attestation verify` support first. Download the installer release asset and
 verify its provenance before running it as root. The local attestation bundle
 means the worker does not need a GitHub login or token:
@@ -439,14 +466,17 @@ means the worker does not need a GitHub login or token:
 )
 ```
 
-On upgrade, an already-active worker is restarted after the verified binary and
-unit are replaced. The final install phase is transactional: if the systemd
-reload, enable, or restart fails, the installer restores the previous binary,
-unit, documentation files, and enabled state, then restarts the restored release
-when needed. It exits with an error if that recovery is incomplete. The
-idempotent nologin service identity, Docker-group membership, and state directory
-are retained for a safe retry; remove them manually only after confirming they
-are unused. A fresh installation remains stopped until enrollment succeeds.
+On upgrade, an already-active systemd worker is restarted after the verified
+binary and unit are replaced. That install phase is transactional: if reload,
+enable, or restart fails, the installer restores the previous binary, unit,
+documentation files, and enabled state, then restarts the restored release when
+needed. Docker-supervised upgrades retain the old container until the new image
+holds a stable, server-accepted mTLS session; a failed health gate restores the
+old container and its previous running state. Both modes exit with an error if
+recovery is incomplete. The idempotent nologin service identity,
+Docker-group membership, and state directory are retained for a safe systemd
+retry; the labeled Docker state volume is retained across container upgrades.
+A fresh installation remains stopped until enrollment succeeds.
 
 To pin a production installation, select the release explicitly, verify its
 installer, inspect it, and pass the same tag to the installer:
@@ -564,11 +594,20 @@ addresses.
 the default 512 MiB writable-layer limit and 5 GiB free-space floor unless the
 event's capacity model calls for stricter values.
 
-For long-running Linux use, keep the systemd service under its dedicated
-account and protect `/var/lib/rsctf-worker`: it contains the worker's mTLS
-private key. `/run/rsctf-worker-agent/connected` exists only while the server
-has accepted the current control session; do not create it manually. Follow
-logs with `sudo journalctl -u rsctf-worker-agent --follow`.
+For long-running systemd use, keep the service under its dedicated account and
+protect `/var/lib/rsctf-worker`: it contains the worker's mTLS private key.
+`/run/rsctf-worker-agent/connected` exists only while the server has accepted
+the current control session; do not create it manually. Follow logs with
+`sudo journalctl -u rsctf-worker-agent --follow`. In Docker-supervised mode,
+protect the `rsctf-worker-state` volume and inspect the agent with:
+
+```sh
+docker ps --filter name=rsctf-worker-agent
+docker logs --follow rsctf-worker-agent
+```
+
+Do not manually replace the agent container or attach the identity volume to
+another container. Rerun the same verified one-line bootstrap for upgrades.
 
 ### Verify or build manually
 
@@ -615,7 +654,8 @@ sudo install -m 0755 \
 
 The source build changes only how the binary is obtained. Use the same
 dedicated account, state ownership, enrollment, and systemd configuration as a
-release installation.
+native release installation, or reproduce the Docker-supervised image and
+volume constraints documented above.
 
 ### Native Windows worker
 

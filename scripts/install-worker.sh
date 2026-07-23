@@ -15,6 +15,8 @@ UNIT_PATH="/etc/systemd/system/rsctf-worker-agent.service"
 DOCUMENTATION_DIRECTORY="/usr/local/share/doc/rsctf-worker-agent"
 
 VERSION=""
+SERVICE_MODE="auto"
+SERVICE_MODE_SET=false
 TEMP_DIRECTORY=""
 SKIP_ATTESTATION=false
 BOOTSTRAP_MODE=false
@@ -37,14 +39,18 @@ STAGED_UNIT=""
 
 usage() {
   cat <<'EOF'
-Install the RSCTF worker agent on a systemd-based Linux host.
+Install the RSCTF worker agent on a Linux Docker host.
 
 Usage:
-  install-worker.sh [--version vX.Y.Z] [--skip-attestation] [--bootstrap]
+  install-worker.sh [--version vX.Y.Z] [--service-mode auto|systemd|docker]
+                    [--skip-attestation] [--bootstrap]
   install-worker.sh --help
 
 Options:
   --version vX.Y.Z    Install a specific GitHub release instead of the latest.
+  --service-mode MODE Use a native systemd service or a Docker-supervised agent
+                      container. Auto uses systemd when active and Docker
+                      otherwise.
   --skip-attestation Install with HTTPS and SHA-256 verification only. This
                      weakens release authenticity and is not recommended.
   --bootstrap        Continue into enrollment through the verified public
@@ -52,16 +58,19 @@ Options:
   -h, --help          Show this help message.
 
 This installer runs with a POSIX sh and supports GNU wget and BusyBox wget.
-The installer never accepts an enrollment token. A fresh installation enables
-the service without starting it and prints secure enrollment commands. An
-already-active service is restarted after a verified upgrade.
+The installer never accepts an enrollment token. In systemd mode, a fresh
+installation enables the service without starting it and prints secure
+enrollment commands. In Docker mode, it imports the verified static binary as a
+minimal local image; the public bootstrap creates durable state, enrolls it,
+and starts the supervised container.
 
 GitHub CLI with `gh attestation verify` support is required unless the explicit
 --skip-attestation escape hatch is used. Verification uses the release's local
 bundle, so no GitHub login or token is required on the worker.
 
-Supported platforms: systemd-based Linux amd64 and Linux arm64/aarch64 hosts.
-Containers and Docker Desktop's internal VM are not persistent worker hosts.
+Supported platforms: Linux amd64 and Linux arm64/aarch64 Docker hosts. The
+Docker-supervised mode does not require a host init system; Docker provides
+restart supervision and durable named-volume identity storage.
 EOF
 }
 
@@ -201,6 +210,14 @@ while [ "$#" -gt 0 ]; do
       VERSION=$2
       shift 2
       ;;
+    --service-mode)
+      [ "$#" -ge 2 ] || die "--service-mode requires a value"
+      [ "$SERVICE_MODE_SET" = false ] ||
+        die "--service-mode may only be specified once"
+      SERVICE_MODE=$2
+      SERVICE_MODE_SET=true
+      shift 2
+      ;;
     --skip-attestation)
       [ "$SKIP_ATTESTATION" = false ] ||
         die "--skip-attestation may only be specified once"
@@ -228,8 +245,21 @@ require_command grep
   die "--version must have the form vX.Y.Z"
 [ "$(id -u)" -eq 0 ] || die "this installer must be run as root"
 [ "$(uname -s)" = "Linux" ] || die "only Linux is supported"
-if [ ! -d /run/systemd/system ]; then
-  die "systemd is not active; use a persistent systemd-based Linux host or VM, not a container or Docker Desktop internal VM"
+case "$SERVICE_MODE" in
+  auto)
+    if [ -d /run/systemd/system ] &&
+      command -v systemctl >/dev/null 2>&1 &&
+      systemctl show --property=Version --value >/dev/null 2>&1; then
+      SERVICE_MODE=systemd
+    else
+      SERVICE_MODE=docker
+    fi
+    ;;
+  systemd | docker) ;;
+  *) die "--service-mode must be auto, systemd, or docker" ;;
+esac
+if [ "$SERVICE_MODE" = systemd ] && [ ! -d /run/systemd/system ]; then
+  die "systemd service mode was requested but systemd is not active"
 fi
 
 case "$(uname -m)" in
@@ -244,13 +274,24 @@ case "$(uname -m)" in
     ;;
 esac
 
-for required_command in awk cp docker getent groupadd id install mktemp mv \
-  rm rmdir sha256sum systemctl tar useradd usermod wc wget; do
+for required_command in awk chmod cp docker id mkdir mktemp rm sha256sum tar \
+  uname wc wget; do
   require_command "$required_command"
 done
 
-getent group docker >/dev/null 2>&1 ||
-  die "the Docker group does not exist; install Docker Engine first"
+docker info >/dev/null 2>&1 ||
+  die "Docker is not running or root cannot access its daemon"
+
+if [ "$SERVICE_MODE" = systemd ]; then
+  for required_command in getent groupadd install mv rmdir systemctl useradd \
+    usermod; do
+    require_command "$required_command"
+  done
+  systemctl show --property=Version --value >/dev/null 2>&1 ||
+    die "systemd service mode was requested but its manager is unavailable"
+  getent group docker >/dev/null 2>&1 ||
+    die "the Docker group does not exist; install Docker Engine first"
+fi
 
 if [ "$SKIP_ATTESTATION" = false ]; then
   require_command gh
@@ -268,11 +309,13 @@ if [ "$SKIP_ATTESTATION" = false ]; then
   done
 fi
 
-if systemctl is-active --quiet rsctf-worker-agent.service >/dev/null 2>&1; then
-  SERVICE_WAS_ACTIVE=true
-fi
-if systemctl is-enabled --quiet rsctf-worker-agent.service >/dev/null 2>&1; then
-  SERVICE_WAS_ENABLED=true
+if [ "$SERVICE_MODE" = systemd ]; then
+  if systemctl is-active --quiet rsctf-worker-agent.service >/dev/null 2>&1; then
+    SERVICE_WAS_ACTIVE=true
+  fi
+  if systemctl is-enabled --quiet rsctf-worker-agent.service >/dev/null 2>&1; then
+    SERVICE_WAS_ENABLED=true
+  fi
 fi
 
 ASSET="rsctf-worker-agent-linux-${ARCHITECTURE}.tar.gz"
@@ -454,6 +497,77 @@ for expected_file in "$EXTRACTED_BINARY" "$EXTRACTED_UNIT" \
 done
 [ -x "$EXTRACTED_BINARY" ] ||
   die "the extracted worker binary is not executable"
+
+if [ "$SERVICE_MODE" = docker ]; then
+  docker_operating_system=$(docker info --format '{{.OSType}}') ||
+    die "could not determine the Docker daemon operating system"
+  [ "$docker_operating_system" = linux ] ||
+    die "Docker-supervised Linux mode requires a Linux-container daemon"
+
+  docker_architecture=$(docker info --format '{{.Architecture}}') ||
+    die "could not determine the Docker daemon architecture"
+  case "$docker_architecture" in
+    x86_64 | amd64) docker_architecture=amd64 ;;
+    aarch64 | arm64) docker_architecture=arm64 ;;
+    *) die "unsupported Docker daemon architecture: ${docker_architecture}" ;;
+  esac
+  [ "$docker_architecture" = "$ARCHITECTURE" ] ||
+    die "the Docker daemon architecture does not match this Linux host"
+
+  CONTAINER_ROOT="${TEMP_DIRECTORY}/container-root"
+  CONTAINER_ARCHIVE="${TEMP_DIRECTORY}/worker-image.tar"
+  CONTAINER_IMAGE="rsctf-worker-agent-local:${VERSION#v}"
+  mkdir -p \
+    "${CONTAINER_ROOT}/usr/local/bin" \
+    "${CONTAINER_ROOT}/usr/share/doc/rsctf-worker-agent"
+  chmod 0755 \
+    "$CONTAINER_ROOT" \
+    "${CONTAINER_ROOT}/usr" \
+    "${CONTAINER_ROOT}/usr/local" \
+    "${CONTAINER_ROOT}/usr/local/bin" \
+    "${CONTAINER_ROOT}/usr/share" \
+    "${CONTAINER_ROOT}/usr/share/doc" \
+    "${CONTAINER_ROOT}/usr/share/doc/rsctf-worker-agent"
+  cp "$EXTRACTED_BINARY" \
+    "${CONTAINER_ROOT}/usr/local/bin/rsctf-worker-agent"
+  cp \
+    "${EXTRACTED_ROOT}/LICENSE.txt" \
+    "${EXTRACTED_ROOT}/NOTICE" \
+    "${CONTAINER_ROOT}/usr/share/doc/rsctf-worker-agent/"
+  chmod 0755 "${CONTAINER_ROOT}/usr/local/bin/rsctf-worker-agent"
+  chmod 0644 \
+    "${CONTAINER_ROOT}/usr/share/doc/rsctf-worker-agent/LICENSE.txt" \
+    "${CONTAINER_ROOT}/usr/share/doc/rsctf-worker-agent/NOTICE"
+  tar -C "$CONTAINER_ROOT" -cf "$CONTAINER_ARCHIVE" . ||
+    die "could not stage the verified worker container filesystem"
+
+  printf 'Importing verified worker image %s...\n' "$CONTAINER_IMAGE"
+  imported_image=$(
+    docker import \
+      --change 'ENTRYPOINT ["/usr/local/bin/rsctf-worker-agent"]' \
+      --change 'LABEL org.opencontainers.image.title=rsctf-worker-agent' \
+      --change "LABEL org.opencontainers.image.version=${VERSION#v}" \
+      --change 'LABEL org.opencontainers.image.licenses=MIT' \
+      --change 'LABEL io.rsctf.worker.agent.image=true' \
+      "$CONTAINER_ARCHIVE" \
+      "$CONTAINER_IMAGE"
+  ) || die "Docker could not import the verified worker image"
+  printf '%s\n' "$imported_image" |
+    grep -Eq '^sha256:[0-9a-f]{64}$' ||
+    die "Docker returned an unexpected worker image identity"
+  inspected_image=$(docker image inspect --format '{{.Id}}' "$CONTAINER_IMAGE") ||
+    die "Docker could not inspect the imported worker image"
+  [ "$inspected_image" = "$imported_image" ] ||
+    die "the imported worker image tag does not resolve to the expected image"
+
+  printf '\nRSCTF worker agent image imported as %s.\n' "$CONTAINER_IMAGE"
+  if [ "$BOOTSTRAP_MODE" = true ]; then
+    printf 'The verified bootstrap will now enroll and start its Docker-supervised service.\n'
+  else
+    printf 'Run the public worker bootstrap to create durable state and enroll this image.\n'
+  fi
+  exit 0
+fi
 
 snapshot_installed_file() {
   snapshot_installed_path=$1

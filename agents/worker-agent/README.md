@@ -7,8 +7,9 @@ AMD64 archive for native Windows-container hosts.
 
 The service account's access to the Docker socket (normally through the
 `docker` group) is host-root-equivalent. A compromised agent can control the
-entire Docker host despite the systemd sandbox, so every production worker must
-be a dedicated event host or VM with no unrelated workloads or secrets.
+entire Docker host despite service or container hardening, so every production
+worker must be a dedicated event host or VM with no unrelated workloads or
+secrets.
 
 ## Install
 
@@ -29,12 +30,28 @@ On a native Windows-container host, use Administrator PowerShell:
 
 Downloading or running the bootstrap grants no worker access without a valid
 15-minute enrollment token. The command requires a tagged release, Docker, and
-a dedicated worker host. Linux additionally requires systemd. Its installer
-runs with POSIX `sh`, uses only the download flags shared by GNU and BusyBox
-`wget`, and elevates through `sudo` or `doas` when needed. Neither one-line
-bootstrap requires the GitHub CLI. A fresh enrollment requires typing
-`DEDICATED` before the hidden token prompt; do not bypass this boundary on a
-daily-use computer or a machine containing unrelated secrets.
+a dedicated worker host. The Linux installer runs with POSIX `sh`, uses only
+the download flags shared by GNU and BusyBox `wget`, and elevates through
+`sudo` or `doas` when needed. It automatically installs a native systemd
+service when systemd is active. Otherwise it imports the same verified static
+binary as a minimal Docker image, runs it with Docker's restart supervision,
+and stores the mTLS identity in the labeled `rsctf-worker-state` volume.
+Neither one-line bootstrap requires the GitHub CLI. A fresh enrollment requires
+typing `DEDICATED` before the hidden token prompt; do not bypass this boundary
+on a daily-use computer or a machine containing unrelated secrets.
+
+Docker-supervised mode uses host networking so the agent can reach private
+challenge bridge addresses. Docker Desktop users must enable its host-networking
+feature before enrollment. Docker Desktop's Linux `overlayfs` storage normally
+does not satisfy the worker's per-container quota preflight; only a trusted,
+disposable development worker may opt out explicitly:
+
+```sh
+(t=$(mktemp) || exit 1; trap 'rm -f "$t"' 0 HUP INT TERM; wget -q -T 30 -O "$t" https://ctf.example/install/worker && sh "$t" --server-url https://ctf.example --allow-unbounded-storage)
+```
+
+Do not use that escape hatch for an adversarial event. Use XFS with project
+quotas, Btrfs, or ZFS for a production Linux worker.
 
 The one-command bootstrap downloads the latest tagged release over HTTPS and
 verifies the worker archive against that release's `SHA256SUMS`. For an
@@ -73,8 +90,11 @@ login or token is needed because the release carries its attestation bundle:
 )
 ```
 
-On a later upgrade, the installer restarts the service only when it was already
-active; a fresh installation remains stopped until enrollment succeeds.
+On a later upgrade, systemd mode transactionally replaces the native service
+files. Docker-supervised mode starts the new image, waits for a stable
+server-accepted mTLS session, and restores the prior container if that health
+gate fails. A fresh installation does not start its long-running agent until
+enrollment succeeds.
 
 For a reproducibly pinned installation, download and attest the installer from
 the same release as the binary it will install:
@@ -136,8 +156,9 @@ unset RSCTF_ADMIN_TOKEN
 ```
 
 Copy only that short-lived token to the worker through a secure operator
-channel. Never put `RSCTF_ADMIN_TOKEN` on the worker. After the installer has
-created the service account, enter the token at the hidden prompt:
+channel. Never put `RSCTF_ADMIN_TOKEN` on the worker. The one-line bootstrap
+performs enrollment itself. For a manual systemd-mode installation, enter the
+token after the installer creates the service account:
 
 ```bash
 sudo -v
@@ -170,11 +191,15 @@ sudo -u rsctf-worker /usr/local/bin/rsctf-worker-agent run \
 
 The installed systemd unit supplies those production arguments. Check it with
 `systemctl status rsctf-worker-agent` or follow logs with
-`journalctl -u rsctf-worker-agent --follow`. Installed Linux and Windows services
-also pass a protected `--ready-file`. The agent creates that marker only after the
-server accepts its mTLS control session and removes it when disconnected, allowing
-the one-line installers to distinguish a truly online worker from a process that
-is only running or retrying.
+`journalctl -u rsctf-worker-agent --follow`. In Docker-supervised mode, use
+`docker ps --filter name=rsctf-worker-agent` and
+`docker logs --follow rsctf-worker-agent`; its identity remains in the
+`rsctf-worker-state` volume across container replacement and Docker restarts.
+Installed Linux and Windows services also pass a protected `--ready-file`. The
+agent creates that marker only after the server accepts its mTLS control session
+and removes it when disconnected, allowing the one-line installers to
+distinguish a truly online worker from a process that is only running or
+retrying.
 
 ## Manual verification and source build
 

@@ -2,6 +2,7 @@ mod backoff;
 mod client;
 mod config;
 mod enroll;
+mod installation;
 mod readiness;
 mod runtime;
 mod security;
@@ -42,6 +43,8 @@ async fn main() {
             .map_err(|error| Box::new(error) as Box<dyn std::error::Error>),
         Command::Doctor(arguments) => runtime::doctor(arguments)
             .await
+            .map_err(|error| Box::new(error) as Box<dyn std::error::Error>),
+        Command::InstallationStatus(arguments) => installation::print_status(arguments)
             .map_err(|error| Box::new(error) as Box<dyn std::error::Error>),
     };
     if let Err(error) = result {

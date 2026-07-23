@@ -375,8 +375,9 @@ const Workers: FC = () => {
           </CopyButton>
           <Text size="xs" c="dimmed">
             The token is shown once, expires after 15 minutes, and is consumed by the first successful enrollment.
-            Native Windows workers require Docker in Windows-container mode. Docker Desktop Linux-container mode must
-            use the Linux command inside a dedicated Linux VM.
+            Linux automatically uses systemd when available or Docker supervision otherwise. Native Windows workers
+            require Docker in Windows-container mode. For Docker Desktop Linux-container mode, enable host networking
+            and run the Linux command inside its dedicated Linux VM. Keep storage quota checks enabled for real events.
           </Text>
         </Stack>
       </Modal>
