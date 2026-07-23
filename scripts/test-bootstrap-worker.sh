@@ -61,4 +61,20 @@ run_uninstall_fixture 1 '
   grep -q "managed containers or networks still exist" /tmp/uninstall-output
 '
 
-printf 'Worker bootstrap uninstall tests passed.\n'
+docker run --rm \
+  --env RSCTF_TEST_HEALTHY=0 \
+  --volume "$REPOSITORY_ROOT/scripts/bootstrap-worker.sh:/bootstrap.sh:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/wget:ro" \
+  "$TEST_IMAGE" \
+  bash -ceu '
+    if bash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
+        >/tmp/bootstrap-output 2>&1; then
+      printf "bootstrap accepted an unhealthy RSCTF server\n" >&2
+      exit 1
+    fi
+    grep -q "health check failed" /tmp/bootstrap-output
+    test "$(wc -l < /tmp/wget.log)" -eq 1
+    grep -q "https://ctf.example/healthz$" /tmp/wget.log
+  '
+
+printf 'Worker bootstrap lifecycle tests passed.\n'

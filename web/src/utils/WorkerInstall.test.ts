@@ -10,7 +10,7 @@ import {
 test('worker install command contains only the public HTTPS origin', () => {
   assert.equal(
     workerInstallCommand('https://tcp.1pc.tf'),
-    'curl -fsSL https://tcp.1pc.tf/install/worker | sudo bash -s -- --server-url https://tcp.1pc.tf'
+    '(set -o pipefail; wget -qO- --https-only --secure-protocol=TLSv1_2 https://tcp.1pc.tf/install/worker | sudo bash -s -- --server-url https://tcp.1pc.tf)'
   )
 })
 
@@ -24,7 +24,7 @@ test('Windows worker command contains only the public HTTPS origin', () => {
 test('worker uninstall commands contain only the public HTTPS origin', () => {
   assert.equal(
     workerUninstallCommand('https://tcp.1pc.tf'),
-    'curl -fsSL https://tcp.1pc.tf/install/worker | sudo bash -s -- --uninstall'
+    '(set -o pipefail; wget -qO- --https-only --secure-protocol=TLSv1_2 https://tcp.1pc.tf/install/worker | sudo bash -s -- --uninstall)'
   )
   assert.equal(
     workerWindowsUninstallCommand('https://tcp.1pc.tf'),

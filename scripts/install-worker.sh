@@ -138,7 +138,7 @@ case "$(uname -m)" in
     ;;
 esac
 
-for command in cp curl docker getent grep groupadd id install mktemp mv rm rmdir sha256sum systemctl tar useradd usermod; do
+for command in awk cp docker getent grep groupadd head id install mktemp mv rm rmdir sha256sum systemctl tar useradd usermod wc wget; do
   command -v "$command" >/dev/null 2>&1 || die "required command is missing: $command"
 done
 
@@ -174,32 +174,25 @@ readonly CHECKSUM_ASSET="SHA256SUMS"
 readonly BUNDLE_ASSET="rsctf-worker-agent-attestation.json"
 readonly RELEASE_BASE="https://github.com/${REPOSITORY}/releases"
 
-release_curl() {
-  curl --disable \
-    --fail \
-    --silent \
-    --show-error \
-    --location \
-    --proto '=https' \
-    --proto-redir '=https' \
-    --tlsv1.2 \
-    --connect-timeout 15 \
-    --max-time 300 \
-    --retry-max-time 300 \
-    --speed-limit 1024 \
-    --speed-time 30 \
-    --retry 5 \
-    --retry-all-errors \
-    --retry-delay 2 \
+release_wget() {
+  wget \
+    --https-only \
+    --secure-protocol=TLSv1_2 \
+    --max-redirect=5 \
+    --timeout=30 \
+    --read-timeout=30 \
+    --tries=5 \
+    --retry-connrefused \
+    --no-verbose \
     "$@"
 }
 
 if [[ -z "$VERSION" ]]; then
-  latest_url="$(release_curl \
-    --output /dev/null \
-    --max-filesize 1048576 \
-    --write-out '%{url_effective}' \
-    "${RELEASE_BASE}/latest")" || die "could not resolve the latest worker release"
+  latest_headers="$(release_wget --spider --server-response \
+    "${RELEASE_BASE}/latest" 2>&1)" || die "could not resolve the latest worker release"
+  latest_url="$(awk '/^  Location: / { location = $2 } END { print location }' \
+    <<< "$latest_headers")"
+  latest_url="${latest_url%$'\r'}"
   latest_prefix="${RELEASE_BASE}/tag/"
   [[ "$latest_url" == "${latest_prefix}"* ]] || die "the latest release redirected to an unexpected URL"
   VERSION="${latest_url#"$latest_prefix"}"
@@ -221,11 +214,18 @@ download() {
   local url="$1"
   local destination="$2"
   local maximum_bytes="$3"
+  local -a pipeline_status
 
-  release_curl \
-    --output "$destination" \
-    --max-filesize "$maximum_bytes" \
-    "$url"
+  set +e
+  release_wget --output-document=- "$url" |
+    head -c "$((maximum_bytes + 1))" > "$destination"
+  pipeline_status=("${PIPESTATUS[@]}")
+  set -e
+  if [[ "$(wc -c < "$destination")" -gt "$maximum_bytes" ]]; then
+    die "download exceeds ${maximum_bytes} bytes: ${url}"
+  fi
+  [[ "${pipeline_status[0]}" -eq 0 && "${pipeline_status[1]}" -eq 0 ]] || \
+    die "download failed: ${url}"
 }
 
 printf 'Downloading %s from %s...\n' "$ASSET" "$VERSION"

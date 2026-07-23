@@ -165,7 +165,30 @@ fi
 [[ -z "$VERSION" || "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
   die "--version must have the form vX.Y.Z"
 
-for command in curl docker runuser sha256sum systemctl; do
+for command in awk head wc wget; do
+  command -v "$command" >/dev/null 2>&1 || die "required command is missing: $command"
+done
+
+release_wget() {
+  wget \
+    --https-only \
+    --secure-protocol=TLSv1_2 \
+    --max-redirect=5 \
+    --timeout=30 \
+    --read-timeout=30 \
+    --tries=5 \
+    --retry-connrefused \
+    --no-verbose \
+    "$@"
+}
+
+server_health="$(release_wget --output-document=- "${SERVER_URL}/healthz" |
+  head -c 3)" || die "RSCTF health check failed; installation did not start"
+[[ "$server_health" == "ok" ]] || \
+  die "RSCTF health check returned an unexpected response; installation did not start"
+printf 'Verified RSCTF server health at %s/healthz.\n' "$SERVER_URL"
+
+for command in docker runuser sha256sum systemctl; do
   command -v "$command" >/dev/null 2>&1 || die "required command is missing: $command"
 done
 docker info >/dev/null 2>&1 || die "Docker is not running or root cannot access its daemon"
@@ -187,17 +210,13 @@ if [[ "$EXISTING_ENROLLMENT" == "false" ]]; then
 fi
 
 readonly RELEASE_BASE="https://github.com/${REPOSITORY}/releases"
-readonly CURL_ARGS=(
-  --disable --fail --silent --show-error --location
-  --proto '=https' --proto-redir '=https' --tlsv1.2
-  --connect-timeout 15 --max-time 300 --retry 5 --retry-all-errors
-  --retry-max-time 300 --speed-limit 1024 --speed-time 30
-)
-
 if [[ -z "$VERSION" ]]; then
-  latest_url="$(curl "${CURL_ARGS[@]}" --max-filesize 1048576 \
-    --output /dev/null --write-out '%{url_effective}' "${RELEASE_BASE}/latest")" || \
+  latest_headers="$(release_wget --spider --server-response \
+    "${RELEASE_BASE}/latest" 2>&1)" || \
     die "could not resolve the latest RSCTF release"
+  latest_url="$(awk '/^  Location: / { location = $2 } END { print location }' \
+    <<< "$latest_headers")"
+  latest_url="${latest_url%$'\r'}"
   VERSION="${latest_url##*/}"
   [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
     die "the latest release does not use a vX.Y.Z tag"
@@ -209,10 +228,26 @@ readonly INSTALLER="${TEMP_DIRECTORY}/install-worker.sh"
 readonly CHECKSUMS="${TEMP_DIRECTORY}/SHA256SUMS"
 readonly DOWNLOAD_BASE="${RELEASE_BASE}/download/${VERSION}"
 
-curl "${CURL_ARGS[@]}" --max-filesize 1048576 \
-  --output "$INSTALLER" "${DOWNLOAD_BASE}/install-worker.sh"
-curl "${CURL_ARGS[@]}" --max-filesize 1048576 \
-  --output "$CHECKSUMS" "${DOWNLOAD_BASE}/SHA256SUMS"
+download() {
+  local url="$1"
+  local destination="$2"
+  local maximum_bytes="$3"
+  local -a pipeline_status
+
+  set +e
+  release_wget --output-document=- "$url" |
+    head -c "$((maximum_bytes + 1))" > "$destination"
+  pipeline_status=("${PIPESTATUS[@]}")
+  set -e
+  if [[ "$(wc -c < "$destination")" -gt "$maximum_bytes" ]]; then
+    die "download exceeds ${maximum_bytes} bytes: ${url}"
+  fi
+  [[ "${pipeline_status[0]}" -eq 0 && "${pipeline_status[1]}" -eq 0 ]] || \
+    die "download failed: ${url}"
+}
+
+download "${DOWNLOAD_BASE}/install-worker.sh" "$INSTALLER" 1048576
+download "${DOWNLOAD_BASE}/SHA256SUMS" "$CHECKSUMS" 1048576
 
 expected_installer_hash=""
 installer_checksum_matches=0

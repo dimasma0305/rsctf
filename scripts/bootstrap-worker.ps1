@@ -190,6 +190,13 @@ try {
     $existingEnrollment = $presentIdentityNames.Count -eq $identityNames.Count
     New-Item -ItemType Directory -Path $temporaryDirectory -ErrorAction Stop | Out-Null
     Protect-TemporaryDirectory -Path $temporaryDirectory
+    $healthPath = Join-Path $temporaryDirectory 'healthz'
+    [void](Get-HttpsFile -Uri "$ServerUrl/healthz" -Destination $healthPath -MaximumBytes 16)
+    $healthBody = [System.IO.File]::ReadAllText($healthPath)
+    if ($healthBody -cne 'ok') {
+        throw 'RSCTF health check returned an unexpected response; installation did not start'
+    }
+    Write-Host "Verified RSCTF server health at $ServerUrl/healthz."
 
     if (-not $Version) {
         $probePath = Join-Path $temporaryDirectory 'latest'

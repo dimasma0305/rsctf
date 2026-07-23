@@ -342,8 +342,9 @@ The simplest supported path is the command shown after creating a worker at
 `/admin/workers`:
 
 ```bash
-curl -fsSL https://ctf.example/install/worker | \
-  sudo bash -s -- --server-url https://ctf.example
+(set -o pipefail; wget -qO- --https-only --secure-protocol=TLSv1_2 \
+  https://ctf.example/install/worker | \
+  sudo bash -s -- --server-url https://ctf.example)
 ```
 
 For a native Windows-container host, open Administrator PowerShell:
@@ -352,9 +353,12 @@ For a native Windows-container host, open Administrator PowerShell:
 & ([scriptblock]::Create((Invoke-RestMethod https://ctf.example/install/worker.ps1))) -ServerUrl https://ctf.example
 ```
 
-The public bootstraps use standard platform tools and verify the worker archive
-against the release SHA-256 checksum. They prompt privately for the separately
-displayed one-use token, enroll, and start the service/task. A fresh enrollment
+The Linux bootstrap uses GNU `wget`; the Windows bootstrap uses built-in
+PowerShell HTTP support. Before changing the host or asking for a token, each
+bootstrap requires the RSCTF `/healthz` readiness check to return HTTP 200 with
+the exact body `ok`. They verify the worker archive against the release SHA-256
+checksum, prompt privately for the separately displayed one-use token, enroll,
+and start the service/task. A fresh enrollment
 also requires typing `DEDICATED` to acknowledge the host boundary. Neither accepts
 enrollment credentials in a URL, command argument, or environment variable.
 Running one without a valid 15-minute token cannot authorize a new worker. A
@@ -372,7 +376,8 @@ to `Disabled` in `/admin/workers`. Then run the matching one-line command.
 Linux:
 
 ```bash
-curl -fsSL https://ctf.example/install/worker | sudo bash -s -- --uninstall
+(set -o pipefail; wget -qO- --https-only --secure-protocol=TLSv1_2 \
+  https://ctf.example/install/worker | sudo bash -s -- --uninstall)
 ```
 
 Windows, from Administrator PowerShell:

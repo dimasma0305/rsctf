@@ -246,6 +246,7 @@ jobs:
           if ($bootstrap -notmatch "Read-Host 'Type REMOVE to uninstall this worker'") { throw 'Windows uninstall does not require confirmation' }
           if ($bootstrap -notmatch 'RSCTF-managed containers or networks still exist') { throw 'Windows uninstall does not protect managed workloads' }
           if ($bootstrap -notmatch '& \$agentPath doctor') { throw 'Windows bootstrap does not run the worker preflight' }
+          if ($bootstrap -notmatch '\$ServerUrl/healthz') { throw 'Windows bootstrap does not verify RSCTF readiness' }
           $installer = Get-Content -LiteralPath 'scripts/install-worker.ps1' -Raw
           if ($installer -notmatch 'New-ScheduledTaskTrigger -AtStartup') { throw 'Windows worker is not configured to start after reboot' }
           if (-not $installer.Contains('$dockerDriver -ne ''windowsfilter''')) { throw 'Windows installer does not require enforceable storage quotas' }
@@ -401,6 +402,12 @@ jobs:
         run: |
           bash -n scripts/bootstrap-worker.sh scripts/install-worker.sh
           scripts/bootstrap-worker.sh --help >/dev/null
+          grep -q '"${SERVER_URL}/healthz"' scripts/bootstrap-worker.sh
+          if grep -Eq '(^|[[:space:]])curl([[:space:]]|$)' \
+              scripts/bootstrap-worker.sh scripts/install-worker.sh; then
+            echo "::error::The Linux worker lifecycle still requires curl instead of wget."
+            exit 1
+          fi
           if scripts/bootstrap-worker.sh \
             --server-url 'https://user@example.com' >/dev/null 2>&1; then
             echo "::error::The worker bootstrap accepted credentials in its server URL."

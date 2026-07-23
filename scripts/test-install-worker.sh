@@ -53,7 +53,7 @@ run_fixture() {
     --env "RSCTF_TEST_FAIL_RESTARTS=${RSCTF_TEST_FAIL_RESTARTS:-0}" \
     --volume "$REPOSITORY_ROOT/scripts/install-worker.sh:/installer.sh:ro" \
     --volume "$fixture_directory:/fixture:ro" \
-    --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/curl:ro" \
+    --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/wget:ro" \
     --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/docker:ro" \
     --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/gh:ro" \
     --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/systemctl:ro" \
@@ -91,10 +91,10 @@ run_fixture "$VALID_FIXTURE" 0 '
   grep -q "^Wants=docker.service network-online.target$" /etc/systemd/system/rsctf-worker-agent.service
   grep -qx "enable rsctf-worker-agent.service" /tmp/systemctl.log
   ! grep -q "^restart " /tmp/systemctl.log
-  test "$(wc -l < /tmp/curl.log)" -eq 2
-  grep -c -- "^--disable .*--max-time 300 .*--retry-max-time 300 .*--speed-limit 1024 .*--speed-time 30 " /tmp/curl.log | grep -qx 2
-  grep -q -- "--max-filesize 134217728 https://github.com/dimasma0305/rsctf/releases/download/v0.1.0/rsctf-worker-agent-linux-amd64.tar.gz$" /tmp/curl.log
-  grep -q -- "--max-filesize 1048576 https://github.com/dimasma0305/rsctf/releases/download/v0.1.0/SHA256SUMS$" /tmp/curl.log
+  test "$(wc -l < /tmp/wget.log)" -eq 2
+  grep -c -- "^--https-only --secure-protocol=TLSv1.2 --max-redirect=5 --timeout=30 --read-timeout=30 --tries=5 --retry-connrefused --no-verbose --output-document=- " /tmp/wget.log | grep -qx 2
+  grep -q -- "https://github.com/dimasma0305/rsctf/releases/download/v0.1.0/rsctf-worker-agent-linux-amd64.tar.gz$" /tmp/wget.log
+  grep -q -- "https://github.com/dimasma0305/rsctf/releases/download/v0.1.0/SHA256SUMS$" /tmp/wget.log
 '
 
 # Public bootstrap mode retains verification and installation output without
@@ -121,8 +121,8 @@ RSCTF_TEST_ATTESTATION_SUCCESS=1 run_fixture "$VALID_FIXTURE" 0 '
   grep -q -- "--signer-workflow dimasma0305/rsctf/.github/workflows/worker-agent-release.yml" /tmp/gh.log
   grep -q -- "--source-ref refs/tags/v0.1.0" /tmp/gh.log
   grep -q -- "--deny-self-hosted-runners" /tmp/gh.log
-  test "$(wc -l < /tmp/curl.log)" -eq 3
-  grep -q -- "--max-filesize 16777216 https://github.com/dimasma0305/rsctf/releases/download/v0.1.0/rsctf-worker-agent-attestation.json$" /tmp/curl.log
+  test "$(wc -l < /tmp/wget.log)" -eq 3
+  grep -q -- "https://github.com/dimasma0305/rsctf/releases/download/v0.1.0/rsctf-worker-agent-attestation.json$" /tmp/wget.log
   test -x /usr/local/bin/rsctf-worker-agent
 '
 

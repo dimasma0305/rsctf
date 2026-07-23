@@ -3,24 +3,26 @@
 set -euo pipefail
 
 case "${0##*/}" in
-  curl)
-    printf '%s\n' "$*" >> /tmp/curl.log
-    destination=""
+  wget)
+    printf '%s\n' "$*" >> /tmp/wget.log
     url=""
+    spider=false
     while (($# > 0)); do
       case "$1" in
-        --output)
-          (($# >= 2))
-          destination="$2"
-          shift 2
-          ;;
-        --connect-timeout | --max-filesize | --max-time | --proto | --proto-redir | \
-          --retry | --retry-delay | --retry-max-time | --speed-limit | --speed-time | \
-          --write-out)
+        --max-redirect | --output-document | --read-timeout | --secure-protocol | \
+          --timeout | --tries)
           (($# >= 2))
           shift 2
           ;;
-        --disable | --fail | --location | --retry-all-errors | --show-error | --silent | --tlsv1.2)
+        --max-redirect=* | --output-document=* | --read-timeout=* | \
+          --secure-protocol=* | --timeout=* | --tries=*)
+          shift
+          ;;
+        --https-only | --no-verbose | --retry-connrefused | --server-response)
+          shift
+          ;;
+        --spider)
+          spider=true
           shift
           ;;
         https://*)
@@ -28,13 +30,24 @@ case "${0##*/}" in
           shift
           ;;
         *)
-          printf 'unsupported curl argument in worker installer fixture: %s\n' "$1" >&2
+          printf 'unsupported wget argument in worker installer fixture: %s\n' "$1" >&2
           exit 1
           ;;
       esac
     done
-    [[ -n "$destination" && -n "$url" ]]
-    cp "/fixture/${url##*/}" "$destination"
+    [[ -n "$url" ]]
+    if [[ "$spider" == "true" ]]; then
+      printf '  Location: https://github.com/dimasma0305/rsctf/releases/tag/v0.1.0\n' >&2
+    elif [[ "$url" == */healthz ]]; then
+      if [[ "${RSCTF_TEST_HEALTHY:-1}" == 1 ]]; then
+        printf 'ok'
+      else
+        printf 'unavailable'
+        exit 8
+      fi
+    else
+      cat "/fixture/${url##*/}"
+    fi
     ;;
   docker)
     case "${1:-}" in

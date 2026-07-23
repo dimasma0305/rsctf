@@ -11,7 +11,7 @@ const workerInstallOrigin = (origin: string): string => {
 
 export const workerInstallCommand = (origin: string): string => {
   const safeOrigin = workerInstallOrigin(origin)
-  return `curl -fsSL ${safeOrigin}/install/worker | sudo bash -s -- --server-url ${safeOrigin}`
+  return `(set -o pipefail; wget -qO- --https-only --secure-protocol=TLSv1_2 ${safeOrigin}/install/worker | sudo bash -s -- --server-url ${safeOrigin})`
 }
 
 export const workerWindowsInstallCommand = (origin: string): string => {
@@ -21,7 +21,7 @@ export const workerWindowsInstallCommand = (origin: string): string => {
 
 export const workerUninstallCommand = (origin: string): string => {
   const safeOrigin = workerInstallOrigin(origin)
-  return `curl -fsSL ${safeOrigin}/install/worker | sudo bash -s -- --uninstall`
+  return `(set -o pipefail; wget -qO- --https-only --secure-protocol=TLSv1_2 ${safeOrigin}/install/worker | sudo bash -s -- --uninstall)`
 }
 
 export const workerWindowsUninstallCommand = (origin: string): string => {
