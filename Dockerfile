@@ -2,7 +2,9 @@ ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE=""
 ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="false"
 
 # --- React frontend build stage ---
-FROM node:22-bookworm AS web-builder
+# The frontend output is architecture-independent. Build it natively on the
+# BuildKit host instead of running Node under QEMU for arm64 release images.
+FROM --platform=$BUILDPLATFORM node:22-bookworm AS web-builder
 RUN corepack enable
 WORKDIR /web
 COPY web/ ./
