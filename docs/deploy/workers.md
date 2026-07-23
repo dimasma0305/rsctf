@@ -358,9 +358,15 @@ PowerShell HTTP support. Before changing the host or asking for a token, each
 bootstrap requires the RSCTF `/healthz` readiness check to return HTTP 200 with
 the exact body `ok`. They verify the worker archive against the release SHA-256
 checksum, prompt privately for the separately displayed one-use token, enroll,
-and start the service/task. A fresh enrollment
-also requires typing `DEDICATED` to acknowledge the host boundary. Neither accepts
-enrollment credentials in a URL, command argument, or environment variable.
+and start the service/task. After startup, the agent creates its protected local
+readiness marker only after RSCTF accepts the authenticated mTLS control session;
+it removes the marker when that session ends. The bootstrap waits for that marker
+to remain stable before reporting success. A process that merely starts, exits
+after a few seconds, or keeps retrying an unreachable control endpoint is reported
+as offline with service diagnostics instead of as a successful installation. A
+fresh enrollment also requires typing `DEDICATED` to acknowledge the host
+boundary. Neither accepts enrollment credentials in a URL, command argument,
+or environment variable.
 Running one without a valid 15-minute token cannot authorize a new worker. A
 repeat run upgrades the binary and preserves an existing mTLS identity instead
 of overwriting it or consuming another token. Before prompting for that token,
@@ -561,8 +567,9 @@ event's capacity model calls for stricter values.
 
 For long-running Linux use, keep the systemd service under its dedicated
 account and protect `/var/lib/rsctf-worker`: it contains the worker's mTLS
-private key. Follow logs with
-`sudo journalctl -u rsctf-worker-agent --follow`.
+private key. `/run/rsctf-worker-agent/connected` exists only while the server
+has accepted the current control session; do not create it manually. Follow
+logs with `sudo journalctl -u rsctf-worker-agent --follow`.
 
 ### Verify or build manually
 

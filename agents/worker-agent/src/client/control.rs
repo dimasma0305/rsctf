@@ -13,6 +13,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use super::{data, validate_revision, ClientError, SESSION_NEGOTIATION_TIMEOUT};
+use crate::readiness::ReadinessFile;
 use crate::runtime::{RuntimeError, SharedRuntime};
 use crate::tls::MtlsConnector;
 
@@ -335,6 +336,7 @@ pub async fn run_session(
     hello: &WorkerHello,
     runtime: SharedRuntime,
     dispatcher: OperationDispatcher,
+    readiness: &ReadinessFile,
 ) -> Result<(), ClientError> {
     let mut stream = connector.connect_control().await?;
     let welcome: ServerWelcome = tokio::time::timeout(SESSION_NEGOTIATION_TIMEOUT, async {
@@ -356,6 +358,7 @@ pub async fn run_session(
             "server returned invalid heartbeat timing".to_string(),
         ));
     }
+    readiness.mark_connected().await?;
     tracing::info!(
         session_id = %welcome.session.session_id,
         session_epoch = welcome.session.session_epoch,

@@ -169,7 +169,11 @@ sudo -u rsctf-worker /usr/local/bin/rsctf-worker-agent run \
 
 The installed systemd unit supplies those production arguments. Check it with
 `systemctl status rsctf-worker-agent` or follow logs with
-`journalctl -u rsctf-worker-agent --follow`.
+`journalctl -u rsctf-worker-agent --follow`. Installed Linux and Windows services
+also pass a protected `--ready-file`. The agent creates that marker only after the
+server accepts its mTLS control session and removes it when disconnected, allowing
+the one-line installers to distinguish a truly online worker from a process that
+is only running or retrying.
 
 ## Manual verification and source build
 

@@ -42,6 +42,10 @@ pub struct RunArgs {
     /// Agent configuration written by `enroll`.
     #[arg(long, env = "RSCTF_WORKER_CONFIG", default_value = "worker.json")]
     pub config: PathBuf,
+    /// Optional service-readiness marker. It exists only while the server has
+    /// accepted this agent's authenticated control session.
+    #[arg(long, env = "RSCTF_WORKER_READY_FILE")]
+    pub ready_file: Option<PathBuf>,
     /// Confirm this agent runs inside a dedicated, firewalled worker host/VM.
     /// Docker workload networks can address their host-side gateway, so this
     /// boundary must not contain unrelated services or secrets.

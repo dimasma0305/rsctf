@@ -196,6 +196,36 @@ sqlx::query_as::<_, (i32, String)>(r#"SELECT id, name FROM "Teams" WHERE game_id
 behavior end-to-end (a local binary against the `rsctf-pg` Postgres, or the compose
 stack) over trusting compile+tests.
 
+### Production deployment is part of completion
+
+`https://tcp.1pc.tf` is the canonical production deployment. After every completed
+change that can affect a built or deployed artifact — backend, React client, agents,
+installers, deployment configuration, migrations, or release tooling — build and
+deploy the change to `tcp.1pc.tf`; a local test, commit, push, tag, or successful
+GitHub workflow alone does not complete the task.
+
+- Run the relevant local tests first, then wait for all required release and image
+  workflows to succeed. Deploy an immutable release image digest, never an unverified
+  local build or a mutable tag.
+- Roll every applicable server/control replica to that same expected release and
+  digest. Preserve the existing production data and secrets, and use only forward
+  migrations registered through the normal migration mechanism.
+- Verify `GET https://tcp.1pc.tf/healthz` returns HTTP 200 with the exact body `ok`;
+  verify every production container is healthy and reports the expected version and
+  image digest; smoke-test the functionality changed; and inspect recent logs for
+  panics, migration failures, restart loops, and unexpected 5xx responses.
+- If a worker or installer changed, also fetch the public Linux and Windows bootstrap
+  endpoints from `tcp.1pc.tf`, verify that they contain the expected release behavior,
+  and exercise their relevant preflight or installation regression tests.
+- Do not say that a change is complete or deployed until those live checks pass.
+  Report the deployed version, immutable digest, replica health, and smoke-test
+  results. If credentials, release artifacts, or the production host are unavailable,
+  state explicitly that production is **not deployed** and explain the blocker.
+
+Changes limited to prose, comments, tests, or agent instructions that cannot alter a
+released artifact do not require a production rebuild; explicitly report that the
+deployment was skipped for this reason.
+
 **Benchmark CPU at a fixed rate, not peak req/s.** When cores sit idle at your target
 rate you are *not* CPU-bound there — peak req/s is host-noise (it swings thousands of
 req/s between passes). Hold the rate fixed (k6 `constant-arrival-rate`, sub-saturation)

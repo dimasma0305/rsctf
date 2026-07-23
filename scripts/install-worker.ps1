@@ -16,6 +16,7 @@ $installDirectory = Join-Path $env:ProgramFiles 'RSCTF Worker'
 $stateDirectory = Join-Path $env:ProgramData 'RSCTF Worker'
 $binaryPath = Join-Path $installDirectory 'rsctf-worker-agent.exe'
 $temporaryDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("rsctf-worker-install-" + [Guid]::NewGuid().ToString('N'))
+$readyPath = Join-Path $stateDirectory 'connected'
 $archiveName = 'rsctf-worker-agent-windows-amd64.zip'
 $archivePath = Join-Path $temporaryDirectory $archiveName
 $checksumPath = Join-Path $temporaryDirectory 'SHA256SUMS'
@@ -273,7 +274,7 @@ try {
         }
     }
 
-    $arguments = 'run --config "' + (Join-Path $stateDirectory 'worker.json') + '" --accept-host-network-boundary --writable-layer-bytes 34359738368'
+    $arguments = 'run --config "' + (Join-Path $stateDirectory 'worker.json') + '" --ready-file "' + $readyPath + '" --accept-host-network-boundary --writable-layer-bytes 34359738368'
     $action = New-ScheduledTaskAction -Execute $binaryPath -Argument $arguments
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest

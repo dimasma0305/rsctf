@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::backoff::Backoff;
 use crate::config::{AgentConfig, RunArgs};
+use crate::readiness::ReadinessFile;
 use crate::runtime::{runtime_for, RuntimeOptions};
 use crate::tls::MtlsConnector;
 
@@ -44,6 +45,15 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
+    let readiness = ReadinessFile::new(arguments.ready_file.clone())?;
+    if let Some(readiness_dir) = arguments
+        .ready_file
+        .as_deref()
+        .and_then(std::path::Path::parent)
+    {
+        crate::security::verify_state_dir(readiness_dir).await?;
+    }
+    readiness.clear().await?;
     crate::security::verify_state_dir(state_dir).await?;
     crate::security::verify_state_file(&arguments.config).await?;
     let _state_lock = crate::security::acquire_state_lock(state_dir)?;
@@ -147,8 +157,15 @@ pub async fn run(arguments: RunArgs) -> Result<(), ClientError> {
             continue;
         }
         let connected_at = Instant::now();
-        let result =
-            control::run_session(&connector, &hello, runtime.clone(), dispatcher.clone()).await;
+        let result = control::run_session(
+            &connector,
+            &hello,
+            runtime.clone(),
+            dispatcher.clone(),
+            &readiness,
+        )
+        .await;
+        readiness.clear().await?;
         if connected_at.elapsed() >= Duration::from_secs(60) {
             backoff.reset();
         }
@@ -210,6 +227,8 @@ pub enum ClientError {
     Runtime(#[from] crate::runtime::RuntimeError),
     #[error(transparent)]
     Tls(#[from] crate::tls::TlsConnectorError),
+    #[error(transparent)]
+    Readiness(#[from] crate::readiness::ReadinessError),
     #[error(transparent)]
     Frame(#[from] rsctf_worker_protocol::FrameError),
     #[error("worker protocol error: {0}")]

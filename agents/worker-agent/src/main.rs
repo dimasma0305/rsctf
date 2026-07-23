@@ -2,6 +2,7 @@ mod backoff;
 mod client;
 mod config;
 mod enroll;
+mod readiness;
 mod runtime;
 mod security;
 mod tls;

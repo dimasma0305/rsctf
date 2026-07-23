@@ -21,7 +21,9 @@ $installerPath = Join-Path $temporaryDirectory 'install-worker.ps1'
 $checksumPath = Join-Path $temporaryDirectory 'SHA256SUMS'
 $agentPath = Join-Path $env:ProgramFiles 'RSCTF Worker\rsctf-worker-agent.exe'
 $stateDirectory = Join-Path $env:ProgramData 'RSCTF Worker'
+$readyPath = Join-Path $stateDirectory 'connected'
 $taskName = 'RSCTF Worker Agent'
+$connectionTimeoutSeconds = 45
 $identityNames = @('worker-key.pem', 'worker-cert.pem', 'worker-ca.pem', 'worker.json')
 
 function Get-HttpsFile {
@@ -109,17 +111,43 @@ function Protect-TemporaryDirectory {
     }
 }
 
-function Assert-WorkerTaskRunning {
+function Clear-WorkerReadiness {
+    if (-not (Test-Path -LiteralPath $readyPath)) { return }
+    $item = Get-Item -LiteralPath $readyPath -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "$readyPath must be a regular file, not a reparse point or directory"
+    }
+    Remove-Item -LiteralPath $readyPath -Force
+}
+
+function Assert-WorkerTaskOnline {
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
     if ($task.State -ne 'Running') {
         Start-ScheduledTask -TaskName $taskName
+        Start-Sleep -Seconds 1
     }
-    Start-Sleep -Seconds 3
-    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
-    if ($task.State -ne 'Running') {
-        $result = (Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop).LastTaskResult
-        throw "worker task did not remain running (state=$($task.State), lastResult=$result)"
+    Write-Host "Waiting up to $connectionTimeoutSeconds seconds for the authenticated worker control session..."
+    $deadline = [DateTime]::UtcNow.AddSeconds($connectionTimeoutSeconds)
+    $stableSince = $null
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        if ($task.State -ne 'Running') {
+            $result = (Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop).LastTaskResult
+            throw "worker health check failed: task stopped before connecting to RSCTF (state=$($task.State), lastResult=$result)"
+        }
+        if (Test-Path -LiteralPath $readyPath -PathType Leaf) {
+            if ($null -eq $stableSince) {
+                $stableSince = [DateTime]::UtcNow
+            } elseif (([DateTime]::UtcNow - $stableSince).TotalSeconds -ge 3) {
+                Write-Host 'Worker health check passed: mTLS control session accepted by RSCTF.' -ForegroundColor Green
+                return
+            }
+        } else {
+            $stableSince = $null
+        }
+        Start-Sleep -Seconds 1
     }
+    throw "worker health check timed out: no stable mTLS control session was established; the worker remains installed but offline. Check outbound access to the controlAddress in $stateDirectory\worker.json"
 }
 
 function Uninstall-Worker {
@@ -188,6 +216,7 @@ try {
         throw 'the worker state directory contains an incomplete identity; revoke that worker and clean the state deliberately before enrolling again'
     }
     $existingEnrollment = $presentIdentityNames.Count -eq $identityNames.Count
+    Clear-WorkerReadiness
     New-Item -ItemType Directory -Path $temporaryDirectory -ErrorAction Stop | Out-Null
     Protect-TemporaryDirectory -Path $temporaryDirectory
     $healthPath = Join-Path $temporaryDirectory 'healthz'
@@ -245,7 +274,7 @@ try {
         }
     }
 
-    Assert-WorkerTaskRunning
+    Assert-WorkerTaskOnline
     if ($existingEnrollment) {
         Write-Host 'RSCTF worker updated and restarted; the existing mTLS identity was preserved.' -ForegroundColor Green
     } else {

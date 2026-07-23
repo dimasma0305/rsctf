@@ -247,8 +247,10 @@ jobs:
           if ($bootstrap -notmatch 'RSCTF-managed containers or networks still exist') { throw 'Windows uninstall does not protect managed workloads' }
           if ($bootstrap -notmatch '& \$agentPath doctor') { throw 'Windows bootstrap does not run the worker preflight' }
           if ($bootstrap -notmatch '\$ServerUrl/healthz') { throw 'Windows bootstrap does not verify RSCTF readiness' }
+          if ($bootstrap -notmatch 'Worker health check passed: mTLS control session accepted') { throw 'Windows bootstrap does not wait for an authenticated control session' }
           $installer = Get-Content -LiteralPath 'scripts/install-worker.ps1' -Raw
           if ($installer -notmatch 'New-ScheduledTaskTrigger -AtStartup') { throw 'Windows worker is not configured to start after reboot' }
+          if ($installer -notmatch '--ready-file') { throw 'Windows worker task does not publish authenticated-session readiness' }
           if (-not $installer.Contains('$dockerDriver -ne ''windowsfilter''')) { throw 'Windows installer does not require enforceable storage quotas' }
           if (-not $installer.Contains('$acl.SetAccessRuleProtection($true, $false)')) { throw 'Windows installer does not remove inherited ACLs' }
           if ($installer -notmatch 'Protect-WorkerDirectory -Path \$stateDirectory -OwnerSid ''S-1-5-18''') { throw 'Windows state is not assigned to SYSTEM' }
@@ -426,6 +428,8 @@ jobs:
           test "$(stat -c '%a' scripts/bootstrap-worker.sh)" = "755"
           test "$(stat -c '%a' scripts/install-worker.sh)" = "755"
           test "$(stat -c '%a' agents/worker-agent/rsctf-worker-agent.service)" = "644"
+          grep -q -- '--ready-file /run/rsctf-worker-agent/connected' \
+            agents/worker-agent/rsctf-worker-agent.service
           systemd-analyze security --offline=yes \
             agents/worker-agent/rsctf-worker-agent.service >/dev/null
           scripts/test-install-worker.sh

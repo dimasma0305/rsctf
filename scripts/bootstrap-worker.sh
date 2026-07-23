@@ -8,6 +8,8 @@ umask 077
 
 readonly REPOSITORY="dimasma0305/rsctf"
 readonly STATE_DIRECTORY="/var/lib/rsctf-worker"
+readonly READY_FILE="/run/rsctf-worker-agent/connected"
+readonly CONNECTION_TIMEOUT_SECONDS="${RSCTF_WORKER_CONNECTION_TIMEOUT_SECONDS:-45}"
 SERVER_URL=""
 VERSION=""
 TEMP_DIRECTORY=""
@@ -164,6 +166,9 @@ fi
   die "--server-url must be an HTTPS origin without a path, query, or credentials"
 [[ -z "$VERSION" || "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
   die "--version must have the form vX.Y.Z"
+[[ "$CONNECTION_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] && \
+  ((CONNECTION_TIMEOUT_SECONDS >= 1 && CONNECTION_TIMEOUT_SECONDS <= 300)) || \
+  die "RSCTF_WORKER_CONNECTION_TIMEOUT_SECONDS must be 1..300"
 
 for command in awk head wc wget; do
   command -v "$command" >/dev/null 2>&1 || die "required command is missing: $command"
@@ -188,7 +193,7 @@ server_health="$(release_wget --output-document=- "${SERVER_URL}/healthz" |
   die "RSCTF health check returned an unexpected response; installation did not start"
 printf 'Verified RSCTF server health at %s/healthz.\n' "$SERVER_URL"
 
-for command in docker runuser sha256sum systemctl; do
+for command in docker journalctl runuser sha256sum systemctl; do
   command -v "$command" >/dev/null 2>&1 || die "required command is missing: $command"
 done
 docker info >/dev/null 2>&1 || die "Docker is not running or root cannot access its daemon"
@@ -280,21 +285,51 @@ if ! runuser -u rsctf-worker -- \
   die "worker runtime preflight failed before enrollment; fix Docker storage/runtime configuration and rerun this command"
 fi
 
-assert_service_running() {
-  systemctl is-active --quiet rsctf-worker-agent.service || \
-    die "the worker service did not start"
-  sleep 3
-  if ! systemctl is-active --quiet rsctf-worker-agent.service; then
-    systemctl --no-pager --full status rsctf-worker-agent.service >&2 || true
-    journalctl --no-pager --unit rsctf-worker-agent.service --lines 30 >&2 || true
-    die "the worker service exited during its startup check"
-  fi
+show_worker_diagnostics() {
+  printf '\nRecent worker service diagnostics:\n' >&2
+  systemctl --no-pager --full status rsctf-worker-agent.service >&2 || true
+  journalctl --no-pager --unit rsctf-worker-agent.service --lines 30 >&2 || true
+}
+
+assert_worker_online() {
+  local deadline stable_since=0
+
+  deadline=$((SECONDS + CONNECTION_TIMEOUT_SECONDS))
+  printf 'Waiting up to %s seconds for the authenticated worker control session...\n' \
+    "$CONNECTION_TIMEOUT_SECONDS"
+  while ((SECONDS < deadline)); do
+    if ! systemctl is-active --quiet rsctf-worker-agent.service; then
+      show_worker_diagnostics
+      die "worker health check failed: the service stopped before connecting to RSCTF"
+    fi
+    if [[ -f "$READY_FILE" ]]; then
+      if ((stable_since == 0)); then
+        stable_since="$SECONDS"
+      elif ((SECONDS - stable_since >= 3)); then
+        printf 'Worker health check passed: mTLS control session accepted by RSCTF.\n'
+        return
+      fi
+    else
+      stable_since=0
+    fi
+    sleep 1
+  done
+
+  show_worker_diagnostics
+  die "worker health check timed out: the service did not establish a stable mTLS control session; the worker remains installed but offline"
+}
+
+start_and_check_worker() {
+  rm -f -- "$READY_FILE"
+  systemctl enable rsctf-worker-agent.service >/dev/null
+  systemctl reset-failed rsctf-worker-agent.service >/dev/null 2>&1 || true
+  systemctl restart rsctf-worker-agent.service
+  assert_worker_online
+  systemctl --no-pager --full status rsctf-worker-agent.service
 }
 
 if [[ "$EXISTING_ENROLLMENT" == "true" ]]; then
-  systemctl enable --now rsctf-worker-agent.service
-  assert_service_running
-  systemctl --no-pager --full status rsctf-worker-agent.service
+  start_and_check_worker
   printf 'RSCTF worker updated and restarted; the existing mTLS identity was preserved.\n'
   exit 0
 fi
@@ -322,7 +357,5 @@ if ! printf '%s\n' "$ENROLLMENT_TOKEN" | runuser -u rsctf-worker -- \
 fi
 ENROLLMENT_TOKEN=""
 
-systemctl enable --now rsctf-worker-agent.service
-assert_service_running
-systemctl --no-pager --full status rsctf-worker-agent.service
+start_and_check_worker
 printf 'RSCTF worker installed, enrolled, and started successfully.\n'

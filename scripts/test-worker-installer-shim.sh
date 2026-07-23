@@ -121,8 +121,26 @@ case "${0##*/}" in
     fi
     if [[ "${1:-}" == "restart" ]]; then
       restart_count="$(grep -c '^restart rsctf-worker-agent.service$' /tmp/systemctl.log || true)"
-      ((restart_count > ${RSCTF_TEST_FAIL_RESTARTS:-0}))
-      exit
+      if ((restart_count > ${RSCTF_TEST_FAIL_RESTARTS:-0})); then
+        if [[ "${RSCTF_TEST_CONTROL_CONNECTED:-0}" == 1 ]]; then
+          mkdir -p /run/rsctf-worker-agent
+          printf 'online\n' > /run/rsctf-worker-agent/connected
+        fi
+        exit 0
+      fi
+      exit 1
+    fi
+    if [[ "${1:-}" == "reset-failed" || "${1:-}" == "show" ]]; then
+      exit 0
+    fi
+    ;;
+  journalctl)
+    printf '%s\n' "$*" >> /tmp/journalctl.log
+    if [[ "${RSCTF_TEST_CONTROL_CONNECTED:-0}" == 1 ]]; then
+      printf 'worker control session established\n'
+    else
+      printf '%s\n' \
+        "${RSCTF_TEST_WORKER_DIAGNOSTIC:-worker control session failed: fixture unavailable}"
     fi
     ;;
   *)
