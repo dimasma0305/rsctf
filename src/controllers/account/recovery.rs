@@ -192,6 +192,9 @@ pub async fn change_password(
 ) -> AppResult<Response> {
     validate_password(&model.new)?;
     let current = load_user(&st, user.id).await?;
+    if model.old.len() > MAX_PASSWORD_BYTES {
+        return Err(AppError::bad_request("Old password is incorrect"));
+    }
     if !verify_password_async(model.old, current.password_hash.clone().unwrap_or_default()).await {
         return Err(AppError::bad_request("Old password is incorrect"));
     }
@@ -247,7 +250,11 @@ pub async fn recovery(
     }
 
     let response_started = tokio::time::Instant::now();
-    let norm_email = model.email.trim().to_uppercase();
+    let norm_email = if model.email.len() <= MAX_EMAIL_BYTES {
+        model.email.trim().to_uppercase()
+    } else {
+        String::new()
+    };
 
     if let Some(user) = user::Entity::find()
         .filter(user::Column::NormalizedEmail.eq(norm_email))
@@ -331,6 +338,12 @@ pub async fn password_reset(
         ));
     }
     validate_password(&model.password)?;
+    if model.r_token.is_empty()
+        || model.r_token.len() > MAX_ACCOUNT_TOKEN_BYTES
+        || model.email.len() > MAX_ENCODED_EMAIL_BYTES
+    {
+        return Err(AppError::bad_request("Invalid or expired reset token"));
+    }
 
     let key = format!("pwreset:{}", model.r_token);
     let ticket_bytes = st
@@ -344,6 +357,7 @@ pub async fn password_reset(
     // The (base64) email must resolve to the same account the token was minted for.
     let email = crate::utils::codec::base64_decode(&model.email)
         .and_then(|b| String::from_utf8(b).ok())
+        .filter(|email| email.len() <= MAX_EMAIL_BYTES)
         .ok_or_else(|| AppError::bad_request("Invalid email"))?;
     let norm_email = email.trim().to_uppercase();
 
@@ -425,6 +439,9 @@ pub async fn verify(
     State(st): State<SharedState>,
     Json(model): Json<AccountVerifyModel>,
 ) -> AppResult<MessageResponse> {
+    if model.token.len() > MAX_ACCOUNT_TOKEN_BYTES || model.email.len() > MAX_ENCODED_EMAIL_BYTES {
+        return Ok(MessageResponse::ok(""));
+    }
     let key = format!("emailconfirm:{}", model.token);
     if let Some(user_id) = st.cache.get(&key).await.and_then(|b| {
         std::str::from_utf8(&b)
@@ -471,7 +488,7 @@ pub async fn change_email(
     Json(model): Json<MailChangeModel>,
 ) -> AppResult<Response> {
     let new_mail = model.new_mail.trim().to_lowercase();
-    if !new_mail.contains('@') {
+    if new_mail.len() > MAX_EMAIL_BYTES || !new_mail.contains('@') {
         return Err(AppError::bad_request("Invalid email address"));
     }
     if !verify_email_domain(&new_mail, &load_email_domain_list(&st).await?) {
@@ -480,6 +497,9 @@ pub async fn change_email(
     let norm = new_mail.to_uppercase();
 
     let current = load_user(&st, user.id).await?;
+    if model.password.len() > MAX_PASSWORD_BYTES {
+        return Err(AppError::bad_request("Current password is incorrect"));
+    }
     if !verify_password_async(
         model.password,
         current.password_hash.clone().unwrap_or_default(),
@@ -601,6 +621,14 @@ pub async fn mail_change_confirm(
     State(st): State<SharedState>,
     Json(model): Json<AccountVerifyModel>,
 ) -> AppResult<MessageResponse> {
+    if model.token.is_empty()
+        || model.token.len() > MAX_ACCOUNT_TOKEN_BYTES
+        || model.email.len() > MAX_ENCODED_EMAIL_BYTES
+    {
+        return Err(AppError::bad_request(
+            "Invalid or expired email-change token",
+        ));
+    }
     let key = format!("emailchange:{}", model.token);
     let ticket_bytes = st
         .cache
@@ -611,6 +639,7 @@ pub async fn mail_change_confirm(
         .map_err(|_| AppError::bad_request("Invalid or expired email-change token"))?;
     let supplied_email = crate::utils::codec::base64_decode(&model.email)
         .and_then(|b| String::from_utf8(b).ok())
+        .filter(|email| email.len() <= MAX_EMAIL_BYTES)
         .map(|email| email.trim().to_lowercase())
         .ok_or_else(|| AppError::bad_request("Invalid email"))?;
     if supplied_email != ticket.new_email {

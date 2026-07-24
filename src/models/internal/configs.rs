@@ -152,6 +152,7 @@ pub struct AppConfig {
     pub redis_url: Option<String>,
     pub jwt_secret: String,
     pub jwt_ttl_secs: i64,
+    jwt_ttl_error: Option<String>,
     /// Emit the session cookie with `Secure`. Disable only for explicit local
     /// development over plain HTTP.
     pub cookie_secure: bool,
@@ -226,6 +227,7 @@ impl AppConfig {
             },
             Err(_) => (RuntimeRole::All, None),
         };
+        let (jwt_ttl_secs, jwt_ttl_error) = parse_jwt_ttl(env::var("RSCTF_JWT_TTL_SECS").ok());
         Self {
             // Invalid values are rejected by `validate`. Keeping `from_env`
             // infallible preserves its existing public contract.
@@ -238,9 +240,8 @@ impl AppConfig {
             ),
             redis_url: env::var("RSCTF_REDIS_URL").ok(),
             jwt_secret: env_or("RSCTF_JWT_SECRET", "insecure-dev-secret-change-me"),
-            jwt_ttl_secs: env_or("RSCTF_JWT_TTL_SECS", "604800")
-                .parse()
-                .unwrap_or(604_800),
+            jwt_ttl_secs,
+            jwt_ttl_error,
             cookie_secure: env_bool("RSCTF_COOKIE_SECURE", true),
             public_url: env::var("RSCTF_PUBLIC_URL")
                 .ok()
@@ -263,6 +264,9 @@ impl AppConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         self.validate_runtime_role()?;
         validate_jwt_secret(&self.jwt_secret)?;
+        if let Some(error) = self.jwt_ttl_error.as_deref() {
+            anyhow::bail!(error.to_string());
+        }
         if self.jwt_ttl_secs <= 0 {
             anyhow::bail!("RSCTF_JWT_TTL_SECS must be a positive integer");
         }
@@ -279,6 +283,19 @@ impl AppConfig {
             anyhow::bail!(error.to_string());
         }
         Ok(())
+    }
+}
+
+fn parse_jwt_ttl(value: Option<String>) -> (i64, Option<String>) {
+    let Some(value) = value else {
+        return (604_800, None);
+    };
+    match value.trim().parse::<i64>() {
+        Ok(ttl) => (ttl, None),
+        Err(_) => (
+            604_800,
+            Some("RSCTF_JWT_TTL_SECS must be a positive integer".to_string()),
+        ),
     }
 }
 
@@ -315,7 +332,7 @@ impl Default for AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_jwt_secret, validate_public_url, RuntimeRole};
+    use super::{parse_jwt_ttl, validate_jwt_secret, validate_public_url, RuntimeRole};
 
     #[test]
     fn rejects_known_or_short_jwt_secrets() {
@@ -327,6 +344,14 @@ mod tests {
     #[test]
     fn accepts_long_random_jwt_secret() {
         assert!(validate_jwt_secret("0123456789abcdef0123456789abcdef").is_ok());
+    }
+
+    #[test]
+    fn invalid_jwt_ttl_is_not_silently_replaced() {
+        assert_eq!(parse_jwt_ttl(None), (604_800, None));
+        assert_eq!(parse_jwt_ttl(Some(" 60 ".to_string())), (60, None));
+        let (_, error) = parse_jwt_ttl(Some("forever".to_string()));
+        assert!(error.is_some());
     }
 
     #[test]

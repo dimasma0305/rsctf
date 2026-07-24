@@ -43,7 +43,9 @@ fn router_with_domains(
         )
         .route(
             "/api/game/{id}/writeup",
-            get(get_writeup).post(submit_writeup),
+            get(get_writeup).merge(post(submit_writeup).layer(DefaultBodyLimit::max(
+                crate::utils::upload::WRITEUP_BODY_BYTES,
+            ))),
         )
         .route(
             "/api/game/{id}/challenge/{challengeId}/open",

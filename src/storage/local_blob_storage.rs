@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use tokio::io::AsyncReadExt;
 
 use crate::storage::blob_storage::{BlobStorage, StoredBlob};
 use crate::utils::codec::sha256_hex;
@@ -87,6 +88,31 @@ impl BlobStorage for LocalBlobStorage {
             .map_err(|_| AppError::not_found("blob not found"))
     }
 
+    async fn load_bounded(&self, hash: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
+        let path = self
+            .path_for(hash)
+            .ok_or_else(|| AppError::not_found("blob not found"))?;
+        let file = tokio::fs::File::open(&path)
+            .await
+            .map_err(|_| AppError::not_found("blob not found"))?;
+        let metadata = file
+            .metadata()
+            .await
+            .map_err(|_| AppError::not_found("blob not found"))?;
+        if metadata.len() > max_bytes as u64 {
+            return Err(AppError::internal("blob exceeds the configured read limit"));
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take((max_bytes as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|_| AppError::not_found("blob not found"))?;
+        if bytes.len() > max_bytes {
+            return Err(AppError::internal("blob exceeds the configured read limit"));
+        }
+        Ok(bytes)
+    }
+
     async fn delete(&self, hash: &str) -> AppResult<()> {
         if let Some(path) = self.path_for(hash) {
             match tokio::fs::remove_file(&path).await {
@@ -127,6 +153,23 @@ mod tests {
         let error = storage.delete(&hash).await.unwrap_err();
         assert!(error.to_string().contains("delete local blob"));
 
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bounded_load_rejects_before_returning_oversized_content() {
+        let root = std::env::temp_dir().join(format!(
+            "rsctf-local-blob-bounded-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let storage = LocalBlobStorage::new(&root);
+        let stored = storage.store("test", b"four").await.unwrap();
+
+        assert!(storage.load_bounded(&stored.hash, 3).await.is_err());
+        assert_eq!(
+            storage.load_bounded(&stored.hash, 4).await.unwrap(),
+            b"four"
+        );
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }

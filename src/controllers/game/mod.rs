@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::middlewares::rate_limiter::{limited, Policy};
 use axum::body::Body;
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};

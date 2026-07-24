@@ -31,7 +31,14 @@ pub(crate) async fn prepare_checker(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| AppError::bad_request("Challenge source archive is unavailable."))?;
-    let archive = st.storage.load(hash).await.map_err(|error| {
+    let archive = st
+        .storage
+        .load_bounded(
+            hash,
+            crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES,
+        )
+        .await
+        .map_err(|error| {
         tracing::warn!(%error, challenge = challenge.id, %hash, "review checker source load failed");
         AppError::bad_request("Challenge source archive is unavailable.")
     })?;

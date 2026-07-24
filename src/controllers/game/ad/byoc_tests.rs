@@ -111,6 +111,24 @@ fn generated_setup_keeps_the_root_equivalent_docker_socket_opt_in() {
 }
 
 #[test]
+fn generated_tunnel_agents_drop_linux_privilege_by_default() {
+    let ctx = context_with_hostile_values(std::path::Path::new("/tmp/not-created"));
+    for compose in [
+        build_setup_compose(7, 11, &ctx, None),
+        build_compose(7, 11, &ctx),
+    ] {
+        let agent = compose
+            .split("  rsctf-agent:")
+            .nth(1)
+            .expect("agent service");
+        assert!(agent.contains("    read_only: true"));
+        assert!(agent.contains("    cap_drop:\n      - ALL"));
+        assert!(agent.contains("    security_opt:\n      - no-new-privileges:true"));
+        assert!(agent.contains("    pids_limit: 128"));
+    }
+}
+
+#[test]
 fn generated_placeholder_service_uses_an_immutable_multi_arch_image() {
     let ctx = context_with_hostile_values(std::path::Path::new("/tmp/not-created"));
     for compose in [

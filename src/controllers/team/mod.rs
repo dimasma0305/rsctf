@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -60,7 +60,12 @@ pub fn router() -> Router<SharedState> {
         .route("/api/team/{id}/leave", post(leave))
         .route("/api/team/{id}/kick/{userId}", post(kick_user))
         .route("/api/team/{id}/transfer", put(transfer))
-        .route("/api/team/{id}/avatar", put(avatar))
+        .route(
+            "/api/team/{id}/avatar",
+            put(avatar).layer(DefaultBodyLimit::max(
+                crate::utils::upload::IMAGE_BODY_BYTES,
+            )),
+        )
 }
 
 // --- Handlers --------------------------------------------------------------

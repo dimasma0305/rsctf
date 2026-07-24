@@ -1,6 +1,6 @@
 [package]
 name = "rsctf"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2021"
 license = "MIT"
 authors = ["rsctf contributors"]
@@ -84,7 +84,7 @@ pcap = "2"
 defguard_wireguard_rs = "0.10.0"
 russh = { version = "0.62.2", default-features = false, features = ["aws-lc-rs", "flate2"] }
 yamux = "0.14.0"
-tokio-util = { version = "0.7.18", features = ["compat"] }
+tokio-util = { version = "0.7.18", features = ["compat", "io"] }
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
 bytes = "1.12.0"

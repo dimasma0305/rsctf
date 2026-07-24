@@ -40,7 +40,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Read};
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -219,23 +219,38 @@ pub fn write_capture(path: impl AsRef<Path>, packets: &[TrafficPacket]) -> AppRe
 /// failure is swallowed into an empty/partial result rather than surfaced as a
 /// `Result`.
 pub fn list_flows(path: impl AsRef<Path>) -> Vec<Flow> {
+    match list_flows_bounded(path, u64::MAX, usize::MAX) {
+        Ok(flows) => flows,
+        Err(error) => {
+            tracing::warn!(%error, "failed to list pcap flows");
+            Vec::new()
+        }
+    }
+}
+
+/// Parse a capture with explicit file-size and distinct-flow bounds.
+///
+/// Monitor-facing HTTP handlers use this variant on a blocking worker. A
+/// capture is attacker-influenced event data, so its disk size and cardinality
+/// must not translate into unbounded CPU or memory in the API process.
+pub fn list_flows_bounded(
+    path: impl AsRef<Path>,
+    max_file_bytes: u64,
+    max_flows: usize,
+) -> AppResult<Vec<Flow>> {
     let path = path.as_ref();
 
-    let file = match File::open(path) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "failed to open pcap file");
-            return Vec::new();
-        }
-    };
+    let metadata = std::fs::metadata(path).map_err(|_| AppError::not_found("Capture not found"))?;
+    if metadata.len() > max_file_bytes {
+        return Err(AppError::bad_request(
+            "Capture is too large to inspect; download it instead",
+        ));
+    }
+    let file = File::open(path).map_err(|_| AppError::not_found("Capture not found"))?;
+    let file = file.take(max_file_bytes.saturating_add(1));
 
-    let mut reader = match PcapReader::new(file) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "not a valid pcap file");
-            return Vec::new();
-        }
-    };
+    let mut reader = PcapReader::new(file)
+        .map_err(|_| AppError::bad_request("Capture is not a valid pcap file"))?;
 
     // Keyed by (src, dst) so both directions of a connection are distinct
     // flows, matching the task's ordered-pair definition.
@@ -258,6 +273,11 @@ pub fn list_flows(path: impl AsRef<Path>) -> Vec<Flow> {
 
         let src = parsed.source.to_string();
         let dst = parsed.dest.to_string();
+        if !flows.contains_key(&(src.clone(), dst.clone())) && flows.len() >= max_flows {
+            return Err(AppError::bad_request(
+                "Capture contains too many distinct flows",
+            ));
+        }
         let entry = flows
             .entry((src.clone(), dst.clone()))
             .or_insert_with(|| Flow {
@@ -270,7 +290,12 @@ pub fn list_flows(path: impl AsRef<Path>) -> Vec<Flow> {
         entry.bytes += parsed.payload_len as u64;
     }
 
-    flows.into_values().collect()
+    if reader.into_reader().limit() == 0 {
+        return Err(AppError::bad_request(
+            "Capture grew beyond the inspection size limit",
+        ));
+    }
+    Ok(flows.into_values().collect())
 }
 
 /// Read-timeout applied to the live capture handle, in milliseconds.
@@ -726,6 +751,27 @@ mod tests {
     #[test]
     fn missing_file_yields_no_flows() {
         assert!(list_flows("/nonexistent/path/does-not-exist.pcap").is_empty());
+    }
+
+    #[test]
+    fn bounded_flow_reader_enforces_file_and_cardinality_limits() {
+        let path = scratch("bounded");
+        let a = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1000);
+        let b = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 2000);
+        let c = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3000);
+        write_capture(
+            &path,
+            &[
+                TrafficPacket::new(a, b, vec![1]),
+                TrafficPacket::new(a, c, vec![2]),
+            ],
+        )
+        .unwrap();
+
+        assert!(list_flows_bounded(&path, u64::MAX, 1).is_err());
+        assert!(list_flows_bounded(&path, 1, usize::MAX).is_err());
+        assert_eq!(list_flows_bounded(&path, u64::MAX, 2).unwrap().len(), 2);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

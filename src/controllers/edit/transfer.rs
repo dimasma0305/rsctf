@@ -7,6 +7,10 @@ const MAX_GAME_IMPORT_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_GAME_IMPORT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_GAME_IMPORT_COMPRESSION_RATIO: u64 = 200;
 const MAX_GAME_IMPORT_PATH_COMPONENTS: usize = 32;
+static GAME_IMPORT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+const MAX_GAME_EXPORT_FILES: usize = 2_048;
+const MAX_GAME_EXPORT_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
+static GAME_EXPORT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 #[derive(Clone, Copy)]
 struct GameImportLimits {
@@ -408,9 +412,17 @@ pub async fn import_game(
     if bytes.is_empty() {
         return Err(AppError::bad_request("File size is zero"));
     }
+    if bytes.len() > crate::utils::upload::ARCHIVE_FILE_BYTES {
+        return Err(AppError::bad_request("Game archive is too large"));
+    }
     // Expand every entry once, under a shared actual-byte budget, before any
     // untrusted JSON can cause database writes.
-    let entries = read_game_import_archive(&bytes)?;
+    let _permit = GAME_IMPORT_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Game import capacity is busy; retry shortly"))?;
+    let entries = tokio::task::spawn_blocking(move || read_game_import_archive(&bytes))
+        .await
+        .map_err(|error| AppError::internal(format!("game import task failed: {error}")))??;
     let game_json = read_import_text(&entries, "game.json")?
         .ok_or_else(|| AppError::bad_request("Missing game.json in import package"))?;
     let export_game: ExportGameModel = serde_json::from_str(game_json)
@@ -601,6 +613,7 @@ async fn resolve_export_attachment(
     st: &SharedState,
     attachment_id: Option<i32>,
     embed: &mut BTreeMap<String, Vec<u8>>,
+    embed_bytes: &mut usize,
 ) -> AppResult<(
     Option<FileType>,
     Option<String>,
@@ -624,13 +637,83 @@ async fn resolve_export_attachment(
     if a.file_type == FileType::Local {
         if let Some(h) = &hash {
             if !embed.contains_key(h) {
-                if let Ok(bytes) = st.storage.load(h).await {
+                if embed.len() >= MAX_GAME_EXPORT_FILES {
+                    return Err(AppError::bad_request(
+                        "Game export contains too many attachment files",
+                    ));
+                }
+                if let Ok(bytes) = st
+                    .storage
+                    .load_bounded(h, crate::utils::upload::ASSET_FILE_BYTES)
+                    .await
+                {
+                    *embed_bytes = embed_bytes
+                        .checked_add(bytes.len())
+                        .filter(|total| *total <= MAX_GAME_EXPORT_ATTACHMENT_BYTES)
+                        .ok_or_else(|| {
+                            AppError::bad_request("Game export attachments exceed the size limit")
+                        })?;
                     embed.insert(h.clone(), bytes);
                 }
             }
         }
     }
     Ok((Some(a.file_type), hash, a.remote_url, name))
+}
+
+fn build_game_export_zip(
+    export_game: ExportGameModel,
+    export_challenges: Vec<ExportChallengeModel>,
+    embed: BTreeMap<String, Vec<u8>>,
+) -> Result<Vec<u8>, String> {
+    let game_json = serde_json::to_string_pretty(&export_game)
+        .map_err(|error| format!("serialize game.json: {error}"))?;
+    let mut zip_writer = zip::ZipWriter::new(Cursor::new(Vec::<u8>::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    zip_writer
+        .start_file("game.json", options)
+        .map_err(|error| format!("zip write: {error}"))?;
+    zip_writer
+        .write_all(game_json.as_bytes())
+        .map_err(|error| format!("zip write: {error}"))?;
+
+    zip_writer
+        .add_directory("challenges/", options)
+        .map_err(|error| format!("zip write: {error}"))?;
+    for challenge in &export_challenges {
+        let body = serde_json::to_string_pretty(challenge)
+            .map_err(|error| format!("serialize challenge: {error}"))?;
+        zip_writer
+            .start_file(
+                format!("challenges/challenge-{}.json", challenge.id),
+                options,
+            )
+            .map_err(|error| format!("zip write: {error}"))?;
+        zip_writer
+            .write_all(body.as_bytes())
+            .map_err(|error| format!("zip write: {error}"))?;
+    }
+
+    if !embed.is_empty() {
+        zip_writer
+            .add_directory("files/", options)
+            .map_err(|error| format!("zip write: {error}"))?;
+        for (hash, bytes) in &embed {
+            zip_writer
+                .start_file(format!("files/{hash}"), options)
+                .map_err(|error| format!("zip write: {error}"))?;
+            zip_writer
+                .write_all(bytes)
+                .map_err(|error| format!("zip write: {error}"))?;
+        }
+    }
+
+    zip_writer
+        .finish()
+        .map(|writer| writer.into_inner())
+        .map_err(|error| format!("zip write: {error}"))
 }
 
 /// `POST /api/edit/games/{id}/export` — export a game as a ZIP package
@@ -686,12 +769,13 @@ pub async fn export_game(
 
     let mut export_challenges = Vec::with_capacity(challenges.len());
     let mut embed: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut embed_bytes = 0usize;
     for c in &challenges {
         // Challenge-level attachment: RSCTF loads `challenge.Attachment` for ALL
         // types (only Flags are gated to static challenges), so resolve it
         // outside the flag branch below.
         let (ch_type, ch_hash, ch_url, ch_name) =
-            resolve_export_attachment(&st, c.attachment_id, &mut embed).await?;
+            resolve_export_attachment(&st, c.attachment_id, &mut embed, &mut embed_bytes).await?;
 
         // Dynamic containers generate flags at runtime and carry no FlagContext
         // rows — skip flag loading for them (as RSCTF does).
@@ -705,7 +789,8 @@ pub async fn export_game(
             let mut out = Vec::with_capacity(rows.len());
             for f in rows {
                 let (attachment_type, file_hash, remote_url, file_name) =
-                    resolve_export_attachment(&st, f.attachment_id, &mut embed).await?;
+                    resolve_export_attachment(&st, f.attachment_id, &mut embed, &mut embed_bytes)
+                        .await?;
                 out.push(ExportFlagModel {
                     flag: f.flag,
                     attachment_type,
@@ -721,52 +806,15 @@ pub async fn export_game(
         ));
     }
 
-    // Serialize + deflate into an in-memory ZIP.
-    let game_json = serde_json::to_string_pretty(&export_game)
-        .map_err(|e| AppError::internal(format!("serialize game.json: {e}")))?;
-
-    let mut zip_writer = zip::ZipWriter::new(Cursor::new(Vec::<u8>::new()));
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-
-    let to_internal = |e: zip::result::ZipError| AppError::internal(format!("zip write: {e}"));
-    let to_internal_io = |e: std::io::Error| AppError::internal(format!("zip write: {e}"));
-
-    zip_writer
-        .start_file("game.json", opts)
-        .map_err(to_internal)?;
-    zip_writer
-        .write_all(game_json.as_bytes())
-        .map_err(to_internal_io)?;
-
-    zip_writer
-        .add_directory("challenges/", opts)
-        .map_err(to_internal)?;
-    for ch in &export_challenges {
-        let body = serde_json::to_string_pretty(ch)
-            .map_err(|e| AppError::internal(format!("serialize challenge: {e}")))?;
-        zip_writer
-            .start_file(format!("challenges/challenge-{}.json", ch.id), opts)
-            .map_err(to_internal)?;
-        zip_writer
-            .write_all(body.as_bytes())
-            .map_err(to_internal_io)?;
-    }
-
-    // Bundle the `Local` attachment blob bytes, keyed by content hash (deduped).
-    if !embed.is_empty() {
-        zip_writer
-            .add_directory("files/", opts)
-            .map_err(to_internal)?;
-        for (hash, bytes) in &embed {
-            zip_writer
-                .start_file(format!("files/{hash}"), opts)
-                .map_err(to_internal)?;
-            zip_writer.write_all(bytes).map_err(to_internal_io)?;
-        }
-    }
-
-    let buf = zip_writer.finish().map_err(to_internal)?.into_inner();
+    let _permit = GAME_EXPORT_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Game export capacity is busy; retry shortly"))?;
+    let buf = tokio::task::spawn_blocking(move || {
+        build_game_export_zip(export_game, export_challenges, embed)
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("game export task failed: {error}")))?
+    .map_err(AppError::internal)?;
 
     let filename = format!("game-{id}-export.zip");
     Response::builder()

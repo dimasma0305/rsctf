@@ -86,6 +86,7 @@ mod m0076_build_image_ownership;
 mod m0077_ad_inspector_ownership;
 mod m0078_game_manager_lookup_index;
 mod m0079_game_configuration_integrity;
+mod m0080_challenge_review_uniqueness;
 
 pub struct Migrator;
 
@@ -172,6 +173,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0077_ad_inspector_ownership::Migration),
             Box::new(m0078_game_manager_lookup_index::Migration),
             Box::new(m0079_game_configuration_integrity::Migration),
+            Box::new(m0080_challenge_review_uniqueness::Migration),
         ]
     }
 }

@@ -1,6 +1,7 @@
 //! Player flag submission, challenge review, and submission status —
 //! split from play.rs to keep each file under the 1000-line rule.
 use super::*;
+use sea_orm::ActiveEnum;
 
 const LOAD_GRADING_POLICY_SQL: &str = r#"
     SELECT submission_limit, deadline_utc, disable_blood_bonus, "Type"
@@ -654,14 +655,30 @@ pub async fn submit(
 /// Mirrors RSCTF `ReviewChallenge` + `ChallengeReviewRepository.AddOrUpdateReviewAsync`:
 /// the caller must be an accepted participant who has solved the challenge, then a
 /// `ChallengeReviews` row (keyed on user+challenge) is inserted or updated in place.
+const UPSERT_CHALLENGE_REVIEW_SQL: &str = r#"
+INSERT INTO "ChallengeReviews"
+            (challenge_id, user_id, game_id, rating, comment, submit_time_utc)
+     VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (user_id, challenge_id)
+DO UPDATE SET game_id = EXCLUDED.game_id,
+              rating = EXCLUDED.rating,
+              comment = EXCLUDED.comment,
+              submit_time_utc = EXCLUDED.submit_time_utc
+"#;
+
+fn review_rating_from_wire(value: Option<i32>) -> ReviewRating {
+    value
+        .and_then(|value| i16::try_from(value).ok())
+        .and_then(|value| ReviewRating::try_from_value(&value).ok())
+        .unwrap_or(ReviewRating::None)
+}
+
 pub async fn review_challenge(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, challenge_id)): Path<(i32, i32)>,
     axum::Json(model): axum::Json<ChallengeReviewModel>,
 ) -> AppResult<MessageResponse> {
-    use sea_orm::ActiveEnum;
-
     let ctx = context_info(&st, &user, id, false).await?;
 
     // The challenge must belong to this game.
@@ -680,38 +697,30 @@ pub async fn review_challenge(
     }
 
     // Map the wire rating (numeric ReviewRating) onto the stored enum.
-    let rating = ReviewRating::try_from_value(&(model.rating.unwrap_or(0) as i16))
-        .unwrap_or(ReviewRating::None);
-    let comment = model.comment.clone().filter(|c| !c.is_empty());
-
-    // Upsert on (user, challenge): update in place if one exists, else insert.
-    let existing = challenge_review::Entity::find()
-        .filter(challenge_review::Column::UserId.eq(user.id))
-        .filter(challenge_review::Column::ChallengeId.eq(challenge_id))
-        .one(&st.db)
-        .await?;
-    match existing {
-        Some(row) => {
-            let mut am: challenge_review::ActiveModel = row.into();
-            am.rating = Set(rating);
-            am.comment = Set(comment);
-            am.submit_time_utc = Set(Utc::now());
-            am.update(&st.db).await?;
-        }
-        None => {
-            challenge_review::ActiveModel {
-                challenge_id: Set(challenge_id),
-                user_id: Set(user.id),
-                game_id: Set(id),
-                rating: Set(rating),
-                comment: Set(comment),
-                submit_time_utc: Set(Utc::now()),
-                ..Default::default()
-            }
-            .insert(&st.db)
-            .await?;
-        }
+    let rating = review_rating_from_wire(model.rating);
+    if model
+        .comment
+        .as_ref()
+        .is_some_and(|comment| comment.chars().count() > 1_000)
+    {
+        return Err(AppError::bad_request(
+            "Review comment cannot exceed 1000 characters",
+        ));
     }
+    let comment = model.comment.filter(|comment| !comment.is_empty());
+
+    // The unique index installed by m0080 makes concurrent double-submits one
+    // atomic upsert instead of two rows from a read-then-insert race.
+    sqlx::query(UPSERT_CHALLENGE_REVIEW_SQL)
+        .bind(challenge_id)
+        .bind(user.id)
+        .bind(id)
+        .bind(rating.into_value())
+        .bind(comment)
+        .bind(Utc::now())
+        .execute(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
 
     Ok(MessageResponse::ok(""))
 }
@@ -739,9 +748,10 @@ pub async fn status(
 #[cfg(test)]
 mod tests {
     use super::{
-        normal_flag_submit_type_allowed, ChallengeType, FINALIZE_SUBMISSION_SQL,
-        LOAD_GRADING_POLICY_SQL,
+        normal_flag_submit_type_allowed, review_rating_from_wire, ChallengeType,
+        FINALIZE_SUBMISSION_SQL, LOAD_GRADING_POLICY_SQL, UPSERT_CHALLENGE_REVIEW_SQL,
     };
+    use crate::utils::enums::ReviewRating;
     use chrono::{Duration, Utc};
 
     #[test]
@@ -768,6 +778,19 @@ mod tests {
                 "missing optimistic grading fence predicate: {predicate}"
             );
         }
+    }
+
+    #[test]
+    fn challenge_review_write_is_an_atomic_upsert() {
+        assert!(UPSERT_CHALLENGE_REVIEW_SQL.contains("ON CONFLICT (user_id, challenge_id)"));
+        assert!(UPSERT_CHALLENGE_REVIEW_SQL.contains("submit_time_utc = EXCLUDED.submit_time_utc"));
+    }
+
+    #[test]
+    fn challenge_review_rating_cannot_wrap_into_a_valid_value() {
+        assert_eq!(review_rating_from_wire(Some(3)), ReviewRating::Good);
+        assert_eq!(review_rating_from_wire(Some(65_537)), ReviewRating::None);
+        assert_eq!(review_rating_from_wire(Some(-65_535)), ReviewRating::None);
     }
 
     #[test]

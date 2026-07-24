@@ -17,7 +17,7 @@ mod archive_tests;
 #[cfg(test)]
 mod local_image_tests;
 
-const MAX_BUILD_ARCHIVE_BLOB_BYTES: usize = 72 * 1024 * 1024;
+const MAX_BUILD_ARCHIVE_BLOB_BYTES: usize = crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES;
 
 pub(super) fn invalidated_build_status(
     container_image: Option<&str>,
@@ -570,7 +570,11 @@ pub(crate) async fn build_challenge_image(
     // the tag when its object is absent: doing so can mark an unrelated mutable
     // registry tag as the successful result of this source definition.
     let context: Option<Vec<u8>> = match archive_path {
-        Some(path) => match st.storage.load(path).await {
+        Some(path) => match st
+            .storage
+            .load_bounded(path, MAX_BUILD_ARCHIVE_BLOB_BYTES)
+            .await
+        {
             Ok(bytes) => Some(bytes),
             Err(error) => {
                 tracing::warn!(

@@ -105,3 +105,21 @@ fn archive_import_rejects_duplicate_ids_and_invalid_engine_weights() {
     invalid.ad_scoring_weight = f64::NAN;
     assert!(validate_import_challenges(&[invalid]).is_err());
 }
+
+#[test]
+fn game_export_zip_contains_manifest_and_bounded_attachments() {
+    let game: ExportGameModel = serde_json::from_value(serde_json::json!({})).unwrap();
+    let mut files = BTreeMap::new();
+    files.insert("a".repeat(64), b"attachment".to_vec());
+
+    let bytes = build_game_export_zip(game, Vec::new(), files).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    assert!(archive.by_name("game.json").is_ok());
+    let mut attachment = Vec::new();
+    archive
+        .by_name(&format!("files/{}", "a".repeat(64)))
+        .unwrap()
+        .read_to_end(&mut attachment)
+        .unwrap();
+    assert_eq!(attachment, b"attachment");
+}

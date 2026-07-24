@@ -8,7 +8,7 @@ use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
-const MAX_AVATAR_BYTES: usize = 3 * 1024 * 1024;
+const MAX_AVATAR_BYTES: usize = crate::utils::upload::IMAGE_FILE_BYTES;
 
 /// `PUT /api/team/{id}/avatar` (multipart, field `file`) — captain only.
 pub async fn avatar(

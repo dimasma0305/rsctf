@@ -24,6 +24,19 @@ pub trait BlobStorage: Send + Sync {
     async fn store(&self, name: &str, bytes: &[u8]) -> AppResult<StoredBlob>;
     /// Read a blob back by hash.
     async fn load(&self, hash: &str) -> AppResult<Vec<u8>>;
+    /// Read a blob only when its stored representation is within `max_bytes`.
+    ///
+    /// Real storage backends override this to check metadata before allocating.
+    /// The default preserves compatibility for small test doubles.
+    async fn load_bounded(&self, hash: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
+        let bytes = self.load(hash).await?;
+        if bytes.len() > max_bytes {
+            return Err(crate::utils::error::AppError::internal(
+                "blob exceeds the configured read limit",
+            ));
+        }
+        Ok(bytes)
+    }
     /// Delete a blob by hash (idempotent).
     async fn delete(&self, hash: &str) -> AppResult<()>;
     /// Whether a blob with this hash exists.

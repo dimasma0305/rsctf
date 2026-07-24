@@ -6,6 +6,7 @@
 //! `{prefix}/{aa}/{bb}/{hash}`.
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
 use object_store::path::Path as ObjectPath;
 use object_store::{
@@ -178,6 +179,27 @@ impl BlobStorage for S3BlobStorage {
         let result = self.client.get(&key).await.map_err(map_err)?;
         let bytes = result.bytes().await.map_err(map_err)?;
         Ok(bytes.to_vec())
+    }
+
+    async fn load_bounded(&self, hash: &str, max_bytes: usize) -> AppResult<Vec<u8>> {
+        let key = self
+            .key_for(hash)
+            .ok_or_else(|| AppError::not_found("blob not found"))?;
+        let metadata = self.client.head(&key).await.map_err(map_err)?;
+        if metadata.size > max_bytes as u64 {
+            return Err(AppError::internal("blob exceeds the configured read limit"));
+        }
+        let result = self.client.get(&key).await.map_err(map_err)?;
+        let mut stream = result.into_stream();
+        let mut bytes = Vec::with_capacity(metadata.size as usize);
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(map_err)?;
+            if bytes.len().saturating_add(chunk.len()) > max_bytes {
+                return Err(AppError::internal("blob exceeds the configured read limit"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     }
 
     async fn delete(&self, hash: &str) -> AppResult<()> {

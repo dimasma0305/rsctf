@@ -6,7 +6,7 @@
 //! `Set-Cookie` and `logout` clears it.
 
 use crate::middlewares::rate_limiter::{limited, Policy};
-use axum::extract::{ConnectInfo, Multipart, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -36,17 +36,29 @@ use crate::utils::enums::{RegisterStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{MessageResponse, RequestResponse, Wrapped};
 
-const MAX_AVATAR_BYTES: usize = 3 * 1024 * 1024;
+const MAX_AVATAR_BYTES: usize = crate::utils::upload::IMAGE_FILE_BYTES;
+pub(super) const MAX_PASSWORD_BYTES: usize = 1_024;
+pub(super) const MAX_EMAIL_BYTES: usize = 320;
+pub(super) const MAX_USER_NAME_BYTES: usize = 128;
+pub(super) const MAX_ACCOUNT_TOKEN_BYTES: usize = 256;
+pub(super) const MAX_ENCODED_EMAIL_BYTES: usize = 1_024;
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$YBSHJA9ANNWFII7EsOe1rw$O5h6h9EwR/6Pyoe9wCcjK91HivbrgJZwb44fhsiqonw";
 pub(crate) const REGISTRATION_LOCK_ID: i64 = 0x5253_4354_4652_4547; // "RSCTFREG"
 
+mod avatar;
 mod bootstrap;
 mod recovery;
+pub use avatar::avatar;
 pub use recovery::*;
 
 pub fn router() -> Router<SharedState> {
     Router::new()
-        .route("/api/account/avatar", put(avatar))
+        .route(
+            "/api/account/avatar",
+            put(avatar).layer(DefaultBodyLimit::max(
+                crate::utils::upload::IMAGE_BODY_BYTES,
+            )),
+        )
         .route(
             "/api/account/changeemail",
             limited(Policy::Register, put(change_email)),
@@ -275,6 +287,9 @@ pub async fn register(
             "Username must be at least 3 characters",
         ));
     }
+    if user_name.len() > MAX_USER_NAME_BYTES {
+        return Err(AppError::bad_request("Username is too long"));
+    }
     if model.password.len() < 6 {
         return Err(AppError::bad_request(
             "Password must be at least 6 characters",
@@ -282,7 +297,7 @@ pub async fn register(
     }
     validate_password(&model.password)?;
     let email = model.email.trim().to_lowercase();
-    if !email.contains('@') {
+    if email.len() > MAX_EMAIL_BYTES || !email.contains('@') {
         return Err(AppError::bad_request("Invalid email address"));
     }
     // Enforce the EmailDomainList allowlist (RSCTF VerifyEmailDomain): a non-empty
@@ -509,15 +524,21 @@ pub async fn login(
         return Err(AppError::bad_request("Captcha failed"));
     }
 
-    let key = model.user_name.trim().to_uppercase();
-    let found = user::Entity::find()
-        .filter(
-            user::Column::NormalizedUserName
-                .eq(key.clone())
-                .or(user::Column::NormalizedEmail.eq(key)),
-        )
-        .one(&st.db)
-        .await?;
+    let credentials_within_bounds =
+        model.user_name.len() <= MAX_EMAIL_BYTES && model.password.len() <= MAX_PASSWORD_BYTES;
+    let found = if credentials_within_bounds {
+        let key = model.user_name.trim().to_uppercase();
+        user::Entity::find()
+            .filter(
+                user::Column::NormalizedUserName
+                    .eq(key.clone())
+                    .or(user::Column::NormalizedEmail.eq(key)),
+            )
+            .one(&st.db)
+            .await?
+    } else {
+        None
+    };
     // Unknown accounts verify the same valid Argon2id shape as real accounts.
     // This equalizes the dominant CPU cost as well as the status and response body.
     let password_hash = found
@@ -525,7 +546,12 @@ pub async fn login(
         .and_then(|user| user.password_hash.as_deref())
         .unwrap_or(DUMMY_PASSWORD_HASH)
         .to_string();
-    let password_valid = verify_password_async(model.password.clone(), password_hash).await;
+    let supplied_password = if model.password.len() <= MAX_PASSWORD_BYTES {
+        model.password.clone()
+    } else {
+        String::new()
+    };
+    let password_valid = verify_password_async(supplied_password, password_hash).await;
     let found = found.ok_or_else(unauthorized_credentials)?;
     if !password_valid {
         return Err(unauthorized_credentials());
@@ -814,6 +840,9 @@ pub async fn update(
 
     if let Some(name) = model.user_name {
         let name = name.trim().to_string();
+        if name.len() > MAX_USER_NAME_BYTES {
+            return Err(AppError::bad_request("Username is too long"));
+        }
         if name.len() >= 3 {
             let norm = name.to_uppercase();
             // `normalized_user_name` is unique; a duplicate rename would surface as a
@@ -870,83 +899,6 @@ pub async fn fingerprint_challenge() -> Wrapped<BrowserFingerprintChallengeModel
     })
 }
 
-/// `PUT /api/account/avatar` (multipart, field `file`) -> raw avatar URL string.
-pub async fn avatar(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    mut multipart: Multipart,
-) -> AppResult<RequestResponse<String>> {
-    let mut data: Option<Vec<u8>> = None;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::bad_request(format!("multipart error: {e}")))?
-    {
-        if field.name() == Some("file") {
-            let bytes = field
-                .bytes()
-                .await
-                .map_err(|e| AppError::bad_request(format!("could not read file: {e}")))?;
-            data = Some(bytes.to_vec());
-            break;
-        }
-    }
-    let bytes = data.ok_or_else(|| AppError::bad_request("No file provided"))?;
-    if bytes.is_empty() || bytes.len() > MAX_AVATAR_BYTES {
-        return Err(AppError::bad_request("Invalid avatar file size"));
-    }
-
-    let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let old_hash = sqlx::query_as::<_, (Option<String>,)>(
-        r#"SELECT avatar_hash FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#,
-    )
-    .bind(user.id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("User not found"))?
-    .0;
-    let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-        st.storage.as_ref(),
-        &mut transaction,
-        "avatar",
-        &bytes,
-    )
-    .await?;
-    sqlx::query(r#"UPDATE "AspNetUsers" SET avatar_hash = $2 WHERE id = $1"#)
-        .bind(user.id)
-        .bind(&blob.hash)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if let Some(old_hash) = old_hash {
-        if let Err(error) =
-            crate::services::blob_refs::release_and_purge(st.pg(), st.storage.as_ref(), &old_hash)
-                .await
-        {
-            tracing::warn!(%error, hash = %old_hash, "old user avatar purge failed");
-        }
-    }
-
-    // RSCTF `AccountController` audit event (`Account_AvatarUpdated`). Best-effort.
-    crate::services::audit::info(
-        &st,
-        "AccountController",
-        Some(user.name.clone()),
-        None,
-        format!("User {} updated avatar", user.name),
-    )
-    .await;
-
-    Ok(RequestResponse::ok(format!("/assets/{}/avatar", blob.hash)))
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -968,6 +920,11 @@ pub(super) fn set_cookie(resp: &mut Response, cookie: &str) -> AppResult<()> {
 /// digit, lowercase, uppercase) and its default `IdentityError` descriptions so the
 /// 400 body matches RSCTF's.
 pub(super) fn validate_password(pw: &str) -> AppResult<()> {
+    if pw.len() > MAX_PASSWORD_BYTES {
+        return Err(AppError::bad_request(format!(
+            "Passwords cannot exceed {MAX_PASSWORD_BYTES} bytes."
+        )));
+    }
     if pw.chars().count() < 6 {
         return Err(AppError::bad_request(
             "Passwords must be at least 6 characters.",

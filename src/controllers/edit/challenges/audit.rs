@@ -1,5 +1,9 @@
 use super::*;
 
+const MAX_AUDIT_ARCHIVE_ENTRIES: usize = 2_048;
+const MAX_AUDIT_TEXT_BYTES: u64 = 64 * 1024;
+static AUDIT_ARCHIVE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
 /// `GET /api/edit/games/{id}/challenges/{cId}/auditmeta` — parsed audit metadata
 /// (`ChallengeAuditModel`). Mirrors `EditController.GetChallengeAuditMeta`: opens
 /// the challenge's persisted `original_archive_blob_path`, extracts it, and returns
@@ -38,12 +42,21 @@ pub async fn get_challenge_audit_meta(
         return Ok(RequestResponse::ok(empty(false)));
     };
     // Blob gone from storage -> archive not available.
-    let bytes = match st.storage.load(hash).await {
+    let bytes = match st
+        .storage
+        .load_bounded(hash, crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES)
+        .await
+    {
         Ok(b) => b,
         Err(_) => return Ok(RequestResponse::ok(empty(false))),
     };
 
-    let mut model = parse_audit_archive(&bytes);
+    let _permit = AUDIT_ARCHIVE_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Archive inspection capacity is busy; retry shortly"))?;
+    let mut model = tokio::task::spawn_blocking(move || parse_audit_archive(&bytes))
+        .await
+        .map_err(|error| AppError::internal(format!("archive inspection task failed: {error}")))?;
     if let Some(obj) = model.as_object_mut() {
         obj.insert(
             "buildStatus".into(),
@@ -65,7 +78,6 @@ pub async fn get_challenge_audit_meta(
 /// blue-highlight previewed entries in the file tree.
 fn parse_audit_archive(bytes: &[u8]) -> JsonValue {
     // Eligibility/size caps mirror RSCTF FillAuditModel.
-    const PREVIEW_MAX: u64 = 64 * 1024;
     const PREVIEW_TRUNC: usize = 8 * 1024;
     const PREVIEW_KEYWORDS: [&str; 6] =
         ["readme", "writeup", "solution", "solve", "solver", "notes"];
@@ -75,6 +87,14 @@ fn parse_audit_archive(bytes: &[u8]) -> JsonValue {
     let mut previews = serde_json::Map::new();
 
     if let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(bytes)) {
+        if archive.len() > MAX_AUDIT_ARCHIVE_ENTRIES {
+            return json!({
+                "archiveAvailable": true,
+                "files": [],
+                "previews": {},
+                "yamlText": JsonValue::Null,
+            });
+        }
         for i in 0..archive.len() {
             let Ok(mut entry) = archive.by_index(i) else {
                 continue;
@@ -97,15 +117,24 @@ fn parse_audit_archive(bytes: &[u8]) -> JsonValue {
             // First challenge.yml/.yaml wins; it isn't also emitted as a preview.
             if yaml_text.is_none() && (lower == "challenge.yaml" || lower == "challenge.yml") {
                 let mut buf = String::new();
-                if std::io::Read::read_to_string(&mut entry, &mut buf).is_ok() {
+                if size <= MAX_AUDIT_TEXT_BYTES
+                    && std::io::Read::take(&mut entry, MAX_AUDIT_TEXT_BYTES + 1)
+                        .read_to_string(&mut buf)
+                        .is_ok()
+                    && buf.len() <= MAX_AUDIT_TEXT_BYTES as usize
+                {
                     yaml_text = Some(buf);
                 }
                 continue;
             }
 
-            if size <= PREVIEW_MAX && PREVIEW_KEYWORDS.iter().any(|k| lower.contains(k)) {
+            if size <= MAX_AUDIT_TEXT_BYTES && PREVIEW_KEYWORDS.iter().any(|k| lower.contains(k)) {
                 let mut data = Vec::new();
-                if std::io::Read::read_to_end(&mut entry, &mut data).is_ok() {
+                if std::io::Read::take(&mut entry, MAX_AUDIT_TEXT_BYTES + 1)
+                    .read_to_end(&mut data)
+                    .is_ok()
+                    && data.len() <= MAX_AUDIT_TEXT_BYTES as usize
+                {
                     if let Ok(mut s) = String::from_utf8(data) {
                         if s.len() > PREVIEW_TRUNC {
                             // Truncate on a char boundary to avoid a panic.

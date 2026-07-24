@@ -72,7 +72,7 @@ pub async fn submit_writeup(
     if bytes.is_empty() {
         return Err(AppError::bad_request("File is empty"));
     }
-    if bytes.len() > 20 * 1024 * 1024 {
+    if bytes.len() > crate::utils::upload::WRITEUP_FILE_BYTES {
         return Err(AppError::bad_request("File is too large"));
     }
     // Extension check is case-SENSITIVE to match RSCTF's `Path.GetExtension(name)

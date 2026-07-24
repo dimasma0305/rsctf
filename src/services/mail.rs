@@ -201,6 +201,21 @@ fn non_empty(v: Option<String>) -> Option<String> {
     v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
 // ---------------------------------------------------------------------------
 // Email templates
 //
@@ -213,9 +228,8 @@ fn non_empty(v: Option<String>) -> Option<String> {
 /// The platform name used in subjects/footers when none is supplied.
 const DEFAULT_PLATFORM: &str = "RSCTF";
 
-/// Render the shared HTML skeleton. `information` is trusted HTML (caller-built);
-/// all other fields are plain text substituted verbatim, matching RSCTF's
-/// `StringBuilder.Replace` approach.
+/// Render the shared HTML skeleton. `information` is trusted caller-built HTML;
+/// every other field is escaped before it enters text or attribute context.
 fn render_template(
     title: &str,
     information: &str,
@@ -224,6 +238,10 @@ fn render_template(
     platform: &str,
 ) -> String {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+    let title = escape_html(title);
+    let button_message = escape_html(button_message);
+    let url = escape_html(url);
+    let platform = escape_html(platform);
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -254,9 +272,11 @@ fn render_template(
 pub fn confirm_email(email: &str, confirm_link: &str, platform: Option<&str>) -> (String, String) {
     let platform = platform.unwrap_or(DEFAULT_PLATFORM);
     let title = "Verify your email";
+    let safe_platform = escape_html(platform);
+    let safe_email = escape_html(email);
     let info = format!(
-        "<p>Welcome to <strong>{platform}</strong>! Please verify the email address \
-         <code>{email}</code> to activate your account.</p>\
+        "<p>Welcome to <strong>{safe_platform}</strong>! Please verify the email address \
+         <code>{safe_email}</code> to activate your account.</p>\
          <p>Click the button below to confirm. This link is valid for a limited time \
          and can only be used once.</p>"
     );
@@ -272,9 +292,11 @@ pub fn change_email(
 ) -> (String, String) {
     let platform = platform.unwrap_or(DEFAULT_PLATFORM);
     let title = "Confirm your new email";
+    let safe_platform = escape_html(platform);
+    let safe_email = escape_html(new_email);
     let info = format!(
-        "<p>A request was made to change your <strong>{platform}</strong> account email to \
-         <code>{new_email}</code>.</p>\
+        "<p>A request was made to change your <strong>{safe_platform}</strong> account email to \
+         <code>{safe_email}</code>.</p>\
          <p>Click the button below to confirm this change. If you did not request it, \
          ignore this email and your address will stay the same.</p>"
     );
@@ -286,8 +308,9 @@ pub fn change_email(
 pub fn reset_password(reset_link: &str, platform: Option<&str>) -> (String, String) {
     let platform = platform.unwrap_or(DEFAULT_PLATFORM);
     let title = "Reset your password";
+    let safe_platform = escape_html(platform);
     let info = format!(
-        "<p>We received a request to reset the password for your <strong>{platform}</strong> \
+        "<p>We received a request to reset the password for your <strong>{safe_platform}</strong> \
          account.</p>\
          <p>Click the button below to choose a new password. This link is valid for a limited \
          time and can only be used once. If you did not request a reset, ignore this email.</p>"
@@ -307,9 +330,11 @@ pub fn invite(
 ) -> (String, String) {
     let platform = platform.unwrap_or(DEFAULT_PLATFORM);
     let title = "Set Your Password";
+    let safe_platform = escape_html(platform);
+    let safe_user_name = escape_html(user_name);
     let info = format!(
-        "<p>An account has been created for you on <strong>{platform}</strong>.</p>\
-         <p><strong>Username:</strong> <code>{user_name}</code></p>\
+        "<p>An account has been created for you on <strong>{safe_platform}</strong>.</p>\
+         <p><strong>Username:</strong> <code>{safe_user_name}</code></p>\
          <p>Click the button below to set your own password. This link is valid for a \
          limited time and can only be used once.</p>"
     );
@@ -355,5 +380,19 @@ mod tests {
 
         let (subject, _) = reset_password("https://x/reset", None);
         assert_eq!(subject, "Reset your password - RSCTF");
+    }
+
+    #[test]
+    fn templates_escape_user_controlled_html_and_link_attributes() {
+        let (_, body) = invite(
+            r#"<img src=x onerror="alert(1)">"#,
+            r#"https://example.test/reset?x=" onclick="alert(1)"#,
+            Some("<b>Unsafe CTF</b>"),
+        );
+        assert!(!body.contains("<img"));
+        assert!(!body.contains("<b>Unsafe CTF</b>"));
+        assert!(!body.contains(r#"" onclick=""#));
+        assert!(body.contains("&lt;img"));
+        assert!(body.contains("&quot; onclick=&quot;"));
     }
 }

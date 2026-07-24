@@ -49,7 +49,11 @@ async fn local_build_source_matches(
             let Some(hash) = challenge.original_archive_blob_path.as_deref() else {
                 return false;
             };
-            let archive = match st.storage.load(hash).await {
+            let archive = match st
+                .storage
+                .load_bounded(hash, crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES)
+                .await
+            {
                 Ok(archive) => archive,
                 Err(error) => {
                     tracing::warn!(%error, %hash, "git_sync: live build source could not be fingerprinted");

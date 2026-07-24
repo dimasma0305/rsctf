@@ -5,7 +5,7 @@
 //! authorized against live game participation before their bytes are loaded.
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Multipart, Path, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -39,7 +39,12 @@ pub struct LocalFileResult {
 
 pub fn router() -> Router<SharedState> {
     Router::new()
-        .route("/api/assets", post(upload))
+        .route(
+            "/api/assets",
+            post(upload).layer(DefaultBodyLimit::max(
+                crate::utils::upload::ASSET_BODY_BYTES,
+            )),
+        )
         .route("/assets/{hash}/{filename}", get(download))
         .route(
             "/assets/{hash}/s/{token}/{filename}",
@@ -54,7 +59,8 @@ pub async fn upload(
     AdminUser(_user): AdminUser,
     mut multipart: Multipart,
 ) -> AppResult<Json<Vec<LocalFileResult>>> {
-    let mut results = Vec::new();
+    let mut uploads = Vec::new();
+    let mut total_bytes = 0usize;
 
     while let Some(field) = multipart
         .next_field()
@@ -71,7 +77,27 @@ pub async fn upload(
             continue;
         }
         let name = file_name.unwrap_or_else(|| "file".to_string());
+        if name.len() > 255 {
+            return Err(AppError::bad_request("File name is too long"));
+        }
+        if bytes.len() > crate::utils::upload::ASSET_FILE_BYTES {
+            return Err(AppError::bad_request("File is too large"));
+        }
+        total_bytes = total_bytes
+            .checked_add(bytes.len())
+            .filter(|total| *total <= crate::utils::upload::ASSET_TOTAL_BYTES)
+            .ok_or_else(|| AppError::bad_request("Upload exceeds the total size limit"))?;
+        uploads.push((name, bytes));
+    }
 
+    if uploads.is_empty() {
+        return Err(AppError::bad_request("No file provided"));
+    }
+
+    // Validate the complete request before acquiring any blob references. A
+    // later oversized part must not leave the earlier parts persisted.
+    let mut results = Vec::with_capacity(uploads.len());
+    for (name, bytes) in uploads {
         let (blob, _) = crate::services::blob_refs::store_and_acquire(
             st.pg(),
             st.storage.as_ref(),
@@ -87,9 +113,6 @@ pub async fn upload(
         });
     }
 
-    if results.is_empty() {
-        return Err(AppError::bad_request("No file provided"));
-    }
     Ok(Json(results))
 }
 
@@ -128,6 +151,21 @@ enum AssetGate {
     Public,
     Protected(Vec<AssetTarget>),
     Private,
+}
+
+#[derive(Clone, Copy)]
+enum AssetCachePolicy {
+    Public,
+    Private,
+}
+
+impl AssetCachePolicy {
+    fn header(self) -> &'static str {
+        match self {
+            Self::Public => "public, max-age=31536000, immutable",
+            Self::Private => "private, no-store",
+        }
+    }
 }
 
 async fn is_explicit_public_reference(st: &SharedState, hash: &str) -> AppResult<bool> {
@@ -271,16 +309,16 @@ async fn authorize_asset_download(
     st: &SharedState,
     hash: &str,
     user: &Option<CurrentUser>,
-) -> AppResult<()> {
+) -> AppResult<AssetCachePolicy> {
     let gate = compute_asset_gate(st, hash).await?;
     if matches!(gate, AssetGate::Public) {
-        return Ok(());
+        return Ok(AssetCachePolicy::Public);
     }
     let Some(u) = user else {
         return Err(AppError::Forbidden);
     };
     if u.is_monitor() {
-        return Ok(());
+        return Ok(AssetCachePolicy::Private);
     }
     let AssetGate::Protected(targets) = gate else {
         return Err(AppError::Forbidden);
@@ -322,8 +360,8 @@ async fn authorize_asset_download(
             continue;
         };
         match target.source_team {
-            None => return Ok(()), // static attachment — any participant of the game
-            Some(team) if part.team_id == team => return Ok(()),
+            None => return Ok(AssetCachePolicy::Private), // static attachment
+            Some(team) if part.team_id == team => return Ok(AssetCachePolicy::Private),
             Some(_) => continue, // participant, but not on the owning team
         }
     }
@@ -337,7 +375,10 @@ async fn load_asset_bytes(st: &SharedState, hash: &str) -> AppResult<Bytes> {
     if let Some(b) = st.cache.get(&key).await {
         return Ok(b);
     }
-    let bytes = st.storage.load(hash).await?;
+    let bytes = st
+        .storage
+        .load_bounded(hash, crate::utils::upload::ASSET_FILE_BYTES)
+        .await?;
     if bytes.len() <= ASSET_CACHE_MAX_BYTES {
         st.cache.set(&key, &bytes, Some(ASSET_BYTES_TTL)).await;
     }
@@ -392,7 +433,7 @@ async fn serve_asset(
     filename: &str,
     token: Option<&str>,
 ) -> AppResult<Response> {
-    authorize_asset_download(st, hash, user).await?;
+    let cache_policy = authorize_asset_download(st, hash, user).await?;
 
     // Conditional caching (RSCTF `AssetsController`): a content-hash blob is
     // immutable, so an `ETag` of hash[8..16] lets the browser skip re-downloading.
@@ -402,7 +443,14 @@ async fn serve_asset(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag))
     {
-        return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
+        return Ok((
+            StatusCode::NOT_MODIFIED,
+            [
+                (header::ETAG, etag),
+                (header::CACHE_CONTROL, cache_policy.header().to_string()),
+            ],
+        )
+            .into_response());
     }
 
     let bytes = match load_asset_bytes(st, hash).await {
@@ -447,6 +495,8 @@ async fn serve_asset(
             (header::CONTENT_TYPE, content_type_for(filename).to_string()),
             (header::CONTENT_DISPOSITION, disposition),
             (header::ETAG, etag),
+            (header::CACHE_CONTROL, cache_policy.header().to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
         ],
         Body::from(bytes),
     )

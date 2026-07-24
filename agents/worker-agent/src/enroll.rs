@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use rsctf_worker_protocol::{EnrollmentRequest, EnrollmentResponse};
@@ -9,6 +10,10 @@ use tokio::io::AsyncReadExt;
 use crate::config::{AgentConfig, EnrollArgs};
 
 const ENROLLMENT_PATH: &str = "/api/workers/enroll";
+const MAX_ENROLLMENT_TOKEN_BYTES: usize = 4 * 1024;
+const MAX_ENROLLMENT_RESPONSE_BYTES: usize = 1024 * 1024;
+const ENROLLMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const ENROLLMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
     let server_url = enrollment_url(&arguments.server_url, arguments.allow_insecure_enrollment)?;
@@ -45,15 +50,16 @@ pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
     };
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(ENROLLMENT_CONNECT_TIMEOUT)
+        .timeout(ENROLLMENT_REQUEST_TIMEOUT)
         .build()?;
     let response = client
         .post(server_url)
         .json(&request)
         .send()
         .await?
-        .error_for_status()?
-        .json::<EnrollmentResponse>()
-        .await?;
+        .error_for_status()?;
+    let response = decode_enrollment_response(response).await?;
     validate_response(&response)?;
     let config = AgentConfig {
         worker_id: response.worker_id,
@@ -85,6 +91,34 @@ pub async fn run(arguments: EnrollArgs) -> Result<(), EnrollmentError> {
         "worker enrollment completed"
     );
     Ok(())
+}
+
+async fn decode_enrollment_response(
+    mut response: reqwest::Response,
+) -> Result<EnrollmentResponse, EnrollmentError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_ENROLLMENT_RESPONSE_BYTES as u64)
+    {
+        return Err(EnrollmentError::InvalidResponse(
+            "enrollment response exceeds the size limit".to_string(),
+        ));
+    }
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(MAX_ENROLLMENT_RESPONSE_BYTES as u64) as usize,
+    );
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > MAX_ENROLLMENT_RESPONSE_BYTES {
+            return Err(EnrollmentError::InvalidResponse(
+                "enrollment response exceeds the size limit".to_string(),
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&body)?)
 }
 
 async fn require_new_identity(paths: &[&Path]) -> Result<(), EnrollmentError> {
@@ -151,12 +185,26 @@ async fn read_token(arguments: &EnrollArgs) -> Result<SecretString, EnrollmentEr
     let value = if let Some(token) = &arguments.token {
         token.clone()
     } else if let Some(path) = &arguments.token_file {
-        tokio::fs::read_to_string(path).await?
+        let mut value = String::new();
+        tokio::fs::File::open(path)
+            .await?
+            .take(MAX_ENROLLMENT_TOKEN_BYTES as u64 + 1)
+            .read_to_string(&mut value)
+            .await?;
+        value
     } else {
         let mut value = String::new();
-        tokio::io::stdin().read_to_string(&mut value).await?;
+        tokio::io::stdin()
+            .take(MAX_ENROLLMENT_TOKEN_BYTES as u64 + 1)
+            .read_to_string(&mut value)
+            .await?;
         value
     };
+    if value.len() > MAX_ENROLLMENT_TOKEN_BYTES {
+        return Err(EnrollmentError::InvalidResponse(
+            "enrollment token exceeds the size limit".to_string(),
+        ));
+    }
     Ok(SecretString::from(
         value.trim_end_matches(['\r', '\n']).to_string(),
     ))
@@ -280,6 +328,33 @@ mod tests {
         assert!(enrollment_url("http://ctf.example", false).is_err());
         assert!(enrollment_url("http://127.0.0.1:8080", true).is_ok());
         assert!(enrollment_url("https://user@ctf.example", false).is_err());
+    }
+
+    #[tokio::test]
+    async fn enrollment_response_rejects_oversized_content_length() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+        assert!(matches!(
+            decode_enrollment_response(response).await,
+            Err(EnrollmentError::InvalidResponse(_))
+        ));
+        server.await.unwrap();
     }
 
     #[tokio::test]

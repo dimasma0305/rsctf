@@ -13,11 +13,11 @@ mod flag_egress;
 mod participation_review;
 
 use std::collections::BTreeMap;
-use std::io::{Cursor, Write};
+use std::io::Write;
 
 use crate::middlewares::rate_limiter::{limited, Policy};
 use axum::body::Body;
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
@@ -85,7 +85,11 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/config", get(get_config).put(update_config))
         .route(
             "/api/admin/config/logo",
-            post(logo_upload).delete(logo_delete),
+            post(logo_upload)
+                .layer(DefaultBodyLimit::max(
+                    crate::utils::upload::IMAGE_BODY_BYTES,
+                ))
+                .merge(delete(logo_delete)),
         )
         // --- Dashboard / trends / reviews / cheat reports / writeups ---
         .route("/api/admin/dashboard", get(dashboard))
@@ -592,10 +596,73 @@ pub async fn game_writeups(
 }
 
 /// `GET /api/admin/writeups/{id}/all` — download every writeup for a game as a
-/// single zip archive (RSCTF streams a tar; a zip is the in-crate equivalent and
-/// what the task calls for). Each participation's writeup blob is pulled from
-/// `st.storage` and added under a per-team, collision-free entry name. A blob
-/// that fails to load is skipped rather than failing the whole download.
+/// single streamed zip archive.
+const WRITEUP_ZIP_CHUNK_BYTES: usize = 64 * 1024;
+static WRITEUP_ARCHIVE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+struct WriteupArchiveSource {
+    hash: String,
+    entry: String,
+}
+
+struct WriteupArchiveFile {
+    entry: String,
+    bytes: Vec<u8>,
+}
+
+type WriteupZipChunk = Result<bytes::Bytes, std::io::Error>;
+
+struct ZipStreamWriter {
+    output: tokio::sync::mpsc::Sender<WriteupZipChunk>,
+    buffered: Vec<u8>,
+}
+
+impl ZipStreamWriter {
+    fn new(output: tokio::sync::mpsc::Sender<WriteupZipChunk>) -> Self {
+        Self {
+            output,
+            buffered: Vec::with_capacity(WRITEUP_ZIP_CHUNK_BYTES),
+        }
+    }
+
+    fn send_buffer(&mut self) -> std::io::Result<()> {
+        if self.buffered.is_empty() {
+            return Ok(());
+        }
+        let chunk = std::mem::replace(
+            &mut self.buffered,
+            Vec::with_capacity(WRITEUP_ZIP_CHUNK_BYTES),
+        );
+        self.output
+            .blocking_send(Ok(bytes::Bytes::from(chunk)))
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "client disconnected"))
+    }
+
+    fn finish(mut self) -> std::io::Result<()> {
+        self.send_buffer()
+    }
+}
+
+impl Write for ZipStreamWriter {
+    fn write(&mut self, mut input: &[u8]) -> std::io::Result<usize> {
+        let input_len = input.len();
+        while !input.is_empty() {
+            let available = WRITEUP_ZIP_CHUNK_BYTES - self.buffered.len();
+            let take = available.min(input.len());
+            self.buffered.extend_from_slice(&input[..take]);
+            input = &input[take..];
+            if self.buffered.len() == WRITEUP_ZIP_CHUNK_BYTES {
+                self.send_buffer()?;
+            }
+        }
+        Ok(input_len)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.send_buffer()
+    }
+}
+
 pub async fn download_all_writeups(
     State(st): State<SharedState>,
     _admin: AdminUser,
@@ -612,38 +679,104 @@ pub async fn download_all_writeups(
         .all(&st.db)
         .await?;
 
-    let mut buf = Cursor::new(Vec::<u8>::new());
-    {
-        let mut zip = zip::ZipWriter::new(&mut buf);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-
-        for p in parts {
-            let Some(wid) = p.writeup_id else { continue };
-            let Some(file) = local_file::Entity::find_by_id(wid).one(&st.db).await? else {
-                continue;
-            };
-            // Degrade instead of 500ing when a blob is missing from storage.
-            let Ok(bytes) = st.storage.load(&file.hash).await else {
-                continue;
-            };
-
-            let team_name = team::Entity::find_by_id(p.team_id)
-                .one(&st.db)
-                .await?
-                .map(|t| t.name)
-                .unwrap_or_else(|| format!("team-{}", p.team_id));
-            let entry = format!("{}-{}-{}", p.id, sanitize_entry(&team_name), file.name);
-
-            if zip.start_file(entry, options).is_err() {
-                continue;
-            }
-            let _ = zip.write_all(&bytes);
+    let mut sources = Vec::with_capacity(parts.len());
+    for participation in parts {
+        let Some(writeup_id) = participation.writeup_id else {
+            continue;
+        };
+        let Some(file) = local_file::Entity::find_by_id(writeup_id)
+            .one(&st.db)
+            .await?
+        else {
+            continue;
+        };
+        if file.file_size < 0 || file.file_size as usize > crate::utils::upload::WRITEUP_FILE_BYTES
+        {
+            tracing::warn!(
+                file_id = file.id,
+                size = file.file_size,
+                "skipping writeup with invalid stored size"
+            );
+            continue;
         }
-
-        zip.finish()
-            .map_err(|e| AppError::internal(format!("zip finish: {e}")))?;
+        let team_name = team::Entity::find_by_id(participation.team_id)
+            .one(&st.db)
+            .await?
+            .map(|team| team.name)
+            .unwrap_or_else(|| format!("team-{}", participation.team_id));
+        sources.push(WriteupArchiveSource {
+            hash: file.hash,
+            entry: format!(
+                "{}-{}-{}",
+                participation.id,
+                sanitize_entry(&team_name),
+                sanitize_entry(&file.name)
+            ),
+        });
     }
+
+    let permit = WRITEUP_ARCHIVE_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Writeup archive capacity is busy; retry shortly"))?;
+    let (file_sender, mut file_receiver) = tokio::sync::mpsc::channel::<WriteupArchiveFile>(1);
+    let (output_sender, output_receiver) = tokio::sync::mpsc::channel::<WriteupZipChunk>(8);
+
+    let error_sender = output_sender.clone();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let outcome = (|| -> Result<(), String> {
+            let writer = ZipStreamWriter::new(output_sender);
+            let mut zip = zip::ZipWriter::new_stream(writer);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            while let Some(file) = file_receiver.blocking_recv() {
+                zip.start_file(file.entry, options)
+                    .map_err(|error| format!("zip entry: {error}"))?;
+                zip.write_all(&file.bytes)
+                    .map_err(|error| format!("zip write: {error}"))?;
+            }
+            let writer = zip
+                .finish()
+                .map_err(|error| format!("zip finish: {error}"))?;
+            writer
+                .into_inner()
+                .finish()
+                .map_err(|error| format!("zip stream: {error}"))
+        })();
+        if let Err(error) = outcome {
+            let _ = error_sender.blocking_send(Err(std::io::Error::other(error)));
+        }
+    });
+
+    let storage = st.storage.clone();
+    tokio::spawn(async move {
+        for source in sources {
+            let bytes = match storage
+                .load_bounded(&source.hash, crate::utils::upload::WRITEUP_FILE_BYTES)
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        hash = %source.hash,
+                        "skipping unavailable writeup in archive"
+                    );
+                    continue;
+                }
+            };
+            if file_sender
+                .send(WriteupArchiveFile {
+                    entry: source.entry,
+                    bytes,
+                })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
 
     let filename = format!(
         "Writeups-{}-{}.zip",
@@ -657,8 +790,9 @@ pub async fn download_all_writeups(
         [
             (header::CONTENT_TYPE, "application/zip".to_string()),
             (header::CONTENT_DISPOSITION, disposition),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
         ],
-        Body::from(buf.into_inner()),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(output_receiver)),
     )
         .into_response())
 }
@@ -673,6 +807,45 @@ fn sanitize_entry(name: &str) -> String {
             c => c,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod writeup_archive_tests {
+    use super::*;
+    use std::io::{Cursor, Read};
+
+    #[test]
+    fn streamed_writeup_zip_is_valid_without_buffering_the_archive() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<WriteupZipChunk>(8);
+        let worker = std::thread::spawn(move || {
+            let writer = ZipStreamWriter::new(sender);
+            let mut zip = zip::ZipWriter::new_stream(writer);
+            zip.start_file("team-writeup.pdf", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"%PDF-test").unwrap();
+            zip.finish().unwrap().into_inner().finish().unwrap();
+        });
+
+        let mut archive_bytes = Vec::new();
+        while let Some(chunk) = receiver.blocking_recv() {
+            archive_bytes.extend_from_slice(&chunk.unwrap());
+        }
+        worker.join().unwrap();
+
+        let mut archive = zip::ZipArchive::new(Cursor::new(archive_bytes)).unwrap();
+        let mut contents = Vec::new();
+        archive
+            .by_name("team-writeup.pdf")
+            .unwrap()
+            .read_to_end(&mut contents)
+            .unwrap();
+        assert_eq!(contents, b"%PDF-test");
+    }
+
+    #[test]
+    fn archive_entry_names_cannot_create_paths() {
+        assert_eq!(sanitize_entry("../team\\name\r\n"), ".._team_name__");
+    }
 }
 
 // ─── Auto-build / repo-binding wire models ─────────────────────────────────────

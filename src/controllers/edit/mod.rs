@@ -10,7 +10,7 @@
 //! marked with `// TODO`.
 
 use axum::body::Body;
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::header;
 use axum::response::Response;
 use axum::routing::{delete, get, post, put};
@@ -609,7 +609,12 @@ pub fn router() -> Router<SharedState> {
         .route("/api/edit/posts/{id}", put(update_post).delete(delete_post))
         // --- Games ---
         .route("/api/edit/games", get(get_games).post(add_game))
-        .route("/api/edit/games/import", post(import_game))
+        .route(
+            "/api/edit/games/import",
+            post(import_game).layer(DefaultBodyLimit::max(
+                crate::utils::upload::ARCHIVE_BODY_BYTES,
+            )),
+        )
         .route(
             "/api/edit/games/{id}",
             get(get_game).put(update_game).delete(delete_game),
@@ -617,7 +622,12 @@ pub fn router() -> Router<SharedState> {
         .route("/api/edit/games/{id}/HashSalt", get(get_hash_salt))
         .route("/api/edit/games/{id}/Clone", post(clone_game))
         .route("/api/edit/games/{id}/writeups", delete(delete_writeups))
-        .route("/api/edit/games/{id}/poster", put(update_poster))
+        .route(
+            "/api/edit/games/{id}/poster",
+            put(update_poster).layer(DefaultBodyLimit::max(
+                crate::utils::upload::IMAGE_BODY_BYTES,
+            )),
+        )
         .route("/api/edit/games/{id}/export", post(export_game))
         .route(
             "/api/edit/games/{id}/scoreboard/flush",
@@ -646,11 +656,15 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/challenges/submit",
-            post(submit_challenge),
+            post(submit_challenge).layer(DefaultBodyLimit::max(
+                crate::utils::upload::ARCHIVE_BODY_BYTES,
+            )),
         )
         .route(
             "/api/edit/games/{id}/challenges/import",
-            post(import_challenge),
+            post(import_challenge).layer(DefaultBodyLimit::max(
+                crate::utils::upload::ARCHIVE_BODY_BYTES,
+            )),
         )
         .route(
             "/api/edit/games/{id}/challenges/importfromgithub",

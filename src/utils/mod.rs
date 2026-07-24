@@ -10,3 +10,4 @@ pub(crate) mod redis;
 pub mod scoring;
 pub mod shared;
 pub mod single_flight;
+pub mod upload;

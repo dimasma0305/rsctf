@@ -32,6 +32,8 @@ use crate::utils::error::{AppError, AppResult};
 const TURNSTILE_API: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const TURNSTILE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const TURNSTILE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const TURNSTILE_RESPONSE_MAX_BYTES: usize = 16 * 1024;
+const MAX_CAPTCHA_TOKEN_BYTES: usize = 4 * 1024;
 
 static TURNSTILE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     turnstile_client_builder(TURNSTILE_CONNECT_TIMEOUT, TURNSTILE_REQUEST_TIMEOUT)
@@ -51,6 +53,35 @@ fn turnstile_client_builder(
 
 pub(crate) fn turnstile_client() -> reqwest::Client {
     TURNSTILE_CLIENT.clone()
+}
+
+async fn decode_turnstile_response(
+    mut response: reqwest::Response,
+) -> AppResult<TurnstileResponse> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > TURNSTILE_RESPONSE_MAX_BYTES as u64)
+    {
+        return Err(AppError::internal("turnstile response is too large"));
+    }
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(TURNSTILE_RESPONSE_MAX_BYTES as u64) as usize,
+    );
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| AppError::internal(format!("turnstile response read failed: {error}")))?
+    {
+        if body.len().saturating_add(chunk.len()) > TURNSTILE_RESPONSE_MAX_BYTES {
+            return Err(AppError::internal("turnstile response is too large"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body)
+        .map_err(|error| AppError::internal(format!("turnstile response decode failed: {error}")))
 }
 
 /// Default proof-of-work difficulty (leading zero bits) when
@@ -134,7 +165,7 @@ impl CaptchaService {
                 if secret.trim().is_empty() {
                     return Ok(true);
                 }
-                if token.trim().is_empty() {
+                if token.trim().is_empty() || token.len() > MAX_CAPTCHA_TOKEN_BYTES {
                     return Ok(false);
                 }
 
@@ -146,16 +177,13 @@ impl CaptchaService {
                     .await
                     .map_err(|e| AppError::internal(format!("turnstile request failed: {e}")))?;
 
-                let body: TurnstileResponse = resp.json().await.map_err(|e| {
-                    AppError::internal(format!("turnstile response decode failed: {e}"))
-                })?;
+                let body = decode_turnstile_response(resp).await?;
 
                 Ok(body.success)
             }
 
-            CaptchaService::HashPow { difficulty } => {
-                Ok(verify_hashpow(token, *difficulty, cache).await)
-            }
+            CaptchaService::HashPow { difficulty } => Ok(token.len() <= MAX_CAPTCHA_TOKEN_BYTES
+                && verify_hashpow(token, *difficulty, cache).await),
         }
     }
 }
@@ -198,13 +226,7 @@ async fn verify_hashpow(token: &str, difficulty: u32, cache: &dyn Cache) -> bool
 /// Decode an even-length lowercase/uppercase hex string to bytes; `None` on any
 /// malformed input.
 fn hex_bytes(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
+    hex::decode(s).ok()
 }
 
 /// Count the number of leading zero bits in a byte slice (most-significant
@@ -333,6 +355,7 @@ mod tests {
         assert_eq!(hex_bytes("00ff10"), Some(vec![0x00, 0xff, 0x10]));
         assert_eq!(hex_bytes("abc"), None); // odd length
         assert_eq!(hex_bytes("zz"), None); // non-hex
+        assert_eq!(hex_bytes("aéa"), None); // never slice malformed UTF-8 boundaries
     }
 
     #[tokio::test]
@@ -369,6 +392,18 @@ mod tests {
         assert!(!verify_hashpow("id:", 0, &cache).await); // empty answer
                                                           // A well-formed token whose id was never minted (no cached challenge) fails.
         assert!(!verify_hashpow("unknownid:00000000", 0, &cache).await);
+    }
+
+    #[tokio::test]
+    async fn hashpow_service_rejects_oversized_tokens_before_cache_access() {
+        let cache = InMemoryCache::default();
+        let key = "_HP_kept";
+        cache.set(key, b"0011223344556677", None).await;
+        let token = format!("kept:{}", "0".repeat(MAX_CAPTCHA_TOKEN_BYTES));
+
+        let service = CaptchaService::HashPow { difficulty: 0 };
+        assert!(!service.verify(&token, &cache).await.unwrap());
+        assert!(cache.get(key).await.is_some());
     }
 
     #[tokio::test]

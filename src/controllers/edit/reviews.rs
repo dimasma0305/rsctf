@@ -31,7 +31,7 @@ pub async fn update_poster(
     if bytes.is_empty() {
         return Err(AppError::bad_request("File size is zero"));
     }
-    if bytes.len() > 3 * 1024 * 1024 {
+    if bytes.len() > crate::utils::upload::IMAGE_FILE_BYTES {
         return Err(AppError::bad_request("File is too large"));
     }
 

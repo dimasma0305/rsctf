@@ -744,7 +744,7 @@ async fn upsert_config(st: &SharedState, key: &str, value: Option<String>) -> Ap
 }
 
 /// Maximum logo upload size (mirrors RSCTF's 3 MiB cap).
-const MAX_LOGO_BYTES: usize = 3 * 1024 * 1024;
+const MAX_LOGO_BYTES: usize = crate::utils::upload::IMAGE_FILE_BYTES;
 
 /// `POST /api/admin/config/logo` (multipart, field `file`) — platform logo
 /// upload. Stores the blob in `st.storage`, records a `Files` row, and persists

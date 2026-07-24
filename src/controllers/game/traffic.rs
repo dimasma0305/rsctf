@@ -1,9 +1,17 @@
 //! Traffic-capture serving: pcap listing/download/flows.
 use super::*;
+use std::io::Read;
 
 // ---------------------------------------------------------------------------
 // Traffic capture metadata and pcap serving for the singleton capture worker.
 // ---------------------------------------------------------------------------
+
+const MAX_CAPTURE_ARCHIVE_FILES: usize = 256;
+const MAX_CAPTURE_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_INSPECT_CAPTURE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_CAPTURE_FLOWS: usize = 20_000;
+static CAPTURE_ARCHIVE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static CAPTURE_FLOW_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// `GET /api/game/games/{id}/captures`
 /// Root dir for per-(challenge, participation) pcaps:
@@ -16,7 +24,18 @@ fn capture_root(st: &SharedState) -> std::path::PathBuf {
 
 /// Reject path-traversal in a URL-supplied file name.
 fn safe_capture_name(name: &str) -> AppResult<&str> {
-    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+    if name.is_empty()
+        || name.len() > 255
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.chars().any(|character| {
+            character.is_control() || matches!(character, '"' | '\'' | '\r' | '\n')
+        })
+        || !name
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("pcap"))
+    {
         return Err(AppError::bad_request("Invalid capture file name"));
     }
     Ok(name)
@@ -50,23 +69,27 @@ pub async fn game_captures(
         .all(&st.db)
         .await?;
     let root = capture_root(&st);
-    let out = challenges
-        .into_iter()
-        .map(|c| {
-            let cdir = root.join(c.id.to_string());
-            let count: usize = std::fs::read_dir(&cdir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|e| e.path().is_dir())
-                .map(|e| list_pcaps(&e.path()).len())
-                .sum();
-            serde_json::json!({
-                "id": c.id, "title": c.title, "category": c.category,
-                "type": c.challenge_type, "isEnabled": c.is_enabled, "count": count,
+    let out = tokio::task::spawn_blocking(move || {
+        challenges
+            .into_iter()
+            .map(|c| {
+                let cdir = root.join(c.id.to_string());
+                let count: usize = std::fs::read_dir(&cdir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| list_pcaps(&e.path()).len())
+                    .sum();
+                serde_json::json!({
+                    "id": c.id, "title": c.title, "category": c.category,
+                    "type": c.challenge_type, "isEnabled": c.is_enabled, "count": count,
+                })
             })
-        })
-        .collect();
+            .collect()
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))?;
     Ok(RequestResponse::ok(out))
 }
 
@@ -77,19 +100,22 @@ pub async fn team_traffic(
     Path(cid): Path<i32>,
 ) -> AppResult<RequestResponse<Vec<Json>>> {
     let cdir = capture_root(&st).join(cid.to_string());
+    let captures = tokio::task::spawn_blocking(move || {
+        std::fs::read_dir(&cdir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| {
+                let pid = entry.file_name().to_str()?.parse::<i32>().ok()?;
+                Some((pid, list_pcaps(&entry.path()).len()))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))?;
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(&cdir).into_iter().flatten().flatten() {
-        if !entry.path().is_dir() {
-            continue;
-        }
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|s| s.parse::<i32>().ok())
-        else {
-            continue;
-        };
-        let count = list_pcaps(&entry.path()).len();
+    for (pid, count) in captures {
         // Resolve the team behind the participation for display.
         let (team_id, name, avatar) =
             match participation::Entity::find_by_id(pid).one(&st.db).await? {
@@ -116,23 +142,27 @@ pub async fn traffic_files(
     let dir = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string());
-    let out = list_pcaps(&dir)
-        .into_iter()
-        .map(|e| {
-            let meta = e.metadata().ok();
-            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            let update = meta
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
-            serde_json::json!({
-                "fileName": e.file_name().to_string_lossy(),
-                "size": size,
-                "updateTime": update,
+    let out = tokio::task::spawn_blocking(move || {
+        list_pcaps(&dir)
+            .into_iter()
+            .map(|e| {
+                let meta = e.metadata().ok();
+                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let update = meta
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                serde_json::json!({
+                    "fileName": e.file_name().to_string_lossy(),
+                    "size": size,
+                    "updateTime": update,
+                })
             })
-        })
-        .collect();
+            .collect()
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))?;
     Ok(RequestResponse::ok(out))
 }
 
@@ -145,28 +175,58 @@ pub async fn get_all_traffic(
     let dir = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string());
-    let files = list_pcaps(&dir);
-    if files.is_empty() {
-        return Err(AppError::not_found("No captures for this participation"));
-    }
-    let mut buf = Vec::new();
-    {
+    let _permit = CAPTURE_ARCHIVE_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Capture archive capacity is busy; retry shortly"))?;
+    let buf = tokio::task::spawn_blocking(move || -> AppResult<Vec<u8>> {
+        let files = list_pcaps(&dir);
+        if files.is_empty() {
+            return Err(AppError::not_found("No captures for this participation"));
+        }
+        if files.len() > MAX_CAPTURE_ARCHIVE_FILES {
+            return Err(AppError::bad_request(
+                "Too many captures to archive; download them individually",
+            ));
+        }
+        let declared_total = files.iter().try_fold(0u64, |total, entry| {
+            entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| total.checked_add(metadata.len()))
+        });
+        if declared_total.is_none_or(|total| total > MAX_CAPTURE_ARCHIVE_BYTES) {
+            return Err(AppError::bad_request(
+                "Captures are too large to archive; download them individually",
+            ));
+        }
+
+        let mut buf = Vec::new();
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
         let opts: zip::write::FileOptions<()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let mut written = 0u64;
         for e in files {
             let name = e.file_name().to_string_lossy().to_string();
-            if let Ok(bytes) = std::fs::read(e.path()) {
-                use std::io::Write;
-                zip.start_file(name, opts)
-                    .map_err(|err| AppError::internal(format!("zip: {err}")))?;
-                zip.write_all(&bytes)
-                    .map_err(|err| AppError::internal(format!("zip: {err}")))?;
+            zip.start_file(name, opts)
+                .map_err(|err| AppError::internal(format!("zip: {err}")))?;
+            let file = std::fs::File::open(e.path())
+                .map_err(|error| AppError::internal(format!("capture open: {error}")))?;
+            let remaining = MAX_CAPTURE_ARCHIVE_BYTES.saturating_sub(written);
+            let copied = std::io::copy(&mut file.take(remaining + 1), &mut zip)
+                .map_err(|error| AppError::internal(format!("zip: {error}")))?;
+            if copied > remaining {
+                return Err(AppError::bad_request(
+                    "Captures grew beyond the archive size limit",
+                ));
             }
+            written += copied;
         }
         zip.finish()
             .map_err(|err| AppError::internal(format!("zip: {err}")))?;
-    }
+        Ok(buf)
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("capture archive task failed: {error}")))??;
     Ok((
         [
             (header::CONTENT_TYPE, "application/zip".to_string()),
@@ -189,7 +249,13 @@ pub async fn delete_all_traffic(
     let dir = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string());
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = tokio::fs::remove_dir_all(&dir).await {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(AppError::internal(format!(
+                "could not delete captures: {error}"
+            )));
+        }
+    }
     Ok(StatusCode::OK)
 }
 
@@ -204,7 +270,20 @@ pub async fn get_traffic_file(
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
-    let bytes = std::fs::read(&path).map_err(|_| AppError::not_found("Capture not found"))?;
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|_| AppError::not_found("Capture not found"))?;
+    let size = file
+        .metadata()
+        .await
+        .map_err(|_| AppError::not_found("Capture not found"))?
+        .len();
+    // Snapshot the size observed above. An active capture may keep growing;
+    // without `take`, one download could chase the writer indefinitely and no
+    // longer match its Content-Length.
+    let body = Body::from_stream(tokio_util::io::ReaderStream::new(
+        tokio::io::AsyncReadExt::take(file, size),
+    ));
     Ok((
         [
             (
@@ -215,8 +294,10 @@ pub async fn get_traffic_file(
                 header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"{name}\""),
             ),
+            (header::CONTENT_LENGTH, size.to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
         ],
-        bytes,
+        body,
     )
         .into_response())
 }
@@ -232,7 +313,13 @@ pub async fn delete_traffic_file(
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
-    let _ = std::fs::remove_file(&path);
+    if let Err(error) = tokio::fs::remove_file(&path).await {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(AppError::internal(format!(
+                "could not delete capture: {error}"
+            )));
+        }
+    }
     Ok(StatusCode::OK)
 }
 
@@ -248,7 +335,19 @@ pub async fn traffic_flows(
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
-    let out = crate::services::traffic::list_flows(&path)
+    let _permit = CAPTURE_FLOW_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Capture inspection capacity is busy; retry shortly"))?;
+    let flows = tokio::task::spawn_blocking(move || {
+        crate::services::traffic::list_flows_bounded(
+            &path,
+            MAX_INSPECT_CAPTURE_BYTES,
+            MAX_CAPTURE_FLOWS,
+        )
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("capture inspection task failed: {error}")))??;
+    let out = flows
         .into_iter()
         .map(|f| {
             serde_json::json!({
@@ -273,7 +372,19 @@ pub async fn traffic_flow_detail(
         .join(pid.to_string())
         .join(name);
     let port = connection_port.to_string();
-    let flow = crate::services::traffic::list_flows(&path)
+    let _permit = CAPTURE_FLOW_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Capture inspection capacity is busy; retry shortly"))?;
+    let flows = tokio::task::spawn_blocking(move || {
+        crate::services::traffic::list_flows_bounded(
+            &path,
+            MAX_INSPECT_CAPTURE_BYTES,
+            MAX_CAPTURE_FLOWS,
+        )
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("capture inspection task failed: {error}")))??;
+    let flow = flows
         .into_iter()
         .find(|f| f.src.ends_with(&format!(":{port}")) || f.dst.ends_with(&format!(":{port}")));
     Ok(RequestResponse::ok(TrafficFlowDetail {

@@ -47,13 +47,16 @@ impl TokenService {
         security_stamp: &str,
     ) -> Result<String, AppError> {
         let now = Utc::now().timestamp();
+        let exp = now
+            .checked_add(self.ttl_secs)
+            .ok_or_else(|| AppError::internal("JWT expiry is outside the supported range"))?;
         let claims = Claims {
             sub: id.to_string(),
             role: role.into_value(),
             name: name.to_string(),
             stamp: security_stamp.to_string(),
             iat: now,
-            exp: now + self.ttl_secs,
+            exp,
         };
         encode(&Header::default(), &claims, &self.encoding)
             .map_err(|e| AppError::internal(format!("jwt encode: {e}")))
@@ -78,5 +81,13 @@ mod tests {
         let claims = service.verify(&token).unwrap();
         assert_eq!(claims.sub, id.to_string());
         assert_eq!(claims.stamp, "stamp-1");
+    }
+
+    #[test]
+    fn session_issue_rejects_expiry_overflow() {
+        let service = TokenService::new("0123456789abcdef0123456789abcdef", i64::MAX);
+        assert!(service
+            .issue(Uuid::new_v4(), Role::User, "alice", "stamp-1")
+            .is_err());
     }
 }

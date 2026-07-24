@@ -6,6 +6,7 @@ const MAX_ARCHIVE_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARCHIVE_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 200;
 const MAX_ARCHIVE_PATH_COMPONENTS: usize = 32;
+static CHALLENGE_IMPORT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// Spawn and persist the challenge's throwaway test container.
 pub async fn create_test_container(
@@ -718,6 +719,9 @@ async fn read_first_archive_field(multipart: &mut Multipart) -> AppResult<Vec<u8
             .await
             .map_err(|e| AppError::bad_request(format!("could not read archive: {e}")))?;
         if !bytes.is_empty() {
+            if bytes.len() > crate::utils::upload::ARCHIVE_FILE_BYTES {
+                return Err(AppError::bad_request("Challenge archive is too large"));
+            }
             return Ok(bytes.to_vec());
         }
     }
@@ -815,6 +819,9 @@ pub async fn submit_challenge(
             title: "User submissions are disabled for this game.".into(),
         });
     }
+    let _permit = CHALLENGE_IMPORT_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Challenge import capacity is busy; retry shortly"))?;
     let bytes = read_first_archive_field(&mut multipart).await?;
     let result = import_archive_bytes(&st, id, &bytes, false).await?;
     Ok(RequestResponse::ok(result))
@@ -829,6 +836,9 @@ pub async fn import_challenge(
     mut multipart: Multipart,
 ) -> AppResult<RequestResponse<ChallengeImportResult>> {
     manager_or_admin(&st, &user, id).await?;
+    let _permit = CHALLENGE_IMPORT_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Challenge import capacity is busy; retry shortly"))?;
     let bytes = read_first_archive_field(&mut multipart).await?;
     let result = import_archive_bytes(&st, id, &bytes, true).await?;
     Ok(RequestResponse::ok(result))

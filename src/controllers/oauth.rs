@@ -30,9 +30,11 @@ use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, Set,
 };
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
+use std::sync::LazyLock;
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
@@ -47,6 +49,61 @@ use crate::utils::error::AppError;
 const LOGIN_PATH: &str = "/account/login";
 const OAUTH_STATE_COOKIE: &str = "RSCTF_OAuthState";
 const OAUTH_STATE_TTL: u64 = 10 * 60;
+const OAUTH_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+const OAUTH_CODE_MAX_BYTES: usize = 4 * 1024;
+const OAUTH_STATE_MAX_BYTES: usize = 256;
+const OAUTH_ACCESS_TOKEN_MAX_BYTES: usize = 8 * 1024;
+
+static OAUTH_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .user_agent("rsctf-oauth/1.0")
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| error.to_string())
+});
+
+fn oauth_http_client() -> Result<&'static reqwest::Client, AppError> {
+    OAUTH_HTTP_CLIENT
+        .as_ref()
+        .map_err(|error| AppError::internal(format!("http client: {error}")))
+}
+
+async fn bounded_oauth_json<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    context: &str,
+) -> Result<T, AppError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > OAUTH_RESPONSE_MAX_BYTES as u64)
+    {
+        return Err(AppError::bad_request(
+            "OAuth provider response is too large",
+        ));
+    }
+
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(OAUTH_RESPONSE_MAX_BYTES as u64) as usize,
+    );
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| AppError::internal(format!("{context} read: {error}")))?
+    {
+        if body.len().saturating_add(chunk.len()) > OAUTH_RESPONSE_MAX_BYTES {
+            return Err(AppError::bad_request(
+                "OAuth provider response is too large",
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body)
+        .map_err(|error| AppError::internal(format!("{context} decode: {error}")))
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OAuthState {
@@ -358,11 +415,11 @@ async fn callback_inner(
 
     let code = q
         .code
-        .filter(|c| !c.is_empty())
+        .filter(|code| !code.is_empty() && code.len() <= OAUTH_CODE_MAX_BYTES)
         .ok_or_else(|| AppError::bad_request("missing code"))?;
     let state = q
         .state
-        .filter(|s| !s.is_empty())
+        .filter(|state| !state.is_empty() && state.len() <= OAUTH_STATE_MAX_BYTES)
         .ok_or_else(|| AppError::bad_request("missing state"))?;
     if cookie_value(&headers, OAUTH_STATE_COOKIE) != Some(state.as_str()) {
         return Err(AppError::bad_request(
@@ -384,11 +441,10 @@ async fn callback_inner(
     }
     let return_url = sanitize_return(Some(&stored.return_url));
 
-    // Discord's userinfo is Cloudflare-fronted and 403s without a User-Agent.
-    let client = reqwest::Client::builder()
-        .user_agent("rsctf-oauth/1.0")
-        .build()
-        .map_err(|e| AppError::internal(format!("http client: {e}")))?;
+    // The shared client bounds connection + total request time and refuses
+    // redirects, so a misconfigured provider cannot pin callback tasks or
+    // redirect credential-bearing requests to an unexpected origin.
+    let client = oauth_http_client()?;
 
     // Exchange the authorization code for an access token.
     let redirect_uri = callback_url(p.name);
@@ -408,13 +464,10 @@ async fn callback_inner(
     if !token_resp.status().is_success() {
         return Err(AppError::bad_request("token exchange failed"));
     }
-    let token_body: TokenResponse = token_resp
-        .json()
-        .await
-        .map_err(|e| AppError::internal(format!("token decode: {e}")))?;
+    let token_body: TokenResponse = bounded_oauth_json(token_resp, "token response").await?;
     let access_token = token_body
         .access_token
-        .filter(|t| !t.is_empty())
+        .filter(|token| !token.is_empty() && token.len() <= OAUTH_ACCESS_TOKEN_MAX_BYTES)
         .ok_or_else(|| AppError::bad_request("no access token"))?;
 
     // Read the user profile.
@@ -427,10 +480,7 @@ async fn callback_inner(
     if !ui_resp.status().is_success() {
         return Err(AppError::bad_request("userinfo failed"));
     }
-    let ui: UserInfoResponse = ui_resp
-        .json()
-        .await
-        .map_err(|e| AppError::internal(format!("userinfo decode: {e}")))?;
+    let ui: UserInfoResponse = bounded_oauth_json(ui_resp, "userinfo response").await?;
 
     if !provider_email_verified(p.name, &ui) {
         return Err(AppError::bad_request("provider email is not verified"));
@@ -440,7 +490,9 @@ async fn callback_inner(
     let email = ui
         .email
         .map(|e| e.trim().to_lowercase())
-        .filter(|e| e.contains('@'))
+        .filter(|email| {
+            email.len() <= crate::controllers::account::MAX_EMAIL_BYTES && email.contains('@')
+        })
         .ok_or_else(|| AppError::bad_request("no email"))?;
     let display = ui.name.or(ui.username);
     let norm_email = email.to_uppercase();
@@ -700,5 +752,31 @@ mod tests {
         assert!(oauth_account_active(Role::User, true));
         assert!(!oauth_account_active(Role::User, false));
         assert!(!oauth_account_active(Role::Banned, true));
+    }
+
+    #[tokio::test]
+    async fn provider_json_rejects_oversized_content_length_before_reading() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 65537\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let response = oauth_http_client()
+            .unwrap()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+        assert!(bounded_oauth_json::<serde_json::Value>(response, "test")
+            .await
+            .is_err());
+        server.await.unwrap();
     }
 }
