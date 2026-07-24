@@ -60,8 +60,8 @@ pub fn validate_json_for_challenge(
     validate_for_challenge(challenge_type, input)
 }
 
-/// Whether this challenge's workload definition is handled by the trusted
-/// worker plane. Hybrid deployments deliberately keep A&D and KotH on
+/// Whether this challenge's legacy single-container runtime is owned by the
+/// trusted worker plane. Hybrid deployments deliberately keep A&D and KotH on
 /// their local backend, so topology-wide worker support is not sufficient to
 /// decide image portability for those challenge kinds.
 pub(crate) fn uses_worker_runtime(st: &SharedState, challenge: &game_challenge::Model) -> bool {
@@ -91,6 +91,23 @@ pub struct ResolvedChallengeRuntime {
     /// challenge-level launch inputs while the aggregate protocol identity
     /// remains byte-for-byte unchanged for API and persisted metadata.
     pub publication_fence: String,
+    /// Exact immutable image passed to `ContainerSpec` for a legacy runtime.
+    /// Aggregate workloads carry their images inside `workload` instead.
+    pub legacy_image: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyRuntimeIdentity {
+    schema: u8,
+    image: String,
+    memory_limit_mb: i32,
+    cpu_count: i32,
+    expose_port: i32,
+    challenge_type: ChallengeType,
+    topology: &'static str,
+    ad_allow_egress: Option<bool>,
+    flag_template: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -115,6 +132,43 @@ fn legacy_topology(
         ChallengeType::StaticContainer if enable_shared_container => "shared",
         _ => "per-team",
     }
+}
+
+fn legacy_flag_template(
+    challenge_type: ChallengeType,
+    flag_template: &Option<String>,
+) -> Option<String> {
+    (challenge_type == ChallengeType::DynamicContainer)
+        .then(|| flag_template.clone())
+        .flatten()
+}
+
+fn legacy_runtime_identity_value(value: &LegacyRuntimeIdentity) -> AppResult<String> {
+    let canonical =
+        serde_json::to_vec(value).map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(format!(
+        "legacy:sha256:{}",
+        crate::utils::codec::sha256_hex(&canonical)
+    ))
+}
+
+fn legacy_runtime_identity(challenge: &game_challenge::Model, image: String) -> AppResult<String> {
+    legacy_runtime_identity_value(&LegacyRuntimeIdentity {
+        schema: 1,
+        image,
+        memory_limit_mb: challenge.memory_limit.unwrap_or(64),
+        cpu_count: challenge.cpu_count.unwrap_or(1),
+        expose_port: challenge.expose_port.unwrap_or(80),
+        challenge_type: challenge.challenge_type,
+        topology: legacy_topology(
+            challenge.challenge_type,
+            challenge.enable_shared_container,
+            challenge.ad_self_hosted,
+        ),
+        ad_allow_egress: (challenge.challenge_type == ChallengeType::KingOfTheHill)
+            .then_some(challenge.ad_allow_egress),
+        flag_template: legacy_flag_template(challenge.challenge_type, &challenge.flag_template),
+    })
 }
 
 fn runtime_publication_fence(
@@ -143,26 +197,38 @@ fn runtime_publication_fence(
 }
 
 /// Resolve the exact runtime definition once while the caller holds the
-/// challenge-definition fence. Aggregate identity remains the protocol hash
-/// encoded from a persisted workloadSpec.
+/// challenge-definition fence. Aggregate identity remains the protocol hash;
+/// legacy identity covers every effective single-container launch field while
+/// retaining the exact immutable image separately for `ContainerSpec`.
 pub fn resolve_runtime(
-    _st: &SharedState,
+    st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> AppResult<ResolvedChallengeRuntime> {
-    let workload = from_challenge(challenge)?.ok_or_else(|| {
-        AppError::bad_request(
-            "Container definition missing workloadSpec; legacy single-container runtime is no longer supported",
-        )
-    })?;
-    let identity = workload_identity(&workload)?;
+    if let Some(workload) = from_challenge(challenge)? {
+        let identity = workload_identity(&workload)?;
+        return Ok(ResolvedChallengeRuntime {
+            publication_fence: runtime_publication_fence(challenge, &identity)?,
+            identity,
+            workload: Some(workload),
+            legacy_image: None,
+        });
+    }
+    let image = if uses_worker_runtime(st, challenge) {
+        crate::services::challenge_images::runtime_worker_image(st, challenge)?
+    } else {
+        crate::services::challenge_images::runtime_image(st, challenge)?
+    };
+    let identity = legacy_runtime_identity(challenge, image.clone())?;
     Ok(ResolvedChallengeRuntime {
         publication_fence: runtime_publication_fence(challenge, &identity)?,
         identity,
-        workload: Some(workload),
+        workload: None,
+        legacy_image: Some(image),
     })
 }
 
-/// Stable bookkeeping identity for the persisted aggregate workload definition.
+/// Stable bookkeeping identity for either an aggregate workload or a canonical
+/// legacy single-service definition.
 pub fn runtime_identity(st: &SharedState, challenge: &game_challenge::Model) -> AppResult<String> {
     resolve_runtime(st, challenge).map(|runtime| runtime.identity)
 }
@@ -217,6 +283,14 @@ fn classify_existing_runtime(
     }
 }
 
+fn legacy_identity_requires_replacement(
+    legacy_runtime: bool,
+    recorded_identity: &str,
+    saved_identity: &str,
+) -> bool {
+    legacy_runtime && recorded_identity != saved_identity
+}
+
 /// Probe a persisted runtime without turning a worker reconnect or rollout into
 /// an implicit destroy. Worker NotFound/terminal states are replaceable;
 /// unexpected worker-store errors propagate so callers retain the handle.
@@ -225,9 +299,16 @@ pub async fn existing_runtime_is_reusable(
     backend_id: &str,
     recorded_identity: &str,
     saved_identity: &str,
+    legacy_runtime: bool,
 ) -> AppResult<bool> {
     let worker_handle = is_stable_worker_runtime(backend_id);
     let identity_matches = recorded_identity == saved_identity;
+    // Rows created before the canonical legacy identity stored only the image.
+    // Their effective CPU/memory/port/topology cannot be recovered safely, so
+    // replace them once instead of silently blessing an unknown definition.
+    if legacy_identity_requires_replacement(legacy_runtime, recorded_identity, saved_identity) {
+        return Ok(false);
+    }
     if !worker_handle && !identity_matches {
         return Ok(false);
     }
@@ -332,7 +413,7 @@ pub fn ensure_definition_unchanged(snapshot: &str, current: &str) -> AppResult<(
 }
 
 /// Dynamic Jeopardy containers generate their per-team flag. Every other
-/// container mode selects an existing static flag row, if one exists.
+/// legacy container mode selects an existing static flag row, if one exists.
 pub async fn load_selected_static_flag(
     pool: &sqlx::PgPool,
     challenge_id: i32,
@@ -390,12 +471,20 @@ pub async fn ensure_selected_static_flag_current(
     ensure_selected_static_flag_unchanged(selected_flag, still_exists)
 }
 
+fn runtime_fields_present(has_workload: bool, container_image: Option<&str>) -> bool {
+    has_workload || container_image.is_some_and(|value| !value.trim().is_empty())
+}
+
 pub fn has_runtime(challenge: &game_challenge::Model) -> bool {
-    challenge.workload_spec.is_some()
+    runtime_fields_present(
+        challenge.workload_spec.is_some(),
+        challenge.container_image.as_deref(),
+    )
 }
 
 /// Add one request-scoped value to every service in an aggregate workload.
-/// The flag remains limited to `flagTarget`.
+/// This preserves the legacy single-container contract for values such as the
+/// participation team ID, while the flag remains limited to `flagTarget`.
 pub fn with_environment(
     workload: ValidatedWorkloadSpec,
     key: impl Into<String>,
@@ -444,13 +533,88 @@ pub fn to_json(spec: ValidatedWorkloadSpec) -> AppResult<JsonValue> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use rsctf_worker_protocol::{
         EndpointRef, FlagTarget, ImageIdentity, OperatingSystem, Platform, PortProtocol,
         ResourceLimits, ServicePort, ServiceSpec,
     };
+    use sea_orm::SqlxPostgresConnector;
+    use sqlx::postgres::PgPoolOptions;
 
     use super::*;
+
+    fn test_state() -> SharedState {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .unwrap();
+        crate::app_state::AppState::new(
+            SqlxPostgresConnector::from_sqlx_postgres_pool(pool),
+            Arc::new(crate::models::internal::configs::AppConfig::default()),
+            Arc::new(crate::services::cache::InMemoryCache::new()),
+            Arc::new(crate::storage::LocalBlobStorage::new(
+                std::env::temp_dir().join("rsctf-challenge-workload-tests"),
+            )),
+            crate::services::token::TokenService::new("0123456789abcdef0123456789abcdef", 60),
+            Arc::new(crate::services::container::NoopContainerManager),
+        )
+    }
+
+    fn legacy_challenge() -> game_challenge::Model {
+        game_challenge::Model {
+            id: 7,
+            game_id: 42,
+            title: "Legacy hill".into(),
+            content: String::new(),
+            category: crate::utils::enums::ChallengeCategory::Pwn,
+            challenge_type: ChallengeType::KingOfTheHill,
+            hints: None,
+            is_enabled: true,
+            deadline_utc: None,
+            submission_limit: 0,
+            accepted_count: 0,
+            submission_count: 0,
+            container_image: Some("registry.example/ctf/hill:latest".into()),
+            memory_limit: Some(64),
+            storage_limit: None,
+            cpu_count: Some(1),
+            expose_port: Some(8080),
+            workload_spec: None,
+            file_name: None,
+            flag_template: None,
+            review_status: crate::utils::enums::ChallengeReviewStatus::Active,
+            review_note: None,
+            submitted_by_user_id: None,
+            submitted_at_utc: None,
+            reviewed_at_utc: None,
+            original_archive_blob_path: None,
+            build_context_subdir: None,
+            build_status: crate::utils::enums::ChallengeBuildStatus::Success,
+            build_image_digest: Some(format!(
+                "registry.example/ctf/hill@sha256:{}",
+                "a".repeat(64)
+            )),
+            last_build_log: None,
+            source_yaml_path: None,
+            attachment_id: None,
+            test_container_id: None,
+            enable_traffic_capture: false,
+            enable_shared_container: false,
+            disable_blood_bonus: false,
+            original_score: 1000,
+            min_score_rate: 0.25,
+            difficulty: 5.0,
+            score_curve: crate::utils::enums::ScoreCurve::Standard,
+            shared_container_id: None,
+            network_mode: Some(crate::utils::enums::NetworkMode::Open),
+            ad_checker_image: None,
+            ad_allow_egress: false,
+            ad_allow_self_reset: true,
+            ad_ssh_requires_flag: false,
+            ad_self_hosted: false,
+            ad_scoring_weight: 1.0,
+        }
+    }
 
     fn workload(kind: GameKind, replicas: u16, stateless: bool) -> WorkloadSpec {
         WorkloadSpec {
@@ -487,6 +651,20 @@ mod tests {
                 service: "app".into(),
                 path: "/flag".into(),
             }),
+        }
+    }
+
+    fn legacy_runtime_fixture() -> LegacyRuntimeIdentity {
+        LegacyRuntimeIdentity {
+            schema: 1,
+            image: "registry.example/ctf/app@sha256:deadbeef".into(),
+            memory_limit_mb: 64,
+            cpu_count: 1,
+            expose_port: 80,
+            challenge_type: ChallengeType::DynamicContainer,
+            topology: "per-team",
+            ad_allow_egress: None,
+            flag_template: Some("flag{%s}".into()),
         }
     }
 
@@ -530,6 +708,36 @@ mod tests {
     }
 
     #[test]
+    fn legacy_image_without_workload_spec_is_still_a_runtime_definition() {
+        assert!(runtime_fields_present(false, Some("image:tag")));
+        assert!(runtime_fields_present(true, None));
+        assert!(!runtime_fields_present(false, None));
+        assert!(!runtime_fields_present(false, Some(" \t")));
+    }
+
+    #[tokio::test]
+    async fn legacy_koth_resolution_uses_only_a_successful_immutable_build() {
+        let state = test_state();
+        let mut challenge = legacy_challenge();
+        let expected_image = challenge.build_image_digest.clone().unwrap();
+
+        let runtime = resolve_runtime(&state, &challenge).unwrap();
+        assert!(runtime.workload.is_none());
+        assert_eq!(
+            runtime.legacy_image.as_deref(),
+            Some(expected_image.as_str())
+        );
+        assert!(runtime.identity.starts_with("legacy:sha256:"));
+
+        challenge.build_status = crate::utils::enums::ChallengeBuildStatus::Queued;
+        assert!(resolve_runtime(&state, &challenge).is_err());
+
+        challenge.build_status = crate::utils::enums::ChallengeBuildStatus::Success;
+        challenge.build_image_digest = Some("registry.example/ctf/hill:latest".into());
+        assert!(resolve_runtime(&state, &challenge).is_err());
+    }
+
+    #[test]
     fn aggregate_identity_remains_the_protocol_hash() {
         let validated = validate_for_challenge(
             ChallengeType::DynamicContainer,
@@ -541,7 +749,76 @@ mod tests {
     }
 
     #[test]
-    fn template_and_topology_match_actual_modes() {
+    fn legacy_identity_covers_every_effective_launch_field() {
+        let baseline = legacy_runtime_fixture();
+        let baseline_identity = legacy_runtime_identity_value(&baseline).unwrap();
+        let mut variants = Vec::new();
+
+        let mut value = baseline.clone();
+        value.image.push_str("-changed");
+        variants.push(("image", value));
+        let mut value = baseline.clone();
+        value.memory_limit_mb += 1;
+        variants.push(("memory", value));
+        let mut value = baseline.clone();
+        value.cpu_count += 1;
+        variants.push(("cpu", value));
+        let mut value = baseline.clone();
+        value.expose_port += 1;
+        variants.push(("port", value));
+        let mut value = baseline.clone();
+        value.challenge_type = ChallengeType::StaticContainer;
+        variants.push(("challenge type", value));
+        let mut value = baseline.clone();
+        value.topology = "shared";
+        variants.push(("topology", value));
+        let mut value = baseline.clone();
+        value.ad_allow_egress = Some(false);
+        variants.push(("A&D egress", value));
+        let mut value = baseline;
+        value.flag_template = Some("other{%s}".into());
+        variants.push(("flag template", value));
+
+        for (field, value) in variants {
+            assert_ne!(
+                legacy_runtime_identity_value(&value).unwrap(),
+                baseline_identity,
+                "identity missed {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_launch_image_is_separate_from_bookkeeping_identity() {
+        let value = legacy_runtime_fixture();
+        let identity = legacy_runtime_identity_value(&value).unwrap();
+        assert!(identity.starts_with("legacy:sha256:"));
+        assert_ne!(identity, value.image);
+        assert!(legacy_identity_requires_replacement(
+            true,
+            &value.image,
+            &identity
+        ));
+        assert!(!legacy_identity_requires_replacement(
+            true, &identity, &identity
+        ));
+    }
+
+    #[test]
+    fn template_and_topology_match_actual_legacy_modes() {
+        let template = Some("flag{%s}".to_string());
+        assert_eq!(
+            legacy_flag_template(ChallengeType::DynamicContainer, &template),
+            template
+        );
+        assert_eq!(
+            legacy_flag_template(ChallengeType::AttackDefense, &template),
+            None
+        );
+        assert_eq!(
+            legacy_flag_template(ChallengeType::KingOfTheHill, &template),
+            None
+        );
         assert_eq!(
             legacy_topology(ChallengeType::StaticContainer, true, false),
             "shared"

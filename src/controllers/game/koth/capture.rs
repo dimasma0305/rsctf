@@ -2,6 +2,26 @@
 //! koth/mod.rs to stay under the 1000-line rule.
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HillRuntimeAvailability {
+    Containerless,
+    BuildNotReady,
+    Ready,
+}
+
+fn hill_runtime_availability(
+    container_image: Option<&str>,
+    build_status: crate::utils::enums::ChallengeBuildStatus,
+) -> HillRuntimeAvailability {
+    if container_image.is_none_or(|image| image.trim().is_empty()) {
+        return HillRuntimeAvailability::Containerless;
+    }
+    if build_status != crate::utils::enums::ChallengeBuildStatus::Success {
+        return HillRuntimeAvailability::BuildNotReady;
+    }
+    HillRuntimeAvailability::Ready
+}
+
 /// Clear one exact backend publication before replacement. During active official
 /// scoring a held target requires both a fresh confirmed-dead inspection by the
 /// caller and a durable checker receipt for the same backend and holder.
@@ -299,21 +319,28 @@ pub async fn ensure_koth_hills(st: &SharedState, game_id: i32) -> AppResult<u64>
 
         // Platform-hosted hills get the single shared container every team races
         // to control; a container-less hill falls back to the deterministic token.
-        let has_image = c
-            .container_image
-            .as_deref()
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-        let launched = if has_image {
-            match super::super::containers::get_or_create_shared_container_locked(st, &c).await {
-                Ok(container) => Some(container),
-                Err(e) => {
-                    tracing::warn!(challenge = c.id, error = %e, "ensure_koth_hills: hill container launch failed");
-                    None
+        let launched = match hill_runtime_availability(c.container_image.as_deref(), c.build_status)
+        {
+            HillRuntimeAvailability::Containerless => None,
+            HillRuntimeAvailability::BuildNotReady => {
+                tracing::debug!(
+                    challenge = c.id,
+                    build_status = ?c.build_status,
+                    "ensure_koth_hills: waiting for an immutable challenge build"
+                );
+                distributed.release().await?;
+                continue;
+            }
+            HillRuntimeAvailability::Ready => {
+                match super::super::containers::get_or_create_shared_container_locked(st, &c).await
+                {
+                    Ok(container) => Some(container),
+                    Err(e) => {
+                        tracing::warn!(challenge = c.id, error = %e, "ensure_koth_hills: hill container launch failed");
+                        None
+                    }
                 }
             }
-        } else {
-            None
         };
         let (host, port, container_id) = launched.as_ref().map_or_else(
             || (String::new(), 0, None),
@@ -351,6 +378,36 @@ pub async fn ensure_koth_hills(st: &SharedState, game_id: i32) -> AppResult<u64>
 mod tests {
     use super::*;
     use sqlx::Connection;
+
+    #[test]
+    fn configured_hills_wait_for_a_successful_immutable_build() {
+        use crate::utils::enums::ChallengeBuildStatus;
+
+        assert_eq!(
+            hill_runtime_availability(None, ChallengeBuildStatus::None),
+            HillRuntimeAvailability::Containerless
+        );
+        assert_eq!(
+            hill_runtime_availability(Some(" \t"), ChallengeBuildStatus::Success),
+            HillRuntimeAvailability::Containerless
+        );
+        for status in [
+            ChallengeBuildStatus::None,
+            ChallengeBuildStatus::Queued,
+            ChallengeBuildStatus::Building,
+            ChallengeBuildStatus::Failed,
+            ChallengeBuildStatus::MissingDockerfile,
+        ] {
+            assert_eq!(
+                hill_runtime_availability(Some("image:tag"), status),
+                HillRuntimeAvailability::BuildNotReady
+            );
+        }
+        assert_eq!(
+            hill_runtime_availability(Some("image:tag"), ChallengeBuildStatus::Success),
+            HillRuntimeAvailability::Ready
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
