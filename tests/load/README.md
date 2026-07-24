@@ -897,6 +897,17 @@ endpoint distributions, the CPU/RAM series, image identities, saturation
 diagnostic, harness corrections, and limitations are in
 [`REPORT.md`](REPORT.md#historical-singleton-operational-acceptance--19-july-2026).
 
+The 24 July production admin-instance ownership rollout also has a retained fixed-rate
+diagnostic. All three 30-request passes completed at one request/s with zero 429/5xx;
+the new set-based projection reduced the live row from four SQL statements to two and
+bounded a page at two statements instead of up to `2 + 4N`. Its p95 moved from
+11.352 ms to 21.118/29.599 ms, while two-web CPU moved from 1.275 CPU-seconds to
+1.135/2.019 CPU-seconds. The opposite candidate CPU movements show that this tiny
+production load is dominated by ambient event work, so no causal performance win and no
+optimization-ledger row is claimed. Exact artifacts, distributions, rollout findings,
+and the live ownership assertion are in
+[`REPORT.md`](REPORT.md#production-admin-instance-ownership-rollout--24-july-2026).
+
 ### Optimization ledger
 
 All 16 July rows compare adjacent images with the common workload above. The

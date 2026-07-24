@@ -46,6 +46,74 @@ only improved endpoints. The first current-tree execution record belongs immedia
 below this protocol after its isolated run; no unexecuted latency or CPU values are
 claimed here.
 
+## Production admin-instance ownership rollout — 24 July 2026
+
+This bounded production diagnostic covers the `/api/admin/instances` ownership fix, not
+the exhaustive disposable admin lifecycle. The old deployment was
+`0.1.12` / `a39caf2c72e35236b94e93bbca6a6e1c1fcacf06` /
+`ghcr.io/dimasma0305/rsctf@sha256:ecba5305ef7022bd0c91b42a58da7ee120dcf730a8a5ccf20cf5ec2297223de0`.
+The accepted deployment is `0.1.13` /
+`b6c6e820b4be51e06aca6f8284a6bc1a40350418` /
+`ghcr.io/dimasma0305/rsctf@sha256:8034cdae914e662b4abaa6c68434096d3e1abe5fdc1c5f0cfbc8b96a849e826f`.
+Both used the same public TLS origin, two web replicas, singleton control replica,
+PostgreSQL data, Redis instance, and one-row live container inventory.
+
+The measured request was
+`GET /api/admin/instances?count=100&skip=0` with an Admin token. Each pass scheduled
+exactly one request per second for 30 seconds. All 90 measured requests returned HTTP
+200 and valid JSON; there were no 429 or 5xx responses. Web CPU is the bracketed
+`usage_usec` delta summed across the two web replicas. The old replicas were warm. The
+first candidate pass began shortly after the rollout; the second retained candidate
+pass records the subsequently warm service. Values are milliseconds except where
+labelled.
+
+| Metric | Before | After 1 | After 2 |
+| --- | ---: | ---: | ---: |
+| Scheduled/accepted requests | 30/30 | 30/30 | 30/30 |
+| Average | 9.176 | 11.513 | 14.269 |
+| p50 | 6.146 | 8.594 | 9.167 |
+| p90 | 9.964 | 13.502 | 21.851 |
+| p95 | 11.352 | 21.118 | 29.599 |
+| p99 | 61.400 | 61.897 | 75.075 |
+| Max | 81.803 | 78.079 | 91.981 |
+| Two-web CPU time | 1.275 s | 1.135 s | 2.019 s |
+| Two-web aggregate CPU | 4.251% | 3.782% | 6.730% |
+
+This is deliberately not presented as a latency or CPU improvement. At one request per
+second the endpoint contributes too little work to separate from production traffic and
+the active A&D/KotH scheduler; the two candidate CPU brackets moving in opposite
+directions demonstrate that noise. The absolute p95 remained below 30 ms, but the
+measured latency regression is retained rather than filtered out. No optimization-ledger
+row is added because this production inventory is not an isolated fixture.
+
+The deterministic work reduction is still material for a populated admin page. The old
+SeaORM path issued a count and page query, then up to four ownership queries per row. The
+live shared-KotH row took four statements and still returned both `team` and `challenge`
+as null. The new raw-SQL projection uses one count plus one bounded page query regardless
+of row count: four statements became two for the live row, and the upper-bound page shape
+changed from `2 + 4N` statements to two. It also resolves per-team game instances, A&D
+services, shared challenges, admin tests, exercises, and unassigned rows in that
+projection.
+
+The live correctness assertion for container
+`c1944551-850c-4c24-b1bf-a4720debb6ae` changed from null ownership metadata to challenge
+`the-hill`, `ownerKind: "Shared"`, `team: null`, and `isProxy: false`. The teamless result
+is intentional: this KotH workload is shared by all teams. The UI now renders that scope
+and does not offer a WSS-copy action for the non-proxy container. The public health path
+returned exact body `ok` with HTTP 200; all three application replicas were healthy on
+the same image with zero restarts; and recent application logs contained no panic,
+migration failure, restart loop, or unexpected 5xx.
+
+The first Compose invocation exposed pre-existing deployment-environment drift:
+`POSTGRES_USER` was absent from the host env, so Compose selected its `rsctf` default
+while the retained database uses `postgres`. The control health check failed closed on
+authentication. The external PostgreSQL volume remained intact, the original role and
+database settings were restored, and only the application services were restarted for
+the accepted rollout. No data migration failed. Production logs continue to report
+retained load-test workloads with foreign installation scopes or removed legacy
+definitions; those warnings predate this ownership-display change and are not counted as
+release regressions.
+
 ## Archived exhaustive admin lifecycle acceptance — 20 July 2026
 
 This record is retained as historical performance and cleanup evidence. It predates the
