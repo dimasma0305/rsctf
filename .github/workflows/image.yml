@@ -215,7 +215,7 @@ jobs:
   build-server:
     name: Build server natively
     if: github.ref == 'refs/heads/main'
-    needs: [prepare, quality, build-agent]
+    needs: [prepare, build-agent]
     uses: docker/github-builder/.github/workflows/build.yml@3415a188caae9a0da7fba83bc06985776e0b1790 # v1
     permissions:
       contents: read
@@ -263,7 +263,7 @@ jobs:
   finalize-main:
     name: Verify and attest commit images
     if: github.ref == 'refs/heads/main'
-    needs: [prepare, build-agent, build-server]
+    needs: [prepare, quality, build-agent, build-server]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

@@ -477,3 +477,20 @@ jobs:
           grep -q 'type=sha,format=long,prefix=sha-' "$workflow"
           grep -q 'Promote attested images to main' "$workflow"
           grep -q 'Promote verified commit images' "$workflow"
+
+      - name: Validate publication critical-path gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby <<'RUBY'
+          require "yaml"
+
+          image_jobs = YAML.load_file(".github/workflows/image.yml", aliases: true).fetch("jobs")
+          abort "server build must overlap quality checks" unless image_jobs.fetch("build-server").fetch("needs") == ["prepare", "build-agent"]
+          abort "image publication must remain quality-gated" unless image_jobs.fetch("finalize-main").fetch("needs") == ["prepare", "quality", "build-agent", "build-server"]
+
+          release_jobs = YAML.load_file(".github/workflows/worker-agent-release.yml", aliases: true).fetch("jobs")
+          abort "Linux release builds must overlap verification" unless release_jobs.fetch("build-linux").fetch("needs") == ["validate-release-state"]
+          abort "Windows release builds must overlap verification" unless release_jobs.fetch("build-windows").fetch("needs") == ["validate-release-state"]
+          abort "release publication must remain verification-gated" unless release_jobs.fetch("publish").fetch("needs") == ["verify", "build-linux", "build-windows"]
+          RUBY

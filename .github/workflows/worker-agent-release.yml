@@ -67,7 +67,7 @@ jobs:
 
   build-linux:
     name: Build ${{ matrix.name }} (static)
-    needs: [verify]
+    needs: [validate-release-state]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -136,7 +136,7 @@ jobs:
 
   build-windows:
     name: Build Windows AMD64
-    needs: [verify]
+    needs: [validate-release-state]
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -183,7 +183,7 @@ jobs:
 
   publish:
     name: Publish verified rsctf release assets
-    needs: [build-linux, build-windows]
+    needs: [verify, build-linux, build-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 250
     permissions:
