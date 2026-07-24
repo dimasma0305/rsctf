@@ -100,19 +100,25 @@ The live correctness assertion for container
 `the-hill`, `ownerKind: "Shared"`, `team: null`, and `isProxy: false`. The teamless result
 is intentional: this KotH workload is shared by all teams. The UI now renders that scope
 and does not offer a WSS-copy action for the non-proxy container. The public health path
-returned exact body `ok` with HTTP 200; all three application replicas were healthy on
-the same image with zero restarts; and recent application logs contained no panic,
-migration failure, restart loop, or unexpected 5xx.
+returned exact body `ok` with HTTP 200, and all three application replicas were healthy
+on the same image. Recent application logs contained no panic, migration failure, or
+restart loop.
 
 The first Compose invocation exposed pre-existing deployment-environment drift:
 `POSTGRES_USER` was absent from the host env, so Compose selected its `rsctf` default
 while the retained database uses `postgres`. The control health check failed closed on
 authentication. The external PostgreSQL volume remained intact, the original role and
 database settings were restored, and only the application services were restarted for
-the accepted rollout. No data migration failed. Production logs continue to report
-retained load-test workloads with foreign installation scopes or removed legacy
-definitions; those warnings predate this ownership-display change and are not counted as
-release regressions.
+the accepted image rollout. No data migration failed. The database container metadata
+was then reconciled to the real `postgres`/`rsctf` identity against the same external
+volume. That deliberate database restart produced a roughly five-second window of 503
+responses; the singleton control process exited fail-closed and restarted once, while
+both web replicas stayed running. Six subsequent five-second public probes all returned
+HTTP 200, the two web replicas remained at zero restarts, the control replica remained
+stable at one restart, and no error, panic, migration-failure, or HTTP-5xx record appeared
+after recovery. Production logs continue to report retained load-test workloads with
+foreign installation scopes or removed legacy definitions; those warnings predate this
+ownership-display change and are not counted as release regressions.
 
 ## Archived exhaustive admin lifecycle acceptance — 20 July 2026
 
