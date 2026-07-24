@@ -213,6 +213,33 @@ readonly PREPARE_ENROLLED_WORKER='
   chmod 0600 /var/lib/rsctf-worker/*
 '
 
+# A stopped Docker service is enabled, started, and readiness-checked before a
+# systemd-supervised worker installation continues.
+# shellcheck disable=SC2016
+docker run --rm \
+  --env RSCTF_TEST_CONTROL_CONNECTED=1 \
+  --env RSCTF_TEST_DOCKER_DAEMON_START_REQUIRED=1 \
+  --env RSCTF_TEST_SERVICE_ACTIVE=1 \
+  --volume "$REPOSITORY_ROOT/scripts/bootstrap-worker.sh:/bootstrap.sh:ro" \
+  --volume "$BOOTSTRAP_FIXTURE:/fixture:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/docker:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/journalctl:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/systemctl:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/wget:ro" \
+  "$TEST_IMAGE" \
+  bash -ceu "$PREPARE_ENROLLED_WORKER"'
+    mkdir -p /run/systemd/system
+    RSCTF_WORKER_CONNECTION_TIMEOUT_SECONDS=6 \
+      dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
+      >/tmp/bootstrap-output 2>&1
+
+    grep -qx "start docker.service" /tmp/systemctl.log
+    grep -qx "enable docker.service" /tmp/systemctl.log
+    grep -q "Docker daemon started through systemd" /tmp/bootstrap-output
+    grep -q "Worker health check passed: mTLS control session accepted" \
+      /tmp/bootstrap-output
+  '
+
 # The bootstrap must not report success until the agent proves that the server
 # accepted its mTLS control session and that state remains stable.
 # shellcheck disable=SC2016
@@ -275,6 +302,35 @@ run_docker_connection_fixture() {
     "$TEST_IMAGE" \
     bash -ceu "$assertions"
 }
+
+# A non-systemd OpenRC host receives the same automatic Docker startup and boot
+# enablement before Docker-supervised worker installation continues.
+# shellcheck disable=SC2016
+docker run --rm \
+  --env RSCTF_TEST_CONTAINER_RUNNING=1 \
+  --env RSCTF_TEST_CONTROL_CONNECTED=1 \
+  --env RSCTF_TEST_DOCKER_DAEMON_START_REQUIRED=1 \
+  --env RSCTF_TEST_DOCTOR_SUCCESS=1 \
+  --env RSCTF_TEST_INSTALLATION_STATUS=enrolled \
+  --volume "$REPOSITORY_ROOT/scripts/bootstrap-worker.sh:/bootstrap.sh:ro" \
+  --volume "$BOOTSTRAP_FIXTURE:/fixture:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/docker:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/rc-service:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/rc-update:ro" \
+  --volume "$REPOSITORY_ROOT/scripts/test-worker-installer-shim.sh:/usr/local/sbin/wget:ro" \
+  "$TEST_IMAGE" \
+  bash -ceu '
+    test ! -d /run/systemd/system
+    RSCTF_WORKER_CONNECTION_TIMEOUT_SECONDS=6 \
+      dash /bootstrap.sh --server-url https://ctf.example --version v0.1.0 \
+      >/tmp/bootstrap-output 2>&1
+
+    grep -qx "add docker default" /tmp/rc-update.log
+    grep -qx "docker start" /tmp/rc-service.log
+    grep -q "Docker daemon started through OpenRC" /tmp/bootstrap-output
+    grep -q "Worker health check passed: mTLS control session accepted" \
+      /tmp/bootstrap-output
+  '
 
 # Without systemd, Docker provides restart supervision and the worker identity
 # remains in a labeled named volume. The health gate still requires a stable,

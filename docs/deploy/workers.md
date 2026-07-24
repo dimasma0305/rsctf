@@ -31,7 +31,11 @@ agent does **not** schedule Kubernetes Pods or use the Kubernetes API.
 One agent represents one Docker daemon. If the agent is containerized, it must
 still run beside a Docker-capable host with deliberate access to that daemon.
 The one-line Linux bootstrap selects a native systemd service when available
-and a hardened Docker-supervised container otherwise.
+and a hardened Docker-supervised container otherwise. When Docker is installed
+but stopped, the bootstrap enables and starts `docker.service` through systemd
+or OpenRC when available; it also supports immediate startup through compatible
+SysV `service` and runit managers. It waits up to 30 seconds for `docker info`
+to succeed before downloading or enrolling the worker.
 
 A Jeopardy worker workload can contain multiple services. Multiple replicas are
 allowed only for explicitly stateless Jeopardy services. The protocol already
@@ -354,12 +358,14 @@ For a native Windows-container host, open Administrator PowerShell:
 
 The Linux bootstrap uses POSIX `sh` and the flags shared by GNU and BusyBox
 `wget`; it automatically uses `sudo` or `doas` when the current account is not
-root. When systemd is active, it installs the native binary under a dedicated
-account. Without systemd, it imports that same verified static binary into a
-minimal local image, stores identity in the labeled `rsctf-worker-state` volume,
-and starts `rsctf-worker-agent` with Docker's `unless-stopped` supervision,
-bounded logs, a read-only root filesystem, dropped capabilities, and
-`no-new-privileges`. The Windows bootstrap uses built-in PowerShell HTTP
+root. It automatically starts an installed but stopped Docker daemon using the
+host's supported service manager and verifies daemon readiness. When systemd is
+active, it installs the native binary under a dedicated account. Without
+systemd, it imports that same verified static binary into a minimal local image,
+stores identity in the labeled `rsctf-worker-state` volume, and starts
+`rsctf-worker-agent` with Docker's `unless-stopped` supervision, bounded logs, a
+read-only root filesystem, dropped capabilities, and `no-new-privileges`. The
+Windows bootstrap uses built-in PowerShell HTTP
 support. Before changing the host or asking for a token, each bootstrap requires
 the RSCTF `/healthz` readiness check to return HTTP 200 with the exact body
 `ok`. They verify the worker archive against the release SHA-256 checksum,

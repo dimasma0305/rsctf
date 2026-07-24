@@ -7,26 +7,46 @@ ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="false"
 FROM --platform=$BUILDPLATFORM node:22-bookworm AS web-builder
 RUN corepack enable
 WORKDIR /web
-COPY web/ ./
+COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile && pnpm build
+    pnpm install --frozen-lockfile
+COPY web/ ./
+RUN pnpm build
 
 # --- backend build stage ---
-FROM rust:1-bookworm AS builder
-ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
-ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH
+FROM lukemathwalker/cargo-chef:0.1.77-rust-1-bookworm@sha256:1689f62cfaa6603480356923cb5966544b2dd6ea523e30486bee4f149965d5bc AS chef
 # libpcap-dev is needed to build the live traffic-capture (pcap) crate.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libpcap-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock* build.rs ./
 COPY lib/worker-protocol ./lib/worker-protocol
 COPY scripts/bootstrap-worker.sh scripts/bootstrap-worker.ps1 ./scripts/
 COPY src ./src
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS dependency-builder
+COPY --from=planner /app/recipe.json recipe.json
+COPY lib/worker-protocol ./lib/worker-protocol
+# cargo-chef 0.1.77 still emits target-level `edition`, which current Cargo
+# deprecates. The package-level edition remains intact; remove only the two
+# synthetic target fields before cooking the dependency layer.
+RUN sed -i 's/\\nedition = \\"2021\\"\\nrequired-features/\\nrequired-features/g' recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
+    cargo chef cook --release --locked --recipe-path recipe.json
+
+FROM dependency-builder AS builder
+COPY Cargo.toml Cargo.lock* build.rs ./
+COPY scripts/bootstrap-worker.sh scripts/bootstrap-worker.ps1 ./scripts/
+COPY src ./src
+ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
+ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     RSCTF_DEFAULT_BYOC_AGENT_IMAGE="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}" \
     RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="${RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH}" \
     cargo build --release --locked \
@@ -34,8 +54,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # --- runtime stage ---
 FROM debian:bookworm-slim
-ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
-LABEL org.opencontainers.image.rsctf.byoc-agent="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}"
 # git: the repo-binding challenge-sync (git_sync) shells out to `git clone`/`fetch`.
 # ca-certificates: TLS for git-over-https + outbound HTTP. libpcap0.8: live capture.
 # iptables + ipset + iproute2: the in-process A&D WireGuard hub enforces
@@ -51,6 +69,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git libpcap0.8 iptables ipset iproute2 wireguard-tools \
        python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
+ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
+LABEL org.opencontainers.image.rsctf.byoc-agent="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}"
 WORKDIR /app
 COPY --from=builder /tmp/rsctf /usr/local/bin/rsctf
 COPY --from=web-builder /web/build /app/web/build

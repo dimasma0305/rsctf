@@ -1,9 +1,19 @@
-FROM rust:1-bookworm AS builder
+FROM lukemathwalker/cargo-chef:0.1.77-rust-1-bookworm@sha256:1689f62cfaa6603480356923cb5966544b2dd6ea523e30486bee4f149965d5bc AS chef
 WORKDIR /app
-COPY Cargo.toml Cargo.lock* ./
-COPY src ./src
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS dependency-builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN sed -i 's/\\nedition = \\"2021\\"\\nrequired-features/\\nrequired-features/g' recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
+    cargo chef cook --release --locked --recipe-path recipe.json
+
+FROM dependency-builder AS builder
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked \
     && cp /app/target/release/rsctf-byoc-agent /tmp/rsctf-byoc-agent
 

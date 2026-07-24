@@ -43,7 +43,9 @@ never accepted in a URL, command-line argument, or environment variable.
 
 Auto mode uses a native systemd service when available. Otherwise Docker
 supervises the agent container and stores its identity in a durable named
-volume, so the host does not need an init system.
+volume, so the host does not need an init system. If an installed Docker daemon
+is stopped, the bootstrap starts and enables it through systemd or OpenRC, or
+starts it through a compatible service or runit manager.
 
 --allow-unbounded-storage is a development-only escape hatch for Docker engines
 that cannot enforce per-workload writable-layer quotas. Never use it for an
@@ -186,14 +188,71 @@ checksum_for() {
   ' "$checksum_file"
 }
 
+ensure_docker_daemon() {
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+
+  printf 'Docker daemon is unavailable; attempting to start the installed service.\n'
+  docker_start_method=""
+
+  if [ -d /run/systemd/system ] &&
+    command -v systemctl >/dev/null 2>&1 &&
+    systemctl show --property=Version --value >/dev/null 2>&1; then
+    if systemctl start docker.service; then
+      docker_start_method=systemd
+      systemctl enable docker.service >/dev/null 2>&1 ||
+        printf 'WARNING: systemd could not enable Docker at boot.\n' >&2
+    fi
+  fi
+
+  if [ -z "$docker_start_method" ] &&
+    command -v rc-service >/dev/null 2>&1; then
+    if rc-service docker start; then
+      docker_start_method=OpenRC
+      if command -v rc-update >/dev/null 2>&1; then
+        rc-update add docker default >/dev/null 2>&1 ||
+          printf 'WARNING: OpenRC could not enable Docker at boot.\n' >&2
+      fi
+    fi
+  fi
+
+  if [ -z "$docker_start_method" ] &&
+    command -v service >/dev/null 2>&1 &&
+    service docker start; then
+    docker_start_method=service
+  fi
+
+  if [ -z "$docker_start_method" ] &&
+    command -v sv >/dev/null 2>&1 &&
+    sv up docker; then
+    docker_start_method=runit
+  fi
+
+  [ -n "$docker_start_method" ] ||
+    die "Docker is installed but its daemon could not be started automatically; start Docker with this host's service manager, then rerun the installer"
+
+  docker_start_wait=0
+  while [ "$docker_start_wait" -lt 30 ]; do
+    if docker info >/dev/null 2>&1; then
+      printf 'Docker daemon started through %s and passed its readiness check.\n' \
+        "$docker_start_method"
+      return 0
+    fi
+    sleep 1
+    docker_start_wait=$((docker_start_wait + 1))
+  done
+
+  die "Docker service startup through ${docker_start_method} completed, but the daemon did not become ready within 30 seconds; inspect the Docker service logs and rerun the installer"
+}
+
 uninstall_worker() {
   [ -r /dev/tty ] && [ -w /dev/tty ] ||
     die "an interactive terminal is required for uninstall confirmation"
   for required_command in docker rm; do
     require_command "$required_command"
   done
-  docker info >/dev/null 2>&1 ||
-    die "Docker must be running so uninstall can verify that no managed workloads remain"
+  ensure_docker_daemon
   managed_containers=$(docker ps --all --quiet \
     --filter label=io.rsctf.worker.managed=true)
   managed_networks=$(docker network ls --quiet \
@@ -451,8 +510,7 @@ if [ "$SERVICE_MODE" = systemd ]; then
   systemctl show --property=Version --value >/dev/null 2>&1 ||
     die "systemd service mode was requested but its manager is unavailable"
 fi
-docker info >/dev/null 2>&1 ||
-  die "Docker is not running or root cannot access its daemon"
+ensure_docker_daemon
 printf 'Selected %s worker service mode.\n' "$SERVICE_MODE"
 
 RELEASE_BASE="https://github.com/${REPOSITORY}/releases"

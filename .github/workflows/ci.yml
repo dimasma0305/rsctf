@@ -417,6 +417,11 @@ jobs:
           head -n 1 scripts/bootstrap-worker.sh | grep -qx '#!/bin/sh'
           head -n 1 scripts/install-worker.sh | grep -qx '#!/bin/sh'
           grep -q '"${SERVER_URL}/healthz"' scripts/bootstrap-worker.sh
+          grep -q 'systemctl start docker.service' scripts/bootstrap-worker.sh
+          grep -q 'systemctl enable docker.service' scripts/bootstrap-worker.sh
+          grep -q 'rc-service docker start' scripts/bootstrap-worker.sh
+          grep -q 'service docker start' scripts/bootstrap-worker.sh
+          grep -q 'sv up docker' scripts/bootstrap-worker.sh
           if grep -Eq '\[\[|PIPESTATUS|BASH_SOURCE|mapfile|<<<|set -euo pipefail|--https-only|--secure-protocol' \
               scripts/bootstrap-worker.sh scripts/install-worker.sh; then
             echo "::error::The Linux worker lifecycle contains a Bash- or GNU-wget-only construct."
@@ -477,6 +482,40 @@ jobs:
           grep -q 'type=sha,format=long,prefix=sha-' "$workflow"
           grep -q 'Promote attested images to main' "$workflow"
           grep -q 'Promote verified commit images' "$workflow"
+
+      - name: Validate layer-backed Rust dependency caches
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby <<'RUBY'
+          chef = "lukemathwalker/cargo-chef:0.1.77-rust-1-bookworm@sha256:1689f62cfaa6603480356923cb5966544b2dd6ea523e30486bee4f149965d5bc"
+
+          ["Dockerfile", "agents/byoc-agent/Dockerfile"].each do |path|
+            source = File.read(path)
+            abort "#{path} must pin the reviewed cargo-chef image" unless source.include?(chef)
+            prepare = source.index("cargo chef prepare --recipe-path recipe.json")
+            cook = source.index("cargo chef cook --release --locked --recipe-path recipe.json")
+            build = source.index("cargo build --release --locked", cook)
+            abort "#{path} must prepare, cook, then build" unless prepare && cook && build && prepare < cook && cook < build
+            synthetic_edition_fix = source.lines.any? do |line|
+              line.start_with?("RUN sed -i ") &&
+                line.include?("edition =") &&
+                line.include?("required-features") &&
+                line.end_with?(" recipe.json\n")
+            end
+            abort "#{path} must remove cargo-chef's deprecated synthetic target editions" unless synthetic_edition_fix
+            abort "#{path} hides the layer-backed target cache behind an ephemeral cache mount" if source.include?("type=cache,target=/app/target")
+          end
+
+          server = File.read("Dockerfile")
+          builder_cook = server.index("cargo chef cook --release --locked --recipe-path recipe.json")
+          builder_arg = server.index("ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE", builder_cook)
+          runtime = server.index("FROM debian:bookworm-slim")
+          runtime_packages = server.index("apt-get install", runtime)
+          runtime_arg = server.index("ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE", runtime)
+          abort "server dependency cook must not depend on the changing agent digest" unless builder_arg && builder_arg > builder_cook
+          abort "runtime package layer must not depend on the changing agent digest" unless runtime_arg && runtime_arg > runtime_packages
+          RUBY
 
       - name: Validate publication critical-path gates
         shell: bash

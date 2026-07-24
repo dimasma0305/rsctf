@@ -67,6 +67,10 @@ case "${0##*/}" in
     printf '%s\n' "$*" >> /tmp/docker.log
     case "${1:-}" in
       info)
+        if [[ "${RSCTF_TEST_DOCKER_DAEMON_START_REQUIRED:-0}" == 1 &&
+          ! -f /tmp/rsctf-test-docker-running ]]; then
+          exit 1
+        fi
         case "$*" in
           *'{{.OSType}}'*) printf 'linux\n' ;;
           *'{{.Architecture}}'*) printf 'amd64\n' ;;
@@ -250,6 +254,17 @@ case "${0##*/}" in
     ;;
   systemctl)
     printf '%s\n' "$*" >> /tmp/systemctl.log
+    if [[ "$*" == "start docker.service" ]]; then
+      if [[ "${RSCTF_TEST_DOCKER_START_SUCCESS:-1}" == 1 ]]; then
+        touch /tmp/rsctf-test-docker-running
+        exit 0
+      fi
+      exit 1
+    fi
+    if [[ "$*" == "enable docker.service" ]]; then
+      [[ "${RSCTF_TEST_DOCKER_ENABLE_SUCCESS:-1}" == 1 ]]
+      exit
+    fi
     if [[ "${1:-}" == "is-active" ]]; then
       [[ "${RSCTF_TEST_SERVICE_ACTIVE:-0}" == 1 ]]
       exit
@@ -282,6 +297,37 @@ case "${0##*/}" in
     if [[ "${1:-}" == "reset-failed" || "${1:-}" == "show" ]]; then
       exit 0
     fi
+    ;;
+  rc-service)
+    printf '%s\n' "$*" >> /tmp/rc-service.log
+    if [[ "$*" == "docker start" &&
+      "${RSCTF_TEST_DOCKER_START_SUCCESS:-1}" == 1 ]]; then
+      touch /tmp/rsctf-test-docker-running
+      exit 0
+    fi
+    exit 1
+    ;;
+  rc-update)
+    printf '%s\n' "$*" >> /tmp/rc-update.log
+    [[ "$*" == "add docker default" ]]
+    ;;
+  service)
+    printf '%s\n' "$*" >> /tmp/service.log
+    if [[ "$*" == "docker start" &&
+      "${RSCTF_TEST_DOCKER_START_SUCCESS:-1}" == 1 ]]; then
+      touch /tmp/rsctf-test-docker-running
+      exit 0
+    fi
+    exit 1
+    ;;
+  sv)
+    printf '%s\n' "$*" >> /tmp/sv.log
+    if [[ "$*" == "up docker" &&
+      "${RSCTF_TEST_DOCKER_START_SUCCESS:-1}" == 1 ]]; then
+      touch /tmp/rsctf-test-docker-running
+      exit 0
+    fi
+    exit 1
     ;;
   journalctl)
     printf '%s\n' "$*" >> /tmp/journalctl.log
