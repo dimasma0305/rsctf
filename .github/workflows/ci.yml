@@ -505,6 +505,7 @@ jobs:
             end
             abort "#{path} must remove cargo-chef's deprecated synthetic target editions" unless synthetic_edition_fix
             abort "#{path} hides the layer-backed target cache behind an ephemeral cache mount" if source.include?("type=cache,target=/app/target")
+            abort "#{path} exports transient application build outputs" unless source.include?("rm -rf /app/target")
           end
 
           server = File.read("Dockerfile")

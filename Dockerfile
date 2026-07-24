@@ -45,12 +45,15 @@ COPY scripts/bootstrap-worker.sh scripts/bootstrap-worker.ps1 ./scripts/
 COPY src ./src
 ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
 ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH
+# Keep release cache export bounded: dependencies remain in the immutable
+# parent layer, while version-specific Cargo outputs are transient.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     RSCTF_DEFAULT_BYOC_AGENT_IMAGE="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}" \
     RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="${RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH}" \
     cargo build --release --locked \
-    && cp /app/target/release/rsctf /tmp/rsctf
+    && cp /app/target/release/rsctf /tmp/rsctf \
+    && rm -rf /app/target
 
 # --- runtime stage ---
 FROM debian:bookworm-slim

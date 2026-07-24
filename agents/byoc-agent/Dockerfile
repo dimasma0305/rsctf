@@ -15,7 +15,8 @@ FROM dependency-builder AS builder
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked \
-    && cp /app/target/release/rsctf-byoc-agent /tmp/rsctf-byoc-agent
+    && cp /app/target/release/rsctf-byoc-agent /tmp/rsctf-byoc-agent \
+    && rm -rf /app/target
 
 FROM debian:bookworm-slim
 RUN apt-get update \
