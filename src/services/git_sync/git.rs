@@ -1,6 +1,6 @@
 //! Git transport policy, checkout locking, and subprocess-backed synchronization.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -22,6 +22,7 @@ use crate::utils::error::{AppError, AppResult};
 /// is wedged (DNS, TLS handshake, proxy, revoked token mid-fetch) and kill it so
 /// the poll tick stays alive for subsequent bindings.
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const GIT_DNS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// GitHub's smart-HTTP transport authenticates with HTTP Basic using this fixed
 /// username and the PAT as the password. Works identically for classic `ghp_` and
@@ -113,22 +114,119 @@ fn is_local_git_host(host: &str) -> bool {
     if lower == "localhost" || lower.ends_with(".localhost") || lower.ends_with(".local") {
         return true;
     }
-    match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => {
-            ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_broadcast()
+    host.parse::<IpAddr>().is_ok_and(|ip| !is_public_git_ip(ip))
+}
+
+/// Permit only globally routable unicast destinations. Keep this explicit
+/// rather than relying on platform routing: repository URLs are persisted and
+/// re-resolved by scheduled scans, so a hostname that later points at loopback,
+/// link-local metadata, a private subnet, or a transition prefix must fail
+/// before Git opens a socket.
+fn is_public_git_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || a >= 224
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 168)
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113))
         }
-        Ok(IpAddr::V6(ip)) => {
-            ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            // Global IPv6 unicast is 2000::/3. Exclude special-purpose ranges
+            // inside that block, including 6to4 and documentation prefixes.
+            segments[0] & 0xe000 == 0x2000
+                && !(segments[0] == 0x2001 && segments[1] < 0x0200)
+                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+                && segments[0] != 0x2002
+                && !(segments[0] == 0x3fff && segments[1] < 0x1000)
         }
-        Err(_) => false,
     }
+}
+
+#[derive(Debug)]
+struct GitTransportPolicy {
+    curl_resolve: Option<String>,
+}
+
+impl GitTransportPolicy {
+    fn command_args(&self, args: &[&str]) -> Vec<String> {
+        let mut configured = vec![
+            "-c".to_string(),
+            "http.followRedirects=false".to_string(),
+            // Clear inherited CURLOPT_RESOLVE entries before adding the exact
+            // host mapping approved for this invocation.
+            "-c".to_string(),
+            "http.curloptResolve=".to_string(),
+        ];
+        if let Some(resolve) = &self.curl_resolve {
+            configured.push("-c".to_string());
+            configured.push(format!("http.curloptResolve={resolve}"));
+        }
+        configured.extend(args.iter().map(|arg| (*arg).to_string()));
+        configured
+    }
+}
+
+fn pinned_transport_policy(
+    host: &str,
+    port: u16,
+    addresses: impl IntoIterator<Item = IpAddr>,
+) -> AppResult<GitTransportPolicy> {
+    let addresses = addresses.into_iter().collect::<BTreeSet<_>>();
+    if addresses.is_empty() {
+        return Err(AppError::bad_request(
+            "repository host did not resolve to an address",
+        ));
+    }
+    if addresses.iter().any(|address| !is_public_git_ip(*address)) {
+        return Err(AppError::bad_request(
+            "repository host must resolve only to public addresses",
+        ));
+    }
+
+    let curl_resolve = host.parse::<IpAddr>().is_err().then(|| {
+        let addresses = addresses
+            .iter()
+            .map(|address| match address {
+                IpAddr::V4(address) => address.to_string(),
+                IpAddr::V6(address) => format!("[{address}]"),
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("{host}:{port}:{addresses}")
+    });
+    Ok(GitTransportPolicy { curl_resolve })
+}
+
+async fn resolve_git_transport(url: &str) -> AppResult<GitTransportPolicy> {
+    let parsed =
+        reqwest::Url::parse(url).map_err(|_| AppError::bad_request("invalid repository URL"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| AppError::bad_request("repository URL requires a host"))?;
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| AppError::bad_request("repository URL requires a known port"))?;
+
+    if let Ok(address) = host.parse::<IpAddr>() {
+        return pinned_transport_policy(host, port, [address]);
+    }
+
+    let resolved = timeout(GIT_DNS_TIMEOUT, tokio::net::lookup_host((host, port)))
+        .await
+        .map_err(|_| AppError::bad_request("repository host lookup timed out"))?
+        .map_err(|_| AppError::bad_request("repository host could not be resolved"))?;
+    pinned_transport_policy(host, port, resolved.map(|address| address.ip()))
 }
 
 pub fn validate_git_ref(raw: Option<&str>) -> AppResult<Option<String>> {
@@ -352,6 +450,7 @@ impl GitCredentials {
 /// the (credential-scrubbed) stderr.
 pub async fn sync_repo(url: &str, branch: Option<&str>, dest: &Path) -> AppResult<()> {
     let url = validate_sync_repo_url(url)?;
+    let transport = resolve_git_transport(&url).await?;
     let clean_url = url_without_credentials(&url)?;
     let branch = validate_git_ref(branch)?;
     let branch = branch.as_deref();
@@ -372,7 +471,12 @@ pub async fn sync_repo(url: &str, branch: Option<&str>, dest: &Path) -> AppResul
         run_git(dest, &["remote", "set-url", "origin", &clean_url]).await?;
         // "--" so a ref beginning with '-' is treated as a refspec, not an option.
         let refspec = branch.unwrap_or("HEAD");
-        run_git(dest, &["fetch", "--depth", "1", "--", &url, refspec]).await?;
+        run_git_with_transport(
+            Some(dest),
+            &transport,
+            &["fetch", "--depth", "1", "--", &url, refspec],
+        )
+        .await?;
         // FETCH_HEAD always points at whatever we just fetched.
         run_git(dest, &["reset", "--hard", "FETCH_HEAD"]).await?;
         // Drop untracked files a previous import may have written (e.g. build
@@ -406,7 +510,7 @@ pub async fn sync_repo(url: &str, branch: Option<&str>, dest: &Path) -> AppResul
 
         // Clone runs from the parent dir; git creates `dest` itself.
         let cwd = dest.parent().filter(|p| !p.as_os_str().is_empty());
-        run_git_opt_cwd(cwd, &args).await?;
+        run_git_with_transport(cwd, &transport, &args).await?;
         // Clone records its authenticated URL as origin; scrub credentials as
         // soon as the checkout exists so a PAT never persists in `.git/config`.
         run_git(dest, &["remote", "set-url", "origin", &clean_url]).await?;
@@ -527,6 +631,25 @@ pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> AppResult<String> {
     run_git_opt_cwd(Some(cwd), args).await
 }
 
+/// Run one HTTP(S) Git operation with the URL's current public DNS answers
+/// pinned into libcurl and redirects disabled. This closes both DNS-rebinding
+/// and redirect pivots between validation and the outbound socket.
+pub(super) async fn run_git_network(cwd: &Path, url: &str, args: &[&str]) -> AppResult<String> {
+    let url = validate_sync_repo_url(url)?;
+    let transport = resolve_git_transport(&url).await?;
+    run_git_with_transport(Some(cwd), &transport, args).await
+}
+
+async fn run_git_with_transport(
+    cwd: Option<&Path>,
+    transport: &GitTransportPolicy,
+    args: &[&str],
+) -> AppResult<String> {
+    let configured = transport.command_args(args);
+    let configured = configured.iter().map(String::as_str).collect::<Vec<_>>();
+    run_git_opt_cwd(cwd, &configured).await
+}
+
 /// Run `git <args>`, optionally in `cwd` (else the process's current dir).
 ///
 /// stdout is captured and returned; stderr is captured only for error messages.
@@ -541,6 +664,9 @@ async fn run_git_opt_cwd(cwd: Option<&Path>, args: &[&str]) -> AppResult<String>
     }
     cmd.args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
+        // A repository-controlled .lfsconfig must not create a second network
+        // request outside the pinned smart-HTTP transport.
+        .env("GIT_LFS_SKIP_SMUDGE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -616,4 +742,90 @@ fn sanitize(s: &str) -> String {
 /// Convenience wrapper to scrub a URL for logging.
 fn redact_url(url: &str) -> String {
     sanitize(url)
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    #[test]
+    fn outbound_policy_rejects_internal_and_special_addresses() {
+        for address in [
+            "0.0.0.1",
+            "10.0.0.1",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "172.16.0.1",
+            "192.168.0.1",
+            "198.18.0.1",
+            "224.0.0.1",
+            "::1",
+            "::ffff:127.0.0.1",
+            "64:ff9b:1::1",
+            "2001:db8::1",
+            "2002:7f00:1::1",
+            "fc00::1",
+            "fe80::1",
+            "ff02::1",
+        ] {
+            let address = address.parse::<IpAddr>().unwrap();
+            assert!(
+                !is_public_git_ip(address),
+                "accepted special address {address}"
+            );
+        }
+
+        for address in ["1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"] {
+            let address = address.parse::<IpAddr>().unwrap();
+            assert!(
+                is_public_git_ip(address),
+                "rejected public address {address}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_private_dns_answer_rejects_the_complete_resolution() {
+        let result = pinned_transport_policy(
+            "git.example",
+            443,
+            [
+                "93.184.216.34".parse().unwrap(),
+                "127.0.0.1".parse().unwrap(),
+            ],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn transport_disables_redirects_and_pins_every_validated_address() {
+        let policy = pinned_transport_policy(
+            "git.example",
+            443,
+            [
+                "2606:4700:4700::1111".parse().unwrap(),
+                "93.184.216.34".parse().unwrap(),
+            ],
+        )
+        .unwrap();
+        let args = policy.command_args(&["fetch", "https://git.example/team/repo"]);
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-c", "http.followRedirects=false"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-c", "http.curloptResolve="]));
+        assert!(args.iter().any(|arg| {
+            arg == "http.curloptResolve=git.example:443:93.184.216.34,[2606:4700:4700::1111]"
+        }));
+    }
+
+    #[test]
+    fn public_ip_literals_need_no_dns_override() {
+        let policy =
+            pinned_transport_policy("93.184.216.34", 443, ["93.184.216.34".parse().unwrap()])
+                .unwrap();
+        assert!(policy.curl_resolve.is_none());
+    }
 }

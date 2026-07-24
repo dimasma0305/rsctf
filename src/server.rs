@@ -4,7 +4,8 @@
 use std::path::Path;
 
 use axum::extract::MatchedPath;
-use axum::http::Request;
+use axum::http::{header, Request};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
@@ -46,6 +47,7 @@ fn common_api_router(game_router: Router<SharedState>) -> Router<SharedState> {
     Router::new()
         .route("/livez", get(crate::services::health::liveness))
         .route("/healthz", get(crate::services::health::readiness))
+        .route("/_rsctf/anti-autofill.js", get(anti_autofill_script))
         // --- controllers (mirror RSCTF Controllers/) ---
         .merge(controllers::account::router())
         .merge(controllers::team::router())
@@ -123,7 +125,7 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
         // rewritten. Falls back to the raw file if it can't be read at startup.
         let injected = std::fs::read_to_string(&index)
             .ok()
-            .map(|html| inject_head(&html, ANTI_AUTOFILL_SCRIPT));
+            .map(|html| inject_head(&html, ANTI_AUTOFILL_TAG));
         let spa: axum::routing::MethodRouter = match injected {
             Some(html) => axum::routing::get(move || {
                 let html = html.clone();
@@ -193,17 +195,32 @@ fn inject_head(html: &str, snippet: &str) -> String {
 /// The client renders without autocomplete attrs). Scoped to that route so the
 /// login page's autofill keeps working; a MutationObserver re-applies it across the
 /// SPA's client-side navigations and React re-renders.
-const ANTI_AUTOFILL_SCRIPT: &str = r#"<script>(function(){function h(){if(!/^\/admin\/settings/.test(location.pathname))return;document.querySelectorAll("input:not([data-noaf])").forEach(function(e){var t=(e.getAttribute("type")||"").toLowerCase(),n=e.getAttribute("name")||"",d=e.id||"";if(t==="password"||/pass|secret|key|token/i.test(n+" "+d)){e.setAttribute("autocomplete","new-password");e.setAttribute("data-noaf","1")}})}try{new MutationObserver(h).observe(document.documentElement,{childList:!0,subtree:!0})}catch(e){}document.addEventListener("DOMContentLoaded",h);window.addEventListener("load",h);h()})();</script>"#;
+const ANTI_AUTOFILL_TAG: &str = r#"<script src="/_rsctf/anti-autofill.js" defer></script>"#;
+const ANTI_AUTOFILL_SCRIPT: &str = r#"(function(){function h(){if(!/^\/admin\/settings/.test(location.pathname))return;document.querySelectorAll("input:not([data-noaf])").forEach(function(e){var t=(e.getAttribute("type")||"").toLowerCase(),n=e.getAttribute("name")||"",d=e.id||"";if(t==="password"||/pass|secret|key|token/i.test(n+" "+d)){e.setAttribute("autocomplete","new-password");e.setAttribute("data-noaf","1")}})}try{new MutationObserver(h).observe(document.documentElement,{childList:!0,subtree:!0})}catch(e){}document.addEventListener("DOMContentLoaded",h);window.addEventListener("load",h);h()})();"#;
+
+async fn anti_autofill_script() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        ANTI_AUTOFILL_SCRIPT,
+    )
+}
 
 #[cfg(test)]
 mod tests {
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
+    use axum::response::IntoResponse;
     use axum::routing::get;
     use axum::Router;
     use tower::ServiceExt;
 
-    use super::{trace_route, UNMATCHED_TRACE_ROUTE};
+    use super::{
+        anti_autofill_script, inject_head, trace_route, ANTI_AUTOFILL_SCRIPT, ANTI_AUTOFILL_TAG,
+        UNMATCHED_TRACE_ROUTE,
+    };
 
     const BYOC_IMAGE_ROUTE: &str =
         "/api/game/{game}/ad/byoc/{participation}/{challenge}/image/{token}";
@@ -248,5 +265,23 @@ mod tests {
         assert_eq!(route, UNMATCHED_TRACE_ROUTE);
         assert!(!route.contains(SECRET));
         assert!(!route.contains("query-secret"));
+    }
+
+    #[test]
+    fn spa_injection_uses_an_external_csp_compatible_script() {
+        let html = inject_head("<head><title>x</title></head>", ANTI_AUTOFILL_TAG);
+        assert!(html.contains(r#"src="/_rsctf/anti-autofill.js""#));
+        assert!(!html.contains(ANTI_AUTOFILL_SCRIPT));
+    }
+
+    #[tokio::test]
+    async fn anti_autofill_script_has_a_javascript_content_type() {
+        let response = anti_autofill_script().await.into_response();
+        assert_eq!(
+            response.headers().get(axum::http::header::CONTENT_TYPE),
+            Some(&axum::http::HeaderValue::from_static(
+                "text/javascript; charset=utf-8"
+            ))
+        );
     }
 }

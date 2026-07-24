@@ -4,8 +4,12 @@
 //! event-bus messages as hub invocations (see `signalr`).
 
 pub mod admin;
+mod admission;
 pub mod attack;
 pub mod container;
 pub mod monitor;
 pub mod signalr;
 pub mod user;
+
+#[cfg(test)]
+mod tests;

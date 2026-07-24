@@ -454,10 +454,12 @@ async fn serve_asset(
     Ok(response)
 }
 
-/// Infer a response Content-Type from the filename extension (RSCTF serves a
-/// guessed type, not a blanket `application/octet-stream`). Unknown extensions
-/// fall back to octet-stream so an arbitrary blob still downloads.
+/// Infer a response Content-Type from the filename extension. Formats that a
+/// browser can execute as an active same-origin subresource are deliberately
+/// forced to octet-stream; the URL's filename is caller-controlled and is not
+/// trustworthy metadata for JavaScript, HTML, SVG, CSS, XML, or WebAssembly.
 fn content_type_for(filename: &str) -> &'static str {
+    const INERT: &str = "application/octet-stream";
     let ext = filename
         .rsplit('.')
         .next()
@@ -465,26 +467,21 @@ fn content_type_for(filename: &str) -> &'static str {
         .to_ascii_lowercase();
     match ext.as_str() {
         "txt" | "md" | "log" => "text/plain; charset=utf-8",
-        "html" | "htm" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "text/javascript; charset=utf-8",
         "json" => "application/json",
-        "xml" => "application/xml",
         "csv" => "text/csv; charset=utf-8",
         "pdf" => "application/pdf",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
-        "svg" => "image/svg+xml",
         "webp" => "image/webp",
         "ico" => "image/x-icon",
         "zip" => "application/zip",
         "gz" | "tgz" => "application/gzip",
         "tar" => "application/x-tar",
         "7z" => "application/x-7z-compressed",
-        "wasm" => "application/wasm",
-        "bin" | "exe" | "elf" | "so" => "application/octet-stream",
-        _ => "application/octet-stream",
+        "html" | "htm" | "css" | "js" | "mjs" | "xml" | "svg" | "wasm" => INERT,
+        "bin" | "exe" | "elf" | "so" => INERT,
+        _ => INERT,
     }
 }
 
@@ -630,4 +627,36 @@ pub async fn delete_asset(
 /// Strip characters that would break a `Content-Disposition` header.
 fn sanitize(filename: &str) -> String {
     filename.replace(['"', '\r', '\n'], "")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::content_type_for;
+
+    #[test]
+    fn caller_chosen_active_extensions_are_always_inert() {
+        for filename in [
+            "payload.html",
+            "payload.HTM",
+            "payload.css",
+            "payload.js",
+            "payload.mjs",
+            "payload.xml",
+            "payload.svg",
+            "payload.wasm",
+        ] {
+            assert_eq!(
+                content_type_for(filename),
+                "application/octet-stream",
+                "{filename} remained browser-executable"
+            );
+        }
+    }
+
+    #[test]
+    fn passive_download_types_keep_their_useful_mime_type() {
+        assert_eq!(content_type_for("image.png"), "image/png");
+        assert_eq!(content_type_for("notes.txt"), "text/plain; charset=utf-8");
+        assert_eq!(content_type_for("archive.zip"), "application/zip");
+    }
 }

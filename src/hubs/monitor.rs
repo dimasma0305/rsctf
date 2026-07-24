@@ -1,8 +1,9 @@
 //! hubs/monitor.rs — RSCTF `MonitorHub` (IMonitorClient) over SignalR.
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -10,20 +11,31 @@ use axum::Router;
 use sea_orm::EntityTrait;
 
 use crate::app_state::SharedState;
-use crate::hubs::signalr;
+use crate::hubs::{admission, signalr};
+use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::game;
 use crate::utils::enums::Role;
 
 pub fn router() -> Router<SharedState> {
     Router::new()
-        .route("/hub/monitor", get(monitor_hub))
-        .route("/hub/monitor/negotiate", post(signalr::negotiate))
+        .route(
+            "/hub/monitor",
+            limited(Policy::PrivilegedHubAdmission, get(monitor_hub)),
+        )
+        .route(
+            "/hub/monitor/negotiate",
+            limited(
+                Policy::PrivilegedHubAdmission,
+                post(signalr::monitor_negotiate),
+            ),
+        )
 }
 
 async fn monitor_hub(
     ws: WebSocketUpgrade,
     State(st): State<SharedState>,
     Query(params): Query<HashMap<String, String>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
     match signalr::hub_identity(&st, &params, &headers).await {
@@ -42,17 +54,25 @@ async fn monitor_hub(
                 None => None,
             };
             let rx = st.events.subscribe();
+            let Some(connection_permit) = admission::try_connection_permit(
+                admission::client_key(&headers, peer.ip()),
+                game_id.map_or(admission::Scope::Global, admission::Scope::Game),
+            ) else {
+                return StatusCode::TOO_MANY_REQUESTS.into_response();
+            };
             let authorization = signalr::HubAuthorization::new(st, token, Role::Monitor);
-            ws.on_upgrade(move |s| {
-                signalr::serve(
-                    s,
-                    rx,
-                    &["ReceivedGameEvent", "ReceivedSubmissions"],
-                    game_id,
-                    Some(authorization),
-                )
-            })
-            .into_response()
+            signalr::bounded_upgrade(ws)
+                .on_upgrade(move |s| {
+                    signalr::serve(
+                        s,
+                        rx,
+                        &["ReceivedGameEvent", "ReceivedSubmissions"],
+                        game_id,
+                        Some(authorization),
+                        connection_permit,
+                    )
+                })
+                .into_response()
         }
         _ => StatusCode::UNAUTHORIZED.into_response(),
     }

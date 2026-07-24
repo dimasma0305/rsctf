@@ -2,10 +2,11 @@
 //! plain-WebSocket mirror (`RSCTF.Services.AttackStreamService`) at
 //! `GET /hub/attack/ws?game={id}` that the React attack-arena page connects to.
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::extract::{ConnectInfo, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -14,38 +15,57 @@ use tokio::sync::broadcast::{error::RecvError, Receiver};
 use tokio::time::{interval, Duration};
 
 use crate::app_state::{HubEvent, SharedState};
-use crate::hubs::signalr;
+use crate::hubs::{admission, signalr};
+use crate::middlewares::rate_limiter::{limited, Policy};
 
 pub fn router() -> Router<SharedState> {
     Router::new()
-        .route("/hub/attack", get(attack_hub))
-        .route("/hub/attack/negotiate", post(signalr::negotiate))
+        .route(
+            "/hub/attack",
+            limited(Policy::PublicHubAdmission, get(attack_hub)),
+        )
+        .route(
+            "/hub/attack/negotiate",
+            limited(Policy::PublicHubAdmission, post(signalr::negotiate)),
+        )
         // Plain-WebSocket mirror of the SignalR feed for the public attack-arena
         // page (no SignalR negotiate/framing). RSCTF: AttackStreamService.
-        .route("/hub/attack/ws", get(attack_ws))
+        .route(
+            "/hub/attack/ws",
+            limited(Policy::PublicHubAdmission, get(attack_ws)),
+        )
 }
 
 async fn attack_hub(
     ws: WebSocketUpgrade,
     State(st): State<SharedState>,
     Query(params): Query<HashMap<String, String>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
     let scope = match signalr::public_game_scope(&st, &params, &headers).await {
         Ok(scope) => scope,
         Err(status) => return status.into_response(),
     };
+    let Some(connection_permit) = admission::try_connection_permit(
+        admission::client_key(&headers, peer.ip()),
+        admission::Scope::Game(scope.game_id),
+    ) else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
     let rx = st.events.subscribe();
-    ws.on_upgrade(move |s| {
-        signalr::serve(
-            s,
-            rx,
-            &["ReceivedAttack"],
-            Some(scope.game_id),
-            scope.authorization,
-        )
-    })
-    .into_response()
+    signalr::bounded_upgrade(ws)
+        .on_upgrade(move |s| {
+            signalr::serve(
+                s,
+                rx,
+                &["ReceivedAttack"],
+                Some(scope.game_id),
+                scope.authorization,
+                connection_permit,
+            )
+        })
+        .into_response()
 }
 
 /// `GET /hub/attack/ws?game={id}` — plain-WebSocket mirror of the SignalR attack
@@ -57,15 +77,25 @@ async fn attack_ws(
     ws: WebSocketUpgrade,
     State(st): State<SharedState>,
     Query(params): Query<HashMap<String, String>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
     let scope = match signalr::public_game_scope(&st, &params, &headers).await {
         Ok(scope) => scope,
         Err(status) => return status.into_response(),
     };
+    let Some(connection_permit) = admission::try_connection_permit(
+        admission::client_key(&headers, peer.ip()),
+        admission::Scope::Game(scope.game_id),
+    ) else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
 
     let rx = st.events.subscribe();
-    ws.on_upgrade(move |s| serve_raw(s, rx, scope.game_id, scope.authorization))
+    signalr::bounded_upgrade(ws)
+        .on_upgrade(move |s| {
+            serve_raw(s, rx, scope.game_id, scope.authorization, connection_permit)
+        })
         .into_response()
 }
 
@@ -79,6 +109,7 @@ async fn serve_raw(
     mut rx: Receiver<HubEvent>,
     game_id: i32,
     authorization: Option<signalr::HubAuthorization>,
+    _connection_permit: admission::ConnectionPermit,
 ) {
     let (mut tx, mut ws_rx) = socket.split();
 

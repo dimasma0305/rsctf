@@ -7,26 +7,42 @@
 //! stream hub invocations (`{"type":1,"target":..,"arguments":[..]}\x1e`) from
 //! the `AppState` event bus and keep alive with pings (`{"type":6}`).
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::header::COOKIE;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use futures::{SinkExt, StreamExt};
-use sea_orm::EntityTrait;
 use std::collections::HashMap;
 use tokio::sync::broadcast::{error::RecvError, Receiver};
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, timeout, Duration};
 
 use crate::app_state::{HubEvent, SharedState};
+use crate::hubs::admission;
 use crate::middlewares::privilege_authentication::{
-    authenticate_token, session_cookie_value, AdminUser, CurrentUser, MAX_SESSION_TOKEN_BYTES,
+    authenticate_token, session_cookie_value, AdminUser, CurrentUser, MonitorUser,
+    MAX_SESSION_TOKEN_BYTES,
 };
-use crate::models::data::game;
 use crate::utils::enums::Role;
+use crate::utils::error::AppError;
 
 /// SignalR record separator (0x1E) that terminates every message.
 const RS: char = '\u{1e}';
+const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024;
+const WRITE_BUFFER_BYTES: usize = 64 * 1024;
+const MAX_WRITE_BUFFER_BYTES: usize = 1024 * 1024;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Apply one conservative transport envelope to every read-only broadcast hub.
+/// Clients send only the tiny SignalR handshake and keepalive frames, so larger
+/// inbound messages are never legitimate. The write ceiling also prevents a
+/// slow or failing peer from retaining an unbounded tungstenite buffer.
+pub fn bounded_upgrade(ws: WebSocketUpgrade) -> WebSocketUpgrade {
+    ws.write_buffer_size(WRITE_BUFFER_BYTES)
+        .max_write_buffer_size(MAX_WRITE_BUFFER_BYTES)
+        .max_message_size(MAX_WS_MESSAGE_BYTES)
+        .max_frame_size(MAX_WS_MESSAGE_BYTES)
+}
 
 /// `POST /hub/{name}/negotiate` — advertise the WebSocket transport only.
 pub async fn negotiate() -> impl IntoResponse {
@@ -45,6 +61,11 @@ pub async fn negotiate() -> impl IntoResponse {
 /// boundary identical across every privileged transport entry point instead
 /// of advertising an admin transport to anonymous callers.
 pub async fn admin_negotiate(_admin: AdminUser) -> impl IntoResponse {
+    negotiate().await
+}
+
+/// SignalR negotiation for monitor/admin hubs.
+pub async fn monitor_negotiate(_monitor: MonitorUser) -> impl IntoResponse {
     negotiate().await
 }
 
@@ -114,10 +135,11 @@ impl HubAuthorization {
             HubAuthorizationKind::Role { token, min_role } => authenticate_token(&self.st, token)
                 .await
                 .is_ok_and(|user| user.require_role(*min_role).is_ok()),
-            HubAuthorizationKind::PublicGame { game_id } => game::Entity::find_by_id(*game_id)
-                .one(&self.st.db)
-                .await
-                .is_ok_and(|game| game.is_some_and(|game| !game.hidden)),
+            HubAuthorizationKind::PublicGame { game_id } => {
+                crate::controllers::game::load_game_cached(&self.st, *game_id)
+                    .await
+                    .is_ok_and(|game| !game.hidden)
+            }
         }
     }
 }
@@ -140,12 +162,12 @@ pub async fn public_game_scope(
         .ok_or(StatusCode::BAD_REQUEST)?
         .parse::<i32>()
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-    match game::Entity::find_by_id(game_id).one(&st.db).await {
-        Ok(Some(game)) if !game.hidden => Ok(PublicGameScope {
+    match crate::controllers::game::load_game_cached(st, game_id).await {
+        Ok(game) if !game.hidden => Ok(PublicGameScope {
             game_id,
             authorization: Some(HubAuthorization::public_game(st.clone(), game_id)),
         }),
-        Ok(Some(_)) => {
+        Ok(_) => {
             let (user, token) = hub_identity(st, params, headers)
                 .await
                 .filter(|(user, _)| user.is_monitor())
@@ -156,7 +178,7 @@ pub async fn public_game_scope(
                 authorization: Some(HubAuthorization::new(st.clone(), token, Role::Monitor)),
             })
         }
-        Ok(_) => Err(StatusCode::NOT_FOUND),
+        Err(AppError::NotFound(_)) => Err(StatusCode::NOT_FOUND),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
@@ -166,18 +188,19 @@ pub async fn public_game_scope(
 /// whose game matches `game_id` (a connection with no game filter sees all
 /// games; a game-scoped event with no game id is broadcast to all) — invoking
 /// the event's own `target`, and answer pings until the socket closes.
-pub async fn serve(
+pub(super) async fn serve(
     socket: WebSocket,
     mut rx: Receiver<HubEvent>,
     targets: &'static [&'static str],
     game_id: Option<i32>,
     authorization: Option<HubAuthorization>,
+    _connection_permit: admission::ConnectionPermit,
 ) {
     let (mut tx, mut ws_rx) = socket.split();
 
     // 1) Handshake: the client's first frame is `{"protocol":"json","version":1}`.
-    match ws_rx.next().await {
-        Some(Ok(Message::Text(_))) => {
+    match timeout(HANDSHAKE_TIMEOUT, ws_rx.next()).await {
+        Ok(Some(Ok(Message::Text(_)))) => {
             if tx
                 .send(Message::Text(format!("{{}}{RS}").into()))
                 .await

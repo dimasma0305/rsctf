@@ -138,6 +138,10 @@ pub enum Policy {
     /// Frames inside an established connection are intentionally not charged.
     /// Appended to preserve every shipped Redis policy discriminant.
     PrivilegedHubAdmission,
+    /// Source-IP admission for anonymous/public hub negotiation and upgrade.
+    /// Long-lived socket counts are bounded separately by `hubs::admission`.
+    /// Appended to preserve every shipped Redis policy discriminant.
+    PublicHubAdmission,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -188,6 +192,10 @@ impl Policy {
             },
             Policy::PrivilegedHubAdmission => Kind::Bucket {
                 capacity: 120.0,
+                refill_per_sec: 10.0,
+            },
+            Policy::PublicHubAdmission => Kind::Bucket {
+                capacity: 512.0,
                 refill_per_sec: 10.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
@@ -445,6 +453,7 @@ fn partition_key(policy: Policy, req: &Request) -> String {
             | Policy::GlobalIpBackstop
             | Policy::CredentialIpAdmission
             | Policy::PrivilegedHubAdmission
+            | Policy::PublicHubAdmission
     ) {
         return client_ip(req);
     }

@@ -317,9 +317,9 @@ pub async fn push_file(
     // Per-repo commit identity — avoid mutating the container's global git config.
     super::run_git(dest, &["config", "user.name", "rsctf admin"]).await?;
     super::run_git(dest, &["config", "user.email", "noreply@rsctf.local"]).await?;
-    // Authenticated remote for the push (token embedded; scrubbed from errors).
+    // Authenticated URL for this one push (token embedded; scrubbed from errors).
+    // Pass it directly instead of persisting the PAT in `.git/config`.
     let auth_url = GitCredentials::new(token.to_string()).apply(&repo_url);
-    super::run_git(dest, &["remote", "set-url", "origin", &auth_url]).await?;
 
     // Stage ONLY the explicit path — never a wholesale add that could sweep up
     // build artifacts a prior import wrote. "--" so a '-'-leading path isn't an opt.
@@ -345,11 +345,8 @@ pub async fn push_file(
             "git_sync: cannot push a detached checkout (tag/SHA ref); pin the binding to a branch",
         ));
     }
-    super::run_git(
-        dest,
-        &["push", "origin", &format!("HEAD:refs/heads/{dest_ref}")],
-    )
-    .await?;
+    let refspec = format!("HEAD:refs/heads/{dest_ref}");
+    super::git::run_git_network(dest, &auth_url, &["push", "--", &auth_url, &refspec]).await?;
     tracing::info!(dir = %dest.display(), rel = %rel_path, branch = %dest_ref, "git_sync: pushed file");
     Ok(())
 }

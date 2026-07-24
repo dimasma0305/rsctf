@@ -1,38 +1,64 @@
 //! hubs/admin.rs — RSCTF `AdminHub` (IAdminClient) over SignalR.
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 
 use crate::app_state::SharedState;
-use crate::hubs::signalr;
+use crate::hubs::{admission, signalr};
+use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::utils::enums::Role;
 
 pub fn router() -> Router<SharedState> {
     Router::new()
-        .route("/hub/admin", get(admin_hub))
-        .route("/hub/admin/negotiate", post(signalr::admin_negotiate))
+        .route(
+            "/hub/admin",
+            limited(Policy::PrivilegedHubAdmission, get(admin_hub)),
+        )
+        .route(
+            "/hub/admin/negotiate",
+            limited(
+                Policy::PrivilegedHubAdmission,
+                post(signalr::admin_negotiate),
+            ),
+        )
 }
 
 async fn admin_hub(
     ws: WebSocketUpgrade,
     State(st): State<SharedState>,
     Query(params): Query<HashMap<String, String>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
     match signalr::hub_identity(&st, &params, &headers).await {
         Some((user, token)) if user.is_admin() => {
             // Admin log stream is global (not game-scoped).
             let rx = st.events.subscribe();
+            let Some(connection_permit) = admission::try_connection_permit(
+                admission::client_key(&headers, peer.ip()),
+                admission::Scope::Global,
+            ) else {
+                return StatusCode::TOO_MANY_REQUESTS.into_response();
+            };
             let authorization = signalr::HubAuthorization::new(st, token, Role::Admin);
-            ws.on_upgrade(move |s| {
-                signalr::serve(s, rx, &["ReceivedLog"], None, Some(authorization))
-            })
-            .into_response()
+            signalr::bounded_upgrade(ws)
+                .on_upgrade(move |s| {
+                    signalr::serve(
+                        s,
+                        rx,
+                        &["ReceivedLog"],
+                        None,
+                        Some(authorization),
+                        connection_permit,
+                    )
+                })
+                .into_response()
         }
         Some(_) => StatusCode::FORBIDDEN.into_response(),
         None => StatusCode::UNAUTHORIZED.into_response(),
