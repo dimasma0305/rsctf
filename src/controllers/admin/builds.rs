@@ -3,7 +3,24 @@
 use super::*;
 
 mod images;
+#[cfg(test)]
+mod in_progress_tests;
 pub use images::{build_images, delete_build_image, prune_images};
+
+const BUILDS_IN_PROGRESS_SQL: &str = r#"
+SELECT id AS audit_id,
+       challenge_id,
+       game_id,
+       challenge_title AS slug,
+       attempt,
+       trigger,
+       kind,
+       COALESCE(started_at_utc, enqueued_at_utc) AS started_at_utc
+  FROM "BuildRecords"
+ WHERE status IN (3, 5)
+   AND finished_at_utc IS NULL
+ ORDER BY enqueued_at_utc DESC, id DESC
+"#;
 
 /// RSCTF `PruneResultModel`.
 #[derive(Debug, Serialize)]
@@ -91,7 +108,7 @@ impl From<build_record::Model> for ChallengeBuildAuditModel {
 }
 
 /// RSCTF `ChallengeBuildInProgressModel` — one row of the live in-progress strip.
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeBuildInProgressModel {
     pub audit_id: i32,
@@ -103,22 +120,6 @@ pub struct ChallengeBuildInProgressModel {
     pub kind: String,
     #[serde(with = "crate::utils::datetime::millis")]
     pub started_at_utc: DateTime<Utc>,
-}
-
-impl From<build_record::Model> for ChallengeBuildInProgressModel {
-    fn from(b: build_record::Model) -> Self {
-        Self {
-            audit_id: b.id,
-            challenge_id: b.challenge_id,
-            game_id: b.game_id,
-            slug: b.challenge_title,
-            attempt: b.attempt,
-            trigger: b.trigger,
-            kind: b.kind,
-            // A queued row may not have started yet — fall back to the enqueue time.
-            started_at_utc: b.started_at_utc.unwrap_or(b.enqueued_at_utc),
-        }
-    }
 }
 
 /// RSCTF `BuildImageModel` — one `rsctf/*` image on the local docker daemon.
@@ -340,25 +341,23 @@ pub async fn list_builds(
     ))
 }
 
-/// `GET /api/admin/builds/inprogress` — builds still pending/running
-/// (`Queued` / `Building`), newest first.
+async fn load_builds_in_progress(
+    pool: &sqlx::PgPool,
+) -> AppResult<Vec<ChallengeBuildInProgressModel>> {
+    sqlx::query_as::<_, ChallengeBuildInProgressModel>(BUILDS_IN_PROGRESS_SQL)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
+/// `GET /api/admin/builds/inprogress` — unfinished builds still pending/running
+/// (`Queued` / `Building`), newest first. A terminal timestamp always wins over
+/// a stale status so completed historical rows can never appear as live work.
 pub async fn builds_in_progress(
     State(st): State<SharedState>,
     _admin: AdminUser,
 ) -> AppResult<RequestResponse<Vec<ChallengeBuildInProgressModel>>> {
-    let rows = build_record::Entity::find()
-        .filter(
-            Condition::any()
-                .add(build_record::Column::Status.eq(ChallengeBuildStatus::Building))
-                .add(build_record::Column::Status.eq(ChallengeBuildStatus::Queued)),
-        )
-        .order_by_desc(build_record::Column::EnqueuedAtUtc)
-        .order_by_desc(build_record::Column::Id)
-        .all(&st.db)
-        .await?;
-    Ok(RequestResponse::ok(
-        rows.into_iter().map(Into::into).collect(),
-    ))
+    Ok(RequestResponse::ok(load_builds_in_progress(st.pg()).await?))
 }
 
 /// `DELETE /api/admin/builds/{auditId}` — drop a single audit row.

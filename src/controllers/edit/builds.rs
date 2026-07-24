@@ -15,9 +15,52 @@ use publication::*;
 #[cfg(test)]
 mod archive_tests;
 #[cfg(test)]
+mod backfill_tests;
+#[cfg(test)]
 mod local_image_tests;
 
 const MAX_BUILD_ARCHIVE_BLOB_BYTES: usize = crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES;
+const BACKFILL_TERMINAL_BUILD_RECORDS_SQL: &str = r#"
+WITH inserted AS (
+    INSERT INTO "BuildRecords" (
+        challenge_id,
+        game_id,
+        challenge_title,
+        enqueued_at_utc,
+        started_at_utc,
+        finished_at_utc,
+        trigger,
+        kind,
+        attempt,
+        status,
+        digest,
+        image_ref,
+        log_tail
+    )
+    SELECT challenge.id,
+           challenge.game_id,
+           challenge.title,
+           clock_timestamp(),
+           clock_timestamp(),
+           clock_timestamp(),
+           'Backfill',
+           'Challenge',
+           1,
+           challenge.build_status,
+           challenge.build_image_digest,
+           CASE WHEN challenge.build_status = 1 THEN challenge.container_image END,
+           right(challenge.last_build_log, 4096)
+      FROM "GameChallenges" challenge
+     WHERE challenge.build_status IN (1, 2, 6)
+       AND NOT EXISTS (
+            SELECT 1
+              FROM "BuildRecords" record
+             WHERE record.challenge_id = challenge.id
+       )
+    RETURNING 1
+)
+SELECT COUNT(*)::BIGINT FROM inserted
+"#;
 
 pub(super) fn invalidated_build_status(
     container_image: Option<&str>,
@@ -84,9 +127,9 @@ pub(crate) async fn run_challenge_build(
         Ok(lock) => lock,
         Err(error) => {
             let outcome = BuildOutcome {
-                status: ChallengeBuildStatus::Queued,
+                status: ChallengeBuildStatus::Failed,
                 log: Some(format!(
-                    "Build coordination unavailable; retry later: {error}"
+                    "Build coordination unavailable; no background work was queued. Retry manually: {error}"
                 )),
                 image_digest: None,
             };
@@ -128,9 +171,10 @@ pub(crate) async fn run_challenge_build(
             // cannot return session-level advisory state to the pool.
             drop(build_lock);
             let outcome = BuildOutcome {
-                status: ChallengeBuildStatus::Queued,
+                status: ChallengeBuildStatus::Failed,
                 log: Some(
-                    "Build coordination unavailable; retry the current definition.".to_string(),
+                    "Build coordination unavailable; no background work was queued. Retry the current definition manually."
+                        .to_string(),
                 ),
                 image_digest: None,
             };
@@ -260,10 +304,20 @@ async fn resolve_build_image_ownership(
     }))
 }
 
-/// Persist one build attempt as a `BuildRecords` audit row. A pending outcome
-/// (`Queued`/`Building`, i.e. the daemon was unreachable) is left unfinished;
-/// any other outcome is stamped `finished`. Only a `Success` carries an image
-/// reference. The captured log is trimmed to a compact ~4 KiB tail for the row.
+fn terminal_audit_status(status: ChallengeBuildStatus) -> ChallengeBuildStatus {
+    match status {
+        ChallengeBuildStatus::Queued | ChallengeBuildStatus::Building => {
+            ChallengeBuildStatus::Failed
+        }
+        status => status,
+    }
+}
+
+/// Persist one completed synchronous build attempt as a `BuildRecords` audit
+/// row. This binary has no background build consumer, so a retryable internal
+/// outcome is defensively recorded as `Failed`, never as live queued work.
+/// Only a `Success` carries an image reference. The captured log is trimmed to
+/// a compact ~4 KiB tail for the row.
 async fn record_build(
     st: &SharedState,
     challenge: &game_challenge::Model,
@@ -272,11 +326,8 @@ async fn record_build(
     started: DateTime<Utc>,
     outcome: &BuildOutcome,
 ) -> Option<build_record::Model> {
-    let pending = matches!(
-        outcome.status,
-        ChallengeBuildStatus::Queued | ChallengeBuildStatus::Building
-    );
-    let image_ref = (outcome.status == ChallengeBuildStatus::Success)
+    let status = terminal_audit_status(outcome.status);
+    let image_ref = (status == ChallengeBuildStatus::Success)
         .then(|| challenge.container_image.clone())
         .flatten();
 
@@ -286,11 +337,11 @@ async fn record_build(
         challenge_title: Set(challenge.title.clone()),
         enqueued_at_utc: Set(started),
         started_at_utc: Set(Some(started)),
-        finished_at_utc: Set((!pending).then(Utc::now)),
+        finished_at_utc: Set(Some(Utc::now())),
         trigger: Set(trigger.to_string()),
         kind: Set("Challenge".to_string()),
         attempt: Set(attempt.max(1)),
-        status: Set(outcome.status),
+        status: Set(status),
         digest: Set(outcome.image_digest.clone()),
         image_ref: Set(image_ref),
         log_tail: Set(outcome.log.as_deref().map(build_log_tail)),
@@ -513,26 +564,29 @@ pub(crate) async fn build_challenge_image(
         }
     }
 
-    // Connect to the local daemon. A connect failure or an unreachable daemon is
-    // not something the operator can act on from here: leave the build enqueued
-    // (`Queued`) and return a valid 200.
-    // TODO(build-worker): RSCTF drains queued builds from a background worker
-    // once the daemon returns; this port has no such worker yet, so a `Queued`
-    // row simply waits for the operator to hit Rebuild again.
+    // This port executes builds synchronously and has no background build
+    // consumer. A daemon failure is therefore terminal for this attempt; the
+    // operator can retry explicitly after restoring the daemon.
     let docker = match Docker::connect_with_local_defaults() {
         Ok(d) => d,
         Err(_) => {
             return BuildOutcome {
-                status: ChallengeBuildStatus::Queued,
-                log: Some("Docker daemon unreachable; build enqueued (pending).".to_string()),
+                status: ChallengeBuildStatus::Failed,
+                log: Some(
+                    "Docker daemon unreachable; no background work was queued. Retry manually."
+                        .to_string(),
+                ),
                 image_digest: None,
             };
         }
     };
     if !docker_reachable(&docker).await {
         return BuildOutcome {
-            status: ChallengeBuildStatus::Queued,
-            log: Some("Docker daemon unreachable; build enqueued (pending).".to_string()),
+            status: ChallengeBuildStatus::Failed,
+            log: Some(
+                "Docker daemon unreachable; no background work was queued. Retry manually."
+                    .to_string(),
+            ),
             image_digest: None,
         };
     }
@@ -773,69 +827,37 @@ async fn pull_image(docker: &Docker, image: &str, portable_required: bool) -> Bu
     }
 }
 
-/// One-time-per-boot backfill of `BuildRecords` for container challenges whose
-/// image build already ran (a terminal/real `build_status`) but have NO build
-/// record — e.g. challenges imported before build-record tracking existed, or
-/// built by a path that didn't record. Without this, `/admin/builds` shows an
-/// empty list even though the challenge editor reports the challenges as built,
-/// which reads as "the build vanished". Idempotent: a challenge that already has
-/// any record is skipped, so it is safe to run on every startup.
+/// One-time-per-boot, set-based backfill of `BuildRecords` for terminal builds
+/// that have no audit history. `Queued` and `Building` are deliberately excluded:
+/// copying those states would invent live work that no background worker owns.
+/// Idempotent: a challenge that already has any record is skipped.
 pub async fn backfill_build_records(db: &sea_orm::DatabaseConnection) -> u64 {
-    use crate::models::data::{build_record, game_challenge};
-    use crate::utils::enums::ChallengeBuildStatus;
+    backfill_terminal_build_records(db.get_postgres_connection_pool()).await
+}
 
-    // Challenge ids that already have at least one build record.
-    let recorded: std::collections::HashSet<i32> = match build_record::Entity::find().all(db).await
-    {
-        Ok(rows) => rows.into_iter().map(|r| r.challenge_id).collect(),
+async fn backfill_terminal_build_records(pool: &sqlx::PgPool) -> u64 {
+    let mut transaction = match pool.begin().await {
+        Ok(transaction) => transaction,
         Err(_) => return 0,
     };
-
-    // Container challenges whose build actually ran (any state except the
-    // never-built None / NotApplicable placeholders).
-    let built = match game_challenge::Entity::find()
-        .filter(game_challenge::Column::BuildStatus.is_in([
-            ChallengeBuildStatus::Success,
-            ChallengeBuildStatus::Failed,
-            ChallengeBuildStatus::Building,
-            ChallengeBuildStatus::Queued,
-            ChallengeBuildStatus::MissingDockerfile,
-        ]))
-        .all(db)
+    if sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('rsctf:build-record-backfill', 0))",
+    )
+    .execute(&mut *transaction)
+    .await
+    .is_err()
+    {
+        return 0;
+    }
+    let inserted = match sqlx::query_scalar::<_, i64>(BACKFILL_TERMINAL_BUILD_RECORDS_SQL)
+        .fetch_one(&mut *transaction)
         .await
     {
-        Ok(c) => c,
+        Ok(inserted) => inserted.max(0) as u64,
         Err(_) => return 0,
     };
-
-    let now = Utc::now();
-    let mut n = 0u64;
-    for c in built {
-        if recorded.contains(&c.id) {
-            continue;
-        }
-        let image_ref = (c.build_status == ChallengeBuildStatus::Success)
-            .then(|| c.container_image.clone())
-            .flatten();
-        let rec = build_record::ActiveModel {
-            challenge_id: Set(c.id),
-            game_id: Set(c.game_id),
-            challenge_title: Set(c.title.clone()),
-            enqueued_at_utc: Set(now),
-            started_at_utc: Set(Some(now)),
-            finished_at_utc: Set(Some(now)),
-            trigger: Set("Backfill".to_string()),
-            kind: Set("Challenge".to_string()),
-            attempt: Set(1),
-            status: Set(c.build_status),
-            digest: Set(c.build_image_digest.clone()),
-            image_ref: Set(image_ref),
-            log_tail: Set(c.last_build_log.as_deref().map(build_log_tail)),
-            ..Default::default()
-        };
-        if rec.insert(db).await.is_ok() {
-            n += 1;
-        }
+    if transaction.commit().await.is_err() {
+        return 0;
     }
-    n
+    inserted
 }
