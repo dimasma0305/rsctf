@@ -961,12 +961,25 @@ export interface ArrayResponseOfContainerInstanceModel {
   total?: number;
 }
 
+/** Container ownership scope (Admin) */
+export enum ContainerOwnerKind {
+  Team = "Team",
+  Shared = "Shared",
+  AdminTest = "AdminTest",
+  Exercise = "Exercise",
+  Unassigned = "Unassigned",
+}
+
 /** Container instance information (Admin) */
 export interface ContainerInstanceModel {
   /** Team */
   team?: TeamModel | null;
   /** Challenge */
   challenge?: ChallengeModel | null;
+  /** Container ownership scope */
+  ownerKind?: ContainerOwnerKind;
+  /** Non-team owner name */
+  ownerName?: string | null;
   /** Container image */
   image?: string;
   /**
@@ -993,6 +1006,8 @@ export interface ContainerInstanceModel {
    * @format int32
    */
   port?: number;
+  /** Whether the access entry is served by the WebSocket proxy */
+  isProxy?: boolean;
 }
 
 /** Team information */

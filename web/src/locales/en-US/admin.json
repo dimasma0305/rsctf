@@ -1083,12 +1083,20 @@
       }
     },
     "instances": {
+      "challenge_unassigned": "Unassigned",
       "container_id": "Container ID",
+      "copy_proxy_url": "Copy proxy URL",
       "entry": "Instance Entry",
       "life_cycle": "Lifecycle",
       "cpu": "CPU",
       "memory": "Memory",
       "network": "Network",
+      "owner": {
+        "admin_test": "Admin test",
+        "exercise": "Exercise",
+        "shared": "Shared (all teams)",
+        "unassigned": "Unassigned"
+      },
       "live_stats": "Live stats"
     },
     "logs": {

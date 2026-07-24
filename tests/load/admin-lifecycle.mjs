@@ -1302,9 +1302,27 @@ async function observabilityAndRuntime() {
   );
 
   const instances = await call('GET', '/api/admin/instances', '/api/admin/instances?count=100&skip=0');
+  const fixtureInstance = instances.json?.data?.find(
+    (instance) => instance.containerGuid === containerGuid,
+  );
   requireCondition(
-    instances.json?.data?.some((instance) => instance.containerGuid === containerGuid),
+    fixtureInstance,
     'instance inventory omitted the live fixture container',
+  );
+  requireCondition(
+    fixtureInstance.ownerKind === 'Team' &&
+      Number.isSafeInteger(fixtureInstance.team?.id) &&
+      fixtureInstance.team?.name?.length > 0,
+    `instance inventory omitted its team owner: ${JSON.stringify(fixtureInstance)}`,
+  );
+  requireCondition(
+    fixtureInstance.challenge?.id === fixtureContainerChallenge &&
+      fixtureInstance.challenge?.title?.length > 0,
+    `instance inventory omitted its challenge: ${JSON.stringify(fixtureInstance)}`,
+  );
+  requireCondition(
+    typeof fixtureInstance.isProxy === 'boolean',
+    `instance inventory omitted its proxy capability: ${JSON.stringify(fixtureInstance)}`,
   );
   const stats = await call(
     'GET',

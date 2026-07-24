@@ -35,10 +35,11 @@ import { Trans, useTranslation } from 'react-i18next'
 import { ActionIconWithConfirm } from '@Components/ActionIconWithConfirm'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
+import { containerOwnerLabel, hasContainerProxy } from '@Utils/ContainerInstance'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { HunamizeSize, useChallengeCategoryLabelMap, getProxyUrl } from '@Utils/Shared'
-import api, { ChallengeModel, ChallengeCategory, TeamModel } from '@Api'
+import api, { ChallengeModel, ChallengeCategory, ContainerInstanceModel, TeamModel } from '@Api'
 import classes from '@Styles/Instances.module.css'
 import misc from '@Styles/Misc.module.css'
 import tableClasses from '@Styles/Table.module.css'
@@ -240,8 +241,10 @@ const Instances: FC = () => {
     }
   }
 
-  const copyContainerUrl = (containerGuid?: string | null) => () => {
-    clipBoard.copy(containerGuid ? getProxyUrl(containerGuid) : '')
+  const copyContainerUrl = (instance: ContainerInstanceModel) => () => {
+    if (!hasContainerProxy(instance)) return
+
+    clipBoard.copy(getProxyUrl(instance.containerGuid))
     showNotification({
       color: 'teal',
       title: t('admin.notification.instances.url_copied.title'),
@@ -338,13 +341,19 @@ const Instances: FC = () => {
               {filteredInstances &&
                 filteredInstances.map((inst) => {
                   const color = challengeCategoryLabelMap.get(inst.challenge?.category ?? ChallengeCategory.Misc)!.color
+                  const ownerLabel = containerOwnerLabel(inst, {
+                    shared: t('admin.label.instances.owner.shared', 'Shared (all teams)'),
+                    adminTest: t('admin.label.instances.owner.admin_test', 'Admin test'),
+                    exercise: t('admin.label.instances.owner.exercise', 'Exercise'),
+                    unassigned: t('admin.label.instances.owner.unassigned', 'Unassigned'),
+                  })
                   return (
                     <Table.Tr key={inst.containerGuid}>
                       <Table.Td>
                         <Box w="100%" h="100%">
                           <Input
                             variant="unstyled"
-                            value={inst.team?.name ?? 'Team'}
+                            value={ownerLabel}
                             aria-label={t('common.label.team')}
                             readOnly
                             classNames={classes}
@@ -355,7 +364,9 @@ const Instances: FC = () => {
                         <Box w="100%" h="100%">
                           <Input
                             variant="unstyled"
-                            value={inst.challenge?.title ?? 'Challenge'}
+                            value={
+                              inst.challenge?.title ?? t('admin.label.instances.challenge_unassigned', 'Unassigned')
+                            }
                             aria-label={t('common.label.challenge')}
                             readOnly
                             classNames={classes}
@@ -376,27 +387,37 @@ const Instances: FC = () => {
                       <InstanceStatsCells instanceGuid={inst.containerGuid} live={liveStats} />
                       <Table.Td>
                         <Text size="sm" ff="monospace" lineClamp={1}>
-                          <Tooltip label={t('common.button.copy')} withArrow position="left">
-                            <Text
-                              size="sm"
-                              ff="monospace"
-                              bg="transparent"
-                              fz="sm"
-                              role="button"
-                              tabIndex={0}
-                              aria-label={t('admin.notification.instances.url_copied.title')}
-                              className={tableClasses.clickable}
-                              onClick={copyContainerUrl(inst.containerGuid)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault()
-                                  copyContainerUrl(inst.containerGuid)()
-                                }
-                              }}
+                          {hasContainerProxy(inst) ? (
+                            <Tooltip
+                              label={t('admin.label.instances.copy_proxy_url', 'Copy proxy URL')}
+                              withArrow
+                              position="left"
                             >
+                              <Text
+                                size="sm"
+                                ff="monospace"
+                                bg="transparent"
+                                fz="sm"
+                                role="button"
+                                tabIndex={0}
+                                aria-label={t('admin.notification.instances.url_copied.title')}
+                                className={tableClasses.clickable}
+                                onClick={copyContainerUrl(inst)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault()
+                                    copyContainerUrl(inst)()
+                                  }
+                                }}
+                              >
+                                {inst.containerGuid}
+                              </Text>
+                            </Tooltip>
+                          ) : (
+                            <Text size="sm" ff="monospace" bg="transparent" fz="sm">
                               {inst.containerGuid}
                             </Text>
-                          </Tooltip>
+                          )}
                         </Text>
                       </Table.Td>
                       <Table.Td>
@@ -437,7 +458,7 @@ const Instances: FC = () => {
                                 inst.containerGuid &&
                                 setExecTarget({
                                   guid: inst.containerGuid,
-                                  title: `${inst.team?.name ?? ''} - ${inst.challenge?.title ?? ''}`,
+                                  title: `${ownerLabel} - ${inst.challenge?.title ?? ''}`,
                                 })
                               }
                             >

@@ -470,9 +470,17 @@
       }
     },
     "instances": {
+      "challenge_unassigned": "Belum ditetapkan",
       "container_id": "ID container",
+      "copy_proxy_url": "Salin URL proxy",
       "entry": "Entri instance",
-      "life_cycle": "Siklus"
+      "life_cycle": "Siklus",
+      "owner": {
+        "admin_test": "Tes admin",
+        "exercise": "Latihan",
+        "shared": "Bersama (semua tim)",
+        "unassigned": "Belum ditetapkan"
+      }
     },
     "logs": {
       "message": "Pesan",
