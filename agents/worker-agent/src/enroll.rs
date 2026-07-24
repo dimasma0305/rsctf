@@ -338,12 +338,21 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let mut chunk = [0u8; 1_024];
+                let read = socket.read(&mut chunk).await.unwrap();
+                assert!(read > 0, "client closed before sending request headers");
+                request.extend_from_slice(&chunk[..read]);
+                assert!(request.len() <= 16 * 1_024, "request headers are too large");
+            }
             socket
                 .write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n",
                 )
                 .await
                 .unwrap();
+            socket.shutdown().await.unwrap();
         });
         let response = reqwest::Client::new()
             .get(format!("http://{address}"))
