@@ -457,3 +457,23 @@ jobs:
           bash -n scripts/install.sh scripts/test-install.sh scripts/test-install-shim.sh
           scripts/install.sh --help >/dev/null
           scripts/test-install.sh
+
+      - name: Validate native image publication topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/image.yml
+          if grep -q 'setup-qemu-action' "$workflow"; then
+            echo "::error::Container publication must use native architecture runners, not QEMU."
+            exit 1
+          fi
+          test "$(grep -c 'docker/github-builder/.github/workflows/build.yml@3415a188caae9a0da7fba83bc06985776e0b1790' "$workflow")" -eq 2
+          grep -q 'platforms: linux/amd64,linux/arm64' "$workflow"
+          grep -q 'linux/arm64=ubuntu-24.04-arm' "$workflow"
+          grep -q 'cache-scope: rsctf-byoc-agent' "$workflow"
+          grep -q 'cache-scope: rsctf-image' "$workflow"
+          test "$(grep -c 'type=raw,value=main' "$workflow" || true)" -eq 0
+          grep -q 'source-ref refs/heads/main' "$workflow"
+          grep -q 'type=sha,format=long,prefix=sha-' "$workflow"
+          grep -q 'Promote attested images to main' "$workflow"
+          grep -q 'Promote verified commit images' "$workflow"

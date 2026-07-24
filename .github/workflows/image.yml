@@ -62,7 +62,7 @@ jobs:
 
   quality:
     name: Test before publishing
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && github.ref_type != 'tag'
     needs: [validate-release]
     uses: ./.github/workflows/ci.yml
 
@@ -88,8 +88,8 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          cache-from: type=gha,scope=rsctf-image
-          cache-to: type=gha,mode=max,scope=rsctf-image,ignore-error=true
+          cache-from: type=gha,scope=rsctf-image-linux-amd64
+          cache-to: type=gha,mode=max,scope=rsctf-image-linux-amd64,ignore-error=true
 
       - name: Build BYOC agent image without pushing
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -100,8 +100,8 @@ jobs:
           load: true
           push: false
           tags: rsctf-byoc-agent:ci
-          cache-from: type=gha,scope=rsctf-byoc-agent
-          cache-to: type=gha,mode=max,scope=rsctf-byoc-agent,ignore-error=true
+          cache-from: type=gha,scope=rsctf-byoc-agent-linux-amd64
+          cache-to: type=gha,mode=max,scope=rsctf-byoc-agent-linux-amd64,ignore-error=true
 
       - name: Smoke test BYOC agent image
         shell: bash
@@ -117,31 +117,45 @@ jobs:
             exit 1
           fi
 
-  publish:
-    name: Publish image
+  prepare:
+    name: Prepare publication
     if: github.event_name != 'pull_request'
-    needs: [validate-release, quality]
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
+    needs: [validate-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      dockerhub-enabled: ${{ steps.registries.outputs.dockerhub-enabled }}
+      ghcr: ${{ steps.image.outputs.ghcr }}
+      ghcr-agent: ${{ steps.image.outputs.ghcr-agent }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - name: Normalize image name
+      - name: Resolve package version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk -F '"' '$1 == "version = " { print $2; exit }' Cargo.toml)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Could not resolve a valid package version from Cargo.toml."
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Normalize image names
         id: image
         shell: bash
         env:
           GHCR_IMAGE: ${{ env.GHCR_REGISTRY }}/${{ github.repository }}
         run: |
-          echo "ghcr=${GHCR_IMAGE,,}" >> "$GITHUB_OUTPUT"
-          echo "ghcr_agent=${GHCR_IMAGE,,}-byoc-agent" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          ghcr="${GHCR_IMAGE,,}"
+          printf 'ghcr=%s\n' "$ghcr" >> "$GITHUB_OUTPUT"
+          printf 'ghcr-agent=%s\n' "${ghcr}-byoc-agent" >> "$GITHUB_OUTPUT"
 
       - name: Detect Docker Hub credentials
         id: registries
@@ -151,184 +165,211 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
-            echo "dockerhub_enabled=true" >> "$GITHUB_OUTPUT"
+            echo "dockerhub-enabled=true" >> "$GITHUB_OUTPUT"
           else
-            echo "dockerhub_enabled=false" >> "$GITHUB_OUTPUT"
+            echo "dockerhub-enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Set up QEMU for release images
-        if: github.ref_type == 'tag'
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
-        with:
-          platforms: arm64
+  build-agent:
+    name: Build BYOC agent natively
+    if: github.ref == 'refs/heads/main'
+    needs: [prepare]
+    uses: docker/github-builder/.github/workflows/build.yml@3415a188caae9a0da7fba83bc06985776e0b1790 # v1
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    with:
+      cache: true
+      cache-mode: max
+      cache-scope: rsctf-byoc-agent
+      context: agents/byoc-agent
+      file: Dockerfile
+      job-name-prefix: BYOC agent
+      labels: |
+        org.opencontainers.image.description=Team-side tunnel agent for RSCTF self-hosted Attack & Defense services
+        org.opencontainers.image.licenses=MIT
+        org.opencontainers.image.revision=${{ github.sha }}
+        org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+        org.opencontainers.image.title=rsctf-byoc-agent
+        org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+      meta-flavor: latest=false
+      meta-images: ${{ needs.prepare.outputs.ghcr-agent }}
+      meta-tags: |
+        type=sha,format=long,prefix=sha-
+      output: image
+      platforms: linux/amd64,linux/arm64
+      push: true
+      runner: |
+        default=ubuntu-24.04
+        linux/arm64=ubuntu-24.04-arm
+      sbom: true
+      sign: "false"
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
+  build-server:
+    name: Build server natively
+    if: github.ref == 'refs/heads/main'
+    needs: [prepare, quality, build-agent]
+    uses: docker/github-builder/.github/workflows/build.yml@3415a188caae9a0da7fba83bc06985776e0b1790 # v1
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    with:
+      build-args: |
+        RSCTF_DEFAULT_BYOC_AGENT_IMAGE=${{ needs.prepare.outputs.ghcr-agent }}@${{ needs.build-agent.outputs.digest }}
+        RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH=true
+      cache: true
+      cache-mode: max
+      cache-scope: rsctf-image
+      context: .
+      file: Dockerfile
+      job-name-prefix: Server
+      labels: |
+        org.opencontainers.image.description=A high-performance Capture-the-Flag competition platform written in Rust
+        org.opencontainers.image.licenses=MIT
+        org.opencontainers.image.revision=${{ github.sha }}
+        org.opencontainers.image.rsctf.creepjs-license=/app/web/build/legal/third-party/CreepJS-LICENSE.txt
+        org.opencontainers.image.rsctf.licensing=/app/web/build/legal/LICENSING.md
+        org.opencontainers.image.rsctf.notice=/app/web/build/legal/NOTICE
+        org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+        org.opencontainers.image.title=rsctf
+        org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+      meta-flavor: latest=false
+      meta-images: ${{ needs.prepare.outputs.ghcr }}
+      meta-tags: |
+        type=sha,format=long,prefix=sha-
+      output: image
+      platforms: linux/amd64,linux/arm64
+      push: true
+      runner: |
+        default=ubuntu-24.04
+        linux/arm64=ubuntu-24.04-arm
+      sbom: true
+      sign: "false"
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+  finalize-main:
+    name: Verify and attest commit images
+    if: github.ref == 'refs/heads/main'
+    needs: [prepare, build-agent, build-server]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-
-      - name: Log in to Docker Hub
-        if: steps.registries.outputs.dockerhub_enabled == 'true'
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
         with:
-          registry: ${{ env.GHCR_REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate image metadata
-        id: metadata
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: |
-            name=${{ env.DOCKERHUB_IMAGE }},enable=${{ steps.registries.outputs.dockerhub_enabled }}
-            name=${{ steps.image.outputs.ghcr }}
-          flavor: latest=auto
-          tags: |
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,format=long,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ github.ref_type == 'tag' }}
-            type=semver,pattern={{major}},enable=${{ github.ref_type == 'tag' }}
-          labels: |
-            org.opencontainers.image.title=rsctf
-            org.opencontainers.image.description=A high-performance Capture-the-Flag competition platform written in Rust
-            org.opencontainers.image.licenses=MIT
-            org.opencontainers.image.rsctf.licensing=/app/web/build/legal/LICENSING.md
-            org.opencontainers.image.rsctf.notice=/app/web/build/legal/NOTICE
-            org.opencontainers.image.rsctf.creepjs-license=/app/web/build/legal/third-party/CreepJS-LICENSE.txt
-
-      - name: Generate BYOC agent image metadata
-        id: agent-metadata
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: |
-            name=${{ env.DOCKERHUB_AGENT_IMAGE }},enable=${{ steps.registries.outputs.dockerhub_enabled }}
-            name=${{ steps.image.outputs.ghcr_agent }}
-          flavor: latest=auto
-          tags: |
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,format=long,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ github.ref_type == 'tag' }}
-            type=semver,pattern={{major}},enable=${{ github.ref_type == 'tag' }}
-          labels: |
-            org.opencontainers.image.title=rsctf-byoc-agent
-            org.opencontainers.image.description=Team-side tunnel agent for RSCTF self-hosted Attack & Defense services
-            org.opencontainers.image.licenses=MIT
-
-      - name: Build and push BYOC agent image
-        id: agent-build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: ./agents/byoc-agent
-          file: ./agents/byoc-agent/Dockerfile
-          platforms: ${{ github.ref_type == 'tag' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: true
-          tags: ${{ steps.agent-metadata.outputs.tags }}
-          labels: ${{ steps.agent-metadata.outputs.labels }}
-          cache-from: type=gha,scope=rsctf-byoc-agent
-          cache-to: type=gha,mode=max,scope=rsctf-byoc-agent,ignore-error=true
-          provenance: mode=max
-          sbom: true
-
-      - name: Build and push image
-        id: build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: ${{ github.ref_type == 'tag' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          build-args: |
-            RSCTF_DEFAULT_BYOC_AGENT_IMAGE=${{ steps.image.outputs.ghcr_agent }}@${{ steps.agent-build.outputs.digest }}
-            RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH=${{ github.ref_type == 'tag' && 'true' || 'false' }}
-          cache-from: type=gha,scope=rsctf-image
-          cache-to: type=gha,mode=max,scope=rsctf-image,ignore-error=true
-          provenance: mode=max
-          sbom: true
-
-      - name: Verify embedded BYOC agent digest
-        env:
-          APP_REF: ${{ steps.image.outputs.ghcr }}@${{ steps.build.outputs.digest }}
-          AGENT_REF: ${{ steps.image.outputs.ghcr_agent }}@${{ steps.agent-build.outputs.digest }}
+      - name: Verify platforms, labels, and embedded agent
         shell: bash
+        env:
+          AGENT_DIGEST: ${{ needs.build-agent.outputs.digest }}
+          AGENT_IMAGE: ${{ needs.prepare.outputs.ghcr-agent }}
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+          SERVER_DIGEST: ${{ needs.build-server.outputs.digest }}
+          SERVER_IMAGE: ${{ needs.prepare.outputs.ghcr }}
         run: |
           set -euo pipefail
-          app_repository="${APP_REF%@*}"
-          app_index="$(docker buildx imagetools inspect --raw "$APP_REF")"
-          mapfile -t platform_digests < <(
-            jq -r '.manifests[]?
-              | select(.platform.os == "linux" and .platform.architecture != "unknown")
-              | .digest' <<< "$app_index"
-          )
-          if (( ${#platform_digests[@]} == 0 )); then
-            echo "::error::Published server image has no Linux platform manifests."
-            exit 1
-          fi
-          for platform_digest in "${platform_digests[@]}"; do
-            embedded_agent="$(
-              docker buildx imagetools inspect "${app_repository}@${platform_digest}" \
-                --format '{{ index .Image.Config.Labels "org.opencontainers.image.rsctf.byoc-agent" }}'
-            )"
-            if [[ "$embedded_agent" != "$AGENT_REF" ]]; then
-              echo "::error::Server platform ${platform_digest} embeds '${embedded_agent}', expected '${AGENT_REF}'."
-              exit 1
-            fi
-          done
+          agent_ref="${AGENT_IMAGE}@${AGENT_DIGEST}"
+          server_ref="${SERVER_IMAGE}@${SERVER_DIGEST}"
 
-      - name: Verify release image platforms
-        if: github.ref_type == 'tag'
-        env:
-          APP_REF: ${{ steps.image.outputs.ghcr }}@${{ steps.build.outputs.digest }}
-          AGENT_REF: ${{ steps.image.outputs.ghcr_agent }}@${{ steps.agent-build.outputs.digest }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for ref in "$APP_REF" "$AGENT_REF"; do
+          verify_platforms() {
+            ref=$1
             manifest="$(docker buildx imagetools inspect --raw "$ref")"
             if ! jq -e '
               [.manifests[]?.platform
                | select(.os == "linux")
-               | .architecture]
-              | (index("amd64") != null and index("arm64") != null)
+               | .architecture
+               | select(. == "amd64" or . == "arm64")]
+              | sort == ["amd64", "arm64"]
             ' <<< "$manifest" >/dev/null; then
-              echo "::error::Release index ${ref} does not contain both linux/amd64 and linux/arm64."
+              echo "::error::Image ${ref} does not contain exactly linux/amd64 and linux/arm64."
               exit 1
             fi
-          done
+          }
 
-      - name: Attest Docker Hub image
-        if: steps.registries.outputs.dockerhub_enabled == 'true'
+          verify_labels() {
+            image=$1
+            ref=$2
+            manifest="$(docker buildx imagetools inspect --raw "$ref")"
+            while IFS= read -r digest; do
+              config="$(
+                docker buildx imagetools inspect "${image}@${digest}" \
+                  --format '{{ json .Image.Config.Labels }}'
+              )"
+              revision="$(jq -er '."org.opencontainers.image.revision"' <<< "$config")"
+              if [[ "$revision" != "$GITHUB_SHA" ]]; then
+                echo "::error::Platform ${digest} has revision '${revision}', expected '${GITHUB_SHA}'."
+                exit 1
+              fi
+              version="$(jq -er '."org.opencontainers.image.version"' <<< "$config")"
+              if [[ "$version" != "$EXPECTED_VERSION" ]]; then
+                echo "::error::Platform ${digest} has version '${version}', expected '${EXPECTED_VERSION}'."
+                exit 1
+              fi
+              source="$(jq -er '."org.opencontainers.image.source"' <<< "$config")"
+              if [[ "$source" != "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" ]]; then
+                echo "::error::Platform ${digest} has unexpected source '${source}'."
+                exit 1
+              fi
+            done < <(
+              jq -r '.manifests[]?
+                | select(.platform.os == "linux")
+                | select(.platform.architecture == "amd64" or .platform.architecture == "arm64")
+                | .digest' <<< "$manifest"
+            )
+          }
+
+          verify_platforms "$agent_ref"
+          verify_platforms "$server_ref"
+          verify_labels "$AGENT_IMAGE" "$agent_ref"
+          verify_labels "$SERVER_IMAGE" "$server_ref"
+
+          server_index="$(docker buildx imagetools inspect --raw "$server_ref")"
+          while IFS= read -r digest; do
+            embedded="$(
+              docker buildx imagetools inspect "${SERVER_IMAGE}@${digest}" \
+                --format '{{ index .Image.Config.Labels "org.opencontainers.image.rsctf.byoc-agent" }}'
+            )"
+            if [[ "$embedded" != "$agent_ref" ]]; then
+              echo "::error::Server platform ${digest} embeds '${embedded}', expected '${agent_ref}'."
+              exit 1
+            fi
+          done < <(
+            jq -r '.manifests[]?
+              | select(.platform.os == "linux")
+              | select(.platform.architecture == "amd64" or .platform.architecture == "arm64")
+              | .digest' <<< "$server_index"
+          )
+
+      - name: Attest GitHub Container Registry server image
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         continue-on-error: ${{ github.event.repository.visibility != 'public' }}
         with:
-          subject-name: ${{ env.DOCKERHUB_IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
-          create-storage-record: false
-
-      - name: Attest Docker Hub BYOC agent image
-        if: steps.registries.outputs.dockerhub_enabled == 'true'
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
-        with:
-          subject-name: ${{ env.DOCKERHUB_AGENT_IMAGE }}
-          subject-digest: ${{ steps.agent-build.outputs.digest }}
-          push-to-registry: true
-          create-storage-record: false
-
-      - name: Attest GitHub Container Registry image
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
-        with:
-          subject-name: ${{ steps.image.outputs.ghcr }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-name: ${{ needs.prepare.outputs.ghcr }}
+          subject-digest: ${{ needs.build-server.outputs.digest }}
           push-to-registry: true
           create-storage-record: false
 
@@ -336,7 +377,377 @@ jobs:
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         continue-on-error: ${{ github.event.repository.visibility != 'public' }}
         with:
-          subject-name: ${{ steps.image.outputs.ghcr_agent }}
-          subject-digest: ${{ steps.agent-build.outputs.digest }}
+          subject-name: ${{ needs.prepare.outputs.ghcr-agent }}
+          subject-digest: ${{ needs.build-agent.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Promote attested images to main
+        shell: bash
+        env:
+          AGENT_DIGEST: ${{ needs.build-agent.outputs.digest }}
+          AGENT_IMAGE: ${{ needs.prepare.outputs.ghcr-agent }}
+          SERVER_DIGEST: ${{ needs.build-server.outputs.digest }}
+          SERVER_IMAGE: ${{ needs.prepare.outputs.ghcr }}
+        run: |
+          set -euo pipefail
+          promote() {
+            image=$1
+            expected=$2
+            sha_actual="$(
+              docker buildx imagetools inspect "${image}:sha-${GITHUB_SHA}" \
+                --format '{{ json .Manifest.Digest }}' | jq -er .
+            )"
+            if [[ "$sha_actual" != "$expected" ]]; then
+              echo "::error::Commit tag for ${image} has digest ${sha_actual}, expected ${expected}."
+              exit 1
+            fi
+            docker buildx imagetools create \
+              --tag "${image}:main" \
+              "${image}@${expected}"
+            main_actual="$(
+              docker buildx imagetools inspect "${image}:main" \
+                --format '{{ json .Manifest.Digest }}' | jq -er .
+            )"
+            if [[ "$main_actual" != "$expected" ]]; then
+              echo "::error::Main tag for ${image} has digest ${main_actual}, expected ${expected}."
+              exit 1
+            fi
+          }
+          promote "$AGENT_IMAGE" "$AGENT_DIGEST"
+          promote "$SERVER_IMAGE" "$SERVER_DIGEST"
+
+      - name: Log in to Docker Hub
+        if: needs.prepare.outputs.dockerhub-enabled == 'true'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Mirror commit images to Docker Hub
+        if: needs.prepare.outputs.dockerhub-enabled == 'true'
+        shell: bash
+        env:
+          AGENT_DIGEST: ${{ needs.build-agent.outputs.digest }}
+          AGENT_IMAGE: ${{ needs.prepare.outputs.ghcr-agent }}
+          SERVER_DIGEST: ${{ needs.build-server.outputs.digest }}
+          SERVER_IMAGE: ${{ needs.prepare.outputs.ghcr }}
+        run: |
+          set -euo pipefail
+          mirror() {
+            source=$1
+            expected=$2
+            target=$3
+            docker buildx imagetools create \
+              --tag "${target}:main" \
+              --tag "${target}:sha-${GITHUB_SHA}" \
+              "$source"
+            actual="$(
+              docker buildx imagetools inspect "${target}:sha-${GITHUB_SHA}" \
+                --format '{{ json .Manifest.Digest }}' | jq -er .
+            )"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error::Mirrored image ${target} has digest ${actual}, expected ${expected}."
+              exit 1
+            fi
+          }
+          mirror "${AGENT_IMAGE}@${AGENT_DIGEST}" "$AGENT_DIGEST" "$DOCKERHUB_AGENT_IMAGE"
+          mirror "${SERVER_IMAGE}@${SERVER_DIGEST}" "$SERVER_DIGEST" "$DOCKERHUB_IMAGE"
+
+      - name: Attest Docker Hub server image
+        if: needs.prepare.outputs.dockerhub-enabled == 'true'
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        with:
+          subject-name: ${{ env.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ needs.build-server.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest Docker Hub BYOC agent image
+        if: needs.prepare.outputs.dockerhub-enabled == 'true'
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        with:
+          subject-name: ${{ env.DOCKERHUB_AGENT_IMAGE }}
+          subject-digest: ${{ needs.build-agent.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+  promote-release:
+    name: Promote verified commit images
+    if: github.ref_type == 'tag'
+    needs: [prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve and verify commit images
+        id: source
+        shell: bash
+        env:
+          AGENT_IMAGE: ${{ needs.prepare.outputs.ghcr-agent }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SERVER_IMAGE: ${{ needs.prepare.outputs.ghcr }}
+        run: |
+          set -euo pipefail
+          server_digest=
+          agent_digest=
+          for _attempt in $(seq 1 400); do
+            server_digest="$(
+              docker buildx imagetools inspect "${SERVER_IMAGE}:sha-${GITHUB_SHA}" \
+                --format '{{ json .Manifest.Digest }}' 2>/dev/null \
+                | jq -er 'select(type == "string")' 2>/dev/null || true
+            )"
+            agent_digest="$(
+              docker buildx imagetools inspect "${AGENT_IMAGE}:sha-${GITHUB_SHA}" \
+                --format '{{ json .Manifest.Digest }}' 2>/dev/null \
+                | jq -er 'select(type == "string")' 2>/dev/null || true
+            )"
+            if [[ "$server_digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+              && [[ "$agent_digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+              && gh attestation verify "oci://${SERVER_IMAGE}@${server_digest}" \
+                --bundle-from-oci \
+                --hostname github.com \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/image.yml" \
+                --source-ref refs/heads/main \
+                --source-digest "$GITHUB_SHA" \
+                --deny-self-hosted-runners \
+                >/dev/null 2>&1 \
+              && gh attestation verify "oci://${AGENT_IMAGE}@${agent_digest}" \
+                --bundle-from-oci \
+                --hostname github.com \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/image.yml" \
+                --source-ref refs/heads/main \
+                --source-digest "$GITHUB_SHA" \
+                --deny-self-hosted-runners \
+                >/dev/null 2>&1; then
+              break
+            fi
+            server_digest=
+            agent_digest=
+            sleep 15
+          done
+
+          if [[ -z "$server_digest" || -z "$agent_digest" ]]; then
+            echo "::error::The matching attested commit images were not available within 100 minutes."
+            exit 1
+          fi
+
+          server_ref="${SERVER_IMAGE}@${server_digest}"
+          agent_ref="${AGENT_IMAGE}@${agent_digest}"
+          for ref in "$server_ref" "$agent_ref"; do
+            manifest="$(docker buildx imagetools inspect --raw "$ref")"
+            if ! jq -e '
+              [.manifests[]?.platform
+               | select(.os == "linux")
+               | .architecture
+               | select(. == "amd64" or . == "arm64")]
+              | sort == ["amd64", "arm64"]
+            ' <<< "$manifest" >/dev/null; then
+              echo "::error::Commit image ${ref} does not contain exactly linux/amd64 and linux/arm64."
+              exit 1
+            fi
+          done
+
+          server_index="$(docker buildx imagetools inspect --raw "$server_ref")"
+          while IFS= read -r digest; do
+            embedded="$(
+              docker buildx imagetools inspect "${SERVER_IMAGE}@${digest}" \
+                --format '{{ index .Image.Config.Labels "org.opencontainers.image.rsctf.byoc-agent" }}'
+            )"
+            if [[ "$embedded" != "$agent_ref" ]]; then
+              echo "::error::Server platform ${digest} embeds '${embedded}', expected '${agent_ref}'."
+              exit 1
+            fi
+          done < <(
+            jq -r '.manifests[]?
+              | select(.platform.os == "linux")
+              | select(.platform.architecture == "amd64" or .platform.architecture == "arm64")
+              | .digest' <<< "$server_index"
+          )
+
+          printf 'agent-digest=%s\n' "$agent_digest" >> "$GITHUB_OUTPUT"
+          printf 'server-digest=%s\n' "$server_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Generate server release tags
+        id: server-metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ needs.prepare.outputs.ghcr }}
+          flavor: latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Generate BYOC agent release tags
+        id: agent-metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ needs.prepare.outputs.ghcr-agent }}
+          flavor: latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Promote GitHub Container Registry images
+        shell: bash
+        env:
+          AGENT_DIGEST: ${{ steps.source.outputs.agent-digest }}
+          AGENT_IMAGE: ${{ needs.prepare.outputs.ghcr-agent }}
+          AGENT_TAGS: ${{ steps.agent-metadata.outputs.tags }}
+          SERVER_DIGEST: ${{ steps.source.outputs.server-digest }}
+          SERVER_IMAGE: ${{ needs.prepare.outputs.ghcr }}
+          SERVER_TAGS: ${{ steps.server-metadata.outputs.tags }}
+        run: |
+          set -euo pipefail
+          promote() {
+            source=$1
+            expected=$2
+            tags=$3
+            args=()
+            while IFS= read -r tag; do
+              [[ -n "$tag" ]] && args+=(--tag "$tag")
+            done <<< "$tags"
+            if (( ${#args[@]} == 0 )); then
+              echo "::error::No release tags were generated for ${source}."
+              exit 1
+            fi
+            docker buildx imagetools create "${args[@]}" "$source"
+            while IFS= read -r tag; do
+              [[ -n "$tag" ]] || continue
+              actual="$(
+                docker buildx imagetools inspect "$tag" \
+                  --format '{{ json .Manifest.Digest }}' | jq -er .
+              )"
+              if [[ "$actual" != "$expected" ]]; then
+                echo "::error::Promoted tag ${tag} has digest ${actual}, expected ${expected}."
+                exit 1
+              fi
+            done <<< "$tags"
+          }
+          promote "${AGENT_IMAGE}@${AGENT_DIGEST}" "$AGENT_DIGEST" "$AGENT_TAGS"
+          promote "${SERVER_IMAGE}@${SERVER_DIGEST}" "$SERVER_DIGEST" "$SERVER_TAGS"
+
+      - name: Log in to Docker Hub
+        if: needs.prepare.outputs.dockerhub-enabled == 'true'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Generate Docker Hub server release tags
+        if: needs.prepare.outputs.dockerhub-enabled == 'true'
+        id: dockerhub-server-metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.DOCKERHUB_IMAGE }}
+          flavor: latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Generate Docker Hub BYOC agent release tags
+        if: needs.prepare.outputs.dockerhub-enabled == 'true'
+        id: dockerhub-agent-metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.DOCKERHUB_AGENT_IMAGE }}
+          flavor: latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Mirror release images to Docker Hub
+        if: needs.prepare.outputs.dockerhub-enabled == 'true'
+        shell: bash
+        env:
+          AGENT_DIGEST: ${{ steps.source.outputs.agent-digest }}
+          AGENT_IMAGE: ${{ needs.prepare.outputs.ghcr-agent }}
+          AGENT_TAGS: ${{ steps.dockerhub-agent-metadata.outputs.tags }}
+          SERVER_DIGEST: ${{ steps.source.outputs.server-digest }}
+          SERVER_IMAGE: ${{ needs.prepare.outputs.ghcr }}
+          SERVER_TAGS: ${{ steps.dockerhub-server-metadata.outputs.tags }}
+        run: |
+          set -euo pipefail
+          mirror() {
+            source=$1
+            expected=$2
+            tags=$3
+            args=()
+            while IFS= read -r tag; do
+              [[ -n "$tag" ]] && args+=(--tag "$tag")
+            done <<< "$tags"
+            docker buildx imagetools create "${args[@]}" "$source"
+            while IFS= read -r tag; do
+              [[ -n "$tag" ]] || continue
+              actual="$(
+                docker buildx imagetools inspect "$tag" \
+                  --format '{{ json .Manifest.Digest }}' | jq -er .
+              )"
+              if [[ "$actual" != "$expected" ]]; then
+                echo "::error::Mirrored tag ${tag} has digest ${actual}, expected ${expected}."
+                exit 1
+              fi
+            done <<< "$tags"
+          }
+          mirror "${AGENT_IMAGE}@${AGENT_DIGEST}" "$AGENT_DIGEST" "$AGENT_TAGS"
+          mirror "${SERVER_IMAGE}@${SERVER_DIGEST}" "$SERVER_DIGEST" "$SERVER_TAGS"
+
+      - name: Attest GitHub Container Registry server image
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        with:
+          subject-name: ${{ needs.prepare.outputs.ghcr }}
+          subject-digest: ${{ steps.source.outputs.server-digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest GitHub Container Registry BYOC agent image
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        with:
+          subject-name: ${{ needs.prepare.outputs.ghcr-agent }}
+          subject-digest: ${{ steps.source.outputs.agent-digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest Docker Hub server image
+        if: needs.prepare.outputs.dockerhub-enabled == 'true'
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        with:
+          subject-name: ${{ env.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.source.outputs.server-digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest Docker Hub BYOC agent image
+        if: needs.prepare.outputs.dockerhub-enabled == 'true'
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        continue-on-error: ${{ github.event.repository.visibility != 'public' }}
+        with:
+          subject-name: ${{ env.DOCKERHUB_AGENT_IMAGE }}
+          subject-digest: ${{ steps.source.outputs.agent-digest }}
           push-to-registry: true
           create-storage-record: false
