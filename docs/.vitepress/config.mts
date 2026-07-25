@@ -141,6 +141,7 @@ export default defineConfig({
             { text: 'Configuration', link: '/reference/configuration' },
             { text: 'Installer options', link: '/reference/installer' },
             { text: 'Health and troubleshooting', link: '/reference/troubleshooting' },
+            { text: 'Testing and coverage', link: '/reference/testing' },
             { text: 'BYOC SSH internals', link: '/reference/byoc-ssh' },
           ],
         },

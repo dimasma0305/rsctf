@@ -51,7 +51,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          components: rustfmt
+          components: clippy, rustfmt
 
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -62,21 +62,92 @@ jobs:
       - name: Check all targets
         run: cargo check --all-targets --all-features --locked
 
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
       - name: Build
         run: cargo build --locked
 
       - name: Run tests
         run: cargo test --all-targets --all-features --locked
 
-      - name: Regress legacy infinite-lockout team roster
-        run: >-
-          cargo test --locked roster_projection_tolerates_legacy_infinite_lockouts
-          -- --ignored --nocapture
+  coverage:
+    name: Rust coverage and database regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rsctf_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rsctf_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      RSCTF_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_test
+      RSCTF_TEST_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
-      - name: Regress repository solve preservation
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Restore coverage build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: coverage
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked --version 0.8.7
+
+      - name: Run default coverage suite
+        run: cargo llvm-cov --all-targets --all-features --locked --no-report
+
+      - name: Run database regressions and enforce coverage floor
+        # Migration fixtures share database-scoped catalog state even though
+        # their data lives in isolated schemas, so this half is deterministic
+        # only when serialized. Live S3 and pre-provisioned-game checks remain
+        # explicit environment tests rather than pretending to pass in CI.
         run: >-
-          cargo test --locked repository_update_preserves_challenge_solves_and_refreshes_content
-          -- --ignored --nocapture
+          cargo llvm-cov
+          --no-clean
+          --summary-only
+          --all-targets
+          --all-features
+          --locked
+          --ignore-filename-regex '(^|/)(target|migrations)/'
+          --fail-under-lines 40
+          --
+          --ignored
+          --test-threads=1
+          --skip s3_round_trip
+          --skip database_board_is_finite_bounded_and_serializable
+          --skip database_aggregate_is_bounded_by_stable_roster
+          --skip database_epoch_rollup_is_idempotent
+          --skip database_rollup_invalidation_keeps_only_the_safe_prefix
 
   byoc-agent:
     name: BYOC agent
@@ -315,11 +386,51 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm --dir web install --frozen-lockfile
 
+      - name: Audit dependencies
+        run: pnpm --dir web audit --audit-level high
+
+      - name: Lint frontend
+        run: pnpm --dir web lint:check
+
       - name: Run frontend tests
         run: pnpm --dir web test
 
       - name: Build frontend
         run: pnpm --dir web build
+
+  dependency-security:
+    name: Dependency security
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      - name: Reject reachable RSA timing vulnerability
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(cargo tree --target all --locked --prefix none)"
+          reachable_rsa="$(awk '$1 == "rsa" { print }' <<<"$tree")"
+          if [[ -n "$reachable_rsa" ]]; then
+            echo "::error::RUSTSEC-2023-0071 is reachable in the compiled dependency graph."
+            echo "$reachable_rsa"
+            exit 1
+          fi
+          echo "rsa is lockfile-only through disabled sqlx-mysql features."
+
+      - name: Audit Rust lockfile
+        # rsa 0.9.10 is retained only in Cargo.lock metadata through sqlx-mysql.
+        # The preceding graph check fails if that advisory ever becomes reachable.
+        run: cargo audit --ignore RUSTSEC-2023-0071
 
   load-harness-contracts:
     name: Load harness contracts

@@ -22,3 +22,16 @@ overrides:
   canvas: "npm:dry-uninstall"
   # Force-patch the transitive form-data CRLF-injection advisory (<4.0.6).
   form-data: ">=4.0.6"
+  # The formatter's minimatch 9 branch cannot consume the only release that
+  # fixes both 2026 brace-expansion denial-of-service advisories.
+  "@trivago/prettier-plugin-sort-imports>minimatch": "10.2.5"
+  "minimatch>brace-expansion": "5.0.8"
+  # Patch the OpenAPI generator's AJV URI parser against host confusion.
+  fast-uri: "3.1.4"
+
+minimumReleaseAgeExclude:
+  # Exact security hotfixes may bypass the seven-day cooldown; every unrelated
+  # newly published version must still age normally.
+  - react-router@8.3.0
+  - brace-expansion@5.0.8
+  - fast-uri@3.1.4

@@ -88,7 +88,7 @@ export function createFbRenderer(mount: ShadowRoot | HTMLElement) {
 
   app.init({ canvas, backgroundAlpha: 0, antialias: true, autoStart: false, resolution: window.devicePixelRatio || 1, width: W, height: H, preference: 'webgpu' })
     .then(() => {
-      if (disposed) { try { app.destroy({ removeView: true }, { children: true, texture: true }) } catch (e) {} ; return }
+      if (disposed) { try { app.destroy({ removeView: true }, { children: true, texture: true }) } catch {} ; return }
       const gtex = glowTex()
       stexBlood = streakTex(BLOOD); stexCrown = streakTex(CROWN); stexActive = stexBlood
       dark = new Graphics()
@@ -204,8 +204,8 @@ export function createFbRenderer(mount: ShadowRoot | HTMLElement) {
     resize() { if (!ready || disposed) return; W = window.innerWidth || 1; H = window.innerHeight || 1; app.renderer.resize(W, H) },
     destroy() {
       disposed = true
-      try { if (ready) app.destroy({ removeView: true }, { children: true, texture: true }) } catch (e) {}
-      try { canvas.remove() } catch (e) {}
+      try { if (ready) app.destroy({ removeView: true }, { children: true, texture: true }) } catch {}
+      try { canvas.remove() } catch {}
     },
   }
 }

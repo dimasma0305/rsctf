@@ -156,8 +156,8 @@ export function createJeopRenderer(wrapEl: HTMLElement, opts?: { onReady?: () =>
     flash(x: number, y: number, r: number, col: string) { if (document.hidden || fxq.length > 64) return; fxq.push({ kind: 'flash', x, y, r, col: colNum(col), t: 0, dur: 0.62 }) },
     destroy() {
       disposed = true
-      try { if (ready) app.destroy({ removeView: true }, { children: true, texture: true }) } catch (e) {}
-      try { canvas.remove() } catch (e) {}
+      try { if (ready) app.destroy({ removeView: true }, { children: true, texture: true }) } catch {}
+      try { canvas.remove() } catch {}
     },
     render(now: number, frozen?: boolean) {
       if (!ready) return

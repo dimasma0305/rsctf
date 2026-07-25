@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "lint": "oxlint --fix",
+    "lint:check": "oxlint src --deny-warnings",
     "check": "tsc --noEmit --strict --project tsconfig.app.json",
     "test": "node scripts/run-tests.mjs",
     "build": "pnpm check && vite build",
@@ -62,7 +63,7 @@
     "react-error-boundary": "^6.1.2",
     "react-i18next": "^17.0.9",
     "react-pdf": "^10.4.1",
-    "react-router": "^8.2.0",
+    "react-router": "^8.3.0",
     "shiki": "^4.3.1",
     "swr": "^2.4.2"
   },

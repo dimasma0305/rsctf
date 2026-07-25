@@ -1217,7 +1217,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       const a = ((60 * i - 90) * Math.PI) / 180
       const px = x + r * Math.cos(a),
         py = y + r * Math.sin(a)
-      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)
+      if (i) ctx.lineTo(px, py)
+      else ctx.moveTo(px, py)
     }
     ctx.closePath()
   }
@@ -1883,7 +1884,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
         try {
           const game: any = await fetchJSON(`/api/Game/${gameId}`)
           if (game?.end) gameEndMs = new Date(game.end).getTime()
-        } catch (e) {}
+        } catch {}
         if (gameEndMs != null && Date.now() < gameEndMs - 1500) return
         const pureKoth = SERVICES.length === 0 && HILLS.length > 0
         if (pureKoth) {
@@ -1906,7 +1907,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
           if (!Number.isFinite(generatedAt) || generatedAt + 1000 < finalBoard.generatedAt) return
           applyOfficialKothBoard(finalKoth)
         }
-      } catch (e) {
+      } catch {
         return // fail closed; tickClock retries and no stale podium is rendered
       } finally {
         endingMatch = false
@@ -2412,21 +2413,21 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       let koth: any = null
       try {
         koth = await fetchJSON(`/api/Game/${gameId}/Ad/Koth/Scoreboard`)
-      } catch (e) {}
+      } catch {}
       let jp: any = null
       try {
         jp = await fetchJSON(`/api/Game/${gameId}/Scoreboard`)
-      } catch (e) {}
+      } catch {}
       // refresh the real end time: an admin extending EndTimeUtc mid-match must move the podium
       // trigger (and un-stick it if the champions screen already showed) — gameEndMs was otherwise
       // read once at load and never updated. Keep the old value if the field is missing.
       try {
         const gi = await fetchJSON(`/api/Game/${gameId}`)
         if (gi && gi.end) gameEndMs = new Date(gi.end).getTime()
-      } catch (e) {}
+      } catch {}
       if (matchOver && gameEndMs != null && Date.now() < gameEndMs - 1500) reopenMatch()
       if (!killed) applyLivePoll(ad, koth, jp)
-    } catch (e) {
+    } catch {
       /* transient */
     }
   }
@@ -2556,7 +2557,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       let f: any
       try {
         f = JSON.parse(m.data)
-      } catch (e) {
+      } catch {
         return
       }
       if (!f || !f.kind) return
@@ -2572,7 +2573,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     ws.onerror = () => {
       try {
         if (ws) ws.close()
-      } catch (e) {}
+      } catch {}
     }
   }
 
@@ -2603,7 +2604,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     let evts: any[]
     try {
       evts = await fetchJSON(`/api/Game/${gameId}/AttackFeed?limit=50`)
-    } catch (e) {
+    } catch {
       return
     }
     if (!Array.isArray(evts) || !evts.length) return
@@ -2637,7 +2638,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     let ad: AdScoreboardModel
     try {
       ad = await fetchJSON<AdScoreboardModel>(`/api/Game/${gameId}/Ad/Scoreboard`)
-    } catch (e) {
+    } catch {
       if (killed) return
       showNote('NO LIVE A&amp;D DATA<br/>this game has no Attack &amp; Defense<br/>or King of the Hill challenges')
       addLog('SYS', 'sys', `<span class="em">NO A&amp;D / KOTH SCOREBOARD</span> for this game`)
@@ -2648,17 +2649,17 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     let koth: any = null
     try {
       koth = await fetchJSON(`/api/Game/${gameId}/Ad/Koth/Scoreboard`)
-    } catch (e) {}
+    } catch {}
     let jp: any = null
     try {
       jp = await fetchJSON(`/api/Game/${gameId}/Scoreboard`)
-    } catch (e) {}
+    } catch {}
     let title: string | null = null
     try {
       const gi = await fetchJSON(`/api/Game/${gameId}`)
       title = gi && gi.title
       if (gi && gi.end) gameEndMs = new Date(gi.end).getTime()
-    } catch (e) {}
+    } catch {}
     if (killed) return
 
     buildLiveModel(ad, koth, jp, title)
@@ -2983,7 +2984,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     try {
       const gi = await fetchJSON(`/api/Game/${gameId}`)
       title = gi && gi.title
-    } catch (e) {}
+    } catch {}
     if (killed) return
     bootDemoModel()
     if (title) $('brandLogo').textContent = title.toUpperCase().slice(0, 22)
@@ -3093,7 +3094,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
         if ('speechSynthesis' in window) {
           try {
             speechSynthesis.cancel()
-          } catch (e) {}
+          } catch {}
         }
       }
     }
@@ -3193,7 +3194,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     if ('speechSynthesis' in window) {
       try {
         speechSynthesis.cancel()
-      } catch (e) {}
+      } catch {}
     }
     stopIncomingSound?.()
     stopIncomingSound = null
@@ -3211,7 +3212,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       try {
         ws.onclose = null
         ws.close()
-      } catch (e) {}
+      } catch {}
       ws = null
     }
   }

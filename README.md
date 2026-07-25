@@ -140,6 +140,8 @@ pnpm build
 ```
 
 The production Dockerfile builds the React client and Rust release binary into one runtime image.
+See the [testing and coverage reference](docs/reference/testing.md) for the
+database-backed suite, coverage baseline, agent checks, and event-scale harness.
 
 ## Security
 

@@ -558,7 +558,7 @@ const GameInfoEdit: FC = () => {
                     value={game?.adEpochTicks ?? 8}
                     onChange={(e) => {
                       const n = getInputNumber(e)
-                      if (!isNaN(n)) game && setGame({ ...game, adEpochTicks: n })
+                      if (!isNaN(n) && game) setGame({ ...game, adEpochTicks: n })
                     }}
                   />
                 </SimpleGrid>
@@ -600,7 +600,7 @@ const GameInfoEdit: FC = () => {
                       value={kothEpochTicks}
                       onChange={(value) => {
                         const ticks = getInputNumber(value)
-                        if (!isNaN(ticks)) game && setGame({ ...game, kothEpochTicks: ticks })
+                        if (!isNaN(ticks) && game) setGame({ ...game, kothEpochTicks: ticks })
                       }}
                     />
                     <NumberInput
@@ -615,7 +615,7 @@ const GameInfoEdit: FC = () => {
                       value={kothCycleTicks}
                       onChange={(value) => {
                         const ticks = getInputNumber(value)
-                        if (!isNaN(ticks)) game && setGame({ ...game, kothCycleTicks: ticks })
+                        if (!isNaN(ticks) && game) setGame({ ...game, kothCycleTicks: ticks })
                       }}
                     />
                     <NumberInput
@@ -630,7 +630,7 @@ const GameInfoEdit: FC = () => {
                       value={kothCooldownTicks}
                       onChange={(value) => {
                         const ticks = getInputNumber(value)
-                        if (!isNaN(ticks)) game && setGame({ ...game, kothChampionCooldownTicks: ticks })
+                        if (!isNaN(ticks) && game) setGame({ ...game, kothChampionCooldownTicks: ticks })
                       }}
                     />
                     <NumberInput
@@ -645,7 +645,7 @@ const GameInfoEdit: FC = () => {
                       value={kothConfirmationTicks}
                       onChange={(value) => {
                         const ticks = getInputNumber(value)
-                        if (!isNaN(ticks)) game && setGame({ ...game, kothClaimConfirmationTicks: ticks })
+                        if (!isNaN(ticks) && game) setGame({ ...game, kothClaimConfirmationTicks: ticks })
                       }}
                     />
                   </SimpleGrid>
@@ -678,7 +678,7 @@ const GameInfoEdit: FC = () => {
                   value={game?.adWarmupSeconds ?? 1800}
                   onChange={(e) => {
                     const n = getInputNumber(e)
-                    if (!isNaN(n)) game && setGame({ ...game, adWarmupSeconds: n })
+                    if (!isNaN(n) && game) setGame({ ...game, adWarmupSeconds: n })
                   }}
                 />
                 <NumberInput
@@ -720,7 +720,7 @@ const GameInfoEdit: FC = () => {
                   value={game?.adTickSeconds ?? 60}
                   onChange={(e) => {
                     const n = getInputNumber(e)
-                    if (!isNaN(n)) game && setGame({ ...game, adTickSeconds: n })
+                    if (!isNaN(n) && game) setGame({ ...game, adTickSeconds: n })
                   }}
                 />
                 <NumberInput
@@ -735,7 +735,7 @@ const GameInfoEdit: FC = () => {
                   value={game?.adFlagLifetimeTicks ?? 5}
                   onChange={(e) => {
                     const n = getInputNumber(e)
-                    if (!isNaN(n)) game && setGame({ ...game, adFlagLifetimeTicks: n })
+                    if (!isNaN(n) && game) setGame({ ...game, adFlagLifetimeTicks: n })
                   }}
                 />
                 <NumberInput
@@ -750,7 +750,7 @@ const GameInfoEdit: FC = () => {
                   value={game?.adResetCooldownMinutes ?? 5}
                   onChange={(e) => {
                     const n = getInputNumber(e)
-                    if (!isNaN(n)) game && setGame({ ...game, adResetCooldownMinutes: n })
+                    if (!isNaN(n) && game) setGame({ ...game, adResetCooldownMinutes: n })
                   }}
                 />
                 <NumberInput
@@ -767,7 +767,7 @@ const GameInfoEdit: FC = () => {
                   value={game?.adGetflagWindowFraction ?? 0.5}
                   onChange={(e) => {
                     const n = getInputNumber(e)
-                    if (!isNaN(n)) game && setGame({ ...game, adGetflagWindowFraction: n })
+                    if (!isNaN(n) && game) setGame({ ...game, adGetflagWindowFraction: n })
                   }}
                 />
                 <NumberInput
@@ -782,7 +782,7 @@ const GameInfoEdit: FC = () => {
                   value={game?.adMinGracePeriodSeconds ?? 3}
                   onChange={(e) => {
                     const n = getInputNumber(e)
-                    if (!isNaN(n)) game && setGame({ ...game, adMinGracePeriodSeconds: n })
+                    if (!isNaN(n) && game) setGame({ ...game, adMinGracePeriodSeconds: n })
                   }}
                 />
                 <Switch

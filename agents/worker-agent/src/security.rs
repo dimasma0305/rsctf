@@ -55,9 +55,19 @@ pub fn acquire_state_lock(path: &Path) -> Result<std::fs::File, SecurityError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let file = options.open(lock_path)?;
+    #[cfg(any(unix, windows))]
+    verify_open_lock_file(&file)?;
     file.try_lock_exclusive().map_err(|error| {
         SecurityError::Io(std::io::Error::new(
             error.kind(),
@@ -65,6 +75,40 @@ pub fn acquire_state_lock(path: &Path) -> Result<std::fs::File, SecurityError> {
         ))
     })?;
     Ok(file)
+}
+
+#[cfg(windows)]
+fn verify_open_lock_file(file: &std::fs::File) -> Result<(), SecurityError> {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file()
+        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(permission_denied(
+            "worker state lock must be a regular file, not a reparse point",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn verify_open_lock_file(file: &std::fs::File) -> Result<(), SecurityError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = file.metadata()?;
+    // SAFETY: geteuid has no preconditions and does not dereference memory.
+    let current_uid = unsafe { libc::geteuid() };
+    if !metadata.file_type().is_file()
+        || metadata.uid() != current_uid
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(permission_denied(
+            "worker state lock must be a service-owned regular file with mode 0600",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -316,6 +360,87 @@ fn permission_denied(message: &'static str) -> SecurityError {
     ))
 }
 
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    use uuid::Uuid;
+
+    fn temp_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "rsctf-worker-security-{label}-{}",
+            Uuid::new_v4().simple()
+        ))
+    }
+
+    #[tokio::test]
+    async fn state_permissions_and_file_type_are_fail_closed() {
+        let path = temp_path("permissions");
+        prepare_state_dir(&path, None, None).await.unwrap();
+        verify_state_dir(&path).await.unwrap();
+        assert_eq!(
+            tokio::fs::metadata(&path)
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+
+        let state_file = path.join("worker.json");
+        tokio::fs::write(&state_file, b"{}").await.unwrap();
+        tokio::fs::set_permissions(&state_file, std::fs::Permissions::from_mode(0o600))
+            .await
+            .unwrap();
+        verify_state_file(&state_file).await.unwrap();
+
+        tokio::fs::set_permissions(&state_file, std::fs::Permissions::from_mode(0o640))
+            .await
+            .unwrap();
+        assert!(verify_state_file(&state_file).await.is_err());
+
+        let target = path.join("target.json");
+        tokio::fs::write(&target, b"{}").await.unwrap();
+        tokio::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+            .await
+            .unwrap();
+        let link = path.join("linked.json");
+        symlink(&target, &link).unwrap();
+        assert!(verify_state_file(&link).await.is_err());
+
+        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750))
+            .await
+            .unwrap();
+        assert!(verify_state_dir(&path).await.is_err());
+        tokio::fs::remove_dir_all(path).await.unwrap();
+    }
+
+    #[test]
+    fn lock_rejects_symlinks_insecure_modes_and_concurrent_owners() {
+        let path = temp_path("lock");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let first = acquire_state_lock(&path).unwrap();
+        assert!(acquire_state_lock(&path).is_err());
+        drop(first);
+        drop(acquire_state_lock(&path).unwrap());
+
+        let lock_path = path.join(".agent.lock");
+        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(acquire_state_lock(&path).is_err());
+        std::fs::remove_file(&lock_path).unwrap();
+
+        let target = path.join("lock-target");
+        std::fs::write(&target, b"").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&target, &lock_path).unwrap();
+        assert!(acquire_state_lock(&path).is_err());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
@@ -326,6 +451,12 @@ mod windows_tests {
         let path = std::env::temp_dir().join(format!("rsctf-worker-acl-{}", Uuid::new_v4()));
         prepare_state_dir(&path, None, None).await.unwrap();
         verify_state_dir(&path).await.unwrap();
+
+        let first_lock = acquire_state_lock(&path).unwrap();
+        assert!(acquire_state_lock(&path).is_err());
+        drop(first_lock);
+        drop(acquire_state_lock(&path).unwrap());
+
         let state_file = path.join("worker.json");
         tokio::fs::write(&state_file, b"{}").await.unwrap();
         verify_state_file(&state_file).await.unwrap();

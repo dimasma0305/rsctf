@@ -4,6 +4,7 @@
     "browser": true
   },
   "globals": {},
+  "ignorePatterns": ["src/lib/creepjs/**"],
   "overrides": [],
   "plugins": ["import", "typescript", "react"],
   "rules": {

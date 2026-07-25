@@ -36,6 +36,13 @@ const isPositiveSafeInteger = (value: unknown): value is number =>
 
 const byteLength = (value: string) => new TextEncoder().encode(value).length
 
+function isAscii(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) > 0x7f) return false
+  }
+  return true
+}
+
 const invalid = (error: string): WorkloadSpecParseResult => ({ ok: false, error })
 
 function validRegistryPort(value: string): boolean {
@@ -75,7 +82,7 @@ function validRegistryRepository(value: string): boolean {
   if (
     !value ||
     byteLength(value) > MAX_REGISTRY_REPOSITORY_BYTES ||
-    !/^[\x00-\x7f]+$/.test(value) ||
+    !isAscii(value) ||
     value.includes('@')
   ) {
     return false
@@ -238,7 +245,7 @@ function validateWorkload(value: unknown): WorkloadSpecParseResult {
     typeof value.platform.architecture !== 'string' ||
     !ARCHITECTURE.test(value.platform.architecture) ||
     byteLength(value.platform.architecture) > MAX_ARCHITECTURE_BYTES ||
-    !/^[\x00-\x7f]+$/.test(value.platform.architecture)
+    !isAscii(value.platform.architecture)
   ) {
     return invalid('platform.architecture must be a non-empty OCI architecture without whitespace')
   }

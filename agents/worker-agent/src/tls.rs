@@ -112,3 +112,52 @@ pub enum TlsConnectorError {
     #[error("the server did not negotiate the required worker ALPN")]
     AlpnMismatch,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcgen::{CertificateParams, KeyPair};
+    use uuid::Uuid;
+
+    fn temp_dir() -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("rsctf-worker-tls-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn loads_pem_identity_and_rejects_missing_or_malformed_material() {
+        let path = temp_dir();
+        let key = KeyPair::generate().unwrap();
+        let params = CertificateParams::new(vec!["worker.example.test".to_string()]).unwrap();
+        let certificate = params.self_signed(&key).unwrap();
+        let certificate_path = path.join("worker.crt");
+        let key_path = path.join("worker.key");
+        std::fs::write(&certificate_path, certificate.pem()).unwrap();
+        std::fs::write(&key_path, key.serialize_pem()).unwrap();
+
+        assert_eq!(load_certificates(&certificate_path).unwrap().len(), 1);
+        load_private_key(&key_path).unwrap();
+
+        let empty_path = path.join("empty.pem");
+        std::fs::write(&empty_path, b"").unwrap();
+        assert!(load_certificates(&empty_path).unwrap().is_empty());
+        assert!(matches!(
+            load_private_key(&empty_path),
+            Err(TlsConnectorError::MissingPrivateKey)
+        ));
+
+        let malformed_path = path.join("malformed.pem");
+        std::fs::write(
+            &malformed_path,
+            b"-----BEGIN CERTIFICATE-----\nnot-base64\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            load_certificates(&malformed_path),
+            Err(TlsConnectorError::Io(_))
+        ));
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}

@@ -46,7 +46,7 @@ export function createSoundEngine(): SoundEngine {
         masterGain.connect(comp); comp.connect(AC.destination)
       }
       return AC
-    } catch (e) { return null }
+    } catch { return null }
   }
   function runningAudio(): any {
     if (!enabled || !unlocked) return null
@@ -61,7 +61,7 @@ export function createSoundEngine(): SoundEngine {
     try {
       masterGain.gain.cancelScheduledValues(AC.currentTime)
       masterGain.gain.setValueAtTime(value, AC.currentTime)
-    } catch (e) { masterGain.gain.value = value }
+    } catch { masterGain.gain.value = value }
   }
   function trackStop(stop: () => void): () => void {
     let stopped = false
@@ -123,13 +123,13 @@ export function createSoundEngine(): SoundEngine {
       const ac = ensureAudio()
       if (ac?.state === 'running') markRunning(ac)
       else if (ac?.state === 'suspended') {
-        try { void Promise.resolve(ac.resume()).then(() => markRunning(ac)).catch(() => {}) } catch (e) {}
+        try { void Promise.resolve(ac.resume()).then(() => markRunning(ac)).catch(() => {}) } catch {}
       }
-      if ('speechSynthesis' in window) { try { speechSynthesis.getVoices() } catch (e) {} }
+      if ('speechSynthesis' in window) { try { speechSynthesis.getVoices() } catch {} }
     },
     resume() {
       if (!unlocked || !AC || AC.state !== 'suspended') return
-      try { void Promise.resolve(AC.resume()).then(() => markRunning(AC)).catch(() => {}) } catch (e) {}
+      try { void Promise.resolve(AC.resume()).then(() => markRunning(AC)).catch(() => {}) } catch {}
     },
     setEnabled(v: boolean) {
       if (v === enabled) return
@@ -140,7 +140,7 @@ export function createSoundEngine(): SoundEngine {
     isEnabled() { return enabled },
     close() {
       stopActive()
-      try { if (AC) AC.close() } catch (e) {}
+      try { if (AC) AC.close() } catch {}
       AC = null; masterGain = null; reverb = null; unlocked = false
     },
     sfxAttack() {
@@ -256,9 +256,9 @@ export function createSoundEngine(): SoundEngine {
         try {
           bus.gain.cancelScheduledValues(now)
           bus.gain.setTargetAtTime(0.0001, now, 0.015)
-        } catch (e) {}
-        for (const source of sources) { try { source.stop(now + 0.08) } catch (e) {} }
-        window.setTimeout(() => { try { bus.disconnect() } catch (e) {} }, 120)
+        } catch {}
+        for (const source of sources) { try { source.stop(now + 0.08) } catch {} }
+        window.setTimeout(() => { try { bus.disconnect() } catch {} }, 120)
       })
     },
     sfxFirstBlood() {
@@ -284,9 +284,9 @@ export function createSoundEngine(): SoundEngine {
         try {
           bus.gain.cancelScheduledValues(now)
           bus.gain.setTargetAtTime(0.0001, now, 0.015)
-        } catch (e) {}
-        for (const source of sources) { try { source.stop(now + 0.08) } catch (e) {} }
-        window.setTimeout(() => { try { bus.disconnect() } catch (e) {} }, 120)
+        } catch {}
+        for (const source of sources) { try { source.stop(now + 0.08) } catch {} }
+        window.setTimeout(() => { try { bus.disconnect() } catch {} }, 120)
       })
       window.setTimeout(stop, 1200)
       return stop

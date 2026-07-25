@@ -139,3 +139,42 @@ where
         .await
         .map_err(|write_error| ClientError::Transport(write_error.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn runtime_errors_map_to_stable_data_plane_statuses() {
+        let cases = [
+            (CommandErrorCode::NotFound, DataStatus::NotFound),
+            (CommandErrorCode::StaleSession, DataStatus::Stale),
+            (CommandErrorCode::StaleAssignment, DataStatus::Stale),
+            (CommandErrorCode::StaleGeneration, DataStatus::Stale),
+            (CommandErrorCode::StaleFlagSequence, DataStatus::Stale),
+            (CommandErrorCode::SpecConflict, DataStatus::Stale),
+            (
+                CommandErrorCode::RuntimeUnavailable,
+                DataStatus::RuntimeUnavailable,
+            ),
+            (CommandErrorCode::Unsupported, DataStatus::Unsupported),
+            (CommandErrorCode::Timeout, DataStatus::DialFailed),
+            (CommandErrorCode::InvalidSpec, DataStatus::Forbidden),
+            (CommandErrorCode::PartialFailure, DataStatus::Internal),
+            (CommandErrorCode::Internal, DataStatus::Internal),
+        ];
+
+        for (code, expected) in cases {
+            let (mut reader, mut writer) = tokio::io::duplex(1);
+            write_error_status(&mut writer, &RuntimeError::new(code, "test"))
+                .await
+                .unwrap();
+            assert_eq!(
+                rsctf_worker_protocol::read_data_status(&mut reader)
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+}

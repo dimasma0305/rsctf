@@ -85,7 +85,7 @@ export function createFxRenderer(refCanvas: HTMLCanvasElement): FxRenderer {
   }
 
   function bez(a: number, c: number, b: number, t: number) { const u = 1 - t; return u * u * a + 2 * u * t * c + t * t * b }
-  function hexPath(g: Graphics, x: number, y: number, r: number) { for (let i = 0; i < 6; i++) { const a = (60 * i - 90) * Math.PI / 180; const px = x + r * Math.cos(a), py = y + r * Math.sin(a); i ? g.lineTo(px, py) : g.moveTo(px, py) } g.closePath() }
+  function hexPath(g: Graphics, x: number, y: number, r: number) { for (let i = 0; i < 6; i++) { const a = (60 * i - 90) * Math.PI / 180; const px = x + r * Math.cos(a), py = y + r * Math.sin(a); if (i) g.lineTo(px, py); else g.moveTo(px, py) } g.closePath() }
 
   return {
     get ready() { return ready },
@@ -95,8 +95,8 @@ export function createFxRenderer(refCanvas: HTMLCanvasElement): FxRenderer {
     },
     destroy() {
       disposed = true
-      try { if (ready) app.destroy({ removeView: true }, { children: true, texture: true }) } catch (e) {}
-      try { canvas.remove() } catch (e) {}
+      try { if (ready) app.destroy({ removeView: true }, { children: true, texture: true }) } catch {}
+      try { canvas.remove() } catch {}
     },
     tick(_dt: number, shots: any[], sparks: any[], fxq: any[]) {
       if (!ready) return

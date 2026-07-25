@@ -122,7 +122,7 @@ export function createFzRenderer(canvas: HTMLCanvasElement) {
     },
     stop() {
       running = false; if (raf) cancelAnimationFrame(raf); raf = 0
-      try { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H) } catch (e) {}
+      try { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H) } catch {}
     },
     resize() {
       const was = running; size(); if (baked && (bw !== W || bh !== H)) baked = null
