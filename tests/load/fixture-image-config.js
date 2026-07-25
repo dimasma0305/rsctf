@@ -14,6 +14,18 @@ export function isImmutableImageReference(value) {
   return LOCAL_IMAGE_ID.test(value.slice(separator + 1));
 }
 
+/** Select the immutable BYOC agent built alongside the running server image. */
+export function companionByocAgentImage(imageLabel, fallback) {
+  const label = typeof imageLabel === "string" ? imageLabel.trim() : "";
+  const selected = label && label !== "<no value>" ? label : fallback;
+  if (!isImmutableImageReference(selected)) {
+    throw new Error(
+      "the server companion BYOC agent image must be an immutable repository digest",
+    );
+  }
+  return selected;
+}
+
 function requiredPort(value) {
   if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) {
     throw new Error("KOTH_CONTAINER_PORT must be an integer from 1 through 65535");

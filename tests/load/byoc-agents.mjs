@@ -7,7 +7,7 @@ import {
   docker,
   byocRsctfIp,
   byocCapabilities,
-  DEFAULT_BYOC_AGENT_IMAGE,
+  byocAgentImage,
   GAME,
   NET,
   sleep,
@@ -30,7 +30,7 @@ export const BYOC_RUN_ID = normalizeByocRunId(
 );
 const fixtureNames = byocFixtureNames(BYOC_RUN_ID);
 const imageConfig = assertByocFixtureImages({
-  agentImage: process.env.RSCTF_BYOC_AGENT_IMAGE ?? DEFAULT_BYOC_AGENT_IMAGE,
+  agentImage: byocAgentImage(),
   serviceImage: process.env.RSCTF_BYOC_SERVICE_IMAGE ?? 'nginx:alpine',
   reportable: process.env.RSCTF_ACCEPTANCE_REPORTABLE === '1',
 });

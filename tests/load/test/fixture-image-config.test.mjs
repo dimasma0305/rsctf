@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assertImmutableBuildRecord,
   assertSuccessfulBuildResponse,
+  companionByocAgentImage,
   isImmutableImageReference,
   kothContainerOverride,
 } from "../fixture-image-config.js";
@@ -12,6 +13,26 @@ const localImage =
   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const repositoryDigest =
   "registry.example/ctf/hill@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+test("BYOC load fixtures follow the immutable companion image from the server", () => {
+  const fallback =
+    "registry.example/rsctf/byoc@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+  assert.equal(companionByocAgentImage(repositoryDigest, fallback), repositoryDigest);
+  assert.equal(companionByocAgentImage("", fallback), fallback);
+  assert.equal(companionByocAgentImage("<no value>", fallback), fallback);
+  assert.throws(
+    () => companionByocAgentImage("", undefined),
+    /immutable repository digest/,
+  );
+  assert.throws(
+    () => companionByocAgentImage("registry.example/rsctf/byoc:latest", fallback),
+    /immutable repository digest/,
+  );
+  assert.throws(
+    () => companionByocAgentImage("", "registry.example/rsctf/byoc:latest"),
+    /immutable repository digest/,
+  );
+});
 
 test("KotH image overrides require one immutable image and exact port pair", () => {
   assert.equal(kothContainerOverride({}), null);

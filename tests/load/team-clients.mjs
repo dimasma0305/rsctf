@@ -16,7 +16,14 @@ import { execFileSync } from 'node:child_process';
 import { basename, dirname, resolve } from 'node:path';
 import { api } from './applib.mjs';
 import { BOUNDED_DOCKER_LOG_ARGS } from './docker-runtime.js';
-import { TARGET, docker, mintJwt, sleep, RSCTF } from './lib.mjs';
+import {
+  BYOC_CONTAINER,
+  TARGET,
+  docker,
+  mintJwt,
+  sleep,
+  RSCTF,
+} from './lib.mjs';
 import {
   dockerLabelArgs,
   dockerTeamClientFilterArgs,
@@ -669,7 +676,12 @@ export async function startVpnTeamClients({
         'distributed source-attribution evidence requires only the exact proxy /32 for that address'
     );
   }
-  const vpnEndpointIp = await step(() => containerNetworkIp(RSCTF, 'traefik'));
+  // The singleton control role owns wg0 in a replicated deployment. Pointing
+  // clients at an arbitrary web replica produces syntactically valid profiles
+  // that can never complete a handshake.
+  const vpnEndpointIp = await step(() =>
+    containerNetworkIp(BYOC_CONTAINER, 'traefik')
+  );
   const image = await step(() =>
     mustDocker(
       docker(['inspect', RSCTF, '--format', '{{.Config.Image}}']),
@@ -920,12 +932,38 @@ export function vpnTeamClientStatus(value, expectedCount = null) {
   };
 }
 
+export function vpnTeamRoutingReady(status, expectedCount, handshakeCount) {
+  const expected = Number(expectedCount);
+  const handshakes = Number(handshakeCount);
+  if (!Number.isSafeInteger(expected) || expected <= 0) {
+    throw new Error(`invalid expected VPN team-client count ${expectedCount}`);
+  }
+  if (!Number.isSafeInteger(handshakes) || handshakes < 0) {
+    throw new Error(`invalid WireGuard handshake count ${handshakeCount}`);
+  }
+  return (
+    status?.total === expected &&
+    status?.running === expected &&
+    status?.succeeded === 0 &&
+    status?.failed === 0 &&
+    status?.missing === 0 &&
+    handshakes === expected
+  );
+}
+
 export function vpnHandshakeCount(sinceEpochSeconds = 0, expectedPublicKeys = null) {
   const since = Number(sinceEpochSeconds);
   if (!Number.isSafeInteger(since) || since < 0) {
     throw new Error(`invalid WireGuard handshake lower bound ${sinceEpochSeconds}`);
   }
-  const result = docker(['exec', RSCTF, 'wg', 'show', 'wg0', 'latest-handshakes']);
+  const result = docker([
+    'exec',
+    BYOC_CONTAINER,
+    'wg',
+    'show',
+    'wg0',
+    'latest-handshakes',
+  ]);
   if (result.status !== 0) return 0;
   const handshakes = new Map(
     result.stdout

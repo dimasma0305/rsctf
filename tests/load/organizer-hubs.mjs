@@ -23,7 +23,7 @@ import {
 } from './organizer-hubs.js';
 import { dockerOwnershipLabelArgs, dockerScopeFromContainerEnv } from './docker-scope.js';
 import {
-  DEFAULT_BYOC_AGENT_IMAGE,
+  byocAgentImage,
   docker,
   mintJwt,
   NET,
@@ -972,7 +972,7 @@ async function replaceFleetRelayWithExecEnabled(gameId, challengeId, capability,
   await waitFleetOffline(gameId, challengeId, capability.pid);
   const endpoint = `ws://${byocRsctfIp()}:8080/api/Game/${gameId}/Ad/Byoc/Agent/` +
     `${capability.pid}/${challengeId}/${capability.token}`;
-  const image = process.env.RSCTF_BYOC_AGENT_IMAGE || DEFAULT_BYOC_AGENT_IMAGE;
+  const image = byocAgentImage();
   dockerMust([
     'run', '-d', '--rm', '--name', 'lcbyoc_0',
     ...dockerLabelArgs(fleetLabels(scope, 'relay', capability.pid)),

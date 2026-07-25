@@ -24,7 +24,7 @@ import {
   kothDeadlineCleanupQuery,
 } from "./koth-deadline-cleanup.js";
 import { kothResetReceiptIntegrityQuery } from "./koth-reset-receipts.js";
-import { sql, JWT_SECRET, RSCTF, mintJwt } from "./lib.mjs";
+import { sql, JWT_SECRET, RSCTF, TARGET, mintJwt } from "./lib.mjs";
 import { countContainerFatalLogs } from "./log-audit.mjs";
 import {
   abortedLifecycleState,
@@ -53,9 +53,12 @@ import * as TeamClients from "./team-clients.mjs";
 
 const VUS = process.env.VUS || 400;
 const DURATION = process.env.DURATION || "90s";
-const HOSTPORT = process.env.HOSTPORT || "127.0.0.1:8080";
-const HEALTH_URL = process.env.HEALTH_URL || `http://${HOSTPORT}/livez`;
-const READINESS_URL = process.env.READINESS_URL || `http://${HOSTPORT}/healthz`;
+const PROBE_ORIGIN = process.env.HOSTPORT
+  ? `http://${process.env.HOSTPORT}`
+  : new URL(TARGET).origin;
+const HEALTH_URL = process.env.HEALTH_URL || `${PROBE_ORIGIN}/livez`;
+const READINESS_URL =
+  process.env.READINESS_URL || `${PROBE_ORIGIN}/healthz`;
 const REALISTIC_COMPETITION = process.env.REALISTIC_COMPETITION === "1";
 const COMPETITION_SEED = process.env.SIMULATION_SEED || "rsctf-competitive-v2";
 const K6_STATE_BASENAME = lifecycleStateBasenameFromPath(A.stateFile);
@@ -1378,7 +1381,15 @@ async function main() {
           teamRun.createdAtSeconds,
           teamRun.peerPublicKeys,
         );
-        if (teamStatus.running === FLEET) break;
+        if (
+          TeamClients.vpnTeamRoutingReady(
+            teamStatus,
+            FLEET,
+            handshakeCount,
+          )
+        ) {
+          break;
+        }
         await A.sleep(1000);
       }
       teamStatus = TeamClients.vpnTeamClientStatus(teamClientOwnership, FLEET);
@@ -1387,18 +1398,15 @@ async function main() {
         teamRun.peerPublicKeys,
       );
       if (
-        teamStatus.running !== FLEET ||
-        teamStatus.failed > 0 ||
-        teamStatus.missing > 0
+        !TeamClients.vpnTeamRoutingReady(
+          teamStatus,
+          FLEET,
+          handshakeCount,
+        )
       ) {
         throw new Error(
           `distributed routing was not ready before the start barrier: ` +
             `${JSON.stringify({ ...teamStatus, handshakes: handshakeCount, expected: FLEET })}`,
-        );
-      }
-      if (handshakeCount < FLEET) {
-        console.log(
-          `  distributed WireGuard handshakes still in-progress (${handshakeCount}/${FLEET}); continuing`,
         );
       }
       console.log(

@@ -24,9 +24,31 @@ import {
 import { buildPlayerProfiles } from "../player-model.js";
 
 process.env.RSCTF_JWT_SECRET ||= "team-client-command-test-secret";
-const { TEAM_RUNNER_FILE_LIMIT_BLOCKS, teamRunnerCommand } = await import(
-  "../team-clients.mjs"
-);
+const {
+  TEAM_RUNNER_FILE_LIMIT_BLOCKS,
+  teamRunnerCommand,
+  vpnTeamRoutingReady,
+} = await import("../team-clients.mjs");
+
+test("distributed A&D routing requires every WireGuard handshake", () => {
+  const running = {
+    total: 10,
+    running: 10,
+    succeeded: 0,
+    failed: 0,
+    missing: 0,
+  };
+  assert.equal(vpnTeamRoutingReady(running, 10, 10), true);
+  assert.equal(vpnTeamRoutingReady(running, 10, 9), false);
+  assert.equal(
+    vpnTeamRoutingReady({ ...running, running: 9, missing: 1 }, 10, 10),
+    false,
+  );
+  assert.throws(
+    () => vpnTeamRoutingReady(running, 10, -1),
+    /invalid WireGuard handshake count/,
+  );
+});
 
 test("team runner retains k6 logs in the mounted evidence directory", () => {
   assert.equal(MAX_TEAM_RUNNER_LOG_BYTES, 1024 * 1024);

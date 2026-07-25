@@ -14,7 +14,7 @@ import {
   byocRsctfIp,
   rsctfIp,
   sleep,
-  DEFAULT_BYOC_AGENT_IMAGE,
+  byocAgentImage,
   NET,
   RSCTF,
 } from './lib.mjs';
@@ -1090,7 +1090,7 @@ export function startFleetForPids(gameId, cid, pids, svcAddr) {
               'RSCTF_BYOC_FLAG_FILE=/shared/flag',
             ]
           : []),
-        process.env.RSCTF_BYOC_AGENT_IMAGE ?? DEFAULT_BYOC_AGENT_IMAGE,
+        byocAgentImage(),
       ]);
       if (result.status !== 0) {
         throw new Error(

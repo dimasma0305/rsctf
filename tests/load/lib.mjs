@@ -3,6 +3,7 @@
 // and runs the k6 HTTP scenarios in ./k6.
 import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import { companionByocAgentImage } from './fixture-image-config.js';
 
 export const TARGET = process.env.TARGET || 'http://127.0.0.1:8080';
 export const GAME = process.env.GAME || '10';
@@ -11,8 +12,24 @@ export const PG_USER = process.env.PG_USER || 'postgres';
 export const PG_DATABASE = process.env.PG_DATABASE || 'rsctf';
 export const RSCTF = process.env.RSCTF_CONTAINER || 'rsctf-rsctf-1';
 export const NET = process.env.NET || 'rsctf_default';
-export const DEFAULT_BYOC_AGENT_IMAGE =
-  'ghcr.io/dimasma0305/rsctf-byoc-agent@sha256:fa5243f7aea7cd1198668134f5c1bae99c339c773ba3a5902d633c2c56c6c490';
+
+function serverImageLabel(name) {
+  try {
+    return execFileSync(
+      'docker',
+      ['inspect', '-f', '{{index .Config.Labels "org.opencontainers.image.rsctf.byoc-agent"}}', name],
+      { encoding: 'utf8' },
+    ).trim();
+  } catch {
+    return '';
+  }
+}
+
+export function byocAgentImage() {
+  const override = String(process.env.RSCTF_BYOC_AGENT_IMAGE || '').trim();
+  return override || companionByocAgentImage(serverImageLabel(RSCTF));
+}
+
 export const JWT_SECRET = process.env.RSCTF_JWT_SECRET;
 if (!JWT_SECRET) throw new Error('RSCTF_JWT_SECRET is required for load-test token minting');
 
@@ -91,16 +108,18 @@ function containerExists(name) {
 }
 
 function resolveByocContainer() {
-  const candidates = [
+  const explicitCandidates = [
     process.env.RSCTF_BYOC_CONTAINER,
     process.env.RSCTF_CONTROL_CONTAINER,
     process.env.RSCTF_CONTROL,
-    RSCTF,
   ].filter((value, index, all) => value && all.indexOf(value) === index);
+  const candidates = [...explicitCandidates, RSCTF].filter(
+    (value, index, all) => value && all.indexOf(value) === index,
+  );
 
   for (const candidate of candidates) {
     if (!containerExists(candidate)) continue;
-    if (containerRole(candidate) !== 'web') return candidate;
+    if (['control', 'all'].includes(containerRole(candidate))) return candidate;
   }
 
   const project = containerProject(RSCTF);
@@ -108,13 +127,21 @@ function resolveByocContainer() {
   for (const candidate of projectContainers) {
     if (!candidate || candidate === RSCTF) continue;
     if (!containerExists(candidate)) continue;
-    if (containerRole(candidate) !== 'web') return candidate;
+    if (['control', 'all'].includes(containerRole(candidate))) return candidate;
   }
 
-  return candidates[0] || RSCTF;
+  // Honor an explicit single-binary/custom-role target, but never infer a
+  // database or cache container merely because it has no RSCTF_ROLE.
+  for (const candidate of explicitCandidates) {
+    if (containerExists(candidate) && containerRole(candidate) !== 'web') {
+      return candidate;
+    }
+  }
+
+  return RSCTF;
 }
 
-const BYOC_CONTAINER = resolveByocContainer();
+export const BYOC_CONTAINER = resolveByocContainer();
 
 /** rsctf container's IP on NET (for agents to dial ws://IP:8080). */
 export function rsctfIp(container = RSCTF) {

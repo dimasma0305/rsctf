@@ -5,6 +5,230 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## Sustained-event operational hardening — 25 July 2026
+
+This campaign addresses failure modes that accumulate during a long event rather than
+adding another read-path cache. The accepted source is
+`fbc0888779ff0c8f7fa0c4037408da90d1056015` (`0.1.17`), released as the immutable
+multi-platform image
+`ghcr.io/dimasma0305/rsctf@sha256:6f6ab51331de5b70c072e4fef5664b64cd9cad75c85a263e40efa60c24da0e7b`.
+Its Linux/amd64 child is
+`sha256:322e65b0fb42d9349391e31bfb90fae56a4d2b2986a4d39ec11d524bd0b4be91`.
+The comparison deployment was
+`3bad048ae5e59aa6663ada9d3139f3305f8e0194` (`0.1.16`) at
+`ghcr.io/dimasma0305/rsctf@sha256:62ebc24e7063953d9fdd1b5e37067417b7188ce882c9d448f754921538f136f7`.
+
+### Failure modes and corrections
+
+- A 30-second A&D/KotH round was advancing every approximately 35 seconds. The
+  round planner treated the normal five-second scheduler wake-up delay as downtime and
+  re-anchored the next round to the current wall clock. The scheduler interval is now one
+  shared constant. A wake-up up to six seconds late preserves the nominal boundary;
+  a genuinely late wake-up still re-anchors instead of replaying a backlog.
+- A fully unreachable A&D service fleet emitted one warning for every service delivery
+  on every round. Incident state is now reconstructed from the last four persisted,
+  published rounds, so it survives a control-replica failover. It emits a start warning,
+  an error after three consecutive affected rounds, one reminder every 20 rounds, and
+  resets after a healthy round. The same bounded signal covers an all-unhealthy checker
+  fleet.
+- Burst-only PostgreSQL connections now have a 60-second idle timeout instead of five
+  minutes, while two warm connections remain. The bundled two-web topology budgets
+  `2×26 + 20 = 72` application connections against PostgreSQL's 100-connection limit.
+  Documentation now rejects an unreviewed third 26-connection web pool because
+  `3×26 + 20 = 98` leaves no ordinary operational headroom; larger topologies need
+  PgBouncer or an explicitly larger database budget.
+- PostgreSQL, Redis, both application roles, Caddy, and every load-owned service/agent
+  container now have bounded Docker JSON logs. The repository defaults to five 20 MiB
+  files per core service and three 5 MiB files per load container; production keeps its
+  stricter five 10 MiB files. The installer refuses a host at 90% disk usage and warns
+  at 80%.
+- Interrupted lifecycle teardown could leave a protected load game because writeup and
+  challenge-attachment blobs still owned durable evidence. Teardown now validates the
+  exact load-test title, pauses scoring, clears those owners through authenticated
+  organizer APIs, and only then invokes the existing fail-closed exact cleanup. It still
+  refuses posters, archives, flag attachments, foreign titles, and ordinary event data.
+- `npm run polled-read` is a new read-only, constant-arrival-rate production harness.
+  One iteration is exactly one GET across the game catalog, Jeopardy scoreboard, A&D
+  scoreboard, KotH board, or KotH timeline. It uses a mode-0600 temporary file containing
+  1,000 disposable tokens, decorrelates tokens from endpoints, removes the file on every
+  exit, and fails on any non-200, 429, authentication rejection, 5xx, or dropped
+  iteration.
+- A post-release acceptance run found that the load harness still defaulted to a
+  July 19 BYOC agent (`fa5243…`, revision `6d38918`) even though the immutable server
+  advertises its compatible `0.1.17` companion (`1edd0d…`). The stale default produced
+  0/10 ready tunnels; an explicit companion digest produced 10/10 ready tunnels and a
+  clean 10/10 delivery/checker round. The harness now reads the immutable
+  `org.opencontainers.image.rsctf.byoc-agent` label from the selected server container,
+  rejects a mutable label, and requires an explicit override when no selected server
+  container is locally inspectable. It no longer carries a release-specific fallback
+  that can silently become stale.
+- The replicated acceptance harness used an arbitrary web replica for both its
+  WireGuard endpoint and handshake inspection even though the singleton control replica
+  owns `wg0`. It also defaulted production liveness probes to localhost. Container-role
+  discovery now selects only an `all` or `control` RSCTF role, both the UDP endpoint and
+  `wg show` use that owner, probes default to the configured `TARGET`, and scoring cannot
+  resume until every expected team container is running with a current authenticated
+  WireGuard handshake.
+
+### Live round-cadence proof
+
+Before the rollout, load game 163 had a configured 30-second tick but its observed starts
+were `06:35:40.751`, `06:36:15.757`, `06:36:50.753`, `06:37:25.754`,
+`06:38:00.754`, and `06:38:35.751` UTC: approximately 35 seconds apart. After the
+immutable rollout and an authenticated scoring resume, rounds 9851–9853 started at
+`07:27:48.700`, `07:28:18.700`, and `07:28:48.700` UTC: exactly 30.000 seconds
+apart. The disposable fixture was then removed by its exact load-test cleanup.
+
+The corrected cadence is a correctness win, not a throughput shortcut. It performs the
+configured number of scoring rounds instead of silently stretching a 30-second game by
+about 16.7%. A scheduler interruption beyond the six-second ordinary-poll allowance
+still logs a re-anchor warning and starts one current round rather than replaying missed
+rounds.
+
+### Fixed-rate polling comparison
+
+Both measurements used the same client tree, public TLS origin, two web replicas,
+singleton control replica, PostgreSQL, Redis, fixed 300 request/s arrival rate, 100
+preallocated VUs, 60-second duration, and the same 1,000-token cohort at offset 2,000:
+
+```sh
+TARGET=https://tcp.1pc.tf JEO_GAME=<100-team-jeopardy-game> \
+  AD_GAME=<100-team-ad-koth-game> RATE=300 VUS=100 DURATION=60s \
+  TOKEN_COUNT=1000 TOKEN_OFFSET=2000 SUMMARY_JSON=<output.json> \
+  npm run polled-read
+```
+
+The `0.1.16` run used games 162/163. An independent exact teardown removed that pair
+during the rollout, so the `0.1.17` run used retained games 171/172 with the same
+100-team roster and challenge types. The after pair returned 624.6 MB over the minute,
+versus 318 MB before, so this is a conservative production no-regression comparison,
+not a causal microbenchmark or optimization-ledger entry.
+
+| Endpoint/metric | `0.1.16` before | `0.1.17` after | Change |
+| --- | ---: | ---: | ---: |
+| Accepted requests | 18,001 | 18,001 | unchanged |
+| Achieved rate | 300.003 req/s | 299.988 req/s | -0.005% |
+| Overall average | 3.650 ms | 3.152 ms | -13.6% |
+| Overall p50 | 2.470 ms | 2.402 ms | -2.8% |
+| Overall p90 | 6.030 ms | 5.139 ms | -14.8% |
+| Overall p95 | 8.240 ms | 6.817 ms | -17.3% |
+| Overall p99 | 21.110 ms | 12.256 ms | -41.9% |
+| Overall max | 206.720 ms | 140.397 ms | -32.1% |
+| Game catalog p95 | 9.630 ms | 7.724 ms | -19.8% |
+| Jeopardy scoreboard p95 | 7.710 ms | 6.059 ms | -21.4% |
+| A&D scoreboard p95 | 6.780 ms | 6.466 ms | -4.6% |
+| KotH board p95 | 8.440 ms | 6.909 ms | -18.1% |
+| KotH timeline p95 | 7.700 ms | 6.317 ms | -18.0% |
+| Non-200 / 429 / auth / 5xx | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | clean |
+| Dropped iterations | 0 | 0 | clean |
+
+The complete after distributions, in milliseconds, were:
+
+| Endpoint | Average | p50 | p90 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Game catalog | 3.866 | 3.167 | 5.992 | 7.724 | 12.213 | 35.002 |
+| Jeopardy scoreboard | 2.573 | 1.941 | 4.493 | 6.059 | 10.794 | 32.855 |
+| A&D scoreboard | 2.878 | 2.167 | 4.804 | 6.466 | 10.962 | 87.789 |
+| KotH board | 3.227 | 2.292 | 5.037 | 6.909 | 13.171 | 84.871 |
+| KotH timeline | 3.216 | 2.242 | 5.033 | 6.317 | 16.762 | 140.397 |
+
+The A&D scoreboard median moved from 1.910 to 2.167 ms (+13.5%) and the KotH timeline
+median from 2.170 to 2.242 ms (+3.3%). Those small regressions are retained rather than
+hidden; both endpoints improved at p90, p95, p99, and max.
+
+Seven in-window `docker stats --no-stream` samples produced the following averages.
+CPU values are percentages of one logical core.
+
+| Resource | Before average | After average | Change |
+| --- | ---: | ---: | ---: |
+| Two web replicas | 40.539% | 38.141% | -5.9% |
+| Control replica | 0.550% | 1.547% | +181.3% |
+| Application total | 41.089% | 39.688% | -3.4% |
+| PostgreSQL | 21.993% | 32.649% | +48.5% |
+| Redis | 15.335% | 15.537% | +1.3% |
+| Whole stack | 78.417% | 87.874% | +12.1% |
+
+The after application-total samples were `29.74, 36.70, 31.95, 32.09, 85.75,
+32.91, 28.68%`; whole-stack samples were `63.32, 65.18, 59.93, 66.95, 200.29,
+72.53, 86.92%`. A separate Codex session provisioned games 179/180 during this
+resource window, and PostgreSQL had just vacuumed the approximately 2.9 million rows
+removed with games 162/163. That explains the fifth-sample database and application
+spike. The measured stack regression is disclosed, but it is not attributed to the
+release and no CPU optimization claim is made from this production series. The stable
+HTTP arrival-rate and latency evidence remains valid.
+
+After memory peaks were 100.7/78.8 MiB for the web replicas, 34.1 MiB for control,
+617.5 MiB for PostgreSQL, and 7.8 MiB for Redis. Every container remained below its
+limit with zero OOM kills or restarts. Redis held approximately 1.5 MiB against its
+256 MiB `allkeys-lru` cap with zero evictions and zero rejected connections.
+
+### Replicated real-event acceptance
+
+The final production acceptance used disposable games 185/186, ten Jeopardy teams, ten
+A&D/KotH teams, ten isolated BYOC services and agents, ten independent
+WireGuard-connected player containers, and a 300-second player phase. No manual agent
+image or control-container override was supplied: the harness selected the companion
+digest and `rsctf-rsctf-control-1` from the running deployment.
+
+The start barrier observed 10/10 BYOC tunnels, a clean 10/10 delivery/checker round, and
+10/10 authenticated WireGuard peers before scoring resumed. The players completed
+5,599 HTTPS and VPN requests. All ten client processes exited successfully, all ten
+sanitized evidence summaries passed their thresholds, and the public probes returned
+495/495 successful liveness responses and 495/495 ready responses. Liveness p95 was
+47 ms and max was 137 ms.
+
+A&D completed all 11 observed rounds with 110 accepted captures, all ten teams acting as
+attackers and victims, and 90 distinct attacker/victim pairs. KotH recorded 50 captures,
+zero reset races, and the required stale-token rejection. Publication lag was 2.280 s
+at p95 and 2.472 s max, below the 8 s and 12 s gates. Every integrity query returned
+zero: duplicate/non-contiguous rounds, cadence drift, late evidence, duplicate attacks
+or KotH state, cross-cycle tokens, stale container evidence, self-captures,
+post-deadline attacks, unfinished pipelines, panics, process failures, and unsettled
+scoreboards. End-of-event cleanup left zero unfinalized rounds, nonterminal crown cycles,
+live KotH tokens/claims/containers, load-owned containers, or load-owned volumes.
+
+The exact teardown then removed both disposable games, the namespaced state file, and
+all fixture resources. Public `/healthz` and `/livez` still returned `200:ok`; both web
+replicas and the control replica remained healthy with zero restarts and zero OOM kills
+on the immutable `0.1.17` digest.
+
+### Verification, release, and production state
+
+`cargo fmt --all -- --check`, `cargo test --locked`, and
+`cargo clippy --locked --all-targets --all-features -- -D warnings` passed. The Rust
+library run reported 740 passing tests and 169 declared ignored tests before the
+integration binaries completed cleanly. `cargo build --release --locked` completed with
+zero warnings; the JavaScript suite passed 284/284 tests including the companion-image
+selection and distributed-routing regressions; Compose security validation,
+installer regression tests, and the 1,000-line Rust-file check passed. GitHub CI,
+documentation, commit-image, tagged-image, Helm, and release workflows all succeeded.
+The public `0.1.17` release contains attested Linux amd64/arm64 and Windows amd64 worker
+archives plus checksums and both installer scripts.
+
+Before deployment, PostgreSQL and uploaded files were backed up to
+`/root/rsctf-production/backups/20260725T071353Z-pre-v0.1.17`; the 51 MiB custom
+PostgreSQL dump and 204 MiB file archive passed checksum verification. The one-shot
+migration role found no pending migration. Both web replicas and the singleton control
+replica now report version `0.1.17`, revision `fbc0888`, the same immutable digest, healthy
+state, zero restarts, and bounded five-by-10-MiB logs. Six consecutive public health
+requests and all three direct in-container probes returned HTTP 200 with exact body
+`ok`. The live Linux and Windows bootstrap endpoints expose their health preflight and
+uninstall paths.
+
+A second full Compose convergence overlapped the rolling application deployment at
+07:21:55 UTC and recreated PostgreSQL and Redis as well as the application services.
+Docker records the exact Compose project and configuration but not the invoking process,
+so the report does not invent an attribution. The external PostgreSQL volume retained
+all data, the database came back healthy, migration history remained complete through
+`m0081`, and the post-start inventory contained 52 games and 4,087 users before disposable
+fixture cleanup. Redis is intentionally non-persistent. Recent application logs contain
+no panic, migration failure, unexpected 5xx, OOM, or restart loop.
+
+This campaign has no optimization-ledger row. It corrects event cadence, bounds
+operational resources and incident output, and adds a reproducible measurement tool; the
+production before/after fixtures and returned byte counts were not identical enough for
+a causal performance claim.
+
 ## Exhaustive admin lifecycle reporting protocol
 
 `npm run admin-lifecycle` is the destructive, disposable-stack acceptance gate for the

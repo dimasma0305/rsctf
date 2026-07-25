@@ -107,7 +107,9 @@ hill fixture to be replaced independently of the Jeopardy `CONTAINER_IMAGE`. Lon
 `REALISTIC_COMPETITION`, `SIMULATION_SEED`, `INTEGRATED_CHEAT_SIMULATION`,
 `CHEAT_AT_FRACTION`, `RETAIN_EVENT`, and `LIFECYCLE_STATE_TAG`. Set
 `RSCTF_BYOC_AGENT_IMAGE` to test a specific local RSCTF agent tag or immutable digest;
-the network-fetched default is pinned to the attested GHCR digest used by the server.
+otherwise the harness reads the immutable companion digest embedded in the selected
+running server image. A remote-only harness with no locally inspectable server container
+must set the image explicitly; there is no release-specific fallback that can go stale.
 Standalone BYOC fleet runs also accept `RSCTF_BYOC_SERVICE_IMAGE` and
 `RSCTF_BYOC_RUN_ID`. The run id is a lowercase DNS-safe identifier and namespaces every
 relay/service container. Cleanup selects the exact run ownership labels and refuses a
@@ -842,6 +844,29 @@ distributed event are in [`REPORT.md`](REPORT.md).
 
 ## Baselines & findings (single-node, docker)
 
+**Sustained-event operational hardening** (25 July 2026) corrected the live
+30-second A&D/KotH cadence from approximately 35 seconds to exactly 30 seconds,
+bounded persistent delivery/checker incident logs, shortened burst-connection
+retention, bounded every core/load-container Docker log, and made interrupted
+load-fixture cleanup release its exact blob owners safely. The new read-only
+`npm run polled-read` gate held 300 requests/s for 60 seconds across the five
+dominant polling endpoints: 18,001/18,001 HTTP 200 responses, zero 429/5xx/auth
+failures/drops, overall p95 8.240 → 6.817 ms, and p99 21.110 → 12.256 ms.
+The after 100-team fixture returned roughly twice the bytes, and a concurrent
+fixture provision polluted the CPU series, so this is a production
+no-regression result rather than a causal optimization-ledger row. A follow-up
+acceptance also replaced the stale July 19 BYOC harness pin: load fixtures now
+consume the immutable companion-agent digest advertised by the selected server
+image and reject a mutable companion label. A clean replicated 10-team,
+five-minute acceptance then completed 5,599 HTTPS/VPN requests, 110 accepted A&D
+captures, 50 KotH captures, and 495/495 health/readiness probes with every
+integrity gate clean. The harness now routes and verifies WireGuard through the
+singleton control owner and will not resume scoring until all expected
+handshakes are current. Exact
+artifacts, endpoint distributions, resource samples, cadence evidence, release
+checks, and limitations are in
+[`REPORT.md`](REPORT.md#sustained-event-operational-hardening--25-july-2026).
+
 **Current immutable deployment acceptance** (20 July 2026) used two web replicas,
 one singleton control replica, PostgreSQL 18.4, Redis, Caddy, 100 Jeopardy teams,
 400 A&D/KotH teams, and 80 real BYOC tunnels. The exact
@@ -976,9 +1001,10 @@ which exercises confirmed capture, reset, stale-token rejection, and integrity c
 
 ### Standalone BYOC fleet and reconnect safety
 
-Diagnostic runs keep the legacy defaults (`nginx:alpine` for the shared target and the
-pinned default relay-agent digest), but still require exactly `N` distinct Accepted
-participations, relay containers, registered tunnels, and listener endpoints. Partial
+Diagnostic runs keep `nginx:alpine` as the shared-target default and select the relay
+agent from the running server's immutable companion label, but still require exactly
+`N` distinct Accepted participations, relay containers, registered tunnels, and listener
+endpoints. Partial
 startup and cleanup failure are fatal. Set a unique `RSCTF_BYOC_RUN_ID` when multiple
 harnesses can share one Docker daemon; resource names and ownership labels are then
 disjoint even when the runs target the same game.
