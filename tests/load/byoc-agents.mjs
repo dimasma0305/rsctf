@@ -23,6 +23,7 @@ import {
   dockerByocRunFilterArgs,
   normalizeByocRunId,
 } from './byoc-harness.js';
+import { BOUNDED_DOCKER_LOG_ARGS } from './docker-runtime.js';
 
 export const BYOC_RUN_ID = normalizeByocRunId(
   process.env.RSCTF_BYOC_RUN_ID || `p${process.pid}-${randomBytes(4).toString('hex')}`,
@@ -100,6 +101,7 @@ export function startSharedService() {
       '--rm',
       '--name',
       fixtureNames.service,
+      ...BOUNDED_DOCKER_LOG_ARGS,
       ...dockerByocLabelArgs(byocFixtureLabels(BYOC_RUN_ID, 'shared-service')),
       '--network',
       NET,
@@ -132,6 +134,7 @@ export async function startAgents(capabilities, svcAddr) {
 
       const args = [
         'run', '-d', '--rm', '--name', fixtureNames.agent(i),
+        ...BOUNDED_DOCKER_LOG_ARGS,
         ...dockerByocLabelArgs(
           byocFixtureLabels(BYOC_RUN_ID, 'relay', {
             index: i,

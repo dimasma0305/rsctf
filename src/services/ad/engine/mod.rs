@@ -112,6 +112,10 @@ pub struct AdScoringConfig {
     pub warmup_seconds: i64,
 }
 
+/// How often an engine replica checks for a due round. The round-window planner
+/// uses the same value to distinguish ordinary polling delay from downtime.
+pub(crate) const ROUND_SCHEDULER_POLL_SECONDS: u64 = 5;
+
 impl Default for AdScoringConfig {
     fn default() -> Self {
         AdScoringConfig {

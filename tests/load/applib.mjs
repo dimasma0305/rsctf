@@ -27,6 +27,7 @@ import {
 } from './fixture-image-config.js';
 import { retainedManifestMatchesGame } from './retention-identity.mjs';
 import { dockerOwnershipLabelArgs, dockerScopeFromContainerEnv } from './docker-scope.js';
+import { BOUNDED_DOCKER_LOG_ARGS } from './docker-runtime.js';
 import {
   dockerLabelArgs,
   dockerOwnershipFilterArgs,
@@ -208,16 +209,51 @@ async function exactLoadGameCleanup(gameId, title, runtimeIds = []) {
   return deleteDisposableLoadGame(gameId, title, { runtimeIds });
 }
 
-async function retryProtectedDeletion(gameId, response) {
-  let last = response;
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const backoff = 500 + attempt * 300;
-    await sleep(backoff);
-    last = await deleteGameWithRetry(gameId, { attempts: 3 });
-    if (last.status < 300) return last;
-    if (!isDeletionProtectedByEvidence(last)) return last;
+async function clearDisposableLoadBlobOwners(gameId, title) {
+  if (!LOAD_GAME_TITLE_RE.test(title)) {
+    throw new Error(`refusing blob cleanup for non-load game ${gameId}`);
   }
-  return last;
+  const currentTitle = sql(`SELECT title FROM "Games" WHERE id=${gameId}`);
+  if (currentTitle !== title) {
+    throw new Error(`load game ${gameId} identity changed before blob cleanup`);
+  }
+
+  await must(
+    await api('DELETE', `/api/edit/games/${gameId}/writeups`, {
+      ...jwtOpt(),
+      timeoutMs: 120_000,
+    }),
+    `clear load game ${gameId} writeups`,
+  );
+  const attachmentIds = sql(
+    `SELECT id FROM "GameChallenges" ` +
+      `WHERE game_id=${gameId} AND attachment_id IS NOT NULL ORDER BY id`,
+  )
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(Number);
+  for (const challengeId of attachmentIds) {
+    if (!Number.isSafeInteger(challengeId) || challengeId <= 0) {
+      throw new Error(`invalid attachment owner for load game ${gameId}`);
+    }
+    await must(
+      await api('POST', `/api/edit/games/${gameId}/challenges/${challengeId}/attachment`, {
+        ...jwtOpt(),
+        body: { attachmentType: 'None' },
+      }),
+      `clear load challenge ${challengeId} attachment`,
+    );
+  }
+}
+
+async function exactProtectedLoadGameCleanup(gameId, title, runtimeIds) {
+  // Stop the round engine before releasing fixture-owned blobs. The exact SQL
+  // fallback still independently locks the game and refuses any remaining
+  // poster/archive/flag attachment owner, so this cannot become a generic
+  // competition-history deletion path.
+  await setAdScoringPaused(gameId, true);
+  await clearDisposableLoadBlobOwners(gameId, title);
+  return exactLoadGameCleanup(gameId, title, { runtimeIds });
 }
 
 /** Idempotently pause/resume the official A&D/KotH scoring clock through its admin API. */
@@ -630,10 +666,6 @@ export async function teardownNamespace(gameIds) {
   for (const g of ids) {
     let response = await deleteGameWithRetry(g);
     if (response.status < 300) continue;
-    if (response.status === 400 && isDeletionProtectedByEvidence(response)) {
-      response = await retryProtectedDeletion(g, response);
-    }
-    if (response.status < 300) continue;
     const title = sql(`SELECT title FROM "Games" WHERE id=${g}`);
     if (!title) continue;
     if (!LOAD_GAME_TITLE_RE.test(title)) {
@@ -648,7 +680,7 @@ export async function teardownNamespace(gameIds) {
     if (response.status !== 400 || !isDeletionProtectedByEvidence(response)) {
       throw new Error(`teardown unexpected delete status ${response.status} for game ${g}: ${response.text}`);
     }
-    await exactLoadGameCleanup(g, title, { runtimeIds });
+    await exactProtectedLoadGameCleanup(g, title, runtimeIds);
     if (Number(sql(`SELECT count(*) FROM "Games" WHERE id=${g}`)) !== 0) {
       throw new Error(`teardown fallback did not remove game ${g}`);
     }
@@ -669,7 +701,7 @@ export async function teardownNamespace(gameIds) {
         docker(['exec', RSCTF, 'rm', '-rf', `/data/files/checkers/load/${g}`]),
         `remove checker directory for game ${g}`,
       );
-      await exactLoadGameCleanup(g, title, { runtimeIds: [...managedKothContainers] });
+      await exactProtectedLoadGameCleanup(g, title, [...managedKothContainers]);
       continue;
     }
     throw new Error(`teardownNamespace cleanup failed for game ${g}: ${response.status} ${response.text}`);
@@ -902,6 +934,7 @@ export function startFleetService(gameId, cid) {
       '--rm',
       '--name',
       'lcbyoc_svc',
+      ...BOUNDED_DOCKER_LOG_ARGS,
       ...dockerLabelArgs(fleetLabels(scope, 'shared-service')),
       '--network',
       AD_NET,
@@ -993,6 +1026,7 @@ function startIsolatedFleetServices(capabilities, gameId) {
         '--rm',
         '--name',
         name,
+        ...BOUNDED_DOCKER_LOG_ARGS,
         ...dockerLabelArgs(fleetLabels(scope, 'isolated-service', capability.pid)),
         '--network',
         NET,
@@ -1039,6 +1073,7 @@ export function startFleetForPids(gameId, cid, pids, svcAddr) {
         '--rm',
         '--name',
         `lcbyoc_${i}`,
+        ...BOUNDED_DOCKER_LOG_ARGS,
         ...dockerLabelArgs(fleetLabels(scope, 'relay', capability.pid)),
         '--network',
         NET,

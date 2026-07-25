@@ -6,6 +6,11 @@ services:
     # major requires dump/restore or pg_upgrade plus a fresh data directory.
     image: ${POSTGRES_IMAGE:-postgres:18.4-alpine3.24}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
+        max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"
     command:
       - postgres
       - -c
@@ -36,6 +41,11 @@ services:
   redis:
     image: ${REDIS_IMAGE:-redis:7-alpine}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
+        max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"
     # Redis is a disposable cache. Keep it bounded and evict least-recently-used
     # keys instead of allowing the host to run out of memory.
     command:
@@ -59,6 +69,11 @@ services:
   rsctf:
     image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to an immutable ghcr.io/dimasma0305/rsctf@sha256 digest}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
+        max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"
     init: true
     pids_limit: ${RSCTF_APP_PIDS_LIMIT:-1024}
     # The all-in-one role runs process-sandboxed A&D/KotH checkers. Drop

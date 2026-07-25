@@ -15,6 +15,7 @@ import {
 import { execFileSync } from 'node:child_process';
 import { basename, dirname, resolve } from 'node:path';
 import { api } from './applib.mjs';
+import { BOUNDED_DOCKER_LOG_ARGS } from './docker-runtime.js';
 import { TARGET, docker, mintJwt, sleep, RSCTF } from './lib.mjs';
 import {
   dockerLabelArgs,
@@ -816,6 +817,7 @@ export async function startVpnTeamClients({
           'create',
           '--name',
           name,
+          ...BOUNDED_DOCKER_LOG_ARGS,
           '--network',
           'traefik',
           '--cap-add',

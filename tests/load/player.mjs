@@ -20,5 +20,6 @@ process.exit(
     DURATION: process.env.DURATION || '60s',
     THINK_MIN_SECONDS: process.env.THINK_MIN_SECONDS || '',
     THINK_MAX_SECONDS: process.env.THINK_MAX_SECONDS || '',
+    READ_ONLY: process.env.READ_ONLY || '',
   })
 );

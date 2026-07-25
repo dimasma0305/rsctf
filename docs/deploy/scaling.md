@@ -174,8 +174,14 @@ export COMPOSE_FILE=compose.yml:compose.roles.yml
 docker compose up -d db redis
 docker compose run --rm --no-deps \
   -e RSCTF_ROLE=migrate -e RSCTF_MIGRATE=1 rsctf
-docker compose up -d --scale rsctf=3
+docker compose up -d --scale rsctf=2
 ```
+
+That two-web default budgets `2×26 + 20 = 72` application connections against
+the bundled PostgreSQL limit of 100, preserving migration, administration, and
+rolling-update headroom. Do not add a third default web pool: `3×26 + 20 = 98`
+already exceeds PostgreSQL's ordinary non-reserved capacity. Put PgBouncer in
+front of PostgreSQL or provide a separately reviewed connection budget first.
 
 For a shared Docker challenge backend, include both overrides so web API replicas
 and the control owner reach the same daemon:
@@ -196,7 +202,8 @@ narrow checker capability set and also uses `NET_ADMIN` for WireGuard plus
 capabilities. The web replicas retain Docker access
 because their API routes may create or destroy player containers.
 
-Scale only the public web service:
+Scale only the public web service. The five-web example assumes PgBouncer or an
+external PostgreSQL connection budget sized with the formula below:
 
 ```bash
 docker compose up -d --scale rsctf=5

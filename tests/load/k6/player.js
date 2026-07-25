@@ -32,6 +32,7 @@ const VUS = Number(__ENV.VUS || 200);
 const RATE = Number(__ENV.RATE || Math.max(1, Math.round(VUS / 2)));
 const THINK_MIN_SECONDS = Number(__ENV.THINK_MIN_SECONDS || 3);
 const THINK_MAX_SECONDS = Number(__ENV.THINK_MAX_SECONDS || 5);
+const READ_ONLY = __ENV.READ_ONLY === '1';
 
 if (
   !Number.isFinite(THINK_MIN_SECONDS) ||
@@ -186,7 +187,7 @@ export default function () {
 
   // 4. Attack attempt — submit a captured flag (~every 5th cycle; mostly wrong, which
   //    is the realistic case + exercises the cheat-scan cache + flag-lookup path).
-  if (it % 5 === 0 && CHALS.length) {
+  if (!READ_ONLY && it % 5 === 0 && CHALS.length) {
     const r = http.post(
       `${TARGET}/api/Game/${GAME}/Ad/Submit`,
       JSON.stringify({ flags: [unknownFlag(vu, it)] }),

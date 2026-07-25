@@ -5,7 +5,10 @@
 #
 # Before first start/upgrade, run the one-shot migration command documented in
 # docs/deploy/scaling.md. Then:
-#   docker compose up -d --scale rsctf=3
+# The bundled PostgreSQL default safely budgets two 26-connection web pools
+# plus the 20-connection control pool. Read docs/deploy/scaling.md and provide
+# PgBouncer or a larger reviewed database budget before adding a third web.
+#   docker compose up -d --scale rsctf=2
 services:
   rsctf:
     # Split roles must all resolve the same reviewed image. Requiring the
@@ -42,6 +45,11 @@ services:
   rsctf-control:
     image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to one immutable rsctf image digest}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
+        max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"
     init: true
     pids_limit: ${RSCTF_APP_PIDS_LIMIT:-1024}
     # Control owns the checker and network engines in this topology. Packet

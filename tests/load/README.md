@@ -14,6 +14,7 @@ cd tests/load
       npm run multi-domain    # destructive 2×A&D + 2×KotH isolation/recovery acceptance
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
+      npm run polled-read   # fixed-rate, read-only five-endpoint production smoke
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
       npm run redis-outage  # disposable Redis failure/recovery micro-harness
@@ -47,6 +48,7 @@ tests/load/
   team-clients.mjs  one WireGuard+k6 container per team, plus verified teardown
   observe.mjs       read-only health/resource/evidence sampler for long event runs
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
+  polled-read.mjs   read-only broad-token fixed-rate polling smoke
   player.mjs        → runs k6/player.js         (npm run player)
   ad-submit-batch.mjs → runs k6/ad-submit-batch.js (npm run ad-submit-batch)
   redis-outage.mjs  → stops/restores one acknowledged disposable Redis + runs k6/redis-outage.js
@@ -58,6 +60,7 @@ tests/load/
     admin-lifecycle.js fixed-rate admin reads, SignalR connection, replica/control health
     edit-lifecycle.js  fixed-rate organizer reads across future/A&D/KotH fixtures
     organizer-hubs.js  fixed-rate privileged negotiate, WebSocket, and exec traffic
+    polled-read.js     one read per iteration across the five dominant polled endpoints
     player.js         A&D + KotH player: poll boards/timelines, tokens/state, submit flags
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable
@@ -78,6 +81,16 @@ hiding which endpoint changed. The standalone player scenario uses a constant
 arrival rate (`RATE`, default `VUS/2` iterations/s). Board trends accept valid
 HTTP 200 responses; the A&D epoch trend additionally requires a semantically
 valid started board. The run fails if the frozen roster has fewer than two teams.
+
+`polled-read` is safe for an explicitly selected production fixture: it performs
+no submissions or mutations and uses at least 100 disposable load-test accounts
+so the held rate measures the read path instead of exhausting one account's
+query bucket. One iteration is exactly one HTTP request. Supply both game IDs:
+
+```sh
+TARGET=https://ctf.example JEO_GAME=162 AD_GAME=163 RATE=300 \
+  DURATION=60s npm run polled-read
+```
 
 Every knob is env-overridable: `TARGET`, `GAME`, `CID`, `VUS`, `RATE`, `DURATION`, `N`,
 `RSCTF_JWT_SECRET`, `PG_CONTAINER`, `RSCTF_CONTAINER`, `NET`, `AD_NET`,

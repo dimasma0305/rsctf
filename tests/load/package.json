@@ -9,6 +9,7 @@
     "edit-lifecycle": "node edit-lifecycle.mjs",
     "multi-domain": "node multi-domain-acceptance.mjs",
     "organizer-hubs": "node organizer-hubs.mjs",
+    "polled-read": "node polled-read.mjs",
     "player": "node player.mjs",
     "ad-submit-batch": "node ad-submit-batch.mjs",
     "redis-outage": "node redis-outage.mjs",

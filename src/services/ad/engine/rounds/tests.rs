@@ -190,7 +190,7 @@ fn elapsed_window_reanchors_without_replaying_live_flags() {
 fn late_poll_reanchors_a_full_tick_without_overlap() {
     let prior_end = Utc::now();
     let nominal = (prior_end, prior_end + Duration::seconds(30));
-    let prepared_at = prior_end + Duration::seconds(5);
+    let prepared_at = prior_end + Duration::seconds(7);
     let event_end = prepared_at + Duration::minutes(5);
     let (start, end, reanchored) =
         playable_round_window(nominal, event_end, 30, prepared_at, 15).unwrap();
@@ -198,6 +198,19 @@ fn late_poll_reanchors_a_full_tick_without_overlap() {
     assert_eq!(start, prepared_at);
     assert_eq!(end - start, Duration::seconds(30));
     assert!(start >= prior_end, "successor rounds must never overlap");
+}
+
+#[test]
+fn ordinary_scheduler_jitter_preserves_the_configured_cadence() {
+    let prior_end = Utc::now();
+    let nominal = (prior_end, prior_end + Duration::seconds(30));
+    let prepared_at = prior_end + Duration::milliseconds(5_250);
+    let event_end = prepared_at + Duration::minutes(5);
+    let (start, end, reanchored) =
+        playable_round_window(nominal, event_end, 30, prepared_at, 15).unwrap();
+    assert!(!reanchored);
+    assert_eq!(start, prior_end);
+    assert_eq!(end, prior_end + Duration::seconds(30));
 }
 
 #[test]

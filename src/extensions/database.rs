@@ -8,12 +8,17 @@ use sqlx::{ConnectOptions as _, Connection as _};
 
 use crate::models::internal::configs::RuntimeRole;
 
+const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
+
 fn pool_options(max_connections: u32) -> PgPoolOptions {
     PgPoolOptions::new()
         .max_connections(max_connections)
         .min_connections(2)
         .acquire_timeout(Duration::from_secs(10))
-        .idle_timeout(Some(Duration::from_secs(300)))
+        // Release burst-only backends promptly so a rolling replica increase
+        // does not retain the prior traffic spike's entire connection budget.
+        // `min_connections` keeps the steady hot path warm.
+        .idle_timeout(Some(IDLE_CONNECTION_TIMEOUT))
         // Transaction starts are completed in detached tasks at the call
         // sites, so a request cancellation cannot strand an untracked BEGIN.
         // Avoid a probe on every checkout; SQLx still performs its mandatory

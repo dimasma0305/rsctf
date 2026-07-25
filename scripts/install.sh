@@ -723,6 +723,17 @@ preflight() {
   if [[ $CONFIGURE_ONLY -eq 0 ]]; then
     docker info >/dev/null 2>&1 \
       || die "cannot reach the Docker daemon; start Docker or grant this user Docker access"
+    local disk_used
+    disk_used=$(df -P "$DEPLOY_DIR" 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')
+    if [[ "$disk_used" =~ ^[0-9]+$ ]]; then
+      ((disk_used < 90)) \
+        || die "the deployment filesystem is ${disk_used}% full; free Docker/host space before pulling or starting rsctf"
+      if ((disk_used >= 80)); then
+        warn "the deployment filesystem is ${disk_used}% full; free space and verify log rotation before an event"
+      fi
+    else
+      warn "could not determine deployment filesystem usage"
+    fi
   fi
 
   local files
@@ -756,6 +767,19 @@ doctor() {
     printf '  %sok%s  Docker daemon access\n' "$GREEN" "$RESET"
   else
     printf '  %sfail%s Docker daemon unavailable or permission denied\n' "$RED" "$RESET"; failures=$((failures + 1))
+  fi
+  local disk_used
+  disk_used=$(df -P "$DEPLOY_DIR" 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')
+  if [[ "$disk_used" =~ ^[0-9]+$ ]] && ((disk_used < 80)); then
+    printf '  %sok%s  deployment filesystem %s%% used\n' "$GREEN" "$RESET" "$disk_used"
+  elif [[ "$disk_used" =~ ^[0-9]+$ ]] && ((disk_used < 90)); then
+    printf '  %swarn%s deployment filesystem %s%% used; free space before an event\n' \
+      "$YELLOW" "$RESET" "$disk_used"
+  elif [[ "$disk_used" =~ ^[0-9]+$ ]]; then
+    printf '  %sfail%s deployment filesystem %s%% used\n' "$RED" "$RESET" "$disk_used"
+    failures=$((failures + 1))
+  else
+    printf '  %swarn%s deployment filesystem usage unavailable\n' "$YELLOW" "$RESET"
   fi
   if [[ -f "$ENV_FILE" ]]; then
     printf '  %sok%s  deploy/.env exists\n' "$GREEN" "$RESET"

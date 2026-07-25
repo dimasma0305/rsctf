@@ -98,6 +98,9 @@ docker compose down
 
 Persistent data lives in the `postgres_data` and `files_data` Docker volumes.
 Back up both. Redis is intentionally non-persistent and capped at 256 MB.
+Every long-running Compose service also uses bounded Docker JSON logs
+(`RSCTF_DOCKER_LOG_MAX_SIZE`, five files by default) so an event cannot consume
+the host filesystem with unbounded container output.
 
 The managed database uses PostgreSQL 18's versioned data directory. Changing an
 existing PostgreSQL 16/17 installation to this Compose file is a major-version

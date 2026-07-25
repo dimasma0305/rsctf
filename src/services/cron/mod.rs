@@ -38,6 +38,7 @@ use crate::models::data::{ad_team_service, container, game, koth_target};
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::AppResult;
 
+mod delivery_health;
 mod round_finish;
 mod scheduler;
 
@@ -61,7 +62,6 @@ const LOCK_IO_TIMEOUT_SECS: u64 = 10;
 /// Maintenance stays on a 30-second cadence; the latency-sensitive round driver
 /// has its own five-second scheduler so reaping/Docker work cannot delay scoring.
 const MAINTENANCE_TICK_SECONDS: u64 = 30;
-const ROUND_TICK_SECONDS: u64 = 5;
 
 /// Hard cap on ONE game's advance (finalize + open + plant flags + run the checker +
 /// KotH). A game with many hung/offline services can make its checker pass take
@@ -143,11 +143,12 @@ pub fn start_round_scheduler(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(StdDuration::from_secs(ROUND_TICK_SECONDS));
+        let poll_seconds = crate::services::ad_engine::ROUND_SCHEDULER_POLL_SECONDS;
+        let mut ticker = tokio::time::interval(StdDuration::from_secs(poll_seconds));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         tracing::info!(
             ?scope,
-            "cron: A&D round supervisor started (tick {ROUND_TICK_SECONDS}s)"
+            "cron: A&D round supervisor started (tick {poll_seconds}s)"
         );
         loop {
             tokio::select! {

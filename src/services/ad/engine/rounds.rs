@@ -257,11 +257,13 @@ fn playable_round_window(
     now: chrono::DateTime<Utc>,
     minimum_duration_seconds: i64,
 ) -> Option<(chrono::DateTime<Utc>, chrono::DateTime<Utc>, bool)> {
-    // A nominal boundary that has already passed was platform downtime, not a
-    // playable slice of this round. Persist the actual durable preparation time
-    // so every ordinary round gets one complete, truthful tick instead of losing
-    // flag/checker runway to the scheduler's polling cadence.
-    let reanchored = nominal.0 < now;
+    // The five-second round poll normally observes a boundary up to one full
+    // polling interval late. Preserve that nominal boundary (plus one second of
+    // transaction jitter) so a configured 30-second event stays on a 30-second
+    // cadence. Longer delay is material platform downtime and receives a fresh
+    // full tick instead of replaying live flags into an expired window.
+    let ordinary_poll_delay = Duration::seconds(super::ROUND_SCHEDULER_POLL_SECONDS as i64 + 1);
+    let reanchored = now.signed_duration_since(nominal.0) > ordinary_poll_delay;
     let start = if reanchored { now } else { nominal.0 };
     let end = if reanchored {
         (start + Duration::seconds(tick_seconds)).min(event_end)

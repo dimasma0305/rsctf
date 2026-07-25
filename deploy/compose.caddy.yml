@@ -8,6 +8,11 @@ services:
   caddy:
     image: ${CADDY_IMAGE:-caddy:2-alpine}
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
+        max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"
     depends_on:
       rsctf:
         condition: service_healthy

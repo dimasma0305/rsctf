@@ -13,6 +13,8 @@ export RSCTF_DOCKER_PUBLIC_ENTRY=ctf.example
 export RSCTF_DOCKER_SCOPE=compose-security-installation
 export RSCTF_AD_VPN_SERVER_ENDPOINT=ctf.example:51820
 export RSCTF_AD_VPN_SERVICES_NETWORK=rsctf-compose-security-ad
+export RSCTF_DOMAIN=ctf.example
+export RSCTF_TRUSTED_PROXY_CIDRS=172.31.252.0/24
 export RSCTF_IMAGE=example.invalid/rsctf:test
 unset RSCTF_AD_SUBMIT_BURST_FLAGS
 
@@ -70,8 +72,29 @@ if actual != expected:
 ' "$service" "$expected"
 }
 
+assert_bounded_logs() {
+  local service="$1"
+  python3 -c '
+import json
+import sys
+
+document = json.load(sys.stdin)
+name = sys.argv[1]
+logging = document["services"][name].get("logging") or {}
+expected = {"driver": "json-file", "options": {"max-file": "5", "max-size": "20m"}}
+if logging != expected:
+    raise SystemExit(f"{name} log bounds mismatch: expected {expected}, got {logging}")
+' "$service"
+}
+
 "${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_service_security rsctf yes no no
+"${compose[@]}" -f deploy/compose.yml config --format json \
+  | assert_bounded_logs db
+"${compose[@]}" -f deploy/compose.yml config --format json \
+  | assert_bounded_logs redis
+"${compose[@]}" -f deploy/compose.yml config --format json \
+  | assert_bounded_logs rsctf
 "${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_service_ad_submit_burst rsctf 400
 RSCTF_AD_SUBMIT_BURST_FLAGS=3200 \
@@ -96,5 +119,9 @@ RSCTF_AD_SUBMIT_BURST_FLAGS=3200 \
   | assert_service_ad_submit_burst rsctf 3200
 "${compose[@]}" "${split[@]}" config --format json \
   | assert_service_security rsctf-control yes yes yes
+"${compose[@]}" "${split[@]}" config --format json \
+  | assert_bounded_logs rsctf-control
+"${compose[@]}" -f deploy/compose.yml -f deploy/compose.caddy.yml config --format json \
+  | assert_bounded_logs caddy
 
-echo "Compose capability ownership is valid."
+echo "Compose capability ownership and log bounds are valid."

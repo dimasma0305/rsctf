@@ -837,14 +837,7 @@ pub(super) async fn finish_prepared_round(
     );
     let (delivery, checker) = tokio::join!(publisher, checker);
     let delivery = delivery?;
-    if delivery.failure_count > 0 {
-        tracing::warn!(
-            game = game.id,
-            round = next_number,
-            failed = delivery.failure_count,
-            "cron: some A&D services did not accept the new flag"
-        );
-    }
+    super::delivery_health::report(state, game.id, next_number, delivery.failure_count).await;
     if let Err(error) = checker {
         tracing::warn!(
             game = game.id,
