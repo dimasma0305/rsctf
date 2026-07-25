@@ -9,6 +9,8 @@ use sea_orm::DatabaseConnection;
 
 use super::firewall::CooldownBlock;
 use super::{peer_address_allowed, vpn_target};
+use crate::services::ad::roster::shared_credential_team_predicate_sql;
+use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 
 #[derive(Debug, sqlx::FromRow)]
@@ -189,41 +191,72 @@ fn validate_required_blocks(
         .collect()
 }
 
+const LOAD_REQUIRED_BLOCKS_SQL: &str = concat!(
+    r#"SELECT cycle.id AS cycle_id, cooldown.participation_id,
+              cycle.game_id, peer.address AS peer,
+              target.host, target.port, target.container_id,
+              cycle.replacement_container_id
+         FROM "KothCycleCooldowns" cooldown
+         JOIN "KothCrownCycles" cycle ON cycle.id = cooldown.cycle_id
+         JOIN "Games" game ON game.id = cycle.game_id
+         JOIN "Participations" participation
+           ON participation.id = cooldown.participation_id
+          AND participation.game_id = cycle.game_id
+         JOIN "Teams" team ON team.id = participation.team_id
+         LEFT JOIN "AdVpnPeers" peer
+           ON peer.game_id = cycle.game_id
+          AND peer.participation_id = cooldown.participation_id
+         LEFT JOIN "KothTargets" target
+           ON target.game_id = cycle.game_id
+          AND target.challenge_id = cycle.challenge_id
+         JOIN LATERAL (
+           SELECT MAX(number) AS number FROM "AdRounds"
+            WHERE game_id = cycle.game_id
+         ) current_round ON TRUE
+        WHERE cycle.phase IN ('FirewallPending','Active')
+          AND cooldown.network_released_at IS NULL
+          AND current_round.number BETWEEN cooldown.starts_round
+                                       AND cooldown.expires_after_round
+          AND game.deletion_pending = FALSE
+          AND game.start_time_utc <= clock_timestamp()
+          AND clock_timestamp() <= game.end_time_utc
+          AND participation.status = $3
+          AND "#,
+    shared_credential_team_predicate_sql!("team", "$2"),
+    r#"
+          AND ($1::bigint IS NULL OR cycle.id = $1)
+        ORDER BY cycle.id, cooldown.participation_id"#
+);
+
+async fn load_required_blocks_from_pool(
+    pool: &sqlx::PgPool,
+    cycle_id: Option<i64>,
+    client_network: &Ipv4Net,
+    service_networks: &[Ipv4Net],
+) -> AppResult<Vec<RequiredCooldownBlock>> {
+    let rows = sqlx::query_as::<_, RawCooldownBlock>(LOAD_REQUIRED_BLOCKS_SQL)
+        .bind(cycle_id)
+        .bind(Role::Banned as i16)
+        .bind(ParticipationStatus::Accepted as i16)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    validate_required_blocks(rows, client_network, service_networks)
+}
+
 async fn load_required_blocks(
     db: &DatabaseConnection,
     cycle_id: Option<i64>,
     client_network: &Ipv4Net,
     service_networks: &[Ipv4Net],
 ) -> AppResult<Vec<RequiredCooldownBlock>> {
-    let rows = sqlx::query_as::<_, RawCooldownBlock>(
-        r#"SELECT cycle.id AS cycle_id, cooldown.participation_id,
-                  cycle.game_id, peer.address AS peer,
-                  target.host, target.port, target.container_id,
-                  cycle.replacement_container_id
-             FROM "KothCycleCooldowns" cooldown
-             JOIN "KothCrownCycles" cycle ON cycle.id = cooldown.cycle_id
-             LEFT JOIN "AdVpnPeers" peer
-               ON peer.game_id = cycle.game_id
-              AND peer.participation_id = cooldown.participation_id
-             LEFT JOIN "KothTargets" target
-               ON target.game_id = cycle.game_id
-              AND target.challenge_id = cycle.challenge_id
-             JOIN LATERAL (
-               SELECT MAX(number) AS number FROM "AdRounds"
-                WHERE game_id = cycle.game_id
-             ) current_round ON TRUE
-            WHERE cycle.phase IN ('FirewallPending','Active')
-              AND cooldown.network_released_at IS NULL
-              AND current_round.number BETWEEN cooldown.starts_round
-                                           AND cooldown.expires_after_round
-              AND ($1::bigint IS NULL OR cycle.id = $1)
-            ORDER BY cycle.id, cooldown.participation_id"#,
+    load_required_blocks_from_pool(
+        db.get_postgres_connection_pool(),
+        cycle_id,
+        client_network,
+        service_networks,
     )
-    .bind(cycle_id)
-    .fetch_all(db.get_postgres_connection_pool())
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    validate_required_blocks(rows, client_network, service_networks)
 }
 
 pub(super) async fn load_active_blocks(
@@ -252,6 +285,9 @@ pub(super) async fn load_cycle_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use std::str::FromStr;
+    use uuid::Uuid;
 
     fn networks() -> (Ipv4Net, Vec<Ipv4Net>) {
         (
@@ -294,6 +330,160 @@ mod tests {
         let mut missing = row();
         missing.peer = None;
         assert!(validate_required_blocks(vec![missing], &client, &services).is_err());
+    }
+
+    #[test]
+    fn cooldown_query_matches_peer_eligibility_boundaries() {
+        assert!(LOAD_REQUIRED_BLOCKS_SQL.contains("game.deletion_pending = FALSE"));
+        assert!(LOAD_REQUIRED_BLOCKS_SQL.contains("game.start_time_utc <= clock_timestamp()"));
+        assert!(LOAD_REQUIRED_BLOCKS_SQL.contains("clock_timestamp() <= game.end_time_utc"));
+        assert!(LOAD_REQUIRED_BLOCKS_SQL.contains("participation.status = $3"));
+        assert!(LOAD_REQUIRED_BLOCKS_SQL.contains("NOT team.deletion_pending"));
+        assert!(LOAD_REQUIRED_BLOCKS_SQL.contains("account.role = $2"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn ended_or_ineligible_cooldown_cannot_block_an_unrelated_event() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("vpn_cooldown_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE "Games" (
+                id INTEGER PRIMARY KEY,
+                start_time_utc TIMESTAMPTZ NOT NULL,
+                end_time_utc TIMESTAMPTZ NOT NULL,
+                deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TABLE "AspNetUsers" (
+                id UUID PRIMARY KEY,
+                role SMALLINT NOT NULL
+            );
+            CREATE TABLE "Teams" (
+                id INTEGER PRIMARY KEY,
+                captain_id UUID NOT NULL,
+                deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TABLE "TeamMembers" (
+                team_id INTEGER NOT NULL,
+                user_id UUID NOT NULL
+            );
+            CREATE TABLE "Participations" (
+                id INTEGER PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                team_id INTEGER NOT NULL,
+                status SMALLINT NOT NULL
+            );
+            CREATE TABLE "KothCrownCycles" (
+                id BIGINT PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                challenge_id INTEGER NOT NULL,
+                phase TEXT NOT NULL,
+                replacement_container_id TEXT
+            );
+            CREATE TABLE "KothCycleCooldowns" (
+                cycle_id BIGINT NOT NULL,
+                participation_id INTEGER NOT NULL,
+                starts_round INTEGER NOT NULL,
+                expires_after_round INTEGER NOT NULL,
+                network_released_at TIMESTAMPTZ
+            );
+            CREATE TABLE "AdVpnPeers" (
+                game_id INTEGER NOT NULL,
+                participation_id INTEGER NOT NULL,
+                address TEXT NOT NULL
+            );
+            CREATE TABLE "KothTargets" (
+                game_id INTEGER NOT NULL,
+                challenge_id INTEGER NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                container_id TEXT
+            );
+            CREATE TABLE "AdRounds" (
+                game_id INTEGER NOT NULL,
+                number INTEGER NOT NULL
+            );
+
+            INSERT INTO "Games" VALUES
+                (1, now() - interval '2 hours', now() - interval '1 hour', FALSE),
+                (2, now() - interval '1 hour', now() + interval '1 hour', FALSE),
+                (3, now() - interval '1 hour', now() + interval '1 hour', FALSE);
+            INSERT INTO "AspNetUsers" VALUES
+                ('00000000-0000-0000-0000-000000000001', 1),
+                ('00000000-0000-0000-0000-000000000002', 1),
+                ('00000000-0000-0000-0000-000000000003', 1);
+            INSERT INTO "Teams" VALUES
+                (1, '00000000-0000-0000-0000-000000000001', FALSE),
+                (2, '00000000-0000-0000-0000-000000000002', FALSE),
+                (3, '00000000-0000-0000-0000-000000000003', FALSE);
+            INSERT INTO "Participations" VALUES
+                (11, 1, 1, 1),
+                (22, 2, 2, 1),
+                (33, 3, 3, 0);
+            INSERT INTO "KothCrownCycles" VALUES
+                (101, 1, 10, 'Active', 'replacement-ended'),
+                (202, 2, 20, 'Active', 'replacement-live'),
+                (303, 3, 30, 'Active', 'replacement-rejected');
+            INSERT INTO "KothCycleCooldowns" VALUES
+                (101, 11, 4, 6, NULL),
+                (202, 22, 4, 6, NULL),
+                (303, 33, 4, 6, NULL);
+            INSERT INTO "AdVpnPeers" VALUES
+                (2, 22, '10.13.37.22');
+            INSERT INTO "KothTargets" VALUES
+                (1, 10, '10.13.40.10', 8080, 'replacement-ended'),
+                (2, 20, '10.13.40.20', 8080, 'replacement-live'),
+                (3, 30, '10.13.40.30', 8080, 'replacement-rejected');
+            INSERT INTO "AdRounds" VALUES (1, 5), (2, 5), (3, 5);
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (client, services) = networks();
+        let blocks = load_required_blocks_from_pool(&pool, None, &client, &services)
+            .await
+            .unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].game_id, 2);
+        assert_eq!(blocks[0].participation_id, 22);
+
+        sqlx::query(r#"DELETE FROM "AdVpnPeers" WHERE game_id = 2"#)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            load_required_blocks_from_pool(&pool, None, &client, &services)
+                .await
+                .is_err(),
+            "an active eligible participant without a peer must still fail closed"
+        );
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 
     #[test]

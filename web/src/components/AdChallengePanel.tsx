@@ -59,9 +59,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
         <Text size="xs" c="dimmed">
           {t('game.content.ad.snapshot', 'Post-game snapshot')}:
         </Text>
-        <Tooltip
-          label={t('game.tooltip.ad.snapshot', 'Download your container as a loadable Docker image (docker load -i …)')}
-        >
+        <Tooltip label={t('game.tooltip.ad.snapshot', 'Download the final container filesystem as a TAR archive.')}>
           <Button
             component="a"
             href={api.game.gameAdDownloadSnapshotUrl(gameId, service.adTeamServiceId)}
@@ -70,7 +68,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
             variant="light"
             leftSection={<Icon path={mdiDownload} size={0.7} />}
           >
-            {t('game.button.ad.download_snapshot', 'Download .tar.gz')}
+            {t('game.button.ad.download_snapshot', 'Download .tar')}
           </Button>
         </Tooltip>
       </Group>

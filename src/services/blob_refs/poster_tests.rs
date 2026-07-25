@@ -77,6 +77,9 @@ async fn game_delete_releases_and_purges_its_poster_reference_atomically() {
           upload_time_utc TIMESTAMPTZ NOT NULL, file_size BIGINT NOT NULL,
           name TEXT NOT NULL, reference_count BIGINT NOT NULL
         );
+        CREATE TABLE "AdServiceSnapshots" (
+          id BIGSERIAL PRIMARY KEY, local_file_id INTEGER NOT NULL
+        );
         CREATE TABLE "Attachments" (id INTEGER PRIMARY KEY, local_file_id INTEGER);
         CREATE TABLE "Participations" (id INTEGER PRIMARY KEY, writeup_id INTEGER);
         CREATE TABLE "AspNetUsers" (id INTEGER PRIMARY KEY, avatar_hash TEXT);

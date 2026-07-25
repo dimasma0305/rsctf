@@ -688,7 +688,7 @@ const GameInfoEdit: FC = () => {
                   )}
                   description={t(
                     'admin.content.games.info.ad_snapshot_retention_days.description',
-                    'How long the per-team container snapshots stay available for download after game end. Leave empty to keep forever (the default).'
+                    'How long final Docker-hosted A&D filesystem snapshots stay available after game end. Leave empty to keep forever (the default).'
                   )}
                   placeholder={t('admin.content.games.info.ad_snapshot_retention_days.placeholder', '∞ (keep forever)')}
                   disabled={disabled}
@@ -790,7 +790,7 @@ const GameInfoEdit: FC = () => {
                   label={t('admin.content.games.info.ad_allow_snapshot_download.label', 'A&D snapshot download')}
                   description={t(
                     'admin.content.games.info.ad_allow_snapshot_download.description',
-                    'Snapshot each team container at game end and offer the tarball for download.'
+                    'Persist each Docker-hosted A&D container filesystem at game end and offer the TAR archive for download. Kubernetes and BYOC services are excluded.'
                   )}
                   disabled={disabled}
                   checked={game?.adAllowSnapshotDownload ?? true}

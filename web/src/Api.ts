@@ -2239,6 +2239,10 @@ export interface AdStateModel {
   flagDeliveryFailures: number;
   roundStartedAt?: string | null;
   roundEndsAt?: string | null;
+  /** True while the operator has frozen A&D/KotH scoring and round progression. */
+  scoringPaused: boolean;
+  /** Unix-millisecond instant used to freeze the player countdown. */
+  scoringPausedAt?: number | null;
   services: AdTeamServiceStateModel[];
 }
 

@@ -447,6 +447,9 @@ mod tests {
                 file_size BIGINT NOT NULL DEFAULT 1, name TEXT NOT NULL DEFAULT '',
                 reference_count BIGINT NOT NULL
             );
+            CREATE TABLE "{schema}"."AdServiceSnapshots" (
+                id BIGSERIAL PRIMARY KEY, local_file_id INTEGER NOT NULL
+            );
             CREATE TABLE "{schema}"."Attachments" (id INTEGER PRIMARY KEY, local_file_id INTEGER);
             CREATE TABLE "{schema}"."Participations" (id INTEGER PRIMARY KEY, writeup_id INTEGER);
             CREATE TABLE "{schema}"."AspNetUsers" (id INTEGER PRIMARY KEY, avatar_hash TEXT);

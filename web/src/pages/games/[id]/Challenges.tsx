@@ -1,8 +1,7 @@
-import { Badge, Button, Flex, Group, Paper, Stack, Text } from '@mantine/core'
+import { Alert, Badge, Button, Flex, Group, Paper, Stack, Text } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
-import { mdiCrown, mdiOpenInNew, mdiSword, mdiSwordCross, mdiToolboxOutline } from '@mdi/js'
+import { mdiCrown, mdiOpenInNew, mdiPauseCircleOutline, mdiSword, mdiSwordCross, mdiToolboxOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import dayjs from 'dayjs'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
@@ -15,6 +14,7 @@ import { WithGameTab } from '@Components/WithGameTab'
 import { WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { adRoundSecondsRemaining } from '@Utils/adState'
 import { epochProgress } from '@Utils/epochProgress'
 import { useAdState, useGameTeamInfo } from '@Hooks/useGame'
 import { useTicker } from '@Hooks/useTicker'
@@ -55,7 +55,12 @@ const Challenges: FC = () => {
   // SWR refreshes (which only happen every 10s). Without this the value is
   // frozen until the next adState refetch.
   const now = useTicker()
-  const roundEndsIn = adState?.roundEndsAt ? Math.max(0, dayjs(adState.roundEndsAt).diff(now, 'second')) : null
+  const roundEndsIn = adRoundSecondsRemaining(
+    adState?.roundEndsAt,
+    now.valueOf(),
+    !!adState?.scoringPaused,
+    adState?.scoringPausedAt
+  )
   const currentEpochProgress = adState
     ? epochProgress(adState.currentRound, adState.startRound, adState.epochTicks)
     : null
@@ -66,6 +71,19 @@ const Challenges: FC = () => {
           <Flex direction={isCompact ? 'column' : 'row'} gap="sm" justify="space-between" align="flex-start" w="100%">
             <ChallengePanel />
             <Stack gap="sm" w={isCompact ? '100%' : '22rem'} miw={isCompact ? 0 : '22rem'}>
+              {adState?.scoringPaused && (
+                <Alert
+                  color="orange"
+                  variant="light"
+                  icon={<Icon path={mdiPauseCircleOutline} size={1} />}
+                  title={t('game.content.ad.scoring_paused', 'Scoring paused')}
+                >
+                  {t(
+                    'game.content.ad.scoring_paused_description',
+                    'Round progression, checker scoring, and captured-flag submissions are paused by the event operator.'
+                  )}
+                </Alert>
+              )}
               <Button
                 component="a"
                 href={`/games/${numId}/attack`}

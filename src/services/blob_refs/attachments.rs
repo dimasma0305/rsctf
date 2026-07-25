@@ -404,6 +404,9 @@ mod tests {
                 id INTEGER PRIMARY KEY, hash TEXT NOT NULL UNIQUE,
                 reference_count BIGINT NOT NULL
             );
+            CREATE TABLE "{schema}"."AdServiceSnapshots" (
+                id BIGSERIAL PRIMARY KEY, local_file_id INTEGER NOT NULL
+            );
             CREATE TABLE "{schema}"."Attachments" (id INTEGER PRIMARY KEY, local_file_id INTEGER);
             CREATE TABLE "{schema}"."Participations" (id INTEGER PRIMARY KEY, writeup_id INTEGER);
             CREATE TABLE "{schema}"."AspNetUsers" (id INTEGER PRIMARY KEY, avatar_hash TEXT);
@@ -476,6 +479,9 @@ mod tests {
             CREATE TABLE "{schema}"."Files" (
                 id INTEGER PRIMARY KEY, hash TEXT NOT NULL UNIQUE,
                 reference_count BIGINT NOT NULL
+            );
+            CREATE TABLE "{schema}"."AdServiceSnapshots" (
+                id BIGSERIAL PRIMARY KEY, local_file_id INTEGER NOT NULL
             );
             CREATE TABLE "{schema}"."Attachments" (id INTEGER PRIMARY KEY, local_file_id INTEGER);
             CREATE TABLE "{schema}"."Participations" (id INTEGER PRIMARY KEY, writeup_id INTEGER);

@@ -11,7 +11,7 @@
       "snapshot": {
         "label": "Snapshot",
         "with_count": "Snapshot ({{count}})",
-        "download": "Download .tar.gz"
+        "download": "Download .tar"
       }
     },
     "challenges": {
@@ -508,7 +508,7 @@
         },
         "ad_snapshot_retention_days": {
           "label": "A&D snapshot retention (days)",
-          "description": "How long the per-team container snapshots stay available for download after game end. Leave empty to keep forever (the default).",
+          "description": "How long final Docker-hosted A&D filesystem snapshots stay available after game end. Leave empty to keep forever (the default).",
           "placeholder": "∞ (keep forever)"
         },
         "ad_tick_seconds": {
@@ -533,7 +533,7 @@
         },
         "ad_allow_snapshot_download": {
           "label": "A&D snapshot download",
-          "description": "Snapshot each team's container at game end and offer the tarball for download."
+          "description": "Persist each Docker-hosted A&D container filesystem at game end and offer the TAR archive for download. Kubernetes and BYOC services are excluded."
         }
       },
       "managers": {

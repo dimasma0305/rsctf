@@ -44,6 +44,9 @@ impl AttachmentHarness {
               name TEXT NOT NULL DEFAULT 'attachment',
               reference_count BIGINT NOT NULL
             );
+            CREATE TABLE "AdServiceSnapshots" (
+              id BIGSERIAL PRIMARY KEY, local_file_id INTEGER NOT NULL
+            );
             CREATE TABLE "Games" (
               id INTEGER PRIMARY KEY,
               deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,

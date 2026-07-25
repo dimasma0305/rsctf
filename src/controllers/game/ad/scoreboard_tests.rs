@@ -77,6 +77,8 @@ fn ad_state_serializes_snapshotted_epoch_config_in_camel_case() {
         flag_delivery_failures: 0,
         round_started_at: None,
         round_ends_at: None,
+        scoring_paused: true,
+        scoring_paused_at: None,
         services: Vec::new(),
     })
     .expect("A&D state serializes");
@@ -84,6 +86,8 @@ fn ad_state_serializes_snapshotted_epoch_config_in_camel_case() {
     assert_eq!(value["currentRound"], 13);
     assert_eq!(value["epochTicks"], 8);
     assert_eq!(value["startRound"], 5);
+    assert_eq!(value["scoringPaused"], true);
+    assert!(value.get("scoringPausedAt").is_some());
 }
 
 #[test]

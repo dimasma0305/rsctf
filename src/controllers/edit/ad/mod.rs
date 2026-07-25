@@ -183,6 +183,8 @@ pub async fn ad_state(
             .await?
     };
     let service_ids: Vec<i32> = services.iter().map(|s| s.id).collect();
+    let snapshot_service_ids =
+        crate::services::blob_refs::available_service_snapshots(st.pg(), &service_ids).await?;
 
     // Latest checker verdict per service (max checked_at) → status label + id.
     let last_check_by_service: std::collections::HashMap<i32, ad_check_result::Model> =
@@ -258,8 +260,7 @@ pub async fn ad_state(
                             .map(|c| ad_check_status_label(c.status).to_string()),
                         last_check_id: last.map(|c| c.id),
                         current_flag: current_flags.get(&s.id).cloned(),
-                        // Snapshot tarballs are blob/k8s-gated — none stored.
-                        snapshot_available: false,
+                        snapshot_available: snapshot_service_ids.contains(&s.id),
                         changed_file_count: None,
                         self_hosted: is_byoc,
                     }
@@ -833,14 +834,10 @@ pub async fn ad_restart_service(
 /// (`Api.ts` `editAdSnapshotUrl`).
 ///
 /// Port of `AdAdminController.DownloadSnapshot`: unlike the player endpoint
-/// (`game::ad::download_snapshot`) this is NOT team-scoped — a game admin pulls
-/// any team's snapshot — and it drops the post-game gate and the
-/// `AdAllowSnapshotDownload` policy check (forensics may run mid-game). Same
-/// production model as the player side: rsctf keeps no snapshot-blob column, so
-/// the tarball is produced on demand by `docker export` of the live service
-/// container (an uncompressed TAR of its current filesystem). BYOC self-hosted
-/// services expose only a tunnel relay, not the team's box — refuse rather than
-/// leak relay internals (RSCTF has no snapshot blob for them either).
+/// (`game::ad::download_snapshot`) this is NOT team-scoped. A game admin may
+/// download the retained final blob, or export a still-running hosted service
+/// for live forensics. BYOC self-hosted services expose only a tunnel relay, not
+/// the team's box — refuse rather than leak relay internals.
 pub async fn ad_download_snapshot(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -863,12 +860,22 @@ pub async fn ad_download_snapshot(
         ));
     }
 
-    let Some(cid) = svc.container_id.as_deref().filter(|c| !c.is_empty()) else {
-        return Err(AppError::not_found(
-            "Snapshot not available (no platform container for this service)",
-        ));
+    let persisted = crate::services::blob_refs::load_service_snapshot(st.pg(), svc.id).await?;
+    let tar = if let Some(snapshot) = persisted {
+        st.storage
+            .load_bounded(
+                &snapshot.hash,
+                crate::services::container::MAX_SNAPSHOT_EXPORT_BYTES,
+            )
+            .await?
+    } else {
+        let Some(cid) = svc.container_id.as_deref().filter(|c| !c.is_empty()) else {
+            return Err(AppError::not_found(
+                "Snapshot not available for this service",
+            ));
+        };
+        st.containers.export(cid).await?
     };
-    let tar = st.containers.export(cid).await?;
     let filename = format!(
         "ad-snapshot-team{}-challenge{}.tar",
         svc.participation_id, svc.challenge_id
@@ -876,6 +883,7 @@ pub async fn ad_download_snapshot(
     Ok((
         [
             (header::CONTENT_TYPE, "application/x-tar".to_string()),
+            (header::CONTENT_LENGTH, tar.len().to_string()),
             (header::CACHE_CONTROL, "private, no-store".to_string()),
             (header::PRAGMA, "no-cache".to_string()),
             (
@@ -897,8 +905,21 @@ pub async fn ad_snapshot_changes(
 ) -> AppResult<RequestResponse<JsonValue>> {
     manager_or_admin(&st, &user, game_id).await?;
     let changes = snapshot_changes_for(&st, game_id, ats_id).await?;
+    let persisted = crate::services::blob_refs::load_service_snapshot(st.pg(), ats_id).await?;
+    let live: bool = sqlx::query_scalar(
+        r#"SELECT container_id IS NOT NULL
+             FROM "AdTeamServices"
+            WHERE id = $1 AND game_id = $2"#,
+    )
+    .bind(ats_id)
+    .bind(game_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Service not found"))?;
     Ok(RequestResponse::ok(json!({
-        "snapshotAvailable": !changes.is_empty(),
+        "snapshotAvailable": persisted.is_some() || !changes.is_empty(),
+        "live": live,
         "changes": changes.iter().map(|c| json!({"path": c.path, "kind": c.kind})).collect::<Vec<_>>(),
     })))
 }

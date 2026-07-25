@@ -81,6 +81,9 @@ async fn branding_delete_atomically_tombstones_once_and_retry_purges() {
           upload_time_utc TIMESTAMPTZ NOT NULL, file_size BIGINT NOT NULL,
           name TEXT NOT NULL, reference_count BIGINT NOT NULL
         );
+        CREATE TABLE "AdServiceSnapshots" (
+          id BIGSERIAL PRIMARY KEY, local_file_id INTEGER NOT NULL
+        );
         CREATE TABLE "Attachments" (id INTEGER PRIMARY KEY, local_file_id INTEGER);
         CREATE TABLE "Participations" (id INTEGER PRIMARY KEY, writeup_id INTEGER);
         CREATE TABLE "AspNetUsers" (id INTEGER PRIMARY KEY, avatar_hash TEXT);

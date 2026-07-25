@@ -17,6 +17,7 @@ pub(super) struct AdStateService {
     pub(super) host: String,
     pub(super) port: i32,
     pub(super) container_id: Option<String>,
+    pub(super) snapshot_available: bool,
     pub(super) last_reset_at: Option<DateTime<Utc>>,
     pub(super) current_flag: Option<String>,
     pub(super) last_check_status: Option<i16>,
@@ -29,6 +30,8 @@ pub(super) struct AdStateTail {
     pub(super) round_ends_at: Option<DateTime<Utc>>,
     pub(super) flags_ready: bool,
     pub(super) flag_delivery_failures: i32,
+    pub(super) scoring_paused: bool,
+    pub(super) scoring_paused_at: Option<DateTime<Utc>>,
     pub(super) services: Vec<AdStateService>,
 }
 
@@ -42,11 +45,14 @@ struct AdStateTailRow {
     round_ends_at: Option<DateTime<Utc>>,
     flags_ready: Option<bool>,
     flag_delivery_failures: Option<i32>,
+    scoring_paused: Option<bool>,
+    scoring_paused_at: Option<DateTime<Utc>>,
     service_id: Option<i32>,
     challenge_id: Option<i32>,
     host: Option<String>,
     port: Option<i32>,
     container_id: Option<String>,
+    snapshot_available: Option<bool>,
     last_reset_at: Option<DateTime<Utc>>,
     current_flag: Option<String>,
     last_check_status: Option<i16>,
@@ -61,6 +67,10 @@ WITH current_round AS (
      WHERE game_id = $1
      ORDER BY number DESC, id DESC
      LIMIT 1
+), game_state AS (
+    SELECT ad_scoring_paused, ad_scoring_paused_at
+      FROM "Games"
+     WHERE id = $1
 ), team_services AS (
     SELECT service.id, service.challenge_id, service.host, service.port,
            service.container_id, service.last_reset_at
@@ -82,12 +92,23 @@ SELECT round.number AS round_number,
        round.start_time_utc AS round_started_at,
        round.end_time_utc AS round_ends_at,
        round.flags_ready, round.flag_delivery_failures,
+       game.ad_scoring_paused AS scoring_paused,
+       game.ad_scoring_paused_at AS scoring_paused_at,
        service.id AS service_id, service.challenge_id, service.host, service.port,
-       service.container_id, service.last_reset_at,
+       service.container_id,
+       snapshot.id IS NOT NULL AND snapshot_file.reference_count > 0
+           AS snapshot_available,
+       service.last_reset_at,
        flag.flag AS current_flag, latest.status AS last_check_status
   FROM (VALUES (1)) singleton(dummy)
   LEFT JOIN current_round round ON TRUE
+  LEFT JOIN game_state game ON TRUE
   LEFT JOIN team_services service ON TRUE
+  LEFT JOIN "AdServiceSnapshots" snapshot
+    ON snapshot.team_service_id = service.id
+   AND (snapshot.expires_at_utc IS NULL
+        OR snapshot.expires_at_utc > clock_timestamp())
+  LEFT JOIN "Files" snapshot_file ON snapshot_file.id = snapshot.local_file_id
   LEFT JOIN "AdFlags" flag
     ON flag.round_id = round.id AND flag.team_service_id = service.id
   LEFT JOIN LATERAL (
@@ -135,6 +156,8 @@ fn reduce(rows: Vec<AdStateTailRow>) -> AppResult<AdStateTail> {
         round_ends_at: first.round_ends_at,
         flags_ready: first.flags_ready.unwrap_or(false),
         flag_delivery_failures: first.flag_delivery_failures.unwrap_or(0),
+        scoring_paused: first.scoring_paused.unwrap_or(false),
+        scoring_paused_at: first.scoring_paused_at,
         services: Vec::with_capacity(rows.len()),
     };
     for row in rows {
@@ -147,6 +170,7 @@ fn reduce(rows: Vec<AdStateTailRow>) -> AppResult<AdStateTail> {
             host: row.host.ok_or_else(|| malformed_service("host"))?,
             port: row.port.ok_or_else(|| malformed_service("port"))?,
             container_id: row.container_id,
+            snapshot_available: row.snapshot_available.unwrap_or(false),
             last_reset_at: row.last_reset_at,
             current_flag: row.current_flag,
             last_check_status: row.last_check_status,
@@ -168,11 +192,14 @@ mod tests {
             round_ends_at: None,
             flags_ready: round.map(|_| true),
             flag_delivery_failures: round.map(|_| 2),
+            scoring_paused: Some(false),
+            scoring_paused_at: None,
             service_id: None,
             challenge_id: None,
             host: None,
             port: None,
             container_id: None,
+            snapshot_available: Some(false),
             last_reset_at: None,
             current_flag: None,
             last_check_status: None,
@@ -216,6 +243,10 @@ mod tests {
               start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL,
               flags_published_at TIMESTAMPTZ, flag_delivery_failures INTEGER NOT NULL
             );
+            CREATE TEMP TABLE "Games" (
+              id INTEGER PRIMARY KEY, ad_scoring_paused BOOLEAN NOT NULL,
+              ad_scoring_paused_at TIMESTAMPTZ
+            );
             CREATE TEMP TABLE "Participations" (
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, status SMALLINT NOT NULL
             );
@@ -238,6 +269,14 @@ mod tests {
               status SMALLINT NOT NULL, sla_credit DOUBLE PRECISION,
               PRIMARY KEY (round_id, team_service_id)
             );
+            CREATE TEMP TABLE "Files" (
+              id INTEGER PRIMARY KEY, reference_count BIGINT NOT NULL
+            );
+            CREATE TEMP TABLE "AdServiceSnapshots" (
+              id BIGINT PRIMARY KEY, team_service_id INTEGER NOT NULL,
+              local_file_id INTEGER NOT NULL, expires_at_utc TIMESTAMPTZ
+            );
+            INSERT INTO "Games" VALUES (1, TRUE, now()), (2, FALSE, NULL);
             "#,
         )
         .execute(&mut connection)
@@ -308,10 +347,22 @@ mod tests {
         .execute(&mut connection)
         .await
         .unwrap();
+        sqlx::raw_sql(
+            r#"INSERT INTO "Files" VALUES (501, 1);
+               INSERT INTO "AdServiceSnapshots"
+                    VALUES (601, 21, 501, now() + interval '1 day')"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
 
         let tail = load(&mut connection, 1, 7).await.unwrap();
         assert_eq!(tail.current_round, 7);
+        assert!(tail.scoring_paused);
+        assert!(tail.scoring_paused_at.is_some());
         assert_eq!(tail.services.len(), 2);
+        assert!(tail.services[0].snapshot_available);
+        assert!(!tail.services[1].snapshot_available);
         assert_eq!(
             tail.services[0].current_flag.as_deref(),
             Some("current-flag")

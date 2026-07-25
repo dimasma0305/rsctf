@@ -88,6 +88,7 @@ mod m0078_game_manager_lookup_index;
 mod m0079_game_configuration_integrity;
 mod m0080_challenge_review_uniqueness;
 mod m0081_build_record_lifecycle;
+mod m0082_ad_service_snapshots;
 
 pub struct Migrator;
 
@@ -176,6 +177,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0079_game_configuration_integrity::Migration),
             Box::new(m0080_challenge_review_uniqueness::Migration),
             Box::new(m0081_build_record_lifecycle::Migration),
+            Box::new(m0082_ad_service_snapshots::Migration),
         ]
     }
 }

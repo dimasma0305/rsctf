@@ -91,6 +91,9 @@ pub struct AdStateModel {
     pub round_started_at: Option<DateTime<Utc>>,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub round_ends_at: Option<DateTime<Utc>>,
+    pub scoring_paused: bool,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub scoring_paused_at: Option<DateTime<Utc>>,
     pub services: Vec<AdTeamServiceStateModel>,
 }
 
@@ -551,6 +554,8 @@ pub async fn state(
         round_ends_at,
         flags_ready,
         flag_delivery_failures,
+        scoring_paused,
+        scoring_paused_at,
         services,
     } = super::state_tail::load(st.pg(), id, part.id).await?;
 
@@ -567,8 +572,7 @@ pub async fn state(
                 .cloned()
                 .unwrap_or_default();
             // Downloadable exactly when the route would serve it (see above).
-            let snapshot_available =
-                snapshots_downloadable && s.container_id.is_some() && !self_hosted;
+            let snapshot_available = snapshots_downloadable && s.snapshot_available && !self_hosted;
             // Remaining cooldown from the last self-reset (0 if never reset or the
             // window has elapsed); the button only lights when it's fully elapsed.
             let cooldown_remaining = s
@@ -603,6 +607,8 @@ pub async fn state(
         flag_delivery_failures,
         round_started_at,
         round_ends_at,
+        scoring_paused,
+        scoring_paused_at,
         services: items,
     }))
 }
@@ -805,13 +811,10 @@ pub async fn reset_service(
 /// post-game container snapshot tarball for one of the caller's OWN team's
 /// services. Ported from RSCTF `AdGameController.DownloadSnapshot`.
 ///
-/// RSCTF streams a stored `.tar.gz` blob keyed on `SnapshotBlobKey`. rsctf keeps
-/// no snapshot-blob column, so this is **best-effort deterministic-without-
-/// persistence**: the tarball is produced on demand by `docker export` of the
-/// live service container (an uncompressed TAR of its current filesystem). The
-/// gate is identical to the `snapshotAvailable` flag the player `state` reports,
-/// so the client's download button never lies. Only the Docker backend can
-/// export; on other backends the export fails with a clear message.
+/// The end-of-event lifecycle captures an immutable Docker filesystem export in
+/// blob storage before destroying the service backend. The gate is identical to
+/// the `snapshotAvailable` flag the player `state` reports, so the client's
+/// download button never lies.
 pub async fn download_snapshot(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -858,12 +861,19 @@ pub async fn download_snapshot(
         ));
     }
 
-    let Some(cid) = svc.container_id.as_deref().filter(|c| !c.is_empty()) else {
+    let Some(snapshot) = crate::services::blob_refs::load_service_snapshot(st.pg(), svc.id).await?
+    else {
         return Err(AppError::not_found(
-            "Snapshot not available (no platform container for this service)",
+            "Snapshot not available for this service",
         ));
     };
-    let tar = st.containers.export(cid).await?;
+    let tar = st
+        .storage
+        .load_bounded(
+            &snapshot.hash,
+            crate::services::container::MAX_SNAPSHOT_EXPORT_BYTES,
+        )
+        .await?;
     let filename = format!(
         "ad-snapshot-team{}-challenge{}.tar",
         svc.participation_id, svc.challenge_id
@@ -871,6 +881,7 @@ pub async fn download_snapshot(
     Ok((
         [
             (header::CONTENT_TYPE, "application/x-tar".to_string()),
+            (header::CONTENT_LENGTH, tar.len().to_string()),
             (header::CACHE_CONTROL, "private, no-store".to_string()),
             (header::PRAGMA, "no-cache".to_string()),
             (

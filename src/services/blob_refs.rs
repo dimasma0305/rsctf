@@ -11,12 +11,17 @@ use crate::storage::{BlobStorage, StoredBlob};
 use crate::utils::codec::sha256_hex;
 use crate::utils::error::{AppError, AppResult};
 
+mod ad_snapshots;
 mod attachments;
 mod challenges;
 #[cfg(test)]
 mod poster_tests;
 mod seaorm;
 mod writeups;
+pub use ad_snapshots::{
+    available_service_snapshots, load_service_snapshot, purge_expired_service_snapshots,
+    store_service_snapshot, ServiceSnapshotBlob,
+};
 pub(crate) use attachments::delete_attachment_locked;
 pub use attachments::{
     delete_attachment, delete_orphan_attachments, store_and_replace_challenge_attachment,
@@ -173,6 +178,7 @@ async fn release_locked(
         let has_owner: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(SELECT 1 FROM "Attachments" WHERE local_file_id = $1)
                    OR EXISTS(SELECT 1 FROM "Participations" WHERE writeup_id = $1)
+                   OR EXISTS(SELECT 1 FROM "AdServiceSnapshots" WHERE local_file_id = $1)
                    OR EXISTS(SELECT 1 FROM "AspNetUsers" WHERE avatar_hash = $2)
                    OR EXISTS(SELECT 1 FROM "Teams" WHERE avatar_hash = $2)
                    OR EXISTS(SELECT 1 FROM "Games" WHERE poster_hash = $2)
@@ -310,6 +316,11 @@ pub async fn purge_if_unreferenced(
                OR EXISTS(
                     SELECT 1 FROM "Participations" participation
                     JOIN "Files" file ON file.id = participation.writeup_id
+                     WHERE file.hash = $1
+               )
+               OR EXISTS(
+                    SELECT 1 FROM "AdServiceSnapshots" snapshot
+                    JOIN "Files" file ON file.id = snapshot.local_file_id
                      WHERE file.hash = $1
                )
                OR EXISTS(SELECT 1 FROM "AspNetUsers" WHERE avatar_hash = $1)
@@ -501,6 +512,9 @@ mod tests {
               upload_time_utc TIMESTAMPTZ NOT NULL, file_size BIGINT NOT NULL,
               name TEXT NOT NULL, reference_count BIGINT NOT NULL
             );
+            CREATE TABLE "AdServiceSnapshots" (
+              id BIGSERIAL PRIMARY KEY, local_file_id INTEGER NOT NULL
+            );
             CREATE TABLE "Participations" (
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
               team_id INTEGER NOT NULL, status SMALLINT NOT NULL,
@@ -621,6 +635,9 @@ mod tests {
                 file_size BIGINT NOT NULL,
                 name TEXT NOT NULL,
                 reference_count BIGINT NOT NULL
+            );
+            CREATE TABLE "{schema}"."AdServiceSnapshots" (
+                id BIGSERIAL PRIMARY KEY, local_file_id INTEGER NOT NULL
             );
             CREATE UNIQUE INDEX ux_files_hash ON "{schema}"."Files"(hash);
             CREATE TABLE "{schema}"."Participations" (
