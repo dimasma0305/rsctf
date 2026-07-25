@@ -5,6 +5,212 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## A&D finalization correctness and snapshot capacity — 25 July 2026
+
+The accepted source is
+`e2492f7a998a2129ca0b987807e042fbe6d32636` (`0.1.18`), released as the
+immutable multi-platform image
+`ghcr.io/dimasma0305/rsctf@sha256:6b59c6e8d3b0fa329f0ebae7d3e3c4edd4035254fc822ae9932d8fdff689dd6d`.
+The comparison deployment was
+`fbc0888779ff0c8f7fa0c4037408da90d1056015` (`0.1.17`) at
+`ghcr.io/dimasma0305/rsctf@sha256:6f6ab51331de5b70c072e4fef5664b64cd9cad75c85a263e40efa60c24da0e7b`.
+
+### Failure modes and corrections
+
+- A VPN reset cooldown could be extended by a peer belonging to an ended event
+  or an ineligible participation. The query now considers only active,
+  accepted, A&D-eligible ownership. It still fails closed when an eligible
+  active service is missing its required peer, so removing a peer cannot bypass
+  the cooldown.
+- A hosted Docker A&D service was destroyed after event end without preserving
+  the filesystem teams needed for post-event review. The control reaper now
+  captures one immutable final snapshot before releasing the backend identity.
+  Publication is idempotent and content-addressed, and the database owner
+  decrements the shared blob reference exactly once on expiry or cascade.
+  Player downloads remain post-event, team-scoped, and policy-gated; organizers
+  retain their cross-team forensic access.
+- A raw `docker export` of the two representative services was already larger
+  than the initial 64 MiB limit, so the first implementation would have retained
+  neither ordinary service. The released pipeline admits only one export per
+  process, caps raw input at 512 MiB, compresses away from Tokio worker threads
+  with gzip's fast level, and caps the retained archive at 128 MiB. It holds the
+  same semaphore through export and compression, so queued requests cannot
+  accumulate several 512 MiB buffers.
+- An archive over either safety limit is a permanent `NotRequired` result:
+  RSCTF logs the skipped snapshot and continues teardown instead of leaking the
+  ended container into an endless retry loop. Transient Docker or storage errors
+  still retain the backend for retry.
+- Kubernetes, trusted-worker, and self-hosted BYOC services are explicitly
+  excluded. Those backends do not expose a portable, trustworthy equivalent of
+  Docker's engine-level filesystem export; exporting a BYOC relay would archive
+  the relay rather than the team's host.
+- The player A&D state now includes `scoringPaused` and `scoringPausedAt`.
+  While paused, the React client displays the pause state and freezes the
+  countdown at the remaining duration instead of counting through an inactive
+  round.
+
+Regression coverage includes eligible/ineligible VPN peer selection, the
+fail-closed missing-peer case, deterministic gzip and round-trip extraction,
+both archive limits, permanent-versus-transient teardown classification,
+idempotent snapshot publication/download/expiry against disposable PostgreSQL,
+player ownership and policy gates, paused-state wire shape and countdown
+behavior, and gzip content-type/magic checks in the organizer lifecycle
+contract. The PostgreSQL regression verifies that expiry removes the metadata,
+decrements the `Files` reference once, and purges the physical blob.
+
+### Snapshot capacity for 100 teams and two A&D challenges
+
+Snapshots are final-event artifacts, not per-round versions. One event with 100
+teams and two hosted A&D challenges therefore creates at most 200 archives.
+Representative images already present on this host produced:
+
+| Representative service | Raw Docker export | gzip-fast archive |
+| --- | ---: | ---: |
+| `rsctf/10/owasp-portal` | 168.56 MiB | 64.85 MiB |
+| `rsctf/10/pwn-armory` | 298.94 MiB | 115.58 MiB |
+| 100 teams × both services | 45.65 GiB | 17.62 GiB |
+
+The measured 17.62 GiB is a planning estimate, not a quota: team patches and
+written data change compressibility. The enforced retained ceiling is exactly
+`200 × 128 MiB = 25 GiB`, plus small filesystem and database metadata overhead.
+An individual service whose compressed archive exceeds 128 MiB is skipped in
+full; RSCTF never stores a truncated archive.
+
+At measurement time the production filesystem had 119.56 GiB free and the
+shared files volume held 0.566 GiB. This event would consume about 14.7% of the
+currently free space at the representative size, or 20.9% at the hard ceiling.
+An empty retention setting means keep forever. Recurring events should set
+`A&D snapshot retention (days)` explicitly—30 days is a reasonable operational
+default—because four retained worst-case events would consume 100 GiB even
+though every individual archive remains bounded.
+
+### Same-fixture fixed-rate comparison
+
+Both passes used the same retained 100-team game (`127`), one A&D service, one
+KotH hill, paused scoring, public TLS origin, two web replicas, singleton
+control replica, 120 preallocated VUs, a fixed 20 iteration/s arrival rate, and
+a 45-second duration:
+
+```sh
+TARGET=https://tcp.1pc.tf GAME=127 READ_ONLY=1 RATE=20 VUS=120 \
+  DURATION=45s SUMMARY_JSON=<output.json> npm run player
+```
+
+Each accepted iteration polls the relevant state, target, token, and board
+routes, so both runs completed 901 iterations and 5,585 HTTP requests. There
+were zero application errors, HTTP failures, server 5xx responses, invalid A&D
+epoch boards, interrupted iterations, or dropped iterations. The scheduled
+arrival rate, request count, fixture, and client tree were unchanged.
+
+| Metric | `0.1.17` before | `0.1.18` after | Change |
+| --- | ---: | ---: | ---: |
+| Overall average | 4.263 ms | 3.497 ms | -18.0% |
+| Overall p50 | 3.445 ms | 3.146 ms | -8.7% |
+| Overall p90 | 7.237 ms | 5.263 ms | -27.3% |
+| Overall p95 | 9.122 ms | 6.495 ms | -28.8% |
+| Overall p99 | 14.970 ms | 9.612 ms | -35.8% |
+| Overall max | 83.605 ms | 60.176 ms | -28.0% |
+| A&D state p50 / p95 | 3.687 / 7.706 ms | 3.343 / 6.677 ms | -9.3% / -13.4% |
+| A&D targets p50 / p95 | 3.563 / 8.123 ms | 3.067 / 6.498 ms | -13.9% / -20.0% |
+| A&D epoch board p95 | 9.050 ms | 6.467 ms | -28.5% |
+| Main board p95 | 9.588 ms | 6.866 ms | -28.4% |
+| KotH board p95 | 9.695 ms | 6.769 ms | -30.2% |
+| Errors / HTTP failures / 5xx | 0 / 0 / 0 | 0 / 0 / 0 | clean |
+
+The complete before distributions, in milliseconds, were:
+
+| Endpoint | Average | p50 | p90 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 4.263 | 3.445 | 7.237 | 9.122 | 14.970 | 83.605 |
+| A&D state | 4.168 | 3.687 | 6.358 | 7.706 | 11.122 | 13.112 |
+| A&D targets | 4.172 | 3.563 | 6.348 | 8.123 | 13.739 | 20.320 |
+| A&D epoch board | 4.558 | 3.795 | 7.430 | 9.050 | 13.243 | 27.316 |
+| Board mix | 4.691 | 3.752 | 7.628 | 9.441 | 14.923 | 83.605 |
+| Main board | 4.638 | 3.716 | 7.752 | 9.588 | 14.013 | 27.348 |
+| KotH board | 4.876 | 3.762 | 7.839 | 9.695 | 22.053 | 83.605 |
+| KotH state | 2.995 | 2.213 | 5.629 | 7.709 | 14.064 | 30.822 |
+| KotH timeline | 2.847 | 1.959 | 4.301 | 5.458 | 22.772 | 40.105 |
+| KotH token | 4.885 | 3.861 | 8.227 | 10.507 | 19.371 | 64.424 |
+
+The complete steady-state after distributions, in milliseconds, were:
+
+| Endpoint | Average | p50 | p90 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 3.497 | 3.146 | 5.263 | 6.495 | 9.612 | 60.176 |
+| A&D state | 3.786 | 3.343 | 5.607 | 6.677 | 8.834 | 11.708 |
+| A&D targets | 3.583 | 3.067 | 5.436 | 6.498 | 9.419 | 11.513 |
+| A&D epoch board | 3.868 | 3.341 | 5.350 | 6.467 | 9.029 | 60.176 |
+| Board mix | 3.910 | 3.329 | 5.409 | 6.700 | 10.397 | 60.176 |
+| Main board | 3.835 | 3.318 | 5.409 | 6.866 | 9.722 | 19.169 |
+| KotH board | 4.027 | 3.340 | 5.568 | 6.769 | 18.496 | 45.346 |
+| KotH state | 2.357 | 1.979 | 3.965 | 5.559 | 8.639 | 12.850 |
+| KotH timeline | 2.518 | 1.762 | 3.668 | 5.089 | 21.763 | 28.955 |
+| KotH token | 3.641 | 3.323 | 5.371 | 6.381 | 9.512 | 12.365 |
+
+The first pass immediately after restarting all application roles was retained
+as cold-start evidence: 5,585/5,585 requests still succeeded, with overall
+average/p50/p90/p95/p99/max of
+`5.17/4.03/9.00/11.85/21.31/95.40 ms`. The table uses the following warmed pass,
+matching the long-running state of the before deployment.
+
+Five in-window `docker stats --no-stream` samples produced application totals
+of `14.03, 18.76, 14.87, 9.88, 13.09%` of one logical core. The median was
+14.03%, versus 15.89% before (-11.7%). PostgreSQL's median was 7.11%, versus
+9.32% before. Peak sampled application memory was 183.89 MiB and PostgreSQL was
+313.2 MiB, versus approximately 267 MiB and 365.2 MiB before. The after roles
+had just restarted, so the memory difference is not treated as a steady-state
+optimization result. One before sample overlapped a checker/round spike; the
+CPU figures are a no-regression observation, not a causal speed claim.
+
+### Verification, release, and production state
+
+`cargo check --locked --all-targets`,
+`cargo clippy --locked --all-targets -- -D warnings`, all 746 Rust library
+tests, the release build, 75 React tests and type checks, and all 284 load
+harness tests passed. The ignored PostgreSQL snapshot and VPN regressions also
+passed against disposable schemas. GitHub CI, documentation, Helm, native
+AMD64/ARM64 container publication, attestation, and tagged Linux AMD64/Linux
+ARM64/Windows AMD64 worker release workflows succeeded. The `v0.1.18` release
+contains both installer scripts, all three worker archives, checksums, and the
+worker attestation; every downloaded checksum verified.
+
+Before deployment, PostgreSQL and uploaded files were backed up to
+`/root/rsctf-production/backups/20260725T140102Z-pre-v0.1.18`. The 4.2 MiB
+custom PostgreSQL dump and 191 MiB file archive passed their recorded SHA-256
+checks, and the dump catalog was readable by PostgreSQL.
+
+The first new control process correctly failed closed on the pending migration.
+The application roles were then stopped while PostgreSQL and Redis remained
+online, the pinned `0.1.18` migration role applied
+`m0082_ad_service_snapshots`, and all roles restarted on the new schema. This
+created a brief application-only migration window rather than running a new
+schema under mixed old/new binaries. The migration ledger, snapshot table,
+unique ownership index, and expiry index are present.
+
+Both web replicas and the singleton control replica now report version
+`0.1.18`, revision `e2492f7a998a2129ca0b987807e042fbe6d32636`, image ID
+`sha256:b2346a5d667a8f5d09fb7459c76589feb0cc1f154884d8c69aa1eb5d9aa25154`,
+and the same immutable manifest digest. All are healthy with zero restarts and
+zero OOM kills. Six consecutive public probes and all three direct in-container
+probes returned HTTP 200 with exact body `ok`; recent logs contain no panic,
+migration failure, restart loop, or error after convergence. The live paused
+A&D state returned round 1, one owned service, `scoringPaused: true`, and a
+numeric `scoringPausedAt`. Both public worker bootstrap endpoints passed their
+health-preflight, hidden-token, doctor, uninstall, and syntax/contract checks,
+and GitHub's latest release resolves to `v0.1.18`.
+
+After the matched benchmark, only its four exact fixtures—games 124 through
+127 with their recorded `LOADTEST-*` titles—were hidden and ended. They no
+longer appear in the public game catalog, and their managed KotH container was
+reaped. Historical data was preserved; unrelated events and other retained
+load fixtures were not modified.
+
+This campaign has no optimization-ledger row. It fixes A&D isolation,
+post-event recovery, bounded resource use, and pause correctness. The held-rate
+result proves no performance regression, but the changes were not introduced
+as a read-path optimization and the production samples include ordinary host
+noise.
+
 ## Sustained-event operational hardening — 25 July 2026
 
 This campaign addresses failure modes that accumulate during a long event rather than
