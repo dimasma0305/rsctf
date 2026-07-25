@@ -29,14 +29,13 @@ Measured on 2026-07-25 with `cargo-llvm-cov 0.8.7`:
 
 | Rust component | Line coverage | Notes |
 | --- | ---: | --- |
-| Server, default suite only | 22.77% | Database-backed ignored regressions excluded |
-| Server, default + 166 PostgreSQL/Redis regressions | 45.09% | All measured source, including migrations |
-| Server production source excluding migrations | 43.76% | CI floor: 40% |
+| Server production source, default suite only | 23.06% | Database-backed ignored regressions excluded |
+| Server production source, default + 164 PostgreSQL/Redis regressions | 43.76% | CI floor: 40%; migrations excluded |
 | Shared worker protocol | 82.77% | 20 protocol and wire-format tests |
 | Trusted worker agent | 39.57% | 45 tests; Docker lifecycle also runs with a real image in Linux CI |
 | BYOC agent | 55.03% | WebSocket, flag ordering, reconnect, and filesystem behavior |
 
-The database suite raises measured server line coverage by 22.32 percentage
+The database suite raises measured production-source coverage by 20.70 percentage
 points and, more importantly, exercises replica fences, deduplication,
 deletion races, A&D/KotH persistence, worker placement, repository solve
 preservation, anti-cheat evidence, and Redis coordination on every CI run.
@@ -77,15 +76,18 @@ cargo llvm-cov \
   --ignored \
   --test-threads=1 \
   --skip s3_round_trip \
+  --skip target_fk_deletes_scoped_tokens \
+  --skip ownership_constraints_are_validated_cascades \
   --skip database_board_is_finite_bounded_and_serializable \
   --skip database_aggregate_is_bounded_by_stable_roster \
   --skip database_epoch_rollup_is_idempotent \
   --skip database_rollup_invalidation_keeps_only_the_safe_prefix
 ```
 
-The skipped S3 test requires a live disposable object store. The other four
-skipped checks require a fully migrated, pre-provisioned A&D game and are
-explicit environment tests rather than self-contained CI fixtures.
+The skipped S3 test requires a live disposable object store. Two migration
+inspection checks require an already fully migrated installation, and the
+other four checks require a pre-provisioned A&D game. They remain explicit
+environment tests rather than self-contained CI fixtures.
 
 ## Event-scale validation
 
