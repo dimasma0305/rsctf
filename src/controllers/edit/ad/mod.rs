@@ -830,7 +830,7 @@ pub async fn ad_restart_service(
 }
 
 /// `GET /api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot` — admin
-/// forensics download of ANY team's service container snapshot tarball
+/// forensics download of ANY team's compressed service filesystem snapshot
 /// (`Api.ts` `editAdSnapshotUrl`).
 ///
 /// Port of `AdAdminController.DownloadSnapshot`: unlike the player endpoint
@@ -861,29 +861,34 @@ pub async fn ad_download_snapshot(
     }
 
     let persisted = crate::services::blob_refs::load_service_snapshot(st.pg(), svc.id).await?;
-    let tar = if let Some(snapshot) = persisted {
-        st.storage
+    let (archive, filename) = if let Some(snapshot) = persisted {
+        let archive = st
+            .storage
             .load_bounded(
                 &snapshot.hash,
-                crate::services::container::MAX_SNAPSHOT_EXPORT_BYTES,
+                crate::services::ad::snapshots::MAX_STORED_SNAPSHOT_BYTES,
             )
-            .await?
+            .await?;
+        (archive, snapshot.name)
     } else {
         let Some(cid) = svc.container_id.as_deref().filter(|c| !c.is_empty()) else {
             return Err(AppError::not_found(
                 "Snapshot not available for this service",
             ));
         };
-        st.containers.export(cid).await?
+        let archive =
+            crate::services::ad::snapshots::export_archive(st.containers.as_ref(), cid).await?;
+        let filename =
+            crate::services::ad::snapshots::archive_name(svc.participation_id, svc.challenge_id);
+        (archive, filename)
     };
-    let filename = format!(
-        "ad-snapshot-team{}-challenge{}.tar",
-        svc.participation_id, svc.challenge_id
-    );
     Ok((
         [
-            (header::CONTENT_TYPE, "application/x-tar".to_string()),
-            (header::CONTENT_LENGTH, tar.len().to_string()),
+            (
+                header::CONTENT_TYPE,
+                crate::services::ad::snapshots::SNAPSHOT_CONTENT_TYPE.to_string(),
+            ),
+            (header::CONTENT_LENGTH, archive.len().to_string()),
             (header::CACHE_CONTROL, "private, no-store".to_string()),
             (header::PRAGMA, "no-cache".to_string()),
             (
@@ -891,7 +896,7 @@ pub async fn ad_download_snapshot(
                 format!("attachment; filename=\"{filename}\""),
             ),
         ],
-        tar,
+        archive,
     )
         .into_response())
 }

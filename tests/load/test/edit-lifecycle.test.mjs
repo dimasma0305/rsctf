@@ -154,7 +154,7 @@ function objectBody(kind) {
     case 'array': return [];
     case 'page': return { data: [], total: 0, length: 0 };
     case 'zip': return new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
-    case 'tar': return new Uint8Array(512);
+    case 'tar': return new Uint8Array([0x1f, 0x8b]);
     case 'import': return { imported: 1, updated: 0, failed: 0, messages: [] };
     case 'flag-status': return 'Success';
     case 'inspector': return { containerGuid: '0123456789abcdef' };
@@ -189,7 +189,7 @@ function sampleResponse(operation) {
   return {
     status,
     body: objectBody(operation.responseKind),
-    headers: operation.responseKind === 'tar' ? { 'content-type': 'application/x-tar' } : {},
+    headers: operation.responseKind === 'tar' ? { 'content-type': 'application/gzip' } : {},
   };
 }
 

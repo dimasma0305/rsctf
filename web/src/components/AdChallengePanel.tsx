@@ -68,7 +68,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
             variant="light"
             leftSection={<Icon path={mdiDownload} size={0.7} />}
           >
-            {t('game.button.ad.download_snapshot', 'Download .tar')}
+            {t('game.button.ad.download_snapshot', 'Download .tar.gz')}
           </Button>
         </Tooltip>
       </Group>

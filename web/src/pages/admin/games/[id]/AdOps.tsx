@@ -623,8 +623,8 @@ const SnapshotModal: FC<{
 
   const downloadUrl = target ? api.edit.editAdSnapshotUrl(gameId, target.cell.adTeamServiceId) : '#'
   const filename = target
-    ? `ad-snapshot-team${target.cell.adTeamServiceId}-challenge${target.cell.challengeId}.tar`
-    : 'snapshot.tar'
+    ? `ad-snapshot-team${target.cell.adTeamServiceId}-challenge${target.cell.challengeId}.tar.gz`
+    : 'snapshot.tar.gz'
 
   return (
     <Modal
@@ -652,7 +652,7 @@ const SnapshotModal: FC<{
                 variant="default"
                 leftSection={<Icon path={mdiDownload} size={0.9} />}
               >
-                {t('admin.button.ad_ops.snapshot.download', 'Download .tar')}
+                {t('admin.button.ad_ops.snapshot.download', 'Download .tar.gz')}
               </Button>
             )}
             <Tooltip

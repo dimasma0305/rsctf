@@ -35,6 +35,9 @@ pub enum AppError {
     TooManyRequests,
 
     #[error("{0}")]
+    PayloadTooLarge(String),
+
+    #[error("{0}")]
     ServiceUnavailable(String),
 
     /// Carries a RSCTF numeric `ErrorCode` in the response body distinct from the
@@ -71,6 +74,9 @@ impl AppError {
     pub fn internal(msg: impl Into<String>) -> Self {
         AppError::Internal(anyhow::anyhow!(msg.into()))
     }
+    pub fn payload_too_large(msg: impl Into<String>) -> Self {
+        AppError::PayloadTooLarge(msg.into())
+    }
     pub fn unavailable(msg: impl Into<String>) -> Self {
         AppError::ServiceUnavailable(msg.into())
     }
@@ -102,6 +108,7 @@ impl AppError {
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Coded { http, .. } => *http,
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,

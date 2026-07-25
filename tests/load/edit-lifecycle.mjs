@@ -985,7 +985,7 @@ async function positiveReadAndMutationSurface() {
   const points = await call('edit_ad_snapshots_get', { jwt: identities.managerJwt });
   requireCondition(points.model.length > 0, 'snapshot history did not expose live drift point');
   const snapshot = await call('edit_ad_snapshot_download', { jwt: identities.managerJwt });
-  requireCondition(snapshot.model.length >= 512, 'snapshot TAR is empty');
+  requireCondition(snapshot.model.length >= 2, 'compressed snapshot archive is empty');
   await call('edit_ad_service_restart', { jwt: identities.managerJwt });
   const restartedRuntime = await waitForSql(
     `SELECT container_id FROM "AdTeamServices" WHERE id=${context.serviceId} AND game_id=${context.adGameId}`,

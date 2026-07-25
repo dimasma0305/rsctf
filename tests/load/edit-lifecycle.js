@@ -392,9 +392,10 @@ export function validateEditResponse(operationOrId, response) {
       if (!(body instanceof Uint8Array) || body[0] !== 0x50 || body[1] !== 0x4b) throw new Error(`${item.id} invalid ZIP`);
       break;
     case 'tar':
-      if (!(body instanceof Uint8Array) || body.length < 512 ||
-          !/application\/x-tar/i.test(headerValue(response.headers, 'content-type'))) {
-        throw new Error(`${item.id} invalid TAR`);
+      if (!(body instanceof Uint8Array) || body.length < 2 ||
+          body[0] !== 0x1f || body[1] !== 0x8b ||
+          !/application\/gzip/i.test(headerValue(response.headers, 'content-type'))) {
+        throw new Error(`${item.id} invalid gzip-compressed TAR`);
       }
       break;
     case 'import':

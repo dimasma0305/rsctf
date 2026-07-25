@@ -808,7 +808,7 @@ pub async fn reset_service(
 }
 
 /// `GET /api/Game/{id}/Ad/Services/{adTeamServiceId}/Snapshot` — download the
-/// post-game container snapshot tarball for one of the caller's OWN team's
+/// compressed post-game container snapshot for one of the caller's OWN team's
 /// services. Ported from RSCTF `AdGameController.DownloadSnapshot`.
 ///
 /// The end-of-event lifecycle captures an immutable Docker filesystem export in
@@ -867,21 +867,21 @@ pub async fn download_snapshot(
             "Snapshot not available for this service",
         ));
     };
-    let tar = st
+    let archive = st
         .storage
         .load_bounded(
             &snapshot.hash,
-            crate::services::container::MAX_SNAPSHOT_EXPORT_BYTES,
+            crate::services::ad::snapshots::MAX_STORED_SNAPSHOT_BYTES,
         )
         .await?;
-    let filename = format!(
-        "ad-snapshot-team{}-challenge{}.tar",
-        svc.participation_id, svc.challenge_id
-    );
+    let filename = snapshot.name;
     Ok((
         [
-            (header::CONTENT_TYPE, "application/x-tar".to_string()),
-            (header::CONTENT_LENGTH, tar.len().to_string()),
+            (
+                header::CONTENT_TYPE,
+                crate::services::ad::snapshots::SNAPSHOT_CONTENT_TYPE.to_string(),
+            ),
+            (header::CONTENT_LENGTH, archive.len().to_string()),
             (header::CACHE_CONTROL, "private, no-store".to_string()),
             (header::PRAGMA, "no-cache".to_string()),
             (
@@ -889,7 +889,7 @@ pub async fn download_snapshot(
                 format!("attachment; filename=\"{filename}\""),
             ),
         ],
-        tar,
+        archive,
     )
         .into_response())
 }

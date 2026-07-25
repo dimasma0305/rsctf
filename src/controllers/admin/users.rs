@@ -244,6 +244,7 @@ fn sanitized_import_row_error(error: &AppError) -> String {
     match error {
         AppError::BadRequest(reason)
         | AppError::Conflict(reason)
+        | AppError::PayloadTooLarge(reason)
         | AppError::Validation(reason) => reason.clone(),
         AppError::ServiceUnavailable(_) => "service temporarily unavailable".to_string(),
         _ => "row could not be imported".to_string(),

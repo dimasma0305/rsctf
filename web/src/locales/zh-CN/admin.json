@@ -492,7 +492,7 @@
         },
         "ad_snapshot_retention_days": {
           "label": "攻防快照保留（天）",
-          "description": "终局快照在赛后保留下载的天数。留空即永久保留（默认）。",
+          "description": "终局 Docker 文件系统快照在赛后保留下载的天数。归档使用 gzip 压缩，每份上限为 128 MiB。留空即永久保留（默认）。",
           "placeholder": "∞（永久保留）"
         }
       },

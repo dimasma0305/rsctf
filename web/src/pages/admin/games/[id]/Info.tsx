@@ -688,7 +688,7 @@ const GameInfoEdit: FC = () => {
                   )}
                   description={t(
                     'admin.content.games.info.ad_snapshot_retention_days.description',
-                    'How long final Docker-hosted A&D filesystem snapshots stay available after game end. Leave empty to keep forever (the default).'
+                    'How long final Docker-hosted A&D filesystem snapshots stay available after game end. Archives are gzip-compressed and capped at 128 MiB each. Leave empty to keep forever (the default).'
                   )}
                   placeholder={t('admin.content.games.info.ad_snapshot_retention_days.placeholder', '∞ (keep forever)')}
                   disabled={disabled}
@@ -757,7 +757,7 @@ const GameInfoEdit: FC = () => {
                   label={t('admin.content.games.info.ad_getflag_window_fraction.label', 'A&D getflag jitter window')}
                   description={t(
                     'admin.content.games.info.ad_getflag_window_fraction.description',
-                    "Fraction of the tick used for the random SLA-check offset after the grace period (default 0.5). Runtime reserves a complete probe and persistence budget; every service gets an independent offset."
+                    'Fraction of the tick used for the random SLA-check offset after the grace period (default 0.5). Runtime reserves a complete probe and persistence budget; every service gets an independent offset.'
                   )}
                   disabled={disabled || engineScoringStarted}
                   min={0.05}

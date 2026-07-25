@@ -89,7 +89,7 @@ fn snapshot_buffer_rejects_the_chunk_that_crosses_its_limit() {
     let error = append_snapshot_chunk(&mut out, b"567", 6).unwrap_err();
     assert!(matches!(
         error,
-        crate::utils::error::AppError::BadRequest(_)
+        crate::utils::error::AppError::PayloadTooLarge(_)
     ));
     assert_eq!(out, b"1234", "the rejected chunk was partially appended");
 }

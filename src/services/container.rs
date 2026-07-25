@@ -91,6 +91,7 @@ pub(crate) const IMAGE_SCOPE_LABEL: &str = "rsctf.image.scope";
 pub(crate) const IMAGE_REFERENCE_LABEL: &str = "rsctf.image.ref";
 const DOCKER_SCOPE_ENV: &str = "RSCTF_DOCKER_SCOPE";
 const JWT_SECRET_ENV: &str = "RSCTF_JWT_SECRET";
+const MIB: usize = 1024 * 1024;
 
 /// Environment names injected into rsctf-managed challenge containers.
 const FLAG_ENV: &str = "RSCTF_FLAG";
@@ -100,10 +101,17 @@ const TEAM_ENV: &str = "RSCTF_TEAM_ID";
 const DEFAULT_MAX_MEMORY_MB: i32 = 4_096;
 const DEFAULT_MAX_CPU_COUNT: i32 = 8;
 pub(super) const MAX_EXEC_OUTPUT_BYTES: usize = 1024 * 1024;
-pub(crate) const MAX_SNAPSHOT_EXPORT_BYTES: usize = 64 * 1024 * 1024;
+/// Raw Docker filesystem exports are bounded before compression. This must
+/// accommodate ordinary A&D images (which commonly export to 150-300 MiB)
+/// while preventing a participant-created sparse/random file from consuming
+/// unbounded control-plane memory during post-event capture.
+pub(crate) const MAX_SNAPSHOT_EXPORT_BYTES: usize = 512 * MIB;
 const SNAPSHOT_EXPORT_MAX_DURATION: Duration = Duration::from_secs(120);
 const SNAPSHOT_EXPORT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_CONCURRENT_SNAPSHOT_EXPORTS: usize = 2;
+// Export + compression temporarily holds the raw TAR and compressed archive.
+// One capture at a time keeps the control replica comfortably inside its 2 GiB
+// production memory limit even for the maximum admitted source archive.
+const MAX_CONCURRENT_SNAPSHOT_EXPORTS: usize = 1;
 const DOCKER_COMPETITIVE_EGRESS_ERROR: &str =
     "Docker does not safely support allowEgress=true for A&D or KotH workloads; \
      set allowEgress=false or use the Kubernetes backend with per-workload NetworkPolicy isolation";
@@ -119,7 +127,7 @@ fn append_snapshot_chunk(out: &mut Vec<u8>, chunk: &[u8], limit: usize) -> AppRe
         .checked_add(chunk.len())
         .ok_or_else(|| AppError::bad_request("snapshot export size overflow"))?;
     if next_len > limit {
-        return Err(AppError::bad_request(format!(
+        return Err(AppError::payload_too_large(format!(
             "snapshot export exceeds the {} MiB safety limit",
             limit / (1024 * 1024)
         )));

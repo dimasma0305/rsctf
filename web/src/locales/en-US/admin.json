@@ -11,7 +11,7 @@
       "snapshot": {
         "label": "Snapshot",
         "with_count": "Snapshot ({{count}})",
-        "download": "Download .tar"
+        "download": "Download .tar.gz"
       }
     },
     "challenges": {
@@ -508,7 +508,7 @@
         },
         "ad_snapshot_retention_days": {
           "label": "A&D snapshot retention (days)",
-          "description": "How long final Docker-hosted A&D filesystem snapshots stay available after game end. Leave empty to keep forever (the default).",
+          "description": "How long final Docker-hosted A&D filesystem snapshots stay available after game end. Archives are gzip-compressed and capped at 128 MiB each. Leave empty to keep forever (the default).",
           "placeholder": "∞ (keep forever)"
         },
         "ad_tick_seconds": {

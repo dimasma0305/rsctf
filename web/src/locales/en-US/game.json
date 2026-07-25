@@ -4,7 +4,7 @@
       "reset": "Reset",
       "submit": "Submit attack",
       "snapshot": "Snapshot",
-      "download_snapshot": "Download .tar",
+      "download_snapshot": "Download .tar.gz",
       "rotate_token": "Rotate token",
       "generate_token": "Generate token",
       "copy_curl": "Copy curl",

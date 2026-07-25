@@ -1,10 +1,24 @@
 //! Final hosted A&D service snapshot capture and retention policy.
 
+use std::io::Write;
+use std::sync::OnceLock;
+use std::time::Duration as StdDuration;
+
 use chrono::{DateTime, Duration, Utc};
+use flate2::{write::GzEncoder, Compression};
 
 use crate::app_state::SharedState;
 use crate::services::container::ContainerBackendKind;
 use crate::utils::error::{AppError, AppResult};
+
+pub(crate) const MAX_STORED_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const SNAPSHOT_CONTENT_TYPE: &str = "application/gzip";
+const SNAPSHOT_PIPELINE_ADMISSION_TIMEOUT: StdDuration = StdDuration::from_secs(5);
+
+fn snapshot_pipeline_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(1))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FinalSnapshotStatus {
@@ -31,6 +45,111 @@ fn expiry(policy: &SnapshotPolicy) -> Option<DateTime<Utc>> {
 
 fn capture_supported(backend: ContainerBackendKind) -> bool {
     backend == ContainerBackendKind::Docker
+}
+
+pub(crate) fn archive_name(participation_id: i32, challenge_id: i32) -> String {
+    format!("ad-snapshot-team{participation_id}-challenge{challenge_id}.tar.gz")
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("compressed snapshot exceeds its storage limit")]
+struct ArchiveLimitExceeded;
+
+struct BoundedArchiveWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl BoundedArchiveWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+        }
+    }
+}
+
+impl Write for BoundedArchiveWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let next = self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other(ArchiveLimitExceeded))?;
+        if next > self.limit {
+            return Err(std::io::Error::other(ArchiveLimitExceeded));
+        }
+        self.bytes
+            .try_reserve(bytes.len())
+            .map_err(std::io::Error::other)?;
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn is_archive_limit(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<ArchiveLimitExceeded>())
+}
+
+fn compress_tar_with_limit(tar: &[u8], limit: usize) -> AppResult<Vec<u8>> {
+    let mut encoder = GzEncoder::new(BoundedArchiveWriter::new(limit), Compression::fast());
+    if let Err(error) = encoder.write_all(tar) {
+        return if is_archive_limit(&error) {
+            Err(AppError::payload_too_large(format!(
+                "compressed snapshot exceeds the {} MiB safety limit",
+                limit / (1024 * 1024)
+            )))
+        } else {
+            Err(AppError::internal(format!(
+                "failed to compress snapshot: {error}"
+            )))
+        };
+    }
+    match encoder.finish() {
+        Ok(writer) => Ok(writer.bytes),
+        Err(error) if is_archive_limit(&error) => Err(AppError::payload_too_large(format!(
+            "compressed snapshot exceeds the {} MiB safety limit",
+            limit / (1024 * 1024)
+        ))),
+        Err(error) => Err(AppError::internal(format!(
+            "failed to finish snapshot compression: {error}"
+        ))),
+    }
+}
+
+/// Compress a raw Docker filesystem TAR away from Tokio's worker threads.
+async fn compress_tar(tar: Vec<u8>) -> AppResult<Vec<u8>> {
+    tokio::task::spawn_blocking(move || compress_tar_with_limit(&tar, MAX_STORED_SNAPSHOT_BYTES))
+        .await
+        .map_err(|error| AppError::internal(format!("snapshot compression task failed: {error}")))?
+}
+
+/// Bound the complete raw-export + compression pipeline, not just Docker's
+/// stream. Holding this permit through compression prevents queued requests
+/// from accumulating several 512 MiB raw TAR buffers in one replica.
+pub(crate) async fn export_archive(
+    containers: &dyn crate::services::container::ContainerManager,
+    container_id: &str,
+) -> AppResult<Vec<u8>> {
+    let _permit = tokio::time::timeout(
+        SNAPSHOT_PIPELINE_ADMISSION_TIMEOUT,
+        snapshot_pipeline_slots().acquire(),
+    )
+    .await
+    .map_err(|_| AppError::unavailable("snapshot export capacity is busy; retry shortly"))?
+    .map_err(|_| AppError::unavailable("snapshot export service is shutting down"))?;
+    let tar = containers.export(container_id).await?;
+    compress_tar(tar).await
+}
+
+fn permanent_size_failure(error: &AppError) -> bool {
+    matches!(error, AppError::PayloadTooLarge(_))
 }
 
 /// Persist the exact final filesystem before its runtime identity is released.
@@ -92,11 +211,20 @@ pub(crate) async fn capture_final_service(
         ));
     }
 
-    let tar = state.containers.export(expected_container_id).await?;
-    let name = format!(
-        "ad-snapshot-team{}-challenge{}.tar",
-        policy.participation_id, policy.challenge_id
-    );
+    let archive = match export_archive(state.containers.as_ref(), expected_container_id).await {
+        Ok(archive) => archive,
+        Err(error) if permanent_size_failure(&error) => {
+            tracing::warn!(
+                team_service_id,
+                %expected_container_id,
+                %error,
+                "A&D snapshot exceeded its safety limit; teardown will continue"
+            );
+            return Ok(FinalSnapshotStatus::NotRequired);
+        }
+        Err(error) => return Err(error),
+    };
+    let name = archive_name(policy.participation_id, policy.challenge_id);
     let stored = crate::services::blob_refs::store_service_snapshot(
         state.pg(),
         state.storage.as_ref(),
@@ -104,7 +232,7 @@ pub(crate) async fn capture_final_service(
         expected_container_id,
         expires_at_utc,
         &name,
-        &tar,
+        &archive,
     )
     .await?;
     Ok(if stored.is_some() {
@@ -116,6 +244,8 @@ pub(crate) async fn capture_final_service(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+
     use super::*;
 
     fn policy(retention: Option<i32>) -> SnapshotPolicy {
@@ -145,5 +275,32 @@ mod tests {
         assert!(!capture_supported(ContainerBackendKind::Kubernetes));
         assert!(!capture_supported(ContainerBackendKind::Worker));
         assert!(!capture_supported(ContainerBackendKind::None));
+    }
+
+    #[test]
+    fn retained_archive_is_deterministic_bounded_and_round_trips() {
+        let tar = vec![b'R'; 2 * 1024 * 1024];
+        let first = compress_tar_with_limit(&tar, 1024 * 1024).unwrap();
+        let second = compress_tar_with_limit(&tar, 1024 * 1024).unwrap();
+        assert_eq!(first, second);
+        assert!(first.len() < tar.len());
+
+        let mut restored = Vec::new();
+        flate2::read::GzDecoder::new(first.as_slice())
+            .read_to_end(&mut restored)
+            .unwrap();
+        assert_eq!(restored, tar);
+
+        let error = compress_tar_with_limit(&tar, 16).unwrap_err();
+        assert!(matches!(error, AppError::PayloadTooLarge(_)));
+    }
+
+    #[test]
+    fn oversized_snapshot_is_permanent_and_uses_a_compressed_filename() {
+        assert!(permanent_size_failure(&AppError::payload_too_large(
+            "too large"
+        )));
+        assert!(!permanent_size_failure(&AppError::unavailable("retry")));
+        assert_eq!(archive_name(7, 11), "ad-snapshot-team7-challenge11.tar.gz");
     }
 }
