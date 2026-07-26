@@ -11,7 +11,7 @@ import { GameNoticePanel } from '@Components/GameNoticePanel'
 import { KothGuideModal } from '@Components/KothGuideModal'
 import { TeamRank } from '@Components/TeamRank'
 import { WithGameTab } from '@Components/WithGameTab'
-import { WithNavBar } from '@Components/WithNavbar'
+import { GAME_PAGE_CONTENT_WIDTH, WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { adRoundSecondsRemaining } from '@Utils/adState'
@@ -65,7 +65,7 @@ const Challenges: FC = () => {
     ? epochProgress(adState.currentRound, adState.startRound, adState.epochTicks)
     : null
   return (
-    <WithNavBar width="90%">
+    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
       <WithRole requiredRole={Role.User}>
         <WithGameTab>
           <Flex direction={isCompact ? 'column' : 'row'} gap="sm" justify="space-between" align="flex-start" w="100%">

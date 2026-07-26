@@ -30,6 +30,8 @@ interface WithNavBarProps extends React.PropsWithChildren {
   stickyHeader?: boolean
 }
 
+export const GAME_PAGE_CONTENT_WIDTH = '1800px'
+
 export interface AppControlProps {
   openColorModal: () => void
 }
@@ -90,6 +92,7 @@ export const WithNavBar: FC<WithNavBarProps> = ({
             <LoadingOverlay visible={isLoading ?? false} overlayProps={DEFAULT_LOADING_OVERLAY} />
             {withHeader && <IconHeader px={isMobile ? '2%' : '10%'} sticky={stickyHeader} />}
             <Box
+              data-page-content
               className={classes.content}
               style={
                 {

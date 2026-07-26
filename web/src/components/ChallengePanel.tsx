@@ -6,7 +6,6 @@ import {
   Group,
   ScrollArea,
   SegmentedControl,
-  SimpleGrid,
   Skeleton,
   Stack,
   Switch,
@@ -271,14 +270,7 @@ export const ChallengePanel: FC = () => {
               </Group>
             ))}
         </Stack>
-        <SimpleGrid
-          p="xs"
-          pt={0}
-          spacing="sm"
-          pos="relative"
-          w="100%"
-          cols={{ base: 1, xs: 2, lg: 3, w18: 4, w24: 6, w30: 8, w36: 10, w42: 12, w48: 14 }}
-        >
+        <div className={`${classes.challengeGrid} ${classes.skeletonGrid}`}>
           {Array(13)
             .fill(null)
             .map((_v, i) => (
@@ -302,7 +294,7 @@ export const ChallengePanel: FC = () => {
                 </Stack>
               </Card>
             ))}
-        </SimpleGrid>
+        </div>
       </div>
     )
   }
@@ -503,11 +495,7 @@ export const ChallengePanel: FC = () => {
                 return (
                   <Stack key={section.kind ?? 'all'} gap="xs">
                     {sectionHeader}
-                    <SimpleGrid
-                      w="100%"
-                      spacing="sm"
-                      cols={{ base: 1, xs: 2, lg: 3, w18: 4, w24: 6, w30: 8, w36: 10, w42: 12, w48: 14 }}
-                    >
+                    <div className={classes.challengeGrid}>
                       {section.items.map((chal) => {
                         const status = teamInfo?.rank?.solvedChallenges?.find((c) => c.id === chal.id)?.type
                         const solved = status !== SubmissionType.Unaccepted && status !== undefined
@@ -530,7 +518,7 @@ export const ChallengePanel: FC = () => {
                           />
                         )
                       })}
-                    </SimpleGrid>
+                    </div>
                   </Stack>
                 )
               })}

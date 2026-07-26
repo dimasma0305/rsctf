@@ -16,7 +16,7 @@ import { FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { WithGameTab } from '@Components/WithGameTab'
-import { WithNavBar } from '@Components/WithNavbar'
+import { GAME_PAGE_CONTENT_WIDTH, WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
 import { HunamizeSize, showErrorMsg } from '@Utils/Shared'
 import {
@@ -67,7 +67,7 @@ const Submit: FC = () => {
   }
 
   return (
-    <WithNavBar width="90%">
+    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
       <WithRole requiredRole={Role.User}>
         <WithGameTab>
           <Stack gap="lg" maw="48rem" mx="auto" w="100%">

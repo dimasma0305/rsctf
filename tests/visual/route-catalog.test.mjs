@@ -37,8 +37,50 @@ test('visual routes select the least privileged useful browser identity', () => 
   assert.equal(routes.find((route) => route.path === '/account/stats')?.expectedPath, '/account/profile')
 })
 
-test('visual audit covers desktop, intermediate, tablet, and compact breakpoints', () => {
+test('game workspace routes share one visual layout group', () => {
+  const workspacePaths = [
+    '/games/67/challenges',
+    '/games/67/scoreboard',
+    '/games/67/submit',
+    '/games/67/monitor/events',
+    '/games/67/monitor/submissions',
+    '/games/67/monitor/cheatcheck',
+    '/games/67/monitor/traffic',
+  ]
+  for (const path of workspacePaths) {
+    assert.equal(routes.find((route) => route.path === path)?.layoutGroup, 'game-workspace', path)
+  }
+  assert.equal(routes.find((route) => route.path === '/games/67')?.layoutGroup, undefined)
+  assert.equal(routes.find((route) => route.path === '/games/67/attack')?.layoutGroup, undefined)
+})
+
+test('game workspace uses one bounded width and container-sized challenge cards', () => {
+  const sources = [
+    'web/src/components/WithGameMonitor.tsx',
+    'web/src/pages/games/[id]/Challenges.tsx',
+    'web/src/pages/games/[id]/Scoreboard.tsx',
+    'web/src/pages/games/[id]/submit.tsx',
+  ]
+  for (const source of sources) {
+    const contents = readFileSync(join(repositoryRoot, source), 'utf8')
+    assert.match(contents, /width=\{GAME_PAGE_CONTENT_WIDTH\}/, source)
+  }
+
+  const navbar = readFileSync(join(repositoryRoot, 'web/src/components/WithNavbar.tsx'), 'utf8')
+  assert.match(navbar, /GAME_PAGE_CONTENT_WIDTH = '1800px'/)
+  assert.match(navbar, /data-page-content/)
+
+  const challengeGrid = readFileSync(
+    join(repositoryRoot, 'web/src/styles/components/ChallengePanel.module.css'),
+    'utf8'
+  )
+  assert.match(challengeGrid, /repeat\(auto-fill, minmax\(min\(15rem, 100%\), 1fr\)\)/)
+})
+
+test('visual audit covers ultrawide, desktop, intermediate, and compact breakpoints', () => {
   assert.deepEqual(viewportCatalog, {
+    ultrawide: { width: 3440, height: 1440, mobile: false },
+    wide: { width: 1920, height: 1080, mobile: false },
     desktop: { width: 1440, height: 1100, mobile: false },
     laptop: { width: 1024, height: 768, mobile: false },
     tablet: { width: 768, height: 1024, mobile: true },

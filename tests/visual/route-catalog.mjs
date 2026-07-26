@@ -6,6 +6,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 export const repositoryRoot = join(here, '..', '..')
 export const pagesRoot = join(repositoryRoot, 'web', 'src', 'pages')
 export const viewportCatalog = Object.freeze({
+  ultrawide: { width: 3440, height: 1440, mobile: false },
+  wide: { width: 1920, height: 1080, mobile: false },
   desktop: { width: 1440, height: 1100, mobile: false },
   laptop: { width: 1024, height: 768, mobile: false },
   tablet: { width: 768, height: 1024, mobile: true },
@@ -71,6 +73,10 @@ function expectedPathFor(sourceFile, path) {
   return path
 }
 
+function layoutGroupFor(path) {
+  return /^\/games\/[^/]+\/(?:challenges|scoreboard|submit|monitor\/[^/]+)$/.test(path) ? 'game-workspace' : undefined
+}
+
 export function discoverPageRoutes(context) {
   return pageFiles(pagesRoot).map((file) => {
     const sourceFile = relative(pagesRoot, file).split(sep).join('/')
@@ -98,6 +104,7 @@ export function discoverPageRoutes(context) {
       expectedPath: expectedPathFor(sourceFile, path),
       urlPath: `${path}${queryFor(sourceFile)}`,
       auth: authFor(path),
+      layoutGroup: layoutGroupFor(path),
       missingContext,
     }
   })

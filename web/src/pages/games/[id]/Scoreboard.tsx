@@ -11,7 +11,7 @@ import { KothScoreboardTable } from '@Components/KothScoreboardTable'
 import { ScoreboardTable } from '@Components/ScoreboardTable'
 import { TeamRank } from '@Components/TeamRank'
 import { WithGameTab } from '@Components/WithGameTab'
-import { WithNavBar } from '@Components/WithNavbar'
+import { GAME_PAGE_CONTENT_WIDTH, WithNavBar } from '@Components/WithNavbar'
 import { ScoreTimeLine } from '@Components/charts/ScoreTimeLine'
 import { MobileScoreboardTable } from '@Components/mobile/ScoreboardTable'
 import { useIsMobile } from '@Utils/ThemeOverride'
@@ -229,7 +229,7 @@ const Scoreboard: FC = () => {
   const showKoth = effectiveTab === 'koth' && hasKothChallenges
 
   return (
-    <WithNavBar width="90%">
+    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
       <WithGameTab>
         {isMobile ? (
           <Stack pt="md">

@@ -6,7 +6,7 @@ import React, { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { WithGameTab } from '@Components/WithGameTab'
-import { WithNavBar } from '@Components/WithNavbar'
+import { GAME_PAGE_CONTENT_WIDTH, WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
 import { downloadBlob } from '@Utils/ApiHelper'
 import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
@@ -70,7 +70,7 @@ export const WithGameMonitor: FC<WithGameMonitorProps> = ({ children, isLoading 
     )
 
   return (
-    <WithNavBar>
+    <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
       <WithRole requiredRole={Role.Monitor}>
         <WithGameTab>
           <Flex direction={isCompact ? 'column' : 'row'} gap="md" justify="space-between" align="flex-start" w="100%">

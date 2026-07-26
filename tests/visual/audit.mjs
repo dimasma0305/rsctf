@@ -14,6 +14,7 @@ import {
 
 const sleep = (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))
 const MAX_SCREENSHOT_HEIGHT = 32_000
+const MAX_SCREENSHOT_WIDTH = 3_840
 
 function parseArguments(argv) {
   const options = {
@@ -48,7 +49,7 @@ Options:
   --page FILTER      Audit route name/path containing FILTER; repeatable
   --shard INDEX/TOTAL
                       Audit one deterministic route shard (for example 1/2)
-  --viewport NAME    Audit desktop, laptop, tablet, mobile, or compact; repeatable
+  --viewport NAME    Audit ultrawide, wide, desktop, laptop, tablet, mobile, or compact; repeatable
   --desktop-only     Capture only 1440x1100
   --mobile-only      Capture 390x844 and compact 320x568
   --list             List resolved routes without launching Chromium
@@ -282,6 +283,8 @@ function accessibleDocumentAnalysis() {
     ) && document.body.innerText.includes('Try again')
   const html = document.documentElement
   const mainText = `${main?.innerText ?? ''} ${main?.shadowRoot?.textContent ?? ''}`.trim()
+  const pageContentElement = document.querySelector('[data-page-content]')
+  const pageContentRectangle = pageContentElement?.getBoundingClientRect()
 
   return window.axe.run(document).then((axeResult) => ({
     title: document.title,
@@ -299,6 +302,14 @@ function accessibleDocumentAnalysis() {
       textLength: mainText.length,
       height: Math.round(main?.getBoundingClientRect().height ?? 0),
     },
+    pageContent: pageContentRectangle
+      ? {
+          left: Math.round(pageContentRectangle.left),
+          right: Math.round(pageContentRectangle.right),
+          width: Math.round(pageContentRectangle.width),
+          limit: getComputedStyle(pageContentElement).getPropertyValue('--page-content-width').trim(),
+        }
+      : null,
     controls: focusable.length,
     unnamedControls,
     crowdedSmallTargets,
@@ -489,6 +500,27 @@ function filterConsoleErrors(messages, route) {
   })
 }
 
+function applyLayoutConsistencyChecks(results) {
+  const groups = new Map()
+  for (const result of results) {
+    if (!result.route.layoutGroup || !result.pageContent) continue
+    const key = `${result.viewport}:${result.route.layoutGroup}`
+    const group = groups.get(key) ?? []
+    group.push(result)
+    groups.set(key, group)
+  }
+
+  for (const group of groups.values()) {
+    if (group.length < 2) continue
+    const limits = new Set(group.map((result) => result.pageContent.limit))
+    if (limits.size === 1) continue
+    const details = group.map((result) => `${result.route.path}=${result.pageContent.limit}`).join(', ')
+    for (const result of group) {
+      result.failures.push(`inconsistent ${result.route.layoutGroup} content limit: ${details}`)
+    }
+  }
+}
+
 function markdownReport(report) {
   const lines = [
     '# RSCTF full-page visual audit',
@@ -501,16 +533,18 @@ function markdownReport(report) {
     `- Failed renders: ${report.summary.failed}`,
     `- Automated warnings: ${report.summary.warnings}`,
     '',
-    '| Viewport | Page | Result | Axe | Overflow | Scroll regions | Browser | Warnings |',
-    '| --- | --- | --- | ---: | --- | ---: | ---: | ---: |',
+    '| Viewport | Page | Result | Content width | Axe | Overflow | Scroll regions | Browser | Warnings |',
+    '| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: |',
   ]
   for (const result of report.results) {
     lines.push(
       `| ${result.viewport} | \`${result.route.sourceFile}\` | ${
         result.failures.length ? `FAIL: ${result.failures.join('; ')}` : 'PASS'
-      } | ${result.axe.violations.length} | ${result.width.overflow ? 'yes' : 'no'} | ${
-        result.scrollRegions.length
       } | ${
+        result.pageContent ? `${result.pageContent.width}px / ${result.pageContent.limit}` : '-'
+      } | ${result.axe.violations.length} | ${
+        result.width.overflow ? 'yes' : 'no'
+      } | ${result.scrollRegions.length} | ${
         result.server5xx.length + result.runtimeExceptions.length + result.consoleErrors.length
       } | ${result.clippedText.length} |`
     )
@@ -542,7 +576,9 @@ function gallery(report) {
       return `<article class="card ${status}">
         <header>
           <div><strong>${escapeHtml(result.route.sourceFile)}</strong><small>${escapeHtml(result.route.path)}</small></div>
-          <span>${escapeHtml(result.viewport)} ${result.viewportSize.width}×${result.viewportSize.height} · ${status.toUpperCase()}</span>
+          <span>${escapeHtml(result.viewport)} ${result.viewportSize.width}×${result.viewportSize.height} · content ${
+            result.pageContent ? `${result.pageContent.width}px / ${result.pageContent.limit}` : '-'
+          } · ${status.toUpperCase()}</span>
         </header>
         <div class="screenshots">
           <figure>
@@ -755,6 +791,7 @@ async function main() {
             headingSkips: [],
             width: { viewport: viewport.width, document: 0, overflow: false },
             main: { present: false, textLength: 0, height: 0 },
+            pageContent: null,
             controls: 0,
             unnamedControls: [],
             crowdedSmallTargets: [],
@@ -788,7 +825,7 @@ async function main() {
         const content = metrics.cssContentSize
         const screenshotName = `${viewportName}--${route.name}--full.png`
         const screenshotHeight = Math.min(MAX_SCREENSHOT_HEIGHT, Math.max(viewport.height, Math.ceil(content.height)))
-        const screenshotWidth = Math.min(2_400, Math.max(viewport.width, Math.ceil(content.width)))
+        const screenshotWidth = Math.min(MAX_SCREENSHOT_WIDTH, Math.max(viewport.width, Math.ceil(content.width)))
         const screenshot = await cdp.send('Page.captureScreenshot', {
           format: 'png',
           fromSurface: true,
@@ -838,6 +875,7 @@ async function main() {
     await close()
   }
 
+  applyLayoutConsistencyChecks(results)
   const report = {
     generatedAt: new Date().toISOString(),
     target,
