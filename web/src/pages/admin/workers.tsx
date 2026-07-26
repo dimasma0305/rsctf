@@ -133,15 +133,19 @@ const Workers: FC = () => {
     return () => window.clearInterval(timer)
   }, [loadWorkers])
 
-  const installCommands = useMemo<WorkerInstallCommands>(
-    () => ({
-      linux: workerInstallCommand(window.location.origin),
-      windows: workerWindowsInstallCommand(window.location.origin),
-      linuxUninstall: workerUninstallCommand(window.location.origin),
-      windowsUninstall: workerWindowsUninstallCommand(window.location.origin),
-    }),
-    []
-  )
+  const installCommands = useMemo<WorkerInstallCommands>(() => {
+    const origin =
+      import.meta.env.DEV && import.meta.env.VITE_BACKEND_URL
+        ? new URL(import.meta.env.VITE_BACKEND_URL).origin
+        : window.location.origin
+
+    return {
+      linux: workerInstallCommand(origin),
+      windows: workerWindowsInstallCommand(origin),
+      linuxUninstall: workerUninstallCommand(origin),
+      windowsUninstall: workerWindowsUninstallCommand(origin),
+    }
+  }, [])
 
   const summary = useMemo(() => {
     const online = workers.filter((worker) => worker.online).length

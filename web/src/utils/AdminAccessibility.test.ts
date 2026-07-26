@@ -55,3 +55,10 @@ test('repeated mobile action landmarks use entity-specific names', () => {
     assert.match(source, /component="section"[\s\S]*?Actions for \{\{name\}\}/, page)
   }
 })
+
+test('game notices keep one realtime connection across ordinary rerenders', () => {
+  const source = readFileSync('src/components/GameNoticePanel.tsx', 'utf8')
+
+  assert.match(source, /\}, \[id, numId, t, theme\.primaryColor\]\)/)
+  assert.doesNotMatch(source, /\n  \}\)\n\n  const allNotices/)
+})

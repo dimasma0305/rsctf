@@ -401,6 +401,7 @@ export const ChallengePanel: FC = () => {
             {t('game.label.challenge_category', { defaultValue: 'Category' })}
           </Text>
           <Tabs
+            autoContrast
             orientation={isCompact ? 'horizontal' : 'vertical'}
             variant="pills"
             value={activeTab}
@@ -414,11 +415,11 @@ export const ChallengePanel: FC = () => {
           >
             <Tabs.List aria-label={t('game.label.challenge_category', { defaultValue: 'Filter by category' })}>
               <Tabs.Tab value={'All'} leftSection={<Icon path={mdiPuzzle} size={1} />}>
-                <Group justify="space-between" wrap="nowrap" gap={2}>
-                  <Text fz="sm" fw="bold">
+                <Group justify="space-between" wrap="nowrap" gap={6}>
+                  <Text fz="sm" fw="bold" c="inherit">
                     {challengeKindLabels.all}
                   </Text>
-                  <Text fz="sm" fw="bold">
+                  <Text fz="sm" fw="bold" c="inherit">
                     {allChallenges.length}
                   </Text>
                 </Group>
@@ -427,11 +428,11 @@ export const ChallengePanel: FC = () => {
                 const data = challengeCategoryLabelMap.get(tab as ChallengeCategory)!
                 return (
                   <Tabs.Tab key={tab} value={tab} leftSection={<Icon path={data?.icon} size={1} />} color={data?.color}>
-                    <Group justify="space-between" wrap="nowrap" gap={2}>
-                      <Text fz="sm" fw="bold">
+                    <Group justify="space-between" wrap="nowrap" gap={6}>
+                      <Text fz="sm" fw="bold" c="inherit">
                         {data?.name}
                       </Text>
-                      <Text fz="sm" fw="bold">
+                      <Text fz="sm" fw="bold" c="inherit">
                         {challenges && challenges[tab].length}
                       </Text>
                     </Group>
@@ -447,6 +448,10 @@ export const ChallengePanel: FC = () => {
           offsetScrollbars
           scrollbarSize={4}
           classNames={{ root: classes.scrollArea }}
+          viewportProps={{
+            tabIndex: 0,
+            'aria-label': t('game.label.challenge_results', 'Challenge list'),
+          }}
         >
           {/* if rank is 0, and have no division, means scoreboard not ready yet */}
           {!teamInfo.rank?.divisionId && !teamInfo?.rank?.rank ? (
@@ -475,7 +480,7 @@ export const ChallengePanel: FC = () => {
                       }
                     />
                     <Title
-                      order={5}
+                      order={2}
                       c={section.kind === 'jeopardy' ? 'blue' : section.kind === 'ad' ? 'red' : 'violet'}
                     >
                       {section.kind === 'jeopardy'
@@ -563,9 +568,9 @@ export const ChallengePanel: FC = () => {
           gameEnded={dayjs(game?.end) < dayjs()}
           practiceMode={game?.practiceMode}
           status={teamInfo?.rank?.solvedChallenges?.find((c) => c.id === challenge?.id)?.type}
-          cateData={
-            challengeCategoryLabelMap.get((challenge?.category as ChallengeCategory) ?? ChallengeCategory.Misc)!
-          }
+          cateData={challengeCategoryLabelMap.get(
+            (challenge?.category as ChallengeCategory) ?? ChallengeCategory.Misc
+          )!}
           title={challenge?.title ?? ''}
           score={challenge?.score ?? 0}
           challengeId={challenge.id}

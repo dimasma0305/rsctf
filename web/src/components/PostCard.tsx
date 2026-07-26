@@ -39,7 +39,7 @@ export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned }) => {
                   {t('post.content.pinned')}
                 </Badge>
               )}
-              <Title order={3} className={classes.title}>
+              <Title order={2} className={classes.title}>
                 {post.title}
               </Title>
             </Stack>

@@ -398,7 +398,15 @@ const GameTeamReview: FC = () => {
         </Group>
       }
     >
-      <ScrollArea type="auto" pos="relative" h="calc(100vh - 250px)">
+      <ScrollArea
+        type="auto"
+        pos="relative"
+        h="calc(100vh - 250px)"
+        viewportProps={{
+          tabIndex: 0,
+          'aria-label': t('admin.content.games.review.title', 'Team participation review'),
+        }}
+      >
         {participations && participations.length === 0 ? (
           <Center h="calc(100vh - 200px)">
             <Stack gap={0}>
@@ -432,6 +440,16 @@ const GameTeamReview: FC = () => {
         value={activePage}
         onChange={setPage}
         total={Math.ceil((filteredParticipations?.length ?? 1) / PART_NUM_PER_PAGE)}
+        getControlProps={(control) => ({
+          'aria-label':
+            control === 'first'
+              ? t('common.pagination.first', 'First page')
+              : control === 'previous'
+                ? t('common.pagination.previous', 'Previous page')
+                : control === 'next'
+                  ? t('common.pagination.next', 'Next page')
+                  : t('common.pagination.last', 'Last page'),
+        })}
         classNames={{
           root: cx(misc.flex, misc.flexRow, misc.justifyEnd),
         }}

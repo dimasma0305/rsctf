@@ -87,7 +87,7 @@ export const TeamRank: FC<CardProps> = (props) => {
           </Avatar>
           <Skeleton visible={!rank}>
             <Stack gap={2} align="flex-start">
-              <Title order={3} lineClamp={1}>
+              <Title order={2} lineClamp={1}>
                 {rank?.name ?? 'Team'}
               </Title>
               {division && (
@@ -108,7 +108,7 @@ export const TeamRank: FC<CardProps> = (props) => {
         <PasswordInput
           label={t('team.label.token', 'Team token')}
           description={t('team.content.token_copy_hint', 'Select the field to copy the token')}
-          value={teamInfo?.teamToken}
+          value={teamInfo?.teamToken ?? ''}
           readOnly
           leftSection={<Icon path={mdiKey} size={1} />}
           onClick={copyTeamToken}

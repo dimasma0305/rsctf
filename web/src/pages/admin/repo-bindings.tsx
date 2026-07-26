@@ -170,7 +170,7 @@ const RepoBindings: FC = () => {
 
   return (
     <AdminPage isLoading={!bindings}>
-      <Container size="xl" mt="md">
+      <Container size="xl" mt="md" px={0} w="100%" maw="100%">
         <Stack gap="lg" pb={48}>
           <Stack gap={0}>
             <Group gap="xs">

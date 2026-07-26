@@ -14,6 +14,7 @@
  * FIRST BLOOD / FIRST CROWN title (so the splash sits behind the hero text), and
  * KotH coronations use the purple CROWN palette instead of the red BLOOD one.
  */
+import 'pixi.js/unsafe-eval'
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import { prefersReducedMotion } from './reducedMotion'
 

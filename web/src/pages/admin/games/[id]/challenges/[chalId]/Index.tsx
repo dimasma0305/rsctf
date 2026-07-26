@@ -97,13 +97,18 @@ const BuildLogSection: FC<{ buildStatus: ChallengeBuildStatus; lastBuildLog: str
       <Stack gap={4}>
         <Group gap="xs" wrap="nowrap">
           {inFlight && <Loader size="xs" />}
-          <Title order={6}>{t('admin.content.audit.build_log')}</Title>
+          <Title order={3}>{t('admin.content.audit.build_log')}</Title>
           <Badge size="xs" color={color} variant={buildStatus === 'Failed' ? 'filled' : 'light'}>
             {buildStatus}
           </Badge>
         </Group>
         {lastBuildLog ? (
-          <Code block style={{ whiteSpace: 'pre-wrap', maxHeight: '40vh', overflowY: 'auto', fontSize: 11 }}>
+          <Code
+            block
+            tabIndex={0}
+            aria-label={t('admin.content.audit.build_log')}
+            style={{ whiteSpace: 'pre-wrap', maxHeight: '40vh', overflowY: 'auto', fontSize: 11 }}
+          >
             {lastBuildLog}
           </Code>
         ) : (
@@ -460,8 +465,7 @@ const GameChallengeEdit: FC = () => {
         headers: { 'X-RSCTF-Expected-Workload': saved.workloadIdentity ?? '' },
       })
       const result = response.data
-      const incomplete =
-        result.stale + result.incompatible + result.insufficientCapacity + result.failed
+      const incomplete = result.stale + result.incompatible + result.insufficientCapacity + result.failed
       showNotification({
         color: incomplete === 0 ? 'teal' : 'orange',
         message: t('admin.content.games.challenges.workload_spec.rollout_result', { ...result }),
@@ -512,7 +516,7 @@ const GameChallengeEdit: FC = () => {
       backUrl={`/admin/games/${id}/challenges`}
       head={
         <>
-          <Title lineClamp={1} className={misc.wordBreakAll}>
+          <Title order={2} lineClamp={1} className={misc.wordBreakAll}>
             # {challengeInfo?.title}
           </Title>
           <Group wrap="wrap" justify="right" w={{ base: '100%', lg: 'auto' }}>
@@ -769,6 +773,7 @@ const GameChallengeEdit: FC = () => {
                   />
                   <Input.Wrapper label={t('admin.content.games.challenges.min_score_radio.label')} h="3.8rem" required>
                     <Slider
+                      thumbLabel={t('admin.content.games.challenges.min_score_radio.label')}
                       label={(value) =>
                         t('admin.content.games.challenges.min_score_radio.description', {
                           min_score: ((value / 100) * (challengeInfo?.originalScore ?? 500)).toFixed(0),
@@ -850,6 +855,7 @@ const GameChallengeEdit: FC = () => {
                   w={{ base: '100%', xs: 'auto' }}
                   miw={{ base: 0, xs: '8rem' }}
                   color={challenge?.testContainer ? 'orange' : 'green'}
+                  c="dark.9"
                   disabled={disabled}
                   onClick={onToggleTestContainer}
                 >
@@ -986,7 +992,7 @@ const GameChallengeEdit: FC = () => {
             <Stack gap="md">
               <Group justify="space-between" align="flex-start" wrap="wrap">
                 <Stack gap={2} style={{ flex: '1 1 24rem' }}>
-                  <Title order={5}>{t('admin.content.games.challenges.workload_spec.title')}</Title>
+                  <Title order={3}>{t('admin.content.games.challenges.workload_spec.title')}</Title>
                   <Text id={WORKLOAD_SPEC_SECTION_HELP_ID} size="sm" c="dimmed">
                     {t('admin.content.games.challenges.workload_spec.section_help')}
                   </Text>
@@ -1039,12 +1045,7 @@ const GameChallengeEdit: FC = () => {
                     onBlur={() => validateWorkloadEditor()}
                   />
                   {rolloutBlockedByStatefulService && (
-                    <Text
-                      id={WORKLOAD_SPEC_ROLLOUT_HELP_ID}
-                      size="sm"
-                      role="status"
-                      aria-live="polite"
-                    >
+                    <Text id={WORKLOAD_SPEC_ROLLOUT_HELP_ID} size="sm" role="status" aria-live="polite">
                       {t('admin.content.games.challenges.workload_spec.rollout_requires_stateless', {
                         services: statefulRolloutServices.join(', '),
                       })}
@@ -1055,9 +1056,7 @@ const GameChallengeEdit: FC = () => {
                       type="button"
                       disabled={disabled || rollingWorkload || rolloutBlockedByStatefulService}
                       loading={rollingWorkload}
-                      aria-describedby={
-                        rolloutBlockedByStatefulService ? WORKLOAD_SPEC_ROLLOUT_HELP_ID : undefined
-                      }
+                      aria-describedby={rolloutBlockedByStatefulService ? WORKLOAD_SPEC_ROLLOUT_HELP_ID : undefined}
                       onClick={onRolloutWorkloads}
                     >
                       {t('admin.content.games.challenges.workload_spec.save_and_rollout')}
@@ -1246,9 +1245,9 @@ const GameChallengeEdit: FC = () => {
         }}
         opened={previewOpened}
         onClose={() => setPreviewOpened(false)}
-        cateData={
-          challengeCategoryLabelMap.get((challengeInfo?.category as ChallengeCategory) ?? ChallengeCategory.Misc)!
-        }
+        cateData={challengeCategoryLabelMap.get(
+          (challengeInfo?.category as ChallengeCategory) ?? ChallengeCategory.Misc
+        )!}
       />
       <ContainerExecModal
         size="min(72rem, calc(100vw - 2rem))"

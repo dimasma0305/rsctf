@@ -89,6 +89,26 @@ test('filled badges automatically choose contrast-safe text', () => {
   assert.match(badgeDefaults, /autoContrast:\s*true,/)
 })
 
+test('active tabs and notification controls retain accessible defaults', () => {
+  const source = readFileSync('src/utils/ThemeOverride.ts', 'utf8')
+  const css = readFileSync('src/styles/App.css', 'utf8')
+  const tabDefaults = source.match(/Tabs\.extend\(\{\s*defaultProps:\s*\{([\s\S]*?)\n\s*\},/)?.[1]
+  const notificationDefaults = source.match(
+    /Notification\.extend\(\{\s*defaultProps:\s*\{([\s\S]*?)\n\s*\},\s*\}\)/
+  )?.[1]
+  const activeTabRule = css.match(/\.mantine-Tabs-tab\[data-active\]\s*\{([\s\S]*?)\n\}/)?.[1]
+
+  assert.ok(tabDefaults, 'global tab defaults exist')
+  assert.match(tabDefaults, /autoContrast:\s*true,/)
+  assert.ok(activeTabRule, 'active tab rule exists')
+  assert.match(activeTabRule, /color:\s*var\(--tabs-text-color,\s*var\(--mantine-color-white\)\);/)
+  assert.doesNotMatch(activeTabRule, /--app-accent-text/)
+
+  assert.ok(notificationDefaults, 'global notification defaults exist')
+  assert.match(notificationDefaults, /closeButtonProps:/)
+  assert.match(notificationDefaults, /'aria-label':\s*'Dismiss notification'/)
+})
+
 test('decorative surfaces are borderless and semantic accent variables resolve', () => {
   const css = readFileSync('src/styles/App.css', 'utf8')
 

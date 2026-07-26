@@ -283,7 +283,15 @@ const Submissions: FC = () => {
         </Group>
       </Group>
       <Paper shadow="md" p="md">
-        <ScrollArea viewportRef={viewport} offsetScrollbars h="calc(100vh - 200px)">
+        <ScrollArea
+          viewportRef={viewport}
+          offsetScrollbars
+          h="calc(100vh - 200px)"
+          viewportProps={{
+            tabIndex: 0,
+            'aria-label': t('game.label.submissions.table_caption', 'Game submissions'),
+          }}
+        >
           <Table className={tableClasses.table}>
             <Table.Caption>
               <VisuallyHidden>{t('game.label.submissions.table_caption', 'Game submissions')}</VisuallyHidden>

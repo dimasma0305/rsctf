@@ -141,7 +141,7 @@ export const GameNoticePanel: FC = () => {
         })
       }
     }
-  })
+  }, [id, numId, t, theme.primaryColor])
 
   const allNotices = [...newNotices.current, ...(notices ?? [])]
   const filteredNotices = ApplyFilter(allNotices, filter)
@@ -171,7 +171,15 @@ export const GameNoticePanel: FC = () => {
           ]}
         />
         {filteredNotices.length ? (
-          <ScrollArea offsetScrollbars scrollbarSize={0} h={PANEL_HEIGHT}>
+          <ScrollArea
+            offsetScrollbars
+            scrollbarSize={0}
+            h={PANEL_HEIGHT}
+            viewportProps={{
+              tabIndex: 0,
+              'aria-label': t('game.label.notices', 'Game notices'),
+            }}
+          >
             <List size="sm" spacing={3} classNames={{ itemWrapper: misc.alignNormal }}>
               {filteredNotices.map((notice) => (
                 <List.Item key={notice.id} icon={<Icon {...iconMap.get(notice.type)!} />}>

@@ -12,6 +12,7 @@
  * preserved by stage.scale = cssW/1000, so every coordinate in the engine is
  * unchanged. Driven by the engine's rAF loop (autoStart:false → render() per tick).
  */
+import 'pixi.js/unsafe-eval'
 import { Application, Container, Graphics, ParticleContainer, Particle, Rectangle, Texture } from 'pixi.js'
 
 export interface FxRenderer {

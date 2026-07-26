@@ -105,11 +105,11 @@ const PendingChallenges: FC = () => {
   return (
     <WithGameEditTab isLoading={!pending}>
       <Stack gap="md" w="100%">
-        <Title order={3}>{t('admin.content.review.title')}</Title>
+        <Title order={2}>{t('admin.content.review.title')}</Title>
         {!pending || pending.length === 0 ? (
           <Center h="40vh">
             <Stack gap={0} align="center">
-              <Title order={4}>{t('admin.content.review.empty.title')}</Title>
+              <Title order={3}>{t('admin.content.review.empty.title')}</Title>
               <Text c="dimmed">{t('admin.content.review.empty.description')}</Text>
             </Stack>
           </Center>

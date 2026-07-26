@@ -331,14 +331,14 @@ const GameInfoEdit: FC = () => {
         >
           {activeSection === 'general' && (
             <Stack gap="sm">
-              <Title order={3}>{t('admin.content.games.info.section.general', 'General')}</Title>
+              <Title order={2}>{t('admin.content.games.info.section.general', 'General')}</Title>
               <Divider />
               <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }}>
                 <TextInput
                   label={t('admin.content.games.info.title.label')}
                   description={t('admin.content.games.info.title.description')}
                   disabled={disabled}
-                  value={game?.title}
+                  value={game?.title ?? ''}
                   required
                   onChange={(e) => game && setGame({ ...game, title: e.target.value })}
                 />
@@ -348,7 +348,7 @@ const GameInfoEdit: FC = () => {
                   disabled={disabled}
                   min={0}
                   required
-                  value={game?.teamMemberCountLimit}
+                  value={game?.teamMemberCountLimit ?? ''}
                   onChange={(e) => {
                     const number = getInputNumber(e)
                     if (!game || isNaN(number)) return
@@ -361,7 +361,7 @@ const GameInfoEdit: FC = () => {
                   disabled={disabled}
                   min={0}
                   required
-                  value={game?.containerCountLimit}
+                  value={game?.containerCountLimit ?? ''}
                   onChange={(e) => {
                     const number = getInputNumber(e)
                     if (!game || isNaN(number)) return
@@ -472,13 +472,13 @@ const GameInfoEdit: FC = () => {
           )}
           {activeSection === 'writeups' && (
             <Stack gap="sm">
-              <Title order={3}>{t('admin.content.games.info.section.writeups', 'Summary & writeups')}</Title>
+              <Title order={2}>{t('admin.content.games.info.section.writeups', 'Summary & writeups')}</Title>
               <Divider />
               <Group grow justify="space-between" align="flex-start">
                 <Textarea
                   label={t('admin.content.games.info.summary.label')}
                   description={t('admin.content.games.info.summary.description')}
-                  value={game?.summary}
+                  value={game?.summary ?? ''}
                   w="100%"
                   autosize
                   disabled={disabled}
@@ -511,7 +511,7 @@ const GameInfoEdit: FC = () => {
                   <Textarea
                     label={t('admin.content.games.info.writeup_instruction')}
                     description={t('admin.content.markdown_support')}
-                    value={game?.writeupNote}
+                    value={game?.writeupNote ?? ''}
                     w="100%"
                     autosize
                     disabled={disabled}
@@ -525,7 +525,7 @@ const GameInfoEdit: FC = () => {
           )}
           {activeSection === 'ad' && (
             <Stack gap="sm">
-              <Title order={3}>{t('admin.content.games.info.section.ad', 'Attack & Defense · King of the Hill')}</Title>
+              <Title order={2}>{t('admin.content.games.info.section.ad', 'Attack & Defense · King of the Hill')}</Title>
               <Text size="xs" c="dimmed">
                 {t(
                   'admin.content.games.info.section.ad_hint',
@@ -801,7 +801,7 @@ const GameInfoEdit: FC = () => {
           )}
           {activeSection === 'content' && (
             <Stack gap="sm">
-              <Title order={3}>{t('admin.content.games.info.section.content', 'Description & media')}</Title>
+              <Title order={2}>{t('admin.content.games.info.section.content', 'Description & media')}</Title>
               <Divider />
               <Grid grow>
                 <Grid.Col span={8}>
@@ -814,7 +814,7 @@ const GameInfoEdit: FC = () => {
                         </Text>
                       </Group>
                     }
-                    value={game?.content}
+                    value={game?.content ?? ''}
                     w="100%"
                     autosize
                     disabled={disabled}
@@ -869,7 +869,7 @@ const GameInfoEdit: FC = () => {
       </Stack>
       {/* Sticky save bar (mirrors /admin/settings), so Save is always reachable
           without scrolling regardless of which section tab is open. */}
-      <Affix position={{ bottom: 16, left: '50%' }} className={classes.saveAffix}>
+      <Affix position={{ bottom: 16, left: '50%' }} className={classes.saveAffix} withinPortal={false}>
         <Paper shadow="md" radius="md" p="sm" withBorder className={classes.saveBar}>
           <Group gap="md" align="center">
             <Group gap={6}>

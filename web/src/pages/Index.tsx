@@ -86,7 +86,7 @@ const Home: FC = () => {
         />
 
         {isMobile && (
-          <section aria-labelledby="competition-radar-title">
+          <section aria-label={t('common.content.home.competition_radar', 'Competition radar')}>
             <Group justify="space-between" align="center" mb="sm">
               <Group gap="sm">
                 <ThemeIcon variant="light" size="lg" radius="md">

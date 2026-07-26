@@ -3,12 +3,14 @@ import {
   Box,
   Card,
   Center,
+  Flex,
   Grid,
   Group,
   Pagination,
   RingProgress,
   ScrollArea,
   SegmentedControl,
+  Select,
   Skeleton,
   Stack,
   Text,
@@ -35,6 +37,7 @@ import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { ScrollingText } from '@Components/ScrollingText'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { useIsMobile } from '@Utils/ThemeOverride'
 import api, { ReviewRating } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
@@ -48,6 +51,12 @@ const ChallengeReviews: FC = () => {
   const [search, setSearch] = useState('')
   const [debouncedSearch] = useDebouncedValue(search, 500)
   const [ratingFilter, setRatingFilter] = useState<string>('all')
+  const isMobile = useIsMobile()
+  const ratingOptions = [
+    { label: t('common.label.all', 'All'), value: 'all' },
+    { label: t('common.label.like', 'Recommended'), value: 'like' },
+    { label: t('common.label.dislike', 'Not Recommended'), value: 'dislike' },
+  ]
 
   const getRatingFilterValue = () => {
     if (ratingFilter === 'like') return ReviewRating.Like
@@ -80,19 +89,19 @@ const ChallengeReviews: FC = () => {
     ? Array.from({ length: 5 }).map((_, i) => (
         <Card key={i} shadow="sm" radius="md" withBorder p="sm">
           <Grid align="center" gap="xs">
-            <Grid.Col span={3}>
+            <Grid.Col span={{ base: 12, sm: 3 }}>
               <Stack gap={4}>
                 <Skeleton height={20} width="80%" radius="xl" />
                 <Skeleton height={15} width="40%" radius="xl" />
               </Stack>
             </Grid.Col>
-            <Grid.Col span={2}>
+            <Grid.Col span={{ base: 12, sm: 2 }}>
               <Stack gap={4}>
                 <Skeleton height={15} width="90%" radius="xl" />
                 <Skeleton height={15} width="60%" radius="xl" />
               </Stack>
             </Grid.Col>
-            <Grid.Col span={7}>
+            <Grid.Col span={{ base: 12, sm: 7 }}>
               <Skeleton height={40} radius="md" />
             </Grid.Col>
           </Grid>
@@ -110,7 +119,7 @@ const ChallengeReviews: FC = () => {
           <Card key={review.id} shadow="sm" radius="md" withBorder p="sm" style={{ borderColor }}>
             <Grid align="center" gap="xs">
               {/* Challenge Name & Rating */}
-              <Grid.Col span={3}>
+              <Grid.Col span={{ base: 12, sm: 3 }}>
                 <Stack gap={4}>
                   <Text fw={700} truncate title={review.challengeName}>
                     {review.challengeName}
@@ -137,7 +146,7 @@ const ChallengeReviews: FC = () => {
               </Grid.Col>
 
               {/* User Info & Time */}
-              <Grid.Col span={2}>
+              <Grid.Col span={{ base: 12, sm: 2 }}>
                 <Stack gap={4}>
                   <Group gap={4} wrap="nowrap" w="100%">
                     <Icon path={mdiAccount} size={0.7} color="dimmed" />
@@ -153,7 +162,7 @@ const ChallengeReviews: FC = () => {
               </Grid.Col>
 
               {/* Comment */}
-              <Grid.Col span={7}>
+              <Grid.Col span={{ base: 12, sm: 7 }}>
                 <ScrollArea.Autosize mah={100} offsetScrollbars>
                   <Text size="sm" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                     {review.comment}
@@ -167,7 +176,7 @@ const ChallengeReviews: FC = () => {
 
   const analyticsSection = analytics && (
     <Grid mb="md">
-      <Grid.Col span={4}>
+      <Grid.Col span={{ base: 12, sm: 4 }}>
         <Card withBorder padding="xs" radius="md">
           <Group>
             <RingProgress
@@ -202,7 +211,7 @@ const ChallengeReviews: FC = () => {
           </Group>
         </Card>
       </Grid.Col>
-      <Grid.Col span={4}>
+      <Grid.Col span={{ base: 12, sm: 4 }}>
         <Card withBorder padding="xs" radius="md" h="100%">
           <Stack gap={2}>
             <Text size="xs" fw={700} c="teal">
@@ -227,7 +236,7 @@ const ChallengeReviews: FC = () => {
           </Stack>
         </Card>
       </Grid.Col>
-      <Grid.Col span={4}>
+      <Grid.Col span={{ base: 12, sm: 4 }}>
         <Card withBorder padding="xs" radius="md" h="100%">
           <Stack gap={2}>
             <Text size="xs" fw={700} c="red">
@@ -260,31 +269,49 @@ const ChallengeReviews: FC = () => {
       headProps={{ justify: 'space-between' }}
       isLoading={!reviewResponse && !analytics}
       head={
-        <Group justify="space-between" wrap="nowrap" w="100%">
+        <Flex
+          direction={isMobile ? 'column' : 'row'}
+          align={isMobile ? 'stretch' : 'center'}
+          justify="space-between"
+          gap="sm"
+          w="100%"
+        >
           <Group gap="xs">
-            <Title order={3}>{t('admin.title.challenge_reviews', 'Challenge Reviews')}</Title>
+            <Title order={2}>{t('admin.title.challenge_reviews', 'Challenge Reviews')}</Title>
             {totalCount > 0 && (
               <Text size="sm" c="dimmed">
                 ({totalCount})
               </Text>
             )}
           </Group>
-          <Group gap="xs">
-            <SegmentedControl
-              size="xs"
-              aria-label={t('admin.label.games.reviews.rating_filter', 'Filter reviews by rating')}
-              value={ratingFilter}
-              onChange={(val) => {
-                setRatingFilter(val)
-                setPage(1)
-              }}
-              data={[
-                { label: t('common.label.all', 'All'), value: 'all' },
-                { label: t('common.label.like', 'Recommended'), value: 'like' },
-                { label: t('common.label.dislike', 'Not Recommended'), value: 'dislike' },
-              ]}
-            />
+          <Group gap="xs" wrap="wrap" style={{ flex: 1 }} justify={isMobile ? 'flex-start' : 'flex-end'}>
+            {isMobile ? (
+              <Select
+                w="100%"
+                aria-label={t('admin.label.games.reviews.rating_filter', 'Filter reviews by rating')}
+                value={ratingFilter}
+                allowDeselect={false}
+                onChange={(value) => {
+                  setRatingFilter(value ?? 'all')
+                  setPage(1)
+                }}
+                data={ratingOptions}
+              />
+            ) : (
+              <SegmentedControl
+                size="xs"
+                aria-label={t('admin.label.games.reviews.rating_filter', 'Filter reviews by rating')}
+                value={ratingFilter}
+                onChange={(value) => {
+                  setRatingFilter(value)
+                  setPage(1)
+                }}
+                data={ratingOptions}
+              />
+            )}
             <TextInput
+              style={{ flex: 1 }}
+              miw={isMobile ? 'calc(100% - 52px)' : 180}
               leftSection={<Icon path={mdiMagnify} size={1} />}
               aria-label={t('common.placeholder.search', 'Search')}
               placeholder={t('common.placeholder.search', 'Search')}
@@ -304,10 +331,18 @@ const ChallengeReviews: FC = () => {
               <Icon path={mdiRefresh} size={1} />
             </ActionIcon>
           </Group>
-        </Group>
+        </Flex>
       }
     >
-      <ScrollArea type="never" pos="relative" h="calc(100vh - 250px)">
+      <ScrollArea
+        type="never"
+        pos="relative"
+        h="calc(100vh - 250px)"
+        viewportProps={{
+          tabIndex: 0,
+          'aria-label': t('admin.title.challenge_reviews', 'Challenge Reviews'),
+        }}
+      >
         {(() => {
           const hasReviews = Array.isArray(reviews) && reviews.length > 0
           const filtering = ratingFilter !== 'all' || !!debouncedSearch
@@ -361,6 +396,16 @@ const ChallengeReviews: FC = () => {
           value={activePage}
           onChange={setPage}
           total={totalPages}
+          getControlProps={(control) => ({
+            'aria-label':
+              control === 'first'
+                ? t('common.pagination.first', 'First page')
+                : control === 'previous'
+                  ? t('common.pagination.previous', 'Previous page')
+                  : control === 'next'
+                    ? t('common.pagination.next', 'Next page')
+                    : t('common.pagination.last', 'Last page'),
+          })}
           classNames={{
             root: cx(misc.flex, misc.flexRow, misc.justifyEnd),
           }}

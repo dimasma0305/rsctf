@@ -255,14 +255,16 @@ const SummaryCard: FC<{
           <Icon path={icon} size={0.7} />
         </ThemeIcon>
       </Group>
-      <Title
-        order={2}
+      <Text
+        component="p"
+        size="xl"
+        fw={720}
         lh={1}
         c={accent && value > 0 ? color : undefined}
         style={{ fontVariantNumeric: 'tabular-nums' }}
       >
         {value}
-      </Title>
+      </Text>
       {sub && (
         <Text size="xs" c="dimmed" mt={4}>
           {sub}
@@ -650,8 +652,9 @@ const SmartSearch: FC<{
   const parsed = useMemo(() => parseSearchQuery(value), [value])
 
   return (
-    <Stack gap={4} style={{ width: w }}>
+    <Stack gap={4} w={w}>
       <Popover
+        withRoles={false}
         opened={dropdownOpen && matchingDefs.length > 0}
         position="bottom-start"
         shadow="md"
@@ -1956,7 +1959,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
           <Tabs.Panel value="suspicion" pt="md">
             <Group justify="space-between" mb="md">
               <Group gap="xs">
-                <Title order={4}>{t('game.cheat_analysis.suspicion_rankings', 'Suspicion Rankings')}</Title>
+                <Title order={3}>{t('game.cheat_analysis.suspicion_rankings', 'Suspicion Rankings')}</Title>
                 <Badge variant="light" color="alert">
                   {sortedSuspicionList.length}
                   {suspSearch && report?.suspicionList?.length !== sortedSuspicionList.length && (
@@ -2063,7 +2066,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
           <Tabs.Panel value="ip" pt="md">
             <Group justify="space-between" mb="md">
               <Group gap="xs">
-                <Title order={4}>{t('game.cheat_analysis.tab.ip_analysis', 'IP Analysis')}</Title>
+                <Title order={3}>{t('game.cheat_analysis.tab.ip_analysis', 'IP Analysis')}</Title>
                 <Badge variant="light" color="cyan">
                   {report?.ipAnalysis?.length ?? 0}
                 </Badge>
@@ -2171,7 +2174,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
           <Tabs.Panel value="solve" pt="md">
             <Group justify="space-between" mb="md">
               <Group gap="xs">
-                <Title order={4}>{t('game.cheat_analysis.tab.abnormal_solves', 'Abnormal Solves')}</Title>
+                <Title order={3}>{t('game.cheat_analysis.tab.abnormal_solves', 'Abnormal Solves')}</Title>
                 <Badge variant="light" color="orange">
                   {report?.abnormalSolves?.length ?? 0}
                 </Badge>
@@ -2276,7 +2279,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
           <Tabs.Panel value="collusion" pt="md">
             <Group justify="space-between" mb="md">
               <Group gap="xs">
-                <Title order={4}>{t('game.cheat_analysis.card.collusion_groups', 'Collusion Groups')}</Title>
+                <Title order={3}>{t('game.cheat_analysis.card.collusion_groups', 'Collusion Groups')}</Title>
                 <Badge variant="light" color="violet">
                   {report?.collusionGroups?.length ?? 0}
                 </Badge>
@@ -2366,7 +2369,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
           <Tabs.Panel value="identity" pt="md">
             <Group justify="space-between" mb="xs">
               <Group gap="xs">
-                <Title order={4}>{t('game.cheat_analysis.tab.identity', 'Identity Overlap')}</Title>
+                <Title order={3}>{t('game.cheat_analysis.tab.identity', 'Identity Overlap')}</Title>
                 <Badge variant="light" color="violet">
                   {report?.identityOverlaps?.length ?? 0}
                 </Badge>

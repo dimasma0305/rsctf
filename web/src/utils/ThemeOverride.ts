@@ -16,6 +16,7 @@ import {
   Menu,
   Modal,
   MultiSelect,
+  Notification,
   NumberInput,
   Pagination,
   Paper,
@@ -267,11 +268,21 @@ const CustomTheme: MantineThemeOverride = {
       },
     }),
     Tabs: Tabs.extend({
+      defaultProps: {
+        autoContrast: true,
+      },
       styles: {
         tab: {
           minHeight: 40,
           padding: 'var(--mantine-spacing-xs) var(--mantine-spacing-sm)',
           fontWeight: 650,
+        },
+      },
+    }),
+    Notification: Notification.extend({
+      defaultProps: {
+        closeButtonProps: {
+          'aria-label': 'Dismiss notification',
         },
       },
     }),

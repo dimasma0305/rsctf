@@ -77,7 +77,6 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
 
   const [disabled, setDisabled] = useState(false)
   const [building, setBuilding] = useState(false)
-
   const { t } = useTranslation()
   const numId = parseInt(id ?? '-1')
 
@@ -133,7 +132,8 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
   const minIdx = colorScheme === 'dark' ? 8 : 6
   const curIdx = colorScheme === 'dark' ? 6 : 4
 
-  const [min, cur, tot] = [challenge.minScore ?? 0, challenge.score ?? 500, challenge.originalScore ?? 500]
+  const [min, cur, totalScore] = [challenge.minScore ?? 0, challenge.score ?? 500, challenge.originalScore ?? 500]
+  const tot = totalScore > 0 ? totalScore : 1
   const minRate = (min / tot) * 100
   const curRate = (cur / tot) * 100
 
@@ -161,10 +161,13 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
       <Group wrap="wrap" gap="xs" pos="relative" align="center" style={{ zIndex: 1 }}>
         {selectable && (
           <Checkbox
-            size="sm"
+            size="lg"
             checked={!!selected}
             onChange={(e) => onSelectChange?.(e.currentTarget.checked)}
-            aria-label={t('admin.button.challenges.select')}
+            aria-label={t('admin.button.challenges.select_named', {
+              defaultValue: 'Select challenge {{title}}',
+              title: challenge.title,
+            })}
           />
         )}
         <Switch
@@ -172,6 +175,13 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
           disabled={disabled}
           checked={challenge.isEnabled}
           onChange={() => onToggle(challenge, setDisabled)}
+          aria-label={t(
+            challenge.isEnabled ? 'admin.button.challenges.disable_named' : 'admin.button.challenges.enable_named',
+            {
+              defaultValue: challenge.isEnabled ? 'Disable challenge {{title}}' : 'Enable challenge {{title}}',
+              title: challenge.title,
+            }
+          )}
         />
 
         <Stack gap={0} style={{ flex: '1 1 12rem', minWidth: 0 }}>
@@ -327,8 +337,22 @@ export const ChallengeEditCard: FC<ChallengeEditCardProps> = ({
 
       <Card.Section mt="sm" pos="relative" style={{ zIndex: 1 }}>
         <Progress.Root radius={0}>
-          <Progress.Section value={minRate} color={colors[minIdx]} />
-          <Progress.Section value={curRate - minRate} color={colors[curIdx]} />
+          <Progress.Section
+            value={Math.max(0, minRate)}
+            color={colors[minIdx]}
+            aria-label={t('admin.content.games.challenges.minimum_score_progress', {
+              defaultValue: '{{title}} minimum score',
+              title: challenge.title,
+            })}
+          />
+          <Progress.Section
+            value={Math.max(0, curRate - minRate)}
+            color={colors[curIdx]}
+            aria-label={t('admin.content.games.challenges.current_score_progress', {
+              defaultValue: '{{title}} current score above minimum',
+              title: challenge.title,
+            })}
+          />
         </Progress.Root>
       </Card.Section>
     </Card>

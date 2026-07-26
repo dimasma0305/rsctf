@@ -5,6 +5,7 @@ import { FC, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { tryGetErrorMsg } from '@Utils/Shared'
+import { useIsMobile } from '@Utils/ThemeOverride'
 import api from '@Api'
 import { useTranslation } from 'react-i18next'
 import { Icon } from '@mdi/react'
@@ -14,6 +15,7 @@ const CheatCheck: FC = () => {
     const { id } = useParams()
     const numId = parseInt(id!)
     const { t } = useTranslation()
+    const isMobile = useIsMobile()
     // Tab state
     const [searchParams, setSearchParams] = useSearchParams()
     const tabFromUrl = searchParams.get('tab')
@@ -66,7 +68,7 @@ const CheatCheck: FC = () => {
                         <Icon path={mdiShieldSearch} size={0.9} />
                     </ThemeIcon>
                     <Box>
-                        <Title order={3}>{t('game.title.cheat_check', 'Cheat Analysis')}</Title>
+                        <Title order={2}>{t('game.title.cheat_check', 'Cheat Analysis')}</Title>
                         <Text size="xs" c="dimmed">
                             {t(
                                 'game.content.cheat.subtitle',
@@ -84,8 +86,10 @@ const CheatCheck: FC = () => {
                     radius="md"
                 >
                     <Tabs.List
+                        grow
                         style={{
                             borderBottom: '1px solid light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-5))',
+                            flexWrap: 'nowrap',
                             paddingBottom: 4,
                             marginBottom: 8,
                         }}
@@ -94,13 +98,17 @@ const CheatCheck: FC = () => {
                             value="analysis"
                             leftSection={<Icon path={mdiChartBox} size={0.85} />}
                         >
-                            {t('game.tab.cheat.analysis', 'Anomaly Analysis')}
+                            {isMobile
+                                ? t('game.tab.cheat.analysis_short', 'Analysis')
+                                : t('game.tab.cheat.analysis', 'Anomaly Analysis')}
                         </Tabs.Tab>
                         <Tabs.Tab
                             value="submissions"
                             leftSection={<Icon path={mdiFlagVariant} size={0.85} />}
                         >
-                            {t('game.tab.cheat.submissions', 'Submissions & Flags')}
+                            {isMobile
+                                ? t('game.tab.cheat.submissions_short', 'Submissions')
+                                : t('game.tab.cheat.submissions', 'Submissions & Flags')}
                         </Tabs.Tab>
                     </Tabs.List>
 

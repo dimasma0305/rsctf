@@ -1,17 +1,4 @@
-import {
-  alpha,
-  Button,
-  Group,
-  SimpleGrid,
-  Stack,
-  TagsInput,
-  Text,
-  Textarea,
-  TextInput,
-  Title,
-  useMantineColorScheme,
-  useMantineTheme,
-} from '@mantine/core'
+import { Button, Group, SimpleGrid, Stack, TagsInput, Text, Textarea, TextInput, Title } from '@mantine/core'
 import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiContentSaveOutline, mdiDeleteOutline, mdiFileCheckOutline } from '@mdi/js'
@@ -27,7 +14,6 @@ import api, { PostEditModel, Role } from '@Api'
 
 const PostEdit: FC = () => {
   const { postId } = useParams()
-  const theme = useMantineTheme()
   const navigate = useNavigate()
 
   const { t } = useTranslation()
@@ -63,7 +49,6 @@ const PostEdit: FC = () => {
   const modals = useModals()
 
   const isMobile = useIsMobile()
-  const { colorScheme } = useMantineColorScheme()
 
   const onUpdate = async () => {
     if (postId === 'new') {
@@ -173,12 +158,10 @@ const PostEdit: FC = () => {
     <WithNavBar withHeader stickyHeader>
       <WithRole requiredRole={Role.Admin}>
         <Stack mt={isMobile ? 25 : 30}>
-          <Group justify={isMobile ? 'right' : 'space-between'}>
-            {!isMobile && (
-              <Title order={1} c={alpha(colorScheme === 'dark' ? theme.colors.light[6] : theme.colors.gray[7], 0.5)}>
-                {`> ${postId === 'new' ? t('post.button.new') : t('post.button.edit')}`}
-              </Title>
-            )}
+          <Group justify="space-between" align="center" wrap="wrap">
+            <Title order={1} size="h2" c="dimmed">
+              {`> ${postId === 'new' ? t('post.button.new') : t('post.button.edit')}`}
+            </Title>
             <Group justify="right">
               {postId?.length === 8 && (
                 <>

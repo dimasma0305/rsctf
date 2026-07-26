@@ -291,7 +291,15 @@ const Events: FC = () => {
           </ActionIcon>
         </Group>
       </Group>
-      <ScrollArea viewportRef={viewport} offsetScrollbars h="calc(100vh - 160px)">
+      <ScrollArea
+        viewportRef={viewport}
+        offsetScrollbars
+        h="calc(100vh - 160px)"
+        viewportProps={{
+          tabIndex: 0,
+          'aria-label': t('game.label.events.stream', 'Event stream'),
+        }}
+      >
         <Stack gap="xs" pr={10} w="100%">
           {[...(activePage === 1 ? filteredEvents : []), ...(events ?? [])]?.map((event, i) => (
             <Card

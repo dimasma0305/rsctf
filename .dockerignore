@@ -12,4 +12,5 @@
 tests
 files
 scratch
+/visual-audit-output
 **/*.log

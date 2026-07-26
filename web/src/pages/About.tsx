@@ -72,7 +72,7 @@ const About: FC = () => {
           <Stack align="center" gap="md" className={classes.contentStack}>
             <Group gap="xs" justify="center">
               <Icon path={mdiLink} size={1} />
-              <Title order={3} fw={600} ta="center">
+              <Title order={2} fw={600} ta="center">
                 {t('common.content.about.resources')}
               </Title>
             </Group>
@@ -151,7 +151,7 @@ const About: FC = () => {
           <Stack align="center" gap="md" className={classes.contentStack}>
             <Group gap="xs" justify="center">
               <Icon path={mdiAccountGroup} size={1} />
-              <Title order={3} fw={600} ta="center">
+              <Title order={2} fw={600} ta="center">
                 {t('common.content.about.contributors')}
               </Title>
             </Group>
@@ -176,6 +176,8 @@ const About: FC = () => {
                             className={classes.contributorAvatar}
                             src={`https://github.com/${contributor.login}.png`}
                             size="sm"
+                            alt=""
+                            aria-hidden="true"
                           />
                           <Anchor
                             href={contributor.html_url}
@@ -202,7 +204,7 @@ const About: FC = () => {
         <Stack align="center" gap="md">
           <Group gap="xs" justify="center">
             <Icon path={mdiTag} size={1} />
-            <Title order={3} fw={600} ta="center">
+            <Title order={2} fw={600} ta="center">
               {t('common.content.about.version')}
             </Title>
           </Group>

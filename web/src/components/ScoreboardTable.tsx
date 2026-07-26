@@ -59,8 +59,9 @@ const TableHeader = React.memo((table: Record<string, ChallengeInfo[]>) => {
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
 
   const hiddenCol = [...Array(5).keys()].map((i) => (
-    <Table.Th
+    <Table.Td
       key={i}
+      aria-hidden="true"
       className={classes.left}
       style={{
         left: Lefts[i],
@@ -70,7 +71,7 @@ const TableHeader = React.memo((table: Record<string, ChallengeInfo[]>) => {
       }}
     >
       &nbsp;
-    </Table.Th>
+    </Table.Td>
   ))
 
   return (

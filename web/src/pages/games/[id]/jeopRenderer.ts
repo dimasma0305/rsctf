@@ -20,6 +20,7 @@
  * teardown+rebuild every call because layout() destroys the challenge objects'
  * identity each relayout — a reconcile-by-ref (like fxRenderer's) would leak.
  */
+import 'pixi.js/unsafe-eval'
 import { Application, Graphics, ParticleContainer, Particle, Rectangle, Texture } from 'pixi.js'
 import { prefersReducedMotion } from './reducedMotion'
 

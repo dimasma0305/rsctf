@@ -118,9 +118,9 @@ const FlagEgress: FC = () => {
     <WithGameEditTab
       isLoading={isLoading && !page}
       head={
-        <Group justify="space-between" w="100%">
+        <Group justify="space-between" w="100%" wrap="wrap">
           <TextInput
-            w="36%"
+            w={{ base: '100%', sm: '36%' }}
             size="sm"
             aria-label={t('admin.placeholder.flag_egress.search', 'Filter by team, challenge, or IP')}
             leftSection={<Icon path={mdiMagnify} size={0.9} />}
@@ -147,7 +147,15 @@ const FlagEgress: FC = () => {
         </Center>
       ) : (
         <Paper shadow="md" p="xs" w="100%">
-          <ScrollArea offsetScrollbars scrollbarSize={4} h="calc(100vh - 220px)">
+          <ScrollArea
+            offsetScrollbars
+            scrollbarSize={4}
+            h="calc(100vh - 220px)"
+            viewportProps={{
+              tabIndex: 0,
+              'aria-label': t('admin.content.flag_egress.table_caption', 'Recent flag egress activity'),
+            }}
+          >
             <Table className={tableClasses.table} highlightOnHover>
               <Table.Caption>
                 {t('admin.content.flag_egress.table_caption', 'Recent flag egress activity')}

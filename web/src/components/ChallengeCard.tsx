@@ -8,7 +8,6 @@ import {
   Group,
   Stack,
   Text,
-  Title,
   Tooltip,
   alpha,
   useMantineColorScheme,
@@ -166,13 +165,13 @@ export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps)
           )}
           <Stack gap="xs">
             {isAdEngine ? (
-              <Title order={6} ta="center" mt={`calc(${theme.spacing.xs} / 2)`} c="dimmed">
+              <Text component="p" size="sm" fw={700} ta="center" mt={`calc(${theme.spacing.xs} / 2)`} c="dimmed">
                 {isKoth
                   ? t('challenge.content.koth_live_caption', 'Per-tick hold scoring')
                   : t('challenge.content.ad_live_caption', 'Per-round scoring')}
-              </Title>
+              </Text>
             ) : (
-              <Title order={6} ta="center" mt={`calc(${theme.spacing.xs} / 2)`}>
+              <Text component="p" size="sm" fw={700} ta="center" mt={`calc(${theme.spacing.xs} / 2)`}>
                 <Trans
                   i18nKey={'challenge.content.solved'}
                   values={{
@@ -185,7 +184,7 @@ export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps)
                   </Code>
                   _
                 </Trans>
-              </Title>
+              </Text>
             )}
             <Group justify="center" gap="md" h={20} wrap="nowrap">
               {challenge.bloods &&

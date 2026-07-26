@@ -490,6 +490,7 @@ const ARENA_CSS = `
     .sp{display:none}
   }
   :where(button,input):focus-visible{outline:3px solid var(--cyan);outline-offset:3px}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
   @media (prefers-reduced-motion:reduce){
     *,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
     .grain{display:none}
@@ -501,6 +502,7 @@ const ARENA_CSS = `
 /* portraits) are populated by the engine.                                    */
 /* -------------------------------------------------------------------------- */
 const ARENA_BODY = `
+  <h1 class="sr-only">Live attack and defense arena</h1>
   <div class="circuit"></div>
   <div class="shell">
     <div class="topbar">
@@ -532,7 +534,7 @@ const ARENA_BODY = `
       <div class="rightcol">
         <div class="panel rank">
           <div class="phead accent-c"><span class="t">RANKING</span><span class="rank-tabs" id="rankTabs"><button data-rm="ad" class="on" aria-pressed="true">A&amp;D</button><button data-rm="koth" aria-pressed="false">KOTH</button><button data-rm="jeopardy" aria-pressed="false">JEO</button></span></div>
-          <div id="ranklist" aria-label="Live team ranking"></div>
+          <div id="ranklist" role="region" aria-label="Live team ranking"></div>
         </div>
       </div>
     </div>

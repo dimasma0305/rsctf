@@ -285,17 +285,16 @@ ad:
                 <Dropzone
                   multiple={false}
                   maxSize={MAX_SIZE}
-                  accept={[
-                    'application/gzip',
-                    'application/x-gzip',
-                    'application/x-tar',
-                    'application/zip',
-                    'application/x-zip-compressed',
-                    '.tar',
-                    '.tar.gz',
-                    '.tgz',
-                    '.zip',
-                  ]}
+                  inputProps={{
+                    'aria-label': t('game.submit.dropzone.input_label', 'Challenge archive'),
+                  }}
+                  accept={{
+                    'application/gzip': ['.tar.gz', '.tgz'],
+                    'application/x-gzip': ['.tar.gz', '.tgz'],
+                    'application/x-tar': ['.tar'],
+                    'application/zip': ['.zip'],
+                    'application/x-zip-compressed': ['.zip'],
+                  }}
                   onDrop={(files) => setFile(files[0] ?? null)}
                   onReject={(rejections) => {
                     const msg = rejections[0]?.errors[0]?.message ?? t('game.submit.dropzone.rejected')

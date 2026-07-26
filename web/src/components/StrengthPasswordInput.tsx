@@ -2,7 +2,7 @@ import { Box, Center, PasswordInput, PasswordInputProps, Popover, Progress, Text
 import { useDisclosure } from '@mantine/hooks'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import React, { FC } from 'react'
+import React, { FC, useId } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import misc from '@Styles/Misc.module.css'
@@ -28,6 +28,7 @@ export const StrengthPasswordInput: FC<StrengthPasswordInputProps> = (props) => 
   const [opened, { close, open }] = useDisclosure(false)
   const pwd = value
   const isMobile = useIsMobile()
+  const guidanceId = useId()
 
   const { t } = useTranslation()
 
@@ -59,10 +60,12 @@ export const StrengthPasswordInput: FC<StrengthPasswordInputProps> = (props) => 
 
   const strength = getStrength(pwd)
   const color = strength === 100 ? 'teal' : strength > 50 ? 'yellow' : 'red'
+  const describedBy = [inputProps['aria-describedby'], opened ? guidanceId : undefined].filter(Boolean).join(' ')
 
   return (
     <Popover
       withArrow
+      withRoles={false}
       opened={opened}
       position={isMobile ? 'top' : 'right'}
       data-mobile={isMobile || undefined}
@@ -75,6 +78,7 @@ export const StrengthPasswordInput: FC<StrengthPasswordInputProps> = (props) => 
           placeholder="P4ssW@rd"
           w="100%"
           {...inputProps}
+          aria-describedby={describedBy || undefined}
           label={label ?? t('account.label.password')}
           value={value}
           onChange={onChange}
@@ -88,8 +92,14 @@ export const StrengthPasswordInput: FC<StrengthPasswordInputProps> = (props) => 
           }}
         />
       </Popover.Target>
-      <Popover.Dropdown>
-        <Progress color={color} value={strength} size={5} mb={10} />
+      <Popover.Dropdown id={guidanceId} role="status" aria-live="polite">
+        <Progress
+          color={color}
+          value={strength}
+          size={5}
+          mb={10}
+          aria-label={t('account.password.strength', 'Password strength')}
+        />
         {checks}
       </Popover.Dropdown>
     </Popover>
