@@ -1,26 +1,50 @@
 import {
+  ActionIcon,
   Badge,
   Button,
-  Code,
-  CopyButton,
   Group,
-  Modal,
+  Menu,
   Paper,
   Select,
+  SimpleGrid,
   Stack,
   Table,
   Text,
   TextInput,
+  ThemeIcon,
   Title,
+  Tooltip,
 } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
-import { mdiCheck, mdiContentCopy, mdiKeyChange, mdiPlus, mdiRefresh, mdiTrashCanOutline } from '@mdi/js'
+import {
+  mdiCheck,
+  mdiCheckCircleOutline,
+  mdiDotsHorizontal,
+  mdiKeyChange,
+  mdiMagnify,
+  mdiPackageVariantClosed,
+  mdiPlus,
+  mdiRefresh,
+  mdiServerNetwork,
+  mdiTrashCanOutline,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
-import { FC, useCallback, useEffect, useMemo, useState } from 'react'
+import { FC, ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Empty } from '@Components/Empty'
 import { AdminPage } from '@Components/admin/AdminPage'
+import { WorkerDialogs } from '@Components/admin/workers/WorkerDialogs'
+import { WorkerRetirement } from '@Components/admin/workers/WorkerRetirement'
+import {
+  CreatedWorker,
+  Enrollment,
+  Worker,
+  WorkerFilter,
+  WorkerInstallCommands,
+  WorkerState,
+} from '@Components/admin/workers/types'
 import { showErrorMsg } from '@Utils/Shared'
 import {
   workerInstallCommand,
@@ -29,47 +53,61 @@ import {
   workerWindowsUninstallCommand,
 } from '@Utils/WorkerInstall'
 import api, { ContentType } from '@Api'
+import classes from '@Styles/AdminWorkers.module.css'
 
 dayjs.extend(relativeTime)
 
-type WorkerState = 'Enabled' | 'Draining' | 'Disabled'
-
-interface WorkerCapacity {
-  cpuMillis: number
-  memoryBytes: number
-  slots: number
+interface SummaryMetricProps {
+  label: string
+  value: number
+  helper: string
+  color: string
+  icon: string
 }
 
-interface Worker {
-  id: string
-  name: string
-  administrativeState: WorkerState
-  platformOs?: string | null
-  architecture?: string | null
-  runtimeKind?: string | null
-  runtimeVersion?: string | null
-  capacity: WorkerCapacity
-  online: boolean
-  heartbeatAt?: number | null
+const SummaryMetric: FC<SummaryMetricProps> = ({ label, value, helper, color, icon }) => (
+  <Paper component="article" withBorder p="md" className={classes.metric}>
+    <Group justify="space-between" align="flex-start" wrap="nowrap">
+      <Stack gap={2}>
+        <Text size="xs" fw={750} tt="uppercase" c="dimmed" className={classes.metricLabel}>
+          {label}
+        </Text>
+        <Text className={classes.metricValue}>{value}</Text>
+        <Text size="xs" c="dimmed" className={classes.metricHelper}>
+          {helper}
+        </Text>
+      </Stack>
+      <ThemeIcon color={color} variant="light" size={42} radius="md">
+        <Icon path={icon} size={1.05} aria-hidden="true" />
+      </ThemeIcon>
+    </Group>
+  </Paper>
+)
+
+const formatMemory = (bytes: number): string => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—'
+
+  const gibibytes = bytes / 1024 ** 3
+  return `${gibibytes >= 10 ? Math.round(gibibytes) : gibibytes.toFixed(1)} GiB`
 }
 
-interface Enrollment {
-  workerId: string
-  token: string
-  expiresAt: number
-}
+const formatCpu = (cpuMillis: number): string => {
+  if (!Number.isFinite(cpuMillis) || cpuMillis <= 0) return '—'
 
-interface CreatedWorker {
-  worker: Worker
-  enrollment: Enrollment
+  const cores = cpuMillis / 1000
+  return `${Number.isInteger(cores) ? cores : cores.toFixed(1)} vCPU`
 }
 
 const Workers: FC = () => {
   const { t } = useTranslation()
   const [workers, setWorkers] = useState<Worker[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [createOpened, setCreateOpened] = useState(false)
   const [name, setName] = useState('')
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<WorkerFilter>('all')
   const [enrollment, setEnrollment] = useState<Enrollment | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Worker | null>(null)
   const [deleteConfirmation, setDeleteConfirmation] = useState('')
@@ -90,19 +128,56 @@ const Workers: FC = () => {
   }, [t])
 
   useEffect(() => {
-    loadWorkers()
-    const timer = window.setInterval(loadWorkers, 10_000)
+    void loadWorkers()
+    const timer = window.setInterval(() => void loadWorkers(), 10_000)
     return () => window.clearInterval(timer)
   }, [loadWorkers])
 
-  const installCommands = useMemo(() => {
-    return {
+  const installCommands = useMemo<WorkerInstallCommands>(
+    () => ({
       linux: workerInstallCommand(window.location.origin),
       windows: workerWindowsInstallCommand(window.location.origin),
       linuxUninstall: workerUninstallCommand(window.location.origin),
       windowsUninstall: workerWindowsUninstallCommand(window.location.origin),
+    }),
+    []
+  )
+
+  const summary = useMemo(() => {
+    const online = workers.filter((worker) => worker.online).length
+    const readyWorkers = workers.filter((worker) => worker.online && worker.administrativeState === 'Enabled')
+
+    return {
+      online,
+      ready: readyWorkers.length,
+      activeSlots: readyWorkers.reduce((total, worker) => total + worker.capacity.slots, 0),
     }
-  }, [])
+  }, [workers])
+
+  const filteredWorkers = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase()
+
+    return workers.filter((worker) => {
+      const matchesFilter =
+        filter === 'all' ||
+        (filter === 'online' && worker.online) ||
+        (filter === 'offline' && !worker.online) ||
+        worker.administrativeState.toLocaleLowerCase() === filter
+
+      if (!matchesFilter) return false
+      if (!normalizedQuery) return true
+
+      return [worker.name, worker.id, worker.platformOs, worker.architecture, worker.runtimeKind, worker.runtimeVersion]
+        .filter(Boolean)
+        .some((value) => value?.toLocaleLowerCase().includes(normalizedQuery))
+    })
+  }, [filter, query, workers])
+
+  const refreshWorkers = async () => {
+    setRefreshing(true)
+    await loadWorkers()
+    setRefreshing(false)
+  }
 
   const createWorker = async () => {
     if (!name.trim()) return
@@ -116,6 +191,7 @@ const Workers: FC = () => {
         body: { name: name.trim() },
       })
       setName('')
+      setCreateOpened(false)
       setEnrollment(response.data.enrollment)
       await loadWorkers()
     } catch (error) {
@@ -159,9 +235,6 @@ const Workers: FC = () => {
     }
   }
 
-  const copied = (message: string) =>
-    showNotification({ color: 'teal', message, icon: <Icon path={mdiCheck} size={0.8} /> })
-
   const openDelete = (worker: Worker) => {
     setDeleteTarget(worker)
     setDeleteConfirmation('')
@@ -181,7 +254,11 @@ const Workers: FC = () => {
         path: `/api/admin/workers/${deleteTarget.id}`,
         method: 'DELETE',
       })
-      copied(`Deleted retired worker ${deleteTarget.name}`)
+      showNotification({
+        color: 'teal',
+        message: t('admin.workers.deleted', 'Deleted retired worker {{name}}', { name: deleteTarget.name }),
+        icon: <Icon path={mdiCheck} size={0.8} />,
+      })
       setDeleteTarget(null)
       setDeleteConfirmation('')
       await loadWorkers()
@@ -192,285 +269,428 @@ const Workers: FC = () => {
     }
   }
 
-  return (
-    <AdminPage isLoading={loading}>
-      <Stack gap="lg">
-        <Group justify="space-between">
-          <Title order={2}>Trusted workers</Title>
-          <Button variant="light" leftSection={<Icon path={mdiRefresh} size={0.8} />} onClick={loadWorkers}>
-            Refresh
-          </Button>
-        </Group>
+  const stateOptions = [
+    { value: 'Enabled', label: t('admin.workers.state.enabled', 'Enabled') },
+    { value: 'Draining', label: t('admin.workers.state.draining', 'Draining') },
+    { value: 'Disabled', label: t('admin.workers.state.disabled', 'Disabled') },
+  ]
 
-        <Paper withBorder radius="md" p="md">
-          <Stack gap="sm">
-            <Title order={4}>Create worker</Title>
-            <Group align="end">
-              <TextInput
-                label="Worker name"
-                placeholder="event-worker-01"
-                value={name}
-                onChange={(event) => setName(event.currentTarget.value)}
-                onKeyDown={(event) => event.key === 'Enter' && createWorker()}
-                flex={1}
-                maxLength={128}
-              />
-              <Button
-                leftSection={<Icon path={mdiPlus} size={0.8} />}
-                loading={busy}
-                disabled={!name.trim()}
-                onClick={createWorker}
-              >
-                Create and enroll
-              </Button>
-            </Group>
-            <Text size="sm" c="dimmed">
-              The install command is public, but connecting requires the one-time token shown after creation.
-            </Text>
-          </Stack>
-        </Paper>
+  const platformLabel = (worker: Worker): ReactNode => {
+    if (!worker.platformOs) {
+      return (
+        <Text size="sm" c="dimmed">
+          {t('admin.workers.not_enrolled', 'Awaiting enrollment')}
+        </Text>
+      )
+    }
 
-        <Paper withBorder radius="md" p="md">
-          <Table.ScrollContainer minWidth={950}>
-            <Table striped highlightOnHover>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Worker</Table.Th>
-                  <Table.Th>Status</Table.Th>
-                  <Table.Th>Platform</Table.Th>
-                  <Table.Th>Capacity</Table.Th>
-                  <Table.Th>Last heartbeat</Table.Th>
-                  <Table.Th>State</Table.Th>
-                  <Table.Th>Enrollment</Table.Th>
-                  <Table.Th>Actions</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {workers.map((worker) => (
-                  <Table.Tr key={worker.id}>
-                    <Table.Td>
-                      <Text fw={500}>{worker.name}</Text>
-                      <Text size="xs" c="dimmed" ff="monospace">
-                        {worker.id}
-                      </Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Badge color={worker.online ? 'teal' : 'gray'}>{worker.online ? 'Online' : 'Offline'}</Badge>
-                    </Table.Td>
-                    <Table.Td>
-                      {worker.platformOs
-                        ? `${worker.platformOs}/${worker.architecture ?? 'unknown'} · ${worker.runtimeKind ?? 'unknown'}`
-                        : 'Not enrolled'}
-                    </Table.Td>
-                    <Table.Td>
-                      {worker.capacity.slots} slots · {worker.capacity.cpuMillis}m CPU
-                    </Table.Td>
-                    <Table.Td>{worker.heartbeatAt ? dayjs(worker.heartbeatAt).fromNow() : 'Never'}</Table.Td>
-                    <Table.Td>
-                      <Select
-                        aria-label={`Administrative state for ${worker.name}`}
-                        data={['Enabled', 'Draining', 'Disabled']}
-                        value={worker.administrativeState}
-                        disabled={busy}
-                        allowDeselect={false}
-                        onChange={(value) => value && updateState(worker, value as WorkerState)}
-                      />
-                    </Table.Td>
-                    <Table.Td>
-                      <Button
-                        size="xs"
-                        variant="light"
-                        leftSection={<Icon path={mdiKeyChange} size={0.7} />}
-                        disabled={busy}
-                        onClick={() => issueToken(worker)}
-                      >
-                        New token
-                      </Button>
-                    </Table.Td>
-                    <Table.Td>
-                      <Button
-                        size="xs"
-                        color="red"
-                        variant="light"
-                        leftSection={<Icon path={mdiTrashCanOutline} size={0.7} />}
-                        disabled={busy || worker.administrativeState !== 'Disabled' || worker.online}
-                        title={
-                          worker.administrativeState === 'Disabled' && !worker.online
-                            ? 'Delete this retired worker record'
-                            : 'Disable this worker before deletion'
-                        }
-                        onClick={() => openDelete(worker)}
-                      >
-                        Delete
-                      </Button>
-                    </Table.Td>
-                  </Table.Tr>
-                ))}
-                {workers.length === 0 && (
-                  <Table.Tr>
-                    <Table.Td colSpan={8}>
-                      <Text ta="center" c="dimmed">
-                        No trusted workers configured.
-                      </Text>
-                    </Table.Td>
-                  </Table.Tr>
-                )}
-              </Table.Tbody>
-            </Table>
-          </Table.ScrollContainer>
-        </Paper>
-
-        <Paper withBorder radius="md" p="md">
-          <Stack gap="sm">
-            <Title order={4}>Uninstall worker software</Title>
-            <Text size="sm" c="dimmed">
-              First set the worker to Disabled above. Uninstall refuses to remove a host that still has managed
-              workloads and asks for confirmation before deleting its local certificate and configuration.
-            </Text>
-            <Text size="sm" fw={500}>
-              Linux
-            </Text>
-            <Code block>{installCommands.linuxUninstall}</Code>
-            <CopyButton value={installCommands.linuxUninstall} timeout={1500}>
-              {({ copy }) => (
-                <Button variant="light" leftSection={<Icon path={mdiContentCopy} size={0.8} />} onClick={copy}>
-                  Copy Linux uninstall command
-                </Button>
-              )}
-            </CopyButton>
-            <Text size="sm" fw={500}>
-              Windows (Administrator PowerShell)
-            </Text>
-            <Code block>{installCommands.windowsUninstall}</Code>
-            <CopyButton value={installCommands.windowsUninstall} timeout={1500}>
-              {({ copy }) => (
-                <Button variant="light" leftSection={<Icon path={mdiContentCopy} size={0.8} />} onClick={copy}>
-                  Copy Windows uninstall command
-                </Button>
-              )}
-            </CopyButton>
-          </Stack>
-        </Paper>
+    return (
+      <Stack gap={1}>
+        <Text size="sm" fw={600}>
+          {worker.platformOs}/{worker.architecture ?? t('common.label.unknown', 'unknown')}
+        </Text>
+        <Text size="xs" c="dimmed">
+          {worker.runtimeKind ?? t('common.label.unknown', 'Unknown runtime')}
+          {worker.runtimeVersion ? ` · ${worker.runtimeVersion}` : ''}
+        </Text>
       </Stack>
+    )
+  }
 
-      <Modal
-        opened={enrollment !== null}
-        onClose={() => setEnrollment(null)}
-        title="Install and enroll this worker"
-        size="lg"
-        closeOnClickOutside={false}
+  const heartbeat = (worker: Worker): ReactNode => {
+    if (!worker.heartbeatAt) {
+      return (
+        <Text size="sm" c="dimmed">
+          {t('admin.workers.heartbeat.never', 'Never')}
+        </Text>
+      )
+    }
+
+    const timestamp = dayjs(worker.heartbeatAt)
+    return (
+      <Text
+        component="time"
+        dateTime={timestamp.toISOString()}
+        title={timestamp.format('YYYY-MM-DD HH:mm:ss Z')}
+        size="sm"
+        fw={worker.online ? 600 : 400}
       >
-        <Stack gap="md">
-          <Text size="sm">
-            Run one command on a dedicated Linux or Windows-container host. It verifies the release and privately
-            prompts for a dedicated-host acknowledgement and the token below. Do not use a daily-use computer or a
-            machine containing unrelated secrets.
-          </Text>
-          <Text size="sm" fw={500}>
-            Linux
-          </Text>
-          <Code block>{installCommands.linux}</Code>
-          <CopyButton value={installCommands.linux} timeout={1500}>
-            {({ copy }) => (
-              <Button
-                variant="light"
-                leftSection={<Icon path={mdiContentCopy} size={0.8} />}
-                onClick={() => {
-                  copy()
-                  copied('Install command copied')
-                }}
-              >
-                Copy Linux command
-              </Button>
-            )}
-          </CopyButton>
+        {timestamp.fromNow()}
+      </Text>
+    )
+  }
 
-          <Text size="sm" fw={500}>
-            Windows (Administrator PowerShell)
-          </Text>
-          <Code block>{installCommands.windows}</Code>
-          <CopyButton value={installCommands.windows} timeout={1500}>
-            {({ copy }) => (
-              <Button
-                variant="light"
-                leftSection={<Icon path={mdiContentCopy} size={0.8} />}
-                onClick={() => {
-                  copy()
-                  copied('Windows install command copied')
-                }}
-              >
-                Copy Windows command
-              </Button>
-            )}
-          </CopyButton>
+  const connectionBadge = (worker: Worker): ReactNode => (
+    <Badge
+      color={worker.online ? 'teal' : 'gray'}
+      variant="light"
+      className={classes.connectionBadge}
+      leftSection={<span className={classes.statusDot} data-online={worker.online || undefined} aria-hidden="true" />}
+    >
+      {worker.online
+        ? t('admin.workers.connection.online', 'Online')
+        : t('admin.workers.connection.offline', 'Offline')}
+    </Badge>
+  )
 
-          <Text size="sm" fw={500}>
-            One-time token (expires {enrollment ? dayjs(enrollment.expiresAt).fromNow() : ''})
-          </Text>
-          <Code block>{enrollment?.token}</Code>
-          <CopyButton value={enrollment?.token ?? ''} timeout={1500}>
-            {({ copy }) => (
-              <Button
-                color="orange"
-                variant="light"
-                leftSection={<Icon path={mdiContentCopy} size={0.8} />}
-                onClick={() => {
-                  copy()
-                  copied('One-time token copied')
-                }}
-              >
-                Copy one-time token
-              </Button>
-            )}
-          </CopyButton>
-          <Text size="xs" c="dimmed">
-            The token is shown once, expires after 15 minutes, and is consumed by the first successful enrollment.
-            Linux automatically uses systemd when available or Docker supervision otherwise. Native Windows workers
-            require Docker in Windows-container mode. For Docker Desktop Linux-container mode, enable host networking
-            and run the Linux command inside its dedicated Linux VM. Keep storage quota checks enabled for real events.
-          </Text>
-        </Stack>
-      </Modal>
+  const stateSelect = (worker: Worker): ReactNode => (
+    <Select
+      aria-label={t('admin.workers.state.label', 'Administrative state for {{name}}', { name: worker.name })}
+      data={stateOptions}
+      value={worker.administrativeState}
+      disabled={busy}
+      allowDeselect={false}
+      onChange={(value) => value && void updateState(worker, value as WorkerState)}
+    />
+  )
 
-      <Modal
-        opened={deleteTarget !== null}
-        onClose={closeDelete}
-        title={deleteTarget ? `Delete retired worker ${deleteTarget.name}` : 'Delete retired worker'}
-        centered
-      >
-        <Stack gap="md">
-          <Text size="sm">
-            This permanently removes the worker record, revokes its registered certificate, and invalidates any
-            outstanding enrollment token. Workers with workload history are retained for audit and cannot be deleted.
-          </Text>
-          <TextInput
-            label={deleteTarget ? `Type ${deleteTarget.name} to confirm` : 'Worker name'}
-            value={deleteConfirmation}
-            onChange={(event) => setDeleteConfirmation(event.currentTarget.value)}
-            data-autofocus
-            autoComplete="off"
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && deleteTarget && deleteConfirmation === deleteTarget.name) {
-                deleteWorker()
-              }
-            }}
-          />
-          <Group justify="flex-end">
-            <Button variant="default" onClick={closeDelete} disabled={busy}>
-              Cancel
+  const deleteDisabledReason = (worker: Worker): string | undefined => {
+    if (worker.online) return t('admin.workers.delete.wait_offline', 'Wait for this worker to go offline first')
+    if (worker.administrativeState !== 'Disabled') {
+      return t('admin.workers.delete.disable_first', 'Set the worker state to Disabled first')
+    }
+    return undefined
+  }
+
+  const actionsMenu = (worker: Worker): ReactNode => {
+    const deleteReason = deleteDisabledReason(worker)
+    return (
+      <Menu position="bottom-end" withinPortal>
+        <Menu.Target>
+          <Tooltip label={t('admin.workers.actions_for', 'Actions for {{name}}', { name: worker.name })}>
+            <ActionIcon
+              variant="subtle"
+              aria-label={t('admin.workers.actions_for', 'Actions for {{name}}', { name: worker.name })}
+              disabled={busy}
+            >
+              <Icon path={mdiDotsHorizontal} size={0.9} aria-hidden="true" />
+            </ActionIcon>
+          </Tooltip>
+        </Menu.Target>
+        <Menu.Dropdown>
+          <Menu.Label>{worker.name}</Menu.Label>
+          <Menu.Item
+            leftSection={<Icon path={mdiKeyChange} size={0.75} aria-hidden="true" />}
+            onClick={() => void issueToken(worker)}
+          >
+            {t('admin.workers.new_token', 'Issue new enrollment token')}
+          </Menu.Item>
+          <Menu.Divider />
+          <Menu.Item
+            color="red"
+            disabled={Boolean(deleteReason)}
+            title={deleteReason}
+            leftSection={<Icon path={mdiTrashCanOutline} size={0.75} aria-hidden="true" />}
+            onClick={() => openDelete(worker)}
+          >
+            {t('admin.workers.delete.action', 'Delete worker record')}
+          </Menu.Item>
+        </Menu.Dropdown>
+      </Menu>
+    )
+  }
+
+  const clearFilters = () => {
+    setQuery('')
+    setFilter('all')
+  }
+
+  return (
+    <AdminPage
+      isLoading={loading}
+      head={
+        <>
+          <Group gap="xs" wrap="nowrap" className={classes.liveStatus}>
+            <span className={classes.liveDot} aria-hidden="true" />
+            <Text size="sm" c="dimmed">
+              {t('admin.workers.auto_refresh', 'Live inventory · refreshes every 10 seconds')}
+            </Text>
+          </Group>
+          <Group gap="sm" w={{ base: '100%', sm: 'auto' }} grow>
+            <Button
+              variant="default"
+              leftSection={<Icon path={mdiRefresh} size={0.8} aria-hidden="true" />}
+              loading={refreshing}
+              onClick={() => void refreshWorkers()}
+            >
+              {t('common.button.refresh', 'Refresh')}
             </Button>
             <Button
-              color="red"
-              leftSection={<Icon path={mdiTrashCanOutline} size={0.8} />}
-              disabled={!deleteTarget || deleteConfirmation !== deleteTarget.name}
-              loading={busy}
-              onClick={deleteWorker}
+              leftSection={<Icon path={mdiPlus} size={0.8} aria-hidden="true" />}
+              onClick={() => setCreateOpened(true)}
             >
-              Delete worker
+              {t('admin.workers.add', 'Add worker')}
             </Button>
           </Group>
-        </Stack>
-      </Modal>
+        </>
+      }
+    >
+      <Stack gap="lg">
+        <SimpleGrid cols={{ base: 2, md: 4 }} spacing="md">
+          <SummaryMetric
+            label={t('admin.workers.summary.total', 'Registered')}
+            value={workers.length}
+            helper={t('admin.workers.summary.total_helper', 'Trusted worker records')}
+            color="blue"
+            icon={mdiServerNetwork}
+          />
+          <SummaryMetric
+            label={t('admin.workers.summary.online', 'Online')}
+            value={summary.online}
+            helper={t('admin.workers.summary.online_helper', 'Heartbeat is current')}
+            color="teal"
+            icon={mdiCheckCircleOutline}
+          />
+          <SummaryMetric
+            label={t('admin.workers.summary.ready', 'Ready')}
+            value={summary.ready}
+            helper={t('admin.workers.summary.ready_helper', 'Online and enabled')}
+            color="green"
+            icon={mdiCheck}
+          />
+          <SummaryMetric
+            label={t('admin.workers.summary.slots', 'Active slots')}
+            value={summary.activeSlots}
+            helper={t('admin.workers.summary.slots_helper', 'On ready workers')}
+            color="violet"
+            icon={mdiPackageVariantClosed}
+          />
+        </SimpleGrid>
+
+        <Paper component="section" withBorder p="md" className={classes.inventory} aria-labelledby="worker-inventory">
+          <Group justify="space-between" align="flex-end" gap="md" mb="md" wrap="wrap">
+            <Stack gap={2}>
+              <Title order={2} size="h4" id="worker-inventory">
+                {t('admin.workers.inventory.title', 'Worker inventory')}
+              </Title>
+              <Text size="sm" c="dimmed">
+                {t('admin.workers.inventory.description', 'Search connectivity, runtime, and administrative state.')}
+              </Text>
+            </Stack>
+            {workers.length > 0 && (
+              <Text size="sm" c="dimmed" aria-live="polite">
+                {t('admin.workers.inventory.showing', 'Showing {{shown}} of {{total}}', {
+                  shown: filteredWorkers.length,
+                  total: workers.length,
+                })}
+              </Text>
+            )}
+          </Group>
+
+          {workers.length > 0 && (
+            <Group gap="sm" align="flex-end" mb="lg" className={classes.filters}>
+              <TextInput
+                type="search"
+                label={t('admin.workers.search.label', 'Search workers')}
+                placeholder={t('admin.workers.search.placeholder', 'Name, ID, OS, or runtime')}
+                leftSection={<Icon path={mdiMagnify} size={0.8} aria-hidden="true" />}
+                value={query}
+                onChange={(event) => setQuery(event.currentTarget.value)}
+                className={classes.search}
+              />
+              <Select
+                label={t('admin.workers.filter.label', 'Status filter')}
+                allowDeselect={false}
+                value={filter}
+                data={[
+                  { value: 'all', label: t('admin.workers.filter.all', 'All workers') },
+                  { value: 'online', label: t('admin.workers.filter.online', 'Online') },
+                  { value: 'offline', label: t('admin.workers.filter.offline', 'Offline') },
+                  { value: 'enabled', label: t('admin.workers.filter.enabled', 'Enabled') },
+                  { value: 'draining', label: t('admin.workers.filter.draining', 'Draining') },
+                  { value: 'disabled', label: t('admin.workers.filter.disabled', 'Disabled') },
+                ]}
+                onChange={(value) => value && setFilter(value as WorkerFilter)}
+                className={classes.filter}
+              />
+            </Group>
+          )}
+
+          {filteredWorkers.length === 0 ? (
+            <Empty
+              bordered
+              title={
+                workers.length === 0
+                  ? t('admin.workers.empty.title', 'No trusted workers yet')
+                  : t('admin.workers.empty.filtered_title', 'No workers match these filters')
+              }
+              description={
+                workers.length === 0
+                  ? t(
+                      'admin.workers.empty.description',
+                      'Add a worker to generate a one-time enrollment token and secure install instructions.'
+                    )
+                  : t('admin.workers.empty.filtered_description', 'Try another name, platform, or status.')
+              }
+              action={
+                workers.length === 0 ? (
+                  <Button leftSection={<Icon path={mdiPlus} size={0.8} />} onClick={() => setCreateOpened(true)}>
+                    {t('admin.workers.add', 'Add worker')}
+                  </Button>
+                ) : (
+                  <Button variant="light" onClick={clearFilters}>
+                    {t('admin.workers.filter.clear', 'Clear filters')}
+                  </Button>
+                )
+              }
+            />
+          ) : (
+            <>
+              <Table.ScrollContainer minWidth={1080} visibleFrom="md">
+                <Table verticalSpacing="sm" className={classes.table}>
+                  <Table.Caption className="app-sr-only">
+                    {t('admin.workers.inventory.caption', 'Trusted worker inventory and controls')}
+                  </Table.Caption>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th scope="col">{t('admin.workers.column.worker', 'Worker')}</Table.Th>
+                      <Table.Th scope="col">{t('admin.workers.column.connection', 'Connection')}</Table.Th>
+                      <Table.Th scope="col">{t('admin.workers.column.runtime', 'Runtime')}</Table.Th>
+                      <Table.Th scope="col">{t('admin.workers.column.capacity', 'Capacity')}</Table.Th>
+                      <Table.Th scope="col">{t('admin.workers.column.heartbeat', 'Last heartbeat')}</Table.Th>
+                      <Table.Th scope="col">{t('admin.workers.column.state', 'State')}</Table.Th>
+                      <Table.Th scope="col">
+                        <span className="app-sr-only">{t('common.label.actions', 'Actions')}</span>
+                      </Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {filteredWorkers.map((worker) => (
+                      <Table.Tr key={worker.id}>
+                        <Table.Td>
+                          <Stack gap={2} className={classes.identity}>
+                            <Text fw={650}>{worker.name}</Text>
+                            <Text size="xs" c="dimmed" ff="monospace" truncate title={worker.id}>
+                              {worker.id}
+                            </Text>
+                          </Stack>
+                        </Table.Td>
+                        <Table.Td>{connectionBadge(worker)}</Table.Td>
+                        <Table.Td>{platformLabel(worker)}</Table.Td>
+                        <Table.Td>
+                          <Stack gap={1}>
+                            <Text size="sm" fw={600}>
+                              {t('admin.workers.capacity.slots', '{{count}} slots', {
+                                count: worker.capacity.slots,
+                              })}
+                            </Text>
+                            <Text size="xs" c="dimmed">
+                              {formatCpu(worker.capacity.cpuMillis)} · {formatMemory(worker.capacity.memoryBytes)}
+                            </Text>
+                          </Stack>
+                        </Table.Td>
+                        <Table.Td>{heartbeat(worker)}</Table.Td>
+                        <Table.Td className={classes.stateCell}>{stateSelect(worker)}</Table.Td>
+                        <Table.Td ta="right">{actionsMenu(worker)}</Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </Table.ScrollContainer>
+
+              <Stack gap="sm" hiddenFrom="md">
+                {filteredWorkers.map((worker) => {
+                  const deleteReason = deleteDisabledReason(worker)
+                  return (
+                    <Paper component="article" key={worker.id} withBorder p="md" className={classes.workerCard}>
+                      <Stack gap="md">
+                        <Group justify="space-between" align="flex-start" wrap="nowrap">
+                          <Stack gap={2} className={classes.identity}>
+                            <Text fw={700}>{worker.name}</Text>
+                            <Text size="xs" c="dimmed" ff="monospace" truncate title={worker.id}>
+                              {worker.id}
+                            </Text>
+                          </Stack>
+                          {connectionBadge(worker)}
+                        </Group>
+
+                        <SimpleGrid cols={2} spacing="sm">
+                          <Stack gap={2}>
+                            <Text size="xs" fw={700} tt="uppercase" c="dimmed">
+                              {t('admin.workers.column.runtime', 'Runtime')}
+                            </Text>
+                            {platformLabel(worker)}
+                          </Stack>
+                          <Stack gap={2}>
+                            <Text size="xs" fw={700} tt="uppercase" c="dimmed">
+                              {t('admin.workers.column.heartbeat', 'Last heartbeat')}
+                            </Text>
+                            {heartbeat(worker)}
+                          </Stack>
+                          <Stack gap={2}>
+                            <Text size="xs" fw={700} tt="uppercase" c="dimmed">
+                              {t('admin.workers.column.capacity', 'Capacity')}
+                            </Text>
+                            <Text size="sm">
+                              {t('admin.workers.capacity.slots', '{{count}} slots', {
+                                count: worker.capacity.slots,
+                              })}
+                            </Text>
+                            <Text size="xs" c="dimmed">
+                              {formatCpu(worker.capacity.cpuMillis)} · {formatMemory(worker.capacity.memoryBytes)}
+                            </Text>
+                          </Stack>
+                        </SimpleGrid>
+
+                        <div>
+                          <Text size="xs" fw={700} mb={5}>
+                            {t('admin.workers.column.state', 'Administrative state')}
+                          </Text>
+                          {stateSelect(worker)}
+                        </div>
+
+                        <Group grow align="stretch">
+                          <Button
+                            variant="light"
+                            leftSection={<Icon path={mdiKeyChange} size={0.75} />}
+                            disabled={busy}
+                            onClick={() => void issueToken(worker)}
+                          >
+                            {t('admin.workers.token.short', 'New token')}
+                          </Button>
+                          <Tooltip label={deleteReason} disabled={!deleteReason} multiline>
+                            <span className={classes.mobileAction}>
+                              <Button
+                                fullWidth
+                                color="red"
+                                variant="light"
+                                leftSection={<Icon path={mdiTrashCanOutline} size={0.75} />}
+                                disabled={busy || Boolean(deleteReason)}
+                                onClick={() => openDelete(worker)}
+                              >
+                                {t('common.button.delete', 'Delete')}
+                              </Button>
+                            </span>
+                          </Tooltip>
+                        </Group>
+                      </Stack>
+                    </Paper>
+                  )
+                })}
+              </Stack>
+            </>
+          )}
+        </Paper>
+
+        <WorkerRetirement commands={installCommands} />
+      </Stack>
+
+      <WorkerDialogs
+        busy={busy}
+        commands={installCommands}
+        createOpened={createOpened}
+        deleteConfirmation={deleteConfirmation}
+        deleteTarget={deleteTarget}
+        enrollment={enrollment}
+        name={name}
+        onCloseCreate={() => !busy && setCreateOpened(false)}
+        onCloseDelete={closeDelete}
+        onCloseEnrollment={() => setEnrollment(null)}
+        onCreate={() => void createWorker()}
+        onDelete={() => void deleteWorker()}
+        onDeleteConfirmationChange={setDeleteConfirmation}
+        onNameChange={setName}
+      />
     </AdminPage>
   )
 }

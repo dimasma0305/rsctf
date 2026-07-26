@@ -1,0 +1,245 @@
+.metric,
+.inventory,
+.retirement,
+.workerCard,
+.tokenPanel {
+  border-color: var(--app-border-subtle);
+  background: var(--app-raised-surface);
+}
+
+.metric {
+  min-height: 9rem;
+  background:
+    radial-gradient(
+      circle at 100% 0,
+      color-mix(in srgb, var(--mantine-primary-color-5) 9%, transparent),
+      transparent 8.5rem
+    ),
+    var(--app-raised-surface);
+}
+
+.metricLabel {
+  letter-spacing: 0.075em;
+}
+
+.metricValue {
+  color: var(--app-text-primary);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: clamp(1.7rem, 3vw, 2.3rem);
+  font-weight: 780;
+  line-height: 1.1;
+  letter-spacing: -0.055em;
+}
+
+.metricHelper {
+  min-height: 2.4em;
+  line-height: 1.35;
+}
+
+.liveStatus {
+  min-width: 0;
+}
+
+.liveDot {
+  width: 0.55rem;
+  height: 0.55rem;
+  flex: 0 0 auto;
+  border: 2px solid var(--app-raised-surface);
+  border-radius: 50%;
+  background: var(--mantine-color-teal-5);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mantine-color-teal-5) 20%, transparent);
+}
+
+.inventory {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.filters {
+  padding: var(--mantine-spacing-sm);
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--mantine-radius-lg);
+  background: var(--app-subtle-surface);
+}
+
+.search {
+  min-width: min(100%, 22rem);
+  flex: 1 1 24rem;
+}
+
+.filter {
+  width: min(100%, 13rem);
+  flex: 0 1 13rem;
+}
+
+.table {
+  margin-inline: calc(var(--mantine-spacing-md) * -1);
+  width: calc(100% + var(--mantine-spacing-md) * 2);
+}
+
+.table :global(.mantine-Table-th:first-child),
+.table :global(.mantine-Table-td:first-child) {
+  padding-inline-start: var(--mantine-spacing-md);
+}
+
+.table :global(.mantine-Table-th:last-child),
+.table :global(.mantine-Table-td:last-child) {
+  padding-inline-end: var(--mantine-spacing-md);
+}
+
+.table :global(.mantine-Table-tr:last-child .mantine-Table-td) {
+  border-bottom: 0;
+}
+
+.identity {
+  min-width: 9rem;
+  max-width: 16rem;
+}
+
+.stateCell {
+  width: 9.75rem;
+}
+
+.statusDot {
+  display: block;
+  width: 0.48rem;
+  height: 0.48rem;
+  border-radius: 50%;
+  background: var(--mantine-color-gray-5);
+}
+
+.statusDot[data-online] {
+  background: var(--mantine-color-teal-5);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mantine-color-teal-5) 18%, transparent);
+}
+
+.connectionBadge {
+  flex-shrink: 0;
+}
+
+.workerCard {
+  overflow: hidden;
+}
+
+.mobileAction {
+  display: block;
+  width: 100%;
+}
+
+.retirement {
+  position: relative;
+  overflow: hidden;
+}
+
+.retirement::after {
+  position: absolute;
+  top: -4rem;
+  right: -4rem;
+  width: 12rem;
+  height: 12rem;
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--mantine-color-orange-5) 14%, transparent);
+  border-radius: 50%;
+  content: '';
+  box-shadow:
+    0 0 0 2rem color-mix(in srgb, var(--mantine-color-orange-5) 2.5%, transparent),
+    0 0 0 4rem color-mix(in srgb, var(--mantine-color-orange-5) 1.5%, transparent);
+}
+
+.retirement > * {
+  position: relative;
+  z-index: 1;
+}
+
+.step {
+  min-width: 0;
+  padding: var(--mantine-spacing-md);
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--mantine-radius-md);
+  background: var(--app-subtle-surface);
+}
+
+.stepNumber {
+  margin-bottom: var(--mantine-spacing-xs);
+  color: var(--app-accent-text);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.command,
+.token {
+  max-width: 100%;
+  padding: var(--mantine-spacing-md);
+  overflow-x: auto;
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--mantine-radius-md);
+  color: var(--app-text-secondary);
+  background: var(--app-background-strong);
+  font-size: 0.78rem;
+  line-height: 1.65;
+  white-space: pre;
+  user-select: all;
+}
+
+.tokenPanel {
+  border-color: color-mix(in srgb, var(--mantine-color-orange-6) 38%, var(--app-border-subtle));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--mantine-color-orange-6) 7%, transparent), transparent 48%),
+    var(--app-raised-surface);
+}
+
+.token {
+  color: var(--app-text-primary);
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .metric {
+    min-height: 8.5rem;
+    padding: var(--mantine-spacing-sm) !important;
+  }
+
+  .metricHelper {
+    min-height: 0;
+  }
+
+  .filters {
+    align-items: stretch;
+  }
+
+  .search,
+  .filter {
+    width: 100%;
+    flex-basis: 100%;
+  }
+
+  .modalActions {
+    align-items: stretch;
+  }
+
+  .modalActions > * {
+    flex: 1;
+  }
+}
+
+@media (max-width: $mantine-breakpoint-xs) {
+  .metric {
+    min-height: 8rem;
+  }
+
+  .metricValue {
+    font-size: 1.6rem;
+  }
+
+  .metric :global(.mantine-ThemeIcon-root) {
+    width: 2.25rem;
+    height: 2.25rem;
+  }
+
+  .inventory {
+    padding: var(--mantine-spacing-sm) !important;
+  }
+}

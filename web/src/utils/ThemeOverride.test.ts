@@ -72,6 +72,15 @@ test('active accent-surface text stays AA-safe for arbitrary configured colors',
   }
 })
 
+test('active admin navigation consumes the contrast-safe surface text token', () => {
+  const css = readFileSync('src/styles/components/AdminTabs.module.css', 'utf8')
+  const activeRule = css.match(/\.navigationLink\[data-active\]\s*\{([\s\S]*?)\n\}/)?.[1]
+
+  assert.ok(activeRule, 'active admin navigation rule exists')
+  assert.match(activeRule, /color:\s*var\(--app-accent-surface-text\);/)
+  assert.doesNotMatch(activeRule, /color:\s*var\(--app-accent-text\);/)
+})
+
 test('decorative surfaces are borderless and semantic accent variables resolve', () => {
   const css = readFileSync('src/styles/App.css', 'utf8')
 
