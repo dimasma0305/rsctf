@@ -1,9 +1,12 @@
 # Full-page visual audit
 
-The visual audit renders every React page component in both desktop and mobile
-viewports. It saves screenshots, runs axe, checks responsive overflow, heading
-structure, control names and target spacing, and records browser exceptions and
-HTTP 5xx responses.
+The visual audit renders every React page component at desktop (1440×1100),
+laptop (1024×768), tablet (768×1024), mobile (390×844), and compact mobile
+(320×568) sizes. For every render it saves the actual viewport plus an expanded
+full-content screenshot that opens nested vertical scroll regions. It runs axe,
+checks responsive overflow and viewport escapes, heading structure, control
+names and target spacing, and records browser exceptions and HTTP 5xx
+responses.
 
 Generated artifacts live in `/visual-audit-output` and are excluded from Git and
 the Docker build context.
@@ -31,11 +34,19 @@ Useful filters:
 ```sh
 pnpm --dir web visual:audit --list
 pnpm --dir web visual:audit --page admin--builds
+pnpm --dir web visual:audit --shard 1/2
+pnpm --dir web visual:audit --shard 2/2
+pnpm --dir web visual:audit --viewport laptop --viewport tablet
 pnpm --dir web visual:audit --desktop-only
 pnpm --dir web visual:audit --mobile-only
 ```
 
+Route shards are deterministic, contiguous slices of the filtered route
+catalog. They are useful when a browser runner has a short process timeout;
+running every shard covers each selected route exactly once.
+
 The audit exits non-zero for accessibility, responsive-layout, browser-runtime,
-server-5xx, and route-rendering failures. Review `report.md`, `report.json`, and
-`gallery.html` together: automated checks catch structural regressions while
-the screenshot gallery is the operator's visual review surface.
+server-5xx, screenshot truncation, and route-rendering failures. Review
+`report.md`, `report.json`, and `gallery.html` together: automated checks catch
+structural regressions while the paired viewport/full-content gallery is the
+operator's visual review surface.

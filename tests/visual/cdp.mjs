@@ -152,6 +152,11 @@ export async function launchBrowser() {
     }
   }
   const removeProfile = () => rmSync(profile, { recursive: true, force: true })
+  const emergencyCleanup = () => {
+    signalBrowser('SIGKILL')
+    removeProfile()
+  }
+  process.once('exit', emergencyCleanup)
 
   try {
     const activePortFile = join(profile, 'DevToolsActivePort')
@@ -175,25 +180,28 @@ export async function launchBrowser() {
     const cdp = new CdpClient(page.webSocketDebuggerUrl)
     await cdp.connect()
 
-    let closed = false
-    const close = async () => {
-      if (closed) return
-      closed = true
-      cdp.close()
-      try {
-        await fetch(`${base}/json/close/${page.id}`)
-      } catch {
-        // The browser may already be gone after a failed navigation.
-      } finally {
-        await stopBrowser()
-        removeProfile()
-      }
+    let closePromise
+    const close = () => {
+      closePromise ??= (async () => {
+        cdp.close()
+        try {
+          await fetch(`${base}/json/close/${page.id}`)
+        } catch {
+          // The browser may already be gone after a failed navigation.
+        } finally {
+          await stopBrowser()
+          removeProfile()
+          process.off('exit', emergencyCleanup)
+        }
+      })()
+      return closePromise
     }
 
     return { cdp, close, executable }
   } catch (error) {
     await stopBrowser()
     removeProfile()
+    process.off('exit', emergencyCleanup)
     throw error
   }
 }

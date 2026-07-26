@@ -34,7 +34,6 @@ import { Icon } from '@mdi/react'
 import * as signalR from '@microsoft/signalr'
 import cx from 'clsx'
 import dayjs from 'dayjs'
-import { TFunction } from 'i18next'
 import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
@@ -43,9 +42,11 @@ import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
+import { useIsMobile } from '@Utils/ThemeOverride'
 import { useGame } from '@Hooks/useGame'
-import api, { AnswerResult, EventType, GameEvent } from '@Api'
+import api, { EventType, GameEvent } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
+import { formatGameEvent } from '../eventFormat'
 
 const ITEM_COUNT_PER_PAGE = 30
 
@@ -65,66 +66,6 @@ const EventTypeIconMap = (size: number) => {
       [EventType.Normal, { path: mdiLightningBolt, size, color: theme.colors.light[colorIdx] }],
     ])
   }, [size, colorScheme, theme.colors])
-}
-
-const formatAnswer = (t: TFunction, res: AnswerResult) => {
-  switch (res) {
-    case AnswerResult.Accepted:
-      return t('game.event.answer.accepted')
-    case AnswerResult.WrongAnswer:
-      return t('game.event.answer.wrong')
-    case AnswerResult.CheatDetected:
-      return t('game.event.answer.cheat')
-    case AnswerResult.FlagSubmitted:
-      return t('game.event.answer.submitted')
-    case AnswerResult.NotFound:
-      return t('game.event.answer.not_found')
-    default:
-      return ''
-  }
-}
-
-const formatEvent = (t: TFunction, event: GameEvent) => {
-  switch (event.type) {
-    case EventType.Normal:
-      return event.values.at(-1) || ''
-    case EventType.FlagSubmit:
-      return t('game.event.flag_submit', {
-        status: formatAnswer(t, event.values.at(0) as AnswerResult),
-        flag: event.values.at(1),
-        chal: event.values.at(2),
-        id: event.values.at(3),
-      })
-    case EventType.CheatDetected:
-      return t('game.event.cheat_detected', {
-        chal: event.values.at(0),
-        team: event.values.at(1),
-        steam: event.values.at(2),
-      })
-    case EventType.ContainerStart:
-      return t('game.event.container.start', {
-        id: event.values.at(0),
-        chal: event.values.at(1),
-      })
-    case EventType.Download:
-      if (event.values.length >= 4) {
-        return `${event.values[2]} (IP: ${event.values[3]})`
-      }
-      return event.values.at(-1) || ''
-    case EventType.ContainerDestroy:
-      return t('game.event.container.destroy', {
-        id: event.values.at(0),
-        chal: event.values.at(1),
-      })
-    case EventType.ChallengeOpened:
-      return (
-        t('game.event.challenge_opened', {
-          chal: event.values.at(1),
-        }) || `Opened challenge ${event.values.at(1)}`
-      )
-    default:
-      return event.values.at(-1) || ''
-  }
 }
 
 interface IconBadgeProps {
@@ -162,6 +103,7 @@ const Events: FC = () => {
   const [events, setEvents] = useState<GameEvent[]>()
 
   const { game } = useGame(numId)
+  const isNarrow = useIsMobile(480)
 
   const iconMap = EventTypeIconMap(1.15)
   const { t } = useTranslation()
@@ -311,16 +253,28 @@ const Events: FC = () => {
               <Group wrap="nowrap" align="flex-start" justify="right" gap="sm" w="100%">
                 <Icon {...iconMap.get(event.type)!} />
                 <Stack gap={2} w="100%" style={{ minWidth: 0 }}>
-                  <ScrollingText text={formatEvent(t, event)} size="md" fw={500} maw={800} />
-                  <Group wrap="nowrap" justify="space-between">
-                    <Group gap="sm" wrap="nowrap">
-                      <IconBadge path={mdiAccountOutline} content={event.user} />
-                      <IconBadge path={mdiAccountGroupOutline} content={event.team} />
+                  <ScrollingText text={formatGameEvent(t, event)} size="md" fw={500} maw={800} />
+                  {isNarrow ? (
+                    <Stack gap={4}>
+                      <Group gap="xs" wrap="wrap" style={{ minWidth: 0 }}>
+                        <IconBadge path={mdiAccountOutline} content={event.user} />
+                        <IconBadge path={mdiAccountGroupOutline} content={event.team} />
+                      </Group>
+                      <Text size="xs" fw={500} c="dimmed" style={{ alignSelf: 'flex-end' }}>
+                        {dayjs(event.time).locale(locale).format('SL LTS')}
+                      </Text>
+                    </Stack>
+                  ) : (
+                    <Group wrap="nowrap" justify="space-between">
+                      <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
+                        <IconBadge path={mdiAccountOutline} content={event.user} />
+                        <IconBadge path={mdiAccountGroupOutline} content={event.team} />
+                      </Group>
+                      <Text size="xs" fw={500} c="dimmed">
+                        {dayjs(event.time).locale(locale).format('SL LTS')}
+                      </Text>
                     </Group>
-                    <Text size="xs" fw={500} c="dimmed">
-                      {dayjs(event.time).locale(locale).format('SL LTS')}
-                    </Text>
-                  </Group>
+                  )}
                 </Stack>
               </Group>
             </Card>

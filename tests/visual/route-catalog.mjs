@@ -5,6 +5,28 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 export const repositoryRoot = join(here, '..', '..')
 export const pagesRoot = join(repositoryRoot, 'web', 'src', 'pages')
+export const viewportCatalog = Object.freeze({
+  desktop: { width: 1440, height: 1100, mobile: false },
+  laptop: { width: 1024, height: 768, mobile: false },
+  tablet: { width: 768, height: 1024, mobile: true },
+  mobile: { width: 390, height: 844, mobile: true },
+  compact: { width: 320, height: 568, mobile: true },
+})
+
+export function parseRouteShard(value) {
+  const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(value ?? '')
+  if (!match) throw new Error('visual route shard must use INDEX/TOTAL with positive integers')
+  const shard = { index: Number(match[1]), total: Number(match[2]) }
+  if (shard.index > shard.total) throw new Error('visual route shard index cannot exceed its total')
+  return shard
+}
+
+export function selectRouteShard(routes, shard) {
+  if (!shard) return routes
+  const start = Math.floor(((shard.index - 1) * routes.length) / shard.total)
+  const end = Math.floor((shard.index * routes.length) / shard.total)
+  return routes.slice(start, end)
+}
 
 function pageFiles(directory, files = []) {
   for (const entry of readdirSync(directory).sort()) {

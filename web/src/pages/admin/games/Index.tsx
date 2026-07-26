@@ -40,6 +40,7 @@ import { AdminPage } from '@Components/admin/AdminPage'
 import { CloneGameModal } from '@Components/admin/CloneGameModal'
 import { GameCreateModal } from '@Components/admin/GameCreateModal'
 import { showErrorMsg } from '@Utils/Shared'
+import { useIsMobile } from '@Utils/ThemeOverride'
 import { useArrayResponse } from '@Hooks/useArrayResponse'
 import { getGameStatus } from '@Hooks/useGame'
 import { useUser } from '@Hooks/useUser'
@@ -64,6 +65,7 @@ const Games: FC = () => {
   const navigate = useNavigate()
   const { t } = useTranslation()
   const theme = useMantineTheme()
+  const isNarrow = useIsMobile(480)
 
   const onToggleHidden = async (game: GameInfoModel) => {
     if (!game.id) return
@@ -153,8 +155,19 @@ const Games: FC = () => {
       head={
         <>
           {user?.role === Role.Admin && (
-            <Group grow gap="sm" wrap="nowrap" w={{ base: '100%', sm: 'auto' }}>
-              <Button h={44} leftSection={<Icon path={mdiPlus} size={1} />} onClick={() => setCreateOpened(true)}>
+            <Group
+              grow={!isNarrow}
+              gap="sm"
+              wrap="nowrap"
+              w={{ base: '100%', sm: 'auto' }}
+              style={isNarrow ? { flexDirection: 'column', alignItems: 'stretch' } : undefined}
+            >
+              <Button
+                h={44}
+                w={isNarrow ? '100%' : undefined}
+                leftSection={<Icon path={mdiPlus} size={1} />}
+                onClick={() => setCreateOpened(true)}
+              >
                 {t('admin.button.games.new')}
               </Button>
               <FileButton onChange={onImportGame} accept="application/zip">
@@ -167,6 +180,7 @@ const Games: FC = () => {
                     color={progress !== 0 ? 'cyan' : theme.primaryColor}
                     variant="outline"
                     h={44}
+                    w={isNarrow ? '100%' : undefined}
                   >
                     <div className={uploadClasses.label}>
                       {progress !== 0 ? t('admin.notification.games.import.importing') : t('admin.button.games.import')}

@@ -62,3 +62,9 @@ test('game notices keep one realtime connection across ordinary rerenders', () =
   assert.match(source, /\}, \[id, numId, t, theme\.primaryColor\]\)/)
   assert.doesNotMatch(source, /\n  \}\)\n\n  const allNotices/)
 })
+
+test('the mobile app-shell scroll region remains keyboard accessible', () => {
+  const source = readFileSync('src/components/WithNavbar.tsx', 'utf8')
+
+  assert.match(source, /id="main-content"[\s\S]*?tabIndex=\{isMobile \? 0 : -1\}/)
+})

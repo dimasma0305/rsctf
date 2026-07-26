@@ -3,16 +3,26 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 import { launchBrowser } from './cdp.mjs'
-import { discoverPageRoutes, repositoryRoot, validatePageRoutes } from './route-catalog.mjs'
+import {
+  discoverPageRoutes,
+  parseRouteShard,
+  repositoryRoot,
+  selectRouteShard,
+  validatePageRoutes,
+  viewportCatalog,
+} from './route-catalog.mjs'
 
 const sleep = (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))
+const MAX_SCREENSHOT_HEIGHT = 32_000
 
 function parseArguments(argv) {
   const options = {
     target: process.env.RSCTF_VISUAL_TARGET || 'http://127.0.0.1:8080',
     output: process.env.RSCTF_VISUAL_OUTPUT || join(repositoryRoot, 'visual-audit-output'),
     pageFilters: [],
-    viewports: ['desktop', 'mobile'],
+    shard: undefined,
+    viewports: Object.keys(viewportCatalog),
+    explicitViewports: false,
     list: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -21,8 +31,13 @@ function parseArguments(argv) {
     if (argument === '--target') options.target = argv[++index]
     else if (argument === '--output') options.output = argv[++index]
     else if (argument === '--page') options.pageFilters.push(argv[++index])
-    else if (argument === '--desktop-only') options.viewports = ['desktop']
-    else if (argument === '--mobile-only') options.viewports = ['mobile']
+    else if (argument === '--shard') options.shard = parseRouteShard(argv[++index])
+    else if (argument === '--viewport') {
+      if (!options.explicitViewports) options.viewports = []
+      options.explicitViewports = true
+      options.viewports.push(argv[++index])
+    } else if (argument === '--desktop-only') options.viewports = ['desktop']
+    else if (argument === '--mobile-only') options.viewports = ['mobile', 'compact']
     else if (argument === '--list') options.list = true
     else if (argument === '--help' || argument === '-h') {
       console.log(`Usage: node tests/visual/audit.mjs [options]
@@ -31,8 +46,11 @@ Options:
   --target URL       RSCTF origin (default http://127.0.0.1:8080)
   --output PATH      Generated artifact directory (relative to the repository root)
   --page FILTER      Audit route name/path containing FILTER; repeatable
+  --shard INDEX/TOTAL
+                      Audit one deterministic route shard (for example 1/2)
+  --viewport NAME    Audit desktop, laptop, tablet, mobile, or compact; repeatable
   --desktop-only     Capture only 1440x1100
-  --mobile-only      Capture only 390x844
+  --mobile-only      Capture 390x844 and compact 320x568
   --list             List resolved routes without launching Chromium
 `)
       process.exit(0)
@@ -40,6 +58,9 @@ Options:
       throw new Error(`unknown argument: ${argument}`)
     }
   }
+  options.viewports = [...new Set(options.viewports)]
+  const unknownViewports = options.viewports.filter((name) => !viewportCatalog[name])
+  if (unknownViewports.length) throw new Error(`unknown viewport: ${unknownViewports.join(', ')}`)
   return options
 }
 
@@ -81,6 +102,14 @@ function accessibleDocumentAnalysis() {
   }
   const queryAll = (selector) => roots.flatMap((root) => [...root.querySelectorAll(selector)])
   const byId = (id) => roots.map((root) => root.querySelector(`#${CSS.escape(id)}`)).find(Boolean)
+  const main = document.querySelector('#main-content')
+  const parentAcrossShadow = (element) => element.parentElement ?? element.getRootNode()?.host ?? null
+  const belongsToMain = (element) => {
+    for (let current = element; current; current = parentAcrossShadow(current)) {
+      if (current === main) return true
+    }
+    return false
+  }
   const visible = (element) => {
     const rectangle = element.getBoundingClientRect()
     const style = getComputedStyle(element)
@@ -90,6 +119,16 @@ function accessibleDocumentAnalysis() {
       style.display !== 'none' &&
       style.visibility !== 'hidden' &&
       Number(style.opacity) !== 0
+    )
+  }
+  const visuallyHidden = (element) => {
+    const rectangle = element.getBoundingClientRect()
+    const style = getComputedStyle(element)
+    return (
+      rectangle.width <= 1 &&
+      rectangle.height <= 1 &&
+      (style.clip !== 'auto' || style.clipPath !== 'none') &&
+      ['hidden', 'clip'].includes(style.overflow)
     )
   }
   const accessibleName = (element) => {
@@ -139,6 +178,7 @@ function accessibleDocumentAnalysis() {
     .filter((element) => !accessibleName(element))
     .map((element) => element.outerHTML.slice(0, 220))
   const crowdedSmallTargets = rectangles
+    .filter(({ element }) => !visuallyHidden(element))
     .filter(({ width, height }) => width < 24 || height < 24)
     .filter((target) =>
       rectangles.some(
@@ -184,6 +224,7 @@ function accessibleDocumentAnalysis() {
 
   const clippedText = queryAll('main *, [role="main"] *')
     .filter(visible)
+    .filter((element) => !visuallyHidden(element))
     .filter((element) => element.children.length === 0 && (element.textContent?.trim().length ?? 0) > 8)
     .filter((element) => {
       const style = getComputedStyle(element)
@@ -194,12 +235,52 @@ function accessibleDocumentAnalysis() {
     .slice(0, 20)
     .map((element) => element.textContent.trim().slice(0, 140))
 
+  const mainElements = queryAll('*').filter(belongsToMain)
+  const containedHorizontally = (element) => {
+    for (let parent = parentAcrossShadow(element); parent && parent !== main; parent = parentAcrossShadow(parent)) {
+      const overflow = getComputedStyle(parent).overflowX
+      if (['auto', 'scroll', 'hidden', 'clip'].includes(overflow)) return true
+    }
+    return false
+  }
+  const viewportEscapes = mainElements
+    .filter(visible)
+    .filter((element) => element.getAttribute('aria-hidden') !== 'true')
+    .filter((element) => {
+      const rectangle = element.getBoundingClientRect()
+      return rectangle.left < -1 || rectangle.right > window.innerWidth + 1
+    })
+    .filter((element) => !containedHorizontally(element))
+    .slice(0, 20)
+    .map((element) => {
+      const rectangle = element.getBoundingClientRect()
+      return {
+        element: element.outerHTML.slice(0, 180),
+        left: Math.round(rectangle.left),
+        right: Math.round(rectangle.right),
+      }
+    })
+  const scrollRegions = [...new Set([main, ...mainElements].filter(Boolean))]
+    .filter((element) => {
+      const overflow = getComputedStyle(element).overflowY
+      return ['auto', 'scroll'].includes(overflow) && element.scrollHeight > element.clientHeight + 2
+    })
+    .slice(0, 40)
+    .map((element) => ({
+      name:
+        element.getAttribute('aria-label') ||
+        element.getAttribute('id') ||
+        [...element.classList].slice(0, 2).join('.') ||
+        element.tagName.toLowerCase(),
+      visibleHeight: Math.round(element.clientHeight),
+      contentHeight: Math.round(element.scrollHeight),
+    }))
+
   const errorFallback =
     [...document.querySelectorAll('textarea')].some((textarea) =>
       textarea.labels?.[0]?.textContent?.includes('Diagnostic details')
     ) && document.body.innerText.includes('Try again')
   const html = document.documentElement
-  const main = document.querySelector('#main-content')
   const mainText = `${main?.innerText ?? ''} ${main?.shadowRoot?.textContent ?? ''}`.trim()
 
   return window.axe.run(document).then((axeResult) => ({
@@ -223,6 +304,8 @@ function accessibleDocumentAnalysis() {
     crowdedSmallTargets,
     overlaps: overlaps.slice(0, 20),
     clippedText,
+    viewportEscapes,
+    scrollRegions,
     errorFallback,
     axe: {
       violations: axeResult.violations.map((violation) => ({
@@ -240,6 +323,83 @@ function accessibleDocumentAnalysis() {
       incomplete: axeResult.incomplete.map(({ id }) => id),
     },
   }))
+}
+
+function expandScrollableContent() {
+  const main = document.querySelector('#main-content')
+  if (!main) return { expanded: [], contentHeight: document.documentElement.scrollHeight }
+
+  const roots = [document]
+  const allElements = []
+  for (let index = 0; index < roots.length; index += 1) {
+    for (const element of roots[index].querySelectorAll('*')) {
+      allElements.push(element)
+      if (element.shadowRoot) roots.push(element.shadowRoot)
+    }
+  }
+  const parentAcrossShadow = (element) => element.parentElement ?? element.getRootNode()?.host ?? null
+  const belongsToMain = (element) => {
+    for (let current = element; current; current = parentAcrossShadow(current)) {
+      if (current === main) return true
+    }
+    return false
+  }
+  const elements = [main, ...allElements.filter(belongsToMain)]
+
+  // The paired viewport image preserves real fixed/sticky navigation. Remove
+  // that chrome from the expanded image so it cannot cover content halfway
+  // down a tall screenshot. Keep in-content controls, but lay them out normally.
+  for (const element of allElements) {
+    const position = getComputedStyle(element).position
+    if (!['fixed', 'sticky'].includes(position)) continue
+    if (belongsToMain(element)) {
+      element.style.setProperty('position', 'static', 'important')
+      element.style.setProperty('inset', 'auto', 'important')
+      element.style.setProperty('transform', 'none', 'important')
+    } else if (position === 'fixed') {
+      element.style.setProperty('visibility', 'hidden', 'important')
+    }
+  }
+
+  const expanded = new Map()
+  for (let pass = 0; pass < 4; pass += 1) {
+    for (const element of [...elements].reverse()) {
+      if (['TEXTAREA', 'SELECT'].includes(element.tagName) || element.clientHeight < 1) continue
+      const overflow = getComputedStyle(element).overflowY
+      if (element !== main && !['auto', 'scroll'].includes(overflow)) continue
+      if (element.scrollHeight <= element.clientHeight + 2) continue
+
+      const visibleHeight = Math.round(element.clientHeight)
+      const contentHeight = Math.ceil(element.scrollHeight)
+      element.style.setProperty('height', `${contentHeight}px`, 'important')
+      element.style.setProperty('max-height', 'none', 'important')
+      element.style.setProperty('overflow-y', 'visible', 'important')
+      expanded.set(element, {
+        name:
+          element.getAttribute('aria-label') ||
+          element.getAttribute('id') ||
+          [...element.classList].slice(0, 2).join('.') ||
+          element.tagName.toLowerCase(),
+        visibleHeight,
+        contentHeight,
+      })
+
+      const scrollArea = element.closest?.('.mantine-ScrollArea-root')
+      if (scrollArea && scrollArea !== element) {
+        scrollArea.style.setProperty('height', `${contentHeight}px`, 'important')
+        scrollArea.style.setProperty('max-height', 'none', 'important')
+        scrollArea.style.setProperty('overflow', 'visible', 'important')
+      }
+    }
+  }
+
+  document.documentElement.style.setProperty('scroll-behavior', 'auto', 'important')
+  document.body.style.setProperty('height', 'auto', 'important')
+  window.scrollTo(0, 0)
+  return {
+    expanded: [...expanded.values()],
+    contentHeight: document.documentElement.scrollHeight,
+  }
 }
 
 async function evaluate(cdp, expression, awaitPromise = false) {
@@ -263,6 +423,20 @@ async function waitForRender(cdp) {
       `({
         ready: document.readyState,
         main: Boolean(document.querySelector('#main-content')),
+        h1:
+          document.querySelectorAll('#main-content h1').length +
+          (document.querySelector('#main-content')?.shadowRoot?.querySelectorAll('h1').length ?? 0),
+        loadingOverlays: [
+          ...document.querySelectorAll('.mantine-LoadingOverlay-root'),
+          ...(document
+            .querySelector('#main-content')
+            ?.shadowRoot?.querySelectorAll('.mantine-LoadingOverlay-root') ?? []),
+        ]
+          .filter((element) => {
+            const style = getComputedStyle(element)
+            const rect = element.getBoundingClientRect()
+            return style.visibility !== 'hidden' && Number(style.opacity) !== 0 && rect.width > 0 && rect.height > 0
+          }).length,
         text: (
           (document.querySelector('#main-content')?.innerText ?? '') +
           ' ' +
@@ -272,14 +446,14 @@ async function waitForRender(cdp) {
         ).trim().length
       })`
     )
-    if (state.ready === 'complete' && state.main && state.text > 10) {
+    if (state.ready === 'complete' && state.main && state.h1 === 1 && state.loadingOverlays === 0 && state.text > 10) {
       await evaluate(cdp, 'document.fonts?.ready ?? Promise.resolve()', true)
       await sleep(900)
       return
     }
     await sleep(200)
   }
-  throw new Error('page did not render #main-content within 25 seconds')
+  throw new Error('page did not finish rendering one h1 without a loading overlay within 25 seconds')
 }
 
 function failuresFor(result, expectedPath) {
@@ -290,6 +464,9 @@ function failuresFor(result, expectedPath) {
   if (result.headingSkips.length) failures.push(`${result.headingSkips.length} heading-level skips`)
   if (result.width.overflow) {
     failures.push(`page overflow ${result.width.document}px/${result.width.viewport}px`)
+  }
+  if (result.viewportEscapes.length) {
+    failures.push(`${result.viewportEscapes.length} elements escape the viewport`)
   }
   if (result.unnamedControls.length) failures.push(`${result.unnamedControls.length} unnamed controls`)
   if (result.crowdedSmallTargets.length) {
@@ -324,14 +501,16 @@ function markdownReport(report) {
     `- Failed renders: ${report.summary.failed}`,
     `- Automated warnings: ${report.summary.warnings}`,
     '',
-    '| Viewport | Page | Result | Axe | Overflow | Browser | Warnings |',
-    '| --- | --- | --- | ---: | --- | ---: | ---: |',
+    '| Viewport | Page | Result | Axe | Overflow | Scroll regions | Browser | Warnings |',
+    '| --- | --- | --- | ---: | --- | ---: | ---: | ---: |',
   ]
   for (const result of report.results) {
     lines.push(
       `| ${result.viewport} | \`${result.route.sourceFile}\` | ${
         result.failures.length ? `FAIL: ${result.failures.join('; ')}` : 'PASS'
       } | ${result.axe.violations.length} | ${result.width.overflow ? 'yes' : 'no'} | ${
+        result.scrollRegions.length
+      } | ${
         result.server5xx.length + result.runtimeExceptions.length + result.consoleErrors.length
       } | ${result.clippedText.length} |`
     )
@@ -340,7 +519,7 @@ function markdownReport(report) {
     '',
     '## Manual screenshot review',
     '',
-    'Open `gallery.html` and inspect hierarchy, density, alignment, whitespace, truncation, empty states, and mobile reachability. Automated warnings identify clipped text that needs human judgment.',
+    'Open `gallery.html` and inspect hierarchy, density, alignment, whitespace, truncation, empty states, and mobile reachability. Each route has its real viewport beside a full-content capture with nested vertical scroll regions expanded. Automated warnings identify clipped text that needs human judgment.',
     ''
   )
   return `${lines.join('\n')}\n`
@@ -363,11 +542,22 @@ function gallery(report) {
       return `<article class="card ${status}">
         <header>
           <div><strong>${escapeHtml(result.route.sourceFile)}</strong><small>${escapeHtml(result.route.path)}</small></div>
-          <span>${escapeHtml(result.viewport)} · ${status.toUpperCase()}</span>
+          <span>${escapeHtml(result.viewport)} ${result.viewportSize.width}×${result.viewportSize.height} · ${status.toUpperCase()}</span>
         </header>
-        <a href="${encodeURI(result.screenshot)}"><img src="${encodeURI(result.screenshot)}" alt="${escapeHtml(
-          `${result.viewport} screenshot of ${result.route.path}`
-        )}" loading="lazy"></a>
+        <div class="screenshots">
+          <figure>
+            <figcaption>Actual viewport</figcaption>
+            <a href="${encodeURI(result.viewportScreenshot)}"><img src="${encodeURI(
+              result.viewportScreenshot
+            )}" alt="${escapeHtml(`${result.viewport} viewport screenshot of ${result.route.path}`)}" loading="lazy"></a>
+          </figure>
+          <figure>
+            <figcaption>Expanded full content · ${result.expandedScrollRegions.length} scroll region(s)</figcaption>
+            <a href="${encodeURI(result.screenshot)}"><img src="${encodeURI(result.screenshot)}" alt="${escapeHtml(
+              `${result.viewport} full-content screenshot of ${result.route.path}`
+            )}" loading="lazy"></a>
+          </figure>
+        </div>
         <ul>${findings.length ? findings.map((item) => `<li>${escapeHtml(item)}</li>`).join('') : '<li>Clean automated audit</li>'}</ul>
       </article>`
     })
@@ -383,7 +573,7 @@ function gallery(report) {
     body { margin: 0; padding: 24px; }
     h1 { margin: 0 0 4px; }
     .summary { margin: 0 0 24px; color: #aebbd2; }
-    main { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+    main { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 640px), 1fr)); gap: 18px; }
     .card { min-width: 0; overflow: hidden; border: 1px solid #29364c; border-radius: 14px; background: #101827; }
     .card.fail { border-color: #f04444; }
     .card.warn { border-color: #d99a20; }
@@ -392,9 +582,17 @@ function gallery(report) {
     header strong, header small { display: block; overflow-wrap: anywhere; }
     header small, .summary { color: #aebbd2; }
     header span { flex: none; font-size: 12px; font-weight: 700; color: #d8e0ef; }
+    .screenshots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); background: #050914; }
+    figure { min-width: 0; margin: 0; border-top: 1px solid #29364c; }
+    figure + figure { border-left: 1px solid #29364c; }
+    figcaption { padding: 7px 10px; color: #aebbd2; font-size: 12px; }
     a { display: block; background: #050914; }
     img { display: block; width: 100%; height: 480px; object-fit: contain; object-position: top; }
     ul { min-height: 22px; margin: 0; padding: 12px 30px 16px; color: #cdd7e8; }
+    @media (max-width: 680px) {
+      .screenshots { grid-template-columns: 1fr; }
+      figure + figure { border-left: 0; }
+    }
   </style>
 </head>
 <body>
@@ -427,6 +625,7 @@ async function main() {
       options.pageFilters.some((filter) => route.name.includes(filter) || route.path.includes(filter))
     )
   }
+  routes = selectRouteShard(routes, options.shard)
   if (!routes.length) throw new Error('no visual routes matched')
 
   if (options.list) {
@@ -459,11 +658,19 @@ async function main() {
   rmSync(output, { recursive: true, force: true })
   mkdirSync(output, { recursive: true })
 
-  const viewports = {
-    desktop: { width: 1440, height: 1100, mobile: false },
-    mobile: { width: 390, height: 844, mobile: true },
-  }
   const { cdp, close, executable } = await launchBrowser()
+  let terminating = false
+  const stopForSignal = (exitCode) => {
+    if (terminating) return
+    terminating = true
+    void close().finally(() => process.exit(exitCode))
+  }
+  const onInterrupt = () => stopForSignal(130)
+  const onTerminate = () => stopForSignal(143)
+  const onHangup = () => stopForSignal(129)
+  process.once('SIGINT', onInterrupt)
+  process.once('SIGTERM', onTerminate)
+  process.once('SIGHUP', onHangup)
   await Promise.all([
     cdp.send('Page.enable'),
     cdp.send('Runtime.enable'),
@@ -494,7 +701,7 @@ async function main() {
   const results = []
   try {
     for (const viewportName of options.viewports) {
-      const viewport = viewports[viewportName]
+      const viewport = viewportCatalog[viewportName]
       await cdp.send('Emulation.setDeviceMetricsOverride', {
         width: viewport.width,
         height: viewport.height,
@@ -553,6 +760,8 @@ async function main() {
             crowdedSmallTargets: [],
             overlaps: [],
             clippedText: [],
+            viewportEscapes: [],
+            scrollRegions: [],
             errorFallback: false,
             axe: { violations: [], passes: 0, incomplete: [] },
             auditError: error instanceof Error ? error.message : String(error),
@@ -565,10 +774,20 @@ async function main() {
           ? [`audit error: ${result.auditError}`]
           : failuresFor(result, route.expectedPath)
 
+        const viewportScreenshotName = `${viewportName}--${route.name}--viewport.png`
+        const viewportScreenshot = await cdp.send('Page.captureScreenshot', {
+          format: 'png',
+          fromSurface: true,
+          captureBeyondViewport: false,
+        })
+        writeFileSync(join(output, viewportScreenshotName), Buffer.from(viewportScreenshot.data, 'base64'))
+
+        const expansion = await evaluate(cdp, `(${expandScrollableContent.toString()})()`)
+        await sleep(50)
         const metrics = await cdp.send('Page.getLayoutMetrics')
         const content = metrics.cssContentSize
-        const screenshotName = `${viewportName}--${route.name}.png`
-        const screenshotHeight = Math.min(16_000, Math.max(viewport.height, Math.ceil(content.height)))
+        const screenshotName = `${viewportName}--${route.name}--full.png`
+        const screenshotHeight = Math.min(MAX_SCREENSHOT_HEIGHT, Math.max(viewport.height, Math.ceil(content.height)))
         const screenshotWidth = Math.min(2_400, Math.max(viewport.width, Math.ceil(content.width)))
         const screenshot = await cdp.send('Page.captureScreenshot', {
           format: 'png',
@@ -584,12 +803,17 @@ async function main() {
         })
         writeFileSync(join(output, screenshotName), Buffer.from(screenshot.data, 'base64'))
         result.screenshot = screenshotName
-        result.screenshotTruncated = content.height > 16_000
+        result.viewportScreenshot = viewportScreenshotName
+        result.expandedScrollRegions = expansion.expanded
+        result.screenshotTruncated = content.height > MAX_SCREENSHOT_HEIGHT
         if (result.screenshotTruncated) {
-          result.failures.push(`screenshot truncated at 16000px (page is ${Math.ceil(content.height)}px tall)`)
+          result.failures.push(
+            `screenshot truncated at ${MAX_SCREENSHOT_HEIGHT}px (page is ${Math.ceil(content.height)}px tall)`
+          )
         }
         result.route = route
         result.viewport = viewportName
+        result.viewportSize = viewport
         results.push(result)
         console.log(
           result.failures.length
@@ -601,6 +825,9 @@ async function main() {
       }
     }
   } finally {
+    process.off('SIGINT', onInterrupt)
+    process.off('SIGTERM', onTerminate)
+    process.off('SIGHUP', onHangup)
     await cdp.send('Network.clearBrowserCookies').catch(() => {})
     await cdp
       .send('Storage.clearDataForOrigin', {
@@ -616,6 +843,7 @@ async function main() {
     target,
     chromium: executable,
     routeCount: routes.length,
+    shard: options.shard,
     viewports: options.viewports,
     summary: {
       failed: results.filter((result) => result.failures.length).length,

@@ -81,7 +81,7 @@ export const WithNavBar: FC<WithNavBarProps> = ({
         <AppShell.Main
           component="main"
           id="main-content"
-          tabIndex={-1}
+          tabIndex={isMobile ? 0 : -1}
           w="100%"
           aria-busy={isLoading || undefined}
           className={classes.shellMain}

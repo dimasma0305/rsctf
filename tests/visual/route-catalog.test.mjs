@@ -2,7 +2,15 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
-import { discoverPageRoutes, pagesRoot, repositoryRoot, validatePageRoutes } from './route-catalog.mjs'
+import {
+  discoverPageRoutes,
+  pagesRoot,
+  parseRouteShard,
+  repositoryRoot,
+  selectRouteShard,
+  validatePageRoutes,
+  viewportCatalog,
+} from './route-catalog.mjs'
 
 const context = { gameId: 67, challengeId: 326, postId: 'ffac23df' }
 const routes = discoverPageRoutes(context)
@@ -27,6 +35,34 @@ test('visual routes select the least privileged useful browser identity', () => 
   assert.equal(routes.find((route) => route.path === '/games/67/submit')?.auth, 'player')
   assert.equal(routes.find((route) => route.path === '/games/67/monitor/events')?.auth, 'admin')
   assert.equal(routes.find((route) => route.path === '/account/stats')?.expectedPath, '/account/profile')
+})
+
+test('visual audit covers desktop, intermediate, tablet, and compact breakpoints', () => {
+  assert.deepEqual(viewportCatalog, {
+    desktop: { width: 1440, height: 1100, mobile: false },
+    laptop: { width: 1024, height: 768, mobile: false },
+    tablet: { width: 768, height: 1024, mobile: true },
+    mobile: { width: 390, height: 844, mobile: true },
+    compact: { width: 320, height: 568, mobile: true },
+  })
+})
+
+test('visual route shards cover every route exactly once', () => {
+  const first = selectRouteShard(routes, parseRouteShard('1/2'))
+  const second = selectRouteShard(routes, parseRouteShard('2/2'))
+  assert.equal(first.length, 25)
+  assert.equal(second.length, 25)
+  assert.deepEqual([...first, ...second], routes)
+  assert.throws(() => parseRouteShard('0/2'), /INDEX\/TOTAL/)
+  assert.throws(() => parseRouteShard('3/2'), /cannot exceed/)
+})
+
+test('visual audit waits for loaded page content before taking screenshots', () => {
+  const auditSource = readFileSync(join(repositoryRoot, 'tests', 'visual', 'audit.mjs'), 'utf8')
+  assert.match(auditSource, /state\.h1 === 1/)
+  assert.match(auditSource, /state\.loadingOverlays === 0/)
+  assert.match(auditSource, /\.mantine-LoadingOverlay-root/)
+  assert.match(auditSource, /shadowRoot\?\.querySelectorAll\('h1'\)/)
 })
 
 test('visual audit artifacts are excluded from source control and Docker contexts', () => {

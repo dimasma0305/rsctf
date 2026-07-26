@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { Link, useParams, useLocation } from 'react-router'
 import { WithGameEditTab, GameEditTabProps } from '@Components/admin/WithGameEditTab'
 import { useChallengeCategoryLabelMap } from '@Utils/Shared'
+import { useIsMobile } from '@Utils/ThemeOverride'
 import { useEditChallenges } from '@Hooks/useEdit'
 import { ChallengeInfoModel, ChallengeCategory } from '@Api'
 
@@ -17,6 +18,7 @@ export const WithChallengeEdit: FC<GameEditTabProps> = (props) => {
   const { challenges } = useEditChallenges(numId)
   const { t } = useTranslation()
   const theme = useMantineTheme()
+  const isMobile = useIsMobile()
 
   const getBeforeNext = (challenges: ChallengeInfoModel[], id: number) => {
     const index = challenges.findIndex((chal) => chal.id === id)
@@ -47,10 +49,11 @@ export const WithChallengeEdit: FC<GameEditTabProps> = (props) => {
     <WithGameEditTab isLoading={isLoading} {...rest}>
       <Stack mih="calc(100vh - 12rem)" justify="space-between">
         {children}
-        <Group justify="space-between" w="100%" wrap="nowrap">
+        <Group justify="space-between" w="100%" wrap="nowrap" gap="xs">
           <Button
             justify="space-between"
             component={Link}
+            style={isMobile ? { flex: '1 1 0' } : undefined}
             disabled={isLoading || !prev}
             leftSection={<Icon path={mdiArrowLeft} size={1} />}
             to={prev?.id ? `/admin/games/${numId}/challenges/${prev?.id}${restpath}` : '#'}
@@ -58,22 +61,25 @@ export const WithChallengeEdit: FC<GameEditTabProps> = (props) => {
             {t('admin.button.challenges.previous')}
           </Button>
 
-          <Group justify="space-between" gap="xs" wrap="nowrap" maw="calc(100% - 16rem)">
-            <Text c="dimmed" truncate>
-              {prev?.title ?? ''}
-            </Text>
-            <Text fw="bold" c={color(current)} truncate>
-              {current?.title ?? ''}
-            </Text>
-            <Text c="dimmed" truncate>
-              {next?.title ?? ''}
-            </Text>
-          </Group>
+          {!isMobile && (
+            <Group justify="space-between" gap="xs" wrap="nowrap" maw="calc(100% - 16rem)">
+              <Text c="dimmed" truncate>
+                {prev?.title ?? ''}
+              </Text>
+              <Text fw="bold" c={color(current)} truncate>
+                {current?.title ?? ''}
+              </Text>
+              <Text c="dimmed" truncate>
+                {next?.title ?? ''}
+              </Text>
+            </Group>
+          )}
 
           <Button
             disabled={isLoading || !next}
             justify="space-between"
             component={Link}
+            style={isMobile ? { flex: '1 1 0' } : undefined}
             rightSection={<Icon path={mdiArrowRight} size={1} />}
             to={next?.id ? `/admin/games/${numId}/challenges/${next?.id}${restpath}` : '#'}
           >

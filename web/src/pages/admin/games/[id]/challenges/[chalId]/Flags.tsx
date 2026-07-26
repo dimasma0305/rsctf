@@ -23,7 +23,7 @@ import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiPuzzleEditOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState } from 'react'
+import { FC, PropsWithChildren, useEffect, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useParams } from 'react-router'
 import { AttachmentRemoteEditModal } from '@Components/admin/AttachmentRemoteEditModal'
@@ -41,6 +41,10 @@ import uploadClasses from '@Styles/Upload.module.css'
 interface FlagEditProps {
   onDelete: (flag: FlagInfoModel) => void
 }
+
+const WrappingCode: FC<PropsWithChildren> = ({ children }) => (
+  <Code style={{ overflowWrap: 'anywhere', whiteSpace: 'normal' }}>{children}</Code>
+)
 
 // Single-attachment editor (upload local / set remote / clear), shared by the
 // standard one-attachment challenges and the A&D/KotH path (which has no flag
@@ -543,7 +547,7 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
             onChange={(e) => setFlagTemplate(e.target.value)}
             classNames={{ input: misc.ffmono }}
           />
-          <Stack mah="400px" gap={2} pb={8}>
+          <Stack gap={2} pb={8}>
             <Text size="md" fw="bold">
               {t('admin.content.games.challenges.flag.instructions.description')}
             </Text>
@@ -583,27 +587,27 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
               <List.Item>
                 {t('admin.content.games.challenges.flag.instructions.leave_empty')}
                 {willGenerate}
-                <Code>{`flag{1bab71b8-117f-4dea-a047-340b72101d7b}`}</Code>
+                <WrappingCode>{`flag{1bab71b8-117f-4dea-a047-340b72101d7b}`}</WrappingCode>
               </List.Item>
               <List.Item>
-                <Code>{`flag{hello world}`}</Code>
+                <WrappingCode>{`flag{hello world}`}</WrappingCode>
                 {willGenerate}
-                <Code>{`flag{He1lo_w0r1d}`}</Code>
+                <WrappingCode>{`flag{He1lo_w0r1d}`}</WrappingCode>
               </List.Item>
               <List.Item>
-                <Code>{`[CLEET]flag{hello sara}`}</Code>
+                <WrappingCode>{`[CLEET]flag{hello sara}`}</WrappingCode>
                 {willGenerate}
-                <Code>{`flag{He1!o_$@rA}`}</Code>
+                <WrappingCode>{`flag{He1!o_$@rA}`}</WrappingCode>
               </List.Item>
               <List.Item>
-                <Code>{`flag{hello_world_[TEAM_HASH]}`}</Code>
+                <WrappingCode>{`flag{hello_world_[TEAM_HASH]}`}</WrappingCode>
                 {willGenerate}
-                <Code>{`flag{hello_world_5418ce4d815c}`}</Code>
+                <WrappingCode>{`flag{hello_world_5418ce4d815c}`}</WrappingCode>
               </List.Item>
               <List.Item>
-                <Code>{`[LEET]flag{hello world [TEAM_HASH]}`}</Code>
+                <WrappingCode>{`[LEET]flag{hello world [TEAM_HASH]}`}</WrappingCode>
                 {willGenerate}
-                <Code>{`flag{He1lo_w0r1d_5418ce4d815c}`}</Code>
+                <WrappingCode>{`flag{He1lo_w0r1d_5418ce4d815c}`}</WrappingCode>
               </List.Item>
             </List>
           </Stack>
