@@ -68,3 +68,9 @@ test('the mobile app-shell scroll region remains keyboard accessible', () => {
 
   assert.match(source, /id="main-content"[\s\S]*?tabIndex=\{isMobile \? 0 : -1\}/)
 })
+
+test('the post tag editor keeps a comfortably sized mobile text target', () => {
+  const source = readFileSync('src/pages/posts/[postId]/Edit.tsx', 'utf8')
+
+  assert.match(source, /styles=\{\{ inputField: \{ minHeight: 28 \} \}\}/)
+})

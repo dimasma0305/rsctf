@@ -149,6 +149,7 @@ const PostEdit: FC = () => {
         placeholder={t('post.label.add_tag')}
         value={post?.tags ?? []}
         onChange={(values) => setPost({ ...post, tags: values })}
+        styles={{ inputField: { minHeight: 28 } }}
         clearable
       />
     </>
