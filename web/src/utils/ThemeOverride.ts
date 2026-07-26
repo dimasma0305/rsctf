@@ -206,6 +206,7 @@ const CustomTheme: MantineThemeOverride = {
       defaultProps: {
         variant: 'light',
         radius: 'sm',
+        autoContrast: true,
       },
     }),
     Button: Button.extend({

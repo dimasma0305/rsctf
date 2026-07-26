@@ -2,6 +2,7 @@ import {
   ActionIcon,
   Anchor,
   Badge,
+  Box,
   Button,
   Center,
   Checkbox,
@@ -45,24 +46,19 @@ import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { BuildImagesPanel } from '@Components/admin/BuildImagesPanel'
+import { BuildHistoryCard } from '@Components/admin/builds/BuildHistoryCard'
+import {
+  BUILD_STATUS_COLOR,
+  BUILD_STATUS_VARIANT,
+  formatBuildDuration,
+} from '@Components/admin/builds/buildPresentation'
 import { showErrorMsg } from '@Utils/Shared'
+import { useIsMobile } from '@Utils/ThemeOverride'
 import api, { ChallengeBuildAuditModel, ChallengeBuildStatus } from '@Api'
 import classes from '@Styles/AdminBuilds.module.css'
 import tableClasses from '@Styles/Table.module.css'
 
 dayjs.extend(relativeTime)
-
-const STATUS_COLOR: Record<ChallengeBuildStatus, string> = {
-  None: 'gray',
-  Success: 'teal',
-  Failed: 'red',
-  Building: 'yellow',
-  NotApplicable: 'gray',
-  Queued: 'blue',
-  MissingDockerfile: 'orange',
-}
-
-const STATUS_VARIANT = (s: ChallengeBuildStatus): 'filled' | 'light' => (s === 'Failed' ? 'filled' : 'light')
 
 // The summary chips count GROUPED statuses (e.g. the "building" chip = Building + Queued,
 // "failed" = Failed + MissingDockerfile, "registry" = NotApplicable + None). A chip's
@@ -86,15 +82,9 @@ const matchesFilter = (status: ChallengeBuildStatus, filter: ChallengeBuildStatu
 // summary chips; only the rendered slice is paged so the table doesn't grow unbounded.
 const PAGE_SIZE = 25
 
-const formatDuration = (ms: number) => {
-  if (!ms) return '—'
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`
-}
-
 const Builds: FC = () => {
   const { t } = useTranslation()
+  const isMobile = useIsMobile()
   const modals = useModals()
   const clipboard = useClipboard({ timeout: 1500 })
   const [statusFilter, setStatusFilterRaw] = useState<ChallengeBuildStatus | ''>('')
@@ -345,7 +335,7 @@ const Builds: FC = () => {
                 <Group justify="flex-end" gap="xs" wrap="wrap">
                   {selected.size > 0 && (
                     <Button
-                      size="xs"
+                      size="sm"
                       variant="filled"
                       color="red"
                       leftSection={<Icon path={mdiDeleteOutline} size={0.9} />}
@@ -356,7 +346,7 @@ const Builds: FC = () => {
                     </Button>
                   )}
                   <Button
-                    size="xs"
+                    size="sm"
                     variant="default"
                     color="red"
                     leftSection={<Icon path={mdiTrashCanOutline} size={0.9} />}
@@ -366,8 +356,8 @@ const Builds: FC = () => {
                     {t('admin.button.builds.prune_failed')} ({failedCount})
                   </Button>
                   <Select
-                    size="xs"
-                    w={200}
+                    size="sm"
+                    w="min(100%, 14rem)"
                     aria-label={t('admin.content.builds.filter.label', 'Filter builds by status')}
                     data={statusOptions}
                     value={statusFilter}
@@ -400,9 +390,11 @@ const Builds: FC = () => {
                         key={key}
                         size="lg"
                         color={color}
-                        variant={active ? 'filled' : 'light'}
+                        variant="light"
+                        autoContrast
                         aria-pressed={active}
-                        style={{ cursor: 'pointer' }}
+                        data-active={active || undefined}
+                        className={classes.summaryButton}
                         onClick={() => setStatusFilter(active ? '' : (key as ChallengeBuildStatus))}
                       >
                         {n} {label}
@@ -412,7 +404,9 @@ const Builds: FC = () => {
                 </Group>
 
                 <Stack gap={6}>
-                  <Title order={5}>{t('admin.content.builds.in_progress_title')}</Title>
+                  <Title order={3} size="h5">
+                    {t('admin.content.builds.in_progress_title')}
+                  </Title>
                   {!inProgress ? (
                     <Center py="sm">
                       <Loader size="xs" />
@@ -472,262 +466,346 @@ const Builds: FC = () => {
                     <Stack gap={6} align="center">
                       <Title order={4}>{t('admin.content.builds.no_match_title', 'No matching builds')}</Title>
                       <Text c="dimmed">{t('admin.content.builds.no_match', 'No builds match this filter.')}</Text>
-                      <Button size="xs" variant="default" onClick={() => setStatusFilter('')}>
+                      <Button size="sm" variant="default" onClick={() => setStatusFilter('')}>
                         {t('admin.content.builds.clear_filter', 'Clear filter')}
                       </Button>
                     </Stack>
                   </Center>
                 ) : (
-                  <Paper p="xs" withBorder className={classes.tableFrame}>
-                    <ScrollArea type="auto" offsetScrollbars className={classes.tableScroll}>
-                      {/* Fixed layout + explicit column widths so one long cell (an image ref or
+                  <>
+                    <Box visibleFrom="md">
+                      <Paper p="xs" withBorder className={classes.tableFrame}>
+                        <ScrollArea
+                          type="auto"
+                          offsetScrollbars
+                          className={classes.tableScroll}
+                          viewportProps={{
+                            tabIndex: 0,
+                            'aria-label': t(
+                              'admin.content.builds.table_scroll_label',
+                              'Scrollable challenge build history'
+                            ),
+                          }}
+                        >
+                          {/* Fixed layout + explicit column widths so one long cell (an image ref or
                     a sha-laden error) can't stretch the table and squeeze the rest. The
                     Detail column is the flexible one (w=100%); miw keeps columns usable on
                     narrow screens — the ScrollArea scrolls horizontally instead of crushing. */}
-                      <Table
-                        withTableBorder
-                        striped
-                        highlightOnHover
-                        w="100%"
-                        miw={1200}
-                        className={cx(tableClasses.table, tableClasses.fixed)}
-                      >
-                        <Table.Caption>
-                          {t('admin.content.builds.table_caption', 'Challenge build history')}
-                        </Table.Caption>
-                        <Table.Thead>
-                          <Table.Tr>
-                            <Table.Th scope="col" w={36}>
-                              <Checkbox
-                                checked={allChecked}
-                                indeterminate={someChecked && !allChecked}
-                                onChange={toggleAll}
-                                aria-label={t('admin.content.builds.select_all')}
-                              />
-                            </Table.Th>
-                            <Table.Th scope="col" w="8.5rem">
-                              {t('admin.content.builds.column.when')}
-                            </Table.Th>
-                            <Table.Th scope="col" w="13rem">
-                              {t('admin.content.builds.column.challenge')}
-                            </Table.Th>
-                            <Table.Th scope="col" w="6rem">
-                              {t('admin.content.builds.column.trigger')}
-                            </Table.Th>
-                            <Table.Th scope="col" w="4.5rem">
-                              {t('admin.content.builds.column.attempt')}
-                            </Table.Th>
-                            <Table.Th scope="col" w="8.5rem">
-                              {t('admin.content.builds.column.status')}
-                            </Table.Th>
-                            <Table.Th scope="col" w="13rem">
-                              {t('admin.content.builds.column.image', 'Image')}
-                            </Table.Th>
-                            <Table.Th scope="col" w="6rem">
-                              {t('admin.content.builds.column.duration')}
-                            </Table.Th>
-                            <Table.Th scope="col" w="100%">
-                              {t('admin.content.builds.column.detail')}
-                            </Table.Th>
-                            <Table.Th scope="col" w="7rem" aria-label={t('common.label.action', 'Actions')} />
-                          </Table.Tr>
-                        </Table.Thead>
-                        <Table.Tbody>
-                          {pagedHistory.map((b) => (
-                            <Table.Tr
-                              key={b.id}
-                              bg={selected.has(b.id) ? 'var(--mantine-color-blue-light)' : undefined}
-                            >
-                              <Table.Td>
-                                <Checkbox
-                                  checked={selected.has(b.id)}
-                                  onChange={() => toggleOne(b.id)}
-                                  aria-label={`select ${b.challengeTitle || b.challengeId}`}
-                                />
-                              </Table.Td>
-                              <Table.Td>
-                                <Stack gap={0}>
-                                  <Text size="sm">{dayjs(b.enqueuedAtUtc).fromNow()}</Text>
-                                  <Text size="xs" c="dimmed" ff="monospace">
-                                    {dayjs(b.enqueuedAtUtc).format('YYYY-MM-DD HH:mm')}
-                                  </Text>
-                                </Stack>
-                              </Table.Td>
-                              <Table.Td>
-                                <Group gap={6} wrap="nowrap" miw={0}>
-                                  <Anchor
-                                    component={Link}
-                                    to={`/admin/games/${b.gameId}/challenges`}
-                                    size="sm"
-                                    fw="bold"
-                                    truncate
-                                    style={{ minWidth: 0 }}
-                                  >
-                                    {b.challengeTitle || `#${b.challengeId}`}
-                                  </Anchor>
-                                  <Tooltip
-                                    label={
-                                      b.kind === 'Checker'
-                                        ? t(
-                                            'admin.content.builds.kind.checker_help',
-                                            'A&D/KotH functional checker image (built from ./checker)'
-                                          )
-                                        : t(
-                                            'admin.content.builds.kind.challenge_help',
-                                            "The challenge's own service image"
-                                          )
-                                    }
-                                  >
-                                    <Badge size="xs" variant="light" color={b.kind === 'Checker' ? 'grape' : 'gray'}>
-                                      {b.kind === 'Checker'
-                                        ? t('admin.content.builds.kind.checker', 'checker')
-                                        : t('admin.content.builds.kind.service', 'service')}
-                                    </Badge>
-                                  </Tooltip>
-                                </Group>
-                              </Table.Td>
-                              <Table.Td>
-                                <Badge size="xs" color="gray" variant="light">
-                                  {b.trigger}
-                                </Badge>
-                              </Table.Td>
-                              <Table.Td>
-                                <Text size="sm" ff="monospace">
-                                  {b.attempt}
-                                </Text>
-                              </Table.Td>
-                              <Table.Td>
-                                <Badge size="sm" color={STATUS_COLOR[b.status]} variant={STATUS_VARIANT(b.status)}>
-                                  {b.status}
-                                </Badge>
-                              </Table.Td>
-                              <Table.Td>
-                                {b.imageRef ? (
-                                  <Group gap={4} wrap="nowrap" miw={0}>
-                                    <Tooltip label={b.imageRef} multiline w={400}>
-                                      <Code
-                                        style={{
-                                          display: 'block',
-                                          flex: 1,
-                                          minWidth: 0,
-                                          overflow: 'hidden',
-                                          textOverflow: 'ellipsis',
-                                          whiteSpace: 'nowrap',
-                                        }}
+                          <Table
+                            withTableBorder
+                            striped
+                            highlightOnHover
+                            w="100%"
+                            miw={1200}
+                            className={cx(tableClasses.table, tableClasses.fixed)}
+                          >
+                            <Table.Caption>
+                              {t('admin.content.builds.table_caption', 'Challenge build history')}
+                            </Table.Caption>
+                            <Table.Thead>
+                              <Table.Tr>
+                                <Table.Th scope="col" w={36}>
+                                  <Checkbox
+                                    size="md"
+                                    checked={allChecked}
+                                    indeterminate={someChecked && !allChecked}
+                                    onChange={toggleAll}
+                                    aria-label={t('admin.content.builds.select_all')}
+                                  />
+                                </Table.Th>
+                                <Table.Th scope="col" w="8.5rem">
+                                  {t('admin.content.builds.column.when')}
+                                </Table.Th>
+                                <Table.Th scope="col" w="13rem">
+                                  {t('admin.content.builds.column.challenge')}
+                                </Table.Th>
+                                <Table.Th scope="col" w="6rem">
+                                  {t('admin.content.builds.column.trigger')}
+                                </Table.Th>
+                                <Table.Th scope="col" w="4.5rem">
+                                  {t('admin.content.builds.column.attempt')}
+                                </Table.Th>
+                                <Table.Th scope="col" w="8.5rem">
+                                  {t('admin.content.builds.column.status')}
+                                </Table.Th>
+                                <Table.Th scope="col" w="13rem">
+                                  {t('admin.content.builds.column.image', 'Image')}
+                                </Table.Th>
+                                <Table.Th scope="col" w="6rem">
+                                  {t('admin.content.builds.column.duration')}
+                                </Table.Th>
+                                <Table.Th scope="col" w="100%">
+                                  {t('admin.content.builds.column.detail')}
+                                </Table.Th>
+                                <Table.Th scope="col" w="7rem">
+                                  <span className="app-sr-only">{t('common.label.action', 'Actions')}</span>
+                                </Table.Th>
+                              </Table.Tr>
+                            </Table.Thead>
+                            <Table.Tbody>
+                              {pagedHistory.map((b) => (
+                                <Table.Tr
+                                  key={b.id}
+                                  bg={selected.has(b.id) ? 'var(--mantine-color-blue-light)' : undefined}
+                                >
+                                  <Table.Td>
+                                    <Checkbox
+                                      size="md"
+                                      checked={selected.has(b.id)}
+                                      onChange={() => toggleOne(b.id)}
+                                      aria-label={`select ${b.challengeTitle || b.challengeId}`}
+                                    />
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Stack gap={0}>
+                                      <Text size="sm">{dayjs(b.enqueuedAtUtc).fromNow()}</Text>
+                                      <Text size="xs" c="dimmed" ff="monospace">
+                                        {dayjs(b.enqueuedAtUtc).format('YYYY-MM-DD HH:mm')}
+                                      </Text>
+                                    </Stack>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Group gap={6} wrap="nowrap" miw={0}>
+                                      <Anchor
+                                        component={Link}
+                                        to={`/admin/games/${b.gameId}/challenges`}
+                                        size="sm"
+                                        fw="bold"
+                                        truncate
+                                        c="var(--app-text-primary)"
+                                        className={classes.challengeLink}
                                       >
-                                        {b.imageRef}
-                                      </Code>
-                                    </Tooltip>
-                                    <CopyButton value={b.imageRef} timeout={1500}>
-                                      {({ copied, copy }) => (
-                                        <Tooltip
-                                          label={
-                                            copied ? t('admin.button.builds.copied') : t('admin.button.builds.copy')
-                                          }
+                                        {b.challengeTitle || `#${b.challengeId}`}
+                                      </Anchor>
+                                      <Tooltip
+                                        label={
+                                          b.kind === 'Checker'
+                                            ? t(
+                                                'admin.content.builds.kind.checker_help',
+                                                'A&D/KotH functional checker image (built from ./checker)'
+                                              )
+                                            : t(
+                                                'admin.content.builds.kind.challenge_help',
+                                                "The challenge's own service image"
+                                              )
+                                        }
+                                      >
+                                        <Badge
+                                          size="xs"
+                                          variant="light"
+                                          color={b.kind === 'Checker' ? 'grape' : 'gray'}
                                         >
+                                          {b.kind === 'Checker'
+                                            ? t('admin.content.builds.kind.checker', 'checker')
+                                            : t('admin.content.builds.kind.service', 'service')}
+                                        </Badge>
+                                      </Tooltip>
+                                    </Group>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Badge size="xs" color="gray" variant="light">
+                                      {b.trigger}
+                                    </Badge>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Text size="sm" ff="monospace">
+                                      {b.attempt}
+                                    </Text>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Badge
+                                      size="sm"
+                                      color={BUILD_STATUS_COLOR[b.status]}
+                                      variant={BUILD_STATUS_VARIANT}
+                                      autoContrast
+                                    >
+                                      {b.status}
+                                    </Badge>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    {b.imageRef ? (
+                                      <Group gap={4} wrap="nowrap" miw={0}>
+                                        <Tooltip label={b.imageRef} multiline w={400}>
+                                          <Code
+                                            style={{
+                                              display: 'block',
+                                              flex: 1,
+                                              minWidth: 0,
+                                              overflow: 'hidden',
+                                              textOverflow: 'ellipsis',
+                                              whiteSpace: 'nowrap',
+                                            }}
+                                          >
+                                            {b.imageRef}
+                                          </Code>
+                                        </Tooltip>
+                                        <CopyButton value={b.imageRef} timeout={1500}>
+                                          {({ copied, copy }) => (
+                                            <Tooltip
+                                              label={
+                                                copied ? t('admin.button.builds.copied') : t('admin.button.builds.copy')
+                                              }
+                                            >
+                                              <ActionIcon
+                                                variant="subtle"
+                                                size="md"
+                                                color={copied ? 'teal' : 'gray'}
+                                                aria-label={
+                                                  copied
+                                                    ? t('admin.button.builds.copied')
+                                                    : t('admin.button.builds.copy')
+                                                }
+                                                onClick={copy}
+                                              >
+                                                <Icon path={copied ? mdiCheck : mdiContentCopy} size={0.7} />
+                                              </ActionIcon>
+                                            </Tooltip>
+                                          )}
+                                        </CopyButton>
+                                      </Group>
+                                    ) : (
+                                      <Text size="xs" c="dimmed">
+                                        —
+                                      </Text>
+                                    )}
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Text size="sm" ff="monospace">
+                                      {formatBuildDuration(b.durationMs)}
+                                    </Text>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    {b.errorMessage ? (
+                                      // Single-line truncation within the flex column: build errors can
+                                      // be long, unbroken strings (sha256 layer ids). Full text in the
+                                      // tooltip + log modal.
+                                      <Tooltip label={b.errorMessage} multiline w={400}>
+                                        <Code
+                                          c="red"
+                                          style={{
+                                            display: 'block',
+                                            maxWidth: '100%',
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
+                                          {b.errorMessage}
+                                        </Code>
+                                      </Tooltip>
+                                    ) : b.digest ? (
+                                      <Code>{b.digest.slice(0, 19)}</Code>
+                                    ) : (
+                                      <Text size="xs" c="dimmed">
+                                        —
+                                      </Text>
+                                    )}
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Group gap={4} wrap="nowrap" justify="flex-end">
+                                      <Tooltip label={t('admin.button.builds.view_log')}>
+                                        <ActionIcon
+                                          variant="subtle"
+                                          disabled={!b.logTail}
+                                          aria-label={t('admin.button.builds.view_log')}
+                                          onClick={() => setLogRow(b)}
+                                        >
+                                          <Icon path={mdiTextBoxOutline} size={0.9} />
+                                        </ActionIcon>
+                                      </Tooltip>
+                                      {(b.status === 'Failed' || b.status === 'MissingDockerfile') && (
+                                        <Tooltip label={t('admin.button.builds.reenqueue')}>
                                           <ActionIcon
                                             variant="subtle"
-                                            size="sm"
-                                            color={copied ? 'teal' : 'gray'}
-                                            aria-label={
-                                              copied ? t('admin.button.builds.copied') : t('admin.button.builds.copy')
-                                            }
-                                            onClick={copy}
+                                            color="blue"
+                                            disabled={busy}
+                                            aria-label={t('admin.button.builds.reenqueue')}
+                                            onClick={() => onReenqueue(b)}
                                           >
-                                            <Icon path={copied ? mdiCheck : mdiContentCopy} size={0.7} />
+                                            <Icon path={mdiRefresh} size={0.9} />
                                           </ActionIcon>
                                         </Tooltip>
                                       )}
-                                    </CopyButton>
-                                  </Group>
-                                ) : (
-                                  <Text size="xs" c="dimmed">
-                                    —
-                                  </Text>
-                                )}
-                              </Table.Td>
-                              <Table.Td>
-                                <Text size="sm" ff="monospace">
-                                  {formatDuration(b.durationMs)}
-                                </Text>
-                              </Table.Td>
-                              <Table.Td>
-                                {b.errorMessage ? (
-                                  // Single-line truncation within the flex column: build errors can
-                                  // be long, unbroken strings (sha256 layer ids). Full text in the
-                                  // tooltip + log modal.
-                                  <Tooltip label={b.errorMessage} multiline w={400}>
-                                    <Code
-                                      c="red"
-                                      style={{
-                                        display: 'block',
-                                        maxWidth: '100%',
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis',
-                                        whiteSpace: 'nowrap',
-                                      }}
-                                    >
-                                      {b.errorMessage}
-                                    </Code>
-                                  </Tooltip>
-                                ) : b.digest ? (
-                                  <Code>{b.digest.slice(0, 19)}</Code>
-                                ) : (
-                                  <Text size="xs" c="dimmed">
-                                    —
-                                  </Text>
-                                )}
-                              </Table.Td>
-                              <Table.Td>
-                                <Group gap={4} wrap="nowrap" justify="flex-end">
-                                  <Tooltip label={t('admin.button.builds.view_log')}>
-                                    <ActionIcon
-                                      variant="subtle"
-                                      disabled={!b.logTail}
-                                      aria-label={t('admin.button.builds.view_log')}
-                                      onClick={() => setLogRow(b)}
-                                    >
-                                      <Icon path={mdiTextBoxOutline} size={0.9} />
-                                    </ActionIcon>
-                                  </Tooltip>
-                                  {(b.status === 'Failed' || b.status === 'MissingDockerfile') && (
-                                    <Tooltip label={t('admin.button.builds.reenqueue')}>
-                                      <ActionIcon
-                                        variant="subtle"
-                                        color="blue"
-                                        disabled={busy}
-                                        aria-label={t('admin.button.builds.reenqueue')}
-                                        onClick={() => onReenqueue(b)}
-                                      >
-                                        <Icon path={mdiRefresh} size={0.9} />
-                                      </ActionIcon>
-                                    </Tooltip>
-                                  )}
-                                  <Tooltip label={t('admin.button.builds.delete')}>
-                                    <ActionIcon
-                                      variant="subtle"
-                                      color="red"
-                                      disabled={busy}
-                                      aria-label={t('admin.button.builds.delete')}
-                                      onClick={() => onDelete(b)}
-                                    >
-                                      <Icon path={mdiDeleteOutline} size={0.9} />
-                                    </ActionIcon>
-                                  </Tooltip>
-                                </Group>
-                              </Table.Td>
-                            </Table.Tr>
-                          ))}
-                        </Table.Tbody>
-                      </Table>
-                    </ScrollArea>
-                  </Paper>
+                                      <Tooltip label={t('admin.button.builds.delete')}>
+                                        <ActionIcon
+                                          variant="subtle"
+                                          color="red"
+                                          disabled={busy}
+                                          aria-label={t('admin.button.builds.delete')}
+                                          onClick={() => onDelete(b)}
+                                        >
+                                          <Icon path={mdiDeleteOutline} size={0.9} />
+                                        </ActionIcon>
+                                      </Tooltip>
+                                    </Group>
+                                  </Table.Td>
+                                </Table.Tr>
+                              ))}
+                            </Table.Tbody>
+                          </Table>
+                        </ScrollArea>
+                      </Paper>
+                    </Box>
+
+                    <Stack hiddenFrom="md" gap="sm" aria-label={t('admin.content.builds.table_caption')}>
+                      {pagedHistory.map((build) => (
+                        <BuildHistoryCard
+                          key={build.id}
+                          build={build}
+                          selected={selected.has(build.id)}
+                          busy={busy}
+                          onSelect={() => toggleOne(build.id)}
+                          onViewLog={() => setLogRow(build)}
+                          onReenqueue={() => onReenqueue(build)}
+                          onDelete={() => onDelete(build)}
+                        />
+                      ))}
+                    </Stack>
+                  </>
                 )}
 
                 {pageCount > 1 && (
-                  <Group justify="center" mt="xs">
-                    <Pagination total={pageCount} value={safePage} onChange={setPage} size="sm" />
-                  </Group>
+                  <Box
+                    component="nav"
+                    aria-label={t('admin.content.builds.pagination_label', 'Build history pages')}
+                    mt="xs"
+                  >
+                    <Pagination.Root
+                      total={pageCount}
+                      value={safePage}
+                      onChange={setPage}
+                      size="md"
+                      siblings={isMobile ? 0 : 1}
+                      getItemProps={(itemPage) => ({
+                        'aria-label': t('common.pagination.page', {
+                          defaultValue: 'Page {{page}}',
+                          page: itemPage,
+                        }),
+                      })}
+                    >
+                      <Group justify="center" gap="xs" wrap="nowrap">
+                        <Pagination.Previous
+                          aria-label={t('common.pagination.previous', 'Previous page')}
+                          title={t('common.pagination.previous', 'Previous page')}
+                        />
+                        {isMobile ? (
+                          <Text size="sm" fw={700} aria-live="polite" className={classes.paginationStatus}>
+                            {t('common.pagination.page_of', {
+                              defaultValue: 'Page {{page}} of {{total}}',
+                              page: safePage,
+                              total: pageCount,
+                            })}
+                          </Text>
+                        ) : (
+                          <Pagination.Items />
+                        )}
+                        <Pagination.Next
+                          aria-label={t('common.pagination.next', 'Next page')}
+                          title={t('common.pagination.next', 'Next page')}
+                        />
+                      </Group>
+                    </Pagination.Root>
+                  </Box>
                 )}
               </Stack>
             </Tabs.Panel>
@@ -736,7 +814,7 @@ const Builds: FC = () => {
               <Stack gap="md">
                 <Group justify="flex-end">
                   <Button
-                    size="xs"
+                    size="sm"
                     variant="default"
                     color="orange"
                     leftSection={<Icon path={mdiImageBrokenVariant} size={0.9} />}
@@ -773,7 +851,7 @@ const Builds: FC = () => {
         {logRow && (
           <Stack gap="xs">
             <Group gap="xs">
-              <Badge color={STATUS_COLOR[logRow.status]} variant={STATUS_VARIANT(logRow.status)}>
+              <Badge color={BUILD_STATUS_COLOR[logRow.status]} variant={BUILD_STATUS_VARIANT} autoContrast>
                 {logRow.status}
               </Badge>
               <Badge variant="light" color="gray">
@@ -783,10 +861,10 @@ const Builds: FC = () => {
                 {t('admin.content.builds.attempt', { n: logRow.attempt })}
               </Badge>
               <Badge variant="light" color="gray" ff="monospace">
-                {formatDuration(logRow.durationMs)}
+                {formatBuildDuration(logRow.durationMs)}
               </Badge>
               <Button
-                size="xs"
+                size="sm"
                 variant="default"
                 ml="auto"
                 leftSection={<Icon path={clipboard.copied ? mdiCheck : mdiContentCopy} size={0.8} />}

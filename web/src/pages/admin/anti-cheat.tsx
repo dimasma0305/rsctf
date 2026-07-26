@@ -73,7 +73,9 @@ const AntiCheat: FC = () => {
           ) : !blocks || blocks.length === 0 ? (
             <Center h="30vh">
               <Stack gap={0} align="center">
-                <Title order={4}>{t('admin.content.anti_cheat.empty_title')}</Title>
+                <Title order={3} size="h4">
+                  {t('admin.content.anti_cheat.empty_title')}
+                </Title>
                 <Text c="dimmed">{t('admin.content.anti_cheat.empty')}</Text>
               </Stack>
             </Center>
@@ -89,7 +91,9 @@ const AntiCheat: FC = () => {
                       <Table.Th scope="col">{t('admin.content.anti_cheat.column.kind')}</Table.Th>
                       <Table.Th scope="col">{t('admin.content.anti_cheat.column.conflict_with')}</Table.Th>
                       <Table.Th scope="col">{t('admin.content.anti_cheat.column.value')}</Table.Th>
-                      <Table.Th scope="col" aria-label={t('common.label.action', 'Actions')} />
+                      <Table.Th scope="col">
+                        <span className="app-sr-only">{t('common.label.action', 'Actions')}</span>
+                      </Table.Th>
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>

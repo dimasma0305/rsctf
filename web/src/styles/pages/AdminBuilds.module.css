@@ -24,8 +24,122 @@
   max-width: 100%;
 }
 
+.summaryButton {
+  min-height: 2rem;
+  cursor: pointer;
+}
+
+.summaryButton[data-active] {
+  box-shadow: 0 0 0 2px var(--app-control-border);
+}
+
+.challengeLink {
+  min-width: 0;
+}
+
+.historyCard {
+  border-color: var(--app-border-subtle);
+  background: var(--app-raised-surface);
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.historyCard[data-selected] {
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-surface);
+}
+
+.cardIdentity,
+.cardTitle {
+  min-width: 0;
+  flex: 1;
+}
+
+.cardTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardTitle a {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardStatus {
+  flex: 0 0 auto;
+}
+
+.cardMetadata {
+  padding: var(--mantine-spacing-sm);
+  margin: 0;
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--mantine-radius-md);
+  background: var(--app-subtle-surface);
+}
+
+.cardMetadata dd {
+  margin-inline-start: 0;
+}
+
+.metaLabel,
+.detailLabel {
+  color: var(--app-text-muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.metaValue {
+  margin-top: 0.2rem;
+  color: var(--app-text-primary);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.cardReference {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.errorText {
+  color: light-dark(var(--mantine-color-red-8), var(--mantine-color-red-3));
+  line-height: 1.5;
+}
+
+.cardActions > * {
+  min-height: 2.75rem;
+  flex: 1 1 7rem;
+}
+
+.paginationStatus {
+  min-width: 7.5rem;
+  color: var(--app-text-secondary);
+  text-align: center;
+}
+
 @media (max-width: $mantine-breakpoint-sm) {
   .pageContainer {
     padding-inline: 0;
+  }
+
+  .pageContent {
+    gap: var(--mantine-spacing-md);
+  }
+
+  .historyCard {
+    padding: var(--mantine-spacing-sm) !important;
+  }
+
+  .cardActions {
+    align-items: stretch;
   }
 }

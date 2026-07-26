@@ -234,7 +234,9 @@ const Games: FC = () => {
                   <Table.Th scope="col">{t('common.label.game')}</Table.Th>
                   <Table.Th scope="col">{t('common.label.time')}</Table.Th>
                   <Table.Th scope="col">{t('admin.label.games.summary')}</Table.Th>
-                  <Table.Th scope="col" aria-label={t('common.label.action', 'Actions')} />
+                  <Table.Th scope="col">
+                    <span className="app-sr-only">{t('common.label.action', 'Actions')}</span>
+                  </Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -420,7 +422,7 @@ const Games: FC = () => {
                   <Divider />
                   <Box
                     component="section"
-                    aria-label={t('common.label.action', 'Actions')}
+                    aria-label={t('admin.button.games.actions_for', 'Actions for {{name}}', { name: gameTitle })}
                     className={mobileClasses.gameActions}
                   >
                     {user?.role === Role.Admin && (

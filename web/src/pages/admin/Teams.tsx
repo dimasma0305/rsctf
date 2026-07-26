@@ -219,7 +219,9 @@ const Teams: FC = () => {
                   </Table.Th>
                   <Table.Th scope="col">{t('admin.label.teams.members')}</Table.Th>
                   <Table.Th scope="col">{t('admin.label.teams.bio')}</Table.Th>
-                  <Table.Th scope="col" aria-label={t('common.label.action', 'Actions')} />
+                  <Table.Th scope="col">
+                    <span className="app-sr-only">{t('common.label.action', 'Actions')}</span>
+                  </Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -402,7 +404,7 @@ const Teams: FC = () => {
                   <Divider />
                   <Box
                     component="section"
-                    aria-label={t('common.label.action', 'Actions')}
+                    aria-label={t('admin.button.teams.actions_for', 'Actions for {{name}}', { name: displayName })}
                     className={mobileClasses.actionGrid}
                     style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}
                   >

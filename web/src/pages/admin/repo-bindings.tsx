@@ -184,7 +184,9 @@ const RepoBindings: FC = () => {
             <Stack gap="sm">
               <Group gap="xs">
                 <Icon path={mdiPlus} size={0.9} />
-                <Title order={5}>{t('admin.content.repo_binding.add')}</Title>
+                <Title order={3} size="h5">
+                  {t('admin.content.repo_binding.add')}
+                </Title>
               </Group>
               <TextInput
                 label={t('admin.content.repo_binding.repo_url')}
@@ -296,7 +298,9 @@ const RepoBindings: FC = () => {
           {!bindings || bindings.length === 0 ? (
             <Center h="30vh">
               <Stack gap={0} align="center">
-                <Title order={4}>{t('admin.content.repo_binding.empty_title')}</Title>
+                <Title order={3} size="h4">
+                  {t('admin.content.repo_binding.empty_title')}
+                </Title>
                 <Text c="dimmed">{t('admin.content.repo_binding.empty')}</Text>
               </Stack>
             </Center>
@@ -317,7 +321,7 @@ const RepoBindings: FC = () => {
                         {b.hasGitHubToken &&
                           (b.tokenStatus === 'DecryptFailed' ? (
                             <Tooltip label={t('admin.content.repo_binding.token_decrypt_failed')}>
-                              <Badge size="xs" color="red" variant="filled">
+                              <Badge size="xs" color="red" variant="light">
                                 {t('admin.content.repo_binding.summary.pat_failed', 'PAT ✗')}
                               </Badge>
                             </Tooltip>
@@ -330,7 +334,7 @@ const RepoBindings: FC = () => {
                           ))}
                       </Group>
                       <Group gap="xs" wrap="wrap">
-                        <Badge color={b.status === 'Active' ? 'teal' : 'gray'} variant="filled">
+                        <Badge color={b.status === 'Active' ? 'teal' : 'gray'} variant="light">
                           {b.status}
                         </Badge>
                         <Badge color="gray" variant="light">
@@ -488,7 +492,9 @@ const RepoBindings: FC = () => {
         }}
         title={
           <Stack gap={0}>
-            <Title order={5}>{t('admin.content.repo_binding.history_title')}</Title>
+            <Title order={2} size="h5">
+              {t('admin.content.repo_binding.history_title')}
+            </Title>
             {historyTarget && (
               <Text size="xs" c="dimmed" ff="monospace">
                 {historyTarget.repoUrl.replace('https://github.com/', '')}

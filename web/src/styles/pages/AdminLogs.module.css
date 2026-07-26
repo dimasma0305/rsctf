@@ -1,0 +1,93 @@
+.search {
+  width: min(100%, 18rem);
+  flex: 0 1 18rem;
+}
+
+.tablePaper {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--app-border-subtle);
+  background: var(--app-raised-surface);
+}
+
+.cellText {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.messageText {
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 1.4;
+  text-wrap: wrap;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.logCard,
+.emptyState {
+  border-color: var(--app-border-subtle);
+  background: var(--app-raised-surface);
+}
+
+.cardTime {
+  flex: 0 0 auto;
+  color: var(--app-text-muted);
+}
+
+.cardMessage {
+  color: var(--app-text-primary);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.cardMetadata {
+  padding-top: var(--mantine-spacing-sm);
+  margin: 0;
+  border-top: 1px solid var(--app-border-subtle);
+}
+
+.cardMetadata dd {
+  margin-inline-start: 0;
+}
+
+.metaLabel {
+  color: var(--app-text-muted);
+  font-size: 0.66rem;
+  font-weight: 750;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+}
+
+.metaValue {
+  margin-top: 0.2rem;
+  overflow: hidden;
+  color: var(--app-text-secondary);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 0.8rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metadataWide {
+  grid-column: 1 / -1;
+}
+
+.emptyState {
+  text-align: center;
+}
+
+@media (max-width: $mantine-breakpoint-sm) {
+  .search {
+    width: 100%;
+    flex-basis: 100%;
+  }
+
+  .logCard {
+    padding: var(--mantine-spacing-sm) !important;
+  }
+}

@@ -280,7 +280,15 @@ const Dashboard: FC = () => {
               <Title order={2} size="h4" mb="md">
                 {t('admin.dashboard.popular_games', 'Popular Games')}
               </Title>
-              <ScrollArea type="auto" offsetScrollbars className={classes.popularGamesScroll}>
+              <ScrollArea
+                type="auto"
+                offsetScrollbars
+                className={classes.popularGamesScroll}
+                viewportProps={{
+                  tabIndex: 0,
+                  'aria-label': t('admin.dashboard.popular_games_scroll', 'Scrollable popular games table'),
+                }}
+              >
                 <Table miw={420}>
                   <Table.Caption className="app-sr-only">
                     {t('admin.dashboard.popular_games', 'Popular Games')}
@@ -363,7 +371,12 @@ const Dashboard: FC = () => {
             </Tabs.List>
 
             <Tabs.Panel value="reviews" pt="xs">
-              <ScrollArea>
+              <ScrollArea
+                viewportProps={{
+                  tabIndex: 0,
+                  'aria-label': t('admin.dashboard.recent_reviews_scroll', 'Scrollable recent challenge reviews'),
+                }}
+              >
                 <Table striped highlightOnHover style={{ minWidth: 700 }}>
                   <Table.Caption className="app-sr-only">
                     {t('admin.dashboard.recent_reviews', 'Recent Reviews')}
@@ -426,7 +439,12 @@ const Dashboard: FC = () => {
             </Tabs.Panel>
 
             <Tabs.Panel value="writeups" pt="xs">
-              <ScrollArea>
+              <ScrollArea
+                viewportProps={{
+                  tabIndex: 0,
+                  'aria-label': t('admin.dashboard.recent_writeups_scroll', 'Scrollable recent writeups'),
+                }}
+              >
                 <Table striped highlightOnHover style={{ minWidth: 700 }}>
                   <Table.Caption className="app-sr-only">
                     {t('admin.dashboard.recent_writeups', 'Recent Writeups')}
@@ -474,7 +492,12 @@ const Dashboard: FC = () => {
             </Tabs.Panel>
 
             <Tabs.Panel value="cheats" pt="xs">
-              <ScrollArea>
+              <ScrollArea
+                viewportProps={{
+                  tabIndex: 0,
+                  'aria-label': t('admin.dashboard.recent_cheats_scroll', 'Scrollable recent cheat reports'),
+                }}
+              >
                 <Table striped highlightOnHover style={{ minWidth: 700 }}>
                   <Table.Caption className="app-sr-only">
                     {t('admin.dashboard.recent_cheats', 'Recent Cheat Reports')}

@@ -321,7 +321,15 @@ const Instances: FC = () => {
       }
     >
       <Paper shadow="md" p="xs" w="100%">
-        <ScrollArea offsetScrollbars scrollbarSize={4} h="calc(100vh - 205px)">
+        <ScrollArea
+          offsetScrollbars
+          scrollbarSize={8}
+          h="calc(100vh - 205px)"
+          viewportProps={{
+            tabIndex: 0,
+            'aria-label': t('admin.content.instances.scroll_label', 'Scrollable active challenge instances'),
+          }}
+        >
           <Table className={tableClasses.table}>
             <Table.Caption>{t('admin.content.instances.table_caption', 'Active challenge instances')}</Table.Caption>
             <Table.Thead>
@@ -334,7 +342,9 @@ const Instances: FC = () => {
                 <Table.Th scope="col">{t('admin.label.instances.network')}</Table.Th>
                 <Table.Th scope="col">{t('admin.label.instances.container_id')}</Table.Th>
                 <Table.Th scope="col">{t('admin.label.instances.entry')}</Table.Th>
-                <Table.Th scope="col" aria-label={t('common.label.action', 'Actions')} />
+                <Table.Th scope="col">
+                  <span className="app-sr-only">{t('common.label.action', 'Actions')}</span>
+                </Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>

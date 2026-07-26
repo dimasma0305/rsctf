@@ -81,6 +81,14 @@ test('active admin navigation consumes the contrast-safe surface text token', ()
   assert.doesNotMatch(activeRule, /color:\s*var\(--app-accent-text\);/)
 })
 
+test('filled badges automatically choose contrast-safe text', () => {
+  const source = readFileSync('src/utils/ThemeOverride.ts', 'utf8')
+  const badgeDefaults = source.match(/Badge\.extend\(\{\s*defaultProps:\s*\{([\s\S]*?)\n\s*\},\s*\}\)/)?.[1]
+
+  assert.ok(badgeDefaults, 'global badge defaults exist')
+  assert.match(badgeDefaults, /autoContrast:\s*true,/)
+})
+
 test('decorative surfaces are borderless and semantic accent variables resolve', () => {
   const css = readFileSync('src/styles/App.css', 'utf8')
 

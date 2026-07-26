@@ -322,7 +322,9 @@ const Users: FC = () => {
                   <Table.Th scope="col">{t('common.label.ip')}</Table.Th>
                   <Table.Th scope="col">{t('account.label.real_name')}</Table.Th>
                   <Table.Th scope="col">{t('account.label.student_id')}</Table.Th>
-                  <Table.Th scope="col" aria-label={t('common.label.action', 'Actions')} />
+                  <Table.Th scope="col">
+                    <span className="app-sr-only">{t('common.label.action', 'Actions')}</span>
+                  </Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -519,7 +521,7 @@ const Users: FC = () => {
                   <Divider />
                   <Box
                     component="section"
-                    aria-label={t('common.label.action', 'Actions')}
+                    aria-label={t('admin.button.users.actions_for', 'Actions for {{name}}', { name: displayName })}
                     className={mobileClasses.actionGrid}
                   >
                     <Box className={mobileClasses.actionCell}>
