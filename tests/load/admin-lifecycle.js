@@ -305,6 +305,14 @@ export const ADMIN_OPERATIONS = Object.freeze([
     responseKind: "worker",
     params: { id: "workerId" },
   }),
+  operation("admin_worker_delete_retired", "DELETE", "/api/admin/workers/{id}", {
+    source: "workers",
+    surface: "control",
+    mutation: true,
+    responseKind: "empty",
+    expectedStatuses: [204],
+    params: { id: "workerId" },
+  }),
   operation("worker_enroll", "POST", "/api/workers/enroll", {
     source: "workers",
     surface: "control",
@@ -799,6 +807,9 @@ export function validateAdminResponse(operationId, response) {
   const body = response.body !== undefined ? response.body : response.json;
   const headers = response.headers || {};
   switch (item.responseKind) {
+    case "empty":
+      return Number(response.status) === 204 &&
+        (body === undefined || body === null || body === "" || response.text === "");
     case "array": return Array.isArray(body);
     case "page": return validPage(body);
     case "message": return validMessage(body, Number(response.status));

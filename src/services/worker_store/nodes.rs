@@ -320,6 +320,67 @@ impl WorkerStore {
         rows.into_iter().map(TryInto::try_into).collect()
     }
 
+    /// Permanently remove a retired identity with no workload history.
+    ///
+    /// Locking the node serializes this decision against enrollment, state
+    /// changes and workload placement. Removing the row also atomically
+    /// invalidates any outstanding one-use enrollment token.
+    pub async fn delete_retired_worker(&self, worker_id: Uuid) -> Result<bool, WorkerStoreError> {
+        let mut transaction = crate::utils::database::begin_sqlx_transaction(&self.pool)
+            .await
+            .map_err(database_error)?;
+        let guard = sqlx::query_as::<_, (String, bool, bool)>(
+            r#"SELECT administrative_state,
+                      session_id IS NOT NULL AS online,
+                      EXISTS (
+                          SELECT 1
+                            FROM "WorkerWorkloads" workload
+                           WHERE workload.worker_id = node.id
+                      ) AS has_workloads
+                 FROM "WorkerNodes" node
+                WHERE id = $1
+                FOR UPDATE"#,
+        )
+        .bind(worker_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let Some((state, online, has_workloads)) = guard else {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(false);
+        };
+
+        let conflict = if state != WorkerAdministrativeState::Disabled.as_str() {
+            Some("worker must be Disabled before deletion")
+        } else if online {
+            Some("online workers cannot be deleted")
+        } else if has_workloads {
+            Some(
+                "workers with workload history are retained for audit history and cannot be deleted",
+            )
+        } else {
+            None
+        };
+        if let Some(message) = conflict {
+            transaction.rollback().await.map_err(database_error)?;
+            return Err(WorkerStoreError::Conflict(message.to_owned()));
+        }
+
+        let deleted = sqlx::query(r#"DELETE FROM "WorkerNodes" WHERE id = $1"#)
+            .bind(worker_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        if deleted.rows_affected() != 1 {
+            transaction.rollback().await.map_err(database_error)?;
+            return Err(WorkerStoreError::InvalidStoredData(
+                "locked worker vanished before deletion".to_owned(),
+            ));
+        }
+        transaction.commit().await.map_err(database_error)?;
+        Ok(true)
+    }
+
     /// Claim a new session epoch and supersede any older connection.
     pub async fn open_session(
         &self,

@@ -36,7 +36,7 @@ tests/load/
   byoc-agents.mjs   BYOC tunnel fleet: seed rows, start/stop N relay agents, list listeners
   fixtures.mjs      materializes the exact checker + shared flag service used by lifecycle
   admin-fixtures.mjs focused SQL, HTTP, Docker-image, CSR, and recovery helpers for admin acceptance
-  admin-lifecycle.js pure 61-operation admin catalog, response contracts, and target-safety rules
+  admin-lifecycle.js pure 62-operation admin catalog, response contracts, and target-safety rules
   admin-lifecycle.mjs destructive disposable admin lifecycle (npm run admin-lifecycle)
   edit-lifecycle.js exact 64-operation `/api/edit` catalog + wire validators
   edit-lifecycle.mjs future/A&D/KotH organizer lifecycle (npm run edit-lifecycle)
@@ -118,7 +118,7 @@ name/label mismatch; it never wildcard-removes every container matching `load_ag
 ### Exhaustive admin lifecycle (`npm run admin-lifecycle`)
 
 This is the destructive privileged-admin acceptance gate. Its catalog is checked against
-the registered routers and covers all **61 HTTP method/path operations** under
+the registered routers and covers all **62 HTTP method/path operations** under
 `/api/admin`, `/api/ad/admin`, `/api/admin/workers`, and the one-time
 `/api/workers/enroll` surface, plus both admin
 SignalR surfaces (`POST /hub/admin/negotiate` and the authenticated `/hub/admin`

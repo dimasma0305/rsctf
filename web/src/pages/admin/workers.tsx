@@ -14,7 +14,7 @@ import {
   Title,
 } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
-import { mdiCheck, mdiContentCopy, mdiKeyChange, mdiPlus, mdiRefresh } from '@mdi/js'
+import { mdiCheck, mdiContentCopy, mdiKeyChange, mdiPlus, mdiRefresh, mdiTrashCanOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
@@ -71,6 +71,8 @@ const Workers: FC = () => {
   const [busy, setBusy] = useState(false)
   const [name, setName] = useState('')
   const [enrollment, setEnrollment] = useState<Enrollment | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Worker | null>(null)
+  const [deleteConfirmation, setDeleteConfirmation] = useState('')
 
   const loadWorkers = useCallback(async () => {
     try {
@@ -160,6 +162,36 @@ const Workers: FC = () => {
   const copied = (message: string) =>
     showNotification({ color: 'teal', message, icon: <Icon path={mdiCheck} size={0.8} /> })
 
+  const openDelete = (worker: Worker) => {
+    setDeleteTarget(worker)
+    setDeleteConfirmation('')
+  }
+
+  const closeDelete = () => {
+    if (busy) return
+    setDeleteTarget(null)
+    setDeleteConfirmation('')
+  }
+
+  const deleteWorker = async () => {
+    if (!deleteTarget || deleteConfirmation !== deleteTarget.name) return
+    setBusy(true)
+    try {
+      await api.request<void>({
+        path: `/api/admin/workers/${deleteTarget.id}`,
+        method: 'DELETE',
+      })
+      copied(`Deleted retired worker ${deleteTarget.name}`)
+      setDeleteTarget(null)
+      setDeleteConfirmation('')
+      await loadWorkers()
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <AdminPage isLoading={loading}>
       <Stack gap="lg">
@@ -199,7 +231,7 @@ const Workers: FC = () => {
         </Paper>
 
         <Paper withBorder radius="md" p="md">
-          <Table.ScrollContainer minWidth={850}>
+          <Table.ScrollContainer minWidth={950}>
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
@@ -210,6 +242,7 @@ const Workers: FC = () => {
                   <Table.Th>Last heartbeat</Table.Th>
                   <Table.Th>State</Table.Th>
                   <Table.Th>Enrollment</Table.Th>
+                  <Table.Th>Actions</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -254,11 +287,28 @@ const Workers: FC = () => {
                         New token
                       </Button>
                     </Table.Td>
+                    <Table.Td>
+                      <Button
+                        size="xs"
+                        color="red"
+                        variant="light"
+                        leftSection={<Icon path={mdiTrashCanOutline} size={0.7} />}
+                        disabled={busy || worker.administrativeState !== 'Disabled' || worker.online}
+                        title={
+                          worker.administrativeState === 'Disabled' && !worker.online
+                            ? 'Delete this retired worker record'
+                            : 'Disable this worker before deletion'
+                        }
+                        onClick={() => openDelete(worker)}
+                      >
+                        Delete
+                      </Button>
+                    </Table.Td>
                   </Table.Tr>
                 ))}
                 {workers.length === 0 && (
                   <Table.Tr>
-                    <Table.Td colSpan={7}>
+                    <Table.Td colSpan={8}>
                       <Text ta="center" c="dimmed">
                         No trusted workers configured.
                       </Text>
@@ -379,6 +429,46 @@ const Workers: FC = () => {
             require Docker in Windows-container mode. For Docker Desktop Linux-container mode, enable host networking
             and run the Linux command inside its dedicated Linux VM. Keep storage quota checks enabled for real events.
           </Text>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={deleteTarget !== null}
+        onClose={closeDelete}
+        title={deleteTarget ? `Delete retired worker ${deleteTarget.name}` : 'Delete retired worker'}
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            This permanently removes the worker record, revokes its registered certificate, and invalidates any
+            outstanding enrollment token. Workers with workload history are retained for audit and cannot be deleted.
+          </Text>
+          <TextInput
+            label={deleteTarget ? `Type ${deleteTarget.name} to confirm` : 'Worker name'}
+            value={deleteConfirmation}
+            onChange={(event) => setDeleteConfirmation(event.currentTarget.value)}
+            data-autofocus
+            autoComplete="off"
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && deleteTarget && deleteConfirmation === deleteTarget.name) {
+                deleteWorker()
+              }
+            }}
+          />
+          <Group justify="flex-end">
+            <Button variant="default" onClick={closeDelete} disabled={busy}>
+              Cancel
+            </Button>
+            <Button
+              color="red"
+              leftSection={<Icon path={mdiTrashCanOutline} size={0.8} />}
+              disabled={!deleteTarget || deleteConfirmation !== deleteTarget.name}
+              loading={busy}
+              onClick={deleteWorker}
+            >
+              Delete worker
+            </Button>
+          </Group>
         </Stack>
       </Modal>
     </AdminPage>

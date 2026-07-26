@@ -13,7 +13,8 @@ use uuid::Uuid;
 use super::tests::{spec, AuthorityFixture};
 use super::*;
 use crate::services::worker_store::{
-    PlaceWorkload, PlacementOutcome, PlatformOs, ResourceReservation, WorkloadDefinition,
+    CreateWorker, PlaceWorkload, PlacementOutcome, PlatformOs, ResourceReservation,
+    WorkerAdministrativeState, WorkerStoreError, WorkloadDefinition,
 };
 
 pub(super) fn v1_capabilities() -> WorkerCapabilities {
@@ -125,6 +126,95 @@ fn revision_one_requires_every_lifecycle_and_route_capability() {
     let mut oversized = complete;
     oversized.max_workload_replicas = 513;
     assert!(validate_v1_capabilities(&oversized).is_err());
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn retired_worker_deletion_is_transactionally_guarded() {
+    let fixture = AuthorityFixture::create().await;
+    let store = WorkerStore::new(fixture.pool.clone());
+
+    let unused_worker_id = Uuid::new_v4();
+    let unused_token_hash = [11; 32];
+    store
+        .create_worker(CreateWorker {
+            id: unused_worker_id,
+            name: format!("unused-{unused_worker_id}"),
+            enrollment_token_hash: unused_token_hash,
+            enrollment_token_expires_at: Utc::now() + ChronoDuration::minutes(5),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.delete_retired_worker(unused_worker_id).await,
+        Err(WorkerStoreError::Conflict(message)) if message.contains("must be Disabled")
+    ));
+    assert!(store
+        .set_administrative_state(unused_worker_id, WorkerAdministrativeState::Disabled)
+        .await
+        .unwrap());
+    assert!(store.delete_retired_worker(unused_worker_id).await.unwrap());
+    assert!(store.get_worker(unused_worker_id).await.unwrap().is_none());
+    assert!(store
+        .resolve_enrollment_token(unused_token_hash)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(!store.delete_retired_worker(unused_worker_id).await.unwrap());
+
+    let enrolled = fixture.insert_current_session().await;
+    assert!(store
+        .set_administrative_state(enrolled.worker_id, WorkerAdministrativeState::Disabled)
+        .await
+        .unwrap());
+    assert!(store
+        .delete_retired_worker(enrolled.worker_id)
+        .await
+        .unwrap());
+    assert!(store
+        .get_worker(enrolled.worker_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .authenticate_certificate(enrolled.certificate_fingerprint_sha256)
+        .await
+        .unwrap()
+        .is_none());
+
+    let historical_worker_id = Uuid::new_v4();
+    store
+        .create_worker(CreateWorker {
+            id: historical_worker_id,
+            name: format!("historical-{historical_worker_id}"),
+            enrollment_token_hash: [12; 32],
+            enrollment_token_expires_at: Utc::now() + ChronoDuration::minutes(5),
+        })
+        .await
+        .unwrap();
+    assert!(store
+        .set_administrative_state(historical_worker_id, WorkerAdministrativeState::Disabled)
+        .await
+        .unwrap());
+    sqlx::query(
+        r#"INSERT INTO "WorkerWorkloads" (
+               id, owner_key, worker_id, assignment_id, generation, spec_hash_sha256
+           ) VALUES ($1, $2, $3, $4, 1, $5)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(format!("historical-{historical_worker_id}"))
+    .bind(historical_worker_id)
+    .bind(Uuid::new_v4())
+    .bind([13_u8; 32].as_slice())
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        store.delete_retired_worker(historical_worker_id).await,
+        Err(WorkerStoreError::Conflict(message)) if message.contains("workload history")
+    ));
+
+    fixture.destroy().await;
 }
 
 #[tokio::test]

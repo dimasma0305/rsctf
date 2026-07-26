@@ -425,8 +425,15 @@ remain and require typing `REMOVE`. They stop and unregister the service/task,
 or the labeled Docker-supervised agent, remove its executable or local image,
 delete the local mTLS identity directory or named volume, and remove the
 worker's Docker ownership marker. Name collisions without the expected RSCTF
-labels are never deleted. The server-side worker row remains as audit history;
-keep it `Disabled` so its issued certificate is rejected.
+labels are never deleted.
+
+A retired worker can be removed from `/admin/workers`: set it to `Disabled`,
+select **Delete**, and type its exact name. The server transaction rejects
+deletion unless the identity is offline and has no workload rows. A successful
+deletion revokes its registered certificate and invalidates any outstanding
+one-use enrollment token. Workers with workload history remain `Disabled` audit
+records and cannot be deleted. Do not delete worker rows directly from
+PostgreSQL.
 
 Beginning with tagged releases, the
 [worker installer](https://github.com/dimasma0305/rsctf/blob/main/scripts/install-worker.sh)

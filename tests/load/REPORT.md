@@ -440,8 +440,8 @@ a causal performance claim.
 `npm run admin-lifecycle` is the destructive, disposable-stack acceptance gate for the
 privileged namespaces `/api/admin`, `/api/ad/admin`, `/api/admin/workers`, and
 `/api/workers/enroll`; it does not claim complete `/api/edit` organizer coverage. The
-pure catalog is source-checked against those registered routers and requires **61/61 HTTP
-method/path operations** plus both admin SignalR surfaces. All 59 Admin-only operations
+pure catalog is source-checked against those registered routers and requires **62/62 HTTP
+method/path operations** plus both admin SignalR surfaces. All 60 Admin-only operations
 must reject anonymous, User, and Monitor principals; participation and enrollment use
 their separate manager/token matrices. A passing execution must also retain zero unauthorized successes, server 5xx,
 invalid response models, HTTP 429 responses, dropped iterations, failed public/direct

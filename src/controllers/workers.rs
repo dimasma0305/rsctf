@@ -7,8 +7,9 @@
 
 use axum::extract::{Path, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, PRAGMA};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Duration, Utc};
 use rsctf_worker_protocol::{EnrollmentRequest, EnrollmentResponse};
@@ -55,6 +56,10 @@ pub fn router() -> Router<SharedState> {
         .route(
             "/api/admin/workers/{id}/state",
             limited(Policy::Container, put(update_worker_state)),
+        )
+        .route(
+            "/api/admin/workers/{id}",
+            limited(Policy::Register, delete(delete_worker)),
         )
         .route(
             "/api/workers/enroll",
@@ -308,6 +313,24 @@ pub async fn update_worker_state(
         .map_err(store_error)?
         .ok_or_else(|| AppError::not_found("Worker not found"))?;
     Ok(Json(worker.into()))
+}
+
+/// `DELETE /api/admin/workers/{id}` — remove only a Disabled, offline identity
+/// with no workload history. Deleting the registry row revokes its certificate.
+pub async fn delete_worker(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Path(worker_id): Path<Uuid>,
+) -> AppResult<StatusCode> {
+    let deleted = st
+        .worker_store
+        .delete_retired_worker(worker_id)
+        .await
+        .map_err(store_error)?;
+    if !deleted {
+        return Err(AppError::not_found("Worker not found"));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/workers/enroll` — validate the one-use token, sign the worker's

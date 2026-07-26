@@ -387,6 +387,7 @@ function sampleBody(kind, status) {
         certificatePem: '-----BEGIN CERTIFICATE-----',
         caPem: '-----BEGIN CERTIFICATE-----',
       };
+    case 'empty': return '';
     case 'object': return {};
     default: throw new Error(`missing test sample for ${kind}`);
   }
@@ -409,15 +410,15 @@ function sampleResponse(operation) {
   return { status, body: sampleBody(operation.responseKind, status), headers };
 }
 
-test('catalog covers all 61 HTTP operations and keeps SignalR as separate surfaces', () => {
-  assert.equal(ADMIN_OPERATIONS.length, 61);
-  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 61);
+test('catalog covers all 62 HTTP operations and keeps SignalR as separate surfaces', () => {
+  assert.equal(ADMIN_OPERATIONS.length, 62);
+  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 62);
   assert.deepEqual(
     ADMIN_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 26, PUT: 6, POST: 20, DELETE: 9 },
+    { GET: 26, PUT: 6, POST: 20, DELETE: 10 },
   );
   const enroll = ADMIN_OPERATIONS.find(({ id }) => id === 'worker_enroll');
   assert.deepEqual(
@@ -439,7 +440,7 @@ test('read-load subset is GET-only, non-destructive, and includes web and contro
 });
 
 test('authorization classes keep Admin, manager, and enrollment-token surfaces explicit', () => {
-  assert.equal(ADMIN_OPERATIONS.filter(({ auth }) => auth === 'admin').length, 59);
+  assert.equal(ADMIN_OPERATIONS.filter(({ auth }) => auth === 'admin').length, 60);
   assert.deepEqual(
     ADMIN_OPERATIONS.filter(({ auth }) => auth !== 'admin').map(({ id, auth }) => [id, auth]),
     [
@@ -566,9 +567,9 @@ test('read-origin matrix covers every live read on every eligible replica exactl
 
 test('repository router source and lifecycle catalog have exact bidirectional coverage', () => {
   const sources = repositoryRouterSources();
-  assert.deepEqual(assertRouterCoverage(sources), { operations: 61, signalR: 2 });
+  assert.deepEqual(assertRouterCoverage(sources), { operations: 62, signalR: 2 });
   const parsed = parseAdminRouterOperations(sources);
-  assert.equal(parsed.operations.length, 61);
+  assert.equal(parsed.operations.length, 62);
   assert.equal(parsed.signalR.length, 2);
 });
 
@@ -609,8 +610,8 @@ test('router parser ignores route-like text in Rust comments and strings', () =>
 
 test('coverage accounting rejects omissions, duplicates, and unknown operations', () => {
   assert.deepEqual(assertCompleteCoverage(ADMIN_OPERATION_IDS), {
-    covered: 61,
-    required: 61,
+    covered: 62,
+    required: 62,
     missing: [],
     extra: [],
   });
@@ -620,8 +621,8 @@ test('coverage accounting rejects omissions, duplicates, and unknown operations'
 
   const allSurfaces = [...ADMIN_OPERATION_IDS, ...ADMIN_SIGNALR_SURFACES.map(({ id }) => id)];
   assert.deepEqual(assertCompleteCoverage(allSurfaces, { includeSignalR: true }), {
-    covered: 63,
-    required: 63,
+    covered: 64,
+    required: 64,
     missing: [],
     extra: [],
   });

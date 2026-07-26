@@ -1947,6 +1947,41 @@ async function workerLifecycle() {
     });
     requireCondition(response.json?.administrativeState === desired, `worker did not enter ${desired}`);
   }
+
+  const unused = await adminApi('POST', '/api/admin/workers', {
+    body: { name: `admin-lifecycle-unused-${tag}` },
+  });
+  const unusedWorkerId = unused.json?.worker?.id;
+  requireCondition(/^[0-9a-f-]{36}$/i.test(unusedWorkerId || ''), `unused worker create failed: ${unused.text}`);
+  state.workerIds.push(unusedWorkerId);
+  saveRecovery();
+
+  const enabledDelete = await adminApi('DELETE', `/api/admin/workers/${unusedWorkerId}`);
+  requireCondition(
+    enabledDelete.status === 409 && /Disabled/i.test(enabledDelete.text),
+    `enabled unused worker deletion returned ${enabledDelete.status}: ${enabledDelete.text}`,
+  );
+  const disabledUnused = await adminApi('PUT', `/api/admin/workers/${unusedWorkerId}/state`, {
+    body: { state: 'Disabled' },
+  });
+  requireCondition(
+    disabledUnused.json?.administrativeState === 'Disabled',
+    'unused worker did not enter Disabled',
+  );
+  const deletedUnused = await call(
+    'DELETE',
+    '/api/admin/workers/{id}',
+    `/api/admin/workers/${unusedWorkerId}`,
+  );
+  requireCondition(deletedUnused.status === 204, `unused worker deletion returned ${deletedUnused.status}`);
+  state.workerIds = state.workerIds.filter((id) => id !== unusedWorkerId);
+  saveRecovery();
+
+  const afterDelete = await adminApi('GET', '/api/admin/workers');
+  requireCondition(
+    !afterDelete.json?.some((worker) => worker.id === unusedWorkerId),
+    'deleted unused worker remained in inventory',
+  );
 }
 
 async function signalRAndLoadSimulation() {
