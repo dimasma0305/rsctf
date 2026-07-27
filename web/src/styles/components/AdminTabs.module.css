@@ -40,21 +40,19 @@
 
 .navigationViewport {
   max-width: 100%;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-  scrollbar-width: thin;
 }
 
 .navigationItems {
-  width: max-content;
-  min-width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.75rem, 1fr));
+  gap: 4px;
+  width: 100%;
 }
 
 .navigationLink {
-  width: auto;
-  min-width: max-content;
+  width: 100%;
+  min-width: 0;
   min-height: 44px;
-  flex: 1 0 auto;
   padding-inline: var(--mantine-spacing-sm);
   border-radius: var(--mantine-radius-md);
   color: var(--app-text-secondary);

@@ -151,13 +151,13 @@ export const WithAdminTab: FC<AdminTabProps> = ({ head, headProps, isLoading, ch
       <Paper
         component="nav"
         aria-label={navigationLabel}
-        visibleFrom="md"
+        visibleFrom="lg"
         withBorder
         radius="lg"
         className={classes.navigation}
       >
         <Box className={classes.navigationViewport}>
-          <Group gap={4} wrap="nowrap" className={classes.navigationItems}>
+          <Box className={classes.navigationItems}>
             {filteredPages.map((page) => {
               const active = page.path === activePage?.path
               return (
@@ -174,11 +174,11 @@ export const WithAdminTab: FC<AdminTabProps> = ({ head, headProps, isLoading, ch
                 />
               )
             })}
-          </Group>
+          </Box>
         </Box>
       </Paper>
       <Select
-        hiddenFrom="md"
+        hiddenFrom="lg"
         label={t('admin.tab.section_picker', 'Administration section')}
         allowDeselect={false}
         searchable={filteredPages.length > 6}

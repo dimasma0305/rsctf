@@ -54,6 +54,19 @@ test('dense admin inventories use readable breakpoints and manageable pages', ()
   assert.match(buildCards, /delete_short/)
 })
 
+test('admin navigation keeps every section discoverable without a horizontal scrollbar', () => {
+  const navigation = readFileSync('src/components/admin/WithAdminTab.tsx', 'utf8')
+  const navigationStyles = readFileSync('src/styles/components/AdminTabs.module.css', 'utf8')
+  const workers = readFileSync('src/pages/admin/workers.tsx', 'utf8')
+
+  assert.match(navigation, /visibleFrom="lg"/)
+  assert.match(navigation, /hiddenFrom="lg"/)
+  assert.match(navigationStyles, /\.navigationItems \{[\s\S]*?display: grid;/)
+  assert.match(navigationStyles, /repeat\(auto-fit, minmax\(8\.75rem, 1fr\)\)/)
+  assert.doesNotMatch(navigationStyles, /\.navigationViewport \{[\s\S]*?overflow-x: auto;/)
+  assert.match(workers, /miw="9rem"[\s\S]*?admin\.workers\.add/)
+})
+
 test('intentionally shortened operational values expose their full text', () => {
   const gameCards = readFileSync('src/components/GameCard.tsx', 'utf8')
   const buildCards = readFileSync('src/components/admin/builds/BuildHistoryCard.tsx', 'utf8')
