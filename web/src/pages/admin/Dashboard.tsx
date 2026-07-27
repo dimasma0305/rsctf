@@ -234,7 +234,7 @@ const Dashboard: FC = () => {
 
         <Grid>
           {/* Trend Chart */}
-          <Grid.Col span={{ base: 12, md: 8 }}>
+          <Grid.Col span={{ base: 12, lg: 7 }}>
             <Card withBorder radius="lg" p="lg">
               <Group justify="space-between" mb="md">
                 <Title order={2} size="h4">
@@ -275,21 +275,91 @@ const Dashboard: FC = () => {
           </Grid.Col>
 
           {/* Popular Games */}
-          <Grid.Col span={{ base: 12, md: 4 }}>
+          <Grid.Col span={{ base: 12, lg: 5 }}>
             <Card withBorder radius="lg" p="lg" h="100%" className={classes.popularGamesCard}>
               <Title order={2} size="h4" mb="md">
                 {t('admin.dashboard.popular_games', 'Popular Games')}
               </Title>
+              <Stack gap="xs" hiddenFrom="sm">
+                {dashboard?.topGames?.map((game) => (
+                  <Card
+                    component={Link}
+                    to={`/games/${game.id}`}
+                    key={game.id}
+                    withBorder
+                    padding="sm"
+                    radius="md"
+                    className={classes.popularGameMobileRow}
+                  >
+                    <Group justify="space-between" align="flex-start" wrap="nowrap">
+                      <Group gap="sm" align="flex-start" wrap="nowrap" miw={0}>
+                        <Avatar imageProps={{ loading: 'lazy' }} src={game.poster} radius="sm" size="sm" />
+                        <Stack gap={4} miw={0}>
+                          <Text fw={700} size="sm" lineClamp={2} title={game.title ?? ''}>
+                            {game.title}
+                          </Text>
+                          <Group gap="sm" wrap="wrap">
+                            <Group
+                              gap={4}
+                              role="group"
+                              aria-label={`${t('admin.dashboard.users', 'Users')}: ${game.userCount ?? 0}`}
+                            >
+                              <Icon path={mdiAccountMultiple} size={0.7} aria-hidden />
+                              <Text size="xs">{game.userCount ?? 0}</Text>
+                            </Group>
+                            <Group
+                              gap={4}
+                              role="group"
+                              aria-label={`${t('admin.dashboard.teams', 'Teams')}: ${game.teamCount ?? 0}`}
+                            >
+                              <Icon path={mdiAccountGroup} size={0.7} aria-hidden />
+                              <Text size="xs">{game.teamCount ?? 0}</Text>
+                            </Group>
+                          </Group>
+                        </Stack>
+                      </Group>
+                      <Stack gap={0} align="flex-end" miw="4rem">
+                        <Text
+                          size="sm"
+                          fw={700}
+                          c={
+                            game.averageRating && game.averageRating > 0.5
+                              ? 'teal'
+                              : game.averageRating !== undefined && game.averageRating !== null
+                                ? 'red'
+                                : 'dimmed'
+                          }
+                        >
+                          {game.averageRating !== undefined && game.averageRating !== null
+                            ? game.averageRating === 1
+                              ? '100%'
+                              : `${Math.round(game.averageRating * 100)}%`
+                            : '-'}
+                        </Text>
+                        <Text size="xs" c="dimmed">
+                          {game.reviewCount ?? 0} {t('admin.dashboard.reviews', 'Reviews').toLocaleLowerCase()}
+                        </Text>
+                      </Stack>
+                    </Group>
+                  </Card>
+                ))}
+                {(dashboard?.topGames?.length ?? 0) === 0 && (
+                  <Text ta="center" c="dimmed" py="md">
+                    {t('common.content.no_data', 'No Data')}
+                  </Text>
+                )}
+              </Stack>
               <ScrollArea
                 type="auto"
                 offsetScrollbars
+                visibleFrom="sm"
                 className={classes.popularGamesScroll}
                 viewportProps={{
                   tabIndex: 0,
                   'aria-label': t('admin.dashboard.popular_games_scroll', 'Scrollable popular games table'),
                 }}
               >
-                <Table miw={420}>
+                <Table miw={360} horizontalSpacing="xs">
                   <Table.Caption className="app-sr-only">
                     {t('admin.dashboard.popular_games', 'Popular Games')}
                   </Table.Caption>
@@ -306,7 +376,7 @@ const Dashboard: FC = () => {
                         <Table.Td>
                           <Group gap="sm" wrap="nowrap">
                             <Avatar imageProps={{ loading: 'lazy' }} src={game.poster} radius="sm" size="sm" />
-                            <ScrollingText text={game.title ?? ''} maw="8rem" />
+                            <ScrollingText text={game.title ?? ''} maw="7rem" />
                           </Group>
                         </Table.Td>
                         <Table.Td>

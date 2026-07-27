@@ -60,7 +60,10 @@ fn checker_firewall_commands_share_one_process_lock() {
     let guard = first.lock().unwrap();
     assert!(second.try_lock().is_err());
     drop(guard);
-    assert!(second.try_lock().is_ok());
+    // Another parallel sandbox test may briefly use this process-wide lock.
+    // Blocking here still proves the mutex was released without racing that
+    // legitimate competing caller.
+    let _reacquired = second.lock().unwrap();
 }
 
 #[test]

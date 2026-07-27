@@ -257,7 +257,7 @@ body {
 }
 
 .mantine-Tabs-tab[data-active] {
-  color: var(--tabs-text-color, var(--mantine-color-white));
+  color: var(--app-text-primary);
 }
 
 .mantine-Pagination-control {

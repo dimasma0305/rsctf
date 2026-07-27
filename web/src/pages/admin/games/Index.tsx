@@ -156,11 +156,10 @@ const Games: FC = () => {
         <>
           {user?.role === Role.Admin && (
             <Group
-              grow={!isNarrow}
               gap="sm"
               wrap="nowrap"
               w={{ base: '100%', sm: 'auto' }}
-              style={isNarrow ? { flexDirection: 'column', alignItems: 'stretch' } : undefined}
+              style={isNarrow ? { flexDirection: 'column', alignItems: 'stretch' } : { flexShrink: 0 }}
             >
               <Button
                 h={44}

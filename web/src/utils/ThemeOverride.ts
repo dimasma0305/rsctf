@@ -109,7 +109,9 @@ const CustomTheme: MantineThemeOverride = {
   primaryColor: 'brand',
   primaryShade: { light: 7, dark: 7 },
   autoContrast: true,
-  luminanceThreshold: 0.38,
+  // Black and white have equal WCAG contrast at relative luminance ≈0.179.
+  // Choosing on that boundary keeps automatic control text at or above 4.5:1.
+  luminanceThreshold: 0.179,
   cursorType: 'pointer',
   respectReducedMotion: true,
   defaultRadius: 'md',
@@ -213,6 +215,7 @@ const CustomTheme: MantineThemeOverride = {
     Button: Button.extend({
       defaultProps: {
         radius: 'md',
+        autoContrast: true,
       },
       styles: {
         root: {

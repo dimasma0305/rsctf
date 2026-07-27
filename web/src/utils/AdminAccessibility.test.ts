@@ -67,6 +67,18 @@ test('admin navigation keeps every section discoverable without a horizontal scr
   assert.match(workers, /miw="9rem"[\s\S]*?admin\.workers\.add/)
 })
 
+test('admin dashboard keeps popular-game metrics visible and action labels intact', () => {
+  const dashboard = readFileSync('src/pages/admin/Dashboard.tsx', 'utf8')
+  const games = readFileSync('src/pages/admin/games/Index.tsx', 'utf8')
+
+  assert.match(dashboard, /span=\{\{ base: 12, lg: 7 \}\}/)
+  assert.match(dashboard, /span=\{\{ base: 12, lg: 5 \}\}/)
+  assert.match(dashboard, /className=\{classes\.popularGameMobileRow\}/)
+  assert.match(dashboard, /visibleFrom="sm"[\s\S]*?<Table miw=\{360\} horizontalSpacing="xs">/)
+  assert.doesNotMatch(games, /grow=\{!isNarrow\}/)
+  assert.match(games, /: \{ flexShrink: 0 \}/)
+})
+
 test('intentionally shortened operational values expose their full text', () => {
   const gameCards = readFileSync('src/components/GameCard.tsx', 'utf8')
   const buildCards = readFileSync('src/components/admin/builds/BuildHistoryCard.tsx', 'utf8')
