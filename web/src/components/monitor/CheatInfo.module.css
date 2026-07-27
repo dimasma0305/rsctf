@@ -20,6 +20,7 @@
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: var(--mantine-spacing-md);
+  margin-bottom: var(--mantine-spacing-md);
 }
 
 @container (max-width: 56rem) {
@@ -51,7 +52,7 @@
   }
 }
 
-@container (max-width: 28rem) {
+@container (max-width: 21rem) {
   .summaryGrid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -132,4 +133,37 @@
 /* ── Inner tab list styling ──────────────────────────── */
 .innerTabList {
   border-bottom: 2px solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: inline proximity;
+  scrollbar-width: thin;
+  scrollbar-color: light-dark(var(--mantine-color-gray-4), var(--mantine-color-dark-3)) transparent;
+}
+
+.innerTabList::-webkit-scrollbar {
+  height: 0.25rem;
+}
+
+.innerTabList::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.innerTabList::-webkit-scrollbar-thumb {
+  background: light-dark(var(--mantine-color-gray-4), var(--mantine-color-dark-3));
+  border-radius: var(--mantine-radius-xl);
+}
+
+.innerTabList :global(.mantine-Tabs-tab) {
+  flex: 0 0 auto;
+  min-height: 2.75rem;
+  padding-inline: var(--mantine-spacing-sm);
+  scroll-snap-align: center;
+}
+
+@container (min-width: 48rem) {
+  .innerTabList :global(.mantine-Tabs-tab) {
+    flex: 1 1 0;
+    min-width: 0;
+  }
 }

@@ -77,11 +77,28 @@ test('game workspace uses one bounded width and container-sized challenge cards'
   assert.match(challengeGrid, /repeat\(auto-fill, minmax\(min\(15rem, 100%\), 1fr\)\)/)
 })
 
+test('cheat analysis separates its sections and keeps evidence tabs on one row', () => {
+  const component = readFileSync(join(repositoryRoot, 'web/src/components/monitor/CheatInfo.tsx'), 'utf8')
+  const styles = readFileSync(join(repositoryRoot, 'web/src/components/monitor/CheatInfo.module.css'), 'utf8')
+  const audit = readFileSync(join(repositoryRoot, 'tests/visual/audit.mjs'), 'utf8')
+
+  assert.match(component, /data-layout-section="cheat-summary"/)
+  assert.match(component, /data-min-block-gap="8"/)
+  assert.match(styles, /\.summaryGrid[\s\S]*margin-bottom: var\(--mantine-spacing-md\)/)
+  assert.match(styles, /\.innerTabList[\s\S]*flex-wrap: nowrap/)
+  assert.match(styles, /\.innerTabList[\s\S]*overflow-x: auto/)
+  assert.match(component, /data-max-layout-rows="1"/)
+  assert.match(audit, /section gap is \$\{gap\.actual\}px/)
+  assert.match(audit, /uses \$\{rows\.actual\} rows/)
+  assert.match(audit, /has \$\{rows\.overflowingChildren\} overflowing children/)
+})
+
 test('visual audit covers ultrawide, desktop, intermediate, and compact breakpoints', () => {
   assert.deepEqual(viewportCatalog, {
     ultrawide: { width: 3440, height: 1440, mobile: false },
     wide: { width: 1920, height: 1080, mobile: false },
     desktop: { width: 1440, height: 1100, mobile: false },
+    notebook: { width: 1366, height: 768, mobile: false },
     laptop: { width: 1024, height: 768, mobile: false },
     tablet: { width: 768, height: 1024, mobile: true },
     mobile: { width: 390, height: 844, mobile: true },

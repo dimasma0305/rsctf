@@ -49,7 +49,7 @@ Options:
   --page FILTER      Audit route name/path containing FILTER; repeatable
   --shard INDEX/TOTAL
                       Audit one deterministic route shard (for example 1/2)
-  --viewport NAME    Audit ultrawide, wide, desktop, laptop, tablet, mobile, or compact; repeatable
+  --viewport NAME    Audit ultrawide, wide, desktop, notebook, laptop, tablet, mobile, or compact; repeatable
   --desktop-only     Capture only 1440x1100
   --mobile-only      Capture 390x844 and compact 320x568
   --list             List resolved routes without launching Chromium
@@ -209,6 +209,38 @@ function accessibleDocumentAnalysis() {
       }
     }
   }
+  const sectionGaps = queryAll('[data-min-block-gap]')
+    .filter(visible)
+    .flatMap((element) => {
+      const next = element.nextElementSibling
+      const required = Number(element.getAttribute('data-min-block-gap'))
+      if (!next || !visible(next) || !Number.isFinite(required) || required < 0) return []
+      const currentRectangle = element.getBoundingClientRect()
+      const nextRectangle = next.getBoundingClientRect()
+      return [
+        {
+          section: element.getAttribute('data-layout-section') || element.tagName.toLowerCase(),
+          required,
+          actual: Math.round((nextRectangle.top - currentRectangle.bottom) * 100) / 100,
+        },
+      ]
+    })
+  const layoutRows = queryAll('[data-max-layout-rows]')
+    .filter(visible)
+    .map((element) => {
+      const rowOffsets = []
+      const children = [...element.children].filter(visible)
+      for (const child of children) {
+        const top = Math.round(child.getBoundingClientRect().top)
+        if (!rowOffsets.some((other) => Math.abs(other - top) <= 2)) rowOffsets.push(top)
+      }
+      return {
+        section: element.getAttribute('data-layout-section') || element.tagName.toLowerCase(),
+        maximum: Number(element.getAttribute('data-max-layout-rows')),
+        actual: rowOffsets.length,
+        overflowingChildren: children.filter((child) => child.scrollWidth > child.clientWidth + 1).length,
+      }
+    })
 
   const headings = queryAll('h1, h2, h3, h4, h5, h6')
     .filter(visible)
@@ -314,6 +346,8 @@ function accessibleDocumentAnalysis() {
     unnamedControls,
     crowdedSmallTargets,
     overlaps: overlaps.slice(0, 20),
+    sectionGaps,
+    layoutRows,
     clippedText,
     viewportEscapes,
     scrollRegions,
@@ -482,6 +516,19 @@ function failuresFor(result, expectedPath) {
   if (result.unnamedControls.length) failures.push(`${result.unnamedControls.length} unnamed controls`)
   if (result.crowdedSmallTargets.length) {
     failures.push(`${result.crowdedSmallTargets.length} crowded controls below 24px`)
+  }
+  for (const gap of result.sectionGaps ?? []) {
+    if (gap.actual + 0.5 < gap.required) {
+      failures.push(`${gap.section} section gap is ${gap.actual}px; expected at least ${gap.required}px`)
+    }
+  }
+  for (const rows of result.layoutRows ?? []) {
+    if (!Number.isFinite(rows.maximum) || rows.maximum < 1 || rows.actual > rows.maximum) {
+      failures.push(`${rows.section} uses ${rows.actual} rows; expected at most ${rows.maximum}`)
+    }
+    if (rows.overflowingChildren) {
+      failures.push(`${rows.section} has ${rows.overflowingChildren} overflowing children`)
+    }
   }
   if (result.axe.violations.length) failures.push(`${result.axe.violations.length} axe violations`)
   if (result.server5xx.length) failures.push(`${result.server5xx.length} HTTP 5xx responses`)
@@ -796,6 +843,8 @@ async function main() {
             unnamedControls: [],
             crowdedSmallTargets: [],
             overlaps: [],
+            sectionGaps: [],
+            layoutRows: [],
             clippedText: [],
             viewportEscapes: [],
             scrollRegions: [],

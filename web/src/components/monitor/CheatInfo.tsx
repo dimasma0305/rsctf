@@ -26,7 +26,7 @@ import {
   Pagination,
   VisuallyHidden,
 } from '@mantine/core'
-import { useClipboard, useDebouncedValue } from '@mantine/hooks'
+import { useClipboard, useDebouncedValue, useReducedMotion } from '@mantine/hooks'
 import { useDisclosure } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import {
@@ -1224,6 +1224,17 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
   const [teamAId, setTeamAId] = useState<number | null>(null)
   const [teamBId, setTeamBId] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState<string | null>('suspicion')
+  const evidenceTabsRef = useRef<HTMLDivElement>(null)
+  const reducedMotion = useReducedMotion()
+
+  useEffect(() => {
+    const scroller = evidenceTabsRef.current
+    const activeItem = scroller?.querySelector<HTMLElement>('[role="tab"][data-active]')
+    if (!scroller || !activeItem) return
+
+    const target = activeItem.offsetLeft - (scroller.clientWidth - activeItem.offsetWidth) / 2
+    scroller.scrollTo({ left: Math.max(0, target), behavior: reducedMotion ? 'auto' : 'smooth' })
+  }, [activeTab, reducedMotion])
 
   // 5. Collusion Group Sort State
   const [collusionSort, setCollusionSort] = useState<SortConfig<any>>({ key: 'averageRsi', direction: 'desc' })
@@ -1815,7 +1826,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
         />
       </Group>
 
-      <Box className={classes.summaryGrid}>
+      <Box className={classes.summaryGrid} data-layout-section="cheat-summary" data-min-block-gap="8">
         <SummaryCard
           label={t('game.cheat_analysis.card.hard_evidence', 'Hard Evidence')}
           value={summaryStats.highRiskTeams}
@@ -1868,10 +1879,18 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
 
       <Paper shadow="md" p="md" radius="md">
         <Tabs value={activeTab} onChange={setActiveTab} variant="pills" radius="sm">
-          <Tabs.List grow className={classes.innerTabList} pb="xs" mb="xs">
+          <Tabs.List
+            ref={evidenceTabsRef}
+            grow
+            className={classes.innerTabList}
+            pb="xs"
+            mb="xs"
+            aria-label={t('game.cheat_analysis.evidence_categories', 'Evidence categories')}
+            data-layout-section="cheat-evidence-tabs"
+            data-max-layout-rows="1"
+          >
             <Tabs.Tab
               value="suspicion"
-              leftSection={<Icon path={mdiShieldAlert} size={0.75} />}
               rightSection={
                 <Badge
                   size="xs"
@@ -1892,7 +1911,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
             </Tabs.Tab>
             <Tabs.Tab
               value="ip"
-              leftSection={<Icon path={mdiIpNetwork} size={0.75} />}
               rightSection={
                 <Badge
                   size="xs"
@@ -1908,7 +1926,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
             </Tabs.Tab>
             <Tabs.Tab
               value="solve"
-              leftSection={<Icon path={mdiGhost} size={0.75} />}
               rightSection={
                 <Badge
                   size="xs"
@@ -1924,7 +1941,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
             </Tabs.Tab>
             <Tabs.Tab
               value="collusion"
-              leftSection={<Icon path={mdiAccountGroup} size={0.75} />}
               rightSection={
                 <Badge
                   size="xs"
@@ -1940,7 +1956,6 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
             </Tabs.Tab>
             <Tabs.Tab
               value="identity"
-              leftSection={<Icon path={mdiFingerprint} size={0.75} />}
               rightSection={
                 <Badge
                   size="xs"

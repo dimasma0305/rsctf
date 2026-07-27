@@ -9,6 +9,7 @@ export const viewportCatalog = Object.freeze({
   ultrawide: { width: 3440, height: 1440, mobile: false },
   wide: { width: 1920, height: 1080, mobile: false },
   desktop: { width: 1440, height: 1100, mobile: false },
+  notebook: { width: 1366, height: 768, mobile: false },
   laptop: { width: 1024, height: 768, mobile: false },
   tablet: { width: 768, height: 1024, mobile: true },
   mobile: { width: 390, height: 844, mobile: true },

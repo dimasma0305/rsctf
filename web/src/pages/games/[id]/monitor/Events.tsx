@@ -238,6 +238,7 @@ const Events: FC = () => {
         offsetScrollbars
         h="calc(100vh - 160px)"
         viewportProps={{
+          role: 'region',
           tabIndex: 0,
           'aria-label': t('game.label.events.stream', 'Event stream'),
         }}
