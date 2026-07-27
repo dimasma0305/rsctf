@@ -59,9 +59,15 @@ const Games: FC = () => {
         statusLabel,
         color: colorHex,
         title: (
-          <Link className={ganttClasses.eventLabel} to={`/games/${game.id}`}>
-            <span className={ganttClasses.title}>{title}</span>
-            <span className={ganttClasses.eventMeta}>
+          <Link
+            className={ganttClasses.eventLabel}
+            to={`/games/${game.id}`}
+            title={`${title} — ${statusLabel} · ${toLimitTag(t, game.limit)}`}
+          >
+            <span className={ganttClasses.title} title={title}>
+              {title}
+            </span>
+            <span className={ganttClasses.eventMeta} title={`${statusLabel} · ${toLimitTag(t, game.limit)}`}>
               {statusLabel} · {toLimitTag(t, game.limit)}
             </span>
           </Link>

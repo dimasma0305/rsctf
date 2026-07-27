@@ -19,7 +19,8 @@ test('dense operational history uses responsive cards and named controls', () =>
   const logs = readFileSync('src/pages/admin/Logs.tsx', 'utf8')
 
   assert.match(builds, /<BuildHistoryCard/)
-  assert.match(builds, /hiddenFrom="md"/)
+  assert.match(builds, /visibleFrom="lg"/)
+  assert.match(builds, /hiddenFrom="lg"/)
   assert.match(builds, /getItemProps=\{\(itemPage\) => \(\{/)
   assert.match(builds, /<Pagination\.Previous[\s\S]*?aria-label=/)
   assert.match(builds, /<Pagination\.Next[\s\S]*?aria-label=/)
@@ -29,6 +30,41 @@ test('dense operational history uses responsive cards and named controls', () =>
   assert.match(logs, /hiddenFrom="md"/)
   assert.doesNotMatch(logs, /tableClasses\.overflow/)
   assert.equal((logs.match(/closeButtonProps:/g) ?? []).length, 2)
+})
+
+test('dense admin inventories use readable breakpoints and manageable pages', () => {
+  const mobileStyles = readFileSync('src/pages/admin/AdminMobileList.module.css', 'utf8')
+  const users = readFileSync('src/pages/admin/Users.tsx', 'utf8')
+  const games = readFileSync('src/pages/admin/games/Index.tsx', 'utf8')
+  const buildCards = readFileSync('src/components/admin/builds/BuildHistoryCard.tsx', 'utf8')
+
+  assert.match(mobileStyles, /@media \(max-width: 25rem\)[\s\S]*?\.actionGrid \{[\s\S]*?repeat\(2,/)
+  assert.match(mobileStyles, /\.recordTitle \{[\s\S]*?-webkit-line-clamp: 2;/)
+
+  assert.match(users, /const ITEM_COUNT_PER_PAGE = 20/)
+  assert.match(users, /visibleFrom="lg"/)
+  assert.match(users, /hiddenFrom="lg" cols=\{\{ base: 1, sm: 2 \}\}/)
+
+  assert.match(games, /const ITEM_COUNT_PER_PAGE = 15/)
+  assert.match(games, /visibleFrom="lg"/)
+  assert.match(games, /hiddenFrom="lg" cols=\{\{ base: 1, sm: 2 \}\}/)
+
+  assert.match(buildCards, /view_log_short/)
+  assert.match(buildCards, /reenqueue_short/)
+  assert.match(buildCards, /delete_short/)
+})
+
+test('intentionally shortened operational values expose their full text', () => {
+  const gameCards = readFileSync('src/components/GameCard.tsx', 'utf8')
+  const buildCards = readFileSync('src/components/admin/builds/BuildHistoryCard.tsx', 'utf8')
+  const bindings = readFileSync('src/pages/admin/repo-bindings.tsx', 'utf8')
+  const cheatInfo = readFileSync('src/components/monitor/CheatInfo.tsx', 'utf8')
+
+  assert.match(gameCards, /lineClamp=\{2\} className=\{classes\.title\} title=\{eventTitle\}/)
+  assert.match(buildCards, /className=\{classes\.cardReference\} title=\{build\.imageRef\}/)
+  assert.match(bindings, /lineClamp=\{1\} title=\{b\.currentActivity\}/)
+  assert.match(bindings, /lineClamp=\{2\} ff="monospace" title=\{b\.lastScanMessage\}/)
+  assert.match(cheatInfo, /className=\{classes\.truncate\} title=\{teamName\}/)
 })
 
 test('admin action columns expose text to assistive technology', () => {

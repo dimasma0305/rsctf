@@ -607,6 +607,17 @@ fn build_challenges_map(
 struct ContextInfo {
     game: game::Model,
     participation: participation::Model,
+    /// A finished, non-practice game remains readable to an accepted
+    /// participant, but every operational/mutating surface stays closed.
+    archived: bool,
+}
+
+fn is_read_only_archive(
+    practice_mode: bool,
+    end_time_utc: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    !practice_mode && now >= end_time_utc
 }
 
 /// Mirror of RSCTF `GetContextInfo`: game exists, user is an Accepted
@@ -629,14 +640,36 @@ async fn context_info(
     if Utc::now() < game.start_time_utc {
         return Err(AppError::game_not_started());
     }
-    if deny_after_ended && !game.practice_mode && game.end_time_utc < Utc::now() {
+    let archived = is_read_only_archive(game.practice_mode, game.end_time_utc, Utc::now());
+    if deny_after_ended && archived {
         return Err(AppError::game_ended());
     }
 
     Ok(ContextInfo {
         game,
         participation: part,
+        archived,
     })
+}
+
+#[cfg(test)]
+mod ended_access_tests {
+    use super::is_read_only_archive;
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn only_finished_non_practice_games_become_read_only_archives() {
+        let now = Utc::now();
+
+        assert!(!is_read_only_archive(
+            false,
+            now + Duration::seconds(1),
+            now
+        ));
+        assert!(is_read_only_archive(false, now, now));
+        assert!(is_read_only_archive(false, now - Duration::seconds(1), now));
+        assert!(!is_read_only_archive(true, now - Duration::days(1), now));
+    }
 }
 
 /// Resolve a challenge permission; dangling/cross-game divisions fail closed.

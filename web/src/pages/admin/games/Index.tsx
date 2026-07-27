@@ -12,6 +12,7 @@ import {
   Paper,
   Progress,
   ScrollArea,
+  SimpleGrid,
   Stack,
   Switch,
   Table,
@@ -23,7 +24,6 @@ import {
 import {
   mdiArrowLeftBold,
   mdiArrowRightBold,
-  mdiChevronTripleRight,
   mdiContentDuplicate,
   mdiOpenInNew,
   mdiPencilOutline,
@@ -50,7 +50,7 @@ import tableClasses from '@Styles/Table.module.css'
 import uploadClasses from '@Styles/Upload.module.css'
 import mobileClasses from '../AdminMobileList.module.css'
 
-const ITEM_COUNT_PER_PAGE = 30
+const ITEM_COUNT_PER_PAGE = 15
 
 const Games: FC = () => {
   const [page, setPage] = useState(1)
@@ -236,7 +236,7 @@ const Games: FC = () => {
       }
     >
       <Paper shadow="md" p="md" w="100%">
-        <Box visibleFrom="sm">
+        <Box visibleFrom="lg">
           <ScrollArea offsetScrollbars h="calc(100vh - 190px)">
             <Table className={tableClasses.table}>
               <Table.Caption className="app-sr-only">{t('admin.content.games.table_caption', 'Games')}</Table.Caption>
@@ -278,7 +278,7 @@ const Games: FC = () => {
                                 <Avatar imageProps={{ loading: 'lazy' }} alt="avatar" src={game.poster} radius={0}>
                                   {game.title?.slice(0, 1)}
                                 </Avatar>
-                                <Text fw="bold" lineClamp={1} maw="calc(20vw)">
+                                <Text fw="bold" lineClamp={2} maw="18rem" title={game.title}>
                                   {game.title}
                                 </Text>
                               </Group>
@@ -287,18 +287,30 @@ const Games: FC = () => {
                           </Group>
                         </Table.Td>
                         <Table.Td>
-                          <Group wrap="nowrap" gap="xs">
-                            <Badge size="sm" color={color} variant="dot">
+                          <Stack gap={1} miw="10.5rem">
+                            <Text
+                              component="time"
+                              dateTime={startTime.toISOString()}
+                              size="xs"
+                              ff="monospace"
+                              title={startTime.format('YYYY-MM-DD HH:mm')}
+                            >
                               {dayjs(startTime).format('YYYY-MM-DD HH:mm')}
-                            </Badge>
-                            <Icon path={mdiChevronTripleRight} size={1} />
-                            <Badge size="sm" color={color} variant="dot">
-                              {dayjs(endTime).format('YYYY-MM-DD HH:mm')}
-                            </Badge>
-                          </Group>
+                            </Text>
+                            <Text
+                              component="time"
+                              dateTime={endTime.toISOString()}
+                              size="xs"
+                              ff="monospace"
+                              c="dimmed"
+                              title={endTime.format('YYYY-MM-DD HH:mm')}
+                            >
+                              → {dayjs(endTime).format('YYYY-MM-DD HH:mm')}
+                            </Text>
+                          </Stack>
                         </Table.Td>
                         <Table.Td>
-                          <Text size="sm" truncate maw="20rem">
+                          <Text size="sm" lineClamp={2} maw="20rem" title={game.summary}>
                             {game.summary}
                           </Text>
                         </Table.Td>
@@ -330,7 +342,7 @@ const Games: FC = () => {
             </Table>
           </ScrollArea>
         </Box>
-        <Stack hiddenFrom="sm" gap="sm" className={mobileClasses.mobileList}>
+        <SimpleGrid hiddenFrom="lg" cols={{ base: 1, sm: 2 }} spacing="sm" className={mobileClasses.mobileList}>
           {games?.map((game) => {
             const { startTime, endTime, status } = getGameStatus(game)
             const color = GameColorMap.get(status)
@@ -368,6 +380,7 @@ const Games: FC = () => {
                             size="sm"
                             fw={750}
                             className={mobileClasses.recordTitle}
+                            title={gameTitle}
                           >
                             {gameTitle}
                           </Text>
@@ -465,7 +478,7 @@ const Games: FC = () => {
               </Card>
             )
           })}
-        </Stack>
+        </SimpleGrid>
       </Paper>
       <GameCreateModal
         opened={createOpened}

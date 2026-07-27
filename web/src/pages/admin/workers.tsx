@@ -420,6 +420,7 @@ const Workers: FC = () => {
               {t('common.button.refresh', 'Refresh')}
             </Button>
             <Button
+              miw="8rem"
               leftSection={<Icon path={mdiPlus} size={0.8} aria-hidden="true" />}
               onClick={() => setCreateOpened(true)}
             >

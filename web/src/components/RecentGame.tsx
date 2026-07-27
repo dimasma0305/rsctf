@@ -57,7 +57,7 @@ export const RecentGame: FC<RecentGameProps> = ({ game, ...others }) => {
           </Group>
 
           <Tooltip label={title} withArrow disabled={!title}>
-            <Title order={3} size="md" lineClamp={1} className={classes.title}>
+            <Title order={3} size="md" lineClamp={1} className={classes.title} title={title ?? undefined}>
               {title ?? t('game.content.recent_games.untitled', 'Untitled game')}
             </Title>
           </Tooltip>

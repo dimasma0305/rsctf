@@ -11,6 +11,7 @@ import { GameProgress } from '@Components/GameProgress'
 import { IconTabs } from '@Components/IconTabs'
 import { RequireRole } from '@Components/WithRole'
 import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
+import { isReadOnlyGameArchive } from '@Utils/gameArchive'
 import { getGameStatus, useGame } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useTicker } from '@Hooks/useTicker'
@@ -68,7 +69,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
   const { game, status } = useGame(numId)
   const { t } = useTranslation()
 
-  const finished = dayjs() > dayjs(game?.end ?? new Date())
+  const archived = isReadOnlyGameArchive(game)
 
   const pages = [
     {
@@ -94,7 +95,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
       link: 'submit',
       requireJoin: false,
       requireRole: Role.User,
-      hidden: game?.allowUserSubmissions === false,
+      hidden: game?.allowUserSubmissions === false || archived,
     },
     {
       icon: mdiMonitorEye,
@@ -110,7 +111,6 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
     .filter((p) => !p.hidden)
     .filter((p) => RequireRole(p.requireRole, role))
     .filter((p) => !p.requireJoin || game?.status === ParticipationStatus.Accepted)
-    .filter((p) => !p.requireJoin || !finished || game?.practiceMode)
 
   const tabs = filteredPages.map((p) => ({
     tabKey: p.link,
@@ -142,6 +142,11 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
 
       if (location.pathname.includes('scoreboard')) {
         // allow access to scoreboard
+        return
+      }
+
+      if (location.pathname.includes('challenges') && status === ParticipationStatus.Accepted) {
+        // Accepted participants retain a read-only archive after closeout.
         return
       }
 
@@ -199,7 +204,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
         aside={
           game && (
             <>
-              <Title>{game?.title}</Title>
+              <Title title={game?.title}>{game?.title}</Title>
               <GameCountdown game={game} />
             </>
           )

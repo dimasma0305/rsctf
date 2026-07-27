@@ -83,11 +83,11 @@ export const RecentGameSlide: FC<RecentGameProps> = ({ game, ...others }) => {
                   time: endTime.locale(locale).format('MMM D · LT'),
                 })}
           </Text>
-          <Title order={3} className={classes.title}>
+          <Title order={3} className={classes.title} title={title ?? undefined}>
             {title}
           </Title>
           {summary && (
-            <Text size="sm" lineClamp={2} className={classes.summary}>
+            <Text size="sm" lineClamp={2} className={classes.summary} title={summary}>
               {summary}
             </Text>
           )}

@@ -473,7 +473,7 @@ const Builds: FC = () => {
                   </Center>
                 ) : (
                   <>
-                    <Box visibleFrom="md">
+                    <Box visibleFrom="lg">
                       <Paper p="xs" withBorder className={classes.tableFrame}>
                         <ScrollArea
                           type="auto"
@@ -572,6 +572,7 @@ const Builds: FC = () => {
                                         size="sm"
                                         fw="bold"
                                         truncate
+                                        title={b.challengeTitle || `#${b.challengeId}`}
                                         c="var(--app-text-primary)"
                                         className={classes.challengeLink}
                                       >
@@ -627,6 +628,7 @@ const Builds: FC = () => {
                                       <Group gap={4} wrap="nowrap" miw={0}>
                                         <Tooltip label={b.imageRef} multiline w={400}>
                                           <Code
+                                            title={b.imageRef}
                                             style={{
                                               display: 'block',
                                               flex: 1,
@@ -682,6 +684,7 @@ const Builds: FC = () => {
                                       <Tooltip label={b.errorMessage} multiline w={400}>
                                         <Code
                                           c="red"
+                                          title={b.errorMessage}
                                           style={{
                                             display: 'block',
                                             maxWidth: '100%',
@@ -747,7 +750,7 @@ const Builds: FC = () => {
                       </Paper>
                     </Box>
 
-                    <Stack hiddenFrom="md" gap="sm" aria-label={t('admin.content.builds.table_caption')}>
+                    <Stack hiddenFrom="lg" gap="sm" aria-label={t('admin.content.builds.table_caption')}>
                       {pagedHistory.map((build) => (
                         <BuildHistoryCard
                           key={build.id}

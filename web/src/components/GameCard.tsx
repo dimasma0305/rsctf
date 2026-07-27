@@ -90,10 +90,15 @@ export const GameCard: FC<GameCardProps> = ({ game, ...others }) => {
 
         <div className={classes.content}>
           <Stack gap={7} className={classes.copy}>
-            <Title order={4} size="h4" lineClamp={2} className={classes.title}>
+            <Title order={4} size="h4" lineClamp={2} className={classes.title} title={eventTitle}>
               {eventTitle}
             </Title>
-            <Text size="sm" lineClamp={2} className={classes.summary}>
+            <Text
+              size="sm"
+              lineClamp={2}
+              className={classes.summary}
+              title={summary || t('game.content.no_summary', 'Open the event to view competition details.')}
+            >
               {summary || t('game.content.no_summary', 'Open the event to view competition details.')}
             </Text>
           </Stack>
@@ -101,10 +106,22 @@ export const GameCard: FC<GameCardProps> = ({ game, ...others }) => {
           <div className={classes.schedule}>
             <Icon path={mdiCalendarBlankOutline} size={0.78} aria-hidden="true" />
             <div className={classes.scheduleDates}>
-              <Text component="time" dateTime={startTime.toISOString()} size="xs" fw={650}>
+              <Text
+                component="time"
+                dateTime={startTime.toISOString()}
+                size="xs"
+                fw={650}
+                title={startTime.locale(locale).format('L LTS')}
+              >
                 {startTime.locale(locale).format('L LTS')}
               </Text>
-              <Text component="time" dateTime={endTime.toISOString()} size="xs" c="dimmed">
+              <Text
+                component="time"
+                dateTime={endTime.toISOString()}
+                size="xs"
+                c="dimmed"
+                title={endTime.locale(locale).format('L LTS')}
+              >
                 {t('game.content.until', 'until {{time}}', { time: endTime.locale(locale).format('L LTS') })}
               </Text>
             </div>

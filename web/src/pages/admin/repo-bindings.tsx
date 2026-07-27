@@ -464,14 +464,14 @@ const RepoBindings: FC = () => {
                     {b.currentActivity && (
                       <Group gap="xs" wrap="nowrap">
                         <Loader size="xs" />
-                        <Text size="xs" c="blue" ff="monospace" lineClamp={1}>
+                        <Text size="xs" c="blue" ff="monospace" lineClamp={1} title={b.currentActivity}>
                           {b.currentActivity}
                         </Text>
                       </Group>
                     )}
 
                     {b.lastScanMessage && (
-                      <Text size="xs" c="dimmed" lineClamp={2} ff="monospace">
+                      <Text size="xs" c="dimmed" lineClamp={2} ff="monospace" title={b.lastScanMessage}>
                         {b.lastScanMessage}
                       </Text>
                     )}

@@ -10,6 +10,7 @@ import {
   Group,
   Paper,
   ScrollArea,
+  SimpleGrid,
   Stack,
   Switch,
   Table,
@@ -47,7 +48,7 @@ import api, { Role, UserInfoModel } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 import mobileClasses from './AdminMobileList.module.css'
 
-const ITEM_COUNT_PER_PAGE = 30
+const ITEM_COUNT_PER_PAGE = 20
 
 const Users: FC = () => {
   const [page, setPage] = useState(1)
@@ -306,7 +307,7 @@ const Users: FC = () => {
       }
     >
       <Paper shadow="md" p="xs" w="100%">
-        <Box visibleFrom="sm">
+        <Box visibleFrom="lg">
           <ScrollArea viewportRef={viewport} offsetScrollbars scrollbarSize={4} h="calc(100vh - 190px)">
             <Table className={tableClasses.table}>
               <Table.Caption className="app-sr-only">
@@ -425,7 +426,7 @@ const Users: FC = () => {
             </Table>
           </ScrollArea>
         </Box>
-        <Stack hiddenFrom="sm" gap="sm" className={mobileClasses.mobileList}>
+        <SimpleGrid hiddenFrom="lg" cols={{ base: 1, sm: 2 }} spacing="sm" className={mobileClasses.mobileList}>
           {users?.map((user) => {
             const userHeadingId = `mobile-user-${user.id}`
             const displayName = user.userName || t('common.label.user')
@@ -453,6 +454,7 @@ const Users: FC = () => {
                         size="sm"
                         fw={750}
                         className={mobileClasses.recordTitle}
+                        title={displayName}
                       >
                         {displayName}
                       </Text>
@@ -583,7 +585,7 @@ const Users: FC = () => {
               </Card>
             )
           })}
-        </Stack>
+        </SimpleGrid>
         <UserImportModal
           title=""
           opened={importModalOpened}

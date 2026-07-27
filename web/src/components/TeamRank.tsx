@@ -20,6 +20,7 @@ import { FC, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
 import { ErrorCodes } from '@Utils/Shared'
+import { isReadOnlyGameArchive } from '@Utils/gameArchive'
 import { useGameTeamInfo } from '@Hooks/useGame'
 import misc from '@Styles/Misc.module.css'
 
@@ -28,6 +29,7 @@ export const TeamRank: FC<CardProps> = (props) => {
   const numId = parseInt(id ?? '-1')
   const navigate = useNavigate()
   const { teamInfo, game, error } = useGameTeamInfo(numId)
+  const archived = isReadOnlyGameArchive(game)
 
   const clipboard = useClipboard()
   const { t } = useTranslation()
@@ -87,7 +89,7 @@ export const TeamRank: FC<CardProps> = (props) => {
           </Avatar>
           <Skeleton visible={!rank}>
             <Stack gap={2} align="flex-start">
-              <Title order={2} lineClamp={1}>
+              <Title order={2} lineClamp={1} title={rank?.name ?? 'Team'}>
                 {rank?.name ?? 'Team'}
               </Title>
               {division && (
@@ -105,18 +107,20 @@ export const TeamRank: FC<CardProps> = (props) => {
           {item(t('game.label.score_table.solved_count'), rank?.solvedCount)}
         </Group>
         <Progress value={solved * 100} aria-label={t('game.label.score_table.solved_progress', 'Challenges solved')} />
-        <PasswordInput
-          label={t('team.label.token', 'Team token')}
-          description={t('team.content.token_copy_hint', 'Select the field to copy the token')}
-          value={teamInfo?.teamToken ?? ''}
-          readOnly
-          leftSection={<Icon path={mdiKey} size={1} />}
-          onClick={copyTeamToken}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') copyTeamToken()
-          }}
-          classNames={{ innerInput: cx(misc.cCopy, misc.ffmono) }}
-        />
+        {!archived && (
+          <PasswordInput
+            label={t('team.label.token', 'Team token')}
+            description={t('team.content.token_copy_hint', 'Select the field to copy the token')}
+            value={teamInfo?.teamToken ?? ''}
+            readOnly
+            leftSection={<Icon path={mdiKey} size={1} />}
+            onClick={copyTeamToken}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') copyTeamToken()
+            }}
+            classNames={{ innerInput: cx(misc.cCopy, misc.ffmono) }}
+          />
+        )}
       </Stack>
     </Card>
   )

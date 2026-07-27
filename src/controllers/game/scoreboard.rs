@@ -385,7 +385,8 @@ pub async fn scoreboard(
 /// a projection of the (freeze-aware) scoreboard. For each team whose `solvedChallenges`
 /// holds `challengeId`, emit a `ChallengeSolverModel` (rank/team/avatar from the item,
 /// userName/type/time/score from the solved cell). `RequireUser` + Accepted-participant
-/// gate via `context_info` (`denyAfterEnded = true`, RSCTF's default); a non-monitor
+/// gate remains in force after closeout so the read-only challenge archive can show
+/// final solvers. A non-monitor
 /// inside `[FreezeTimeUtc, EndTimeUtc)` gets the FROZEN board, keeping post-freeze solves
 /// hidden. `count`/`skip` page the ordered list (count omitted or 0 ⇒ every solver).
 pub async fn challenge_solvers(
@@ -394,7 +395,7 @@ pub async fn challenge_solvers(
     Path((id, challenge_id)): Path<(i32, i32)>,
     Query(q): Query<SolversQuery>,
 ) -> AppResult<RequestResponse<Vec<ChallengeSolverModel>>> {
-    let ctx = context_info(&st, &user, id, true).await?;
+    let ctx = context_info(&st, &user, id, false).await?;
     let board = build_scoreboard_cached(&st, &ctx.game, user.is_monitor()).await?;
 
     let mut solvers: Vec<ChallengeSolverModel> = board

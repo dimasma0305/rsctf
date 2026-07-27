@@ -825,7 +825,7 @@ const SuspicionRow = React.memo<{
           multiline
           maw={280}
         >
-          <Text size="sm" fw={700} className={classes.truncate}>
+          <Text size="sm" fw={700} className={classes.truncate} title={teamName}>
             {item.teamName || t('common.label.unknown', 'Unknown')}
           </Text>
         </Tooltip>
@@ -936,7 +936,12 @@ const IpAnalysisRow = React.memo<{
           multiline
           maw={240}
         >
-          <Text size="sm" fw={700} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <Text
+            size="sm"
+            fw={700}
+            title={item.teamName || t('common.label.unknown', 'Unknown')}
+            style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
             {item.teamName || t('common.label.unknown', 'Unknown')}
           </Text>
         </Tooltip>
@@ -1018,7 +1023,12 @@ const AbnormalSolveRow = React.memo<{
           multiline
           maw={240}
         >
-          <Text size="sm" fw={700} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <Text
+            size="sm"
+            fw={700}
+            title={item.teamName || t('common.label.unknown', 'Unknown')}
+            style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
             {item.teamName || t('common.label.unknown', 'Unknown')}
           </Text>
         </Tooltip>
@@ -1076,7 +1086,12 @@ const CollusionGroupRow = React.memo<{
             <Group key={idx} gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
               <Badge size="xs" variant="dot" color={idx === 0 ? 'brand' : 'violet'} />
               <Tooltip label={team.name} withArrow disabled={(team.name || '').length <= 24} multiline maw={280}>
-                <Text size="sm" fw={600} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <Text
+                  size="sm"
+                  fw={600}
+                  title={team.name}
+                  style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
                   {team.name}
                 </Text>
               </Tooltip>

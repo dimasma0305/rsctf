@@ -199,11 +199,9 @@ pub async fn game_details_with_challenges(
     user: CurrentUser,
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<GameDetailModel>> {
-    // RSCTF `ChallengesWithTeamInfo` uses `denyAfterEnded = true`: an ended
-    // non-practice game is denied here (practice-mode games remain accessible —
-    // `context_info` handles that). The denial surfaces the coded GameEnded error
-    // the React `TeamRank` keys on to redirect.
-    let ctx = context_info(&st, &user, id, true).await?;
+    // Accepted participants keep a read-only challenge archive after closeout.
+    // Mutation endpoints still call `context_info(..., true)` and remain closed.
+    let ctx = context_info(&st, &user, id, false).await?;
 
     // RSCTF `ChallengesWithTeamInfo` sources the challenge columns from the
     // SCOREBOARD (decayed score, live solve counts, bloods) rather than the raw
@@ -569,7 +567,9 @@ pub async fn get_challenge(
     user: CurrentUser,
     Path((id, challenge_id)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<ChallengeDetailModel>> {
-    let ctx = context_info(&st, &user, id, true).await?;
+    // Challenge content, hints, static attachments, final score, and solvers
+    // remain readable after closeout. Operational context is stripped below.
+    let ctx = context_info(&st, &user, id, false).await?;
 
     let challenge = load_playable_challenge(&st, id, challenge_id).await?;
 
@@ -583,19 +583,21 @@ pub async fn get_challenge(
     let mut context = ClientFlagContext::default();
 
     // Per-team instance -> running container connection entry.
-    if let Some(instance) = game_instance::Entity::find()
-        .filter(game_instance::Column::ParticipationId.eq(ctx.participation.id))
-        .filter(game_instance::Column::ChallengeId.eq(challenge_id))
-        .one(&st.db)
-        .await?
-    {
-        if let Some(cont) = container::Entity::find()
-            .filter(container::Column::GameInstanceId.eq(instance.id))
+    if !ctx.archived {
+        if let Some(instance) = game_instance::Entity::find()
+            .filter(game_instance::Column::ParticipationId.eq(ctx.participation.id))
+            .filter(game_instance::Column::ChallengeId.eq(challenge_id))
             .one(&st.db)
             .await?
         {
-            context.instance_entry = Some(cont.entry());
-            context.close_time = Some(cont.expect_stop_at);
+            if let Some(cont) = container::Entity::find()
+                .filter(container::Column::GameInstanceId.eq(instance.id))
+                .one(&st.db)
+                .await?
+            {
+                context.instance_entry = Some(cont.entry());
+                context.close_time = Some(cont.expect_stop_at);
+            }
         }
     }
 
@@ -633,7 +635,7 @@ pub async fn get_challenge(
     // container's connection (read-only for players; only an admin can stop it).
     // Mirrors RSCTF `GameController.GetChallenge` (UsesSharedContainer branch): sets
     // IsSharedInstance and overrides Entry/CloseTime while leaving any attachment Url.
-    if uses_shared_container(&challenge) {
+    if !ctx.archived && uses_shared_container(&challenge) {
         context.is_shared_instance = true;
         if let Some(sid) = challenge.shared_container_id {
             if let Some(shared) = container::Entity::find_by_id(sid).one(&st.db).await? {
@@ -666,35 +668,37 @@ pub async fn get_challenge(
     // `EventType.ChallengeOpened` GameEvent once per team+challenge, deduped on the
     // event's `values[0]` — the challenge id string). Mirrors
     // `GameEventRepository.IsChallengeOpened(gameId, teamId, challengeId)`.
-    let cid_str = challenge_id.to_string();
-    // Has this team already opened this challenge? Push the challenge-id match into
-    // SQL as an EXISTS (served by ix_gameevents_game_team_type + the `values[0]`
-    // filter) instead of loading EVERY ChallengeOpened event for the team and
-    // scanning them in memory on every challenge view.
-    let already_opened: bool = sqlx::query_scalar(
-        r#"SELECT EXISTS(
-             SELECT 1 FROM "GameEvents"
-             WHERE game_id = $1 AND team_id = $2 AND "Type" = $3 AND "values"->>0 = $4
-           )"#,
-    )
-    .bind(id)
-    .bind(ctx.participation.team_id)
-    .bind(crate::utils::enums::EventType::ChallengeOpened as i16)
-    .bind(&cid_str)
-    .fetch_one(st.pg())
-    .await
-    .map_err(|e| AppError::internal(e.to_string()))?;
-    if !already_opened {
-        let ev = game_event::ActiveModel {
-            game_id: Set(id),
-            event_type: Set(crate::utils::enums::EventType::ChallengeOpened),
-            values: Set(serde_json::json!([cid_str, challenge.title.clone()])),
-            publish_time_utc: Set(Utc::now()),
-            user_id: Set(Some(user.id)),
-            team_id: Set(ctx.participation.team_id),
-            ..Default::default()
-        };
-        ev.insert(&st.db).await?;
+    if !ctx.archived {
+        let cid_str = challenge_id.to_string();
+        // Has this team already opened this challenge? Push the challenge-id match into
+        // SQL as an EXISTS (served by ix_gameevents_game_team_type + the `values[0]`
+        // filter) instead of loading EVERY ChallengeOpened event for the team and
+        // scanning them in memory on every challenge view.
+        let already_opened: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM "GameEvents"
+                 WHERE game_id = $1 AND team_id = $2 AND "Type" = $3 AND "values"->>0 = $4
+               )"#,
+        )
+        .bind(id)
+        .bind(ctx.participation.team_id)
+        .bind(crate::utils::enums::EventType::ChallengeOpened as i16)
+        .bind(&cid_str)
+        .fetch_one(st.pg())
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+        if !already_opened {
+            let ev = game_event::ActiveModel {
+                game_id: Set(id),
+                event_type: Set(crate::utils::enums::EventType::ChallengeOpened),
+                values: Set(serde_json::json!([cid_str, challenge.title.clone()])),
+                publish_time_utc: Set(Utc::now()),
+                user_id: Set(Some(user.id)),
+                team_id: Set(ctx.participation.team_id),
+                ..Default::default()
+            };
+            ev.insert(&st.db).await?;
+        }
     }
 
     // Project the score from the same board snapshot used by `/details` and the

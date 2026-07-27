@@ -26,12 +26,14 @@
 }
 
 .recordTitle {
+  display: -webkit-box;
   min-width: 0;
   margin: 0;
   overflow: hidden;
   color: var(--app-text-primary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .publicLink .recordTitle {
@@ -121,13 +123,11 @@
 
 .actionLabel {
   max-width: 100%;
-  overflow: hidden;
   color: var(--app-text-muted);
   font-size: 0.68rem;
   font-weight: 650;
   line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .gameActions {
@@ -150,6 +150,11 @@
   }
 
   .actionLabel {
-    font-size: 0.64rem;
+    font-size: 0.68rem;
+  }
+
+  .actionGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: var(--mantine-spacing-md);
   }
 }

@@ -170,6 +170,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   // of the live defending-service / hill panel — the backend gates this the same
   // way (GameChallenge.AllowsPracticeContainer) and serves the container context.
   const isPracticeContainer = isAd && !!gameEnded && !!practiceMode
+  const readOnlyArchive = !!gameEnded && !practiceMode
   const { t } = useTranslation()
   const theme = useMantineTheme()
   const { locale } = useLanguage()
@@ -262,11 +263,15 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       <Group wrap="nowrap" w="100%" justify="space-between" gap="sm">
         <Group wrap="nowrap" gap="sm" w="calc(100% - 6.75rem)">
           {cateData && <Icon path={cateData.icon} size={1.2} color={theme.colors[cateData.color][5]} />}
-          <Title order={4} lineClamp={1}>
+          <Title order={4} lineClamp={1} title={challenge?.title ?? ''}>
             {challenge?.title ?? ''}
           </Title>
         </Group>
-        {isAd ? (
+        {readOnlyArchive ? (
+          <Text miw="6rem" fw="bold" c="dimmed" ff="monospace" ta="right">
+            {t('challenge.content.archived', 'ARCHIVED')}
+          </Text>
+        ) : isAd ? (
           <Text miw="6rem" fw="bold" c={isKoth ? 'violet' : 'red'} ff="monospace" ta="right">
             {t('challenge.content.ad_live', 'LIVE')}
           </Text>
@@ -293,6 +298,14 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         <ContentPlaceholder />
       ) : (
         <>
+          {readOnlyArchive && (
+            <Alert mb="md" color="blue" variant="light" icon={<Icon path={mdiAlertCircleOutline} size={0.9} />}>
+              {t(
+                'challenge.content.read_only_archive',
+                'This event has ended. Challenge material is read-only; submissions and workloads are closed.'
+              )}
+            </Alert>
+          )}
           <Markdown source={challenge.content ?? ''} />
           {challenge.hints && challenge.hints.length > 0 && (
             <Stack gap={2} pt="sm">
@@ -400,7 +413,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     </Group>
   )
 
-  const withInstance = isContainer && challenge?.context
+  const withInstance = !readOnlyArchive && isContainer && challenge?.context
 
   const instance = withInstance && (
     <InstanceEntry
@@ -551,7 +564,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   )
 
   const footer =
-    isAd && gameId && !isPracticeContainer ? (
+    isAd && gameId && !isPracticeContainer && !readOnlyArchive ? (
       <Stack gap="xs" className={classes.footer}>
         <Divider />
         {/* A&D/KotH challenges can ship a downloadable attachment (e.g. the
@@ -582,30 +595,34 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         {isPracticeContainer && gameId && (
           <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} snapshotOnly />
         )}
-        <Divider label={attemptsInfo} my={attemptsInfo ? '-0.4rem' : undefined} />
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (!solved && canSubmitDespiteDeadline) {
-              onSubmitFlag()
-            }
-          }}
-        >
-          <Group justify="space-between" gap="sm" align="flex-end">
-            <TextInput
-              ref={flagInputRef}
-              label={t('challenge.label.flag', 'Flag')}
-              placeholder={placeholder}
-              value={inputValue}
-              disabled={inputDisabled}
-              onChange={setFlag}
-              classNames={{ root: misc.flexGrow, input: misc.ffmono }}
-            />
-            <Button miw="6rem" type="submit" disabled={inputDisabled} loading={submitting}>
-              {t('challenge.button.submit_flag')}
-            </Button>
-          </Group>
-        </form>
+        {!readOnlyArchive && (
+          <>
+            <Divider label={attemptsInfo} my={attemptsInfo ? '-0.4rem' : undefined} />
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (!solved && canSubmitDespiteDeadline) {
+                  onSubmitFlag()
+                }
+              }}
+            >
+              <Group justify="space-between" gap="sm" align="flex-end">
+                <TextInput
+                  ref={flagInputRef}
+                  label={t('challenge.label.flag', 'Flag')}
+                  placeholder={placeholder}
+                  value={inputValue}
+                  disabled={inputDisabled}
+                  onChange={setFlag}
+                  classNames={{ root: misc.flexGrow, input: misc.ffmono }}
+                />
+                <Button miw="6rem" type="submit" disabled={inputDisabled} loading={submitting}>
+                  {t('challenge.button.submit_flag')}
+                </Button>
+              </Group>
+            </form>
+          </>
+        )}
         {reviewSection}
       </Stack>
     )

@@ -73,6 +73,7 @@ export const BuildHistoryCard: FC<BuildHistoryCardProps> = ({
                   to={`/admin/games/${build.gameId}/challenges`}
                   c="var(--app-text-primary)"
                   className={classes.challengeLink}
+                  title={challengeName}
                 >
                   {challengeName}
                 </Anchor>
@@ -138,7 +139,9 @@ export const BuildHistoryCard: FC<BuildHistoryCardProps> = ({
           <Stack gap={5}>
             <Text className={classes.detailLabel}>{t('admin.content.builds.column.image', 'Image')}</Text>
             <Group gap="xs" wrap="nowrap">
-              <Code className={classes.cardReference}>{build.imageRef}</Code>
+              <Code className={classes.cardReference} title={build.imageRef}>
+                {build.imageRef}
+              </Code>
               <CopyButton value={build.imageRef} timeout={1500}>
                 {({ copied, copy }) => (
                   <Tooltip label={copied ? copiedLabel : copyLabel}>
@@ -165,7 +168,9 @@ export const BuildHistoryCard: FC<BuildHistoryCardProps> = ({
                 {build.errorMessage}
               </Text>
             ) : (
-              <Code className={classes.cardReference}>{build.digest}</Code>
+              <Code className={classes.cardReference} title={build.digest ?? undefined}>
+                {build.digest}
+              </Code>
             )}
           </Stack>
         )}
@@ -177,8 +182,9 @@ export const BuildHistoryCard: FC<BuildHistoryCardProps> = ({
             leftSection={<Icon path={mdiTextBoxOutline} size={0.8} />}
             disabled={!build.logTail}
             onClick={onViewLog}
+            aria-label={t('admin.button.builds.view_log')}
           >
-            {t('admin.button.builds.view_log')}
+            {t('admin.button.builds.view_log_short', 'View log')}
           </Button>
           {(build.status === 'Failed' || build.status === 'MissingDockerfile') && (
             <Button
@@ -188,8 +194,9 @@ export const BuildHistoryCard: FC<BuildHistoryCardProps> = ({
               leftSection={<Icon path={mdiRefresh} size={0.8} />}
               disabled={busy}
               onClick={onReenqueue}
+              aria-label={t('admin.button.builds.reenqueue')}
             >
-              {t('admin.button.builds.reenqueue')}
+              {t('admin.button.builds.reenqueue_short', 'Re-run')}
             </Button>
           )}
           <Button
@@ -199,8 +206,9 @@ export const BuildHistoryCard: FC<BuildHistoryCardProps> = ({
             leftSection={<Icon path={mdiDeleteOutline} size={0.8} />}
             disabled={busy}
             onClick={onDelete}
+            aria-label={t('admin.button.builds.delete')}
           >
-            {t('admin.button.builds.delete')}
+            {t('admin.button.builds.delete_short', 'Delete')}
           </Button>
         </Group>
       </Stack>

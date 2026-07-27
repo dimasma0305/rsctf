@@ -1,6 +1,14 @@
 import { Alert, Badge, Button, Flex, Group, Paper, Stack, Text } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
-import { mdiCrown, mdiOpenInNew, mdiPauseCircleOutline, mdiSword, mdiSwordCross, mdiToolboxOutline } from '@mdi/js'
+import {
+  mdiArchiveOutline,
+  mdiCrown,
+  mdiOpenInNew,
+  mdiPauseCircleOutline,
+  mdiSword,
+  mdiSwordCross,
+  mdiToolboxOutline,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -16,6 +24,7 @@ import { WithRole } from '@Components/WithRole'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { adRoundSecondsRemaining } from '@Utils/adState'
 import { epochProgress } from '@Utils/epochProgress'
+import { isReadOnlyGameArchive } from '@Utils/gameArchive'
 import { useAdState, useGameTeamInfo } from '@Hooks/useGame'
 import { useTicker } from '@Hooks/useTicker'
 import { ChallengeType, Role } from '@Api'
@@ -26,7 +35,8 @@ const Challenges: FC = () => {
   const { t } = useTranslation()
   const isCompact = useIsMobile(1200)
 
-  const { teamInfo } = useGameTeamInfo(numId)
+  const { teamInfo, game } = useGameTeamInfo(numId)
+  const archived = isReadOnlyGameArchive(game)
   // Three separate flags so the toolkit buttons can be shown / hidden
   // independently — a pure-AD game has no KotH button to confuse anyone,
   // and vice versa. hasAdEngine still gates the shared engine plumbing
@@ -47,7 +57,7 @@ const Challenges: FC = () => {
     return { hasAdChallenges: a, hasKothChallenges: k, hasAdEngine: a || k }
   }, [teamInfo])
 
-  const { adState } = useAdState(numId, hasAdEngine)
+  const { adState } = useAdState(numId, hasAdEngine && !archived)
   const [adGuideOpened, adGuideHandlers] = useDisclosure(false)
   const [kothGuideOpened, kothGuideHandlers] = useDisclosure(false)
 
@@ -68,10 +78,24 @@ const Challenges: FC = () => {
     <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
       <WithRole requiredRole={Role.User}>
         <WithGameTab>
+          {archived && (
+            <Alert
+              mb="md"
+              color="blue"
+              variant="light"
+              icon={<Icon path={mdiArchiveOutline} size={1} />}
+              title={t('game.content.archive.title', 'Event archive')}
+            >
+              {t(
+                'game.content.archive.description',
+                'Challenges and final results remain available for review. Submissions and challenge workloads are closed.'
+              )}
+            </Alert>
+          )}
           <Flex direction={isCompact ? 'column' : 'row'} gap="sm" justify="space-between" align="flex-start" w="100%">
             <ChallengePanel />
             <Stack gap="sm" w={isCompact ? '100%' : '22rem'} miw={isCompact ? 0 : '22rem'}>
-              {adState?.scoringPaused && (
+              {!archived && adState?.scoringPaused && (
                 <Alert
                   color="orange"
                   variant="light"
@@ -96,7 +120,7 @@ const Challenges: FC = () => {
               >
                 {t('game.button.attack')}
               </Button>
-              {hasAdEngine && (
+              {!archived && hasAdEngine && (
                 <Paper p="sm" withBorder>
                   <Group justify="space-between" wrap="nowrap" align="center">
                     <Stack gap={0}>
@@ -155,7 +179,7 @@ const Challenges: FC = () => {
                   )}
                 </Paper>
               )}
-              {hasAdChallenges && (
+              {!archived && hasAdChallenges && (
                 <Button
                   variant="default"
                   fullWidth
@@ -166,7 +190,7 @@ const Challenges: FC = () => {
                   {t('game.button.ad.open_toolkit', 'A&D Toolkit')}
                 </Button>
               )}
-              {hasKothChallenges && (
+              {!archived && hasKothChallenges && (
                 <Button
                   variant="default"
                   fullWidth

@@ -23,6 +23,10 @@ export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned }) => {
   const [disabled, setDisabled] = useState(false)
 
   const { locale } = useLanguage()
+  const metadata = t('post.content.metadata', {
+    author: post.authorName ?? t('common.content.anonymous', 'Anonymous'),
+    date: dayjs(post.time).locale(locale).format('LLL'),
+  })
 
   return (
     <Card component="article" p={0} className={classes.card}>
@@ -91,11 +95,8 @@ export const PostCard: FC<PostCardProps> = ({ post, onTogglePinned }) => {
               {post.authorName?.slice(0, 1) ?? 'A'}
             </Avatar>
             <Tooltip label={post.authorName} disabled={!post.authorName}>
-              <Text size="sm" fw={650} c="dimmed" truncate>
-                {t('post.content.metadata', {
-                  author: post.authorName ?? t('common.content.anonymous', 'Anonymous'),
-                  date: dayjs(post.time).locale(locale).format('LLL'),
-                })}
+              <Text size="sm" fw={650} c="dimmed" truncate title={metadata}>
+                {metadata}
               </Text>
             </Tooltip>
           </Group>
