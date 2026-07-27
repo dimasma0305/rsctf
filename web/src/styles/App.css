@@ -252,11 +252,11 @@ body {
   border-color: var(--app-border);
 }
 
-.mantine-Tabs-tab {
+.mantine-Tabs-tab:not([data-variant='pills']) {
   color: var(--app-text-secondary);
 }
 
-.mantine-Tabs-tab[data-active] {
+.mantine-Tabs-tab[data-active]:not([data-variant='pills']) {
   color: var(--app-text-primary);
 }
 

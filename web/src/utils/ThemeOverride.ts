@@ -9,6 +9,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Chip,
   Code,
   Drawer,
   Loader,
@@ -209,6 +210,15 @@ const CustomTheme: MantineThemeOverride = {
       defaultProps: {
         variant: 'light',
         radius: 'sm',
+        autoContrast: true,
+      },
+    }),
+    Chip: Chip.extend({
+      defaultProps: {
+        // Chip's implicit filled fallback does not emit its contrast variables.
+        // Making the same variant explicit lets managed accent colors select
+        // black or white text through autoContrast.
+        variant: 'filled',
         autoContrast: true,
       },
     }),

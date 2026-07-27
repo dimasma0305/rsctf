@@ -81,19 +81,23 @@ test('active admin navigation consumes the contrast-safe surface text token', ()
   assert.doesNotMatch(activeRule, /color:\s*var\(--app-accent-text\);/)
 })
 
-test('filled buttons and badges automatically choose contrast-safe text', () => {
+test('filled buttons, badges, and chips automatically choose contrast-safe text', () => {
   const source = readFileSync('src/utils/ThemeOverride.ts', 'utf8')
   const badgeDefaults = source.match(/Badge\.extend\(\{\s*defaultProps:\s*\{([\s\S]*?)\n\s*\},\s*\}\)/)?.[1]
   const buttonDefaults = source.match(/Button\.extend\(\{\s*defaultProps:\s*\{([\s\S]*?)\n\s*\},/)?.[1]
+  const chipDefaults = source.match(/Chip\.extend\(\{\s*defaultProps:\s*\{([\s\S]*?)\n\s*\},\s*\}\)/)?.[1]
   const threshold = Number(source.match(/luminanceThreshold:\s*([0-9.]+),/)?.[1])
 
   assert.ok(badgeDefaults, 'global badge defaults exist')
   assert.match(badgeDefaults, /autoContrast:\s*true,/)
   assert.ok(buttonDefaults, 'global button defaults exist')
   assert.match(buttonDefaults, /autoContrast:\s*true,/)
+  assert.ok(chipDefaults, 'global chip defaults exist')
+  assert.match(chipDefaults, /variant:\s*'filled',/)
+  assert.match(chipDefaults, /autoContrast:\s*true,/)
   assert.equal(threshold, 0.179)
 
-  for (const color of ['#0d9488', '#ffff00', '#00ff00', '#ff00ff', '#ffffff', '#000000', '#777777']) {
+  for (const color of ['#0d9488', '#3c94be', '#ffff00', '#00ff00', '#ff00ff', '#ffffff', '#000000', '#777777']) {
     for (const background of generateColors(color)) {
       const blackContrast = contrastRatio(background, '#000000')
       const luminance = blackContrast * 0.05 - 0.05
@@ -106,17 +110,27 @@ test('filled buttons and badges automatically choose contrast-safe text', () => 
 test('active tabs and notification controls retain accessible defaults', () => {
   const source = readFileSync('src/utils/ThemeOverride.ts', 'utf8')
   const css = readFileSync('src/styles/App.css', 'utf8')
+  const timelineCss = readFileSync('src/styles/components/GanttTimeline.module.css', 'utf8')
   const tabDefaults = source.match(/Tabs\.extend\(\{\s*defaultProps:\s*\{([\s\S]*?)\n\s*\},/)?.[1]
   const notificationDefaults = source.match(
     /Notification\.extend\(\{\s*defaultProps:\s*\{([\s\S]*?)\n\s*\},\s*\}\)/
   )?.[1]
-  const activeTabRule = css.match(/\.mantine-Tabs-tab\[data-active\]\s*\{([\s\S]*?)\n\}/)?.[1]
+  const activeTabRule = css.match(
+    /\.mantine-Tabs-tab\[data-active\]:not\(\[data-variant='pills'\]\)\s*\{([\s\S]*?)\n\}/
+  )?.[1]
+  const inactiveTabRule = css.match(/\.mantine-Tabs-tab:not\(\[data-variant='pills'\]\)\s*\{([\s\S]*?)\n\}/)?.[1]
+  const todayRule = timelineCss.match(/\.dayCell\[data-today\]\s*\{([\s\S]*?)\n\}/)?.[1]
 
   assert.ok(tabDefaults, 'global tab defaults exist')
   assert.match(tabDefaults, /autoContrast:\s*true,/)
+  assert.ok(inactiveTabRule, 'surface tab rule exists')
+  assert.match(inactiveTabRule, /color:\s*var\(--app-text-secondary\);/)
   assert.ok(activeTabRule, 'active tab rule exists')
   assert.match(activeTabRule, /color:\s*var\(--app-text-primary\);/)
   assert.doesNotMatch(activeTabRule, /--app-accent-text/)
+  assert.ok(todayRule, 'timeline today rule exists')
+  assert.match(todayRule, /color:\s*var\(--mantine-primary-color-contrast\);/)
+  assert.doesNotMatch(todayRule, /--mantine-color-white/)
 
   assert.ok(notificationDefaults, 'global notification defaults exist')
   assert.match(notificationDefaults, /closeButtonProps:/)
