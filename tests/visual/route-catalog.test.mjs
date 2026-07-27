@@ -124,6 +124,13 @@ test('visual audit waits for loaded page content before taking screenshots', () 
   assert.match(auditSource, /shadowRoot\?\.querySelectorAll\('h1'\)/)
 })
 
+test('profile identity header shrinks without escaping compact viewports', () => {
+  const profile = readFileSync(join(repositoryRoot, 'web/src/pages/account/Profile.tsx'), 'utf8')
+  assert.match(profile, /<Group wrap="nowrap" w="100%">/)
+  assert.match(profile, /<Box miw=\{0\} style=\{\{ flex: 1 \}\}>/)
+  assert.match(profile, /<Text size="sm" c="dimmed" truncate title=\{user\?\.email \?\? undefined\}>/)
+})
+
 test('visual audit artifacts are excluded from source control and Docker contexts', () => {
   const gitIgnore = readFileSync(join(repositoryRoot, '.gitignore'), 'utf8')
   const dockerIgnore = readFileSync(join(repositoryRoot, '.dockerignore'), 'utf8')

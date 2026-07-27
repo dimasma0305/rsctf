@@ -263,7 +263,7 @@ const Profile: FC = () => {
     <WithNavBar>
       <Stack p="md" maw={880} mx="auto" gap="lg" w="100%">
         {/* Shared header */}
-        <Group wrap="nowrap">
+        <Group wrap="nowrap" w="100%">
           <Tooltip label={avatarModalTitle} withArrow>
             <Avatar
               src={user?.avatar}
@@ -284,14 +284,14 @@ const Profile: FC = () => {
               {user?.userName?.[0]?.toUpperCase()}
             </Avatar>
           </Tooltip>
-          <div>
-            <Title order={1} size="h3" lineClamp={1}>
+          <Box miw={0} style={{ flex: 1 }}>
+            <Title order={1} size="h3" lineClamp={1} title={user?.userName ?? undefined}>
               {user?.userName ?? t('account.title.profile')}
             </Title>
-            <Text size="sm" c="dimmed">
+            <Text size="sm" c="dimmed" truncate title={user?.email ?? undefined}>
               {user?.email}
             </Text>
-          </div>
+          </Box>
         </Group>
 
         <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
