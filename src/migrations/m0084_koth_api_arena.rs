@@ -281,6 +281,11 @@ impl MigrationTrait for Migration {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use sea_orm_migration::sea_orm::SqlxPostgresConnector;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
     use super::UP_SQL;
     use crate::migrations::{Migrator, MigratorTrait};
 
@@ -306,19 +311,35 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires an empty PostgreSQL database via RSCTF_TEST_DATABASE_URL"]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
     async fn upgrades_the_real_m0083_schema_without_retaining_holder_observations() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to an empty disposable database");
-        let db = sea_orm_migration::sea_orm::Database::connect(database_url)
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
             .unwrap();
+        let schema = format!("rsctf_m0084_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let db = SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
         let user_tables: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*) FROM information_schema.tables
-                WHERE table_schema = 'public'
+                WHERE table_schema = current_schema()
                   AND table_name <> 'seaql_migrations'"#,
         )
-        .fetch_one(db.get_postgres_connection_pool())
+        .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(user_tables, 0, "migration regression database is not empty");
@@ -326,7 +347,7 @@ mod tests {
         Migrator::up(&db, Some(83)).await.unwrap();
         let old_table: bool =
             sqlx::query_scalar(r#"SELECT to_regclass('"KothApiObservations"') IS NOT NULL"#)
-                .fetch_one(db.get_postgres_connection_pool())
+                .fetch_one(&pool)
                 .await
                 .unwrap();
         assert!(old_table);
@@ -340,9 +361,15 @@ mod tests {
                  to_regclass('"KothApiSnapshotScores"') IS NOT NULL,
                  to_regclass('"KothApiScoreResults"') IS NOT NULL"#,
         )
-        .fetch_one(db.get_postgres_connection_pool())
+        .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(relations, (true, true, true, true, true));
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }
