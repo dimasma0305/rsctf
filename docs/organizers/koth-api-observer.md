@@ -124,6 +124,9 @@ checker before the observation can affect crown state.
 This standard-library example sends one observation. A real observer should
 derive `token` from its independent challenge logic, submit on every control
 change, retry transient failures with backoff, and refetch context after `409`.
+For a complete importable hill, functional checker, long-running observer, and
+regression test, see
+[`examples/challenge-repository/Koth/Web/api-observed-hill`](../../examples/challenge-repository/Koth/Web/api-observed-hill/).
 
 ```python
 import hashlib
