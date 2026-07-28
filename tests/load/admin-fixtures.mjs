@@ -582,6 +582,17 @@ export function disposableAdminGameRuntimeIds(gameId, tag) {
   return disposableGameRuntimeIds(id);
 }
 
+export function disposableLoadGameRuntimeIds(gameId, expectedTitle) {
+  const id = positiveId(gameId, 'disposable load game');
+  const title = String(expectedTitle);
+  if (!/^(?:LOADTEST-[A-Za-z0-9-]+|MULTI-DOMAIN-[a-z0-9][a-z0-9-]{0,31})$/.test(title)) {
+    throw new Error(`invalid disposable load title ${title}`);
+  }
+  const identity = requireExactDisposableGame({ id, title }, 'disposable load fixture');
+  if (!identity.exists) return [];
+  return disposableGameRuntimeIds(id);
+}
+
 function assertDockerRuntimeAbsent(containerId) {
   const inspected = docker(['container', 'inspect', containerId]);
   if (inspected.status === 0) {

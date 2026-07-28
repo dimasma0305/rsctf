@@ -10,8 +10,8 @@ use rollup::load_rollup_snapshot;
 pub(crate) use rollup::{invalidate_rollups_for_end_change, lock_epoch_rollups};
 
 use super::scoring_formula::{
-    aggregate_epoch_hills, average_weighted_epochs, evidence_fraction, score_epoch_hill,
-    KothEpochHillEvidence, WeightedHillScore,
+    aggregate_epoch_hills, average_weighted_epochs, evidence_fraction, score_api_epoch_hill,
+    score_epoch_hill, KothApiEpochHillEvidence, KothEpochHillEvidence, WeightedHillScore,
 };
 use crate::utils::database::begin_read_only_repeatable_read;
 use crate::utils::error::{AppError, AppResult};
@@ -19,6 +19,7 @@ use crate::utils::error::{AppError, AppResult};
 #[derive(Clone, Debug, FromRow)]
 struct HillEpochMetaRow {
     challenge_id: i32,
+    claim_source: String,
     epoch: i32,
     start_round: i32,
     end_round: i32,
@@ -42,6 +43,11 @@ struct TeamEvidenceRow {
     healthy_responsible_ticks: i64,
     personal_scorable_ticks: i64,
     personal_eligible_windows: i64,
+    api_activity_rate: Option<f64>,
+    api_objective_rate: Option<f64>,
+    api_integrity_rate: Option<f64>,
+    api_core_rate: Option<f64>,
+    api_score_rate: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -203,17 +209,33 @@ fn score_evidence_rows(
             let healthy_responsible_ticks = team.map_or(0, |team| team.healthy_responsible_ticks);
             let personal_scorable_ticks = team.map_or(0, |team| team.personal_scorable_ticks);
             let personal_eligible_windows = team.map_or(0, |team| team.personal_eligible_windows);
-            let evidence = KothEpochHillEvidence {
-                scorable_ticks: personal_scorable_ticks,
-                acquisition_windows,
-                eligible_windows: personal_eligible_windows,
-                controlled_ticks,
-                responsible_ticks,
-                healthy_responsible_ticks,
-                service_weight: row.service_weight,
-            };
-            let score = score_epoch_hill(&evidence)
-                .map_err(|error| AppError::internal(error.to_string()))?;
+            let score = if row.claim_source == "Api" {
+                score_api_epoch_hill(&KothApiEpochHillEvidence {
+                    activity_rate: team
+                        .and_then(|value| value.api_activity_rate)
+                        .unwrap_or(0.0),
+                    objective_rate: team
+                        .and_then(|value| value.api_objective_rate)
+                        .unwrap_or(0.0),
+                    integrity_rate: team
+                        .and_then(|value| value.api_integrity_rate)
+                        .unwrap_or(0.0),
+                    core_rate: team.and_then(|value| value.api_core_rate).unwrap_or(0.0),
+                    score_rate: team.and_then(|value| value.api_score_rate).unwrap_or(0.0),
+                    service_weight: row.service_weight,
+                })
+            } else {
+                score_epoch_hill(&KothEpochHillEvidence {
+                    scorable_ticks: personal_scorable_ticks,
+                    acquisition_windows,
+                    eligible_windows: personal_eligible_windows,
+                    controlled_ticks,
+                    responsible_ticks,
+                    healthy_responsible_ticks,
+                    service_weight: row.service_weight,
+                })
+            }
+            .map_err(|error| AppError::internal(error.to_string()))?;
             scored_by_team_epoch
                 .entry((participation_id, row.epoch))
                 .or_default()

@@ -175,6 +175,7 @@ pub struct TeamService {
 
 mod checker;
 mod flag_delivery;
+pub(crate) mod koth_api;
 mod koth_auth;
 pub(crate) mod koth_cycle;
 mod koth_marker;

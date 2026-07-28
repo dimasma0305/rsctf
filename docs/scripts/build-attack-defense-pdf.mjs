@@ -38,14 +38,14 @@ const PDF_PROFILES = {
     outputName: 'king-of-the-hill-scoring-handbook.pdf',
     pagePath: '/players/koth-scoring-handbook',
     expectedHeading: 'King of the Hill',
-    headerLabel: 'Crown-Cycle KotH Scoring · Fixed Formula',
+    headerLabel: 'RSCTF KotH · Marker + Normalized API Arena',
     generateDocumentOutline: false,
     metadata: {
-      title: 'How RSCTF Scores King of the Hill: The Crown-Cycle Model',
+      title: 'How RSCTF Scores King of the Hill: Crown Cycles and Normalized API Arenas',
       author: 'Dimas Maulana',
-      subject: 'Technical practice paper for the fixed RSCTF crown-cycle King of the Hill scoring formula',
+      subject: 'Technical practice paper for fixed RSCTF marker and API-arena King of the Hill scoring',
       keywords:
-        'King of the Hill CTF; KotH; crown cycle; qualified capture; acquisition; control; reliability; RSCTF',
+        'King of the Hill CTF; KotH; crown cycle; API arena; normalization; harmonic mean; integrity; RSCTF',
     },
   },
 }

@@ -82,23 +82,26 @@ Pair it with clear event rules, network design, monitoring, and player-visible
 functional checks. The legacy `@ad_checker` / `@koth_checker` single-function
 API remains valid when variation is unnecessary.
 
-## KotH claim input
+## KotH format
 
-Every KotH hill uses one claim transport, frozen when official scoring starts:
+Choose one format before official scoring; RSCTF freezes it with the hill:
 
-- **Container marker** reads `/koth/king` from the exact managed container.
-- **Signed API observer** receives the current capability from an independent
-  trusted controller. This removes the backend-exec requirement and works
-  across Docker, Kubernetes, and private workers.
+- **Container marker** is exclusive boot2root KotH. RSCTF reads
+  `/koth/king`, qualifies one holder, and scores acquisition, control, and
+  reliability.
+- **Signed API arena** is multi-team application KotH. Every team can score in
+  the same tick. A trusted referee reports bounded activity, objective, and
+  integrity evidence; RSCTF normalizes it and applies the fixed arena formula.
 
-The API observer never submits points. RSCTF still brackets the observation
-around the functional checker, confirms consecutive healthy control, runs
-pristine crown-cycle resets, and calculates the fixed score.
+API mode is not merely another marker transport. It has no single holder,
+provisional crown, or champion-cooldown score. It still uses pristine lifecycle
+resets, exact capability generations, an independent functional checker, and
+field-wide voids for platform failures.
 
-Configure the observer from the KotH operations table before official scoring.
-Keep its HMAC secret outside the attacker-controlled hill. See
-[Signed KotH API observer](./koth-api-observer) for the security boundary,
-wire contract, response behavior, and reference client.
+Configure the referee from the KotH operations table before official scoring.
+Keep its HMAC secret outside the player-facing application. See
+[Signed KotH API arena referee](./koth-api-observer) for evidence design,
+normalization, anti-cheat rules, the wire contract, and the runnable example.
 
 ## Review and enable
 

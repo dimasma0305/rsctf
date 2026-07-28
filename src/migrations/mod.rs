@@ -90,6 +90,7 @@ mod m0080_challenge_review_uniqueness;
 mod m0081_build_record_lifecycle;
 mod m0082_ad_service_snapshots;
 mod m0083_koth_api_observers;
+mod m0084_koth_api_arena;
 
 pub struct Migrator;
 
@@ -180,6 +181,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0081_build_record_lifecycle::Migration),
             Box::new(m0082_ad_service_snapshots::Migration),
             Box::new(m0083_koth_api_observers::Migration),
+            Box::new(m0084_koth_api_arena::Migration),
         ]
     }
 }

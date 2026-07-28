@@ -7,7 +7,11 @@ import { lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as A from "./applib.mjs";
 import { lifecycleStateBasenameFromPath } from "./lifecycle-state-file.js";
-import { selectKothCapacityClaimant } from "./lifecycle-load-model.js";
+import {
+  assertTrustedForwardedIdentity,
+  FORWARDED_IDENTITY_PROBE_IP,
+  selectKothCapacityClaimant,
+} from "./lifecycle-load-model.js";
 import { readCheatResult, mergeCheatResult } from "./cheat-result.js";
 import { cheatRetentionPolicy } from "./cheat-retention.js";
 import {
@@ -162,6 +166,7 @@ async function writeCapacityKothClaim(state, containerId, token) {
       state.kothChal,
       state.kothObserverSecret,
       token,
+      { omitLast: Array.isArray(token) },
     );
   }
   A.kothCaptureWrite(containerId, token);
@@ -973,6 +978,14 @@ async function main() {
   let lifecycleRunClaimed = false;
   try {
     await interruptible(A.preflight());
+    assertTrustedForwardedIdentity(
+      await interruptible(
+        A.api("GET", "/api/admin/MyIp", {
+          jwt: A.adminJwt(),
+          ip: FORWARDED_IDENTITY_PROBE_IP,
+        }),
+      ),
+    );
     st = A.readState();
     if (!st || process.env.PROVISION === "1") {
       console.log("provisioning…");
@@ -1453,19 +1466,25 @@ async function main() {
         "  official scoring resumed at the distributed player start barrier",
       );
     } else {
-      // Capacity-mode crown captures run out of band rather than through the
-      // distributed team clients. Provision every possible claimant's VPN
-      // identity before timed player traffic begins. Doing this lazily in the
-      // capture loop briefly takes the team credential fence and can manufacture
-      // otherwise-impossible 503s on that team's concurrent token/submit reads.
-      for (const participationId of fleetPids) {
-        await interruptible(
-          ensureCapacityVpnPeer(st, participationId, capacityVpnPeers),
+      if (st.kothClaimSource === "Marker") {
+        // Capacity-mode marker captures run out of band rather than through the
+        // distributed team clients. Provision every possible claimant's VPN
+        // identity before timed player traffic begins. Doing this lazily in the
+        // capture loop briefly takes the team credential fence and can manufacture
+        // otherwise-impossible 503s on that team's concurrent token/submit reads.
+        for (const participationId of fleetPids) {
+          await interruptible(
+            ensureCapacityVpnPeer(st, participationId, capacityVpnPeers),
+          );
+        }
+        console.log(
+          `  capacity VPN identities ready: ${capacityVpnPeers.size}/${FLEET}`,
+        );
+      } else {
+        console.log(
+          `  API arena referee will report simultaneous evidence for ${FLEET} teams`,
         );
       }
-      console.log(
-        `  capacity VPN identities ready: ${capacityVpnPeers.size}/${FLEET}`,
-      );
       if (process.env.ALIGN_EVENT_END === "1") {
         const endAfterSeconds = Math.ceil(runDuration) + graceSeconds;
         sql(
@@ -1623,9 +1642,9 @@ async function main() {
       recordProbe(probe, healthProbe(HEALTH_URL));
       recordProbe(readinessProbe, healthProbe(READINESS_URL));
       tick++;
-      // Hold one exact active-cycle token across checker rounds. This exercises the
-      // provisional → confirmed path; rotating every write would intentionally keep
-      // breaking the confirmation streak and would never test acquisition credit.
+      // Marker mode holds one exact capability across checker rounds to exercise
+      // provisional → confirmed acquisition. API mode publishes one stable,
+      // simultaneous evidence set for the whole scoring tick.
       const loadStarted =
         !distributedTeamClients || Date.now() / 1000 >= teamRun.startAtSeconds;
       const loadElapsedSeconds = distributedTeamClients
@@ -1812,7 +1831,13 @@ async function main() {
               } catch {
                 kothCaptureRaces++;
               }
-              if (response?.status === 400) {
+              const staleModel = response?.json?.data ?? response?.json;
+              if (
+                response?.status === 200 &&
+                staleModel?.accepted === true &&
+                staleModel?.submittedTeams === 1 &&
+                staleModel?.recognizedTeams === 0
+              ) {
                 staleWrites++;
                 staleRejections++;
                 staleCyclesProbed.add(view.cycleId);
@@ -1846,44 +1871,63 @@ async function main() {
               capture.container !== view.containerId)
           ) {
             if (!staleProbe) {
-              const cooled = new Set(
-                (
-                  sql(
-                    `SELECT participation_id FROM "KothCycleCooldowns" ` +
-                      `WHERE cycle_id=${Number(view.cycleId)} AND network_released_at IS NULL ORDER BY participation_id`,
-                  ) || ""
-                )
-                  .split("\n")
-                  .filter(Boolean)
-                  .map(Number),
-              );
-              // Capacity mode writes KotH tokens out-of-band, without the
-              // distributed WireGuard clients. Restrict claimants to the exact
-              // relay fleet and provision their real VPN identity before a
-              // capture, otherwise the fail-closed champion cooldown correctly
-              // refuses to activate the next crown cycle for a peerless winner.
-              const pid = selectKothCapacityClaimant(
-                fleetPids,
-                cooled,
-                Math.max(view.cycleNumber, 1),
-              );
-              if (pid) {
-                await interruptible(
-                  ensureCapacityVpnPeer(st, pid, capacityVpnPeers),
+              if (st.kothClaimSource === "Api") {
+                const fleetSet = new Set(fleetPids);
+                const capabilities = A.kothCapturable(
+                  st.mixGame,
+                  st.kothChal,
+                ).filter(({ pid }) => fleetSet.has(pid));
+                capture =
+                  capabilities.length === FLEET
+                    ? {
+                        cycleId: view.cycleId,
+                        container: view.containerId,
+                        pid: capabilities[0].pid,
+                        token: capabilities[0].token,
+                        tokens: capabilities.map(({ token }) => token),
+                      }
+                    : null;
+                if (capture) {
+                  lastCycleCapture = {
+                    cycleId: capture.cycleId,
+                    container: capture.container,
+                    pid: capture.pid,
+                    token: capture.token,
+                  };
+                }
+              } else {
+                const cooled = new Set(
+                  (
+                    sql(
+                      `SELECT participation_id FROM "KothCycleCooldowns" ` +
+                        `WHERE cycle_id=${Number(view.cycleId)} AND network_released_at IS NULL ORDER BY participation_id`,
+                    ) || ""
+                  )
+                    .split("\n")
+                    .filter(Boolean)
+                    .map(Number),
                 );
+                // Marker capacity mode writes tokens out of band. Restrict the
+                // claimant to the relay fleet and its real VPN identity so the
+                // champion cooldown remains fail closed.
+                const pid = selectKothCapacityClaimant(
+                  fleetPids,
+                  cooled,
+                  Math.max(view.cycleNumber, 1),
+                );
+                const token = pid
+                  ? A.latestKothToken(st.mixGame, pid, st.kothChal)
+                  : null;
+                capture = token
+                  ? {
+                      cycleId: view.cycleId,
+                      container: view.containerId,
+                      pid,
+                      token,
+                    }
+                  : null;
+                if (capture) lastCycleCapture = capture;
               }
-              const token = pid
-                ? A.latestKothToken(st.mixGame, pid, st.kothChal)
-                : null;
-              capture = token
-                ? {
-                    cycleId: view.cycleId,
-                    container: view.containerId,
-                    pid,
-                    token,
-                  }
-                : null;
-              if (capture) lastCycleCapture = capture;
             }
           }
           if (
@@ -1893,14 +1937,17 @@ async function main() {
             tick % 8 === 0
           ) {
             try {
-              await interruptible(
+              const accepted = await interruptible(
                 writeCapacityKothClaim(
                   st,
                   capture.container,
-                  capture.token,
+                  capture.tokens || capture.token,
                 ),
               );
-              kothCaps++;
+              kothCaps +=
+                st.kothClaimSource === "Api"
+                  ? Number(accepted?.recognizedTeams || 0)
+                  : 1;
             } catch {
               // A snapshot can race the exact destroy boundary. The next poll must
               // discover a new identity; stale evidence is checked in SQL below.
@@ -2031,6 +2078,65 @@ async function main() {
         : null;
     const adScoreSpread = scoreSpread(settlement?.adBoard);
     const kothScoreSpread = scoreSpread(settlement?.kothBoard);
+    const officialKothRoster = Number(
+      sql(
+        `SELECT COALESCE(jsonb_array_length(roster_snapshot),0) ` +
+          `FROM "KothOfficialConfigs" WHERE game_id=${Number(st.mixGame)}`,
+      ) || 0,
+    );
+    const apiArenaEvidence =
+      st.kothClaimSource === "Api"
+        ? JSON.parse(
+            sql(
+              `WITH ticks AS (` +
+                `SELECT game_id,challenge_id,ad_round_id,` +
+                `controlling_participation_id,responsible_participation_id,` +
+                `token_id,provisional_participation_id,confirmed_participation_id,` +
+                `confirmation_streak,is_scorable ` +
+                `FROM "KothControlResults" WHERE game_id=${Number(st.mixGame)} ` +
+                `AND challenge_id=${Number(st.kothChal)} AND id>${kothControlBaselineId}` +
+                `), scored AS (` +
+                `SELECT score.* FROM "KothApiScoreResults" score JOIN ticks ` +
+                `USING (game_id,challenge_id,ad_round_id) WHERE ticks.is_scorable` +
+                `) SELECT json_build_object(` +
+                `'observedTicks',(SELECT count(*) FROM ticks),` +
+                `'scorableTicks',(SELECT count(*) FROM ticks WHERE is_scorable),` +
+                `'voidTicks',(SELECT count(*) FROM ticks WHERE NOT is_scorable),` +
+                `'denseRows',(SELECT count(*) FROM scored),` +
+                `'positiveTeams',(SELECT count(DISTINCT participation_id) FROM scored WHERE score_rate>0),` +
+                `'zeroRows',(SELECT count(*) FROM scored WHERE activity_earned=0 ` +
+                  `AND objective_earned=0 AND valid_actions=0 AND score_rate=0),` +
+                `'invalidRows',(SELECT count(*) FROM scored WHERE ` +
+                  `abs(activity_rate-activity_earned::double precision/activity_possible)>1e-12 ` +
+                  `OR abs(objective_rate-objective_earned::double precision/objective_possible)>1e-12 ` +
+                  `OR abs(integrity_rate-valid_actions::double precision/total_actions)>1e-12 ` +
+                  `OR abs(core_rate-(CASE WHEN activity_rate=0 OR objective_rate=0 THEN 0 ` +
+                    `ELSE 1.0/(0.35/activity_rate+0.65/objective_rate) END))>1e-12 ` +
+                  `OR abs(score_rate-integrity_rate*core_rate)>1e-12 ` +
+                  `OR objective_possible<>objective_count::bigint*1000000),` +
+                `'exclusiveTicks',(SELECT count(*) FROM ticks WHERE ` +
+                  `controlling_participation_id IS NOT NULL ` +
+                  `OR responsible_participation_id IS NOT NULL OR token_id IS NOT NULL ` +
+                  `OR provisional_participation_id IS NOT NULL ` +
+                  `OR confirmed_participation_id IS NOT NULL OR confirmation_streak<>0),` +
+                `'acquisitions',(SELECT count(*) FROM "KothAcquisitions" acquisition ` +
+                  `JOIN "KothCrownCycles" cycle ON cycle.id=acquisition.cycle_id ` +
+                  `WHERE cycle.game_id=${Number(st.mixGame)} ` +
+                  `AND cycle.challenge_id=${Number(st.kothChal)} ` +
+                  `AND acquisition.id>${kothAcquisitionBaselineId}),` +
+                `'cooldowns',(SELECT count(*) FROM "KothCycleCooldowns" cooldown ` +
+                  `JOIN "KothCrownCycles" cycle ON cycle.id=cooldown.cycle_id ` +
+                  `WHERE cycle.game_id=${Number(st.mixGame)} ` +
+                  `AND cycle.challenge_id=${Number(st.kothChal)} ` +
+                  `AND cooldown.starts_round>=${Number(evidenceStartRound)}),` +
+                `'holderTargets',(SELECT count(*) FROM "KothTargets" ` +
+                  `WHERE game_id=${Number(st.mixGame)} ` +
+                  `AND challenge_id=${Number(st.kothChal)} ` +
+                  `AND holder_participation_id IS NOT NULL)` +
+                `)::text`,
+            ),
+          )
+        : null;
     const adRankAudit = settlement
       ? auditOrdinalScoreboard("ad", settlement.adBoard, fleetPids)
       : null;
@@ -2061,6 +2167,13 @@ async function main() {
         `stale-token rejections ${staleRejections}/${staleWrites} · ` +
         `cycles ${crownCyclesSeen.size} · phases ${[...crownPhasesSeen].sort().join(",")}`,
     );
+    if (apiArenaEvidence) {
+      console.log(
+        `  API arena ticks: ${apiArenaEvidence.scorableTicks}/${apiArenaEvidence.observedTicks} scorable · ` +
+          `${apiArenaEvidence.denseRows} dense rows for ${officialKothRoster} teams · ` +
+          `${apiArenaEvidence.positiveTeams} positive teams · ${apiArenaEvidence.zeroRows} explicit zero rows`,
+      );
+    }
 
     // ── report ─────────────────────────────────────────────────────────────────
     const pick = (re) => (out.match(re) || [, "?"])[1];
@@ -2398,6 +2511,45 @@ async function main() {
         integratedCheat && cheatExit !== 0 ? 1 : 0,
       panics: countContainerFatalLogs(RSCTF, evidenceNotBeforeMs),
     };
+    if (apiArenaEvidence) {
+      const minimumScorableTicks = runDuration >= 30 ? 1 : 0;
+      const expectedDenseRows =
+        Number(apiArenaEvidence.scorableTicks) * officialKothRoster;
+      const expectedPositiveTeams = Math.min(
+        officialKothRoster,
+        Math.max(0, FLEET - 1),
+      );
+      checks["missing API arena ticks"] = Math.max(
+        0,
+        minimumScorableTicks - Number(apiArenaEvidence.scorableTicks),
+      );
+      checks["API arena dense-row mismatch"] = Math.abs(
+        expectedDenseRows - Number(apiArenaEvidence.denseRows),
+      );
+      checks["missing API multi-team evidence"] =
+        Number(apiArenaEvidence.scorableTicks) > 0
+          ? Math.max(
+              0,
+              expectedPositiveTeams - Number(apiArenaEvidence.positiveTeams),
+            )
+          : 0;
+      checks["missing API omission zero"] =
+        Number(apiArenaEvidence.scorableTicks) > 0 &&
+        Number(apiArenaEvidence.zeroRows) === 0
+          ? 1
+          : 0;
+      checks["invalid API normalized rows"] = Number(
+        apiArenaEvidence.invalidRows,
+      );
+      checks["API exclusive-holder leakage"] = Number(
+        apiArenaEvidence.exclusiveTicks,
+      );
+      checks["API acquisition leakage"] = Number(
+        apiArenaEvidence.acquisitions,
+      );
+      checks["API cooldown leakage"] = Number(apiArenaEvidence.cooldowns);
+      checks["API holder leakage"] = Number(apiArenaEvidence.holderTargets);
+    }
     if (distributedTeamClients) {
       checks["team-client process failures"] =
         teamStatus.succeeded === FLEET &&
@@ -2775,7 +2927,8 @@ async function main() {
     // Crown-cycle acceptance is based on authoritative scoring rounds. Reset/readiness
     // remains excluded from evidence, but round boundaries themselves must not drift.
     const minAcquisitions = Number(
-      process.env.CROWN_MIN_ACQUISITIONS ?? (duration >= 120 ? 1 : 0),
+      process.env.CROWN_MIN_ACQUISITIONS ??
+        (st.kothClaimSource === "Marker" && duration >= 120 ? 1 : 0),
     );
     const minCompleted = Number(
       process.env.CROWN_MIN_COMPLETED ?? (duration >= 240 ? 1 : 0),
@@ -2787,7 +2940,9 @@ async function main() {
           : 0),
     );
     const defaultStableConfirmations =
-      REALISTIC_COMPETITION && duration >= 1800
+      st.kothClaimSource === "Api"
+        ? 0
+        : REALISTIC_COMPETITION && duration >= 1800
         ? Math.max(3, Math.floor(duration / 600))
         : duration >= 120
           ? 1
@@ -2884,16 +3039,25 @@ async function main() {
     console.log(
       `    · containers in-flight at check (auto-expire + reaped at teardown): ${inflight}`,
     );
-    console.log(
-      `    · KotH kings elected (control results with a controller): ${sql(`SELECT count(*) FROM "KothControlResults" WHERE game_id=${st.mixGame} AND controlling_participation_id IS NOT NULL`)}`,
-    );
+    if (apiArenaEvidence) {
+      console.log(
+        `    · API arena evidence: ${apiArenaEvidence.positiveTeams} teams scored concurrently · ` +
+          `${apiArenaEvidence.zeroRows} omission zero rows · ${apiArenaEvidence.voidTicks} field-wide void ticks`,
+      );
+    } else {
+      console.log(
+        `    · KotH kings elected (control results with a controller): ${sql(`SELECT count(*) FROM "KothControlResults" WHERE game_id=${st.mixGame} AND controlling_participation_id IS NOT NULL`)}`,
+      );
+    }
     console.log(
       `    · crown cycles completed: ${completedCycles} · confirmed acquisitions: ${acquisitions}`,
     );
-    console.log(
-      `    · qualified stable confirmations: ${stableConfirmations} ` +
-        `(same cycle/container/token/team, exact single acquisition; gate ${minStableConfirmations})`,
-    );
+    if (!apiArenaEvidence) {
+      console.log(
+        `    · qualified stable confirmations: ${stableConfirmations} ` +
+          `(same cycle/container/token/team, exact single acquisition; gate ${minStableConfirmations})`,
+      );
+    }
     if (REALISTIC_COMPETITION) {
       console.log(
         `    · competitive KotH: ${provisionalClaimants} provisional claimants · ` +

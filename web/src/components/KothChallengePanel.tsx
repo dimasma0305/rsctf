@@ -1,5 +1,5 @@
 import { Alert, Badge, CopyButton, Group, Loader, Stack, Text, Tooltip } from '@mantine/core'
-import { mdiAlertCircleOutline, mdiCrown } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiApi, mdiCrown } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -37,6 +37,7 @@ interface KothTokenModel {
 
 interface KothHillStateModel extends KothLifecycleFields {
   round: number
+  claimSource: 'Api' | 'Marker' | string
   holderParticipationId: number | null
   holderTeamName: string | null
   isYou: boolean
@@ -58,9 +59,8 @@ interface KothChallengePanelProps {
  * <see cref="AdChallengePanel"/> but for the shared hill model:
  *   - the hill IP:port (one shared container per challenge — copy-button so the
  *     player can drop it straight into curl);
- *   - the team's exact capability for this hill and crown cycle — copy-button
- *     to plant into /koth/king;
- *   - who's holding it right now (highlights when it's YOU);
+ *   - the team's exact capability for this hill and crown cycle;
+ *   - marker-holder state, or the API-arena play model;
  *   - the latest functional verdict on the hill.
  *
  * Uses useSWR with 5s polling so the holder + status update without manual
@@ -96,6 +96,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
     stateData?.claimConfirmationTicks
   )
   const cooldown = stateData?.cooldownParticipants ?? []
+  const isApiArena = stateData?.claimSource === 'Api'
 
   // Loading: neither came back yet → show a single spinner so the modal
   // doesn't flash empty.
@@ -112,15 +113,19 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
       {/* Hill state — who holds it right now + functional verdict */}
       <Group justify="space-between" wrap="wrap" align="center">
         <Group gap="xs" wrap="nowrap">
-          <Icon path={mdiCrown} size={0.7} color="var(--mantine-color-violet-6)" />
+          <Icon
+            path={isApiArena ? mdiApi : mdiCrown}
+            size={0.7}
+            color={isApiArena ? 'var(--mantine-color-blue-6)' : 'var(--mantine-color-violet-6)'}
+          />
           <Text fw="bold" size="sm">
-            {t('game.content.koth.hill', 'The hill')}
+            {isApiArena ? t('game.content.koth.api_arena', 'API arena') : t('game.content.koth.hill', 'The hill')}
           </Text>
           <Badge size="sm" color={statusColor(displayedStatus)} variant={displayedStatus ? 'filled' : 'light'}>
             {displayedStatus ?? t('game.content.ad.no_checks_yet', 'no checks yet')}
           </Badge>
         </Group>
-        {stateData?.holderTeamName && (
+        {!isApiArena && stateData?.holderTeamName && (
           <Badge size="sm" color={stateData.isYou ? 'violet' : 'gray'} variant={stateData.isYou ? 'filled' : 'light'}>
             {stateData.isYou
               ? t('game.content.koth.you_hold_it', 'You are the confirmed king')
@@ -130,7 +135,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
                 })}
           </Badge>
         )}
-        {stateData?.provisionalClaimantTeamName && (
+        {!isApiArena && stateData?.provisionalClaimantTeamName && (
           <Badge size="sm" color="orange" variant="light">
             {t('game.content.koth.provisional_holder', {
               team: stateData.provisionalClaimantTeamName,
@@ -141,6 +146,17 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
           </Badge>
         )}
       </Group>
+
+      {isApiArena && (
+        <Alert color="blue" variant="light" p="xs">
+          <Text size="xs">
+            {t(
+              'game.content.koth.api_play',
+              'Every team can score in the same tick. Use your current capability only in the challenge’s documented actions; RSCTF scores verified activity, normalized objectives, and valid-action integrity. There is no exclusive king.'
+            )}
+          </Text>
+        </Alert>
+      )}
 
       {((stateData?.cycleNumber ?? 0) > 0 || stateData?.nextResetTicks != null || isResetting) && (
         <Group gap={6} wrap="wrap">
@@ -190,7 +206,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
         </Alert>
       )}
 
-      {cooldown.length > 0 && (
+      {!isApiArena && cooldown.length > 0 && (
         <Alert color={stateData?.isYouCooldown ? 'orange' : 'violet'} variant="light" p="xs">
           <Text size="xs">
             {stateData?.isYouCooldown
@@ -246,10 +262,15 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
         </Group>
       )}
 
-      {/* The team's cycle-scoped capability — copy-button so the player can plant it. */}
+      {/* The team's cycle-scoped capability: marker hills plant it, while an
+          API arena consumes it only through challenge-defined player actions. */}
       <Group gap={6} align="center" wrap="nowrap">
         <Text size="xs" c="dimmed">
-          {`${t('game.content.koth.your_token_short', 'Your cycle token')}:`}
+          {`${
+            isApiArena
+              ? t('game.content.koth.your_arena_capability', 'Your arena capability')
+              : t('game.content.koth.your_token_short', 'Your cycle token')
+          }:`}
         </Text>
         {/* No data yet (initial load or a failed token fetch) — show a hint rather
             than a bare label with a blank value, which looks broken. */}
@@ -275,10 +296,15 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
                 label={
                   copied
                     ? t('game.tooltip.copy.copied', 'Copied')
-                    : t(
-                        'game.tooltip.copy.koth_token',
-                        'Copy this hill’s capability — write it into /koth/king on this hill'
-                      )
+                    : isApiArena
+                      ? t(
+                          'game.tooltip.copy.koth_api_token',
+                          'Copy this capability — use it only in the arena action described by the challenge'
+                        )
+                      : t(
+                          'game.tooltip.copy.koth_token',
+                          'Copy this hill’s capability — write it into /koth/king on this hill'
+                        )
                 }
               >
                 <Text
@@ -288,10 +314,17 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
                   truncate
                   role="button"
                   tabIndex={0}
-                  aria-label={t(
-                    'game.tooltip.copy.koth_token',
-                    'Copy this hill’s capability — write it into /koth/king on this hill'
-                  )}
+                  aria-label={
+                    isApiArena
+                      ? t(
+                          'game.tooltip.copy.koth_api_token',
+                          'Copy this capability — use it only in the arena action described by the challenge'
+                        )
+                      : t(
+                          'game.tooltip.copy.koth_token',
+                          'Copy this hill’s capability — write it into /koth/king on this hill'
+                        )
+                  }
                   style={{ cursor: 'pointer', maxWidth: 320 }}
                   onClick={copy}
                   onKeyDown={(e) => {
@@ -323,10 +356,15 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
       )}
 
       <Text size="xs" c="dimmed">
-        {t(
-          'game.content.koth.patch_lifetime',
-          'Patching is encouraged, but every patch and foothold lasts only until the next crown-cycle reset.'
-        )}
+        {isApiArena
+          ? t(
+              'game.content.koth.api_capability_lifetime',
+              'The capability identifies your play without exposing your team identity to the arena. It expires at the next pristine reset; fetch the replacement before continuing.'
+            )
+          : t(
+              'game.content.koth.patch_lifetime',
+              'Patching is encouraged, but every patch and foothold lasts only until the next crown-cycle reset.'
+            )}
       </Text>
     </Stack>
   )

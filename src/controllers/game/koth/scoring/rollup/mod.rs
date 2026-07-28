@@ -737,6 +737,7 @@ mod tests {
     fn cumulative_rows_keep_the_prior_prefix_exact() {
         let meta = vec![HillEpochMetaRow {
             challenge_id: 7,
+            claim_source: "Marker".to_string(),
             epoch: 2,
             start_round: 9,
             end_round: 16,
@@ -829,6 +830,7 @@ mod tests {
     fn void_only_epoch_has_zero_rollup_evidence_weight() {
         let meta = vec![HillEpochMetaRow {
             challenge_id: 7,
+            claim_source: "Marker".to_string(),
             epoch: 1,
             start_round: 1,
             end_round: 8,

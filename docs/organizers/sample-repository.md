@@ -1,6 +1,6 @@
 # Import the sample challenge repository
 
-The public [`dimasma0305/rsctf-challenges`](https://github.com/dimasma0305/rsctf-challenges) repository contains a hidden demonstration event with seven manifests covering every challenge type, including both A&D hosting modes. It is also pinned in the rsctf source tree as the `examples/challenge-repository` Git submodule. Repository Bindings can scan the challenge repository directly and build its five container challenges locally from the checked-in `src/Dockerfile` contexts.
+The public [`dimasma0305/rsctf-challenges`](https://github.com/dimasma0305/rsctf-challenges) repository contains a hidden demonstration event with eight manifests covering every challenge type, including both A&D hosting modes and both KotH formats. It is also pinned in the rsctf source tree as the `examples/challenge-repository` Git submodule. Repository Bindings can scan the challenge repository directly and build its six container challenges locally from the checked-in `src/Dockerfile` contexts.
 
 ## What the sample contains
 
@@ -12,7 +12,8 @@ The public [`dimasma0305/rsctf-challenges`](https://github.com/dimasma0305/rsctf
 | Personal flag service | `DynamicContainer` | Runnable on the Docker backend; reads the injected `RSCTF_FLAG` |
 | Hosted flag-file service | `AttackDefense` | Platform-managed raw TCP line service and `pwntools==4.15.0` checker; requires a complete Docker A&D staging setup |
 | Self-hosted flag-file service | `AttackDefense` | BYOC HTTP service and `httpx==0.28.1` checker reached through the outbound relay |
-| Claim marker | `KingOfTheHill` | Shared hill and functional checker; Docker marker mode or a separately configured API observer |
+| Claim marker | `KingOfTheHill` | Exclusive shared hill and `/koth/king` marker scoring |
+| Proof arena | `KingOfTheHill` | Concurrent API play with a separately deployed signed evidence referee |
 
 The event manifest is `.gzevent` at the challenge repository root. Challenges use the layout `AD/<category>/<challenge>/`, `Koth/<category>/<challenge>/`, or `Jeopardy/<category>/<challenge>/`. Because every challenge lives below the root event manifest, the binding imports them into the same game.
 
@@ -31,7 +32,7 @@ The event manifest is `.gzevent` at the challenge repository root. Challenges us
 6. Select the run-immediately option or save and choose **Scan now**.
 7. Open the newest scan result.
 
-A successful first scan reports one created game and seven imported challenges with zero manifest failures. It also runs five local service-image builds and prepares three checkers.
+A successful first scan reports one created game and eight imported challenges with zero manifest failures. It also runs six local service-image builds and prepares four checkers.
 
 ## Safe result after import
 
@@ -47,7 +48,7 @@ These defaults prevent the demo from silently becoming a public competition. The
 
 The attachment examples work in platform-only mode. Import-time source builds require the Docker challenge backend and a reachable daemon. Split-role installations may enable them only when every builder and container owner uses the same daemon; acknowledge that verified topology with `RSCTF_SHARED_DOCKER_DAEMON=true`. Kubernetes and independent node-local daemons require prebuilt registry images instead.
 
-Platform-hosted A&D also needs an isolated service network, scheduler, checker sandbox, accepted test teams, and optionally WireGuard. Self-hosted A&D builds the challenge service locally but sends it to each authorized team to run behind the BYOC relay; platform resource and egress settings do not constrain that team-owned container. The separately configured relay-agent image is still a platform dependency and must be mirrored when the deployment cannot pull from Docker Hub. The sample KotH challenge defaults to container marker mode, which requires backend exec access to read `/koth/king`; its local checker verifies service health without reading or changing that marker. An organizer can instead configure the [signed API observer](./koth-api-observer) before scoring, removing the marker-read backend requirement while retaining the same checker and scoring rules. Preparing the sample Pwn and Web checkers also requires outbound access from the scanning rsctf process to PyPI and its package file hosts; checker runtime egress remains restricted to the supplied challenge target.
+Platform-hosted A&D also needs an isolated service network, scheduler, checker sandbox, accepted test teams, and optionally WireGuard. Self-hosted A&D builds the challenge service locally but sends it to each authorized team to run behind the BYOC relay; platform resource and egress settings do not constrain that team-owned container. The separately configured relay-agent image is still a platform dependency and must be mirrored when the deployment cannot pull from Docker Hub. The marker KotH sample requires backend exec access to read `/koth/king`. The separate proof arena uses a [signed API referee](./koth-api-observer), supports concurrent team scoring, and does not use marker-holder scoring. Both local checkers verify service health without changing scoring state. Preparing the sample Pwn and Web A&D checkers also requires outbound access from the scanning rsctf process to PyPI and its package file hosts; checker runtime egress remains restricted to the supplied challenge target.
 
 ::: warning Dynamic Attachment is intentionally not runnable
 The current importer creates one challenge-level attachment and unassigned flag rows, but does not assign a per-team flag/attachment to the participation instance. It still imports successfully because it demonstrates the schema. Leave it disabled until that application gap is implemented and tested.
@@ -55,7 +56,7 @@ The current importer creates one challenge-level attachment and unassigned flag 
 
 ## Import-time image builds
 
-Each of the five container challenges keeps a small Dockerfile and Python service in `src/`. Its manifest intentionally omits `containerImage`, which tells Repository Bindings to archive the challenge package and build `src/Dockerfile` during a trusted scan. The generated image remains local to the shared Docker daemon and is pinned to the immutable build result before the challenge can run. The self-hosted A&D service is then made available through rsctf's authenticated BYOC image endpoint rather than being pulled as a prebuilt challenge image.
+Each of the six container challenges keeps a small Dockerfile and Python service in `src/`. Its manifest intentionally omits `containerImage`, which tells Repository Bindings to archive the challenge package and build `src/Dockerfile` during a trusted scan. The generated image remains local to the shared Docker daemon and is pinned to the immutable build result before the challenge can run. The self-hosted A&D service is then made available through rsctf's authenticated BYOC image endpoint rather than being pulled as a prebuilt challenge image.
 
 The Dockerfiles currently use `python:3.12-alpine`, so Docker may still pull that base image when it is not cached. Mirror or replace the base if the build host must not contact Docker Hub at all. For a production event, review and pin every base image, inspect the import build logs, test the resulting services, and replace every public demo flag.
 

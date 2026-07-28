@@ -9,15 +9,18 @@ use sea_orm::DatabaseConnection;
 
 use super::{
     bounded_diagnostic, bounded_optional_diagnostic, checker_concurrency, checker_probe_can_start,
-    deadline_limited_probe_budget, probe_budget_is_platform_limited, run_check,
+    deadline_limited_probe_budget, koth_api::persist_api_arena_result,
+    probe_budget_is_platform_limited, run_check,
 };
 use crate::models::data::ad_round;
 use crate::services::ad::engine::{
+    koth_api::{
+        read_koth_api_snapshot, stable_koth_api_snapshot, KothApiSnapshot, KothApiSnapshotRead,
+    },
     koth_auth,
     koth_cycle::{self, ClaimObservation, ObservedToken},
     koth_marker::{
-        observation_precedes_deadline, read_koth_api_observation, read_koth_marker,
-        stable_koth_marker, KothMarkerRead,
+        observation_precedes_deadline, read_koth_marker, stable_koth_marker, KothMarkerRead,
     },
     AdCheckStatus, RoundFinishLease,
 };
@@ -36,6 +39,12 @@ enum ManagedHillLiveness {
 // durable transaction. The pre-probe marker is guarded separately after it
 // completes, so it cannot consume this reserved tail.
 const KOTH_COMPLETION_MARGIN: Duration = Duration::from_secs(4);
+// A referee learns a new round by polling its signed context. Give the bundled
+// five-second poll cadence one bounded arrival window before sampling. This
+// never carries evidence across rounds: the database read still requires the
+// exact round, cycle, reset attempt, and container identity.
+const API_SNAPSHOT_ARRIVAL_GRACE: Duration = Duration::from_secs(6);
+const API_SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 const PENDING_KOTH_CHALLENGES_SQL: &str = r#"SELECT (frozen.item->>'challengeId')::integer
          FROM "KothOfficialConfigs" config
@@ -64,29 +73,139 @@ async fn inspect_liveness(
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
-struct LiveHill {
-    target_id: i32,
-    challenge_id: i32,
+pub(super) struct LiveHill {
+    pub(super) target_id: i32,
+    pub(super) challenge_id: i32,
     host: String,
     port: i32,
-    container_id: String,
-    cycle_id: i64,
-    token_window_attempt: i32,
+    pub(super) container_id: String,
+    pub(super) cycle_id: i64,
+    pub(super) token_window_attempt: i32,
     phase: String,
     claim_source: String,
     claim_confirmation_ticks: i32,
     token_count: i64,
     roster_count: i64,
-    eligible_roster: Vec<i32>,
+    pub(super) eligible_roster: Vec<i32>,
     game_start: chrono::DateTime<Utc>,
     game_end: chrono::DateTime<Utc>,
-    round_start: chrono::DateTime<Utc>,
-    round_end: chrono::DateTime<Utc>,
+    pub(super) round_start: chrono::DateTime<Utc>,
+    pub(super) round_end: chrono::DateTime<Utc>,
 }
 
 impl LiveHill {
     fn has_complete_token_window(&self) -> bool {
         self.roster_count >= 2 && self.token_count == self.roster_count
+    }
+}
+
+enum ClaimInputRead {
+    Marker(KothMarkerRead),
+    Api(KothApiSnapshotRead),
+}
+
+async fn read_claim_input(
+    db: &DatabaseConnection,
+    containers: &dyn ContainerManager,
+    hill: &LiveHill,
+    round_id: i32,
+) -> ClaimInputRead {
+    match hill.claim_source.as_str() {
+        "Marker" => {
+            ClaimInputRead::Marker(read_koth_marker(containers, Some(&hill.container_id)).await)
+        }
+        "Api" => ClaimInputRead::Api(
+            read_koth_api_snapshot(
+                db.get_postgres_connection_pool(),
+                hill.target_id,
+                hill.cycle_id,
+                hill.token_window_attempt,
+                &hill.container_id,
+                round_id,
+                hill.round_start,
+                hill.round_end,
+            )
+            .await,
+        ),
+        source => ClaimInputRead::Marker(KothMarkerRead::Unavailable(format!(
+            "unsupported snapshotted KotH claim source {source:?}"
+        ))),
+    }
+}
+
+fn api_snapshot_arrival_deadline(
+    effective_deadline: tokio::time::Instant,
+    planned_timeout: Duration,
+    now: tokio::time::Instant,
+) -> tokio::time::Instant {
+    let reserved = planned_timeout
+        .checked_add(KOTH_COMPLETION_MARGIN)
+        .unwrap_or(Duration::MAX);
+    let latest_safe_probe_start = effective_deadline.checked_sub(reserved).unwrap_or(now);
+    std::cmp::min(
+        now.checked_add(API_SNAPSHOT_ARRIVAL_GRACE)
+            .unwrap_or(latest_safe_probe_start),
+        latest_safe_probe_start,
+    )
+}
+
+async fn read_initial_claim_input(
+    db: &DatabaseConnection,
+    containers: &dyn ContainerManager,
+    hill: &LiveHill,
+    round_id: i32,
+    planned_timeout: Duration,
+    effective_deadline: tokio::time::Instant,
+) -> ClaimInputRead {
+    let wait_until = api_snapshot_arrival_deadline(
+        effective_deadline,
+        planned_timeout,
+        tokio::time::Instant::now(),
+    );
+    loop {
+        let input = read_claim_input(db, containers, hill, round_id).await;
+        if hill.claim_source != "Api"
+            || matches!(input, ClaimInputRead::Api(KothApiSnapshotRead::Observed(_)))
+        {
+            return input;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= wait_until {
+            return input;
+        }
+        tokio::time::sleep(std::cmp::min(
+            API_SNAPSHOT_POLL_INTERVAL,
+            wait_until.saturating_duration_since(now),
+        ))
+        .await;
+    }
+}
+
+fn stable_claim_input(
+    before: ClaimInputRead,
+    after: ClaimInputRead,
+) -> (
+    Option<String>,
+    bool,
+    Option<KothApiSnapshot>,
+    Option<String>,
+) {
+    match (before, after) {
+        (ClaimInputRead::Marker(before), ClaimInputRead::Marker(after)) => {
+            let (marker, observed, error) = stable_koth_marker(before, after);
+            (marker, observed, None, error)
+        }
+        (ClaimInputRead::Api(before), ClaimInputRead::Api(after)) => {
+            let (snapshot, error) = stable_koth_api_snapshot(before, after);
+            let observed = snapshot.is_some();
+            (None, observed, snapshot, error)
+        }
+        _ => (
+            None,
+            false,
+            None,
+            Some("KotH claim source changed during the functional probe".to_string()),
+        ),
     }
 }
 
@@ -183,29 +302,6 @@ async fn load_live_hill(
     .fetch_optional(connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))
-}
-
-async fn read_claim_source(
-    db: &DatabaseConnection,
-    containers: &dyn ContainerManager,
-    hill: &LiveHill,
-) -> KothMarkerRead {
-    match hill.claim_source.as_str() {
-        "Api" => {
-            read_koth_api_observation(
-                db.get_postgres_connection_pool(),
-                hill.target_id,
-                hill.cycle_id,
-                hill.token_window_attempt,
-                &hill.container_id,
-            )
-            .await
-        }
-        "Marker" => read_koth_marker(containers, Some(&hill.container_id)).await,
-        source => KothMarkerRead::Unavailable(format!(
-            "unsupported snapshotted KotH claim source {source:?}"
-        )),
-    }
 }
 
 async fn reconcile_ineligible_incumbents(
@@ -415,10 +511,12 @@ async fn check_one_hill(
         .map_err(|error| AppError::internal(error.to_string()))?;
 
     let liveness = inspect_liveness(containers, &hill.container_id).await;
-    let (marker, marker_observed, status, message, dead_container_id) = match liveness {
+    let (marker, marker_observed, api_snapshot, status, message, dead_container_id) = match liveness
+    {
         ManagedHillLiveness::Dead(container_id) => (
             None,
             false,
+            None,
             AdCheckStatus::Offline,
             Some("managed hill container is not running".to_string()),
             Some(container_id),
@@ -426,6 +524,7 @@ async fn check_one_hill(
         ManagedHillLiveness::Unknown(error) => (
             None,
             false,
+            None,
             AdCheckStatus::InternalError,
             Some(format!("managed hill liveness is unknown: {error}")),
             None,
@@ -443,13 +542,22 @@ async fn check_one_hill(
                 (
                     None,
                     false,
+                    None,
                     AdCheckStatus::InternalError,
                     Some("KotH checker has no safe execution and persistence runway".to_string()),
                     None,
                 )
             } else {
-                let before = read_claim_source(db, containers, &hill).await;
                 let timeout = planned_timeout.expect("checked above");
+                let before = read_initial_claim_input(
+                    db,
+                    containers,
+                    &hill,
+                    round.id,
+                    timeout,
+                    effective_deadline,
+                )
+                .await;
                 if !checker_probe_can_start(
                     effective_deadline,
                     timeout,
@@ -459,9 +567,10 @@ async fn check_one_hill(
                     (
                         None,
                         false,
+                        None,
                         AdCheckStatus::InternalError,
                         Some(
-                            "KotH marker read consumed the safe checker execution runway"
+                            "KotH evidence read consumed the safe checker execution runway"
                                 .to_string(),
                         ),
                         None,
@@ -479,13 +588,18 @@ async fn check_one_hill(
                         probe_budget_is_platform_limited(timeout, configured_timeout),
                     )
                     .await;
-                    let after = read_claim_source(db, containers, &hill).await;
-                    let (marker, observed, error) = stable_koth_marker(before, after);
-                    if let Some(error) = error {
-                        let error = bounded_diagnostic(error);
-                        tracing::warn!(challenge = challenge_id, %error, "KotH marker was unstable");
-                    }
-                    (marker, observed, status, message, None)
+                    let after = read_claim_input(db, containers, &hill, round.id).await;
+                    let (marker, observed, snapshot, evidence_error) =
+                        stable_claim_input(before, after);
+                    let message = match (message, evidence_error) {
+                        (Some(checker), Some(evidence)) => {
+                            Some(format!("{checker}; {}", bounded_diagnostic(evidence)))
+                        }
+                        (Some(checker), None) => Some(checker),
+                        (None, Some(evidence)) => Some(bounded_diagnostic(evidence)),
+                        (None, None) => None,
+                    };
+                    (marker, observed, snapshot, status, message, None)
                 }
             }
         }
@@ -538,6 +652,7 @@ async fn check_one_hill(
     if duplicate
         || current.cycle_id != hill.cycle_id
         || current.container_id != hill.container_id
+        || current.claim_source != hill.claim_source
         || current.game_start > observed_at
         || current.round_start > observed_at
         || !observation_precedes_deadline(observed_at, current.round_end)
@@ -565,6 +680,43 @@ async fn check_one_hill(
             game_id,
             round,
             &reason,
+        )
+        .await?;
+        control
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        lifecycle.release().await?;
+        return Ok(());
+    }
+
+    if current.claim_source == "Api" {
+        persist_api_arena_result(
+            &mut *control.transaction_mut(),
+            &current,
+            game_id,
+            round,
+            status,
+            message.as_deref(),
+            observed_at,
+            dead_container_id.as_deref(),
+            api_snapshot.as_ref(),
+        )
+        .await?;
+        control
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        lifecycle.release().await?;
+        return Ok(());
+    }
+    if current.claim_source != "Marker" {
+        insert_void(
+            &mut *control.transaction_mut(),
+            &current,
+            game_id,
+            round,
+            "unsupported snapshotted KotH claim source",
         )
         .await?;
         control

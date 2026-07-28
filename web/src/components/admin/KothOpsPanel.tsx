@@ -103,7 +103,7 @@ const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill
         >
           {hill.claimSource === 'Api'
             ? hill.apiObserverConfigured
-              ? t('admin.content.ad_ops.koth.observer_api', 'Signed API')
+              ? t('admin.content.ad_ops.koth.observer_api', 'API arena')
               : t('admin.content.ad_ops.koth.observer_missing', 'API key missing')
             : hill.cycleNumber > 0
               ? t('admin.content.ad_ops.koth.observer_marker_locked', 'Container marker · locked')
@@ -285,7 +285,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         icon: <Icon path={mdiKeyVariant} size={1} />,
         message: t(
           'admin.notification.ad_ops.koth.observer_rotated',
-          'A new observer secret was created. Copy it now; it will not be shown again.'
+          'A new referee secret was created. Copy it now; it will not be shown again.'
         ),
       })
       await onMutate()
@@ -302,7 +302,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
       !window.confirm(
         t(
           'admin.confirm.ad_ops.koth.observer_revoke',
-          'Revoke this observer secret? API observations will stop until a new secret is created.'
+          'Revoke this referee secret? API arena evidence will stop until a new secret is created.'
         )
       )
     )
@@ -323,7 +323,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
       showNotification({
         color: 'teal',
         icon: <Icon path={mdiCheck} size={1} />,
-        message: t('admin.notification.ad_ops.koth.observer_revoked', 'The KotH observer secret was revoked.'),
+        message: t('admin.notification.ad_ops.koth.observer_revoked', 'The KotH referee secret was revoked.'),
       })
       await onMutate()
     } catch (error) {
@@ -362,6 +362,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
               const phase = hill.resetPhase
               const hasCycle = hill.cycleNumber > 0
               const cooldown = hill.cooldownParticipants
+              const isApiArena = hill.claimSource === 'Api'
               return (
                 <Table.Tr key={hill.challengeId} style={{ opacity: hill.isEnabled ? 1 : 0.5 }}>
                   <Table.Td>
@@ -444,33 +445,48 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                     </Badge>
                   </Table.Td>
                   <Table.Td>
-                    <Stack gap={3}>
-                      {hill.currentHolderTeamName ? (
-                        <Group gap={4} wrap="nowrap">
-                          <Icon path={mdiCrown} size={0.65} color="var(--mantine-color-yellow-6)" />
-                          <Text size="sm" truncate maw="12rem">
-                            {hill.currentHolderTeamName}
-                          </Text>
-                        </Group>
-                      ) : (
-                        <Text size="sm" c="dimmed">
-                          {t('admin.content.ad_ops.koth.no_king', 'No confirmed king')}
-                        </Text>
-                      )}
-                      {hill.provisionalClaimantTeamName && (
-                        <Badge size="xs" color="orange" variant="light" style={{ alignSelf: 'flex-start' }}>
-                          {t('admin.content.ad_ops.koth.provisional', {
-                            team: hill.provisionalClaimantTeamName,
-                            current: hill.provisionalConfirmationTicks,
-                            required: koth.claimConfirmationTicks,
-                            defaultValue: 'Provisional {{team}} · {{current}}/{{required}}',
-                          })}
+                    {isApiArena ? (
+                      <Stack gap={2}>
+                        <Badge size="xs" color="blue" variant="light" style={{ alignSelf: 'flex-start' }}>
+                          {t('admin.content.ad_ops.koth.api_dense', 'Multi-team arena')}
                         </Badge>
-                      )}
-                    </Stack>
+                        <Text size="xs" c="dimmed">
+                          {t('admin.content.ad_ops.koth.api_dense_detail', 'Every eligible team may score this tick.')}
+                        </Text>
+                      </Stack>
+                    ) : (
+                      <Stack gap={3}>
+                        {hill.currentHolderTeamName ? (
+                          <Group gap={4} wrap="nowrap">
+                            <Icon path={mdiCrown} size={0.65} color="var(--mantine-color-yellow-6)" />
+                            <Text size="sm" truncate maw="12rem">
+                              {hill.currentHolderTeamName}
+                            </Text>
+                          </Group>
+                        ) : (
+                          <Text size="sm" c="dimmed">
+                            {t('admin.content.ad_ops.koth.no_king', 'No confirmed king')}
+                          </Text>
+                        )}
+                        {hill.provisionalClaimantTeamName && (
+                          <Badge size="xs" color="orange" variant="light" style={{ alignSelf: 'flex-start' }}>
+                            {t('admin.content.ad_ops.koth.provisional', {
+                              team: hill.provisionalClaimantTeamName,
+                              current: hill.provisionalConfirmationTicks,
+                              required: koth.claimConfirmationTicks,
+                              defaultValue: 'Provisional {{team}} · {{current}}/{{required}}',
+                            })}
+                          </Badge>
+                        )}
+                      </Stack>
+                    )}
                   </Table.Td>
                   <Table.Td>
-                    {hill.cycleChampions.length > 0 || cooldown.length > 0 ? (
+                    {isApiArena ? (
+                      <Text size="xs" c="dimmed">
+                        {t('admin.content.ad_ops.koth.api_no_cooldown', 'Not used in API scoring')}
+                      </Text>
+                    ) : hill.cycleChampions.length > 0 || cooldown.length > 0 ? (
                       <Stack gap={4}>
                         {hill.cycleChampions.length > 0 && (
                           <Stack gap={1}>
@@ -760,12 +776,12 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         centered
         title={t('admin.content.ad_ops.koth.observer_title', {
           hill: observerHill?.title ?? '',
-          defaultValue: 'Signed KotH observer — {{hill}}',
+          defaultValue: 'API arena referee — {{hill}}',
         })}
       >
         {observerLoading || !observer ? (
           <Text size="sm" c="dimmed">
-            {t('admin.content.ad_ops.koth.observer_loading', 'Loading observer configuration…')}
+            {t('admin.content.ad_ops.koth.observer_loading', 'Loading referee configuration…')}
           </Text>
         ) : (
           <Stack gap="md">
@@ -779,17 +795,31 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                   ? observer.configured
                     ? t(
                         'admin.content.ad_ops.koth.observer_active',
-                        'This hill accepts signed control observations. RSCTF still validates the capability around the functional checker and calculates every point.'
+                        'This API arena accepts signed, normalized evidence for every team. RSCTF binds it to the current tick, brackets it around the functional checker, and calculates every point.'
                       )
                     : t(
                         'admin.content.ad_ops.koth.observer_required',
-                        'This hill is officially locked to API observations but has no active credential. Create one before resuming scoring.'
+                        'This hill is officially locked to API arena scoring but has no active referee credential. Create one before resuming scoring.'
                       )
                   : t(
                       'admin.content.ad_ops.koth.observer_marker_mode',
-                      'This hill currently reads /koth/king. Enabling the observer before the official snapshot selects API input; the source cannot change after scoring starts.'
+                      'This boot2root hill currently reads /koth/king. Enabling the referee before the official snapshot selects multi-team API arena scoring; the mode cannot change after scoring starts.'
                     )}
               </Text>
+              {observer.claimSource === 'Api' && observer.configured && (
+                <Text size="xs" mt={6} c="dimmed">
+                  {observer.objectiveCount === null
+                    ? t(
+                        'admin.content.ad_ops.koth.observer_scheme_pending',
+                        'The objective component count will lock on the first accepted snapshot containing a recognized team.'
+                      )
+                    : t('admin.content.ad_ops.koth.observer_scheme_locked', {
+                        count: observer.objectiveCount,
+                        defaultValue:
+                          'Objective scheme locked: {{count}} equally normalized components for the event. Referee credential changes cannot alter it.',
+                      })}
+                </Text>
+              )}
             </Alert>
 
             {observer.secret && (
@@ -798,7 +828,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                   <Text size="sm">
                     {t(
                       'admin.content.ad_ops.koth.secret_once_body',
-                      'This HMAC secret is shown only now. Keep it in the independent observer service, never in the attacker-controlled hill.'
+                      'This HMAC secret is shown only now. Keep it in the independent referee service, never in the player-facing arena or client.'
                     )}
                   </Text>
                   <Group gap="xs" wrap="nowrap">
@@ -825,19 +855,19 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                 GET {observer.contextPath}
               </Code>
               <Text size="xs" fw={700} mt="xs">
-                {t('admin.content.ad_ops.koth.observer_post_endpoint', '2. Submit current control')}
+                {t('admin.content.ad_ops.koth.observer_post_endpoint', '2. Submit current evidence')}
               </Text>
               <Code block className={misc.ffmono} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
                 {`POST ${observer.observationPath}
 X-RSCTF-Timestamp: <Unix milliseconds>
 X-RSCTF-Signature: sha256=<HMAC-SHA256>
 
-{"context":"<context>","token":"<team capability or null>"}`}
+{"context":"<context>","teams":[{"tokenHash":"<sha256-current-capability>","activity":{"earned":4,"possible":5},"objectives":[{"earned":7,"possible":10},{"earned":750,"possible":1000}],"integrity":{"earned":19,"possible":20}}]}`}
               </Code>
               <Text size="xs" c="dimmed">
                 {t(
                   'admin.content.ad_ops.koth.observer_signature',
-                  'Sign the exact raw body as timestamp.gameId.challengeId.body. Requests expire after five minutes and accepted signatures cannot be replayed.'
+                  'Hash each current capability with SHA-256 and sign the exact raw body as timestamp.gameId.challengeId.body. RSCTF normalizes each objective independently; raw capabilities and points are never accepted. Requests expire after five minutes and accepted signatures cannot be replayed.'
                 )}
               </Text>
             </Stack>
@@ -861,7 +891,7 @@ X-RSCTF-Signature: sha256=<HMAC-SHA256>
               >
                 {observer.configured
                   ? t('admin.button.ad_ops.koth.observer_rotate', 'Rotate secret')
-                  : t('admin.button.ad_ops.koth.observer_create', 'Create observer secret')}
+                  : t('admin.button.ad_ops.koth.observer_create', 'Create referee secret')}
               </Button>
             </Group>
           </Stack>

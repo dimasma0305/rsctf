@@ -7,6 +7,7 @@ use futures::StreamExt;
 mod ad;
 mod diagnostics;
 mod koth;
+mod koth_api;
 pub(super) use diagnostics::{bounded_diagnostic, bounded_optional_diagnostic};
 
 /// Max concurrent service probes per checker pass. Scale the mostly I/O-bound

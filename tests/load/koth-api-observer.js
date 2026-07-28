@@ -13,8 +13,8 @@ export function kothObservationMessage(timestamp, gameId, challengeId, rawBody) 
   if (!/^\d{1,19}$/.test(timestampText)) {
     throw new Error('KotH observer timestamp must be Unix milliseconds');
   }
-  if (typeof rawBody !== 'string' || Buffer.byteLength(rawBody) > 1024) {
-    throw new Error('KotH observer body must be a string of at most 1024 bytes');
+  if (typeof rawBody !== 'string' || Buffer.byteLength(rawBody) > 512 * 1024) {
+    throw new Error('KotH referee body must be a string of at most 512 KiB');
   }
   return `${timestampText}.${positiveId(gameId, 'gameId')}.${positiveId(challengeId, 'challengeId')}.${rawBody}`;
 }

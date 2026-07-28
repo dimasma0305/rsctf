@@ -1,5 +1,6 @@
 import {
   Accordion,
+  Alert,
   Anchor,
   Button,
   Code,
@@ -18,6 +19,7 @@ import {
 import { showNotification } from '@mantine/notifications'
 import {
   mdiCheck,
+  mdiApi,
   mdiContentCopy,
   mdiCounter,
   mdiCrown,
@@ -29,7 +31,9 @@ import {
 import { Icon } from '@mdi/react'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+import useSWR from 'swr'
 import { useAdToken, AdTokenSection, AdVpnSection, AdTokenRevealModal } from '@Components/AdToolkitSections'
+import type { KothScoreboardModel } from '@Hooks/useGame'
 import misc from '@Styles/Misc.module.css'
 
 interface KothToolkitModalProps extends ModalProps {
@@ -99,6 +103,11 @@ const CopyCurlButton: FC<{ value: string }> = ({ value }) => {
  */
 export const KothGuideModal: FC<KothToolkitModalProps> = ({ gameId, ...modalProps }) => {
   const { t } = useTranslation()
+  const { data: scoreboard } = useSWR<KothScoreboardModel>(
+    modalProps.opened ? `/api/game/${gameId}/ad/koth/scoreboard` : null
+  )
+  const hasApiArena = scoreboard?.hills.some((hill) => hill.claimSource === 'Api') ?? false
+  const hasMarkerHill = !scoreboard || scoreboard.hills.some((hill) => hill.claimSource !== 'Api')
   const { adTokenHint, rotating, freshToken, storedToken, forgetToken, tokenModalOpen, closeTokenModal, onRotate } =
     useAdToken(gameId, () =>
       showNotification({
@@ -166,13 +175,25 @@ write_to_hill "/koth/king" "$TOKEN"`,
             <Text size="sm" c="dimmed">
               {t(
                 'game.content.koth.guide.intro',
-                'Everything you need to play King of the Hill: your API token, the VPN config, the control-token endpoint, and the rules. KotH shares the API token + VPN with A&D — one token, one tunnel, both engines.'
+                'Everything you need to play both KotH formats: your API token, VPN config, cycle capability, and scoring rules. KotH shares the API token and VPN with A&D.'
               )}
             </Text>
 
+            {hasApiArena && (
+              <Alert
+                color="blue"
+                title={t('game.content.koth.guide.api_notice_title', 'API arenas are not king-takes-all')}
+              >
+                {t(
+                  'game.content.koth.guide.api_notice',
+                  'Every eligible team can score during the same tick. Follow the challenge’s player actions; the trusted referee never accepts points or your raw capability.'
+                )}
+              </Alert>
+            )}
+
             <Accordion
               variant="separated"
-              defaultValue={['token', 'vpn', 'hill']}
+              defaultValue={['token', 'vpn', 'api', 'hill']}
               radius="md"
               chevronPosition="left"
               multiple
@@ -206,143 +227,204 @@ write_to_hill "/koth/king" "$TOKEN"`,
                 )}
               />
 
-              {/* HILL — KotH-specific: cycle capability + plant flow */}
-              <Accordion.Item value="hill">
-                <Accordion.Control icon={<Icon path={mdiCrown} size={1} color="var(--mantine-color-violet-6)" />}>
-                  <Text fw={600}>{t('game.content.koth.guide.hill.title', 'Take the hill')}</Text>
-                </Accordion.Control>
-                <Accordion.Panel>
-                  <Stack gap="sm">
-                    <Text size="sm">
-                      {t(
-                        'game.content.koth.guide.hill.intro',
-                        'A KotH challenge is one shared container. Exploit it and write this hill’s current-cycle capability into /koth/king, then keep that capability in control through the required consecutive healthy checks. The first observation is provisional; only a confirmed claim becomes king and earns acquisition credit.'
-                      )}
-                    </Text>
-                    <Text size="sm" fw={600}>
-                      {t('game.content.koth.guide.hill.step1', '1. Get your control token')}
-                    </Text>
-                    <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
-                      {tokenCurlExample}
-                    </Code>
-                    <Group justify="space-between">
-                      <Text size="xs" c="dimmed">
+              {hasApiArena && (
+                <Accordion.Item value="api">
+                  <Accordion.Control icon={<Icon path={mdiApi} size={1} color="var(--mantine-color-blue-6)" />}>
+                    <Text fw={600}>{t('game.content.koth.guide.api.title', 'Play an API arena')}</Text>
+                  </Accordion.Control>
+                  <Accordion.Panel>
+                    <Stack gap="sm">
+                      <Text size="sm">
                         {t(
-                          'game.content.koth.guide.hill.token_note',
-                          'Fetch a fresh token after each crown-cycle reset. Old tokens are revoked before the replacement hill becomes active and can never claim the new container.'
+                          'game.content.koth.guide.api.intro',
+                          'Use the current hill capability only where the challenge tells you to authenticate an action. The arena turns real activity into evidence; RSCTF resolves its SHA-256 hash, normalizes every objective independently, and calculates the score.'
                         )}
                       </Text>
-                      <CopyButton value={tokenCurlExample}>
-                        {({ copied, copy }) => (
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            leftSection={<Icon path={mdiContentCopy} size={0.7} />}
-                            onClick={copy}
-                          >
-                            {copied
-                              ? t('game.tooltip.copy.copied', 'Copied')
-                              : t('game.button.ad.copy_curl', 'Copy curl')}
-                          </Button>
+                      <Text size="sm" fw={600}>
+                        {t('game.content.koth.guide.api.step1', '1. Fetch the current capability')}
+                      </Text>
+                      <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
+                        {tokenCurlExample}
+                      </Code>
+                      <CopyCurlButton value={tokenCurlExample} />
+                      <Text size="sm" fw={600}>
+                        {t('game.content.koth.guide.api.step2', '2. Complete the challenge’s real actions')}
+                      </Text>
+                      <List size="sm" spacing="xs">
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.api.activity',
+                            'Activity rewards completing the required engagement budget; merely opening or polling the service is insufficient.'
+                          )}
+                        </List.Item>
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.api.objectives',
+                            'Objective performance combines the challenge’s independent native metrics after RSCTF normalizes each one.'
+                          )}
+                        </List.Item>
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.api.integrity',
+                            'Integrity scales the whole tick, so invalid, replayed, or forbidden actions cannot be hidden by one strong metric.'
+                          )}
+                        </List.Item>
+                      </List>
+                      <Code block className={misc.ffmono} style={{ fontSize: '0.78rem' }}>
+                        {'Tick = 100 × I ÷ (0.35/E + 0.65/P) · zero if E = 0 or P = 0'}
+                      </Code>
+                      <Text size="xs" c="dimmed">
+                        {t(
+                          'game.content.koth.guide.api.fences',
+                          'Scores are calculated per tick before averaging. Missing-team evidence is an explicit zero; a missing, changing, late, or unhealthy field snapshot is void for everyone. Capabilities expire at each pristine reset.'
                         )}
-                      </CopyButton>
-                    </Group>
-                    <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
-                      {TOKEN_RESPONSE_EXAMPLE}
-                    </Code>
-                    <Text size="xs" c="dimmed">
-                      {t(
-                        'game.content.koth.guide.hill.status_note',
-                        'The response contains one entry per enabled hill. It is empty during warmup; each entry carries that hill’s exact token for the current crown cycle.'
-                      )}
-                    </Text>
+                      </Text>
+                    </Stack>
+                  </Accordion.Panel>
+                </Accordion.Item>
+              )}
 
-                    <Divider />
+              {/* HILL — KotH-specific: cycle capability + plant flow */}
+              {hasMarkerHill && (
+                <Accordion.Item value="hill">
+                  <Accordion.Control icon={<Icon path={mdiCrown} size={1} color="var(--mantine-color-violet-6)" />}>
+                    <Text fw={600}>{t('game.content.koth.guide.hill.title', 'Take the hill')}</Text>
+                  </Accordion.Control>
+                  <Accordion.Panel>
+                    <Stack gap="sm">
+                      <Text size="sm">
+                        {t(
+                          'game.content.koth.guide.hill.intro',
+                          'A KotH challenge is one shared container. Exploit it and write this hill’s current-cycle capability into /koth/king, then keep that capability in control through the required consecutive healthy checks. The first observation is provisional; only a confirmed claim becomes king and earns acquisition credit.'
+                        )}
+                      </Text>
+                      <Text size="sm" fw={600}>
+                        {t('game.content.koth.guide.hill.step1', '1. Get your control token')}
+                      </Text>
+                      <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
+                        {tokenCurlExample}
+                      </Code>
+                      <Group justify="space-between">
+                        <Text size="xs" c="dimmed">
+                          {t(
+                            'game.content.koth.guide.hill.token_note',
+                            'Fetch a fresh token after each crown-cycle reset. Old tokens are revoked before the replacement hill becomes active and can never claim the new container.'
+                          )}
+                        </Text>
+                        <CopyButton value={tokenCurlExample}>
+                          {({ copied, copy }) => (
+                            <Button
+                              size="compact-xs"
+                              variant="subtle"
+                              leftSection={<Icon path={mdiContentCopy} size={0.7} />}
+                              onClick={copy}
+                            >
+                              {copied
+                                ? t('game.tooltip.copy.copied', 'Copied')
+                                : t('game.button.ad.copy_curl', 'Copy curl')}
+                            </Button>
+                          )}
+                        </CopyButton>
+                      </Group>
+                      <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
+                        {TOKEN_RESPONSE_EXAMPLE}
+                      </Code>
+                      <Text size="xs" c="dimmed">
+                        {t(
+                          'game.content.koth.guide.hill.status_note',
+                          'The response contains one entry per enabled hill. It is empty during warmup; each entry carries that hill’s exact token for the current crown cycle.'
+                        )}
+                      </Text>
 
-                    <Text size="sm" fw={600}>
-                      {t('game.content.koth.guide.hill.step2', '2. Plant it on the hill')}
-                    </Text>
-                    <Text size="sm">
-                      {t(
-                        'game.content.koth.guide.hill.plant_intro',
-                        'How you get the bytes into /koth/king is the actual KotH challenge — exploit the hill’s service to write the file. The platform doesn’t care HOW you got it there, only what’s there when the checker peeks.'
-                      )}
-                    </Text>
-                    <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
-                      {plantPseudocode}
-                    </Code>
-                    <CopyCurlButton value={plantPseudocode} />
-                    <Text size="xs" c="dimmed">
-                      {t(
-                        'game.content.koth.guide.hill.last_write_wins',
-                        'A single fast write is not enough. Keep your exact token in place while the service stays healthy for every confirmation tick; a rival token or a Mumble/Offline verdict breaks the streak.'
-                      )}
-                    </Text>
+                      <Divider />
 
-                    <Divider />
+                      <Text size="sm" fw={600}>
+                        {t('game.content.koth.guide.hill.step2', '2. Plant it on the hill')}
+                      </Text>
+                      <Text size="sm">
+                        {t(
+                          'game.content.koth.guide.hill.plant_intro',
+                          'How you get the bytes into /koth/king is the actual KotH challenge — exploit the hill’s service to write the file. The platform doesn’t care HOW you got it there, only what’s there when the checker peeks.'
+                        )}
+                      </Text>
+                      <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
+                        {plantPseudocode}
+                      </Code>
+                      <CopyCurlButton value={plantPseudocode} />
+                      <Text size="xs" c="dimmed">
+                        {t(
+                          'game.content.koth.guide.hill.last_write_wins',
+                          'A single fast write is not enough. Keep your exact token in place while the service stays healthy for every confirmation tick; a rival token or a Mumble/Offline verdict breaks the streak.'
+                        )}
+                      </Text>
 
-                    <Text size="sm" fw={600}>
-                      {t('game.content.koth.guide.hill.step3', '3. Find the hill IP:port')}
-                    </Text>
-                    <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
-                      {hillIpCurlExample}
-                    </Code>
-                    <CopyCurlButton value={hillIpCurlExample} />
-                    <Text size="xs" c="dimmed">
-                      {t(
-                        'game.content.koth.guide.hill.targets_note',
-                        'GET /Koth/Hills returns every live target. The container is destroyed and recreated from the same pristine image at each crown-cycle boundary, so always re-read the exact endpoint after a reset.'
-                      )}
-                    </Text>
-                  </Stack>
-                </Accordion.Panel>
-              </Accordion.Item>
+                      <Divider />
+
+                      <Text size="sm" fw={600}>
+                        {t('game.content.koth.guide.hill.step3', '3. Find the hill IP:port')}
+                      </Text>
+                      <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
+                        {hillIpCurlExample}
+                      </Code>
+                      <CopyCurlButton value={hillIpCurlExample} />
+                      <Text size="xs" c="dimmed">
+                        {t(
+                          'game.content.koth.guide.hill.targets_note',
+                          'GET /Koth/Hills returns every live target. The container is destroyed and recreated from the same pristine image at each crown-cycle boundary, so always re-read the exact endpoint after a reset.'
+                        )}
+                      </Text>
+                    </Stack>
+                  </Accordion.Panel>
+                </Accordion.Item>
+              )}
 
               {/* STATE — current holder + verdict */}
-              <Accordion.Item value="state">
-                <Accordion.Control icon={<Icon path={mdiHeartPulse} size={1} color="var(--mantine-color-blue-6)" />}>
-                  <Text fw={600}>{t('game.content.koth.guide.state.title', 'Did my plant take?')}</Text>
-                </Accordion.Control>
-                <Accordion.Panel>
-                  <Stack gap="sm">
-                    <Text size="sm">
-                      {t(
-                        'game.content.koth.guide.state.intro',
-                        'GET /Koth/Hills returns every hill, its exact current endpoint, confirmed king, provisional claimant and progress, checker verdict, crown-cycle position, reset phase, and cooldown. Use it as the authoritative input to your automation.'
-                      )}
-                    </Text>
-                    <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
-                      {hillsCurlExample}
-                    </Code>
-                    <Group justify="flex-end">
-                      <CopyButton value={hillsCurlExample}>
-                        {({ copied, copy }) => (
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            leftSection={<Icon path={mdiContentCopy} size={0.7} />}
-                            onClick={copy}
-                          >
-                            {copied
-                              ? t('game.tooltip.copy.copied', 'Copied')
-                              : t('game.button.ad.copy_curl', 'Copy curl')}
-                          </Button>
+              {hasMarkerHill && (
+                <Accordion.Item value="state">
+                  <Accordion.Control icon={<Icon path={mdiHeartPulse} size={1} color="var(--mantine-color-blue-6)" />}>
+                    <Text fw={600}>{t('game.content.koth.guide.state.title', 'Did my plant take?')}</Text>
+                  </Accordion.Control>
+                  <Accordion.Panel>
+                    <Stack gap="sm">
+                      <Text size="sm">
+                        {t(
+                          'game.content.koth.guide.state.intro',
+                          'GET /Koth/Hills returns every hill, its exact current endpoint, confirmed king, provisional claimant and progress, checker verdict, crown-cycle position, reset phase, and cooldown. Use it as the authoritative input to your automation.'
                         )}
-                      </CopyButton>
-                    </Group>
-                    <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
-                      {HILLS_RESPONSE_EXAMPLE}
-                    </Code>
-                    <Text size="xs" c="dimmed">
-                      {t('game.content.koth.guide.state.fields', {
-                        gameId,
-                        defaultValue:
-                          'holderTeamName is the confirmed king; provisionalClaimantTeamName is still proving control. Reset/readiness phases are non-scorable. For a single hill, GET /api/game/{{gameId}}/ad/koth/{challenge-id}/state.',
-                      })}
-                    </Text>
-                  </Stack>
-                </Accordion.Panel>
-              </Accordion.Item>
+                      </Text>
+                      <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
+                        {hillsCurlExample}
+                      </Code>
+                      <Group justify="flex-end">
+                        <CopyButton value={hillsCurlExample}>
+                          {({ copied, copy }) => (
+                            <Button
+                              size="compact-xs"
+                              variant="subtle"
+                              leftSection={<Icon path={mdiContentCopy} size={0.7} />}
+                              onClick={copy}
+                            >
+                              {copied
+                                ? t('game.tooltip.copy.copied', 'Copied')
+                                : t('game.button.ad.copy_curl', 'Copy curl')}
+                            </Button>
+                          )}
+                        </CopyButton>
+                      </Group>
+                      <Code block className={misc.ffmono} style={{ fontSize: '0.75rem' }}>
+                        {HILLS_RESPONSE_EXAMPLE}
+                      </Code>
+                      <Text size="xs" c="dimmed">
+                        {t('game.content.koth.guide.state.fields', {
+                          gameId,
+                          defaultValue:
+                            'holderTeamName is the confirmed king; provisionalClaimantTeamName is still proving control. Reset/readiness phases are non-scorable. For a single hill, GET /api/game/{{gameId}}/ad/koth/{challenge-id}/state.',
+                        })}
+                      </Text>
+                    </Stack>
+                  </Accordion.Panel>
+                </Accordion.Item>
+              )}
 
               {/* SCORING — KotH formulas */}
               <Accordion.Item value="scoring">
@@ -351,63 +433,80 @@ write_to_hill "/koth/king" "$TOKEN"`,
                 </Accordion.Control>
                 <Accordion.Panel>
                   <Stack gap="sm">
-                    <Text size="sm">
-                      {t(
-                        'game.content.koth.guide.epoch_scoring.intro',
-                        'Each checker tick contributes evidence to a fixed-length epoch. A team’s score on each hill combines three rates:'
-                      )}
-                    </Text>
-                    <List size="sm" spacing="xs">
-                      <List.Item
-                        icon={
-                          <Text c="teal" fw={700} ff="monospace">
-                            A
-                          </Text>
-                        }
-                      >
-                        <Text component="span" fw={600} c="teal">
-                          {t('game.content.koth.guide.epoch_scoring.acquisition_label', 'Acquisition')}:
-                        </Text>{' '}
-                        {t(
-                          'game.content.koth.guide.epoch_scoring.acquisition',
-                          'the share of eligible crown-cycle capability windows in which your team proves control of the hill.'
-                        )}
-                      </List.Item>
-                      <List.Item
-                        icon={
-                          <Text c="blue" fw={700} ff="monospace">
-                            C
-                          </Text>
-                        }
-                      >
-                        <Text component="span" fw={600} c="blue">
-                          {t('game.content.koth.guide.epoch_scoring.control_label', 'Control')}:
-                        </Text>{' '}
-                        {t(
-                          'game.content.koth.guide.epoch_scoring.control',
-                          'the share of scorable checker ticks during which your marker controls the hill.'
-                        )}
-                      </List.Item>
-                      <List.Item
-                        icon={
-                          <Text c="orange" fw={700} ff="monospace">
-                            R
-                          </Text>
-                        }
-                      >
-                        <Text component="span" fw={600} c="orange">
-                          {t('game.content.koth.guide.epoch_scoring.reliability_label', 'Reliability')}:
-                        </Text>{' '}
-                        {t(
-                          'game.content.koth.guide.epoch_scoring.sla',
-                          'healthy responsible ticks divided by responsible ticks. A team with no responsibility has zero reliability and zero points; InternalError and platform failures are void.'
-                        )}
-                      </List.Item>
-                    </List>
-                    <Divider />
-                    <Code block className={misc.ffmono} style={{ fontSize: '0.78rem' }}>
-                      {'Hill = 100 × R × (0.25A + 0.55C + 0.20√(A×C))'}
-                    </Code>
+                    {hasMarkerHill && (
+                      <>
+                        <Text size="sm">
+                          {t(
+                            'game.content.koth.guide.epoch_scoring.intro',
+                            'Marker hills combine three rates inside each fixed-length epoch:'
+                          )}
+                        </Text>
+                        <List size="sm" spacing="xs">
+                          <List.Item
+                            icon={
+                              <Text c="teal" fw={700} ff="monospace">
+                                A
+                              </Text>
+                            }
+                          >
+                            <Text component="span" fw={600} c="teal">
+                              {t('game.content.koth.guide.epoch_scoring.acquisition_label', 'Acquisition')}:
+                            </Text>{' '}
+                            {t(
+                              'game.content.koth.guide.epoch_scoring.acquisition',
+                              'the share of eligible crown-cycle capability windows in which your team proves control of the hill.'
+                            )}
+                          </List.Item>
+                          <List.Item
+                            icon={
+                              <Text c="blue" fw={700} ff="monospace">
+                                C
+                              </Text>
+                            }
+                          >
+                            <Text component="span" fw={600} c="blue">
+                              {t('game.content.koth.guide.epoch_scoring.control_label', 'Control')}:
+                            </Text>{' '}
+                            {t(
+                              'game.content.koth.guide.epoch_scoring.control',
+                              'the share of scorable checker ticks during which your marker controls the hill.'
+                            )}
+                          </List.Item>
+                          <List.Item
+                            icon={
+                              <Text c="orange" fw={700} ff="monospace">
+                                R
+                              </Text>
+                            }
+                          >
+                            <Text component="span" fw={600} c="orange">
+                              {t('game.content.koth.guide.epoch_scoring.reliability_label', 'Reliability')}:
+                            </Text>{' '}
+                            {t(
+                              'game.content.koth.guide.epoch_scoring.sla',
+                              'healthy responsible ticks divided by responsible ticks. A team with no responsibility has zero reliability and zero points; InternalError and platform failures are void.'
+                            )}
+                          </List.Item>
+                        </List>
+                        <Code block className={misc.ffmono} style={{ fontSize: '0.78rem' }}>
+                          {'Marker = 100 × R × (0.25A + 0.55C + 0.20√(A×C))'}
+                        </Code>
+                      </>
+                    )}
+                    {hasApiArena && (
+                      <>
+                        <Divider />
+                        <Text size="sm">
+                          {t(
+                            'game.content.koth.guide.api.scoring',
+                            'API arenas use E for verified activity, P for equal-weight normalized objective performance, and I for valid-action integrity. Both E and P must be positive.'
+                          )}
+                        </Text>
+                        <Code block className={misc.ffmono} style={{ fontSize: '0.78rem' }}>
+                          {'API tick = 100 × I ÷ (0.35/E + 0.65/P)'}
+                        </Code>
+                      </>
+                    )}
                     <Text size="sm">
                       {t(
                         'game.content.koth.guide.epoch_scoring.total',
@@ -419,112 +518,116 @@ write_to_hill "/koth/king" "$TOKEN"`,
               </Accordion.Item>
 
               {/* REFRESH + COOLDOWN */}
-              <Accordion.Item value="refresh">
-                <Accordion.Control
-                  icon={<Icon path={mdiTimerSandComplete} size={1} color="var(--mantine-color-blue-6)" />}
-                >
-                  <Text fw={600}>
-                    {t('game.content.koth.guide.refresh.title', 'Crown cycles, pristine resets & cooldown')}
-                  </Text>
-                </Accordion.Control>
-                <Accordion.Panel>
-                  <List size="sm" spacing={4}>
-                    <List.Item icon={<Icon path={mdiRefresh} size={0.8} color="var(--mantine-color-blue-6)" />}>
-                      {t(
-                        'game.content.koth.guide.refresh.wipe',
-                        'At every crown-cycle boundary, the old shared container is destroyed and exactly one replacement is created from the same pristine challenge image. Footholds, markers, and patches do not carry over.'
-                      )}
-                    </List.Item>
-                    <List.Item icon={<Icon path={mdiCrown} size={0.8} color="var(--mantine-color-violet-6)" />}>
-                      {t(
-                        'game.content.koth.guide.refresh.cooldown',
-                        'The team with the most confirmed healthy controlled ticks in the previous cycle is blocked from this hill for the configured opening tick. Every tied leader cools down unless that would leave no challenger.'
-                      )}
-                    </List.Item>
-                    <List.Item>
-                      {t(
-                        'game.content.koth.guide.refresh.recent_window',
-                        'Cooldown starts only after readiness succeeds, expires by authoritative scoring rounds, and its forced tick is removed from that team’s personal eligible denominator.'
-                      )}
-                    </List.Item>
-                    <List.Item>
-                      {t(
-                        'game.content.koth.guide.refresh.epoch_timing_tip',
-                        'Scoring and attribution pause through finalize, destroy, create, and readiness. Reset time and platform failures are excluded for every team.'
-                      )}
-                    </List.Item>
-                  </List>
-                </Accordion.Panel>
-              </Accordion.Item>
+              {hasMarkerHill && (
+                <Accordion.Item value="refresh">
+                  <Accordion.Control
+                    icon={<Icon path={mdiTimerSandComplete} size={1} color="var(--mantine-color-blue-6)" />}
+                  >
+                    <Text fw={600}>
+                      {t('game.content.koth.guide.refresh.title', 'Crown cycles, pristine resets & cooldown')}
+                    </Text>
+                  </Accordion.Control>
+                  <Accordion.Panel>
+                    <List size="sm" spacing={4}>
+                      <List.Item icon={<Icon path={mdiRefresh} size={0.8} color="var(--mantine-color-blue-6)" />}>
+                        {t(
+                          'game.content.koth.guide.refresh.wipe',
+                          'At every crown-cycle boundary, the old shared container is destroyed and exactly one replacement is created from the same pristine challenge image. Footholds, markers, and patches do not carry over.'
+                        )}
+                      </List.Item>
+                      <List.Item icon={<Icon path={mdiCrown} size={0.8} color="var(--mantine-color-violet-6)" />}>
+                        {t(
+                          'game.content.koth.guide.refresh.cooldown',
+                          'The team with the most confirmed healthy controlled ticks in the previous cycle is blocked from this hill for the configured opening tick. Every tied leader cools down unless that would leave no challenger.'
+                        )}
+                      </List.Item>
+                      <List.Item>
+                        {t(
+                          'game.content.koth.guide.refresh.recent_window',
+                          'Cooldown starts only after readiness succeeds, expires by authoritative scoring rounds, and its forced tick is removed from that team’s personal eligible denominator.'
+                        )}
+                      </List.Item>
+                      <List.Item>
+                        {t(
+                          'game.content.koth.guide.refresh.epoch_timing_tip',
+                          'Scoring and attribution pause through finalize, destroy, create, and readiness. Reset time and platform failures are excluded for every team.'
+                        )}
+                      </List.Item>
+                    </List>
+                  </Accordion.Panel>
+                </Accordion.Item>
+              )}
 
               {/* DO / DON'T */}
-              <Accordion.Item value="do_dont">
-                <Accordion.Control icon={<Icon path={mdiCounter} size={1} color="var(--mantine-color-gray-6)" />}>
-                  <Text fw={600}>{t('game.content.koth.guide.do_dont.title', "Do / Don't")}</Text>
-                </Accordion.Control>
-                <Accordion.Panel>
-                  <Stack gap="xs">
-                    <Text size="sm" fw={600} c="teal">
-                      {t('game.content.koth.guide.do_dont.do', 'Do')}
-                    </Text>
-                    <List size="sm" spacing={2}>
-                      <List.Item>
-                        {t(
-                          'game.content.koth.guide.do_dont.do_script_epoch',
-                          'Script the per-hill capability-fetch + plant loop. Manual planting means missed acquisition windows and control evidence.'
-                        )}
-                      </List.Item>
-                      <List.Item>
-                        {t(
-                          'game.content.koth.guide.do_dont.do_plant_late',
-                          'Keep the same current-cycle capability in control through every healthy confirmation check. A rival capability or unhealthy verdict restarts the streak.'
-                        )}
-                      </List.Item>
-                      <List.Item>
-                        {t(
-                          'game.content.koth.guide.do_dont.do_repatch',
-                          'Have re-exploit and re-patch automation ready for each crown-cycle reset. Patching is encouraged, but patches survive only until the next reset.'
-                        )}
-                      </List.Item>
-                      <List.Item>
-                        {t(
-                          'game.content.koth.guide.do_dont.do_watch_status_epoch',
-                          'Watch the hill status and claim-progress badges. Mumble or Offline breaks confirmation and reduces reliability while your team is responsible.'
-                        )}
-                      </List.Item>
-                    </List>
-                    <Text size="sm" fw={600} c="red" mt="xs">
-                      {t('game.content.koth.guide.do_dont.dont', "Don't")}
-                    </Text>
-                    <List size="sm" spacing={2}>
-                      <List.Item>
-                        {t(
-                          'game.content.koth.guide.do_dont.dont_stale_token',
-                          'Plant a capability from an earlier crown cycle — it is revoked at reset and cannot claim the replacement hill.'
-                        )}
-                      </List.Item>
-                      <List.Item>
-                        {t(
-                          'game.content.koth.guide.do_dont.dont_replay',
-                          'Plant a token you observed in /koth/king from another team — it’ll credit THEM, not you. (You’re also flagged in the audit log.)'
-                        )}
-                      </List.Item>
-                      <List.Item>
-                        {t(
-                          'game.content.koth.guide.do_dont.dont_dos_epoch',
-                          'DoS the hill. Broken ticks damage scoring evidence, organizers can see the traffic, and deliberate disruption can lead to disqualification.'
-                        )}
-                      </List.Item>
-                      <List.Item>
-                        {t(
-                          'game.content.koth.guide.do_dont.dont_persist',
-                          'Try to persist tricks across a crown-cycle reset. The old container is completely destroyed; the replacement starts from the configured pristine image.'
-                        )}
-                      </List.Item>
-                    </List>
-                  </Stack>
-                </Accordion.Panel>
-              </Accordion.Item>
+              {hasMarkerHill && (
+                <Accordion.Item value="do_dont">
+                  <Accordion.Control icon={<Icon path={mdiCounter} size={1} color="var(--mantine-color-gray-6)" />}>
+                    <Text fw={600}>{t('game.content.koth.guide.do_dont.title', "Do / Don't")}</Text>
+                  </Accordion.Control>
+                  <Accordion.Panel>
+                    <Stack gap="xs">
+                      <Text size="sm" fw={600} c="teal">
+                        {t('game.content.koth.guide.do_dont.do', 'Do')}
+                      </Text>
+                      <List size="sm" spacing={2}>
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.do_dont.do_script_epoch',
+                            'Script the per-hill capability-fetch + plant loop. Manual planting means missed acquisition windows and control evidence.'
+                          )}
+                        </List.Item>
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.do_dont.do_plant_late',
+                            'Keep the same current-cycle capability in control through every healthy confirmation check. A rival capability or unhealthy verdict restarts the streak.'
+                          )}
+                        </List.Item>
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.do_dont.do_repatch',
+                            'Have re-exploit and re-patch automation ready for each crown-cycle reset. Patching is encouraged, but patches survive only until the next reset.'
+                          )}
+                        </List.Item>
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.do_dont.do_watch_status_epoch',
+                            'Watch the hill status and claim-progress badges. Mumble or Offline breaks confirmation and reduces reliability while your team is responsible.'
+                          )}
+                        </List.Item>
+                      </List>
+                      <Text size="sm" fw={600} c="red" mt="xs">
+                        {t('game.content.koth.guide.do_dont.dont', "Don't")}
+                      </Text>
+                      <List size="sm" spacing={2}>
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.do_dont.dont_stale_token',
+                            'Plant a capability from an earlier crown cycle — it is revoked at reset and cannot claim the replacement hill.'
+                          )}
+                        </List.Item>
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.do_dont.dont_replay',
+                            'Plant a token you observed in /koth/king from another team — it’ll credit THEM, not you. (You’re also flagged in the audit log.)'
+                          )}
+                        </List.Item>
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.do_dont.dont_dos_epoch',
+                            'DoS the hill. Broken ticks damage scoring evidence, organizers can see the traffic, and deliberate disruption can lead to disqualification.'
+                          )}
+                        </List.Item>
+                        <List.Item>
+                          {t(
+                            'game.content.koth.guide.do_dont.dont_persist',
+                            'Try to persist tricks across a crown-cycle reset. The old container is completely destroyed; the replacement starts from the configured pristine image.'
+                          )}
+                        </List.Item>
+                      </List>
+                    </Stack>
+                  </Accordion.Panel>
+                </Accordion.Item>
+              )}
             </Accordion>
 
             <Text size="xs" c="dimmed" ta="center">

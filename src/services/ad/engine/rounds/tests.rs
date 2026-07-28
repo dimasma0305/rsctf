@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use super::{
     authoritative_round_window, classify_round_target, complete_engine_scoring_roster,
-    network_scope_matches, playable_round_window, prepared_checker_exists, valid_service_endpoint,
-    RoundTargetDisposition,
+    koth_scoring_lifecycle_ready, network_scope_matches, playable_round_window,
+    prepared_checker_exists, valid_service_endpoint, RoundTargetDisposition,
 };
 use chrono::{Duration, Utc};
 
@@ -116,6 +116,15 @@ fn koth_scoring_requires_ready_crown_lifecycle() {
         true,
         false,
     ));
+}
+
+#[test]
+fn only_boot2root_koth_requires_the_managed_vpn() {
+    assert!(koth_scoring_lifecycle_ready(true, false, false));
+    assert!(koth_scoring_lifecycle_ready(true, false, true));
+    assert!(!koth_scoring_lifecycle_ready(true, true, false));
+    assert!(koth_scoring_lifecycle_ready(true, true, true));
+    assert!(!koth_scoring_lifecycle_ready(false, false, true));
 }
 
 #[test]

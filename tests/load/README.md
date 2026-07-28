@@ -101,7 +101,7 @@ anti-spoofing of forwarding headers from turning a logged-in player load into on
 anonymous source-IP bucket. Lifecycle provisioning also accepts a paired immutable
 `KOTH_CONTAINER_IMAGE` and `KOTH_CONTAINER_PORT`, allowing the default functional
 hill fixture to be replaced independently of the Jeopardy `CONTAINER_IMAGE`.
-`KOTH_CLAIM_SOURCE=api` selects the signed organizer observer before the official
+`KOTH_CLAIM_SOURCE=api` selects the signed external-referee arena before the official
 snapshot; the default is `marker`. Long distributed runs also use `FLEET`,
 `DISTRIBUTED_TEAM_CLIENTS`, `LIFECYCLE_ISOLATED_SERVICES`, `TEAM_THINK_SECONDS`,
 `TEAM_START_DELAY_SECONDS`, `EVENT_END_GRACE_SECONDS`, `TEAM_EVIDENCE_DIR`, and
@@ -290,9 +290,9 @@ validates every positive response contract and, for every route, proves missing-
 rejection plus the exact Admin/game-manager/authenticated-user boundary. Real runtime
 coverage includes challenge rebuild and test-container teardown, A&D provisioning,
 filesystem drift/TAR export, service restart and checker override, and KotH durable-cycle
-recovery. The KotH fixture creates its observer key before the official snapshot, stages
-one signed current-context capability, proves metadata never returns the key, then revokes
-the credential without changing the frozen API source. A fixed-rate k6 phase polls
+recovery. The KotH fixture creates its referee key before the official snapshot, submits
+one signed current-context arena snapshot, proves metadata never returns the key, then
+revokes the credential without changing the frozen API source. A fixed-rate k6 phase polls
 organizer reads before destructive operations.
 Game creation is read back immediately and must preserve every supplied A&D/KotH timing
 and policy knob. The KotH fixture is provisioned only through the public organizer
@@ -1125,12 +1125,17 @@ state, anonymous browsing, an admin monitor feed, and a concurrent same-flag ded
   configurable 45-second grace (`EVENT_END_GRACE_SECONDS`). This exceeds k6's default
   30-second graceful-stop allowance, so in-flight work cannot consume the entire
   settlement window. In capacity mode, the host
-  capture driver holds one exact cycle-scoped capability across checker rounds so the load
-  covers provisional → confirmed acquisition, then switches to an eligible challenger
-  after a pristine reset. Before the next valid capture it plants the revoked prior-cycle
-  token and requires its claim transport to reject it. Marker mode verifies the rejection
-  in a scorable checker observation. API mode requires an immediate HTTP 400 before the
-  observer can stage stale evidence. It never calls the disabled manual round endpoint.
+  marker capture driver holds one exact cycle-scoped capability across checker rounds so
+  the load covers provisional → confirmed acquisition, then switches to an eligible
+  challenger after a pristine reset. Before the next valid capture it plants the revoked
+  prior-cycle token and requires the marker transport to reject it in a scorable checker
+  observation. In API mode, the referee instead submits simultaneous evidence for the
+  whole active fleet. It deliberately omits one eligible team to prove that RSCTF writes
+  a dense zero, alternates equivalent 5/10 and 5,000/10,000 native objective scales to
+  verify application-side normalization, and proves an old capability hash is accepted
+  only as unrecognized evidence. API acceptance also requires multiple positive teams
+  and zero holder, acquisition, or cooldown state. The harness never calls the disabled
+  manual round endpoint.
 
 ```sh
 npm run provision                         # 300 + 300 teams by default
@@ -1145,11 +1150,13 @@ KOTH_CLAIM_SOURCE=api npm run provision
 KOTH_CLAIM_SOURCE=api VUS=400 DURATION=300s KEEP=1 npm run lifecycle
 ```
 
-The one-time observer key is kept only in the ignored mode-`0600` lifecycle state
+The one-time referee key is kept only in the ignored mode-`0600` lifecycle state
 file and removed with the namespace. API mode still uses the real shared hill and
-functional checker; only `/koth/king` transport is replaced. Distributed player
-simulation remains marker-based because its clients exercise the hill's real
-player-facing capture endpoint, not an organizer credential.
+functional checker, but its scoring semantics are intentionally different from marker
+KotH: each eligible team receives an independently normalized arena result on every
+stable tick, with explicit zeros for omissions and no exclusive crown. Distributed
+player simulation remains marker-based because its clients exercise the hill's real
+player-facing capture endpoint, not a trusted referee credential.
 
 ### Competitive player simulation
 

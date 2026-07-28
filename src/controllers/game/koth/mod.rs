@@ -50,6 +50,7 @@ use crate::utils::shared::RequestResponse;
 
 mod admin;
 mod api;
+mod api_contract;
 mod board;
 mod capture;
 mod eligibility;
@@ -106,6 +107,8 @@ pub struct KothScoreboardHill {
     /// Serializes as the enum's string name (e.g. `"Web"`, `"PPC"`), matching the
     /// `category: string` the React board feeds to `useChallengeCategoryLabelMap`.
     pub category: ChallengeCategory,
+    /// `Marker` for exclusive boot2root control, `Api` for normalized arena scoring.
+    pub claim_source: String,
     pub current_holder_team_name: Option<String>,
     pub current_holder_participation_id: Option<i32>,
     pub provisional_claimant_team_name: Option<String>,
@@ -262,6 +265,8 @@ pub struct AdminKothStateModel {
 #[serde(rename_all = "camelCase")]
 pub struct KothHillStateModel {
     pub round: i32,
+    /// Marker is exclusive boot2root control; Api is normalized arena evidence.
+    pub claim_source: String,
     pub holder_participation_id: Option<i32>,
     pub holder_team_name: Option<String>,
     pub is_you: bool,
@@ -291,6 +296,7 @@ pub struct KothHillStateModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct KothHillBase {
     container_id: Option<String>,
+    claim_source: String,
     holder_participation_id: Option<i32>,
     holder_team_name: Option<String>,
     status: Option<String>,
@@ -349,6 +355,7 @@ async fn load_hill_base(st: &SharedState, id: i32, challenge_id: i32) -> AppResu
                 _,
                 (
                     Option<String>,
+                    String,
                     Option<i32>,
                     Option<String>,
                     Option<String>,
@@ -359,6 +366,19 @@ async fn load_hill_base(st: &SharedState, id: i32, challenge_id: i32) -> AppResu
             >(
                 r#"SELECT
                          t.container_id,
+                         COALESCE((
+                           SELECT frozen.item->>'claimSource'
+                             FROM "KothOfficialConfigs" config,
+                                  LATERAL jsonb_array_elements(config.hills_snapshot)
+                                    frozen(item)
+                            WHERE config.game_id = $1
+                              AND (frozen.item->>'challengeId')::integer = $2
+                            LIMIT 1
+                         ), CASE WHEN EXISTS (
+                           SELECT 1 FROM "KothApiObservers" observer
+                            WHERE observer.game_id = $1
+                              AND observer.challenge_id = $2
+                         ) THEN 'Api' ELSE 'Marker' END) AS claim_source,
                          p.id,
                          tm.name,
                          cr.container_id,
@@ -389,6 +409,7 @@ async fn load_hill_base(st: &SharedState, id: i32, challenge_id: i32) -> AppResu
             .await;
             let (
                 container_id,
+                claim_source,
                 holder_pid,
                 holder_team,
                 evidence_container_id,
@@ -409,6 +430,7 @@ async fn load_hill_base(st: &SharedState, id: i32, challenge_id: i32) -> AppResu
             );
             let base = KothHillBase {
                 container_id,
+                claim_source,
                 holder_participation_id: holder_pid,
                 holder_team_name: holder_team,
                 status: evidence_is_current
@@ -466,6 +488,7 @@ pub async fn koth_hill_state(
         .any(|cooldown| cooldown.participation_id == part.id);
     Ok(RequestResponse::ok(KothHillStateModel {
         round,
+        claim_source: base.claim_source,
         holder_participation_id,
         holder_team_name,
         is_you: holder_participation_id == Some(part.id),
@@ -523,10 +546,10 @@ fn common_router() -> Router<SharedState> {
         )
         .route(
             "/api/v1/koth/games/{id}/challenges/{challengeId}/observations",
-            post(submit_observation).layer(DefaultBodyLimit::max(1_024)),
+            post(submit_observation).layer(DefaultBodyLimit::max(api_contract::MAX_BODY_BYTES)),
         )
-    // No player capture endpoint: marker hills read /koth/king, while an API hill
-    // accepts input only from its challenge-scoped trusted observer credential.
+    // No player score endpoint: marker hills read /koth/king, while an API arena
+    // accepts evidence only from its challenge-scoped trusted referee.
 }
 
 fn recovery_router() -> Router<SharedState> {
@@ -592,6 +615,7 @@ mod token_cache_tests {
     fn lifecycle_round_is_not_part_of_cached_hill_state() {
         let cached = serde_json::to_value(KothHillBase {
             container_id: Some("container-a".to_string()),
+            claim_source: "Marker".to_string(),
             holder_participation_id: Some(7),
             holder_team_name: Some("red".to_string()),
             status: Some("Ok".to_string()),
@@ -724,6 +748,7 @@ async fn build_koth_scoreboard(
                 challenge_id: h.challenge_id,
                 title: h.title.clone(),
                 category: h.category,
+                claim_source: h.claim_source.clone(),
                 current_holder_team_name: board
                     .holder_team_name_by_challenge
                     .get(&h.challenge_id)

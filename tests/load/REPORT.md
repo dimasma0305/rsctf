@@ -5,7 +5,169 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
-## Signed KotH API observer acceptance — 28 July 2026
+## Normalized multi-team API arena acceptance — 28 July 2026
+
+This campaign replaces the earlier exclusive-holder API observer with an
+application-native KotH arena. Marker KotH remains the boot2root format: one
+shared machine, one observed controller, confirmation and cooldowns, and the
+constant `100R(0.25A + 0.55C + 0.20√AC)` score. API arena KotH is intentionally
+different: every eligible team may produce evidence in the same tick, and no
+holder, acquisition, provisional crown, or champion cooldown is created.
+
+The referee submits bounded integer ratios, never points:
+
+- activity `earned/possible`;
+- one to sixteen objective `earned/possible` components; and
+- integrity `valid/total`.
+
+RSCTF independently normalizes every objective and gives each component equal
+influence, so `5/10` and `5,000/10,000` are identical. For activity `E`,
+equal-weight objective performance `P`, and integrity `I`, the fixed tick
+formula is:
+
+```text
+B = 0                                      when E = 0 or P = 0
+B = 1 / (0.35/E + 0.65/P)                 otherwise
+tick score = 100 * I * B
+```
+
+The harmonic core makes both repeated participation and challenge performance
+necessary; a high result in one cannot hide zero play in the other. Integrity
+multiplies that same tick, and RSCTF stores the nonlinear tick result before
+the epoch average, so activity from one tick cannot be combined with clean
+integrity from another. There is no scoring version, organizer-selected
+weight, or externally supplied point value.
+
+The transport is HMAC-SHA-256 over the exact timestamp, game, challenge, and
+raw body. It is bounded to 512 KiB, 2,000 teams, 16 objectives per team, and
+integer budgets no larger than `10^12`. The body contains current capability
+hashes, not raw bearer tokens or team IDs. Context binds the evidence to the
+exact game, challenge, target, crown cycle, reset attempt, container, and A&D
+round. Durable replay fencing, monotonic timestamps, objective-count freezing,
+before/after snapshot identity, and an independent functional checker protect
+settlement. One omitted eligible team receives an explicit zero row; a missing,
+changing, late, or unhealthy field snapshot voids the whole tick and never
+carries an earlier result forward.
+
+### Defects found and corrected during acceptance
+
+The first full run exposed a local load-topology error. Synthetic client
+addresses arrived through an untrusted Docker bridge, so RSCTF correctly
+ignored them and applied the admission limiter to one real peer address. The
+run still sustained 12,153 requests/s with zero 5xx responses, but onboarding
+and container thresholds failed on expected 429 responses. The lifecycle now
+calls `/api/admin/MyIp` before mutation and refuses to start unless the proxy
+reports the exact forwarded identity as trusted.
+
+The next run found a real scoring defect: the checker could begin 1–5 seconds
+into a round while the documented referee polls every five seconds. All ten
+timed API ticks were therefore field-wide void even though the platform
+remained healthy at 10,678 requests/s. RSCTF now allows one bounded six-second
+arrival window for the exact current-round snapshot while reserving the full
+functional-checker and persistence budget. The wait never accepts a previous
+round, cycle, reset, or container, and the same snapshot must still bracket the
+checker probe.
+
+The aborted run also exposed a harness cleanup gap. Protected-event teardown
+remembered KotH runtimes but not every database-owned Jeopardy runtime before
+the public delete became evidence-protected. Cleanup now snapshots only
+containers reachable from an exact, validated disposable game identity,
+removes those runtimes, and then performs the fail-closed evidence cleanup.
+The regression proves that a similarly aborted simulation cannot leak its
+challenge containers.
+
+### Five-minute whole-event simulation
+
+The corrected run provisioned 20 Jeopardy teams, 20 A&D/API-KotH teams, 20
+live team services and capabilities, and 20 real BYOC tunnels. It exercised
+registration, login, team creation, event join, every polled board, A&D flag
+delivery and submission, Jeopardy solves, attachment upload/download, 39 real
+container create/destroy journeys, API arena observations, stale-capability
+rejection, pristine crown-cycle replacement, and final integrity settlement.
+One hundred active VUs ran for 300 seconds.
+
+| Result | Measurement |
+| --- | ---: |
+| HTTP requests | 2,550,878 |
+| Sustained throughput | 8,256.04 requests/s |
+| Server 5xx | 0 |
+| Unexpected non-2xx | 0 |
+| Liveness probes | 449/449 |
+| Readiness probes | 449/449 |
+| API arena timed ticks | 10/10 scorable |
+| Dense API score rows | 200/200 |
+| Teams with concurrent positive evidence | 19 |
+| Explicit zero rows | 29 |
+| Field-wide voids in the timed window | 0 |
+| Stale-capability rejections | 1/1 |
+| Duplicate/integrity checks | all zero |
+
+The 29 zero rows combine the deliberately omitted team with the deliberately
+unrecognized old-cycle capability snapshot. Neither case was attributed to a
+player. No API tick leaked a holder, acquisition, provisional state, or
+cooldown. All duplicate round, token, cycle, control-row, participation,
+runtime-operation, stale-container, cross-cycle, cadence, deadline,
+publication, readiness, liveness, and panic checks passed.
+
+The complete endpoint distributions were:
+
+| Path | Average | p50 | p90 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 10.674 ms | 5.066 ms | 13.523 ms | 22.009 ms | 151.760 ms | 4,152.690 ms |
+| Board poll mix | 16.118 ms | 5.078 ms | 16.903 ms | 42.201 ms | 273.525 ms | 629.794 ms |
+| A&D epoch board | 10.667 ms | 4.684 ms | 14.187 ms | 24.247 ms | 237.339 ms | 323.515 ms |
+| A&D state | 26.529 ms | 22.629 ms | 42.634 ms | 54.287 ms | 86.517 ms | 148.512 ms |
+| A&D targets | 25.814 ms | 22.197 ms | 41.771 ms | 53.262 ms | 87.430 ms | 121.886 ms |
+| KotH hills | 8.603 ms | 4.700 ms | 13.886 ms | 23.628 ms | 141.578 ms | 182.633 ms |
+| Jeopardy details | 26.291 ms | 7.398 ms | 96.105 ms | 117.789 ms | 168.326 ms | 285.587 ms |
+| A&D submit | 76.597 ms | 58.745 ms | 144.522 ms | 171.726 ms | 227.031 ms | 259.881 ms |
+| Jeopardy submit | 177.193 ms | 163.918 ms | 268.481 ms | 300.546 ms | 370.548 ms | 410.938 ms |
+| Attachment download | 157.991 ms | 135.963 ms | 239.723 ms | 304.877 ms | 507.683 ms | 2,352.903 ms |
+| Container lifecycle | 1,465.574 ms | 1,105.995 ms | 2,639.893 ms | 4,069.414 ms | 4,138.349 ms | 4,152.690 ms |
+| Onboarding | 1,023.085 ms | 994.000 ms | 1,420.800 ms | 1,560.900 ms | 1,667.980 ms | 1,719.000 ms |
+
+Fifty-nine five-second samples from the sustained-load window showed:
+
+| Component | CPU average | CPU max | RAM average | RAM max |
+| --- | ---: | ---: | ---: | ---: |
+| RSCTF | 186.42% | 249.98% | 171.55 MiB | 299.10 MiB |
+| PostgreSQL | 175.04% | 389.08% | 374.26 MiB | 394.60 MiB |
+| Redis | 4.21% | 11.42% | 4.67 MiB | 6.57 MiB |
+| Traefik | 2.40% | 21.05% | 41.83 MiB | 43.67 MiB |
+
+### Fixed-rate read-path acceptance
+
+The same-fixture comparison held 300 requests/s for 60 seconds with 120
+preallocated VUs. Each pass completed 18,000 requests without a drop, 429,
+authentication failure, non-200 response, or 5xx response.
+
+| Path | `v0.1.30` p95 | New arena p95 | Change |
+| --- | ---: | ---: | ---: |
+| All HTTP | 7.706 ms | 5.059 ms | -34.3% |
+| Game catalog | 6.646 ms | 4.602 ms | -30.8% |
+| Jeopardy scoreboard | 7.586 ms | 4.815 ms | -36.5% |
+| A&D scoreboard | 6.632 ms | 4.724 ms | -28.8% |
+| KotH scoreboard | 8.499 ms | 5.599 ms | -34.1% |
+| KotH timeline | 9.105 ms | 5.519 ms | -39.4% |
+
+Across the same 12 load-window samples, RSCTF CPU averaged 33.54% before and
+26.29% after (-21.6%); PostgreSQL averaged 21.85% and 19.62%. The exact final
+build, rerun after the whole-event load against a different warm state,
+completed another 18,000 requests at 299.993 requests/s with a 5.365 ms
+overall p95 and zero failures. Its RSCTF CPU averaged 31.04% across the same
+sampling rule.
+
+These figures establish no read-path regression; they are not attributed to
+the scoring feature because API settlement is outside those HTTP reads and
+the host/cache state can move short latency samples. This is therefore an
+acceptance comparison, not a new optimization-ledger row.
+
+## Historical signed KotH API observer acceptance — 28 July 2026
+
+> Superseded by the normalized multi-team API arena described in the newer
+> report section above this one. These measurements and security checks remain
+> as the same-rate pre-change baseline; the exclusive-holder semantics
+> described in this historical section are no longer the API scoring contract.
 
 This campaign adds an API observation source for hills whose control state
 cannot be read from `/koth/king`. It adapts rCTF's useful external-input idea

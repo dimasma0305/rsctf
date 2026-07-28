@@ -59,13 +59,13 @@ pub(super) async fn rotate_capability_window(
     }
 
     // A fresh reset window invalidates both qualified crown state and any
-    // observer value staged against the previous container/capabilities.
+    // API-arena snapshot staged against the previous container/capabilities.
     sqlx::query(
         r#"WITH cleared_claim AS (
              DELETE FROM "KothClaimStates" WHERE target_id = $1
              RETURNING target_id
            )
-           DELETE FROM "KothApiObservations" WHERE target_id = $1"#,
+           DELETE FROM "KothApiSnapshots" WHERE target_id = $1"#,
     )
     .bind(window.target_id)
     .execute(&mut *connection)

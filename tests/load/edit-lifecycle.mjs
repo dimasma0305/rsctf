@@ -1269,20 +1269,22 @@ async function positiveReadAndMutationSurface() {
     acceptedObservation.accepted === true &&
       Number.isSafeInteger(acceptedObservation.cycleNumber) &&
       Number.isSafeInteger(acceptedObservation.resetAttempt),
-    `KotH API observer rejected current exact evidence: ${JSON.stringify(acceptedObservation)}`,
+    `KotH API referee rejected current exact evidence: ${JSON.stringify(acceptedObservation)}`,
   );
   const stagedObservation = JSON.parse(sql(
     `SELECT json_build_object(` +
-      `'tokenId',observation.token_id,'cycleId',observation.cycle_id,` +
-      `'resetAttempt',observation.reset_attempt,'containerId',observation.container_id` +
-    `)::text FROM "KothApiObservations" observation ` +
-    `JOIN "KothTargets" target ON target.id=observation.target_id ` +
-    `WHERE target.game_id=${context.kothGameId} ` +
-      `AND target.challenge_id=${context.kothChallengeId}`,
+      `'scoredTeams',(SELECT count(*) FROM "KothApiSnapshotScores" score ` +
+        `WHERE score.target_id=snapshot.target_id),` +
+      `'cycleId',snapshot.cycle_id,'resetAttempt',snapshot.reset_attempt,` +
+      `'containerId',snapshot.container_id,'roundId',snapshot.ad_round_id` +
+    `)::text FROM "KothApiSnapshots" snapshot ` +
+    `WHERE snapshot.game_id=${context.kothGameId} ` +
+      `AND snapshot.challenge_id=${context.kothChallengeId}`,
   ));
   requireCondition(
-    Number.isSafeInteger(stagedObservation.tokenId) &&
+    stagedObservation.scoredTeams === 1 &&
       stagedObservation.cycleId > 0 &&
+      stagedObservation.roundId > 0 &&
       stagedObservation.containerId === activeHillView.replacementContainerId,
     `KotH API input was not staged against the active runtime: ${JSON.stringify(stagedObservation)}`,
   );
@@ -1532,10 +1534,9 @@ async function destructivePositiveSurface() {
           `WHERE game_id=${context.kothGameId} AND challenge_id=${context.kothChallengeId}`,
       )) === 0 &&
       Number(sql(
-        `SELECT count(*) FROM "KothApiObservations" observation ` +
-          `JOIN "KothTargets" target ON target.id=observation.target_id ` +
-          `WHERE target.game_id=${context.kothGameId} ` +
-            `AND target.challenge_id=${context.kothChallengeId}`,
+        `SELECT count(*) FROM "KothApiSnapshots" snapshot ` +
+          `WHERE snapshot.game_id=${context.kothGameId} ` +
+            `AND snapshot.challenge_id=${context.kothChallengeId}`,
       )) === 0,
     `KotH observer revocation did not preserve source while clearing credentials: ${JSON.stringify(revokedObserver)}`,
   );

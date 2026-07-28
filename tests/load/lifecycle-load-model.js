@@ -10,6 +10,33 @@ export function shouldValidateSemanticResponse(status) {
   return Number(status) !== 429;
 }
 
+export const FORWARDED_IDENTITY_PROBE_IP = "198.51.100.77";
+
+export function assertTrustedForwardedIdentity(
+  response,
+  expectedIp = FORWARDED_IDENTITY_PROBE_IP,
+) {
+  const model = response?.json?.data ?? response?.json;
+  const rawConnectionIp =
+    typeof model?.rawConnectionIp === "string"
+      ? model.rawConnectionIp
+      : "unknown";
+  if (
+    response?.status !== 200 ||
+    model?.proxyTrusted !== true ||
+    model?.detectedIp !== expectedIp
+  ) {
+    throw new Error(
+      "lifecycle synthetic client identities are not reaching RSCTF: " +
+        `expected ${expectedIp}, detected ${String(model?.detectedIp ?? "unknown")}, ` +
+        `immediate peer ${rawConnectionIp}. Configure RSCTF_TRUSTED_PROXY_CIDRS ` +
+        "to include only the immediate load proxy, then rerun; otherwise all VUs " +
+        "share one rate-limit identity and the simulation is invalid.",
+    );
+  }
+  return model;
+}
+
 export function reserveLifecycleContainerUsers(userIds, reservedCount) {
   if (!Array.isArray(userIds) || userIds.length === 0) {
     throw new Error("lifecycle Jeopardy users must be a non-empty array");

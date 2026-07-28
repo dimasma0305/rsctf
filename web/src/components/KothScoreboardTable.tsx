@@ -199,6 +199,16 @@ const HillCard: FC<HillCardProps> = ({ hill, score, cycleTicks, confirmationTick
   const dark = colorScheme === 'dark'
   const status = hill.lastCheckStatus
   const healthyTicks = score?.healthyResponsibleTicks ?? 0
+  const isApiArena = hill.claimSource === 'Api'
+  const firstMetric = isApiArena
+    ? t('game.content.scoreboard.koth.api.activity', 'Activity')
+    : t('game.content.scoreboard.koth.epoch.column.acquisition', 'Acquisition')
+  const secondMetric = isApiArena
+    ? t('game.content.scoreboard.koth.api.objective', 'Objective')
+    : t('game.content.scoreboard.koth.epoch.column.control', 'Control')
+  const thirdMetric = isApiArena
+    ? t('game.content.scoreboard.koth.api.integrity', 'Integrity')
+    : t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')
 
   return (
     <Paper withBorder p="sm" radius="md">
@@ -212,12 +222,14 @@ const HillCard: FC<HillCardProps> = ({ hill, score, cycleTicks, confirmationTick
               </Text>
             </Group>
             <Text size="xs" c="dimmed" truncate>
-              {hill.currentHolderTeamName
-                ? t('game.content.scoreboard.koth.held_by', {
-                    defaultValue: 'Confirmed king: {{team}}',
-                    team: hill.currentHolderTeamName,
-                  })
-                : hill.category}
+              {isApiArena
+                ? t('game.content.scoreboard.koth.api.mode', 'Normalized API arena')
+                : hill.currentHolderTeamName
+                  ? t('game.content.scoreboard.koth.held_by', {
+                      defaultValue: 'Confirmed king: {{team}}',
+                      team: hill.currentHolderTeamName,
+                    })
+                  : hill.category}
             </Text>
           </Stack>
           <Badge size="xs" color={statusColor(status)} variant="light">
@@ -235,32 +247,27 @@ const HillCard: FC<HillCardProps> = ({ hill, score, cycleTicks, confirmationTick
                 value={fmtPts(score.settledPoints)}
                 color="cyan"
               />
-              <CompactMetric
-                label={t('game.content.scoreboard.koth.epoch.column.acquisition', 'Acquisition')}
-                value={formatPercent(score.acquisitionRate)}
-                color="teal"
-              />
-              <CompactMetric
-                label={t('game.content.scoreboard.koth.epoch.column.control', 'Control')}
-                value={formatPercent(score.controlRate)}
-                color="blue"
-              />
-              <CompactMetric
-                label={t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')}
-                value={formatPercent(score.reliabilityRate)}
-                color="orange"
-              />
+              <CompactMetric label={firstMetric} value={formatPercent(score.acquisitionRate)} color="teal" />
+              <CompactMetric label={secondMetric} value={formatPercent(score.controlRate)} color="blue" />
+              <CompactMetric label={thirdMetric} value={formatPercent(score.reliabilityRate)} color="orange" />
             </SimpleGrid>
             <Group justify="space-between" gap="xs" wrap="wrap">
               <Text size="xs" c="dimmed">
-                {t('game.content.scoreboard.koth.evidence_value', {
-                  defaultValue:
-                    '{{windows}} windows · {{ticks}} controlled ticks · {{healthy}}/{{responsible}} healthy',
-                  windows: score.acquisitionWindows,
-                  ticks: score.controlledTicks,
-                  healthy: healthyTicks,
-                  responsible: score.responsibleTicks,
-                })}
+                {isApiArena
+                  ? t('game.content.scoreboard.koth.api.evidence_value', {
+                      defaultValue: '{{active}} active ticks · {{objective}} objective ticks · {{samples}} samples',
+                      active: score.acquisitionWindows,
+                      objective: score.controlledTicks,
+                      samples: score.responsibleTicks,
+                    })
+                  : t('game.content.scoreboard.koth.evidence_value', {
+                      defaultValue:
+                        '{{windows}} windows · {{ticks}} controlled ticks · {{healthy}}/{{responsible}} healthy',
+                      windows: score.acquisitionWindows,
+                      ticks: score.controlledTicks,
+                      healthy: healthyTicks,
+                      responsible: score.responsibleTicks,
+                    })}
               </Text>
               {hasProjection(score.settledPoints, score.projectedPoints) && (
                 <Text size="xs" c={readableMetricColor('orange', dark)} className={misc.ffmono}>
@@ -301,6 +308,23 @@ const KothScoreDetailModal: FC<KothScoreDetailModalProps> = ({
 }) => {
   const { t } = useTranslation()
   const latestEpoch = team?.epochs.at(-1)
+  const onlyApi = hills.length > 0 && hills.every((hill) => hill.claimSource === 'Api')
+  const mixed = !onlyApi && hills.some((hill) => hill.claimSource === 'Api')
+  const firstMetric = onlyApi
+    ? t('game.content.scoreboard.koth.api.activity', 'Activity')
+    : mixed
+      ? t('game.content.scoreboard.koth.api.activity_acquisition', 'Activity / acquisition')
+      : t('game.content.scoreboard.koth.epoch.column.acquisition', 'Acquisition')
+  const secondMetric = onlyApi
+    ? t('game.content.scoreboard.koth.api.objective', 'Objective')
+    : mixed
+      ? t('game.content.scoreboard.koth.api.objective_control', 'Objective / control')
+      : t('game.content.scoreboard.koth.epoch.column.control', 'Control')
+  const thirdMetric = onlyApi
+    ? t('game.content.scoreboard.koth.api.integrity', 'Integrity')
+    : mixed
+      ? t('game.content.scoreboard.koth.api.integrity_reliability', 'Integrity / reliability')
+      : t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')
 
   return (
     <Modal
@@ -337,21 +361,9 @@ const KothScoreDetailModal: FC<KothScoreDetailModalProps> = ({
               value={fmtPts(team.projectedTotal)}
               color="orange"
             />
-            <CompactMetric
-              label={t('game.content.scoreboard.koth.epoch.column.acquisition', 'Acquisition')}
-              value={formatPercent(team.acquisitionRate)}
-              color="teal"
-            />
-            <CompactMetric
-              label={t('game.content.scoreboard.koth.epoch.column.control', 'Control')}
-              value={formatPercent(team.controlRate)}
-              color="blue"
-            />
-            <CompactMetric
-              label={t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')}
-              value={formatPercent(team.reliabilityRate)}
-              color="orange"
-            />
+            <CompactMetric label={firstMetric} value={formatPercent(team.acquisitionRate)} color="teal" />
+            <CompactMetric label={secondMetric} value={formatPercent(team.controlRate)} color="blue" />
+            <CompactMetric label={thirdMetric} value={formatPercent(team.reliabilityRate)} color="orange" />
           </SimpleGrid>
 
           {latestEpoch && !latestEpoch.finalized && (
@@ -421,6 +433,7 @@ interface ScoringInfoModalProps {
   cycleTicks: number
   championCooldownTicks: number
   claimConfirmationTicks: number
+  hasApiArena: boolean
 }
 
 const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
@@ -433,6 +446,7 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
   cycleTicks,
   championCooldownTicks,
   claimConfirmationTicks,
+  hasApiArena,
 }) => {
   const { t } = useTranslation()
   const currentEpochRange =
@@ -527,6 +541,34 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
         </Text>
 
         <Divider />
+
+        {hasApiArena && (
+          <Alert color="blue" variant="light">
+            <Stack gap={4}>
+              <Text size="sm" fw={700}>
+                {t('game.content.scoreboard.koth.api.info_title', 'API arena scoring')}
+              </Text>
+              <Text size="xs">
+                {t(
+                  'game.content.scoreboard.koth.api.info_body',
+                  'API arenas are not single-holder hills. Every team can score in the same tick. RSCTF independently normalizes each signed integer objective, then derives Activity (E), Objective performance (P), and Integrity (I); the referee cannot submit points.'
+                )}
+              </Text>
+              <Text size="xs" fw={700} className={cx(misc.ffmono, classes.scoringFormula)}>
+                {t(
+                  'game.content.scoreboard.koth.api.formula',
+                  'Arena score = 100 × I ÷ (35% ÷ E + 65% ÷ P); zero if E or P is zero'
+                )}
+              </Text>
+              <Text size="xs">
+                {t(
+                  'game.content.scoreboard.koth.api.anti_cheat',
+                  'The harmonic mean requires both real activity and objective performance. Only current-tick evidence that stays unchanged around the functional checker is scored. Omitted teams receive zero; stale, replayed, late, or changing snapshots cannot carry points forward.'
+                )}
+              </Text>
+            </Stack>
+          </Alert>
+        )}
 
         <Group gap="xs" align="flex-start" wrap="nowrap">
           <Icon path={mdiFlagVariantOutline} size={0.75} color="var(--mantine-color-teal-6)" />
@@ -684,6 +726,23 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
   }
 
   const openDetail = (team: KothTeamScoreRow) => setDetailParticipationId(team.participationId)
+  const hasApiArena = scoreboard.hills.some((hill) => hill.claimSource === 'Api')
+  const onlyApiArena = scoreboard.hills.every((hill) => hill.claimSource === 'Api')
+  const firstMetricLabel = onlyApiArena
+    ? t('game.content.scoreboard.koth.api.activity', 'Activity')
+    : hasApiArena
+      ? t('game.content.scoreboard.koth.api.activity_acquisition', 'Activity / acquisition')
+      : t('game.content.scoreboard.koth.epoch.column.acquisition', 'Acquisition')
+  const secondMetricLabel = onlyApiArena
+    ? t('game.content.scoreboard.koth.api.objective', 'Objective')
+    : hasApiArena
+      ? t('game.content.scoreboard.koth.api.objective_control', 'Objective / control')
+      : t('game.content.scoreboard.koth.epoch.column.control', 'Control')
+  const thirdMetricLabel = onlyApiArena
+    ? t('game.content.scoreboard.koth.api.integrity', 'Integrity')
+    : hasApiArena
+      ? t('game.content.scoreboard.koth.api.integrity_reliability', 'Integrity / reliability')
+      : t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')
 
   return (
     <Paper shadow="md" p={{ base: 'xs', sm: 'md' }}>
@@ -716,10 +775,15 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                 </Tooltip>
               </Group>
               <Text size="xs" c="dimmed">
-                {t(
-                  'game.content.scoreboard.koth.epoch.compact_description',
-                  'Settled is the primary rank value; exact ties use control, reliability, confirmed acquisitions, then participation ID.'
-                )}
+                {hasApiArena
+                  ? t(
+                      'game.content.scoreboard.koth.api.compact_description',
+                      'Settled epochs determine rank. API arenas score every team from normalized current-tick evidence; marker hills score exclusive control.'
+                    )
+                  : t(
+                      'game.content.scoreboard.koth.epoch.compact_description',
+                      'Settled is the primary rank value; exact ties use control, reliability, confirmed acquisitions, then participation ID.'
+                    )}
               </Text>
             </Stack>
           </Group>
@@ -828,6 +892,11 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                               <Badge size="xs" variant="light" color={statusColor(hill.lastCheckStatus)}>
                                 {status}
                               </Badge>
+                              {hill.claimSource === 'Api' && (
+                                <Badge size="xs" variant="light" color="blue">
+                                  {t('game.content.scoreboard.koth.api.badge', 'API arena')}
+                                </Badge>
+                              )}
                               {hill.currentHolderTeamName && (
                                 <Tooltip
                                   label={t('game.content.scoreboard.koth.held_by', {
@@ -857,71 +926,83 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                   </Table.Tr>
                   <Table.Tr>
                     <AdLikePinnedHeaderCells
-                      countLabel={t('game.content.scoreboard.koth.epoch.column.windows', 'Windows')}
+                      countLabel={
+                        onlyApiArena
+                          ? t('game.content.scoreboard.koth.api.active_ticks', 'Active ticks')
+                          : hasApiArena
+                            ? t('game.content.scoreboard.koth.api.evidence', 'Evidence')
+                            : t('game.content.scoreboard.koth.epoch.column.windows', 'Windows')
+                      }
                       totalLabel={t('game.content.scoreboard.koth.epoch.column.settled', 'Settled')}
                     />
-                    {scoreboard.hills.flatMap((hill) => [
-                      <Table.Th
-                        key={`${hill.challengeId}-score`}
-                        className={cx(classes.mono, classes.groupStart)}
-                        style={{ width: SUBCOL.score }}
-                        aria-label={t('game.content.scoreboard.koth.epoch.column.score', 'Hill score')}
-                      >
-                        <Tooltip
-                          label={t(
-                            'game.content.scoreboard.koth.epoch.detail.settled_hint',
-                            'Finalized hill contribution; orange text is the live projection.'
-                          )}
-                          withinPortal
+                    {scoreboard.hills.flatMap((hill) => {
+                      const isApiArena = hill.claimSource === 'Api'
+                      const firstMetric = isApiArena
+                        ? t('game.content.scoreboard.koth.api.activity', 'Activity')
+                        : t('game.content.scoreboard.koth.epoch.column.acquisition', 'Acquisition')
+                      const secondMetric = isApiArena
+                        ? t('game.content.scoreboard.koth.api.objective', 'Objective')
+                        : t('game.content.scoreboard.koth.epoch.column.control', 'Control')
+                      const thirdMetric = isApiArena
+                        ? t('game.content.scoreboard.koth.api.integrity', 'Integrity')
+                        : t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')
+                      return [
+                        <Table.Th
+                          key={`${hill.challengeId}-score`}
+                          className={cx(classes.mono, classes.groupStart)}
+                          style={{ width: SUBCOL.score }}
+                          aria-label={t('game.content.scoreboard.koth.epoch.column.score', 'Hill score')}
                         >
-                          <Center>
-                            <Icon path={mdiTrophyOutline} size={0.6} color={theme.colors.cyan[6]} />
-                          </Center>
-                        </Tooltip>
-                      </Table.Th>,
-                      <Table.Th
-                        key={`${hill.challengeId}-acquisition`}
-                        className={classes.mono}
-                        style={{ width: SUBCOL.acquisition }}
-                        aria-label={t('game.content.scoreboard.koth.epoch.column.acquisition', 'Acquisition')}
-                      >
-                        <Tooltip
-                          label={t('game.content.scoreboard.koth.epoch.column.acquisition', 'Acquisition')}
-                          withinPortal
+                          <Tooltip
+                            label={t(
+                              'game.content.scoreboard.koth.epoch.detail.settled_hint',
+                              'Finalized hill contribution; orange text is the live projection.'
+                            )}
+                            withinPortal
+                          >
+                            <Center>
+                              <Icon path={mdiTrophyOutline} size={0.6} color={theme.colors.cyan[6]} />
+                            </Center>
+                          </Tooltip>
+                        </Table.Th>,
+                        <Table.Th
+                          key={`${hill.challengeId}-acquisition`}
+                          className={classes.mono}
+                          style={{ width: SUBCOL.acquisition }}
+                          aria-label={firstMetric}
                         >
-                          <Center>
-                            <Icon path={mdiFlagVariantOutline} size={0.6} color={theme.colors.teal[6]} />
-                          </Center>
-                        </Tooltip>
-                      </Table.Th>,
-                      <Table.Th
-                        key={`${hill.challengeId}-control`}
-                        className={classes.mono}
-                        style={{ width: SUBCOL.control }}
-                        aria-label={t('game.content.scoreboard.koth.epoch.column.control', 'Control')}
-                      >
-                        <Tooltip label={t('game.content.scoreboard.koth.epoch.column.control', 'Control')} withinPortal>
-                          <Center>
-                            <Icon path={mdiCrown} size={0.6} color={theme.colors.blue[6]} />
-                          </Center>
-                        </Tooltip>
-                      </Table.Th>,
-                      <Table.Th
-                        key={`${hill.challengeId}-sla`}
-                        className={classes.mono}
-                        style={{ width: SUBCOL.sla }}
-                        aria-label={t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')}
-                      >
-                        <Tooltip
-                          label={t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')}
-                          withinPortal
+                          <Tooltip label={firstMetric} withinPortal>
+                            <Center>
+                              <Icon path={mdiFlagVariantOutline} size={0.6} color={theme.colors.teal[6]} />
+                            </Center>
+                          </Tooltip>
+                        </Table.Th>,
+                        <Table.Th
+                          key={`${hill.challengeId}-control`}
+                          className={classes.mono}
+                          style={{ width: SUBCOL.control }}
+                          aria-label={secondMetric}
                         >
-                          <Center>
-                            <Icon path={mdiTimerSandComplete} size={0.6} color={theme.colors.orange[6]} />
-                          </Center>
-                        </Tooltip>
-                      </Table.Th>,
-                    ])}
+                          <Tooltip label={secondMetric} withinPortal>
+                            <Center>
+                              <Icon path={mdiCrown} size={0.6} color={theme.colors.blue[6]} />
+                            </Center>
+                          </Tooltip>
+                        </Table.Th>,
+                        <Table.Th
+                          key={`${hill.challengeId}-sla`}
+                          className={classes.mono}
+                          style={{ width: SUBCOL.sla }}
+                          aria-label={thirdMetric}
+                        >
+                          <Tooltip label={thirdMetric} withinPortal>
+                            <Center>
+                              <Icon path={mdiTimerSandComplete} size={0.6} color={theme.colors.orange[6]} />
+                            </Center>
+                          </Tooltip>
+                        </Table.Th>,
+                      ]
+                    })}
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -961,6 +1042,10 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                         const cellBg = statusBg(hill.lastCheckStatus, theme, dark)
                         const status =
                           hill.lastCheckStatus ?? t('game.content.scoreboard.koth.not_checked', 'Not checked')
+                        const isApiArena = hill.claimSource === 'Api'
+                        const firstMetric = isApiArena ? 'activity' : 'acquisition'
+                        const secondMetric = isApiArena ? 'objective performance' : 'control'
+                        const thirdMetric = isApiArena ? 'integrity' : 'reliability'
                         const holderAccent = score.isCurrentHolder
                           ? `inset 3px 0 0 ${theme.colors.violet[dark ? 4 : 7]}`
                           : undefined
@@ -994,7 +1079,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                             key={`${hill.challengeId}-acquisition`}
                             className={classes.mono}
                             style={{ backgroundColor: cellBg }}
-                            aria-label={`${hill.title} acquisition ${formatPercent(score.acquisitionRate)}, ${score.acquisitionWindows} windows, ${status}`}
+                            aria-label={`${hill.title} ${firstMetric} ${formatPercent(score.acquisitionRate)}, ${score.acquisitionWindows} evidence ticks, ${status}`}
                           >
                             <Text size="xs" c={readableMetricColor('teal', dark)} className={misc.ffmono} fw={700}>
                               {formatPercent(score.acquisitionRate)}
@@ -1004,7 +1089,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                             key={`${hill.challengeId}-control`}
                             className={classes.mono}
                             style={{ backgroundColor: cellBg }}
-                            aria-label={`${hill.title} control ${formatPercent(score.controlRate)}, ${score.controlledTicks} ticks, ${status}`}
+                            aria-label={`${hill.title} ${secondMetric} ${formatPercent(score.controlRate)}, ${score.controlledTicks} positive ticks, ${status}`}
                           >
                             <Text size="xs" c={readableMetricColor('blue', dark)} className={misc.ffmono} fw={700}>
                               {formatPercent(score.controlRate)}
@@ -1014,7 +1099,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                             key={`${hill.challengeId}-sla`}
                             className={classes.mono}
                             style={{ backgroundColor: cellBg }}
-                            aria-label={`${hill.title} reliability ${formatPercent(score.reliabilityRate)}, ${score.healthyResponsibleTicks} of ${score.responsibleTicks} healthy responsible ticks, ${status}`}
+                            aria-label={`${hill.title} ${thirdMetric} ${formatPercent(score.reliabilityRate)}, ${score.responsibleTicks} evidence samples, ${status}`}
                           >
                             <Text size="xs" c={readableMetricColor('orange', dark)} className={misc.ffmono} fw={700}>
                               {formatPercent(score.reliabilityRate)}
@@ -1132,27 +1217,33 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
               <Group gap={4}>
                 <Icon path={mdiFlagVariantOutline} size={0.65} color={theme.colors.teal[6]} />
                 <Text size="xs" c={readableMetricColor('teal', dark)}>
-                  {t('game.content.scoreboard.koth.epoch.column.acquisition', 'Acquisition')}
+                  {firstMetricLabel}
                 </Text>
               </Group>
               <Group gap={4}>
                 <Icon path={mdiCrown} size={0.65} color={theme.colors.blue[6]} />
                 <Text size="xs" c={readableMetricColor('blue', dark)}>
-                  {t('game.content.scoreboard.koth.epoch.column.control', 'Control')}
+                  {secondMetricLabel}
                 </Text>
               </Group>
               <Group gap={4}>
                 <Icon path={mdiTimerSandComplete} size={0.65} color={theme.colors.orange[6]} />
                 <Text size="xs" c={readableMetricColor('orange', dark)}>
-                  {t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')}
+                  {thirdMetricLabel}
                 </Text>
               </Group>
             </Group>
             <Text size="xs" c="dimmed">
-              {t('game.content.scoreboard.koth.epoch.footer_hint', {
-                defaultValue: 'Crown marks the confirmed king. Cell tint shows latest health. Updated {{time}}.',
-                time: dayjs(scoreboard.generatedAt).format('LT'),
-              })}
+              {hasApiArena
+                ? t('game.content.scoreboard.koth.api.footer_hint', {
+                    defaultValue:
+                      'API arena labels are shown per hill; crown icons apply only to marker hills. Updated {{time}}.',
+                    time: dayjs(scoreboard.generatedAt).format('LT'),
+                  })
+                : t('game.content.scoreboard.koth.epoch.footer_hint', {
+                    defaultValue: 'Crown marks the confirmed king. Cell tint shows latest health. Updated {{time}}.',
+                    time: dayjs(scoreboard.generatedAt).format('LT'),
+                  })}
             </Text>
           </Stack>
           <ScoreboardPagination
@@ -1182,6 +1273,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
         cycleTicks={scoreboard.cycleTicks}
         championCooldownTicks={scoreboard.championCooldownTicks}
         claimConfirmationTicks={scoreboard.claimConfirmationTicks}
+        hasApiArena={hasApiArena}
       />
     </Paper>
   )

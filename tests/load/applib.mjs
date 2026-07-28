@@ -670,10 +670,21 @@ export async function teardownNamespace(gameIds) {
   // Preserve every durable runtime identity before attempting the public path.
   // A failed API delete must not erase the only way a retry can find a hill.
   const kothScope = kothRuntimeScope(ids);
-  const managedKothContainers = new Set([
+  const managedEventContainers = new Set([
     ...kothScope.targetContainerIds,
     ...kothOperationContainerIds(kothScope.cycleIds),
   ]);
+  const { disposableLoadGameRuntimeIds } = await import('./admin-fixtures.mjs');
+  for (const gameId of ids) {
+    const title = sql(`SELECT title FROM "Games" WHERE id=${gameId}`);
+    if (!title) continue;
+    if (!LOAD_GAME_TITLE_RE.test(title)) {
+      throw new Error(`teardown blocked for non-load game ${gameId}`);
+    }
+    for (const containerId of disposableLoadGameRuntimeIds(gameId, title)) {
+      managedEventContainers.add(containerId);
+    }
+  }
 
   // First use the public path so live containers and capabilities are revoked. A
   // concurrent scheduler/checker can make this return a transient 5xx; the exact
@@ -687,7 +698,7 @@ export async function teardownNamespace(gameIds) {
     if (!LOAD_GAME_TITLE_RE.test(title)) {
       throw new Error(`teardown blocked for non-load game ${g}: ${response.text}`);
     }
-    const runtimeIds = [...managedKothContainers].filter((containerId) => containerId);
+    const runtimeIds = [...managedEventContainers].filter((containerId) => containerId);
     removeManagedKothContainers(runtimeIds);
     mustDocker(
       docker(['exec', RSCTF, 'rm', '-rf', `/data/files/checkers/load/${g}`]),
@@ -701,8 +712,10 @@ export async function teardownNamespace(gameIds) {
       throw new Error(`teardown fallback did not remove game ${g}`);
     }
   }
-  for (const containerId of kothOperationContainerIds(kothScope.cycleIds)) managedKothContainers.add(containerId);
-  removeManagedKothContainers(managedKothContainers);
+  for (const containerId of kothOperationContainerIds(kothScope.cycleIds)) {
+    managedEventContainers.add(containerId);
+  }
+  removeManagedKothContainers(managedEventContainers);
   for (const g of ids) {
     if (Number(sql(`SELECT count(*) FROM "Games" WHERE id=${g}`)) === 0) {
       continue;
@@ -712,12 +725,12 @@ export async function teardownNamespace(gameIds) {
     const response = await deleteGameWithRetry(g);
     if (response.status < 300) continue;
     if (response.status === 400 && isDeletionProtectedByEvidence(response) && LOAD_GAME_TITLE_RE.test(title)) {
-      removeManagedKothContainers(managedKothContainers);
+      removeManagedKothContainers(managedEventContainers);
       mustDocker(
         docker(['exec', RSCTF, 'rm', '-rf', `/data/files/checkers/load/${g}`]),
         `remove checker directory for game ${g}`,
       );
-      await exactProtectedLoadGameCleanup(g, title, [...managedKothContainers]);
+      await exactProtectedLoadGameCleanup(g, title, [...managedEventContainers]);
       continue;
     }
     throw new Error(`teardownNamespace cleanup failed for game ${g}: ${response.status} ${response.text}`);
@@ -1432,7 +1445,7 @@ export async function configureKothApiObserver(gid, cid) {
     await api('POST', `/api/edit/games/${Number(gid)}/ad/koth/${Number(cid)}/observer`, {
       ...jwtOpt(),
     }),
-    'configure KotH API observer',
+    'configure KotH API referee',
   );
   const model = unwrap(response);
   if (
@@ -1441,18 +1454,46 @@ export async function configureKothApiObserver(gid, cid) {
     typeof model?.secret !== 'string' ||
     !model.secret.startsWith('koth_api_')
   ) {
-    throw new Error('configure KotH API observer returned an invalid one-time credential');
+    throw new Error('configure KotH API referee returned an invalid one-time credential');
   }
   return model.secret;
 }
 
 let lastKothObservationTimestamp = 0;
 
+export function kothApiEvidence(token, index) {
+  if (typeof token !== 'string') return null;
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  const objectiveTenths = 5 + (index % 6);
+  const activityEarned = 3 + (index % 3);
+  const validActions = 18 + (index % 3);
+  // Alternate the challenge-native objective budget while preserving the
+  // ratio. The platform must normalize 5/10 and 5,000/10,000 identically.
+  const firstObjective = Math.floor(index / 6) % 2 === 0
+    ? { earned: objectiveTenths, possible: 10 }
+    : { earned: objectiveTenths * 1_000, possible: 10_000 };
+  return {
+    tokenHash,
+    activity: { earned: activityEarned, possible: 5 },
+    objectives: [
+      firstObjective,
+      { earned: 750, possible: 1_000 },
+    ],
+    integrity: { earned: validActions, possible: 20 },
+  };
+}
+
 /**
- * Report one exact current KotH capability through the trusted observer API.
- * Returns the response so negative/replay scenarios can assert the rejection.
+ * Report a simultaneous normalized arena snapshot through the trusted referee
+ * API. Bearer capabilities are hashed locally and never enter the signed body.
  */
-export async function kothApiObservation(gid, cid, secret, token) {
+export async function kothApiObservation(
+  gid,
+  cid,
+  secret,
+  tokenOrTokens,
+  { omitLast = false } = {},
+) {
   const gameId = Number(gid);
   const challengeId = Number(cid);
   const contextResponse = await api(
@@ -1465,11 +1506,29 @@ export async function kothApiObservation(gid, cid, secret, token) {
       `fetch KotH API context → ${contextResponse.status} ${contextResponse.text?.slice(0, 200)}`,
     );
   }
-  const context = unwrap(contextResponse)?.context;
-  if (typeof context !== 'string' || !/^[0-9a-f]{64}$/.test(context)) {
+  const contextModel = unwrap(contextResponse);
+  const context = contextModel?.context;
+  if (
+    typeof context !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(context) ||
+    !Number.isSafeInteger(contextModel?.roundNumber) ||
+    !Number.isSafeInteger(contextModel?.roundStartsAt) ||
+    !Number.isSafeInteger(contextModel?.roundEndsAt) ||
+    !Array.isArray(contextModel?.eligibleTokenHashes)
+  ) {
     throw new Error('KotH API context response is malformed');
   }
-  const rawBody = JSON.stringify({ context, token });
+  const tokens = Array.isArray(tokenOrTokens)
+    ? tokenOrTokens
+    : typeof tokenOrTokens === 'string'
+      ? [tokenOrTokens]
+      : [];
+  const selectedTokens =
+    omitLast && tokens.length > 1 ? tokens.slice(0, -1) : tokens;
+  const teams = selectedTokens
+    .map((token, index) => kothApiEvidence(token, index))
+    .filter(Boolean);
+  const rawBody = JSON.stringify({ context, teams });
   const timestamp = Math.max(Date.now(), lastKothObservationTimestamp + 1);
   lastKothObservationTimestamp = timestamp;
   return api(
@@ -1483,11 +1542,23 @@ export async function kothApiObservation(gid, cid, secret, token) {
   );
 }
 
-export async function kothApiCaptureWrite(gid, cid, secret, token) {
-  const response = await kothApiObservation(gid, cid, secret, token);
+export async function kothApiCaptureWrite(
+  gid,
+  cid,
+  secret,
+  tokenOrTokens,
+  options,
+) {
+  const response = await kothApiObservation(
+    gid,
+    cid,
+    secret,
+    tokenOrTokens,
+    options,
+  );
   if (response.status !== 200) {
     throw new Error(
-      `write KotH API observation → ${response.status} ${response.text?.slice(0, 200)}`,
+      `write KotH API arena evidence → ${response.status} ${response.text?.slice(0, 200)}`,
     );
   }
   return unwrap(response);

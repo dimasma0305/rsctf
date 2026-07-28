@@ -104,6 +104,10 @@
     overflow-wrap: anywhere;
   }
 
+  .koth-handbook .journal-nowrap {
+    white-space: nowrap;
+  }
+
   .koth-handbook .journal-math {
     box-sizing: border-box;
     max-width: 100%;

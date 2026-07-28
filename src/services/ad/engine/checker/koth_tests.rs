@@ -28,6 +28,29 @@ fn deadline_limited_hill_retains_queue_and_marker_slack() {
 }
 
 #[test]
+fn api_snapshot_arrival_wait_preserves_probe_and_commit_runway() {
+    let now = tokio::time::Instant::now();
+    let timeout = Duration::from_secs(8);
+    let spacious_deadline = now + Duration::from_secs(30);
+    assert_eq!(
+        api_snapshot_arrival_deadline(spacious_deadline, timeout, now),
+        now + API_SNAPSHOT_ARRIVAL_GRACE
+    );
+
+    let tight_deadline = now + Duration::from_secs(14);
+    assert_eq!(
+        api_snapshot_arrival_deadline(tight_deadline, timeout, now),
+        now + Duration::from_secs(2)
+    );
+    assert!(checker_probe_can_start(
+        tight_deadline,
+        timeout,
+        KOTH_COMPLETION_MARGIN,
+        api_snapshot_arrival_deadline(tight_deadline, timeout, now),
+    ));
+}
+
+#[test]
 fn recovery_roster_excludes_already_committed_hills() {
     assert!(PENDING_KOTH_CHALLENGES_SQL.contains("NOT EXISTS"));
     assert!(PENDING_KOTH_CHALLENGES_SQL.contains("result.ad_round_id = $2"));

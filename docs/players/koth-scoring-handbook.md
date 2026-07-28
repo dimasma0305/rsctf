@@ -1,16 +1,16 @@
 ---
 title: How RSCTF Scores King of the Hill
-description: An implementation-aligned guide to RSCTF King of the Hill, written for first-time players and technical readers.
+description: An implementation-aligned guide to RSCTF boot2root and API-arena King of the Hill scoring.
 pageClass: koth-handbook
 ---
 
 <div class="journal-title-block">
   <p class="journal-series">RSCTF TECHNICAL PRACTICE PAPER</p>
-  <h1>How RSCTF Scores King of the Hill: The Crown-Cycle Model</h1>
+  <h1>How RSCTF Scores King of the Hill: Crown Cycles and Normalized API Arenas</h1>
   <p class="journal-authors">Dimas Maulana</p>
   <p class="journal-affiliation">RSCTF Project · Competition Platform</p>
-  <p class="journal-correspondence">Crown-cycle implementation · Manuscript version 2.5 · 14 July 2026</p>
-  <p class="journal-policy">Scoring policy: fixed crown-cycle KotH formula</p>
+  <p class="journal-correspondence">Implementation-aligned manuscript · Version 3.0 · 28 July 2026</p>
+  <p class="journal-policy">Scoring policy: one fixed formula per KotH format; no scoring versions</p>
 </div>
 
 <p class="pdf-download"><strong>Archival edition:</strong> <a href="../downloads/king-of-the-hill-scoring-handbook.pdf" download>Download the A4 journal PDF</a>.</p>
@@ -18,914 +18,838 @@ pageClass: koth-handbook
 ## Abstract
 
 <div class="journal-abstract">
-<p>In King of the Hill (KotH), every team attacks one shared service for each challenge. RSCTF's fixed scoring formula divides an epoch into shorter crown cycles: scored periods separated by clean resets. This design stops an early team from keeping the same patched challenge for the entire event. At each cycle boundary, RSCTF finalizes the evidence, destroys the old container, and starts one clean replacement from the same configured image. Scoring resumes only after an automated readiness test confirms that the replacement works. A new claim remains provisional until the checker observes the same team's code and a healthy service in consecutive rounds. When at least one challenger remains, the previous cycle's leader or tied leaders normally receive a one-tick block from that hill. The score is 100R(0.25A + 0.55C + 0.20√(AC)), where A measures confirmed acquisition, C measures sustained control, and R measures service reliability while the team is responsible. Control has the largest direct weight, and reliability scales the whole score. A blocked tick does not count as an opportunity for the affected team. Reset time, readiness time, incomplete code issuance, and platform faults do not count for any team. Finalized epochs determine rank; unfinished epochs appear only as projections. Equal final scores are resolved by control rate, reliability, confirmed acquisitions, and participation ID.</p>
+<p>RSCTF implements two King of the Hill (KotH) formats with different evidence semantics. Marker KotH is an exclusive boot2root contest: one shared machine has at most one observed controller, and the fixed local score is 100R(0.25A + 0.55C + 0.20√AC), where A is confirmed acquisition, C is sustained control, and R is service reliability during responsibility. API arena KotH is a multi-team application contest: every eligible team can produce evidence in the same tick. RSCTF normalizes challenge-native integer ratios into activity E, equal-weight objective performance P, and integrity I. It calculates a weighted harmonic core B = 1/(0.35/E + 0.65/P), with B = 0 when either E or P is zero, and assigns tick score 100IB. The platform calculates the nonlinear API result per tick before averaging, preventing evidence from different ticks from being recombined into performance that never occurred. Both formats use exact game, hill, round, cycle, reset, target, container, and capability-generation fences; an independent functional checker; field-wide void treatment for infrastructure failures; pristine crown-cycle replacements; bounded hill normalization; and finalized epoch settlement. The API referee submits signed evidence rather than points or raw capabilities. Omitted teams receive explicit zero rows, while missing, changing, late, or unhealthy field snapshots are void. These properties bound and audit the calculation, but they do not establish empirical fairness or prove that a challenge's evidence definitions measure the intended skill.</p>
 </div>
 
-<p class="journal-keywords"><strong>Keywords:</strong> King of the Hill; capture the flag; cybersecurity competition; crown cycle; qualified capture; service reliability; transactional recovery; RSCTF</p>
+<p class="journal-keywords"><strong>Keywords:</strong> King of the Hill; capture the flag; boot2root; API challenge; normalization; harmonic mean; anti-cheat; crown cycle; evidence integrity; RSCTF</p>
 
-<p class="journal-status"><strong>Document status:</strong> versioned technical-practice report, not a claim of peer review. Appendix C maps implementation claims to repository source files.</p>
+<p class="journal-status"><strong>Document status:</strong> technical-practice report aligned to the repository revision that contains it; not a claim of peer review or empirical validation. Appendix C maps the rules to source files.</p>
 
-## Start here: KotH in 60 seconds {#start-here}
+## Start here: KotH in 90 seconds {#start-here}
 
-### The big idea
+### Choose the format shown on the hill
 
-Every team attacks the same running challenge. Teams do not get separate copies.
-Become king by placing your team's current code on the shared hill and keeping
-the challenge working.
+**Marker / boot2root** means one shared machine and one holder:
 
-A **healthy check** means that RSCTF sees your team code and confirms that the
-challenge still works.
+1. exploit or administer the hill;
+2. place your current capability in `/koth/king`;
+3. keep the service healthy through confirmation; and
+4. hold it until another team takes over or the clean reset begins.
 
-### Play in four steps
+**API arena** means every team may score concurrently:
 
-1. **Attack the hill:** find a way into the shared challenge.
-2. **Place your claim:** copy your current team code from the KotH toolkit and
-   use the challenge's published claim mechanic. Marker hills use `/koth/king`;
-   API-observed hills report the challenge's result through an independent
-   organizer controller.
-3. **Pass two checks:** RSCTF shows **Provisional** when it first sees your valid
-   code. With the default settings, two consecutive healthy checks confirm you
-   as king.
-4. **Hold it:** keep your code there and keep the challenge working. Another
-   team can replace your code and take the crown.
+1. use the challenge's player-facing API;
+2. complete meaningful, verified actions;
+3. optimize each published objective; and
+4. avoid invalid attempts, which lower integrity.
 
-### How points work
+Players never call the organizer's signed referee endpoint.
 
-You earn more by doing three things:
+### The two fixed formulas
 
-- taking the hill;
-- holding it longer, which matters most; and
-- keeping it working while you control it.
+Marker KotH:
 
-If the challenge breaks while your team controls it, your whole KotH score goes
-down.
+```text
+Core  = 0.25A + 0.55C + 0.20 * sqrt(A * C)
+Local = 100 * R * Core
+```
 
-### What starts over
+API arena KotH:
 
-A **crown cycle** is a short block of scoring rounds. At its end, RSCTF pauses
-scoring, saves the result, removes the old challenge, and opens a clean copy.
-Your patches and access disappear, and old team codes stop working. Teams
-receive new codes and compete again. The leading team is normally blocked for
-the first scored round. If teams tie for the lead, RSCTF blocks every tied
-leader unless that would leave no challenger.
+```text
+B = 0                                  if E = 0 or P = 0
+B = 1 / (0.35 / E + 0.65 / P)         otherwise
+Tick = 100 * I * B
+```
 
-### Read the board
+Marker `A/C/R` and arena `E/P/I` are different evidence, even though the board
+uses the same three compact metric columns. The hill's format badge determines
+their labels.
 
-**Projected** can still change. **Settled** is final and determines the official
-rank.
+### What resets and what settles
 
-**New player?** Continue with Sections 2.1-2.4, the scoreboard guide in Section
-3.6, and Section 7. The later sections explain the exact mathematics, recovery
-rules, and organizer controls.
+Several ticks form a **crown cycle**. At its boundary, RSCTF pauses the hill,
+destroys the old container, creates one pristine replacement from the frozen
+image, issues new capabilities, verifies readiness, and then resumes. Old
+capabilities, player changes, transient API sessions, and stale evidence stop
+working.
 
-### Key terms used in this handbook
+Several cycles form an **epoch**. **Projected** includes unfinished evidence;
+**Settled** includes only finalized epochs and determines official rank.
 
-- The **hill** is the one running challenge shared by every team.
-- A **team code** is the current secret value that identifies your claim. The
-  technical sections also call it a **token** or **capability**.
-- The **claim input** is either the `/koth/king` marker or a signed observation
-  from a trusted organizer-side API controller.
-- The **checker** is RSCTF's automated test. It reads the snapshotted claim
-  input and checks that the challenge still works.
-- A **crown cycle** is the short scored period between clean resets.
-- An **epoch** is a longer group of scored rounds that produces one result.
-- When at least one challenger remains, a **cooldown** temporarily blocks the
-  previous cycle's strongest controller or tied controllers from this hill.
-- **Readiness** is RSCTF's test that a clean replacement is working before
-  scoring resumes.
+## 1. Scope and design requirements {#introduction}
 
-![King of the Hill: attack the shared challenge, place your team code, pass two healthy checks, hold it, and start again after a clean reset](/diagrams/koth-gameplay-overview.svg)
+### 1.1 Why the formats are separate
 
-<p class="journal-figure-caption"><strong>Figure 1.</strong> KotH in one picture. All teams attack the same running challenge. Seeing a valid team code creates a provisional claim; two healthy checks confirm the king by default. Teams score for taking the hill, holding it, and keeping it working. A clean reset starts the next cycle.</p>
+A boot2root hill asks which team controls one shared target. Its natural
+evidence is exclusive identity, duration, and service responsibility. An
+application arena may instead expose puzzles, transactions, simulations, or
+protocol objectives that several teams can complete simultaneously. Treating
+the latter as a disguised one-holder marker discards useful evidence and
+encourages last-write races. Treating the former as a generic point feed gives
+an external component authority over the official score.
 
-## 1. Introduction {#introduction}
+RSCTF therefore freezes one of two meanings for each hill:
 
-The technical sections use **capability** and **token** for the team code. A
-**container** is the running shared challenge. These exact names let RSCTF tie
-each checker result to one team code and one running challenge.
+| Format | Concurrent scorers | Evidence | Platform result |
+| --- | ---: | --- | --- |
+| <code class="journal-nowrap">Marker</code> | At most one observed controller per tick | current capability, confirmation, control, checker verdict | `A`, `C`, `R`, marker formula |
+| <code class="journal-nowrap">Api</code> | Every eligible team | bounded activity, objective components, valid/all actions | `E`, `P`, `I`, arena formula |
 
-King of the Hill places every team against the same service. A team claims
-control by presenting its exact current capability through the challenge's
-published mechanic. The checker reads either the standard `/koth/king` marker or
-a signed observation from an independent organizer controller, then tests the
-service. The hill is exclusive: one KotH challenge has one active shared
-container. A takeover changes the holder of that container; it does not create
-a separate instance for the attacking team.
+An API credential configured before official scoring selects `Api`; otherwise
+the hill is `Marker`. The frozen source cannot change during official scoring.
 
-The fixed formula addresses two fairness problems. An early team could harden
-the container so thoroughly that the rest of the event becomes a permanent
-defense exercise. A team could also write its marker briefly and appear to
-capture the hill even if the service immediately fails or another team takes
-over at the next check. Fixed resets address the first problem. Consecutive
-healthy observations, called **qualified capture evidence**, address the second.
-Patching remains useful, but each patch lasts only until the next clean
-crown-cycle reset.
+### 1.2 Shared invariants
 
-The score measures three outcomes during each fixed **epoch**, or scoring block:
-confirmed acquisition, observed control, and service reliability while a team
-is responsible. Sustained control receives the largest direct coefficient.
-Reliability multiplies the complete acquisition-control result, so a team cannot
-preserve a large offensive score while leaving the service broken.
+Both formats must preserve the following requirements:
 
-![One twelve-tick KotH epoch divided into four three-tick crown cycles](/diagrams/koth-three-clocks.svg)
+1. **Constant policy.** Each format has one formula; organizers cannot select a
+   version or alter coefficients.
+2. **Bounded result.** One hill-epoch score remains in `[0,100]`, and normalized
+   hill aggregation preserves the 100-point epoch ceiling.
+3. **Current evidence only.** Every scored sample belongs to the exact game,
+   challenge, round, cycle, reset attempt, target, container, and capability
+   generation.
+4. **Independent health.** A functional checker, not the scoring feed, decides
+   whether the shared application works.
+5. **No stale carry.** Missing team evidence becomes zero in an otherwise valid
+   API tick. A missing field snapshot becomes void; neither repeats a previous
+   result.
+6. **Infrastructure neutrality.** Reset, readiness, incomplete issuance, and
+   platform-attributed failures do not become participant penalties.
+7. **Auditable settlement.** Immutable tick evidence precedes epoch
+   finalization, and retries cannot create duplicate credit.
+8. **Bounded and frozen state.** Inputs, rosters, objective counts, replay
+   memory, and retained challenge evidence have explicit limits. The first
+   accepted snapshot containing a recognized team freezes the objective
+   component count for the event. Referee credential rotation or revocation
+   cannot change that challenge-owned scheme.
 
-<p class="journal-figure-caption"><strong>Figure 2.</strong> Default RSCTF cadence. A twelve-tick epoch contains four three-tick crown cycles. Each cycle starts only after a pristine replacement passes readiness. RSCTF excludes reset and readiness time from scoring.</p>
+Marker-specific requirements are contestable exclusive control, qualified
+capture, and responsibility for service health. API-specific requirements are
+multi-team normalization, meaningful activity, same-tick integrity, and
+challenge evidence that requires actual play.
 
-### 1.1 Design requirements
+### 1.3 Relation to other systems
 
-The scoring and reset code must preserve eight requirements:
+Bock, Hughey, and Levin describe an instructional KotH in which taking a shared
+machine also creates responsibility for critical services [[2]](#ref-2).
+Marker KotH follows that exclusive-control interpretation while using periodic
+clean resets and fixed epoch weights.
 
-1. **One hill means one container.** Reset logic never permits two active
-   containers for the same target.
-2. **Control must be contestable.** A pristine same-image reset bounds the
-   lifetime of patches, implants, credentials, and filesystem changes.
-3. **A capture must be qualified.** By default, two consecutive healthy checker
-   observations distinguish a sustained claim from a momentary marker write.
-4. **Sustained control must matter more than capture speed.** Control has a 55%
-   direct coefficient; acquisition has 25%.
-5. **Service correctness must constrain the whole score.** Reliability
-   multiplies every acquisition and control contribution.
-6. **Forced cooldown must remove opportunity, not assign failure.** A cooled
-   champion's personal denominators omit its blocked tick.
-7. **Infrastructure faults must not become player penalties.** Reset, readiness,
-   incomplete token issuance, and `InternalError` evidence are void.
-8. **Every transition must be auditable and recoverable.** Each evidence record
-   identifies its game, hill, cycle, reset attempt, container, round, and token
-   window. These identities let operators trace and safely resume interrupted
-   work.
+CTFd documents a KotH agent that reports the current identifier and awards a
+configured reward at each check [[3]](#ref-3). This is comparable to marker
+sampling, although RSCTF separately records provisional control, confirmation,
+duration, and reliability.
 
-These properties do not prove that every challenge is balanced. Event organizers
-remain responsible for checker quality, equivalent network access, challenge
-design, collusion rules, and incident decisions.
+rCTF documents a signed dynamic-score endpoint that accepts absolute
+`userId/points` setters. Its contract permits negative points, preserves an
+omitted team's earlier value, and relies on the publisher to stop after the
+event deadline [[5]](#ref-5). RSCTF reuses the useful exact-body HMAC and replay
+ideas, but its API arena does not accept external points. It applies event and
+round gates, normalizes bounded evidence, writes explicit zeros for omitted
+eligible teams, and calculates every score internally.
 
-### 1.2 Relation to prior KotH and A&D systems
-
-Bock, Hughey, and Levin (2018) describe an instructional KotH in which teams
-claim shared machines, become responsible for critical services, and receive
-points at repeated checks [[2]](#ref-2). Their scoring gives later rounds more
-value because hardened systems should become harder to retake. RSCTF takes a
-different approach: periodic clean resets preserve opportunities to retake the
-hill, and every complete epoch containing evidence has equal weight.
-
-CTFd's documented KotH challenge checks an agent at intervals and awards a
-configured reward to the identifier it reports [[3]](#ref-3). RSCTF also reads
-an identity marker, but it records four parts separately before calculating the
-score: provisional control, confirmed acquisition, control duration, and service
-reliability.
-
-FAUST CTF uses Attack & Defense rather than a single shared hill. Its public
-rules provide an operational comparison because both systems use repeated ticks
-and service checks [[4]](#ref-4). The two formats do not use the same target
-layout or scoring formula.
+FAUST CTF is an Attack & Defense system rather than a shared hill, but it offers
+an operational comparison because it also uses repeated rounds and service
+checks [[4]](#ref-4). Its target topology and score are not the RSCTF KotH
+model.
 
 ## 2. Competition protocol {#competition-protocol}
 
-### 2.1 Shared hill and control observation
+### 2.1 Marker / boot2root protocol
 
-RSCTF runs each enabled ranked KotH challenge in one managed container. It
-publishes the container's unique identity so each checker result identifies the
-correct running challenge. When official scoring starts, RSCTF records and locks
-the configured image and claim source for scoring history.
-
-The standard `Marker` source reads this file inside the exact container:
+RSCTF runs one managed shared container for each marker hill. It issues a
+high-entropy bearer capability to every eligible team for the exact hill and
+reset attempt. A team claims by writing its current value to:
 
 ```text
 /koth/king
 ```
 
-The optional `Api` source accepts an observation from a challenge-scoped trusted
-controller. The controller fetches an opaque context bound to the exact game,
-challenge, target, crown cycle, reset attempt, and active container. It then
-posts the current capability or an explicit uncaptured state with an
-HMAC-SHA256 signature over the timestamp, game, challenge, and exact raw body.
-Requests have a five-minute clock window, accepted signatures cannot be
-replayed, and request timestamps must advance monotonically. A reset changes
-the context, so an old signed request cannot attach to a replacement container.
+The checker reads the marker immediately before and after the functional probe.
+A stable eligible capability creates control and responsibility evidence. The
+first healthy observation is provisional; the configured consecutive healthy
+streak confirms acquisition. A different capability begins a different claim.
 
-The observer secret belongs only in the independent organizer service. It must
-not be placed in the attacker-controlled hill or a player client. The observer
-does not submit a team ID or points; it submits only the exact current
-capability. RSCTF resolves that capability against the live issuance window and
-remains the sole scoring authority.
+The previous cycle's team or tied teams with the most confirmed healthy
+controlled ticks normally receive the configured opening cooldown, unless
+blocking all tied leaders would leave no challenger. The blocked tick is
+removed from that team's personal opportunity denominator.
 
-A team follows five steps. Here, the **active reset attempt** identifies the
-specific clean container created for the current cycle.
+### 2.2 API arena protocol
 
-1. obtain its current capability for the hill and active reset attempt;
-2. exploit or administer the published shared service;
-3. present only that capability through the published marker or challenge
-   capture mechanic;
-4. preserve the behavior required by the functional checker; and
-5. keep control stable for the configured confirmation streak.
+The player-facing application receives a capability through its documented
+mechanic, hashes it immediately with SHA-256, and records only the lowercase
+digest alongside independently verified actions. The trusted referee runs
+outside the player-facing container.
 
-Players do not submit a KotH capture to RSCTF through a separate endpoint. In
-API mode, only the organizer's trusted observer calls the signed endpoint.
-Either input creates evidence only when the checker reads the same claim around
-the functional probe for the exact active context before the event deadline.
+For each active scoring round, the referee fetches a context bound to the exact
+runtime and receives the current eligible capability hashes. It filters the
+untrusted challenge feed against that set and submits:
 
-### 2.2 Crown-cycle lifecycle
+- one activity `earned/possible` ratio;
+- one to sixteen objective `earned/possible` ratios; and
+- one integrity `valid/total` ratio per active team.
 
-The default values are:
+The signed body contains `tokenHash`, never the raw bearer token. It contains
+no team ID and no point value. RSCTF resolves hashes against current
+capabilities, normalizes the evidence, and reports submitted and recognized
+counts.
 
-| Setting | Default | Valid range |
-| --- | ---: | --- |
-| Epoch length | 12 ticks | 2-64 ticks |
-| Crown-cycle length | 3 ticks | At least 1, at most half the epoch, and an exact divisor of the epoch |
-| Previous-champion cooldown | 1 tick | 0 through cycle length minus 1 |
-| Claim confirmation | 2 ticks | 1 through the cycle length |
+The checker allows a bounded six-second current-round arrival window, then
+reads the complete snapshot before and after its independent functional
+probe. A byte-equivalent current snapshot plus an `Ok` checker
+verdict creates one dense result row for every frozen eligible team. Omitted
+teams receive zero. A changing snapshot or unhealthy shared application voids
+the field-wide tick.
 
-At each crown-cycle boundary, RSCTF stores every completed phase of one
-**durable transition** so an interrupted reset can resume without repeating
-work: **finalize → pause → replace → issue new claim codes → prove readiness →
-resume.** The phases are:
+API mode does not elect a holder, create a provisional crown, confirm
+acquisition, or apply champion-cooldown scoring. Multiple teams can score in
+the same tick.
 
-1. finalize the previous cycle's evidence and select its champion or tied champions;
-2. stop assigning checker results and scores to the hill;
-3. record an audit receipt and a filesystem diff when the runtime supports it;
-4. destroy the old container completely;
-5. create one replacement from the same snapshotted challenge image;
-6. publish the replacement's exact container identity and network endpoint;
-7. clear the previous holder, responsibility, provisional claim, and stale claim-input state;
-8. revoke old claim codes and issue one fresh capability per eligible team and hill;
-9. run readiness and the functional checker against the replacement;
-10. install the champion cooldown at the VPN/firewall layer when configured; and
-11. activate the cycle only after readiness succeeds.
+### 2.3 Crown-cycle lifecycle
 
-Reset and readiness rounds do not count as scoring opportunities for any team.
-After a crash, RSCTF resumes from the last stored phase. It does not create a
-second active container or award the same scoring credit again.
+Both formats use a durable lifecycle:
 
-### 2.3 Qualified capture
+```text
+finalize → pause → audit/snapshot → destroy → create → issue → readiness → resume
+```
 
-The first scorable checker observation of an eligible current capability creates
-a **provisional claimant**, meaning the checker has seen the team's claim but has
-not confirmed it. The service verdict can be `Ok`, `Mumble`, or `Offline`. That
-sample immediately counts as one controlled tick and one responsible tick, but
-it does not award acquisition credit. Under the default configuration, the
-checker must then observe the same token, the same team, and an `Ok` service for
-two consecutive scorable rounds.
+At every boundary, RSCTF stores the transition phase, prevents a second replica
+from owning the same hill operation, destroys the previous container, launches
+one replacement from the snapshotted image, clears transient claim or API
+snapshot state, revokes old capabilities, issues the new exact window, and
+resumes only after readiness and the functional checker succeed.
 
-A different valid token starts a new streak for its team. `Mumble` or `Offline`
-resets the current claimant's confirmation progress to zero but leaves the claim
-provisional. `InternalError`, reset time, readiness time, and
-incomplete capability issuance create **void evidence**, meaning the sample
-counts for no team. A void sample pauses confirmation: it neither penalizes the
-claimant nor erases an earlier healthy step. On confirmation, RSCTF writes one
-permanent acquisition receipt for that exact cycle and token. Retrying the same
-operation cannot create a second receipt.
+Marker mode also derives its previous champion and installs any enforceable
+cooldown. API mode has no exclusive champion; the lifecycle reset instead
+clears sessions, challenge state, stale hashes, and accumulated player changes.
 
-The public board therefore distinguishes three states:
+Reset and readiness intervals create no scoring opportunity. A crash-safe retry
+resumes the stored phase rather than starting a parallel replacement.
 
-- no observed eligible claim;
-- provisional claimant with `progress / required` healthy observations; and
-- confirmed king.
+### 2.4 Exact attribution and void evidence
 
-### 2.4 Previous-champion cooldown
+One immutable checker result is allowed per game, challenge, and scoring round.
+Scorable evidence must match the frozen hill, active cycle, reset attempt,
+container identity, round deadline, and current capability window.
 
-RSCTF selects the previous cycle's champion by counting each team's confirmed
-ticks that were both controlled and healthy. The team with the highest count
-wins the cycle; the last observed claim alone does not decide the result. Every team tied
-for the highest count enters the champion set. RSCTF disables cooldown for that
-cycle if blocking the full tied set would leave no eligible challenger.
-
-Cooldown starts only after the clean replacement passes readiness. The VPN or
-firewall blocks each affected team from that hill, and the application rejects
-its capability as a second check. The block does not affect the rest of the event.
-By default, cooldown lasts one **authoritative scoring round**: one round counted
-by the platform scheduler, not a wall-clock timer. RSCTF removes that round from
-the cooled team's own total of available scoring opportunities. An acquisition
-window still counts as an opportunity for that team if the window contains a
-later scorable tick after cooldown.
-
-This rule requires enforceable network isolation. If an external target cannot
-support a firewall rule for one specific hill, the organizer must reject that
-configuration or clearly disable cooldown. The interface must not report an
-unenforced cooldown as active.
-
-### 2.5 Tick, cycle, and epoch
-
-<p class="journal-table-caption koth-keep-table"><strong>Table 1.</strong> Operational clocks and scoring effects.</p>
-
-| Clock | Definition | Scoring effect |
-| --- | --- | --- |
-| **Tick / round** | One pass of the scheduler, with at most one permanent checker result per hill. | Records who controlled the hill, who was responsible, and whether the service worked. |
-| **Crown cycle** | A fixed set of active scoring ticks played on one clean container. | Defines claim codes for that reset, acquisition opportunities, and the cycle champion. |
-| **Epoch** | A fixed number of scoring ticks combined into one score bounded from 0 to 100. | Produces one equal-weight official score after finalization; a shortened final epoch receives proportional weight. |
-
-At the official scoring boundary, the platform stores a fixed copy, or
-**snapshot**, of the timing settings, accepted teams, enabled
-hills, service weights, configured images, and each hill's claim source. Later configuration changes
-cannot rewrite finalized history.
-
-### 2.6 Exact attribution and void evidence
-
-A control observation can affect the score only if its game, challenge, round,
-cycle, reset attempt, token, target, and container identity all match the active
-hill. An old capability cannot authenticate after a reset. A late checker result
-from the destroyed container cannot enter the replacement's score.
-
-The checker reads the snapshotted claim input immediately before and after
-testing the service. If the capability changes during that test, RSCTF does not
-elect a new controller. In API mode, both reads require an accepted observation
-for the exact active cycle, reset attempt, target, and container.
-When the platform confirms that a container stopped, it records a final receipt
-for that exact container and schedules recovery. If the runtime inspection is
-uncertain, the checker records `InternalError`; it does not assume that a team
-caused downtime.
+`InternalError`, incomplete token issuance, and uncertain runtime inspection
+are platform voids. A confirmed stopped container is handled through durable
+recovery. For marker mode, the responsible team may receive the final
+authoritative availability outcome before reset. For API mode, the shared
+application failure voids all teams for that tick because the checker cannot
+attribute a global service failure to one arena participant.
 
 ## 3. Evidence and scoring method {#scoring-method}
 
-### 3.1 Evidence counts and personal denominators
+### 3.1 Marker acquisition, control, and reliability
 
-The score compares what a team achieved with the opportunities it actually had.
-In a fraction, the bottom number is the **denominator**. A personal denominator
-removes field-wide void rounds and any cooldown round forced on that team. For
-team $i$, hill $h$, and epoch $e$, define:
+For team $i$, hill $h$, and epoch $e$, define:
 
-A team is **responsible** for a scorable tick when the checker observes its
-eligible code. If no new eligible code appears, the confirmed king remains
-responsible. A platform-void sample adds no responsible tick to the score.
-
-<p class="journal-table-caption koth-keep-table"><strong>Table 2.</strong> Fixed-formula evidence counts.</p>
-
-| Symbol | Count |
+| Symbol | Marker evidence |
 | --- | --- |
-| $x_{ihe}$ | Number of acquisition windows in which the team confirmed a capture. |
-| $y_{ihe}$ | Number of acquisition windows in which the team had at least one scorable, non-cooldown chance to capture. |
-| $u_{ihe}$ | Number of scorable ticks controlled by the team's exact current capability. |
-| $s_{ihe}$ | Number of ticks the team could personally score after removing field-wide voids and its own cooldown exclusions. |
-| $b_{ihe}$ | Number of responsible ticks in which the checker returned `Ok`. |
-| $d_{ihe}$ | Number of scorable ticks for which the team was responsible. |
-| $w_h$ | Snapshotted service weight, constrained to $[0.8,1.2]$. |
-| $z_{he}$ | Hill evidence switch: one when the hill has at least one scorable tick in the epoch, otherwise zero. |
+| $x_{ihe}$ | capability windows in which the team confirmed acquisition |
+| $y_{ihe}$ | windows in which the team had at least one eligible opportunity |
+| $u_{ihe}$ | scorable ticks controlled by the team's exact capability |
+| $s_{ihe}$ | personally eligible scorable ticks after void/cooldown removal |
+| $b_{ihe}$ | responsible ticks with checker verdict `Ok` |
+| $d_{ihe}$ | ticks for which the team was responsible |
 
-`InternalError`, reset and readiness time, incomplete token issuance, and
-platform-attributed failures count for no team. A champion cooldown is removed
-only from that champion's $s_{ihe}$. RSCTF removes an acquisition window from a
-team's denominator only when that team had no eligible scoring opportunity
-during the entire window.
-
-### 3.2 Acquisition, control, and reliability
-
-The acquisition, control, and reliability rates measure capture success,
-duration of control, and service health during responsibility:
+The rates are:
 
 $$
 A_{ihe}=\frac{x_{ihe}}{y_{ihe}},\qquad
 C_{ihe}=\frac{u_{ihe}}{s_{ihe}},\qquad
 R_{ihe}=\frac{b_{ihe}}{d_{ihe}}.
-\qquad\text{(1)}
+\tag{1}
 $$
 
-Here, $A$ is the acquisition rate, $C$ is the control rate, and $R$ is the
-reliability rate. An empty denominator produces zero. The implementation rejects
-counts that are negative or not finite, then limits each rate to $[0,1]$. A team
-with no responsible tick has $R=0$ and receives no points.
-
-RSCTF first combines acquisition and control into the following intermediate
-value, $B$:
+An empty denominator produces zero. The fixed marker core and local score are:
 
 $$
-B_{ihe}=0.25A_{ihe}+0.55C_{ihe}
-        +0.20\sqrt{A_{ihe}C_{ihe}}.
-\qquad\text{(2)}
+B^{M}_{ihe}
+=0.25A_{ihe}+0.55C_{ihe}
+ +0.20\sqrt{A_{ihe}C_{ihe}},
+\tag{2}
 $$
 
-It then multiplies $B$ by reliability to calculate the local hill score:
-
 $$
-L_{ihe}=100R_{ihe}B_{ihe}.
-\qquad\text{(3)}
+L^{M}_{ihe}=100R_{ihe}B^{M}_{ihe}.
+\tag{3}
 $$
 
-Equation (2) makes sustained control more valuable than capture speed. A team
-with $A=1,C=0,R=1$ scores 25; it captured every available window but held no
-scorable tick. A team with $A=0,C=1,R=1$ scores 55; it controlled every scorable
-tick but earned no acquisition. The square-root term rewards doing both.
-Equation (3) then applies reliability to the entire result.
+Control has the largest direct coefficient. The geometric balance term rewards
+teams that both acquire and retain the hill, while reliability constrains the
+complete result.
 
-![Evidence flows through qualified acquisition, control, reliability, hill normalization, and epoch settlement](/diagrams/koth-scoring-pipeline.svg)
+### 3.2 API evidence normalization
 
-<p class="journal-figure-caption"><strong>Figure 3.</strong> Fixed-formula pipeline. Exact cycle/container evidence becomes bounded personal rates before hill normalization and finalized-epoch aggregation.</p>
-
-### 3.3 Hill normalization
-
-When an event has several hills, RSCTF combines their local scores without
-raising the 100-point epoch limit. Let $H_e$ be the set of hills represented in
-epoch $e$. The normalized team score is:
+For team $i$, hill $h$, tick $t$, let activity evidence be
+$a^+_{iht}/a^\ast_{iht}$, integrity evidence be
+$v_{iht}/n_{iht}$, and let objective $j$ report
+$o^+_{ihtj}/o^\ast_{ihtj}$. Every numerator and denominator is an integer
+with:
 
 $$
-E_{ie}=
-\frac{\sum_{h\in H_e}z_{he}w_hL_{ihe}}
-     {\sum_{h\in H_e}z_{he}w_h}.
-\qquad\text{(4)}
+0\leq \text{earned}\leq\text{possible}\leq10^{12}.
+\tag{4}
 $$
 
-If the denominator is zero, the epoch contributes zero. Service weights change
-how much each hill influences the result, but the epoch still cannot exceed 100
-points. A hill with no scorable evidence for any team has $z_{he}=0$, so it does
-not lower every team's score as an assumed failure. After the hill records one
-scorable tick, $z_{he}=1$ and its approved weight applies. Equation (1) has
-already removed individual void samples from each team's denominator.
-
-### 3.4 Epoch weight and totals
-
-Every complete epoch with at least one scorable tick for the field has weight
-one. Other void samples can reduce its denominators but not its epoch weight. A
-complete epoch made entirely of field-wide voids has weight zero because it
-contains no performance that RSCTF can assign to a team. A final event may stop
-partway through an epoch. For that partial final epoch, let $p_{he}$ be the
-number of played scorable ticks for hill $h$ and let $n$ be the configured epoch
-length. Its weight is:
+RSCTF calculates:
 
 $$
-q_e=\frac{\sum_{h\in H_e}w_hp_{he}}
-          {n\sum_{h\in H_e}w_h}.
-\qquad\text{(5)}
+E_{iht}=\frac{a^+_{iht}}{a^\ast_{iht}},\qquad
+I_{iht}=\frac{v_{iht}}{n_{iht}},
+\tag{5}
 $$
 
-For the set of included epochs $J$, the total is:
+$$
+p_{ihtj}=\frac{o^+_{ihtj}}{o^\ast_{ihtj}},\qquad
+P_{iht}=\frac{1}{m}\sum_{j=1}^{m}p_{ihtj},
+\quad 1\leq m\leq16.
+\tag{6}
+$$
+
+Each objective is converted to a fixed integer normalization scale before the
+mean. This makes Equation (6) deterministic without trusting floating-point
+values in the signed request. More importantly, native scale does not imply
+weight: a `9/10` objective and a `900/1000` objective each contribute one
+normalized component.
+
+### 3.3 API tick formula
+
+The API core is a weighted harmonic mean:
 
 $$
-T_i(J)=\frac{\sum_{e\in J}q_eE_{ie}}
-             {\sum_{e\in J}q_e}.
-\qquad\text{(6)}
+B^{A}_{iht}=
+\begin{cases}
+0, & E_{iht}=0\ \text{or}\ P_{iht}=0,\\[4pt]
+\displaystyle
+\frac{1}{0.35/E_{iht}+0.65/P_{iht}}, & \text{otherwise}.
+\end{cases}
+\tag{7}
 $$
 
-RSCTF does not make late rounds worth more. For example, a three-tick final tail
-in the default twelve-tick epoch has weight $3/12=0.25$.
+The immutable tick score rate and point value are:
 
-### 3.5 Settled score, projection, and rank
+$$
+G_{iht}=I_{iht}B^{A}_{iht},\qquad
+L^{A}_{iht}=100G_{iht}.
+\tag{8}
+$$
 
-**Settled** includes only finalized epochs. It is the value used for official
-rank. **Projected** also includes unfinished evidence, so it can change while
-the current epoch continues. A projected value never breaks an official tie.
+Both activity and objective performance are necessary. The larger objective
+weight makes poor objective performance more costly than equally poor activity,
+but the harmonic form remains sensitive to either bottleneck. Integrity
+multiplies the same tick's core.
 
-Equal Settled scores are resolved by higher control rate, higher reliability,
-more confirmed acquisition windows, and finally lower participation ID. RSCTF
-uses this evidence order for both the stable list order and the ordinal rank
-shown to players. Projected points do not enter the tie-break.
+For an epoch containing $T_{he}$ scorable API ticks, RSCTF displays the mean
+channels but scores the mean of immutable tick results:
 
-### 3.6 Reading the deployed scoreboard
+$$
+\bar E_{ihe}=\frac{1}{T_{he}}\sum_t E_{iht},\quad
+\bar P_{ihe}=\frac{1}{T_{he}}\sum_t P_{iht},\quad
+\bar I_{ihe}=\frac{1}{T_{he}}\sum_t I_{iht},
+\tag{9}
+$$
 
-The upper-right header shows only the `Epoch N` and `Tick x/y` badges. The
-deployed player board also shows the confirmed king, provisional claimant,
-cycle number and tick, reset or readiness phase, cooldown participants,
-next-reset countdown, Settled and Projected scores, and the corresponding
-$A/C/R$ rates. Orange values identify projections; finalized ranking points use
-a separate visual style.
+$$
+L^{A}_{ihe}
+=100\left(\frac{1}{T_{he}}\sum_t G_{iht}\right).
+\tag{10}
+$$
 
-![Deployed RSCTF crown-cycle KotH scoring board](/screenshots/koth-scoreboard-journal.png)
+RSCTF does not insert the averages from Equation (9) back into Equation (7).
+That would permit temporal mixing. For example, perfect performance with zero
+integrity in one tick and perfect integrity with no play in another tick must
+remain two zero-score ticks.
 
-<p class="journal-figure-caption"><strong>Figure 4.</strong> RSCTF fixed-formula scoring interface captured from the Docker Compose deployment on 14 July 2026 after the retained one-hour, 100-team event settled. The board shows ordinal ranks and the upper-right Epoch 14 and Tick 5/12 badges; the former cycle-length header badge is absent. The screen is application output, not a static mockup.</p>
+### 3.4 Hill normalization
+
+Before scoring starts, every hill receives a frozen weight $w_h$ in
+$[0.8,1.2]$. Let $z_{he}=1$ when hill $h$ has at least one field-wide
+scorable tick in epoch $e$, and zero otherwise. The normalized team epoch
+score is:
+
+$$
+E_{ie}
+=\frac{\sum_h z_{he}w_hL_{ihe}}
+       {\sum_h z_{he}w_h}.
+\tag{11}
+$$
+
+Here $L_{ihe}$ is Equation (3) for a marker hill or Equation (10) for an API
+hill. A wholly void hill contributes no numerator or denominator. Once a hill
+has valid field evidence, omitted API teams retain explicit zero rows rather
+than removing that hill from their personal calculation.
+
+### 3.5 Epoch weight, settlement, and rank
+
+A complete evidence-bearing epoch has weight $q_e=1$. If the event ends after
+$r_e$ of the configured $n$ scoring ticks in its final epoch:
+
+$$
+q_e=\frac{r_e}{n}.
+\tag{12}
+$$
+
+The event score is:
+
+$$
+T_i=\frac{\sum_e q_eE_{ie}}{\sum_e q_e}.
+\tag{13}
+$$
+
+There is no late-epoch multiplier. **Projected** includes open evidence;
+**Settled** includes finalized epochs only. Exact Settled ties use the
+format-neutral board columns in this order: second metric, third metric, first
+metric evidence count, and participation ID. Those columns mean
+control/reliability/acquisition for marker hills and
+objective/integrity/activity for API arenas.
+
+### 3.6 Reading the scoreboard
+
+The hill badge and column labels are part of the scoring contract:
+
+| Badge | First metric | Second metric | Third metric | Crown state |
+| --- | --- | --- | --- | --- |
+| Marker | Acquisition | Control | Reliability | confirmed/provisional holder |
+| API arena | Activity | Objective | Integrity | none |
+
+Mixed games label aggregate columns with both meanings and preserve
+source-specific labels in each hill detail. Selecting the scoring information
+control shows both formulas and the no-carry rule.
 
 ## 4. Worked examples {#worked-examples}
 
-### 4.1 Provisional to confirmed
+### 4.1 Marker example
 
-Cedar reaches confirmation across three checker samples under the default
-requirement of two consecutive healthy ticks.
-
-<p class="journal-table-caption koth-keep-table"><strong>Table 3.</strong> Cedar's claim from first observation through confirmed hold.</p>
-
-| Sample | Board state | Evidence added |
-| --- | --- | --- |
-| **Tick 1:** Cedar's current token and `Ok` | Provisional `1/2` | Cedar earns one controlled tick and one healthy responsible tick, but no acquisition yet. |
-| **Tick 2:** same token and `Ok` | Confirmed king | Cedar earns another controlled and healthy responsible tick, plus one acquisition. |
-| **Tick 3:** same token and `Ok` | Confirmed hold | Cedar's control and reliability counts grow. This window cannot award the acquisition again. |
-
-The verdict changes the sequence. A `Mumble` verdict at tick 2 would break the
-streak and return its progress to zero. An `InternalError` at tick 2 would leave
-the streak at one and exclude that sample from scoring.
-
-### 4.2 One team on one hill
-
-Suppose Cedar plays one hill for one epoch. Cedar confirms one capture during
-two eligible windows, controls three of eight eligible scorable ticks, and keeps
-the service healthy for four of five responsible ticks:
-
-<div class="journal-worked-example">
+Suppose a team confirms one of two eligible acquisition windows, controls three
+of eight personally eligible ticks, and keeps the service healthy in four of
+five responsible ticks:
 
 $$
-A=\frac{1}{2}=0.5000,\qquad
-C=\frac{3}{8}=0.3750,\qquad
-R=\frac{4}{5}=0.8000.
-\qquad\text{(7)}
+A=1/2=0.5000,\quad C=3/8=0.3750,\quad R=4/5=0.8000.
 $$
 
 $$
 \begin{aligned}
-B&=0.25(0.5000)+0.55(0.3750)
-   +0.20\sqrt{0.5000\times0.3750}\\
- &=0.1250+0.20625+0.086603=0.417853,\\
-L&=100(0.8000)(0.417853)=33.4282.
+B^M
+&=0.25(0.5000)+0.55(0.3750)
+  +0.20\sqrt{(0.5000)(0.3750)}\\
+&\approx0.417853,\\
+L^M&=100(0.8000)(0.417853)\approx33.43.
 \end{aligned}
-\qquad\text{(8)}
 $$
 
-</div>
+The team receives control evidence from the first stable eligible observation,
+but acquisition appears only after the healthy confirmation threshold.
 
-The calculation gives Cedar a 50% acquisition rate, 37.5% control rate, and 80%
-reliability. Together, these rates produce **33.43 points out of 100** for this
-hill and epoch.
+### 4.2 API normalization example
 
-### 4.3 Personal cooldown denominator
+Suppose one API tick reports:
 
-Consider a three-tick cycle. The previous champion is blocked during tick 1,
-then controls the hill with an `Ok` service during ticks 2 and 3. RSCTF counts
-only the two ticks that the team could play, so its personal control denominator
-is two rather than three: $C=2/2=1$. The acquisition window still counts because
-the team had scoring opportunities during ticks 2 and 3. The forced cooldown
-tick does not become a failed claim.
+```json
+{
+  "activity": {"earned": 4, "possible": 5},
+  "objectives": [
+    {"earned": 7, "possible": 10},
+    {"earned": 750, "possible": 1000}
+  ],
+  "integrity": {"earned": 19, "possible": 20}
+}
+```
 
-### 4.4 Two weighted hills
-
-Now suppose the event has two hills. Hill Alpha has weight 1.2 and uses Cedar's
-local score from Equation (8). Hill Beta has weight 0.8 and a local score of 70:
-
-$$
-E=\frac{(1.2)(33.4282)+(0.8)(70.0000)}
-        {1.2+0.8}
-  =48.0569.
-\qquad\text{(9)}
-$$
-
-Alpha influences the result more than Beta because its weight is larger. The
-bounded weights do not raise the epoch's 100-point ceiling.
-
-### 4.5 Equal complete epochs and a short tail
-
-Suppose a team scores 80 and 60 in two complete epochs. The event then ends
-after three ticks of the next twelve-tick epoch, where the team has a projected
-score of 40. The two complete epochs each have weight 1, and the final tail has
-weight 0.25:
+The two objective scales are normalized independently:
 
 $$
-T=\frac{(1)(80)+(1)(60)+(0.25)(40)}{1+1+0.25}=66.6667.
-\qquad\text{(10)}
+E=4/5=0.8000,\quad
+P=((7/10)+(750/1000))/2=0.7250,\quad
+I=19/20=0.9500.
 $$
 
-The short final tail contributes one quarter as much as either complete epoch.
+$$
+B^A
+=\frac{1}{0.35/0.8000+0.65/0.7250}
+\approx0.749596.
+$$
+
+$$
+L^A=100(0.9500)(0.749596)\approx71.21.
+$$
+
+Adding zeros to the native throughput scale would not change its normalized
+share. Adding a duplicate objective entry would change the declared evidence
+model and is prohibited by the organizer guidelines as hidden weighting.
+
+### 4.3 Why activity is mandatory
+
+If $E=0$, $P=1$, and $I=1$, Equation (7) sets the core to zero. A referee
+cannot grant points by reporting performance without verified activity.
+Likewise, $E=1$ and $P=0$ scores zero.
+
+At $E=0.2$, $P=0.9$, and $I=1$:
+
+$$
+B^A=\frac{1}{0.35/0.2+0.65/0.9}\approx0.404494,
+$$
+
+so the tick scores approximately 40.45, not the 90 points suggested by the
+strong objective channel alone.
+
+### 4.4 Same-tick integrity blocks temporal mixing
+
+Consider two ticks:
+
+| Tick | $E$ | $P$ | $I$ | Tick score |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1 | 1 | 0 | 0 |
+| 2 | 0 | 0 | 1 | 0 |
+
+The displayed channel means are each `0.5`, but Equation (10) averages the two
+stored zero score rates and returns zero. Calculating a formula from the channel
+means would incorrectly create points for behavior that never had performance
+and integrity together.
+
+### 4.5 Missing team and field void
+
+If a valid snapshot contains evidence for 99 of 100 eligible teams, RSCTF writes
+the omitted team's rates as zero for that tick. If the referee submits no
+current snapshot, changes it during the functional probe, or the shared checker
+fails, RSCTF writes one field-wide void instead. A void changes no team's
+denominator and never reuses the preceding tick.
+
+### 4.6 Multiple hills and a short final epoch
+
+Suppose one hill has weight `1.2` and local score `33.43`, while another has
+weight `0.8` and local score `70`:
+
+$$
+E=\frac{(1.2)(33.43)+(0.8)(70)}{1.2+0.8}=48.06.
+$$
+
+Suppose two complete epochs score `80` and `60`, while a three-of-twelve-tick
+final epoch scores `40`. Its weight is `0.25`:
+
+$$
+T=\frac{(1)(80)+(1)(60)+(0.25)(40)}{1+1+0.25}=66.67.
+$$
 
 ## 5. Failure adjudication and recovery {#failure-adjudication}
 
 ### 5.1 Functional verdicts
 
-<p class="journal-table-caption"><strong>Table 4.</strong> Checker verdict treatment.</p>
-
-| Verdict | Meaning | Fixed-formula treatment |
+| Verdict or condition | Marker treatment | API arena treatment |
 | --- | --- | --- |
-| `Ok` | The service passed every behavior required by the checker. | Advances a matching provisional streak and records a healthy responsible tick. |
-| `Mumble` | The service answered, but its response failed a required checker condition. | Breaks confirmation and records an unhealthy responsible tick when RSCTF can attribute it to a team. |
-| `Offline` | The checker could not reach the service, or the platform confirmed that its managed backend stopped. | Breaks confirmation and records an unhealthy responsible tick when RSCTF can attribute it to a team. |
-| `InternalError` | The platform or checker infrastructure could not produce evidence that RSCTF can safely assign. | Creates a void sample, pauses confirmation, and stays out of all denominators. |
+| `Ok`, stable current evidence | control/responsibility; may advance confirmation | score every eligible team from dense current evidence |
+| `Mumble` or `Offline` | responsible team receives unhealthy evidence; confirmation breaks | field-wide void because the shared arena is not trustworthy |
+| `InternalError` | field-wide void | field-wide void |
+| missing/changing marker or snapshot | no new marker election according to exact claim rules | field-wide void; no stale carry |
+| reset/readiness/incomplete issuance | field-wide void | field-wide void |
+| omitted eligible API team | not applicable | explicit zero in an otherwise valid tick |
 
-### 5.2 Durable reset state machine
+### 5.2 Transaction and replica safety
 
-RSCTF models a reset as a **state machine**: a fixed sequence of named phases
-stored in the database. The phases are finalization, snapshot, destroy, create,
-publish, capability issuance, readiness, firewall, active play, cooldown release,
-completion, failure, and event end. Each transition uses a durable
-**compare-and-set**, which changes the phase only when the stored phase still
-matches the expected value. RSCTF also writes an audit receipt identified by the
-cycle, phase, and reset attempt.
+The round engine uses a database advisory lock per game/hill plus a local
+single-flight guard. Unique keys allow one control result per
+game/challenge/round and one API score row per
+game/challenge/round/participation. Upserts are atomic; the implementation does
+not perform a read-check-then-insert sequence.
 
-A local **single-flight guard** lets only one copy of the same task run inside an
-RSCTF process. A PostgreSQL **advisory lock**, scoped to one game and hill, lets
-only one RSCTF replica own a checker or reset transition. Together, these guards
-prevent duplicate work within one process and across several replicas. The code
-never holds a blocking lock while it waits for an asynchronous operation.
+Before writing API scores, the checker takes a shared lock on the exact snapshot
+row whose digest bracketed the functional probe. A referee update cannot replace
+that snapshot until the score transaction completes.
 
-### 5.3 Identity fences
+### 5.3 Recovery
 
-An **identity fence** ties evidence to the exact object and scoring period that
-produced it. Each checker record contains the container ID, game, challenge,
-round, cycle, reset attempt, and capability window. The checker and reset path
-also use the same hill lock. These rules prevent:
+The admin console exposes stored cycle phase, old and replacement container
+identities, readiness failures, audit receipts, referee credential status, and
+last accepted snapshot time. **Retry** resumes the same idempotent lifecycle;
+it does not create a separate repair process.
 
-- checker/reset overlap for one hill;
-- duplicate cycle or acquisition rows;
-- stale tokens after reset;
-- results from the old container entering the replacement's score;
-- reset-time failure from entering a participant denominator; and
-- late evidence after the event deadline.
+## 6. Security and anti-cheat properties {#fairness-and-incentives}
 
-### 5.4 Safe retry
+### 6.1 What the platform prevents
 
-The admin console shows the stored reset phase, old and replacement container
-IDs, readiness failures, champions, cooldown participants, provisional progress,
-and audit receipts. The **Retry** action calls the same recovery path used after
-a crash. This path is **idempotent**: repeating it has the same final effect as
-running it once. Retry does not use a separate repair procedure.
+The API arena rejects or neutralizes:
 
-## 6. Fairness and incentives {#fairness-and-incentives}
+- arbitrary external points, negative scores, and organizer-selected formula
+  coefficients;
+- raw team IDs and raw bearer capabilities in the evidence payload;
+- malformed ratios, zero denominators, over-earned evidence, oversized
+  budgets, duplicate token hashes, excessive objective count, oversized bodies,
+  and rosters over 2,000 teams;
+- stale round, cycle, reset, target, or container evidence;
+- old capability hashes after issuance rotation;
+- accepted-signature replay and out-of-order snapshots;
+- post-deadline submissions;
+- score carry for omitted teams;
+- temporal mixing of nonlinear evidence; and
+- partial feed scoring in the bundled referee when its cursor has a retention
+  gap.
 
-### 6.1 Why control receives 55%
+These controls constrain the platform/referee protocol. They cannot prove that
+an organizer-defined objective measures the intended skill.
 
-A one-time claim proves that a team reached the challenge's control mechanic, but it does not prove
-sustained ownership. Control duration counts repeated observations of the exact
-token across available ticks. Its 55% direct coefficient makes persistence worth
-more than the 25% acquisition coefficient. The remaining 20% square-root term
-rewards teams that both take and retain the hill.
+### 6.2 What a challenge must do
 
-### 6.2 Why containers reset
+A defensible API arena counts only meaningful verified actions. It should use
+unpredictable, expiring, one-use server tasks; bind each event to the
+capability hash that started it; include failed attempts in integrity; publish
+fixed denominators; rate-limit per identity, client, and service; bound sessions
+and event retention; and expose an ordered evidence cursor.
 
-Without resets, the first team to harden the service successfully could gain an
-advantage for the rest of the event. A fixed clean reset makes defense a skill
-that teams must repeat in each short cycle. Teams can still patch, test, and
-automate, but their changes last only until the next boundary. Every replacement
-uses the same configured challenge image, so a reset cannot substitute an easier
-or harder variant.
+Objectives should be conceptually distinct. Because RSCTF normalizes each
+component equally, repeating the same component to create hidden weight violates
+the declared scoring design. RSCTF requires one common objective-component
+count across a snapshot; organizers should keep those components' meaning and
+order fixed throughout the event.
 
-### 6.3 Why champions receive a cooldown
+### 6.3 Trust boundary and limitations
 
-The reset removes the champion's accumulated filesystem changes. The default
-one-tick block then gives challengers the first opportunity to attack that hill,
-but it awards them no points. RSCTF also removes the blocked tick from the
-champion's personal denominator. The champion therefore loses both access and
-the corresponding scoring opportunity, rather than receiving an unavoidable
-failure.
+The referee is trusted infrastructure. HMAC proves that an accepted body came
+from a holder of the secret and was not altered in transit; it does not prove
+that the referee measured the challenge honestly. Run it outside the
+attacker-controlled application under a dedicated identity, protect its state
+and time source, and retain its audit logs through appeals.
 
-### 6.4 Why the platform does not detect bots
+Automation is permitted. RSCTF does not attempt to infer whether a person,
+script, or assisted workflow produced an event. All methods remain subject to
+the published challenge rules, credentials, scope, evidence checks, and rate
+limits.
 
-Automation is permitted. Timing and behavior cannot reliably distinguish a
-script from a fast human or an assisted team. RSCTF therefore checks exact
-capabilities, rate limits, allowed network scope, and evidence integrity. It does
-not attempt to classify participants as humans or bots.
+## 7. Player and organizer operations {#player-operations}
 
-### 6.5 What the score establishes
+### 7.1 Player procedure
 
-<p class="journal-table-caption"><strong>Table 5.</strong> Interpretation limits.</p>
+For both formats:
 
-| Observed claim | What RSCTF establishes | What remains unknown |
-| --- | --- | --- |
-| Confirmed acquisition | The checker observed one exact capability and a healthy service for the required consecutive rounds. | The exploit path, operator, novelty, or method used to bypass a patch. |
-| Controlled tick | The same exact capability appeared before and after the functional service test. | Whether the team held continuous control between checker samples. |
-| Responsible tick | RSCTF could assign control during that sample to the team. | Which person or tool changed the service. |
-| Healthy responsibility | The organizer's checker returned `Ok`. | Whether the checker tests every property that organizers intend to protect. |
-| Platform void | RSCTF could not safely assign the evidence. | What would have happened if the platform fault had not occurred. |
+1. fetch the current capability and exact hill state;
+2. use only the player-facing challenge mechanic;
+3. discard the old capability after every reset;
+4. protect capabilities from logs, screenshots, and public repositories; and
+5. verify the scoreboard rather than assuming an action was sampled.
 
-## 7. Player operations {#player-operations}
+For marker hills, keep the exact claim stable and the checked service healthy
+through confirmation. For API arenas, complete distinct verified actions,
+balance every objective, and avoid speculative requests that count as invalid
+attempts.
 
-### 7.1 Reliable control loop
+### 7.2 Organizer preflight
 
-Use this loop for each hill:
+Before official scoring:
 
-1. Check the hill's token and state endpoints regularly.
-2. Wait until the board shows that the cycle is active and your team is eligible.
-3. Present the exact current capability through the challenge's published
-   marker or capture mechanic promptly. Do not call RSCTF's organizer observer
-   endpoint or try to predict the checker's sample time.
-4. Keep the service working throughout the full confirmation streak.
-5. Monitor the holder, your team's responsibility, and the reset countdown.
-6. After a reset, delete the old token from your tools and request the new token
-   for that exact hill.
-7. Apply only patches that you have tested and can reverse. Every filesystem
-   change disappears at the next crown boundary.
+- freeze and publish the format, tick/epoch/cycle cadence, service weights,
+  checker contract, API activity target, objective definitions, denominators,
+  and appeal policy;
+- confirm at least two accepted teams receive distinct current capabilities;
+- run a full clean reset and reject the previous capability afterward;
+- verify the independent functional checker before and after evidence reads;
+- for marker mode, verify holder confirmation and enforceable cooldown;
+- for API mode, verify HMAC signing, recognized/submitted equality, objective
+  normalization, explicit omitted-team zero, referee restart, stale hash,
+  replay, timestamp, feed-gap, and changing-snapshot behavior; and
+- run at least one accelerated complete epoch with honest and invalid clients.
 
-A token for one hill does not work on another. Automated tools should store each
-credential under its game, challenge, cycle, and reset attempt so they never
-reuse a stale or incorrectly scoped token.
+The official snapshot records roster, hills, images, formats, cadence, and
+weights. Later editor changes cannot rewrite finalized evidence.
 
-### 7.2 Treat generated actions as untrusted changes
+### 7.3 During play and finalization
 
-AI assistance can speed up reconnaissance and patch drafting, but generated
-commands can stop the checked service, remove your access, or reveal the claim
-code. Test each generated change against the configured image. Review destructive
-commands, keep a rollback method, and confirm the result on the scoreboard.
-RSCTF scores the observed outcome, not whether a human or tool produced it.
+Monitor missing checker results, void reasons, reset phases, runtime identity,
+snapshot freshness, recognized-team counts, feed cursor lag, and referee
+errors. Pause scoring before rotating a referee secret, submit fresh current
+evidence, verify it, and then resume.
 
-### 7.3 Capability hygiene
+At the event deadline, reject late evidence, finish in-flight authoritative
+checks according to the deadline fence, finalize the proportional tail, and
+publish awards only from Settled results. Retain official configuration,
+capability issuance/revocation, immutable checker rows, API tick evidence,
+cycle receipts, and epoch rollups through the appeal period.
 
-A KotH token is a **bearer secret**: anyone who has the text can present the
-claim. Keep tokens out of public logs, screenshots, writeups, and shared
-continuous-integration output. A token stops working after reset, but RSCTF keeps
-its historical issuance record as audit evidence. Do not plant another team's
-token or attack infrastructure outside the published hill scope.
+## 8. Validation and limitations {#limitations}
 
-## 8. Organizer and review procedure {#organizer-procedure}
+The equations establish boundedness and several zero conditions. Unit and
+database tests establish implementation behavior for the tested cases. Neither
+kind of verification establishes competitive validity.
 
-### 8.1 Before scoring
+Organizers should measure:
 
-Before play, publish the tick duration, epoch length, cycle length, cooldown,
-confirmation threshold, service weights, checker contract, allowed network
-scope, and appeal process. Then verify that:
+- API activity and objective distributions;
+- integrity loss and invalid-action patterns;
+- missing/void tick frequency;
+- referee lag, restart recovery, and feed retention margin;
+- marker confirmation failures and control changes;
+- repeat winners and cooldown use;
+- readiness and reset latency; and
+- score sensitivity to activity targets, challenge objectives, tick duration,
+  cycle length, and epoch length.
 
-- every ranked KotH challenge has exactly one managed active container;
-- the replacement image matches the configured image;
-- the cycle divides the epoch and every range validation passes;
-- at least two accepted teams receive distinct per-hill capabilities;
-- the VPN/firewall can enforce a hill-specific champion cooldown;
-- the selected marker or signed API observation can be read before and after a
-  functional probe;
-- an API observer runs outside the attacker-controlled hill, has a synchronized
-  clock, and can refresh context after every reset; and
-- readiness succeeds on a pristine replacement.
+A randomized checker sample cannot prove continuous state between observations.
+Capability hashing does not repair a low-entropy token source. A valid HMAC does
+not prove referee correctness. Equal objective normalization does not prove that
+the chosen objectives have equal difficulty. The formula cannot prevent
+collusion outside the evidence protocol. Because a shared arena outage is
+field-wide void evidence, the challenge must isolate and bound work per
+capability so one participant cannot turn resource exhaustion into a scoring
+veto. These are operational and challenge-design responsibilities.
 
-The official snapshot stores these settings as the rules for that game. Changes
-made later in the editor cannot rewrite finalized evidence.
+## 9. Conclusion {#conclusion}
 
-### 8.2 During play
+RSCTF does not treat API KotH as boot2root KotH with a different transport.
+Marker hills remain exclusive contests scored by qualified acquisition,
+sustained control, and service reliability. API arenas let every team score
+concurrently from platform-normalized activity, objective, and integrity
+evidence.
 
-Monitor the stored reset phase, current and replacement container
-IDs, readiness failures, confirmation progress, cooldown release, result
-completeness, and event deadline. Read the audit receipts before using the admin
-retry action. Retry resumes the same transition; it does not start a new reset.
-Do not create a replacement manually while the durable reset process owns the
-hill.
+The API formula uses a fixed weighted harmonic mean so play and performance are
+both necessary, then applies same-tick integrity. Independent normalization
+prevents native numeric scale from becoming accidental weight. Per-tick
+calculation prevents temporal recombination. Dense zero rows prevent stale
+team scores, while field-wide voids prevent infrastructure failures from
+becoming participant penalties.
 
-### 8.3 Finalization
-
-At the event deadline, RSCTF closes unfinished reset and confirmation work and
-rejects late evidence. A partial final epoch keeps only the fraction that teams
-actually played. A hill or epoch with no scorable evidence for the field carries
-no weight. Publish awards only from finalized epochs, after the board reports
-full settlement.
-
-Keep the following records through the appeal period: official configuration;
-team-roster and hill snapshots; cycle rows; cooldown sets; token issuance and
-revocation; control observations; acquisition receipts; container filesystem
-diffs; reset receipts; and finalized score rollups.
-
-## 9. Validation and limitations {#limitations}
-
-The fixed formula has bounded scores and exact identity checks. Those
-properties establish implementation integrity, but they do not show how a
-particular challenge will behave in competition. During test events, organizers
-should measure confirmation failures, control changes, time to the first
-challenger after reset, repeat winners, cooldown use, void samples, readiness
-latency, reset failures, and score sensitivity to cycle length.
-
-One randomized checker sample per tick cannot prove continuous ownership between
-samples. The functional checker defines "healthy" through the behaviors it tests,
-so it may omit a relevant service property. Champion cooldown creates an opening
-only when the network layer enforces the block. The default three-tick cycle and
-two-tick confirmation threshold leave little time to exploit and repair the
-service. Organizers should test each challenge to determine whether its tick
-duration provides enough time for both tasks.
-
-## 10. Conclusion {#conclusion}
-
-RSCTF's fixed formula keeps a shared KotH challenge contestable through fixed
-crown-cycle resets. Every reset replaces the old container with one clean
-container built from the same configured image. Under the default settings, the
-previous champion sits out one tick that is also removed from its personal
-denominator. A new claim must pass two consecutive healthy observations before
-RSCTF confirms the acquisition. Every scoring observation identifies its exact
-container, cycle, reset, round, and token.
-
-The score combines 25% acquisition, 55% control, and a 20% balance term. It then
-multiplies that full result by the service reliability achieved while the team
-was responsible. Complete epochs containing evidence have equal weight. Wholly
-void hills do not count, and short final epochs receive proportional weight.
-Unfinished results remain projections. Equal finalized scores use control,
-reliability, acquisition, and participation ID as ordinal tie-breaks. These rules
-reward teams for taking the hill, holding it, and keeping it working. They do not
-rely on bot detection or permanent patches.
+Both formats retain exact identity fences, independent health checking,
+pristine lifecycle resets, fixed-ceiling hill aggregation, and finalized epoch
+settlement. These mechanisms make the result reproducible and auditable. Fair
+competition still depends on the published rules, checker coverage, objective
+design, trusted referee operation, network equality, and incident review.
 
 ## Appendix A. Frequently asked questions
 
-### A.1 Is a tick the same as a round?
+### A.1 Is API mode just an observer for `/koth/king`?
 
-Yes. Both words mean one opportunity for the scheduler to run the checker. A
-crown cycle contains several ticks, and an epoch contains one or more crown
-cycles.
+No. Marker mode has one holder and `A/C/R` evidence. API mode has concurrent
+teams and `E/P/I` evidence. The lifecycle infrastructure is shared, but the
+scoring semantics are different.
 
-### A.2 Does one token work on every hill?
+### A.2 Can a referee submit points?
 
-No. RSCTF issues each capability for one team, one hill, one cycle,
-and one reset attempt.
+No. The wire contract accepts bounded integer evidence ratios and a current
+capability hash. RSCTF performs normalization and scoring.
 
-### A.3 Does reporting a claim immediately award acquisition?
+### A.3 Why use a harmonic mean?
 
-No. The first scorable observation of an eligible current token creates a
-provisional claim. Only the configured streak of healthy observations confirms
-acquisition.
+It returns zero when either required play channel is zero and is sensitive to a
+weak channel. The fixed 35/65 weights give objective performance greater
+influence without allowing it to replace activity.
 
-### A.4 What breaks confirmation?
+### A.4 Why normalize objectives separately?
 
-A different valid token, an ineligible claimant, `Mumble`, or `Offline` breaks
-the streak. `InternalError` and incomplete token issuance create void evidence,
-so they pause rather than break it.
+Raw sums make the largest native number dominate. Independent ratios let
+different units share the same `[0,1]` range before an equal-weight mean.
 
-### A.5 What survives a crown reset?
+### A.5 What happens when my team is missing from a valid API snapshot?
 
-Audit records and scoring evidence survive. The old container, marker or API
-observation context, patches, and active capabilities do not.
+RSCTF writes an explicit zero row for that tick. It never repeats your previous
+score.
 
-### A.6 Can the previous champion play during cooldown?
+### A.6 What happens when the whole snapshot or application is unavailable?
 
-Yes, on the rest of the game. The champion cannot access or claim the cooled
-hill until the authoritative cooldown round ends. RSCTF removes that blocked
-tick from the team's personal denominator.
+The tick is field-wide void and enters no team's denominator. This differs from
+one omitted team inside a valid snapshot.
 
-### A.7 How are tied champions handled?
+### A.7 Does a crown reset erase settled evidence?
 
-Every team tied for the lead enters the champion set. If blocking the full set
-would leave no challenger, RSCTF disables cooldown for that cycle.
+No. It removes transient containers, sessions, claims, and active
+capabilities. Immutable checker evidence and finalized rollups remain.
 
-### A.8 Does destroying the container erase responsibility?
+### A.8 Can one capability work on another hill or reset?
 
-No. Before recovery, RSCTF records evidence tied to the exact container that it
-confirmed as stopped. If the runtime state is uncertain, RSCTF creates a
-platform void instead of assuming that the responsible team caused downtime.
+No. Capabilities and their hashes are resolved within an exact hill, target,
+cycle, reset attempt, and container generation.
 
-### A.9 Is there a late-epoch multiplier?
+### A.9 Is there score versioning?
 
-No. Complete epochs containing scorable evidence have equal weight. RSCTF
-excludes an epoch that is entirely void for the field. Only a partial final
-epoch receives a fractional weight.
+No. Marker and API are distinct formats, each with one constant formula. A
+migration voids pre-arena API holder evidence rather than interpreting it under
+the new arena formula.
 
 ### A.10 Can automation participate?
 
-Yes. RSCTF does not attempt unreliable bot detection. Automated tools remain
-subject to the same credentials, allowed network scope, and rate limits as
-manual play.
+Yes, subject to event rules. RSCTF validates evidence and scope rather than
+classifying a participant as human or automated.
 
 ## Appendix B. Nomenclature
 
-<p class="journal-table-caption"><strong>Table 6.</strong> Symbols and board terms.</p>
-
 | Symbol or term | Definition |
 | --- | --- |
-| $i,h,e$ | Labels for one team, hill, and epoch. |
-| $A$ | Share of the team's eligible acquisition windows that produced a confirmed capture. |
-| $C$ | Share of the team's eligible scorable ticks that it controlled. |
-| $R$ | Share of the team's responsible ticks in which the service was healthy. |
-| $B$ | Combined acquisition-and-control value before applying reliability. |
-| $L$ | Score for one team, hill, and epoch, bounded to 0-100. |
-| $w_h$ | Snapshotted service weight in $[0.8,1.2]$. |
-| $z_{he}$ | One when hill $h$ has scorable evidence for the field in epoch $e$; zero otherwise. |
-| $E_{ie}$ | The team's normalized score for one epoch. |
-| $q_e$ | Weight assigned to a complete or partial epoch. |
-| **Provisional claimant** | Team whose exact eligible token was observed but has not completed the healthy confirmation threshold. |
-| **Confirmed king** | Team whose exact claim completed the required healthy observations. |
-| **Settled** | Official score calculated only from finalized epochs. |
-| **Projected** | Informational score that also includes unfinished evidence. |
+| $A,C,R$ | marker acquisition, control, and reliability rates |
+| $E,P,I$ | API activity, objective, and integrity rates for one tick |
+| $B^M$ | marker acquisition/control core |
+| $B^A$ | API weighted harmonic core for one tick |
+| $G$ | integrity-adjusted API tick score rate |
+| $L^M,L^A$ | local marker/API hill score in `[0,100]` |
+| $w_h$ | frozen hill weight in `[0.8,1.2]` |
+| $z_{he}$ | field evidence switch for one hill and epoch |
+| $q_e$ | complete or partial epoch weight |
+| **Provisional** | marker capability observed but not yet confirmed |
+| **Settled** | official value using finalized epochs |
+| **Projected** | informational value that also includes open evidence |
+| **Field void** | sample excluded from every team's evidence |
+| **Explicit zero** | one omitted API team's row in an otherwise valid tick |
 
 ## Appendix C. Implementation traceability {#implementation-traceability}
 
-This appendix connects each rule in the handbook to the code that implements it.
-It is intended for developers, reviewers, and event operators, so it retains
-repository and API terminology. Paths are relative to the repository revision
-that contains this handbook.
-
-<p class="journal-table-caption koth-traceability-table"><strong>Table 7.</strong> Fixed-formula source-of-truth map.</p>
+Paths are relative to the repository revision containing this handbook.
 
 | Responsibility | Source of truth |
 | --- | --- |
-| Configuration validation and official snapshot | `src/services/ad/engine/koth_cycle/config.rs` |
-| Cycle coordinates and tied-champion selection | `src/services/ad/engine/koth_cycle/state.rs` |
-| Durable reset lifecycle and audit receipts | `src/services/ad/engine/koth_cycle/lifecycle/` |
-| Qualified claim transition and acquisition idempotency | `src/services/ad/engine/koth_cycle/claims.rs` |
-| Champion cooldown release | `src/services/ad/engine/koth_cycle/cooldown.rs` |
-| Exact-container checker and immutable observations | `src/services/ad/engine/checker/koth.rs` |
-| Signed observer authentication, context, replay fence, and operator credential API | `src/controllers/game/koth/api.rs` |
-| Marker/API claim-source reads | `src/services/ad/engine/koth_marker.rs` |
-| Pure $A$, $C$, $R$, local, hill, and epoch formulas | `src/controllers/game/koth/scoring_formula.rs` |
-| SQL evidence and personal denominators | `src/controllers/game/koth/scoring/evidence.rs` |
-| Finalized epoch rollups | `src/controllers/game/koth/scoring/rollup/` |
-| Ordinal tie-break construction and board cells | `src/controllers/game/koth/board.rs` |
-| Player and admin DTOs/routes | `src/controllers/game/koth/mod.rs`, `admin.rs` |
-| Crown schema and reset-attempt integrity | `src/migrations/m0046_koth_crown_cycles.rs` through `m0058_constant_koth_scoring.rs` |
-| API observer schema and exact-context constraints | `src/migrations/m0083_koth_api_observers.rs` |
+| Official format, roster, hill, cadence, and weight snapshot | `src/services/ad/engine/koth_cycle/config.rs` |
+| Durable crown reset lifecycle | `src/services/ad/engine/koth_cycle/lifecycle/` |
+| Marker claim transition and acquisition | `src/services/ad/engine/koth_cycle/claims.rs` |
+| Exact marker read | `src/services/ad/engine/koth_marker.rs` |
+| Signed API context, credential, HMAC, replay, and submission | `src/controllers/game/koth/api/`, `api_contract.rs` |
+| Stable exact-tick API snapshot read and tick formula | `src/services/ad/engine/koth_api.rs` |
+| Marker/API checker persistence and dense zero rows | `src/services/ad/engine/checker/koth.rs`, `checker/koth_api.rs` |
+| Pure marker and API epoch scoring | `src/controllers/game/koth/scoring_formula.rs` |
+| SQL evidence aggregation | `src/controllers/game/koth/scoring/evidence.rs` |
+| Finalized rollups | `src/controllers/game/koth/scoring/rollup/` |
+| Board labels, format metadata, and ranking | `src/controllers/game/koth/board.rs`, `web/src/components/KothScoreboardTable.tsx` |
+| Crown and constant marker schema | `src/migrations/m0046_koth_crown_cycles.rs` through `m0058_constant_koth_scoring.rs` |
+| Referee credential/replay schema | `src/migrations/m0083_koth_api_observers.rs` |
+| Challenge-owned objective scheme, normalized API snapshot, and score schema | `src/migrations/m0084_koth_api_arena.rs` |
 
 ### C.1 Core HTTP surface
 
-<p class="journal-table-caption"><strong>Table 8.</strong> KotH routes used by players and operators.</p>
-
 | Method and route | Purpose |
 | --- | --- |
-| `GET /api/Game/{id}/Ad/Koth/Token` | Returns the caller's active exact-hill capability rows. |
-| `GET /api/game/{id}/ad/koth/{challengeId}/token` | Returns one hill's `{round, token, status}` capability state. |
-| `GET /api/game/{id}/ad/koth/{challengeId}/state` | Returns confirmed/provisional holder state, cycle progress, eligibility, cooldown, reset phase, and countdown. |
-| `GET /api/Game/{id}/Ad/Koth/Hills` | Lists enabled hills and current lifecycle state. |
-| `GET /api/game/{id}/ad/koth/scoreboard` | Returns fixed-formula cadence, settlement, lifecycle, ranks, and $A/C/R$ detail. |
-| `GET /api/game/{id}/ad/koth/timeline` | Returns cumulative finalized/projected score history. |
-| `GET /api/edit/games/{id}/ad/koth/state` | Returns the operator lifecycle and scoring view. |
-| `POST /api/edit/games/{id}/ad/koth/{challengeId}/recover` | Calls the idempotent recovery path. |
-| `GET/POST/DELETE /api/edit/games/{id}/ad/koth/{challengeId}/observer` | Reads metadata, creates/rotates a secret once, or revokes the trusted observer. |
-| `GET /api/v1/koth/games/{id}/challenges/{challengeId}/context` | Returns the opaque exact-cycle/reset/container context for an API observer. |
-| `POST /api/v1/koth/games/{id}/challenges/{challengeId}/observations` | Accepts a timestamped, signed capability observation; it never accepts points. |
+| `GET /api/game/{id}/ad/koth/{challengeId}/token` | caller's current exact-hill capability |
+| `GET /api/game/{id}/ad/koth/{challengeId}/state` | hill lifecycle and marker holder state |
+| `GET /api/game/{id}/ad/koth/scoreboard` | source-aware metrics, Projected, Settled, and ranks |
+| `GET /api/game/{id}/ad/koth/timeline` | cumulative finalized/projected history |
+| `GET /api/edit/games/{id}/ad/koth/state` | operator lifecycle and evidence view |
+| `POST /api/edit/games/{id}/ad/koth/{challengeId}/recover` | idempotent lifecycle recovery |
+| `GET/POST/DELETE /api/edit/games/{id}/ad/koth/{challengeId}/observer` | read metadata, create/rotate once, or revoke referee credential |
+| `GET /api/v1/koth/games/{id}/challenges/{challengeId}/context` | exact round/runtime fence and eligible capability hashes |
+| `POST /api/v1/koth/games/{id}/challenges/{challengeId}/observations` | signed bounded evidence snapshot; never points |
 
-The API uses camelCase field names, string-valued enumerations, and timestamps
-represented as Unix milliseconds.
+Wire models use camelCase and Unix-millisecond timestamps. Enums are strings
+unless the platform's documented global exception applies.
 
 ### C.2 Verification scope
 
-The implementation test suite checks malformed formula inputs, formula bounds,
-confirmation, interrupted streaks, observer signature binding, clock skew,
-exact-context changes, one acquisition per token, personal cooldown
-denominators, single and tied champions, partial epochs, ordinal tie-breaks, and void
-evidence. PostgreSQL tests check exact reset windows, event-deadline closeout,
-container identity, and foreign-key integrity. The JavaScript lifecycle harness
-runs capture, confirmation, cycle reset, stale-token rejection, concurrent
-polling, BYOC tunnels, health checks, and duplicate/integrity queries against the
-Docker Compose deployment.
+The suite covers formula bounds and zero conditions, independent objective
+normalization, same-tick integrity, malformed evidence, HMAC scope, clock skew,
+replay, context rotation, current capability-hash resolution, unknown hashes,
+dense omitted-team zeros, stable snapshot bracketing, marker confirmation,
+personal cooldown denominators, tied champions, partial epochs, rollups, and
+ordinal ranks. The example repository additionally exercises one-use play,
+invalid attempts, token hashing, evidence pagination, persistent referee
+restart, feed-gap failure, and exact signed bodies.
+
+The JavaScript lifecycle harness exercises current and stale capabilities,
+concurrent polling, cycle replacement, checker evidence, BYOC tunnels, and
+duplicate/integrity queries against the composed platform. Performance results
+belong in `tests/load/REPORT.md`; this handbook does not convert a benchmark
+into a fairness claim.
 
 ## References
 
-1. <span id="ref-1"></span>RSCTF Project, “Crown-cycle King of the Hill implementation,” repository-local source artifact, fixed scoring formula, verified 13 July 2026.
-2. <span id="ref-2"></span>K. Bock, G. Hughey, and D. Levin, “King of the Hill: A Novel Cybersecurity Competition for Teaching Penetration Testing,” in *Proceedings of the 2018 USENIX Workshop on Advances in Security Education*, Baltimore, MD, USA, 2018. [Online]. Available: [https://www.usenix.org/conference/ase18/presentation/bock](https://www.usenix.org/conference/ase18/presentation/bock). Accessed: 13 July 2026.
-3. <span id="ref-3"></span>CTFd, “King of the Hill,” *CTFd Documentation*, n.d. [Online]. Available: [https://docs.ctfd.io/docs/custom-challenges/king-of-the-hill/](https://docs.ctfd.io/docs/custom-challenges/king-of-the-hill/). Accessed: 13 July 2026.
-4. <span id="ref-4"></span>FAU Security Team, “Rules,” *FAUST CTF 2025*, 2025. [Online]. Available: [https://2025.faustctf.net/information/rules/](https://2025.faustctf.net/information/rules/). Accessed: 13 July 2026.
+1. <span id="ref-1"></span>RSCTF Project, “King of the Hill implementation,” repository-local source artifact, fixed marker and API-arena formulas, verified 28 July 2026.
+2. <span id="ref-2"></span>K. Bock, G. Hughey, and D. Levin, “King of the Hill: A Novel Cybersecurity Competition for Teaching Penetration Testing,” in *Proceedings of the 2018 USENIX Workshop on Advances in Security Education*, Baltimore, MD, USA, 2018. [Online]. Available: [https://www.usenix.org/conference/ase18/presentation/bock](https://www.usenix.org/conference/ase18/presentation/bock). Accessed: 28 July 2026.
+3. <span id="ref-3"></span>CTFd, “King of the Hill,” *CTFd Documentation*, 2026. [Online]. Available: [https://docs.ctfd.io/docs/custom-challenges/king-of-the-hill/](https://docs.ctfd.io/docs/custom-challenges/king-of-the-hill/). Accessed: 28 July 2026.
+4. <span id="ref-4"></span>FAU Security Team, “Rules,” *FAUST CTF 2025*, 2025. [Online]. Available: [https://2025.faustctf.net/information/rules/](https://2025.faustctf.net/information/rules/). Accessed: 28 July 2026.
+5. <span id="ref-5"></span>OtterSec, “Submit dynamic scores,” *rCTF Documentation*, 2026. [Online]. Available: [https://github.com/otter-sec/rctf/blob/main/apps/docs/src/content/docs/api/challenges/submit-dynamic-scores.md](https://github.com/otter-sec/rctf/blob/main/apps/docs/src/content/docs/api/challenges/submit-dynamic-scores.md). Accessed: 28 July 2026.

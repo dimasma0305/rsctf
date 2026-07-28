@@ -210,7 +210,7 @@ async fn recovery_mints_one_immutable_window_per_reset_attempt() {
         CREATE TEMP TABLE "KothClaimStates" (
           target_id INTEGER PRIMARY KEY
         );
-        CREATE TEMP TABLE "KothApiObservations" (
+        CREATE TEMP TABLE "KothApiSnapshots" (
           target_id INTEGER PRIMARY KEY
         );
         CREATE TEMP TABLE "KothTokens" (
@@ -241,7 +241,7 @@ async fn recovery_mints_one_immutable_window_per_reset_attempt() {
         VALUES (41, 7, 9, 1, 'CapabilityPending', 'runtime-1');
         INSERT INTO "KothTargets" VALUES (3, 7, 9, 'runtime-1');
         INSERT INTO "KothClaimStates" VALUES (3);
-        INSERT INTO "KothApiObservations" VALUES (3);
+        INSERT INTO "KothApiSnapshots" VALUES (3);
         "#,
     )
     .execute(&mut connection)
@@ -288,7 +288,7 @@ async fn recovery_mints_one_immutable_window_per_reset_attempt() {
     assert_eq!(issued, vec![11]);
     let stale_input_rows: i64 = sqlx::query_scalar(
         r#"SELECT (SELECT COUNT(*) FROM "KothClaimStates") +
-                  (SELECT COUNT(*) FROM "KothApiObservations")"#,
+                  (SELECT COUNT(*) FROM "KothApiSnapshots")"#,
     )
     .fetch_one(&mut connection)
     .await

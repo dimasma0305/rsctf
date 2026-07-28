@@ -124,7 +124,7 @@ async fn load_observer_admin_state(
                   END AS claim_source,
                   observer.challenge_id IS NOT NULL AS configured,
                   observer.secret_hint,
-                  observation.accepted_at AS last_observation_at
+                  snapshot.accepted_at AS last_observation_at
              FROM "GameChallenges" challenge
              LEFT JOIN "KothOfficialConfigs" config
                ON config.game_id = challenge.game_id
@@ -140,8 +140,8 @@ async fn load_observer_admin_state(
              LEFT JOIN "KothTargets" target
                ON target.game_id = challenge.game_id
               AND target.challenge_id = challenge.id
-             LEFT JOIN "KothApiObservations" observation
-               ON observation.target_id = target.id
+             LEFT JOIN "KothApiSnapshots" snapshot
+               ON snapshot.target_id = target.id
             WHERE challenge.game_id = $1 AND challenge."Type" = $2"#,
     )
     .bind(game_id)

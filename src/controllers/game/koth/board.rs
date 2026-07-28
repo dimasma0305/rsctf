@@ -38,6 +38,7 @@ struct HillRow {
     container_id: Option<String>,
     holder_participation_id: Option<i32>,
     holder_team_name: Option<String>,
+    claim_source: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -206,8 +207,25 @@ async fn compute_koth_board_inner(
                   address.host AS container_ip, address.port AS container_port,
                   address.container_id,
                   holder_participation.id AS holder_participation_id,
-                  holder_team.name AS holder_team_name
+                  holder_team.name AS holder_team_name,
+                  CASE
+                    WHEN config.game_id IS NOT NULL
+                      THEN COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker')
+                    WHEN observer.challenge_id IS NOT NULL THEN 'Api'
+                    ELSE 'Marker'
+                  END AS claim_source
              FROM "GameChallenges" challenge
+        LEFT JOIN "KothOfficialConfigs" config
+               ON config.game_id = challenge.game_id
+        LEFT JOIN LATERAL (
+               SELECT item
+                 FROM jsonb_array_elements(config.hills_snapshot) item
+                WHERE (item->>'challengeId')::integer = challenge.id
+                LIMIT 1
+             ) frozen ON TRUE
+        LEFT JOIN "KothApiObservers" observer
+               ON observer.game_id = challenge.game_id
+              AND observer.challenge_id = challenge.id
         LEFT JOIN LATERAL (
                SELECT target.host, target.port, target.container_id
                  FROM "KothTargets" target
@@ -283,6 +301,7 @@ async fn compute_koth_board_inner(
                 container_ip: row.container_ip,
                 container_port: row.container_port,
                 container_id: row.container_id,
+                claim_source: row.claim_source,
             })
         })
         .collect::<AppResult<_>>()?;
@@ -465,6 +484,8 @@ pub(super) struct KothHillInfo {
     pub(super) container_port: Option<i32>,
     /// Docker container id of the shared hill container (for the admin shell).
     pub(super) container_id: Option<String>,
+    /// `Marker` is exclusive boot2root control; `Api` is a multi-team arena.
+    pub(super) claim_source: String,
 }
 
 /// One team eligible to appear on the board.

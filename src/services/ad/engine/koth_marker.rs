@@ -86,55 +86,9 @@ pub(super) async fn read_koth_marker(
     }
 }
 
-/// Read the latest signed observer value only when it belongs to the exact
-/// active target, crown cycle, reset attempt, and container. A missing row is
-/// different from an explicit `token: null`: the former means the observer has
-/// not established current-context state.
-pub(super) async fn read_koth_api_observation(
-    pool: &sqlx::PgPool,
-    target_id: i32,
-    cycle_id: i64,
-    reset_attempt: i32,
-    container_id: &str,
-) -> KothMarkerRead {
-    let row = sqlx::query_as::<_, (Option<i32>, Option<String>)>(
-        r#"SELECT observation.token_id, capability.token
-             FROM "KothApiObservations" observation
-             LEFT JOIN "KothTokens" capability
-               ON capability.id = observation.token_id
-              AND capability.cycle_id = observation.cycle_id
-              AND capability.reset_attempt = observation.reset_attempt
-              AND capability.revoked_at IS NULL
-            WHERE observation.target_id = $1
-              AND observation.cycle_id = $2
-              AND observation.reset_attempt = $3
-              AND observation.container_id = $4"#,
-    )
-    .bind(target_id)
-    .bind(cycle_id)
-    .bind(reset_attempt)
-    .bind(container_id)
-    .fetch_optional(pool)
-    .await;
-    match row {
-        Ok(Some((None, _))) => KothMarkerRead::Observed(None),
-        Ok(Some((Some(_), Some(token)))) => KothMarkerRead::Observed(Some(token)),
-        Ok(Some((Some(_), None))) => KothMarkerRead::Unavailable(
-            "KotH API observation references an unavailable capability".to_string(),
-        ),
-        Ok(None) => KothMarkerRead::Unavailable(
-            "KotH API observer has not reported the active context".to_string(),
-        ),
-        Err(error) => {
-            KothMarkerRead::Unavailable(format!("KotH API observation read failed: {error}"))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::postgres::PgPoolOptions;
 
     #[test]
     fn unavailable_marker_elects_nobody_without_voiding_functional_evidence() {
@@ -176,63 +130,6 @@ mod tests {
         assert!(!observation_precedes_deadline(
             end + chrono::Duration::milliseconds(1),
             end,
-        ));
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn api_claim_reads_are_bound_to_exact_context_and_live_capability() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let pool = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .unwrap();
-        sqlx::raw_sql(
-            r#"
-            CREATE TEMP TABLE "KothTokens" (
-              id INTEGER PRIMARY KEY, cycle_id BIGINT NOT NULL,
-              reset_attempt INTEGER NOT NULL, token TEXT NOT NULL,
-              revoked_at TIMESTAMPTZ
-            );
-            CREATE TEMP TABLE "KothApiObservations" (
-              target_id INTEGER PRIMARY KEY, cycle_id BIGINT NOT NULL,
-              reset_attempt INTEGER NOT NULL, container_id TEXT NOT NULL,
-              token_id INTEGER
-            );
-            INSERT INTO "KothTokens" VALUES
-              (11, 41, 2, 'current-token', NULL);
-            INSERT INTO "KothApiObservations" VALUES
-              (3, 41, 2, 'runtime-a', 11);
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        match read_koth_api_observation(&pool, 3, 41, 2, "runtime-a").await {
-            KothMarkerRead::Observed(Some(token)) => assert_eq!(token, "current-token"),
-            _ => panic!("exact active API observation was not returned"),
-        }
-        assert!(matches!(
-            read_koth_api_observation(&pool, 3, 41, 1, "runtime-a").await,
-            KothMarkerRead::Unavailable(_)
-        ));
-        sqlx::query(r#"UPDATE "KothTokens" SET revoked_at = clock_timestamp() WHERE id = 11"#)
-            .execute(&pool)
-            .await
-            .unwrap();
-        assert!(matches!(
-            read_koth_api_observation(&pool, 3, 41, 2, "runtime-a").await,
-            KothMarkerRead::Unavailable(_)
-        ));
-        sqlx::query(r#"UPDATE "KothApiObservations" SET token_id = NULL WHERE target_id = 3"#)
-            .execute(&pool)
-            .await
-            .unwrap();
-        assert!(matches!(
-            read_koth_api_observation(&pool, 3, 41, 2, "runtime-a").await,
-            KothMarkerRead::Observed(None)
         ));
     }
 }

@@ -63,10 +63,53 @@ pub(crate) async fn snapshot_official_config(
     .fetch_optional(&mut **transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if unsnapshotted_cooldown.is_some_and(|ticks| ticks > 0) && !crate::services::ad_vpn::enabled()
+    let (has_api_arena, has_marker_hill, roster_count) = sqlx::query_as::<_, (bool, bool, i64)>(
+        r#"SELECT EXISTS(
+                 SELECT 1 FROM "GameChallenges" challenge
+                 JOIN "KothApiObservers" observer
+                   ON observer.game_id = challenge.game_id
+                  AND observer.challenge_id = challenge.id
+                WHERE challenge.game_id = $1
+                  AND challenge.is_enabled = TRUE
+                  AND challenge.review_status = $2
+                  AND challenge."Type" = $3
+               ),
+               EXISTS(
+                 SELECT 1 FROM "GameChallenges" challenge
+                WHERE challenge.game_id = $1
+                  AND challenge.is_enabled = TRUE
+                  AND challenge.review_status = $2
+                  AND challenge."Type" = $3
+                  AND NOT EXISTS (
+                        SELECT 1 FROM "KothApiObservers" observer
+                         WHERE observer.game_id = challenge.game_id
+                           AND observer.challenge_id = challenge.id
+                  )
+               ),
+               (SELECT COUNT(*) FROM "Participations" participation
+                 WHERE participation.game_id = $1
+                   AND participation.status = $4)"#,
+    )
+    .bind(game_id)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::KingOfTheHill as i16)
+    .bind(ParticipationStatus::Accepted as i16)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if unsnapshotted_cooldown.is_some_and(|ticks| ticks > 0)
+        && has_marker_hill
+        && !crate::services::ad_vpn::enabled()
     {
         return Err(AppError::bad_request(
-            "KotH champion cooldown requires the managed A&D VPN; enable it or configure zero cooldown ticks before scoring starts",
+            "boot2root KotH champion cooldown requires the managed A&D VPN; enable it or configure zero cooldown ticks before scoring starts",
+        ));
+    }
+    if has_api_arena
+        && roster_count > crate::services::ad::engine::koth_api::MAX_API_ARENA_TEAMS as i64
+    {
+        return Err(AppError::bad_request(
+            "KotH API arena scoring supports at most 2,000 accepted teams",
         ));
     }
     let exists = sqlx::query_scalar::<_, bool>(

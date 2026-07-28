@@ -215,6 +215,14 @@ fn valid_service_endpoint(host: &str, port: i32) -> bool {
     !host.trim().is_empty() && (1..=65_535).contains(&port)
 }
 
+fn koth_scoring_lifecycle_ready(
+    crown_shape_ready: bool,
+    has_marker_hill: bool,
+    vpn_enabled: bool,
+) -> bool {
+    crown_shape_ready && (!has_marker_hill || vpn_enabled)
+}
+
 fn classify_round_target(
     latest: Option<(i32, i32)>,
     expected_latest: Option<(i32, i32)>,
@@ -365,15 +373,21 @@ async fn prepare_round_transaction(
         ));
     }
 
-    let engine_challenges: Vec<(i32, i16, Option<String>, bool)> = sqlx::query_as(
-        r#"SELECT id, "Type", ad_checker_image, ad_self_hosted
-             FROM "GameChallenges"
-            WHERE game_id = $1
-              AND is_enabled = TRUE
-              AND review_status = $2
-              AND "Type" IN ($3, $4)
-            ORDER BY id
-            FOR SHARE"#,
+    let engine_challenges: Vec<(i32, i16, Option<String>, bool, bool)> = sqlx::query_as(
+        r#"SELECT challenge.id, challenge."Type", challenge.ad_checker_image,
+                  challenge.ad_self_hosted,
+                  EXISTS (
+                    SELECT 1 FROM "KothApiObservers" observer
+                     WHERE observer.game_id = challenge.game_id
+                       AND observer.challenge_id = challenge.id
+                  ) AS api_arena
+             FROM "GameChallenges" challenge
+            WHERE challenge.game_id = $1
+              AND challenge.is_enabled = TRUE
+              AND challenge.review_status = $2
+              AND challenge."Type" IN ($3, $4)
+            ORDER BY challenge.id
+            FOR SHARE OF challenge"#,
     )
     .bind(game_id)
     .bind(ChallengeReviewStatus::Active as i16)
@@ -396,6 +410,9 @@ async fn prepare_round_transaction(
     let has_koth = engine_challenges
         .iter()
         .any(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16);
+    let has_marker_hill = engine_challenges
+        .iter()
+        .any(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16 && !challenge.4);
     let koth_challenge_ids: Vec<i32> = engine_challenges
         .iter()
         .filter(|challenge| challenge.1 == ChallengeType::KingOfTheHill as i16)
@@ -694,7 +711,11 @@ async fn prepare_round_transaction(
         crown_settings.2,
         crown_settings.3,
     );
-    let koth_lifecycle_ready = crown_shape_ready && crate::services::ad_vpn::enabled();
+    let koth_lifecycle_ready = koth_scoring_lifecycle_ready(
+        crown_shape_ready,
+        has_marker_hill,
+        crate::services::ad_vpn::enabled(),
+    );
     let scoring_roster_ready = complete_engine_scoring_roster(
         &accepted_participation_ids,
         &ad_challenge_ids,
@@ -707,8 +728,9 @@ async fn prepare_round_transaction(
 
     // A mutable template declares its boundary only when every engine challenge
     // has a prepared checker, every A&D service and KotH target exists, at least
-    // two teams are frozen, and the crown-cycle configuration is valid and
-    // enforceable through the VPN layer.
+    // two teams are frozen, and the crown-cycle configuration is valid.
+    // Boot2root marker hills additionally require the managed VPN because their
+    // champion cooldown is network-enforced; API arenas have no champion.
     let scoring_boundary_missing = game_settings.ad_scoring_start_round.is_none()
         || (has_koth && game_settings.koth_scoring_start_round.is_none());
     if scoring_roster_ready && scoring_boundary_missing {

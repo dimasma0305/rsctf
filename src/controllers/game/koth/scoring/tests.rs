@@ -73,6 +73,7 @@ fn recent_rollup_epochs_keep_the_true_timeline_prefix() {
 fn scoring_uses_each_teams_personal_cooldown_denominator() {
     let meta = vec![HillEpochMetaRow {
         challenge_id: 5,
+        claim_source: "Marker".to_string(),
         epoch: 1,
         start_round: 1,
         end_round: 3,
@@ -95,6 +96,11 @@ fn scoring_uses_each_teams_personal_cooldown_denominator() {
             healthy_responsible_ticks: 2,
             personal_scorable_ticks: 2,
             personal_eligible_windows: 1,
+            api_activity_rate: None,
+            api_objective_rate: None,
+            api_integrity_rate: None,
+            api_core_rate: None,
+            api_score_rate: None,
         },
         TeamEvidenceRow {
             participation_id: 9,
@@ -106,6 +112,11 @@ fn scoring_uses_each_teams_personal_cooldown_denominator() {
             healthy_responsible_ticks: 2,
             personal_scorable_ticks: 3,
             personal_eligible_windows: 1,
+            api_activity_rate: None,
+            api_objective_rate: None,
+            api_integrity_rate: None,
+            api_core_rate: None,
+            api_score_rate: None,
         },
     ];
 
@@ -120,6 +131,7 @@ fn scoring_uses_each_teams_personal_cooldown_denominator() {
 fn complete_epochs_keep_equal_weight_but_partial_tail_uses_played_ticks() {
     let mut row = HillEpochMetaRow {
         challenge_id: 5,
+        claim_source: "Marker".to_string(),
         epoch: 1,
         start_round: 1,
         end_round: 12,
@@ -150,6 +162,7 @@ fn wholly_void_hill_does_not_dilute_an_available_hill() {
     let meta = vec![
         HillEpochMetaRow {
             challenge_id: 5,
+            claim_source: "Marker".to_string(),
             epoch: 1,
             start_round: 1,
             end_round: 3,
@@ -165,6 +178,7 @@ fn wholly_void_hill_does_not_dilute_an_available_hill() {
         },
         HillEpochMetaRow {
             challenge_id: 6,
+            claim_source: "Marker".to_string(),
             epoch: 1,
             start_round: 1,
             end_round: 3,
@@ -187,6 +201,11 @@ fn wholly_void_hill_does_not_dilute_an_available_hill() {
         healthy_responsible_ticks: 1,
         personal_scorable_ticks: 1,
         personal_eligible_windows: 1,
+        api_activity_rate: None,
+        api_objective_rate: None,
+        api_integrity_rate: None,
+        api_core_rate: None,
+        api_score_rate: None,
     }];
 
     let scored = score_evidence_rows(&meta, &evidence, &[7], 3, false).unwrap();
@@ -197,4 +216,61 @@ fn wholly_void_hill_does_not_dilute_an_available_hill() {
     assert!((team.epochs[0].epoch_weight - 1.0).abs() < 1e-12);
     assert!((team.cells[&5].projected_weight - 1.0).abs() < 1e-12);
     assert!((team.cells[&6].projected_weight - 0.0).abs() < 1e-12);
+}
+
+#[test]
+fn api_arena_uses_normalized_channels_for_every_team_simultaneously() {
+    let meta = vec![HillEpochMetaRow {
+        challenge_id: 8,
+        claim_source: "Api".to_string(),
+        epoch: 1,
+        start_round: 1,
+        end_round: 3,
+        service_weight: 1.0,
+        round_count: 3,
+        result_count: 3,
+        scorable_ticks: 3,
+        eligible_windows: 3,
+        all_finalized: true,
+        max_checked_at: Some(Utc::now()),
+    }];
+    let evidence = vec![
+        TeamEvidenceRow {
+            participation_id: 7,
+            challenge_id: 8,
+            epoch: 1,
+            acquisition_windows: 3,
+            controlled_ticks: 3,
+            responsible_ticks: 3,
+            healthy_responsible_ticks: 3,
+            personal_scorable_ticks: 3,
+            personal_eligible_windows: 3,
+            api_activity_rate: Some(1.0),
+            api_objective_rate: Some(0.8),
+            api_integrity_rate: Some(1.0),
+            api_core_rate: Some(1.0 / (0.35 + 0.65 / 0.8)),
+            api_score_rate: Some(1.0 / (0.35 + 0.65 / 0.8)),
+        },
+        TeamEvidenceRow {
+            participation_id: 9,
+            challenge_id: 8,
+            epoch: 1,
+            acquisition_windows: 2,
+            controlled_ticks: 2,
+            responsible_ticks: 3,
+            healthy_responsible_ticks: 0,
+            personal_scorable_ticks: 3,
+            personal_eligible_windows: 3,
+            api_activity_rate: Some(0.5),
+            api_objective_rate: Some(0.4),
+            api_integrity_rate: Some(0.8),
+            api_core_rate: Some(1.0 / (0.35 / 0.5 + 0.65 / 0.4)),
+            api_score_rate: Some(0.8 / (0.35 / 0.5 + 0.65 / 0.4)),
+        },
+    ];
+    let scored = score_evidence_rows(&meta, &evidence, &[7, 9], 3, false).unwrap();
+    assert!(scored.teams[&7].projected_total > scored.teams[&9].projected_total);
+    assert_eq!(scored.teams[&7].acquisition_rate, 1.0);
+    assert_eq!(scored.teams[&7].control_rate, 0.8);
+    assert_eq!(scored.teams[&7].reliability_rate, 1.0);
 }

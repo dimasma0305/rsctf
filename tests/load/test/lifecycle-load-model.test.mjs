@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  assertTrustedForwardedIdentity,
   buildLifecycleFleet,
+  FORWARDED_IDENTITY_PROBE_IP,
   lifecycleFleetIp,
   lifecycleFleetSlot,
   lifecycleFleetSlots,
@@ -51,6 +53,38 @@ test("semantic integrity samples exclude expected rate-limit responses", () => {
   assert.equal(shouldValidateSemanticResponse(400), true);
   assert.equal(shouldValidateSemanticResponse(500), true);
   assert.equal(shouldValidateSemanticResponse(429), false);
+});
+
+test("lifecycle rejects a proxy path that collapses synthetic client identities", () => {
+  const accepted = {
+    status: 200,
+    json: {
+      detectedIp: FORWARDED_IDENTITY_PROBE_IP,
+      rawConnectionIp: "172.0.16.1",
+      proxyTrusted: true,
+      trustedNetworks: ["172.0.16.1/32"],
+    },
+  };
+  assert.equal(
+    assertTrustedForwardedIdentity(accepted).detectedIp,
+    FORWARDED_IDENTITY_PROBE_IP,
+  );
+  assert.throws(
+    () =>
+      assertTrustedForwardedIdentity({
+        ...accepted,
+        json: {
+          ...accepted.json,
+          detectedIp: "172.0.16.1",
+          proxyTrusted: false,
+        },
+      }),
+    /all VUs share one rate-limit identity/,
+  );
+  assert.throws(
+    () => assertTrustedForwardedIdentity({ status: 403, json: {} }),
+    /immediate peer unknown/,
+  );
 });
 
 test("container lifecycle identities are reserved away from Jeopardy polling", () => {

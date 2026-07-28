@@ -35,3 +35,19 @@ test('exact fallback remains fail-closed for unsupported blob owner classes', ()
     /RAISE EXCEPTION 'disposable admin fixture % still owns blob metadata'/,
   );
 });
+
+test('protected teardown snapshots every game-owned runtime before deletion can erase its identity', () => {
+  assert.match(fixtures, /export function disposableLoadGameRuntimeIds\(gameId, expectedTitle\)/);
+  assert.match(
+    fixtures,
+    /requireExactDisposableGame\(\{ id, title \}, 'disposable load fixture'\)/,
+  );
+  assert.match(
+    app,
+    /for \(const containerId of disposableLoadGameRuntimeIds\(gameId, title\)\) \{\s*managedEventContainers\.add\(containerId\);/,
+  );
+  assert.match(
+    app,
+    /removeManagedKothContainers\(runtimeIds\);[\s\S]*exactProtectedLoadGameCleanup\(g, title, runtimeIds\)/,
+  );
+});
