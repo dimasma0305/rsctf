@@ -163,6 +163,57 @@ before/after speed claim. The campaign adds a correctness feature outside the
 player polling hot path and has no optimization-ledger row because there is no
 same-fixture, same-load old-code pass.
 
+### Release and production state
+
+The accepted source is
+`d702bdf9b474c859aa27b6286aaecf5774589d7f` (`0.1.30`). GitHub CI,
+documentation, Helm, native AMD64/ARM64 server and BYOC images, image
+attestation and promotion, and the Linux AMD64/Linux ARM64/Windows AMD64 worker
+release workflow all succeeded. The published `v0.1.30` release contains the
+three worker archives, both worker installers, the deployment installer and
+bundle, checksums, and the artifact-attestation bundle.
+
+The production image is pinned to
+`ghcr.io/dimasma0305/rsctf@sha256:334269b8a316954caf4ece64cc73d9352a97bad7f3b05b26d852f5cc4d721318`.
+Its native children are
+`sha256:82f1b1242b4fc6c9c16d6488d570062578b02e32141316a6dcb8b750002058fa`
+for AMD64 and
+`sha256:e0cfd9080bffaed146974fb558f5e51abb97cf17f6ca97ed62632c29796f5d6b`
+for ARM64. Both carry the exact version and revision labels and embed the same
+attested BYOC agent digest.
+
+Before migration, the stopped application roles were backed up to
+`/root/rsctf-production/backups/20260728T020919Z-pre-v0.1.30`. The 4,406,970
+byte PostgreSQL custom dump has SHA-256
+`f5364399e86bc001b19e8827da1d7e6597daa7219f5feed8710c1fc5ff45b6e9`;
+its catalog was readable by PostgreSQL 18. The 199,469,803 byte files archive
+has SHA-256
+`12258869fc188770c023da5df1f33f6563b79554cfa70dcb028532d89caab4fa`
+and passed a full archive listing. PostgreSQL and Redis remained online while
+the application roles were stopped.
+
+The one-shot migration role from the pinned image applied
+`m0083_koth_api_observers`; the ledger and all three new tables were verified
+before long-running roles restarted. Both web replicas and the singleton
+control replica now report version `0.1.30`, the exact accepted revision and
+manifest digest, image ID
+`sha256:d468e242794a0894f9e0379034c9abc0be486147c19fcb59a3c1b7c688ed1b42`,
+healthy state, zero restarts, and no OOM kills. All three direct health probes
+and six consecutive public probes returned HTTP 200 with exact body `ok`;
+public liveness, `/games`, and `/api/games` also returned HTTP 200. Recent logs
+contained no error, panic, migration failure, or restart-loop signal.
+
+A disposable future hidden game exercised the live public organizer path.
+Anonymous observer metadata returned 401; authenticated initial metadata
+returned unconfigured `Marker` state; credential creation returned 200 with
+`no-store`/`no-cache` and a one-time secret; the following metadata response
+contained no secret; revocation returned 200; and inactive public context
+returned 409. The game was deleted through the API, leaving zero smoke games,
+observers, observations, or replay rows. Both active pre-existing games
+remained active. The live Linux and Windows bootstrap endpoints were fetched,
+contained no embedded enrollment token, retained the health preflight, and
+passed shell syntax or the release workflow's Windows parser/build gate.
+
 ## A&D finalization correctness and snapshot capacity — 25 July 2026
 
 The accepted source is
