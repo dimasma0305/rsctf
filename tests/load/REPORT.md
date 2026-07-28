@@ -162,6 +162,69 @@ the scoring feature because API settlement is outside those HTTP reads and
 the host/cache state can move short latency samples. This is therefore an
 acceptance comparison, not a new optimization-ledger row.
 
+### Verification, release, and production rollout
+
+The accepted implementation is commit
+`bf7371ff77bbb2731ce01329221f120092dfb8de`, published by the annotated
+`v0.1.31` tag. The full Rust run discovered 946 library tests: 770 ordinary
+tests passed and 176 environment-gated tests remained ignored; all binary and
+integration targets also passed. The PostgreSQL-gated suite then passed
+169/169 tests. Clippy completed with warnings denied. The React checks,
+94 component tests, 10 visual tests, production build, 290 load-harness tests,
+example referee tests, documentation/PDF build, locked release build, and
+dependency audit all passed. GitHub runs `30346728400`, `30346728992`,
+`30346757265`, `30346757038`, and `30346756907` completed successfully for CI,
+the main and tagged images, the release, and the Helm chart.
+
+The published release contains native Linux AMD64, Linux ARM64, and Windows
+AMD64 worker archives, both bootstrap installers, checksums, attestations, and
+the deployment bundle. GitHub's latest-release redirect resolves to
+`v0.1.31`. The server multi-platform image is
+`ghcr.io/dimasma0305/rsctf@sha256:468df5e22abd922da4c26ecf76572767f75a9a00323700224cca999a5a6f5a49`;
+its AMD64 child is
+`sha256:c09bbd80b367f51da8e5d773ef9940eba4897c8ae78db3356129c0bbb08263bd`.
+The separately attested BYOC index is
+`sha256:86b08f8985c0047b9bd226f26851d3112bc61b7561185fef227f46f8a707d128`.
+
+Before migration, production was backed up at
+`/root/rsctf-production/backups/20260728T094827Z-pre-v0.1.31`. The PostgreSQL
+custom dump has SHA-256
+`de43d97e4e6409c7b5e3a1be32f136bf63b80d5bfa382b1837e2053d6fed2495`;
+`pg_restore -l` read its catalog successfully. The files archive has SHA-256
+`12258869fc188770c023da5df1f33f6563b79554cfa70dcb028532d89caab4fa`
+and passed a complete archive listing. The release record has SHA-256
+`951965d126a2bc5b4ff1bcbd488b24ed2014e29e7ee734095faa71d50a1eca33`;
+all three values matched the retained checksum manifest.
+
+The one-shot migration role from the immutable new image applied
+`m0084_koth_api_arena` in about 96 ms. Its ledger row and four arena tables
+were verified, and the superseded `KothApiObservations` table is absent. Both
+web replicas and the singleton control replica now use the exact image index
+above and local image ID
+`sha256:d753c7a6af17d2a42f2121ee3a79fc76475fa470fbac56c5b4770b1a4233d4a5`.
+All three carry version `0.1.31` and the accepted revision, are healthy with
+zero restarts and no OOM kills, and report fresh heartbeats as exactly two web
+roles and one control role with one common build fingerprint. The public
+`/healthz` response is HTTP 200 with the exact two bytes `ok`; `/games` and
+the existing game challenge page also return HTTP 200. Recent application and
+edge logs contain no panic, fatal error, migration failure, restart loop, or
+5xx response. Pre-existing active games 52 and 67 remained active.
+
+A disposable production organizer smoke test proved the new credential
+boundary without retaining event data. Anonymous metadata and rotation were
+rejected with HTTP 401. Authenticated rotation returned HTTP 200 with
+`no-store` and a one-time secret; later metadata returned HTTP 200 without
+leaking that secret. The objective scheme was initially unset, a future
+inactive context returned HTTP 409, and revocation returned HTTP 200. Cleanup
+deleted disposable game 189 and left no game residue. The live POSIX and
+PowerShell bootstrap endpoints are byte-identical to the accepted source,
+return HTTP 200 with the expected security headers, and have SHA-256 values
+`207ba16ec0df85b26e37257f06dea56e96dd267c8d10abddcefc3640704804ae`
+and
+`c3969a177929097e57dc4d471c688694f0c13a0f190b60f07d78c7eac0526627`;
+the POSIX script also passed `sh -n`, while Windows parsing and smoke tests
+passed in CI.
+
 ## Historical signed KotH API observer acceptance — 28 July 2026
 
 > Superseded by the normalized multi-team API arena described in the newer
