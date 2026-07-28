@@ -306,10 +306,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires an empty PostgreSQL database via RSCTF_MIGRATION_TEST_DATABASE_URL"]
+    #[ignore = "requires an empty PostgreSQL database via RSCTF_TEST_DATABASE_URL"]
     async fn upgrades_the_real_m0083_schema_without_retaining_holder_observations() {
-        let database_url = std::env::var("RSCTF_MIGRATION_TEST_DATABASE_URL")
-            .expect("RSCTF_MIGRATION_TEST_DATABASE_URL must point to an empty disposable database");
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to an empty disposable database");
         let db = sea_orm_migration::sea_orm::Database::connect(database_url)
             .await
             .unwrap();
