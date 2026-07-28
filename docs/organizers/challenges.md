@@ -82,6 +82,24 @@ Pair it with clear event rules, network design, monitoring, and player-visible
 functional checks. The legacy `@ad_checker` / `@koth_checker` single-function
 API remains valid when variation is unnecessary.
 
+## KotH claim input
+
+Every KotH hill uses one claim transport, frozen when official scoring starts:
+
+- **Container marker** reads `/koth/king` from the exact managed container.
+- **Signed API observer** receives the current capability from an independent
+  trusted controller. This removes the backend-exec requirement and works
+  across Docker, Kubernetes, and private workers.
+
+The API observer never submits points. RSCTF still brackets the observation
+around the functional checker, confirms consecutive healthy control, runs
+pristine crown-cycle resets, and calculates the fixed score.
+
+Configure the observer from the KotH operations table before official scoring.
+Keep its HMAC secret outside the attacker-controlled hill. See
+[Signed KotH API observer](./koth-api-observer) for the security boundary,
+wire contract, response behavior, and reference client.
+
 ## Review and enable
 
 Keep new challenges disabled until another organizer reviews the description, downloadable files, flag, scoring, and runtime. Enable them only after testing with a non-admin account.

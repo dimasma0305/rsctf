@@ -29,7 +29,7 @@
 
 use std::collections::HashMap;
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -49,6 +49,7 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
 mod admin;
+mod api;
 mod board;
 mod capture;
 mod eligibility;
@@ -59,6 +60,9 @@ mod scoring_formula;
 mod timeline;
 mod tokens;
 pub use admin::{admin_state, audit_receipts, recover_hill};
+pub use api::{
+    get_observer, observer_context, revoke_observer, rotate_observer, submit_observation,
+};
 use board::*;
 pub use capture::ensure_koth_hills;
 pub(crate) use eligibility::invalidate_live_hill_cache;
@@ -232,6 +236,12 @@ pub struct AdminKothHill {
     pub can_retry: bool,
     pub reset_receipt_id: Option<i64>,
     pub scoring_receipt_id: Option<i64>,
+    /// Officially snapshotted input transport, or the pre-start selection.
+    pub claim_source: String,
+    pub api_observer_configured: bool,
+    pub api_observer_secret_hint: Option<String>,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub api_last_observation_at: Option<DateTime<Utc>>,
 }
 
 /// `GET /api/edit/games/{id}/ad/koth/state` response (`AdminKothStateModel`).
@@ -501,9 +511,22 @@ fn common_router() -> Router<SharedState> {
             "/api/edit/games/{id}/ad/koth/{challengeId}/receipts",
             get(audit_receipts),
         )
-    // No capture endpoint: a team claims a hill by writing its minted token into the
-    // hill's /koth/king. The checker reads it each tick to elect the
-    // king — there is no platform-side capture call.
+        .route(
+            "/api/edit/games/{id}/ad/koth/{challengeId}/observer",
+            get(get_observer)
+                .post(rotate_observer)
+                .delete(revoke_observer),
+        )
+        .route(
+            "/api/v1/koth/games/{id}/challenges/{challengeId}/context",
+            get(observer_context),
+        )
+        .route(
+            "/api/v1/koth/games/{id}/challenges/{challengeId}/observations",
+            post(submit_observation).layer(DefaultBodyLimit::max(1_024)),
+        )
+    // No player capture endpoint: marker hills read /koth/king, while an API hill
+    // accepts input only from its challenge-scoped trusted observer credential.
 }
 
 fn recovery_router() -> Router<SharedState> {

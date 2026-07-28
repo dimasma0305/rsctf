@@ -2,7 +2,11 @@
 
 use super::*;
 
-async fn require_game_admin(st: &SharedState, user: &CurrentUser, game_id: i32) -> AppResult<()> {
+pub(super) async fn require_game_admin(
+    st: &SharedState,
+    user: &CurrentUser,
+    game_id: i32,
+) -> AppResult<()> {
     if user.is_admin() {
         return Ok(());
     }
@@ -97,6 +101,60 @@ async fn load_cycle_champions(
     Ok(champions)
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct ObserverAdminRow {
+    challenge_id: i32,
+    claim_source: String,
+    configured: bool,
+    secret_hint: Option<String>,
+    last_observation_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+async fn load_observer_admin_state(
+    st: &SharedState,
+    game_id: i32,
+) -> AppResult<std::collections::HashMap<i32, ObserverAdminRow>> {
+    let rows = sqlx::query_as::<_, ObserverAdminRow>(
+        r#"SELECT challenge.id AS challenge_id,
+                  CASE
+                    WHEN config.game_id IS NOT NULL
+                      THEN COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker')
+                    WHEN observer.challenge_id IS NOT NULL THEN 'Api'
+                    ELSE 'Marker'
+                  END AS claim_source,
+                  observer.challenge_id IS NOT NULL AS configured,
+                  observer.secret_hint,
+                  observation.accepted_at AS last_observation_at
+             FROM "GameChallenges" challenge
+             LEFT JOIN "KothOfficialConfigs" config
+               ON config.game_id = challenge.game_id
+             LEFT JOIN LATERAL (
+               SELECT item
+                 FROM jsonb_array_elements(config.hills_snapshot) item
+                WHERE (item->>'challengeId')::integer = challenge.id
+                LIMIT 1
+             ) frozen ON TRUE
+             LEFT JOIN "KothApiObservers" observer
+               ON observer.game_id = challenge.game_id
+              AND observer.challenge_id = challenge.id
+             LEFT JOIN "KothTargets" target
+               ON target.game_id = challenge.game_id
+              AND target.challenge_id = challenge.id
+             LEFT JOIN "KothApiObservations" observation
+               ON observation.target_id = target.id
+            WHERE challenge.game_id = $1 AND challenge."Type" = $2"#,
+    )
+    .bind(game_id)
+    .bind(ChallengeType::KingOfTheHill as i16)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.challenge_id, row))
+        .collect())
+}
+
 /// `GET /api/edit/games/{id}/ad/koth/state` — the admin KotH operator console:
 /// every hill (enabled and disabled) with its container address + current king,
 /// plus the game's KotH tunables and the same ranked team rows as the board.
@@ -112,6 +170,7 @@ pub async fn admin_state(
     let board = compute_koth_board(&st, game_id, None, true).await?;
     let mut lifecycle = load_lifecycle_map(&st, game_id, board.latest_round, None).await?;
     let mut cycle_champions = load_cycle_champions(&st, game_id).await?;
+    let mut observer_state = load_observer_admin_state(&st, game_id).await?;
     let config = sqlx::query_as::<_, (i32, i32, i32, i32)>(
         r#"SELECT koth_epoch_ticks, koth_cycle_ticks, koth_champion_cooldown_ticks,
                   koth_claim_confirmation_ticks
@@ -130,6 +189,7 @@ pub async fn admin_state(
         .iter()
         .map(|h| {
             let view = lifecycle.remove(&h.challenge_id).unwrap_or_default();
+            let observer = observer_state.remove(&h.challenge_id);
             AdminKothHill {
                 challenge_id: h.challenge_id,
                 title: h.title.clone(),
@@ -170,6 +230,15 @@ pub async fn admin_state(
                 can_retry: view.can_retry,
                 reset_receipt_id: view.reset_receipt_id,
                 scoring_receipt_id: view.scoring_receipt_id,
+                claim_source: observer
+                    .as_ref()
+                    .map(|state| state.claim_source.clone())
+                    .unwrap_or_else(|| "Marker".to_string()),
+                api_observer_configured: observer.as_ref().is_some_and(|state| state.configured),
+                api_observer_secret_hint: observer
+                    .as_ref()
+                    .and_then(|state| state.secret_hint.clone()),
+                api_last_observation_at: observer.and_then(|state| state.last_observation_at),
             }
         })
         .collect();

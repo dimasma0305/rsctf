@@ -160,6 +160,7 @@ const context = {
   inspectorId: 'inspector-not-created',
   kothGameId: null,
   kothChallengeId: null,
+  kothObserverSecret: null,
 };
 
 let identities;
@@ -329,7 +330,7 @@ function authorizationProbeRequest(operation) {
 }
 
 async function authorizationMatrix() {
-  console.log('\n64-operation authorization matrix…');
+  console.log(`\n${EDIT_OPERATIONS.length}-operation authorization matrix…`);
   const before = fixtureFingerprint();
   let missingChecks = 0;
   let privilegeChecks = 0;
@@ -838,6 +839,18 @@ async function prepareKothFixture() {
   });
   await A.rebuildChallengeImage(context.kothGameId, context.kothChallengeId, image, 'edit KotH hill');
   await A.addFlags(context.kothGameId, context.kothChallengeId, [`flag{edit_koth_placeholder_${runKey}}`]);
+  const observer = await call('edit_koth_observer_rotate', {
+    jwt: identities.managerJwt,
+  });
+  context.kothObserverSecret = observer.model.secret;
+  state.kothObserver = {
+    challengeId: context.kothChallengeId,
+    source: observer.model.claimSource,
+    configured: observer.model.configured,
+    secretHint: observer.model.secretHint,
+    secretReturnedOnce: true,
+  };
+  saveRecovery();
   await A.setChallenge(context.kothGameId, context.kothChallengeId, { isEnabled: true });
   await uncatalogued('POST', `/api/edit/games/${context.kothGameId}/ad/EnsureContainers`);
   const hill = discoverManagedKothHill(context.kothGameId, context.kothChallengeId);
@@ -1219,6 +1232,67 @@ async function positiveReadAndMutationSurface() {
     activeHillView.durablePhase === 'Active' && activeHillView.resetPhase === 'Active',
     `KotH fixture was not active before recovery fault: ${JSON.stringify(activeHillView)}`,
   );
+  requireCondition(
+    activeHillView.claimSource === 'Api' && activeHillView.apiObserverConfigured === true,
+    `KotH fixture did not freeze signed API input: ${JSON.stringify(activeHillView)}`,
+  );
+  const observer = await call('edit_koth_observer_get', {
+    jwt: identities.managerJwt,
+  });
+  requireCondition(
+    observer.model.claimSource === 'Api' &&
+      observer.model.configured === true &&
+      !Object.hasOwn(observer.model, 'secret'),
+    `KotH observer metadata leaked or changed credential state: ${JSON.stringify(observer.model)}`,
+  );
+  const claimantId = Number(sql(
+    `SELECT token.participation_id FROM "KothTokens" token ` +
+      `JOIN "KothCrownCycles" cycle ON cycle.id=token.cycle_id ` +
+      `WHERE cycle.game_id=${context.kothGameId} ` +
+        `AND token.challenge_id=${context.kothChallengeId} ` +
+        `AND cycle.phase='Active' AND token.revoked_at IS NULL ` +
+      `ORDER BY token.participation_id LIMIT 1`,
+  ));
+  const claimToken = A.latestKothToken(
+    context.kothGameId,
+    claimantId,
+    context.kothChallengeId,
+  );
+  requireCondition(claimToken, 'KotH API fixture has no exact active capability');
+  const acceptedObservation = await A.kothApiCaptureWrite(
+    context.kothGameId,
+    context.kothChallengeId,
+    context.kothObserverSecret,
+    claimToken,
+  );
+  requireCondition(
+    acceptedObservation.accepted === true &&
+      Number.isSafeInteger(acceptedObservation.cycleNumber) &&
+      Number.isSafeInteger(acceptedObservation.resetAttempt),
+    `KotH API observer rejected current exact evidence: ${JSON.stringify(acceptedObservation)}`,
+  );
+  const stagedObservation = JSON.parse(sql(
+    `SELECT json_build_object(` +
+      `'tokenId',observation.token_id,'cycleId',observation.cycle_id,` +
+      `'resetAttempt',observation.reset_attempt,'containerId',observation.container_id` +
+    `)::text FROM "KothApiObservations" observation ` +
+    `JOIN "KothTargets" target ON target.id=observation.target_id ` +
+    `WHERE target.game_id=${context.kothGameId} ` +
+      `AND target.challenge_id=${context.kothChallengeId}`,
+  ));
+  requireCondition(
+    Number.isSafeInteger(stagedObservation.tokenId) &&
+      stagedObservation.cycleId > 0 &&
+      stagedObservation.containerId === activeHillView.replacementContainerId,
+    `KotH API input was not staged against the active runtime: ${JSON.stringify(stagedObservation)}`,
+  );
+  state.kothObserver = {
+    ...state.kothObserver,
+    currentObservationAccepted: true,
+    cycleId: stagedObservation.cycleId,
+    resetAttempt: stagedObservation.resetAttempt,
+  };
+  saveRecovery();
   const receipts = await call('edit_koth_receipts', { jwt: identities.managerJwt });
   requireCondition(receipts.model.challengeId === context.kothChallengeId, 'KotH receipt feed returned wrong hill');
 
@@ -1442,6 +1516,35 @@ async function runReadSimulation() {
 
 async function destructivePositiveSurface() {
   console.log('\npositive delete/review contracts…');
+  await call('edit_koth_observer_revoke', { jwt: identities.managerJwt });
+  const revokedObserverResponse = await uncatalogued(
+    'GET',
+    `/api/edit/games/${context.kothGameId}/ad/koth/${context.kothChallengeId}/observer`,
+    { jwt: identities.managerJwt },
+  );
+  const revokedObserver = revokedObserverResponse.json?.data ?? revokedObserverResponse.json;
+  requireCondition(
+    revokedObserver?.claimSource === 'Api' &&
+      revokedObserver.configured === false &&
+      !Object.hasOwn(revokedObserver, 'secret') &&
+      Number(sql(
+        `SELECT count(*) FROM "KothApiObservers" ` +
+          `WHERE game_id=${context.kothGameId} AND challenge_id=${context.kothChallengeId}`,
+      )) === 0 &&
+      Number(sql(
+        `SELECT count(*) FROM "KothApiObservations" observation ` +
+          `JOIN "KothTargets" target ON target.id=observation.target_id ` +
+          `WHERE target.game_id=${context.kothGameId} ` +
+            `AND target.challenge_id=${context.kothChallengeId}`,
+      )) === 0,
+    `KotH observer revocation did not preserve source while clearing credentials: ${JSON.stringify(revokedObserver)}`,
+  );
+  state.kothObserver = {
+    ...state.kothObserver,
+    revoked: true,
+    sourceAfterRevoke: revokedObserver.claimSource,
+  };
+  saveRecovery();
   await call('edit_flag_delete', { jwt: identities.managerJwt });
   await call('edit_test_container_delete', { jwt: identities.managerJwt });
   await call('edit_challenge_approve', { jwt: identities.managerJwt });

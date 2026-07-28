@@ -37,6 +37,7 @@ import {
   normalizeFleetScope,
   ownsFleetResource,
 } from './fleet-ownership.js';
+import { kothObservationHeaders } from './koth-api-observer.js';
 
 const STATE_DIRECTORY = new URL('.', import.meta.url).pathname;
 const STATE_TAG = String(process.env.LIFECYCLE_STATE_TAG || '').trim();
@@ -51,17 +52,32 @@ export const nowMs = () => Number(sql('SELECT (extract(epoch from now())*1000)::
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
 /** One API call. Returns { status, json, text }. jwt → Bearer; ip → X-Real-IP. */
-export async function api(method, path, { jwt, ip, body, timeoutMs = 30_000, baseUrl = TARGET } = {}) {
+export async function api(
+  method,
+  path,
+  {
+    jwt,
+    ip,
+    body,
+    rawBody,
+    headers: suppliedHeaders,
+    timeoutMs = 30_000,
+    baseUrl = TARGET,
+  } = {},
+) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error(`API timeout must be a positive number (got ${timeoutMs})`);
   }
-  const headers = { 'content-type': 'application/json' };
+  if (body !== undefined && rawBody !== undefined) {
+    throw new Error('API request cannot provide both body and rawBody');
+  }
+  const headers = { 'content-type': 'application/json', ...(suppliedHeaders || {}) };
   if (jwt) headers.authorization = `Bearer ${jwt}`;
   if (ip) headers['x-real-ip'] = ip;
   const r = await fetch(`${baseUrl}${path}`, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: rawBody !== undefined ? rawBody : body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await r.text();
@@ -1409,6 +1425,74 @@ export function kothCaptureWrite(container, token) {
     'write KotH capture marker'
   );
 }
+
+/** Select API claim input before the official snapshot and return its one-time secret. */
+export async function configureKothApiObserver(gid, cid) {
+  const response = await must(
+    await api('POST', `/api/edit/games/${Number(gid)}/ad/koth/${Number(cid)}/observer`, {
+      ...jwtOpt(),
+    }),
+    'configure KotH API observer',
+  );
+  const model = unwrap(response);
+  if (
+    model?.claimSource !== 'Api' ||
+    model?.configured !== true ||
+    typeof model?.secret !== 'string' ||
+    !model.secret.startsWith('koth_api_')
+  ) {
+    throw new Error('configure KotH API observer returned an invalid one-time credential');
+  }
+  return model.secret;
+}
+
+let lastKothObservationTimestamp = 0;
+
+/**
+ * Report one exact current KotH capability through the trusted observer API.
+ * Returns the response so negative/replay scenarios can assert the rejection.
+ */
+export async function kothApiObservation(gid, cid, secret, token) {
+  const gameId = Number(gid);
+  const challengeId = Number(cid);
+  const contextResponse = await api(
+    'GET',
+    `/api/v1/koth/games/${gameId}/challenges/${challengeId}/context`,
+    { ip: '10.9.9.10' },
+  );
+  if (contextResponse.status !== 200) {
+    throw new Error(
+      `fetch KotH API context → ${contextResponse.status} ${contextResponse.text?.slice(0, 200)}`,
+    );
+  }
+  const context = unwrap(contextResponse)?.context;
+  if (typeof context !== 'string' || !/^[0-9a-f]{64}$/.test(context)) {
+    throw new Error('KotH API context response is malformed');
+  }
+  const rawBody = JSON.stringify({ context, token });
+  const timestamp = Math.max(Date.now(), lastKothObservationTimestamp + 1);
+  lastKothObservationTimestamp = timestamp;
+  return api(
+    'POST',
+    `/api/v1/koth/games/${gameId}/challenges/${challengeId}/observations`,
+    {
+      rawBody,
+      headers: kothObservationHeaders(secret, timestamp, gameId, challengeId, rawBody),
+      ip: '10.9.9.10',
+    },
+  );
+}
+
+export async function kothApiCaptureWrite(gid, cid, secret, token) {
+  const response = await kothApiObservation(gid, cid, secret, token);
+  if (response.status !== 200) {
+    throw new Error(
+      `write KotH API observation → ${response.status} ${response.text?.slice(0, 200)}`,
+    );
+  }
+  return unwrap(response);
+}
+
 export function latestKothToken(gid, pid, cid) {
   return sql(
     `SELECT token.token FROM "KothTokens" token ` +

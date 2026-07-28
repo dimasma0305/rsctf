@@ -113,6 +113,7 @@ export default defineConfig({
             { text: 'Run your first event', link: '/organizers/' },
             { text: 'Create games', link: '/organizers/games' },
             { text: 'Create challenges', link: '/organizers/challenges' },
+            { text: 'KotH API observer', link: '/organizers/koth-api-observer' },
             { text: 'Import the sample repository', link: '/organizers/sample-repository' },
             { text: 'Operate a live event', link: '/organizers/live-event' },
           ],

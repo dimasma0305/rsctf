@@ -15,7 +15,10 @@ use crate::models::data::ad_round;
 use crate::services::ad::engine::{
     koth_auth,
     koth_cycle::{self, ClaimObservation, ObservedToken},
-    koth_marker::{observation_precedes_deadline, read_koth_marker, stable_koth_marker},
+    koth_marker::{
+        observation_precedes_deadline, read_koth_api_observation, read_koth_marker,
+        stable_koth_marker, KothMarkerRead,
+    },
     AdCheckStatus, RoundFinishLease,
 };
 use crate::services::container::{ContainerLiveness, ContainerManager};
@@ -70,6 +73,7 @@ struct LiveHill {
     cycle_id: i64,
     token_window_attempt: i32,
     phase: String,
+    claim_source: String,
     claim_confirmation_ticks: i32,
     token_count: i64,
     roster_count: i64,
@@ -99,7 +103,10 @@ async fn load_live_hill(
                            cycle.old_container_id, '') AS container_id,
                   cycle.id AS cycle_id,
                   cycle.reset_attempt AS token_window_attempt,
-                  cycle.phase, config.claim_confirmation_ticks,
+                  cycle.phase,
+                  COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker')
+                    AS claim_source,
+                  config.claim_confirmation_ticks,
                   (SELECT COUNT(*) FROM "KothTokens" token
                     WHERE token.cycle_id = cycle.id
                       AND token.challenge_id = target.challenge_id
@@ -117,6 +124,12 @@ async fn load_live_hill(
              JOIN "Games" game ON game.id = target.game_id
              JOIN "KothOfficialConfigs" config
                ON config.game_id = target.game_id
+             JOIN LATERAL (
+               SELECT item
+                 FROM jsonb_array_elements(config.hills_snapshot) item
+                WHERE (item->>'challengeId')::integer = target.challenge_id
+                LIMIT 1
+             ) frozen ON TRUE
              JOIN "AdRounds" scoring_round
                ON scoring_round.id = $3 AND scoring_round.game_id = target.game_id
              JOIN LATERAL (
@@ -170,6 +183,29 @@ async fn load_live_hill(
     .fetch_optional(connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))
+}
+
+async fn read_claim_source(
+    db: &DatabaseConnection,
+    containers: &dyn ContainerManager,
+    hill: &LiveHill,
+) -> KothMarkerRead {
+    match hill.claim_source.as_str() {
+        "Api" => {
+            read_koth_api_observation(
+                db.get_postgres_connection_pool(),
+                hill.target_id,
+                hill.cycle_id,
+                hill.token_window_attempt,
+                &hill.container_id,
+            )
+            .await
+        }
+        "Marker" => read_koth_marker(containers, Some(&hill.container_id)).await,
+        source => KothMarkerRead::Unavailable(format!(
+            "unsupported snapshotted KotH claim source {source:?}"
+        )),
+    }
 }
 
 async fn reconcile_ineligible_incumbents(
@@ -412,7 +448,7 @@ async fn check_one_hill(
                     None,
                 )
             } else {
-                let before = read_koth_marker(containers, Some(&hill.container_id)).await;
+                let before = read_claim_source(db, containers, &hill).await;
                 let timeout = planned_timeout.expect("checked above");
                 if !checker_probe_can_start(
                     effective_deadline,
@@ -443,7 +479,7 @@ async fn check_one_hill(
                         probe_budget_is_platform_limited(timeout, configured_timeout),
                     )
                     .await;
-                    let after = read_koth_marker(containers, Some(&hill.container_id)).await;
+                    let after = read_claim_source(db, containers, &hill).await;
                     let (marker, observed, error) = stable_koth_marker(before, after);
                     if let Some(error) = error {
                         let error = bounded_diagnostic(error);

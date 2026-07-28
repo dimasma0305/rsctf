@@ -155,6 +155,19 @@ async function ensureCapacityVpnPeer(state, participationId, readyPeers) {
   readyPeers.add(participationId);
 }
 
+async function writeCapacityKothClaim(state, containerId, token) {
+  if (state.kothClaimSource === "Api") {
+    return A.kothApiCaptureWrite(
+      state.mixGame,
+      state.kothChal,
+      state.kothObserverSecret,
+      token,
+    );
+  }
+  A.kothCaptureWrite(containerId, token);
+  return null;
+}
+
 function interruptibleMutation(operation) {
   return interruptible(inFlightMutations.track(operation));
 }
@@ -993,6 +1006,20 @@ async function main() {
         "competitive lifecycle state lacks the network-capturable KotH image; reprovision it",
       );
     }
+    if (
+      st.kothClaimSource === "Api" &&
+      (typeof st.kothObserverSecret !== "string" ||
+        !st.kothObserverSecret.startsWith("koth_api_"))
+    ) {
+      throw new Error(
+        "API-observed lifecycle state lacks its one-time observer credential; reprovision it",
+      );
+    }
+    if (REALISTIC_COMPETITION && st.kothClaimSource === "Api") {
+      throw new Error(
+        "API-observer transport validation runs in capacity mode; use marker mode for distributed player clients",
+      );
+    }
     const FLEET = Number(process.env.FLEET || 80);
     if (!Number.isSafeInteger(FLEET) || FLEET < 2) {
       throw new Error(
@@ -1740,7 +1767,13 @@ async function main() {
                 // Keep the revoked capability present until one authoritative
                 // checker round observes it. Real team writes may race this
                 // probe, so a single host write is not durable evidence.
-                A.kothCaptureWrite(staleProbe.container, staleProbe.token);
+                await interruptible(
+                  writeCapacityKothClaim(
+                    st,
+                    staleProbe.container,
+                    staleProbe.token,
+                  ),
+                );
               } catch {
                 kothCaptureRaces++;
               }
@@ -1765,19 +1798,45 @@ async function main() {
                   `WHERE game_id=${st.mixGame} AND challenge_id=${st.kothChal}`,
               ) || 0,
             );
-            try {
-              A.kothCaptureWrite(view.containerId, lastCycleCapture.token);
-              staleWrites++;
-              staleCyclesProbed.add(view.cycleId);
-              staleProbe = {
-                cycleId: view.cycleId,
-                container: view.containerId,
-                afterResultId,
-                token: lastCycleCapture.token,
-              };
-              capture = null;
-            } catch {
-              kothCaptureRaces++;
+            if (st.kothClaimSource === "Api") {
+              let response = null;
+              try {
+                response = await interruptible(
+                  A.kothApiObservation(
+                    st.mixGame,
+                    st.kothChal,
+                    st.kothObserverSecret,
+                    lastCycleCapture.token,
+                  ),
+                );
+              } catch {
+                kothCaptureRaces++;
+              }
+              if (response?.status === 400) {
+                staleWrites++;
+                staleRejections++;
+                staleCyclesProbed.add(view.cycleId);
+                capture = null;
+              } else if (response && response.status !== 409) {
+                throw new Error(
+                  `old-cycle KotH API capability was not rejected: ${response.status} ${response.text?.slice(0, 160)}`,
+                );
+              }
+            } else {
+              try {
+                A.kothCaptureWrite(view.containerId, lastCycleCapture.token);
+                staleWrites++;
+                staleCyclesProbed.add(view.cycleId);
+                staleProbe = {
+                  cycleId: view.cycleId,
+                  container: view.containerId,
+                  afterResultId,
+                  token: lastCycleCapture.token,
+                };
+                capture = null;
+              } catch {
+                kothCaptureRaces++;
+              }
             }
           }
           if (
@@ -1834,7 +1893,13 @@ async function main() {
             tick % 8 === 0
           ) {
             try {
-              A.kothCaptureWrite(capture.container, capture.token);
+              await interruptible(
+                writeCapacityKothClaim(
+                  st,
+                  capture.container,
+                  capture.token,
+                ),
+              );
               kothCaps++;
             } catch {
               // A snapshot can race the exact destroy boundary. The next poll must

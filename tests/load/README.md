@@ -38,7 +38,7 @@ tests/load/
   admin-fixtures.mjs focused SQL, HTTP, Docker-image, CSR, and recovery helpers for admin acceptance
   admin-lifecycle.js pure 62-operation admin catalog, response contracts, and target-safety rules
   admin-lifecycle.mjs destructive disposable admin lifecycle (npm run admin-lifecycle)
-  edit-lifecycle.js exact 64-operation `/api/edit` catalog + wire validators
+  edit-lifecycle.js exact 67-operation `/api/edit` catalog + wire validators
   edit-lifecycle.mjs future/A&D/KotH organizer lifecycle (npm run edit-lifecycle)
   multi-domain-acceptance.js pure two-service/two-hill isolation contracts
   multi-domain-acceptance.mjs focused multi-domain acceptance (npm run multi-domain)
@@ -100,7 +100,9 @@ real player session on its public-board polls. This keeps a normal reverse proxy
 anti-spoofing of forwarding headers from turning a logged-in player load into one
 anonymous source-IP bucket. Lifecycle provisioning also accepts a paired immutable
 `KOTH_CONTAINER_IMAGE` and `KOTH_CONTAINER_PORT`, allowing the default functional
-hill fixture to be replaced independently of the Jeopardy `CONTAINER_IMAGE`. Long distributed runs also use `FLEET`,
+hill fixture to be replaced independently of the Jeopardy `CONTAINER_IMAGE`.
+`KOTH_CLAIM_SOURCE=api` selects the signed organizer observer before the official
+snapshot; the default is `marker`. Long distributed runs also use `FLEET`,
 `DISTRIBUTED_TEAM_CLIENTS`, `LIFECYCLE_ISOLATED_SERVICES`, `TEAM_THINK_SECONDS`,
 `TEAM_START_DELAY_SECONDS`, `EVENT_END_GRACE_SECONDS`, `TEAM_EVIDENCE_DIR`, and
 `TEAM_CLIENT_CPUS`/`TEAM_CLIENT_MEMORY`. Competitive runs add
@@ -282,13 +284,16 @@ ledger row only when before and after use this same harness, fixture shape, and 
 
 This destructive acceptance gate owns the separate `/api/edit` surface. Its catalog is
 checked bidirectionally against production controller source and currently contains all
-64 method/path operations (20 GET, 28 POST, 6 PUT, 10 DELETE). The runner creates one
+67 method/path operations (21 GET, 29 POST, 6 PUT, 11 DELETE). The runner creates one
 future mutable event, one active managed A&D event, and one active KotH event. It then
 validates every positive response contract and, for every route, proves missing-token
 rejection plus the exact Admin/game-manager/authenticated-user boundary. Real runtime
 coverage includes challenge rebuild and test-container teardown, A&D provisioning,
 filesystem drift/TAR export, service restart and checker override, and KotH durable-cycle
-recovery. A fixed-rate k6 phase polls organizer reads before destructive operations.
+recovery. The KotH fixture creates its observer key before the official snapshot, stages
+one signed current-context capability, proves metadata never returns the key, then revokes
+the credential without changing the frozen API source. A fixed-rate k6 phase polls
+organizer reads before destructive operations.
 Game creation is read back immediately and must preserve every supplied A&D/KotH timing
 and policy knob. The KotH fixture is provisioned only through the public organizer
 `EnsureContainers` route; acceptance follows its initial `KothTargets` → challenge →
@@ -1123,14 +1128,28 @@ state, anonymous browsing, an admin monitor feed, and a concurrent same-flag ded
   capture driver holds one exact cycle-scoped capability across checker rounds so the load
   covers provisional → confirmed acquisition, then switches to an eligible challenger
   after a pristine reset. Before the next valid capture it plants the revoked prior-cycle
-  token and requires a scorable checker observation that rejects it. It never calls the
-  disabled manual round endpoint.
+  token and requires its claim transport to reject it. Marker mode verifies the rejection
+  in a scorable checker observation. API mode requires an immediate HTTP 400 before the
+  observer can stage stale evidence. It never calls the disabled manual round endpoint.
 
 ```sh
 npm run provision                         # 300 + 300 teams by default
 VUS=400 DURATION=300s KEEP=1 npm run lifecycle
 npm run teardown                          # if KEEP=1 was set
 ```
+
+To run the same fixed-rate capacity lifecycle through signed API observations:
+
+```sh
+KOTH_CLAIM_SOURCE=api npm run provision
+KOTH_CLAIM_SOURCE=api VUS=400 DURATION=300s KEEP=1 npm run lifecycle
+```
+
+The one-time observer key is kept only in the ignored mode-`0600` lifecycle state
+file and removed with the namespace. API mode still uses the real shared hill and
+functional checker; only `/koth/king` transport is replaced. Distributed player
+simulation remains marker-based because its clients exercise the hill's real
+player-facing capture endpoint, not an organizer credential.
 
 ### Competitive player simulation
 

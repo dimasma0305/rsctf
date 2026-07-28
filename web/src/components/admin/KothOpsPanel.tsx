@@ -19,13 +19,17 @@ import {
 import { showNotification } from '@mantine/notifications'
 import {
   mdiAlertCircle,
+  mdiApi,
   mdiCheck,
   mdiCheckCircle,
   mdiCloseCircle,
   mdiConsole,
   mdiCrown,
+  mdiFileOutline,
   mdiHelpCircle,
+  mdiKeyVariant,
   mdiRestart,
+  mdiTrashCanOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useMemo, useState } from 'react'
@@ -35,6 +39,7 @@ import { isKothResetTransition } from '@Utils/kothLifecycle'
 import {
   type AdminKothAuditReceipt,
   type AdminKothHill,
+  type AdminKothObserverModel,
   type AdminKothReceiptsModel,
   type AdminKothStateModel,
 } from '@Hooks/useGame'
@@ -82,6 +87,50 @@ const CopyId: FC<{ label: string; value?: string | null }> = ({ label, value }) 
         </Tooltip>
       )}
     </CopyButton>
+  )
+}
+
+const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill) => void }> = ({ hill, onOpen }) => {
+  const { t } = useTranslation()
+  return (
+    <Table.Td>
+      <Stack gap={4} align="flex-start">
+        <Badge
+          size="xs"
+          color={hill.claimSource === 'Api' ? (hill.apiObserverConfigured ? 'blue' : 'red') : 'gray'}
+          variant="light"
+          leftSection={<Icon path={hill.claimSource === 'Api' ? mdiApi : mdiFileOutline} size={0.55} />}
+        >
+          {hill.claimSource === 'Api'
+            ? hill.apiObserverConfigured
+              ? t('admin.content.ad_ops.koth.observer_api', 'Signed API')
+              : t('admin.content.ad_ops.koth.observer_missing', 'API key missing')
+            : hill.cycleNumber > 0
+              ? t('admin.content.ad_ops.koth.observer_marker_locked', 'Container marker · locked')
+              : t('admin.content.ad_ops.koth.observer_marker', 'Container marker')}
+        </Badge>
+        {hill.apiObserverSecretHint && (
+          <Text size="xs" c="dimmed" className={misc.ffmono}>
+            {hill.apiObserverSecretHint}
+          </Text>
+        )}
+        {hill.apiLastObservationAt != null && (
+          <Text size="xs" c="dimmed">
+            {t('admin.content.ad_ops.koth.observer_last_seen', {
+              time: new Date(hill.apiLastObservationAt).toLocaleString(),
+              defaultValue: 'Last input {{time}}',
+            })}
+          </Text>
+        )}
+        <Button size="compact-xs" variant="subtle" onClick={() => onOpen(hill)}>
+          {hill.claimSource === 'Marker' && hill.cycleNumber > 0
+            ? t('admin.button.ad_ops.koth.observer_view', 'View input')
+            : hill.apiObserverConfigured
+              ? t('admin.button.ad_ops.koth.observer_manage', 'Manage API')
+              : t('admin.button.ad_ops.koth.observer_enable', 'Enable API')}
+        </Button>
+      </Stack>
+    </Table.Td>
   )
 }
 
@@ -148,6 +197,10 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
   const [auditHill, setAuditHill] = useState<AdminKothHill | null>(null)
   const [audit, setAudit] = useState<AdminKothReceiptsModel | null>(null)
   const [auditLoading, setAuditLoading] = useState(false)
+  const [observerHill, setObserverHill] = useState<AdminKothHill | null>(null)
+  const [observer, setObserver] = useState<AdminKothObserverModel | null>(null)
+  const [observerLoading, setObserverLoading] = useState(false)
+  const [observerBusy, setObserverBusy] = useState(false)
   const enabledHills = useMemo(() => koth.hills.filter((hill) => hill.isEnabled), [koth.hills])
   const hasResetInProgress = useMemo(
     () => koth.hills.some((hill) => hill.isEnabled && hill.cycleNumber > 0 && isKothResetTransition(hill.resetPhase)),
@@ -197,6 +250,89 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
     }
   }
 
+  const observerPath = (hill: AdminKothHill) => `/api/edit/games/${gameId}/ad/koth/${hill.challengeId}/observer`
+
+  const openObserver = async (hill: AdminKothHill) => {
+    setObserverHill(hill)
+    setObserver(null)
+    setObserverLoading(true)
+    try {
+      const response = await api.request<AdminKothObserverModel>({
+        path: observerPath(hill),
+        method: 'GET',
+        format: 'json',
+      })
+      setObserver(response.data)
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setObserverLoading(false)
+    }
+  }
+
+  const rotateObserver = async () => {
+    if (!observerHill) return
+    setObserverBusy(true)
+    try {
+      const response = await api.request<AdminKothObserverModel>({
+        path: observerPath(observerHill),
+        method: 'POST',
+        format: 'json',
+      })
+      setObserver(response.data)
+      showNotification({
+        color: 'teal',
+        icon: <Icon path={mdiKeyVariant} size={1} />,
+        message: t(
+          'admin.notification.ad_ops.koth.observer_rotated',
+          'A new observer secret was created. Copy it now; it will not be shown again.'
+        ),
+      })
+      await onMutate()
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setObserverBusy(false)
+    }
+  }
+
+  const revokeObserver = async () => {
+    if (!observerHill || !observer?.configured) return
+    if (
+      !window.confirm(
+        t(
+          'admin.confirm.ad_ops.koth.observer_revoke',
+          'Revoke this observer secret? API observations will stop until a new secret is created.'
+        )
+      )
+    )
+      return
+    setObserverBusy(true)
+    try {
+      await api.request({
+        path: observerPath(observerHill),
+        method: 'DELETE',
+        format: 'json',
+      })
+      const response = await api.request<AdminKothObserverModel>({
+        path: observerPath(observerHill),
+        method: 'GET',
+        format: 'json',
+      })
+      setObserver(response.data)
+      showNotification({
+        color: 'teal',
+        icon: <Icon path={mdiCheck} size={1} />,
+        message: t('admin.notification.ad_ops.koth.observer_revoked', 'The KotH observer secret was revoked.'),
+      })
+      await onMutate()
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setObserverBusy(false)
+    }
+  }
+
   return (
     <Stack gap="lg">
       <ScrollArea type="auto">
@@ -211,6 +347,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
               <Table.Th scope="col">{t('admin.content.ad_ops.koth.col_cooldown', 'Cooldown')}</Table.Th>
               <Table.Th scope="col">{t('admin.content.ad_ops.koth.col_container', 'Container transition')}</Table.Th>
               <Table.Th scope="col">{t('admin.content.ad_ops.koth.col_endpoint', 'Endpoint')}</Table.Th>
+              <Table.Th scope="col">{t('admin.content.ad_ops.koth.col_claim_input', 'Claim input')}</Table.Th>
               <Table.Th scope="col" w={90}>
                 {t('admin.content.ad_ops.koth.col_enabled', 'Enabled')}
               </Table.Th>
@@ -425,6 +562,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                       </Text>
                     )}
                   </Table.Td>
+                  <KothClaimInputCell hill={hill} onOpen={openObserver} />
                   <Table.Td>
                     <Tooltip
                       label={t('admin.tooltip.ad_ops.koth.toggle_hill', {
@@ -609,6 +747,124 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
           <Text size="sm" c="dimmed">
             {t('admin.content.ad_ops.koth.receipts_empty', 'No receipts have been recorded for this hill yet.')}
           </Text>
+        )}
+      </Modal>
+
+      <Modal
+        opened={observerHill !== null}
+        onClose={() => {
+          setObserverHill(null)
+          setObserver(null)
+        }}
+        size="lg"
+        centered
+        title={t('admin.content.ad_ops.koth.observer_title', {
+          hill: observerHill?.title ?? '',
+          defaultValue: 'Signed KotH observer — {{hill}}',
+        })}
+      >
+        {observerLoading || !observer ? (
+          <Text size="sm" c="dimmed">
+            {t('admin.content.ad_ops.koth.observer_loading', 'Loading observer configuration…')}
+          </Text>
+        ) : (
+          <Stack gap="md">
+            <Alert
+              color={observer.claimSource === 'Api' && !observer.configured ? 'red' : 'blue'}
+              variant="light"
+              icon={<Icon path={mdiApi} size={0.9} />}
+            >
+              <Text size="sm">
+                {observer.claimSource === 'Api'
+                  ? observer.configured
+                    ? t(
+                        'admin.content.ad_ops.koth.observer_active',
+                        'This hill accepts signed control observations. RSCTF still validates the capability around the functional checker and calculates every point.'
+                      )
+                    : t(
+                        'admin.content.ad_ops.koth.observer_required',
+                        'This hill is officially locked to API observations but has no active credential. Create one before resuming scoring.'
+                      )
+                  : t(
+                      'admin.content.ad_ops.koth.observer_marker_mode',
+                      'This hill currently reads /koth/king. Enabling the observer before the official snapshot selects API input; the source cannot change after scoring starts.'
+                    )}
+              </Text>
+            </Alert>
+
+            {observer.secret && (
+              <Alert color="orange" variant="light" title={t('admin.content.ad_ops.koth.secret_once', 'Copy once')}>
+                <Stack gap="xs">
+                  <Text size="sm">
+                    {t(
+                      'admin.content.ad_ops.koth.secret_once_body',
+                      'This HMAC secret is shown only now. Keep it in the independent observer service, never in the attacker-controlled hill.'
+                    )}
+                  </Text>
+                  <Group gap="xs" wrap="nowrap">
+                    <Code block className={misc.ffmono} style={{ flex: 1, overflowWrap: 'anywhere' }}>
+                      {observer.secret}
+                    </Code>
+                    <CopyButton value={observer.secret}>
+                      {({ copied, copy }) => (
+                        <Button size="xs" variant="default" onClick={copy}>
+                          {copied ? t('game.tooltip.copy.copied', 'Copied') : t('common.copy', 'Copy')}
+                        </Button>
+                      )}
+                    </CopyButton>
+                  </Group>
+                </Stack>
+              </Alert>
+            )}
+
+            <Stack gap={4}>
+              <Text size="xs" fw={700}>
+                {t('admin.content.ad_ops.koth.observer_context_endpoint', '1. Fetch active context')}
+              </Text>
+              <Code block className={misc.ffmono} style={{ overflowWrap: 'anywhere' }}>
+                GET {observer.contextPath}
+              </Code>
+              <Text size="xs" fw={700} mt="xs">
+                {t('admin.content.ad_ops.koth.observer_post_endpoint', '2. Submit current control')}
+              </Text>
+              <Code block className={misc.ffmono} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                {`POST ${observer.observationPath}
+X-RSCTF-Timestamp: <Unix milliseconds>
+X-RSCTF-Signature: sha256=<HMAC-SHA256>
+
+{"context":"<context>","token":"<team capability or null>"}`}
+              </Code>
+              <Text size="xs" c="dimmed">
+                {t(
+                  'admin.content.ad_ops.koth.observer_signature',
+                  'Sign the exact raw body as timestamp.gameId.challengeId.body. Requests expire after five minutes and accepted signatures cannot be replayed.'
+                )}
+              </Text>
+            </Stack>
+
+            <Group justify="space-between" wrap="wrap">
+              <Button
+                color="red"
+                variant="subtle"
+                leftSection={<Icon path={mdiTrashCanOutline} size={0.8} />}
+                disabled={!observer.configured}
+                loading={observerBusy}
+                onClick={revokeObserver}
+              >
+                {t('admin.button.ad_ops.koth.observer_revoke', 'Revoke')}
+              </Button>
+              <Button
+                leftSection={<Icon path={mdiKeyVariant} size={0.8} />}
+                disabled={observer.claimSource === 'Marker' && (observerHill?.cycleNumber ?? 0) > 0}
+                loading={observerBusy}
+                onClick={rotateObserver}
+              >
+                {observer.configured
+                  ? t('admin.button.ad_ops.koth.observer_rotate', 'Rotate secret')
+                  : t('admin.button.ad_ops.koth.observer_create', 'Create observer secret')}
+              </Button>
+            </Group>
+          </Stack>
         )}
       </Modal>
     </Stack>

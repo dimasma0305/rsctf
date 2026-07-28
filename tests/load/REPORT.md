@@ -5,6 +5,164 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## Signed KotH API observer acceptance — 28 July 2026
+
+This campaign adds an API observation source for hills whose control state
+cannot be read from `/koth/king`. It adapts rCTF's useful external-input idea
+without importing its externally assigned score model: an RSCTF observer may
+report only the exact capability for the current hill container, or an explicit
+`null` observation. It cannot choose a team, round, score, or timestamp used by
+the scoring engine.
+
+The manager chooses `Marker` or `Api` before the official A&D snapshot. That
+choice is then immutable for the event. API observations are staged evidence;
+the normal RSCTF checker remains authoritative for service health, exact
+capability validity, before/after stability, two-tick confirmation,
+eligibility, cooldown, crown transitions, and publication. The documented
+constant KotH formula remains
+`100R(0.25A + 0.55C + 0.20√AC)`. No scoring version or dynamic per-team score
+input was added.
+
+Each observer credential is challenge-scoped and returned only on creation or
+rotation. Requests sign the exact
+`timestamp.gameId.challengeId.rawBody` bytes with HMAC-SHA-256. RSCTF enforces a
+five-minute clock window, stores replay hashes across replicas for ten minutes,
+rejects stale timestamps, limits the body to 1,024 bytes, and binds the opaque
+context to the current game, hill, target, crown cycle, reset attempt, and
+container. Rotation and revocation share the same cross-replica game lock as
+the crown lifecycle and atomically clear prior observations. A reset also
+removes stale marker and API evidence before issuing a new capability window.
+The organizer documentation requires HTTPS, synchronized clocks, a secret
+store, secret-aware backups, and an observer outside the attacker-controlled
+hill.
+
+### Functional and security verification
+
+Fresh and in-place PostgreSQL migration runs reached migration 83 and created
+the observer, current-observation, and durable-replay tables and indexes. All
+929 Rust tests were discovered: 753 ordinary tests passed and 176
+environment-gated tests remained ignored in the normal run. The seven new
+observer PostgreSQL regressions, the exact-context checker regression, and the
+reset/recovery regression were then run explicitly against disposable
+PostgreSQL and passed. They cover exact signed staging, replay rejection,
+monotonic timestamps, context invalidation after reset, explicit `null`,
+capability matching, and atomic evidence cleanup.
+
+The organizer/edit lifecycle catalog now exercises 67 KotH-related routes and
+contracts. All 287 Node load-harness tests, 94 React unit tests, 10 visual tests,
+type checking, linting, the production web build, documentation build, PDF
+generation, `cargo check --all-targets`, `cargo clippy --all-targets -- -D
+warnings`, the full Rust suite, and the locked release build passed. The release
+binary was built with zero warnings.
+
+The retained isolated event was also used for a direct credential-boundary
+smoke test:
+
+| Check | Result |
+| --- | ---: |
+| Anonymous manager metadata | HTTP 401 |
+| Ordinary player manager metadata | HTTP 403 |
+| Administrator metadata | HTTP 200 |
+| Secret present in later metadata | No |
+| Rotation response cache policy | `no-store`, `no-cache` |
+| Rotated-out secret | HTTP 401 |
+| New secret with an exact current capability | HTTP 200 |
+| Revoke request | HTTP 200 |
+| Revoked secret | HTTP 401 |
+| Public context after revocation | HTTP 409 |
+
+### Five-minute whole-event simulation
+
+The corrected isolated run provisioned 20 Jeopardy teams and 20 A&D/KotH teams,
+20 live team services/capabilities, 10 real BYOC tunnels, attachment
+upload/download, real Jeopardy container create/destroy, A&D submissions,
+scoreboard/timeline polling, and API-mode KotH captures. It ran 100 active VUs
+for 300 seconds. The run completed 3,084,510 requests at 9,594.97 requests/s
+with zero server 5xx responses, zero unexpected non-2xx responses, no failed
+checks, and no interrupted or dropped iterations.
+
+The complete measured latency distributions were:
+
+| Path | Average | p50 | p90 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 8.702 ms | 5.041 ms | 12.573 ms | 20.049 ms | 88.063 ms | 1,770.068 ms |
+| Board poll mix | 17.359 ms | 5.680 ms | 18.871 ms | 98.633 ms | 249.254 ms | 781.965 ms |
+| A&D epoch board | 13.075 ms | 5.240 ms | 15.048 ms | 26.460 ms | 231.415 ms | 317.362 ms |
+| A&D state | 31.650 ms | 23.122 ms | 52.207 ms | 77.303 ms | 220.522 ms | 283.484 ms |
+| A&D targets | 28.565 ms | 22.258 ms | 45.193 ms | 69.984 ms | 132.888 ms | 257.063 ms |
+| KotH hills | 11.886 ms | 5.079 ms | 25.505 ms | 50.497 ms | 86.907 ms | 434.579 ms |
+| Jeopardy details | 27.738 ms | 8.863 ms | 88.052 ms | 113.117 ms | 197.620 ms | 350.178 ms |
+| A&D submit | 93.223 ms | 58.935 ms | 196.511 ms | 264.434 ms | 370.701 ms | 676.399 ms |
+| Jeopardy submit | 165.482 ms | 126.349 ms | 316.442 ms | 474.283 ms | 585.298 ms | 746.382 ms |
+| Attachment | 82.371 ms | 71.931 ms | 130.666 ms | 181.198 ms | 280.768 ms | 870.010 ms |
+| Container lifecycle | 930.554 ms | 860.782 ms | 1,337.059 ms | 1,395.810 ms | 1,656.725 ms | 1,770.068 ms |
+| Onboarding | 802.047 ms | 797.000 ms | 996.000 ms | 1,077.250 ms | 1,698.750 ms | 1,922.000 ms |
+
+Four sustained-load resource samples showed:
+
+| Sample | RSCTF CPU | PostgreSQL CPU |
+| --- | ---: | ---: |
+| 1 | 169.29% | 142.86% |
+| 2 | 178.00% | 149.24% |
+| 3 | 174.83% | 136.67% |
+| 4 | 161.12% | 165.82% |
+
+RSCTF used 134.6–164.7 MiB, PostgreSQL used 328.6–345.8 MiB, and
+Redis used 3.9–5.1 MiB. Redis consumed 0.99–3.75% of one logical core.
+
+The event performed 42 real container create/destroy cycles and 57 signed
+observer writes; the k6 control metric recorded 10 accepted end-to-end capture
+operations. The final database contained five crown cycles, four completed
+cycles, three confirmed acquisitions, and three qualified stable
+confirmations. An old-cycle capability was rejected immediately by the API with
+HTTP 400. All duplicate-round, duplicate-KotH-row, overlapping-cycle,
+cross-cycle evidence, stale-container evidence, cooldown, holder, cadence,
+publication, operation, readiness, liveness, and panic checks were zero. The
+probe loop recorded 490/490 successful liveness checks (p95 19 ms, max 80 ms)
+and 490/490 ready health checks.
+
+The first isolated attempt was retained as a harness diagnostic, not an
+application failure. Its synthetic client addresses were collapsed by an
+intentionally untrusted local reverse-proxy hop, which correctly triggered the
+IP admission limiter during onboarding and container orchestration. It still
+produced zero server 5xx responses and stayed healthy. A fresh stack with only
+that local proxy CIDR trusted completed the run above; no limiter, application,
+or data workaround was applied.
+
+### Fixed-rate polled-read acceptance baseline
+
+The retained API-mode event was then polled at a constant 300 requests/s with
+120 preallocated VUs for 60 seconds. Exactly 18,004 requests completed at
+299.963 requests/s with zero dropped or interrupted iterations, 429s,
+authentication errors, non-200 responses, or server 5xx responses.
+
+| Path | Average | p50 | p90 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 3.318 ms | 1.540 ms | 5.082 ms | 7.603 ms | 39.276 ms | 200.049 ms |
+| Game catalog | 3.003 ms | 1.652 ms | 4.763 ms | 6.872 ms | 25.948 ms | 158.555 ms |
+| Jeopardy scoreboard | 3.434 ms | 1.604 ms | 5.448 ms | 8.057 ms | 39.188 ms | 158.729 ms |
+| A&D scoreboard | 2.756 ms | 1.316 ms | 4.488 ms | 6.680 ms | 36.030 ms | 96.437 ms |
+| KotH scoreboard | 3.806 ms | 1.544 ms | 5.274 ms | 8.837 ms | 50.738 ms | 200.049 ms |
+| KotH timeline | 3.590 ms | 1.598 ms | 5.363 ms | 7.970 ms | 46.966 ms | 186.610 ms |
+
+The four fixed-rate resource samples were:
+
+| Sample | RSCTF CPU | PostgreSQL CPU |
+| --- | ---: | ---: |
+| 1 | 33.40% | 20.78% |
+| 2 | 23.96% | 14.84% |
+| 3 | 29.33% | 15.42% |
+| 4 | 76.21% | 19.56% |
+
+RSCTF used 128.3–139.7 MiB, PostgreSQL used 352.7–358.3 MiB, and
+Redis used 4.19–4.41 MiB. Redis consumed 4.75–10.45% of one logical core.
+
+The fourth application sample overlaps a checker tick and is disclosed rather
+than discarded. This section is a post-change acceptance baseline, not a
+before/after speed claim. The campaign adds a correctness feature outside the
+player polling hot path and has no optimization-ledger row because there is no
+same-fixture, same-load old-code pass.
+
 ## A&D finalization correctness and snapshot capacity — 25 July 2026
 
 The accepted source is

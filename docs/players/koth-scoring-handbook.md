@@ -40,7 +40,9 @@ challenge still works.
 
 1. **Attack the hill:** find a way into the shared challenge.
 2. **Place your claim:** copy your current team code from the KotH toolkit and
-   write it to `/koth/king`.
+   use the challenge's published claim mechanic. Marker hills use `/koth/king`;
+   API-observed hills report the challenge's result through an independent
+   organizer controller.
 3. **Pass two checks:** RSCTF shows **Provisional** when it first sees your valid
    code. With the default settings, two consecutive healthy checks confirm you
    as king.
@@ -81,9 +83,10 @@ rules, and organizer controls.
 - The **hill** is the one running challenge shared by every team.
 - A **team code** is the current secret value that identifies your claim. The
   technical sections also call it a **token** or **capability**.
-- The **marker** is the `/koth/king` file where a team places its code.
-- The **checker** is RSCTF's automated test. It reads the marker and checks that
-  the challenge still works.
+- The **claim input** is either the `/koth/king` marker or a signed observation
+  from a trusted organizer-side API controller.
+- The **checker** is RSCTF's automated test. It reads the snapshotted claim
+  input and checks that the challenge still works.
 - A **crown cycle** is the short scored period between clean resets.
 - An **epoch** is a longer group of scored rounds that produces one result.
 - When at least one challenger remains, a **cooldown** temporarily blocks the
@@ -102,11 +105,12 @@ The technical sections use **capability** and **token** for the team code. A
 each checker result to one team code and one running challenge.
 
 King of the Hill places every team against the same service. A team claims
-control by writing its exact current capability to the hill's marker file,
-`/koth/king`. The checker reads that marker and tests the service. The hill is
-exclusive: one KotH challenge has one active shared container. A takeover
-changes the holder of that container; it does not create a separate instance for
-the attacking team.
+control by presenting its exact current capability through the challenge's
+published mechanic. The checker reads either the standard `/koth/king` marker or
+a signed observation from an independent organizer controller, then tests the
+service. The hill is exclusive: one KotH challenge has one active shared
+container. A takeover changes the holder of that container; it does not create
+a separate instance for the attacking team.
 
 The fixed formula addresses two fairness problems. An early team could harden
 the container so thoroughly that the rest of the event becomes a permanent
@@ -176,30 +180,48 @@ layout or scoring formula.
 
 ## 2. Competition protocol {#competition-protocol}
 
-### 2.1 Shared hill and control marker
+### 2.1 Shared hill and control observation
 
 RSCTF runs each enabled ranked KotH challenge in one managed container. It
 publishes the container's unique identity so each checker result identifies the
 correct running challenge. When official scoring starts, RSCTF records and locks
-the configured image for scoring history. RSCTF reads the standard claim marker
-inside that exact container:
+the configured image and claim source for scoring history.
+
+The standard `Marker` source reads this file inside the exact container:
 
 ```text
 /koth/king
 ```
+
+The optional `Api` source accepts an observation from a challenge-scoped trusted
+controller. The controller fetches an opaque context bound to the exact game,
+challenge, target, crown cycle, reset attempt, and active container. It then
+posts the current capability or an explicit uncaptured state with an
+HMAC-SHA256 signature over the timestamp, game, challenge, and exact raw body.
+Requests have a five-minute clock window, accepted signatures cannot be
+replayed, and request timestamps must advance monotonically. A reset changes
+the context, so an old signed request cannot attach to a replacement container.
+
+The observer secret belongs only in the independent organizer service. It must
+not be placed in the attacker-controlled hill or a player client. The observer
+does not submit a team ID or points; it submits only the exact current
+capability. RSCTF resolves that capability against the live issuance window and
+remains the sole scoring authority.
 
 A team follows five steps. Here, the **active reset attempt** identifies the
 specific clean container created for the current cycle.
 
 1. obtain its current capability for the hill and active reset attempt;
 2. exploit or administer the published shared service;
-3. write only that capability to `/koth/king`;
+3. present only that capability through the published marker or challenge
+   capture mechanic;
 4. preserve the behavior required by the functional checker; and
-5. keep the marker stable for the configured confirmation streak.
+5. keep control stable for the configured confirmation streak.
 
-Players do not submit a KotH capture through a separate API endpoint. Writing the
-marker creates evidence only when the checker reads it from the exact active
-container before the event deadline.
+Players do not submit a KotH capture to RSCTF through a separate endpoint. In
+API mode, only the organizer's trusted observer calls the signed endpoint.
+Either input creates evidence only when the checker reads the same claim around
+the functional probe for the exact active context before the event deadline.
 
 ### 2.2 Crown-cycle lifecycle
 
@@ -223,7 +245,7 @@ resume.** The phases are:
 4. destroy the old container completely;
 5. create one replacement from the same snapshotted challenge image;
 6. publish the replacement's exact container identity and network endpoint;
-7. clear the previous holder, responsibility, provisional claim, and stale marker state;
+7. clear the previous holder, responsibility, provisional claim, and stale claim-input state;
 8. revoke old claim codes and issue one fresh capability per eligible team and hill;
 9. run readiness and the functional checker against the replacement;
 10. install the champion cooldown at the VPN/firewall layer when configured; and
@@ -262,13 +284,13 @@ The public board therefore distinguishes three states:
 
 RSCTF selects the previous cycle's champion by counting each team's confirmed
 ticks that were both controlled and healthy. The team with the highest count
-wins the cycle; the last marker alone does not decide the result. Every team tied
+wins the cycle; the last observed claim alone does not decide the result. Every team tied
 for the highest count enters the champion set. RSCTF disables cooldown for that
 cycle if blocking the full tied set would leave no eligible challenger.
 
 Cooldown starts only after the clean replacement passes readiness. The VPN or
 firewall blocks each affected team from that hill, and the application rejects
-its marker as a second check. The block does not affect the rest of the event.
+its capability as a second check. The block does not affect the rest of the event.
 By default, cooldown lasts one **authoritative scoring round**: one round counted
 by the platform scheduler, not a wall-clock timer. RSCTF removes that round from
 the cooled team's own total of available scoring opportunities. An acquisition
@@ -292,7 +314,7 @@ unenforced cooldown as active.
 
 At the official scoring boundary, the platform stores a fixed copy, or
 **snapshot**, of the timing settings, accepted teams, enabled
-hills, service weights, and configured images. Later configuration changes
+hills, service weights, configured images, and each hill's claim source. Later configuration changes
 cannot rewrite finalized history.
 
 ### 2.6 Exact attribution and void evidence
@@ -302,8 +324,10 @@ cycle, reset attempt, token, target, and container identity all match the active
 hill. An old capability cannot authenticate after a reset. A late checker result
 from the destroyed container cannot enter the replacement's score.
 
-The checker reads the marker immediately before and after testing the service.
-If the marker changes during that test, RSCTF does not elect a new controller.
+The checker reads the snapshotted claim input immediately before and after
+testing the service. If the capability changes during that test, RSCTF does not
+elect a new controller. In API mode, both reads require an accepted observation
+for the exact active cycle, reset attempt, target, and container.
 When the platform confirms that a container stopped, it records a final receipt
 for that exact container and schedules recovery. If the runtime inspection is
 uncertain, the checker records `InternalError`; it does not assume that a team
@@ -598,7 +622,7 @@ running it once. Retry does not use a separate repair procedure.
 
 ### 6.1 Why control receives 55%
 
-A one-time claim proves that a team reached the marker, but it does not prove
+A one-time claim proves that a team reached the challenge's control mechanic, but it does not prove
 sustained ownership. Control duration counts repeated observations of the exact
 token across available ticks. Its 55% direct coefficient makes persistence worth
 more than the 25% acquisition coefficient. The remaining 20% square-root term
@@ -649,8 +673,9 @@ Use this loop for each hill:
 
 1. Check the hill's token and state endpoints regularly.
 2. Wait until the board shows that the cycle is active and your team is eligible.
-3. Write the exact current capability to `/koth/king` promptly. Do not try to
-   predict the checker's sample time.
+3. Present the exact current capability through the challenge's published
+   marker or capture mechanic promptly. Do not call RSCTF's organizer observer
+   endpoint or try to predict the checker's sample time.
 4. Keep the service working throughout the full confirmation streak.
 5. Monitor the holder, your team's responsibility, and the reset countdown.
 6. After a reset, delete the old token from your tools and request the new token
@@ -691,7 +716,10 @@ scope, and appeal process. Then verify that:
 - the cycle divides the epoch and every range validation passes;
 - at least two accepted teams receive distinct per-hill capabilities;
 - the VPN/firewall can enforce a hill-specific champion cooldown;
-- the marker can be read before and after a functional probe; and
+- the selected marker or signed API observation can be read before and after a
+  functional probe;
+- an API observer runs outside the attacker-controlled hill, has a synchronized
+  clock, and can refresh context after every reset; and
 - readiness succeeds on a pristine replacement.
 
 The official snapshot stores these settings as the rules for that game. Changes
@@ -768,7 +796,7 @@ cycles.
 No. RSCTF issues each capability for one team, one hill, one cycle,
 and one reset attempt.
 
-### A.3 Does a marker write immediately award acquisition?
+### A.3 Does reporting a claim immediately award acquisition?
 
 No. The first scorable observation of an eligible current token creates a
 provisional claim. Only the configured streak of healthy observations confirms
@@ -782,8 +810,8 @@ so they pause rather than break it.
 
 ### A.5 What survives a crown reset?
 
-Audit records and scoring evidence survive. The old container, marker, patches,
-and active capabilities do not.
+Audit records and scoring evidence survive. The old container, marker or API
+observation context, patches, and active capabilities do not.
 
 ### A.6 Can the previous champion play during cooldown?
 
@@ -852,12 +880,15 @@ that contains this handbook.
 | Qualified claim transition and acquisition idempotency | `src/services/ad/engine/koth_cycle/claims.rs` |
 | Champion cooldown release | `src/services/ad/engine/koth_cycle/cooldown.rs` |
 | Exact-container checker and immutable observations | `src/services/ad/engine/checker/koth.rs` |
+| Signed observer authentication, context, replay fence, and operator credential API | `src/controllers/game/koth/api.rs` |
+| Marker/API claim-source reads | `src/services/ad/engine/koth_marker.rs` |
 | Pure $A$, $C$, $R$, local, hill, and epoch formulas | `src/controllers/game/koth/scoring_formula.rs` |
 | SQL evidence and personal denominators | `src/controllers/game/koth/scoring/evidence.rs` |
 | Finalized epoch rollups | `src/controllers/game/koth/scoring/rollup/` |
 | Ordinal tie-break construction and board cells | `src/controllers/game/koth/board.rs` |
 | Player and admin DTOs/routes | `src/controllers/game/koth/mod.rs`, `admin.rs` |
 | Crown schema and reset-attempt integrity | `src/migrations/m0046_koth_crown_cycles.rs` through `m0058_constant_koth_scoring.rs` |
+| API observer schema and exact-context constraints | `src/migrations/m0083_koth_api_observers.rs` |
 
 ### C.1 Core HTTP surface
 
@@ -873,6 +904,9 @@ that contains this handbook.
 | `GET /api/game/{id}/ad/koth/timeline` | Returns cumulative finalized/projected score history. |
 | `GET /api/edit/games/{id}/ad/koth/state` | Returns the operator lifecycle and scoring view. |
 | `POST /api/edit/games/{id}/ad/koth/{challengeId}/recover` | Calls the idempotent recovery path. |
+| `GET/POST/DELETE /api/edit/games/{id}/ad/koth/{challengeId}/observer` | Reads metadata, creates/rotates a secret once, or revokes the trusted observer. |
+| `GET /api/v1/koth/games/{id}/challenges/{challengeId}/context` | Returns the opaque exact-cycle/reset/container context for an API observer. |
+| `POST /api/v1/koth/games/{id}/challenges/{challengeId}/observations` | Accepts a timestamped, signed capability observation; it never accepts points. |
 
 The API uses camelCase field names, string-valued enumerations, and timestamps
 represented as Unix milliseconds.
@@ -880,7 +914,8 @@ represented as Unix milliseconds.
 ### C.2 Verification scope
 
 The implementation test suite checks malformed formula inputs, formula bounds,
-confirmation, interrupted streaks, one acquisition per token, personal cooldown
+confirmation, interrupted streaks, observer signature binding, clock skew,
+exact-context changes, one acquisition per token, personal cooldown
 denominators, single and tied champions, partial epochs, ordinal tie-breaks, and void
 evidence. PostgreSQL tests check exact reset windows, event-deadline closeout,
 container identity, and foreign-key integrity. The JavaScript lifecycle harness

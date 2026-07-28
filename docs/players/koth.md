@@ -8,13 +8,17 @@ read the [KotH scoring handbook](/players/koth-scoring-handbook) or
 
 ## The objective
 
-Exploit or administer the hill, then write your team's current hill capability to the marker described by the challenge. The standard marker is:
+Exploit or administer the hill, then present your team's current hill capability
+through the mechanism described by the challenge. A marker-based hill uses:
 
 ```text
 /koth/king
 ```
 
-The challenge instructions are authoritative if they specify a different mechanism.
+An API-observed hill instead has a trusted organizer-side controller report the
+capability produced by the challenge mechanic. Players never send capabilities
+to RSCTF's observer endpoint directly. The challenge instructions are
+authoritative for how control is established.
 
 ## Capture the hill
 
@@ -22,7 +26,7 @@ The challenge instructions are authoritative if they specify a different mechani
 2. Copy the current capability for the specific hill.
 3. Connect to the displayed hill endpoint through the required network path.
 4. Gain the access required by the challenge.
-5. Write only the capability, without extra formatting, to the marker.
+5. Present only the capability through the challenge's marker or capture mechanic.
 6. Keep the service healthy and the capability in place until the claim is confirmed.
 
 Capabilities are bound to a hill, its exact container, and the current crown-cycle reset. Re-read the toolkit after every reset; a capability from an earlier cycle cannot claim the replacement container.
@@ -90,8 +94,8 @@ a team opens its per-hill score and raw evidence counts.
 
 ## Practical strategy
 
-- Automate the per-hill capability fetch and marker write, but respect rate limits.
-- Keep the current capability planted and preserve the service behavior the checker expects until confirmation.
+- Automate the per-hill capability fetch and challenge-specific claim action, but respect rate limits.
+- Keep the current capability in control and preserve the service behavior the checker expects until confirmation.
 - Fetch the new capability and exact endpoint after every crown-cycle reset.
 - Prepare automation to re-exploit and reapply patches: the replacement is pristine, so patches survive only until the next reset.
 - Monitor scoreboard evidence rather than assuming a successful write was observed.

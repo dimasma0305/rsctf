@@ -58,6 +58,20 @@ pub(super) async fn rotate_capability_window(
         return Ok(None);
     }
 
+    // A fresh reset window invalidates both qualified crown state and any
+    // observer value staged against the previous container/capabilities.
+    sqlx::query(
+        r#"WITH cleared_claim AS (
+             DELETE FROM "KothClaimStates" WHERE target_id = $1
+             RETURNING target_id
+           )
+           DELETE FROM "KothApiObservations" WHERE target_id = $1"#,
+    )
+    .bind(window.target_id)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+
     sqlx::query(
         r#"UPDATE "KothTokens" token
               SET revoked_at = COALESCE(revoked_at, clock_timestamp())
@@ -213,11 +227,6 @@ pub(super) async fn mint_capabilities(
             .map_err(|error| AppError::internal(error.to_string()))?;
         return Ok(());
     };
-    sqlx::query(r#"DELETE FROM "KothClaimStates" WHERE target_id = $1"#)
-        .bind(spec.target_id)
-        .execute(&mut **control.transaction_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
     let advanced = sqlx::query(
         r#"UPDATE "KothCrownCycles"
               SET provisional_participation_id = NULL,

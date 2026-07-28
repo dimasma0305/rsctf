@@ -35,6 +35,12 @@ const COMPETITION_SEED = process.env.SIMULATION_SEED || 'rsctf-competitive-v2';
 const SKIP_JEO_CONTAINER_REBUILD = process.env.SKIP_JEO_CONTAINER_REBUILD === '1';
 const SKIP_KOTH_REBUILD = process.env.SKIP_KOTH_REBUILD === '1';
 const KOTH_CONTAINER_OVERRIDE = kothContainerOverride(process.env);
+const KOTH_CLAIM_SOURCE = String(process.env.KOTH_CLAIM_SOURCE || 'marker')
+  .trim()
+  .toLowerCase();
+if (!['api', 'marker'].includes(KOTH_CLAIM_SOURCE)) {
+  throw new Error('KOTH_CLAIM_SOURCE must be api or marker');
+}
 const KOTH_CONFIG = Object.freeze({
   kothEpochTicks: 12,
   kothCycleTicks: 3,
@@ -459,8 +465,14 @@ async function main() {
     console.log('  skipping KotH challenge immutable rebuild (skip flag set)');
   }
   await interruptibleMutation(A.addFlags(mixGame, kothChal, ['flag{koth_placeholder}']));
+  const kothObserverSecret =
+    KOTH_CLAIM_SOURCE === 'api'
+      ? await interruptibleMutation(A.configureKothApiObserver(mixGame, kothChal))
+      : null;
   await interruptibleMutation(A.setChallenge(mixGame, kothChal, { isEnabled: true }));
-  console.log(`  A&D chal ${adChal} + KotH chal ${kothChal}`);
+  console.log(
+    `  A&D chal ${adChal} + KotH chal ${kothChal} (${KOTH_CLAIM_SOURCE === 'api' ? 'signed API' : 'container marker'} claims)`,
+  );
 
   // ── Seed cohorts ───────────────────────────────────────────────────────────
   console.log(`seeding ${TEAMS_JEO} jeopardy + ${TEAMS_AD} A&D/KotH teams…`);
@@ -549,6 +561,8 @@ async function main() {
     mixGame,
     adChal,
     kothChal,
+    kothClaimSource: KOTH_CLAIM_SOURCE === 'api' ? 'Api' : 'Marker',
+    ...(kothObserverSecret ? { kothObserverSecret } : {}),
     containerChal,
     staticFlags,
     jeopardyCatalog,

@@ -77,6 +77,12 @@ const endpoints = [
     token: adminToken,
     shape: 'receipts',
   },
+  {
+    name: 'koth_observer',
+    path: `/api/edit/games/${kothGameId}/ad/koth/${kothChallengeId}/observer`,
+    token: managerToken,
+    shape: 'observer',
+  },
 ];
 
 function unwrap(value) {
@@ -98,6 +104,16 @@ function validShape(shape, value) {
   if (shape === 'changes') return value && typeof value.snapshotAvailable === 'boolean' && Array.isArray(value.changes);
   if (shape === 'koth-state') return value && Array.isArray(value.hills) && Array.isArray(value.teams);
   if (shape === 'receipts') return value && Array.isArray(value.receipts);
+  if (shape === 'observer') {
+    return (
+      value &&
+      value.claimSource === 'Api' &&
+      value.configured === true &&
+      typeof value.contextPath === 'string' &&
+      typeof value.observationPath === 'string' &&
+      !Object.prototype.hasOwnProperty.call(value, 'secret')
+    );
+  }
   return false;
 }
 

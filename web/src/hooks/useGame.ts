@@ -328,6 +328,11 @@ export interface AdminKothHill extends KothLifecycleFields {
   canRetry: boolean
   resetReceiptId: number | null
   scoringReceiptId: number | null
+  claimSource: 'Api' | 'Marker' | string
+  apiObserverConfigured: boolean
+  apiObserverSecretHint: string | null
+  /** Unix milliseconds. */
+  apiLastObservationAt: number | null
 }
 
 export interface KothCycleChampion {
@@ -360,6 +365,25 @@ export interface AdminKothReceiptsModel {
   challengeId: number
   cycleNumber: number
   receipts: AdminKothAuditReceipt[]
+}
+
+export interface AdminKothObserverModel {
+  challengeId: number
+  claimSource: 'Api' | 'Marker' | string
+  configured: boolean
+  secretHint: string | null
+  /** Unix milliseconds. */
+  createdAt: number | null
+  /** Unix milliseconds. */
+  rotatedAt: number | null
+  /** Unix milliseconds. */
+  lastUsedAt: number | null
+  /** Unix milliseconds. */
+  lastObservationAt: number | null
+  contextPath: string
+  observationPath: string
+  /** Returned exactly once by credential creation/rotation. */
+  secret?: string
 }
 
 /**

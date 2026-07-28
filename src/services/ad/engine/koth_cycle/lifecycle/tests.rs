@@ -207,6 +207,12 @@ async fn recovery_mints_one_immutable_window_per_reset_attempt() {
           id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
           challenge_id INTEGER NOT NULL, container_id TEXT
         );
+        CREATE TEMP TABLE "KothClaimStates" (
+          target_id INTEGER PRIMARY KEY
+        );
+        CREATE TEMP TABLE "KothApiObservations" (
+          target_id INTEGER PRIMARY KEY
+        );
         CREATE TEMP TABLE "KothTokens" (
           id SERIAL PRIMARY KEY,
           target_id INTEGER NOT NULL,
@@ -234,6 +240,8 @@ async fn recovery_mints_one_immutable_window_per_reset_attempt() {
           (id, game_id, challenge_id, reset_attempt, phase, replacement_container_id)
         VALUES (41, 7, 9, 1, 'CapabilityPending', 'runtime-1');
         INSERT INTO "KothTargets" VALUES (3, 7, 9, 'runtime-1');
+        INSERT INTO "KothClaimStates" VALUES (3);
+        INSERT INTO "KothApiObservations" VALUES (3);
         "#,
     )
     .execute(&mut connection)
@@ -278,6 +286,14 @@ async fn recovery_mints_one_immutable_window_per_reset_attempt() {
     .unwrap()
     .unwrap();
     assert_eq!(issued, vec![11]);
+    let stale_input_rows: i64 = sqlx::query_scalar(
+        r#"SELECT (SELECT COUNT(*) FROM "KothClaimStates") +
+                  (SELECT COUNT(*) FROM "KothApiObservations")"#,
+    )
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert_eq!(stale_input_rows, 0);
 
     let windows: Vec<(i32, String, bool)> = sqlx::query_as(
         r#"SELECT reset_attempt, token, revoked_at IS NULL

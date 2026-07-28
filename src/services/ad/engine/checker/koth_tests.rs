@@ -96,7 +96,7 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
         );
         CREATE TEMP TABLE "KothOfficialConfigs" (
           game_id INTEGER PRIMARY KEY, claim_confirmation_ticks INTEGER NOT NULL,
-          roster_snapshot JSONB NOT NULL
+          roster_snapshot JSONB NOT NULL, hills_snapshot JSONB NOT NULL
         );
         CREATE TEMP TABLE "AdRounds" (
           id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, number INTEGER NOT NULL,
@@ -135,7 +135,8 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
           (7, clock_timestamp() - interval '1 hour',
               clock_timestamp() + interval '1 hour');
         INSERT INTO "KothOfficialConfigs" VALUES
-          (7, 2, '[11,12,13]'::jsonb);
+          (7, 2, '[11,12,13]'::jsonb,
+              '[{"challengeId":9,"claimSource":"Api"}]'::jsonb);
         INSERT INTO "AdRounds" VALUES
           (101, 7, 5, clock_timestamp() - interval '10 seconds',
               clock_timestamp() + interval '20 seconds', FALSE);
@@ -169,6 +170,7 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
     assert_eq!(live.eligible_roster, vec![11, 12]);
     assert_eq!((live.token_count, live.roster_count), (2, 2));
     assert!(live.has_complete_token_window());
+    assert_eq!(live.claim_source, "Api");
 
     sqlx::query(
         r#"UPDATE "AspNetUsers" SET role = 0

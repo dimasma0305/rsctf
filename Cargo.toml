@@ -1,6 +1,6 @@
 [package]
 name = "rsctf"
-version = "0.1.29"
+version = "0.1.30"
 edition = "2021"
 license = "MIT"
 authors = ["rsctf contributors"]
@@ -50,6 +50,7 @@ jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_r
 argon2 = "0.5"
 rand = "0.10"
 sha2 = "0.11"
+hmac = "0.13"
 hex = "0.4"
 base64 = "0.22"
 ipnet = "2.12"

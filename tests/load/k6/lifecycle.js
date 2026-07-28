@@ -299,7 +299,11 @@ function validAdminKothLifecycle(model) {
       (hill.oldContainerId == null || typeof hill.oldContainerId === 'string') &&
       (hill.replacementContainerId == null || typeof hill.replacementContainerId === 'string') &&
       (hill.resetReceiptId == null || Number.isSafeInteger(hill.resetReceiptId)) &&
-      (hill.scoringReceiptId == null || Number.isSafeInteger(hill.scoringReceiptId))
+      (hill.scoringReceiptId == null || Number.isSafeInteger(hill.scoringReceiptId)) &&
+      ['Api', 'Marker'].includes(hill.claimSource) &&
+      typeof hill.apiObserverConfigured === 'boolean' &&
+      (hill.apiObserverSecretHint == null || typeof hill.apiObserverSecretHint === 'string') &&
+      (hill.apiLastObservationAt == null || Number.isSafeInteger(hill.apiLastObservationAt))
   );
 }
 
@@ -430,6 +434,12 @@ function kothLifecycleFailure(model, admin) {
         candidate.resetAttempt < 0 ||
         !Number.isSafeInteger(candidate?.readinessFailureCount) ||
         candidate.readinessFailureCount < 0 ||
+        !['Api', 'Marker'].includes(candidate.claimSource) ||
+        typeof candidate.apiObserverConfigured !== 'boolean' ||
+        (candidate.apiObserverSecretHint != null &&
+          typeof candidate.apiObserverSecretHint !== 'string') ||
+        (candidate.apiLastObservationAt != null &&
+          !Number.isSafeInteger(candidate.apiLastObservationAt)) ||
         (candidate.oldContainerId != null && typeof candidate.oldContainerId !== 'string') ||
         (candidate.replacementContainerId != null && typeof candidate.replacementContainerId !== 'string') ||
         (candidate.resetReceiptId != null && !Number.isSafeInteger(candidate.resetReceiptId)) ||

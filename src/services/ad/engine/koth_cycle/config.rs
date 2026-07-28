@@ -89,7 +89,15 @@ pub(crate) async fn snapshot_official_config(
                     SELECT jsonb_agg(jsonb_build_object(
                              'challengeId', challenge.id,
                              'serviceWeight', LEAST(1.2, GREATEST(0.8, challenge.ad_scoring_weight)),
-                             'image', challenge.build_image_digest
+                             'image', challenge.build_image_digest,
+                             'claimSource', CASE
+                               WHEN EXISTS (
+                                 SELECT 1 FROM "KothApiObservers" observer
+                                  WHERE observer.game_id = challenge.game_id
+                                    AND observer.challenge_id = challenge.id
+                               ) THEN 'Api'
+                               ELSE 'Marker'
+                             END
                            ) ORDER BY challenge.id)
                       FROM "GameChallenges" challenge
                       JOIN "KothTargets" target
@@ -182,5 +190,14 @@ mod tests {
             validate_crown_shape(12, 3, 1, 4),
             Err(CrownShapeError::ClaimConfirmation)
         );
+    }
+
+    #[test]
+    fn official_hill_snapshot_freezes_the_claim_transport() {
+        let source = include_str!("config.rs");
+        assert!(source.contains("'claimSource'"));
+        assert!(source.contains("\"KothApiObservers\""));
+        assert!(source.contains("THEN 'Api'"));
+        assert!(source.contains("ELSE 'Marker'"));
     }
 }
