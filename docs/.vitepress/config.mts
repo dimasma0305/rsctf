@@ -102,6 +102,7 @@ export default defineConfig({
             { text: 'Attack & Defense', link: '/players/attack-defense' },
             { text: 'King of the Hill', link: '/players/koth' },
             { text: 'KotH scoring paper', link: '/players/koth-scoring-handbook' },
+            { text: 'KotH two-format proposal', link: '/players/koth-formats' },
             { text: 'Rules and fair play', link: '/players/rules' },
           ],
         },

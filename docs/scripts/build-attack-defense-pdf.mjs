@@ -48,6 +48,21 @@ const PDF_PROFILES = {
         'King of the Hill CTF; KotH; crown cycle; API arena; normalization; harmonic mean; integrity; RSCTF',
     },
   },
+  'koth-formats': {
+    outputName: 'king-of-the-hill-format-design.pdf',
+    pagePath: '/players/koth-formats',
+    expectedHeading: 'Two Ways to Hold the Hill',
+    headerLabel: 'RSCTF KotH · Boot2Root + Leaderboard',
+    generateDocumentOutline: false,
+    metadata: {
+      title: 'Two Ways to Hold the Hill: Boot2Root KotH and Leaderboard KotH',
+      author: 'Dimas Maulana',
+      subject:
+        'RSCTF design proposal for exclusive Boot2Root and concurrent Leaderboard King of the Hill formats',
+      keywords:
+        'King of the Hill CTF; Boot2Root; Leaderboard KotH; normalized objectives; sustained lead; RSCTF',
+    },
+  },
 }
 
 function requestedProfiles() {

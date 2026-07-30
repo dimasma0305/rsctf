@@ -208,4 +208,25 @@
     break-after: avoid;
     page-break-after: avoid;
   }
+
+  .koth-format-paper .vp-doc {
+    column-count: 1;
+    column-gap: 0;
+    font-size: 10pt;
+    line-height: 1.32;
+  }
+
+  .koth-format-paper .journal-figure img,
+  .koth-format-paper .vp-doc > p > img {
+    max-height: 112mm;
+  }
+
+  .koth-format-paper .journal-table table {
+    font-size: 8.5pt;
+    line-height: 1.2;
+  }
+
+  .koth-format-paper .journal-math > math[display="block"] {
+    font-size: 10pt;
+  }
 }

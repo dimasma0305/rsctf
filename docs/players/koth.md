@@ -10,6 +10,14 @@ For the complete formulas, worked examples, fault rules, and organizer
 guidance, read the [KotH scoring handbook](/players/koth-scoring-handbook) or
 [download the journal PDF](/downloads/king-of-the-hill-scoring-handbook.pdf).
 
+The proposed next taxonomy separates **Boot2Root KotH** from the
+transport-neutral **Leaderboard KotH** format. Its sustained-first-place
+formula deliberately removes failed hacking attempts from score penalties.
+Read the [two-format design proposal](/players/koth-formats) or
+[download its A4 PDF](/downloads/king-of-the-hill-format-design.pdf). The
+proposal is not the live scoring contract until its status notice says
+otherwise.
+
 ## Boot2root marker KotH
 
 Exploit or administer the shared hill and place your current per-hill

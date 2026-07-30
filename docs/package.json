@@ -7,9 +7,10 @@
   "scripts": {
     "dev": "vitepress dev .",
     "build": "vitepress build .",
-    "pdf": "node scripts/build-attack-defense-pdf.mjs ad koth",
+    "pdf": "node scripts/build-attack-defense-pdf.mjs ad koth koth-formats",
     "pdf:ad": "node scripts/build-attack-defense-pdf.mjs",
     "pdf:koth": "node scripts/build-attack-defense-pdf.mjs koth",
+    "pdf:koth-formats": "node scripts/build-attack-defense-pdf.mjs koth-formats",
     "preview": "vitepress preview .",
     "check": "vitepress build ."
   },
