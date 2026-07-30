@@ -1,7 +1,7 @@
 ---
 title: Boot2Root KotH and Leaderboard KotH
 description: A two-format design proposal that separates exclusive machine control from concurrent normalized leaderboard competition.
-pageClass: koth-handbook koth-format-paper
+pageClass: koth-handbook
 ---
 
 <div class="journal-title-block">
@@ -344,6 +344,8 @@ $$
 There is no late-event multiplier. **Projected** may include open evidence;
 **Settled** includes finalized epochs and determines official rank.
 
+<div class="journal-break-page"></div>
+
 ## 8. Organizer selection guide
 
 Choose **Boot2Root KotH** when all of the following are true:
@@ -404,8 +406,6 @@ Authentic current evidence is accepted; forged or stale evidence is rejected
 The two formats share the KotH idea but not the meaning of control. Boot2Root
 control is possession of a shared machine. Leaderboard control is sustained
 first place in a normalized concurrent challenge.
-
-<div class="journal-break-page"></div>
 
 ## Appendix A. Symbols
 

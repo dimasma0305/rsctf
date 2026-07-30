@@ -1,0 +1,4 @@
+interface:
+  display_name: "RSCTF Journal PDF"
+  short_description: "Build consistent RSCTF journal PDFs"
+  default_prompt: "Use $rsctf-journal-pdf to create or revise an RSCTF documentation PDF in the repository house style."
