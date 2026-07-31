@@ -66,6 +66,11 @@
     page-break-before: avoid;
   }
 
+  .koth-handbook .journal-table caption {
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+
   .koth-handbook .journal-table {
     margin: 2.5mm 0 3.5mm;
   }

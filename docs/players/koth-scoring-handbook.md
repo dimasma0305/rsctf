@@ -1,62 +1,65 @@
 ---
-title: How RSCTF Scores King of the Hill
-description: An implementation-aligned guide to RSCTF boot2root and API-arena King of the Hill scoring.
+title: RSCTF King of the Hill Handbook
+description: One canonical guide to Boot2Root control, concurrent application competition, current API-arena scoring, and the proposed Leaderboard contract.
 pageClass: koth-handbook
 ---
 
 <div class="journal-title-block">
   <p class="journal-series">RSCTF TECHNICAL PRACTICE PAPER</p>
-  <h1>How RSCTF Scores King of the Hill: Crown Cycles and Normalized API Arenas</h1>
+  <h1>RSCTF King of the Hill Handbook: Boot2Root and Leaderboard Formats</h1>
   <p class="journal-authors">Dimas Maulana</p>
   <p class="journal-affiliation">RSCTF Project · Competition Platform</p>
-  <p class="journal-correspondence">Implementation-aligned manuscript · Version 3.0 · 28 July 2026</p>
+  <p class="journal-correspondence">Unified edition · Version 4.0 · 31 July 2026</p>
   <p class="journal-policy">Scoring policy: one fixed formula per KotH format; no scoring versions</p>
 </div>
 
-<p class="pdf-download"><strong>Archival edition:</strong> <a href="../downloads/king-of-the-hill-scoring-handbook.pdf" download>Download the A4 journal PDF</a>.</p>
+<p class="pdf-download"><strong>Download:</strong> <a href="../downloads/king-of-the-hill-scoring-handbook.pdf" download>King of the Hill handbook (A4 PDF)</a>.</p>
 
 ## Abstract
 
 <div class="journal-abstract">
-<p>RSCTF implements two King of the Hill (KotH) formats with different evidence semantics. Marker KotH is an exclusive boot2root contest: one shared machine has at most one observed controller, and the fixed local score is 100R(0.25A + 0.55C + 0.20√AC), where A is confirmed acquisition, C is sustained control, and R is service reliability during responsibility. API arena KotH is a multi-team application contest: every eligible team can produce evidence in the same tick. RSCTF normalizes challenge-native integer ratios into activity E, equal-weight objective performance P, and integrity I. It calculates a weighted harmonic core B = 1/(0.35/E + 0.65/P), with B = 0 when either E or P is zero, and assigns tick score 100IB. The platform calculates the nonlinear API result per tick before averaging, preventing evidence from different ticks from being recombined into performance that never occurred. Both formats use exact game, hill, round, cycle, reset, target, container, and capability-generation fences; an independent functional checker; field-wide void treatment for infrastructure failures; pristine crown-cycle replacements; bounded hill normalization; and finalized epoch settlement. The API referee submits signed evidence rather than points or raw capabilities. Omitted teams receive explicit zero rows, while missing, changing, late, or unhealthy field snapshots are void. These properties bound and audit the calculation, but they do not establish empirical fairness or prove that a challenge's evidence definitions measure the intended skill.</p>
+<p>RSCTF separates King of the Hill (KotH) into two competition models. <strong>Boot2Root KotH</strong> is an exclusive-control contest over one shared machine: teams acquire the current hill, retain it, and remain responsible for service health. <strong>Leaderboard KotH</strong> is a concurrent application or protocol contest: every eligible team can play in the same tick, challenge-native evidence is normalized inside RSCTF, and sustained first place earns a bounded bonus. The production revision covered by this handbook still exposes these sources as <code>Marker</code> and <code>API arena</code>. Marker uses the fixed score 100R(0.25A + 0.55C + 0.20√AC). API arena currently scores a same-tick harmonic activity/objective core multiplied by integrity. The target Leaderboard contract keeps the normalized core, removes failed hacking attempts from score penalties, and adds explicit first-place continuity. Both contracts retain scoped capabilities, signed evidence, replay and runtime fencing, an independent functional checker, pristine crown-cycle replacement, bounded hill normalization, and finalized epoch settlement. This unified handbook records the live contract and the proposed atomic transition without presenting the proposal as deployed behavior.</p>
 </div>
 
-<p class="journal-keywords"><strong>Keywords:</strong> King of the Hill; capture the flag; boot2root; API challenge; normalization; harmonic mean; anti-cheat; crown cycle; evidence integrity; RSCTF</p>
+<p class="journal-keywords"><strong>Keywords:</strong> King of the Hill; Boot2Root; Leaderboard KotH; API arena; normalization; sustained lead; anti-cheat; crown cycle; RSCTF</p>
 
-<p class="journal-status"><strong>Document status:</strong> technical-practice report aligned to the repository revision that contains it; not a claim of peer review or empirical validation. Appendix C maps the rules to source files.</p>
+<p class="journal-status"><strong>Document status:</strong> single canonical KotH paper. Sections 1–8 and Appendices A–C describe the production contract in the repository revision that contains this document. Section 9 is the proposed Leaderboard replacement for API arena and is not live until the backend, UI, tests, and organizer guidance adopt it atomically. This is a technical-practice report, not a claim of peer review or empirical validation.</p>
+
+![Two KotH formats: exclusive Boot2Root control and concurrent Leaderboard competition](/diagrams/koth-two-format-model.svg)
+
+<p class="journal-figure-caption"><strong>Figure 1.</strong> Boot2Root KotH measures exclusive machine control. Leaderboard KotH measures normalized concurrent performance and sustained first place. Both pass through the same bounded hill and epoch settlement.</p>
 
 ## Start here: KotH in 90 seconds {#start-here}
 
 ### Choose the format shown on the hill
 
-**Marker / boot2root** means one shared machine and one holder:
+**Boot2Root**—shown as **Marker** in the current UI—means one shared machine and
+one holder:
 
 1. exploit or administer the hill;
 2. place your current capability in `/koth/king`;
 3. keep the service healthy through confirmation; and
 4. hold it until another team takes over or the clean reset begins.
 
-**API arena** means every team may score concurrently:
+**Concurrent application KotH**—shown as **API arena** today and proposed as
+**Leaderboard KotH**—means every team may score concurrently:
 
 1. use the challenge's player-facing API;
 2. complete meaningful, verified actions;
 3. optimize each published objective; and
-4. avoid invalid attempts, which lower integrity.
+4. read the hill's status notice to determine whether current API-integrity or
+   proposed Leaderboard scoring applies.
 
 Players never call the organizer's signed referee endpoint.
 
-### The two fixed formulas
-
-Marker KotH:
+### The production formulas
 
 ```text
+MARKER / BOOT2ROOT
 Core  = 0.25A + 0.55C + 0.20 * sqrt(A * C)
 Local = 100 * R * Core
-```
 
-API arena KotH:
-
-```text
+API ARENA
 B = 0                                  if E = 0 or P = 0
 B = 1 / (0.35 / E + 0.65 / P)         otherwise
 Tick = 100 * I * B
@@ -64,7 +67,8 @@ Tick = 100 * I * B
 
 Marker `A/C/R` and arena `E/P/I` are different evidence, even though the board
 uses the same three compact metric columns. The hill's format badge determines
-their labels.
+their labels. Section 9 defines the proposed Leaderboard formula; it does not
+change a live event merely because this handbook describes it.
 
 ### What resets and what settles
 
@@ -89,15 +93,22 @@ the latter as a disguised one-holder marker discards useful evidence and
 encourages last-write races. Treating the former as a generic point feed gives
 an external component authority over the official score.
 
-RSCTF therefore freezes one of two meanings for each hill:
+RSCTF therefore freezes one of two competitive meanings for each hill. The
+production names and the target public names are recorded together here so
+players do not have to reconcile separate papers:
 
-| Format | Concurrent scorers | Evidence | Platform result |
-| --- | ---: | --- | --- |
-| <code class="journal-nowrap">Marker</code> | At most one observed controller per tick | current capability, confirmation, control, checker verdict | `A`, `C`, `R`, marker formula |
-| <code class="journal-nowrap">Api</code> | Every eligible team | bounded activity, objective components, valid/all actions | `E`, `P`, `I`, arena formula |
+<p class="journal-table-caption"><strong>Table 1.</strong> Production sources and their target public contracts.</p>
+
+| Competitive model | Production source | Simultaneous scorers | Production evidence | Target contract |
+| --- | --- | ---: | --- | --- |
+| Boot2Root control | <code class="journal-nowrap">Marker</code> | At most one observed controller | acquisition, control, reliability | name changes; formula remains fixed |
+| Concurrent leaderboard | <code class="journal-nowrap">Api</code> | Every eligible team | activity, objectives, integrity | Leaderboard name; activity, objectives, sustained lead |
 
 An API credential configured before official scoring selects `Api`; otherwise
 the hill is `Marker`. The frozen source cannot change during official scoring.
+“Leaderboard” names the competitive object rather than its transport: the hill
+may expose HTTP, a binary protocol, a simulator, a game server, or another
+instrumented application.
 
 ### 1.2 Shared invariants
 
@@ -126,9 +137,11 @@ Both formats must preserve the following requirements:
    cannot change that challenge-owned scheme.
 
 Marker-specific requirements are contestable exclusive control, qualified
-capture, and responsibility for service health. API-specific requirements are
-multi-team normalization, meaningful activity, same-tick integrity, and
-challenge evidence that requires actual play.
+capture, and responsibility for service health. Production API-specific
+requirements are multi-team normalization, meaningful activity, same-tick
+integrity, and challenge evidence that requires actual play. The proposed
+Leaderboard contract changes the last channel from integrity points to
+sustained-lead evidence while retaining authenticity as an admission gate.
 
 ### 1.3 Relation to other systems
 
@@ -213,7 +226,8 @@ the same tick.
 Both formats use a durable lifecycle:
 
 ```text
-finalize → pause → audit/snapshot → destroy → create → issue → readiness → resume
+finalize → pause → audit/snapshot → destroy
+         → create → issue → readiness → resume
 ```
 
 At every boundary, RSCTF stores the transition phase, prevents a second replica
@@ -248,6 +262,8 @@ attribute a global service failure to one arena participant.
 
 For team $i$, hill $h$, and epoch $e$, define:
 
+<p class="journal-table-caption"><strong>Table 2.</strong> Boot2Root marker evidence.</p>
+
 | Symbol | Marker evidence |
 | --- | --- |
 | $x_{ihe}$ | capability windows in which the team confirmed acquisition |
@@ -263,7 +279,6 @@ $$
 A_{ihe}=\frac{x_{ihe}}{y_{ihe}},\qquad
 C_{ihe}=\frac{u_{ihe}}{s_{ihe}},\qquad
 R_{ihe}=\frac{b_{ihe}}{d_{ihe}}.
-\tag{1}
 $$
 
 An empty denominator produces zero. The fixed marker core and local score are:
@@ -271,13 +286,11 @@ An empty denominator produces zero. The fixed marker core and local score are:
 $$
 B^{M}_{ihe}
 =0.25A_{ihe}+0.55C_{ihe}
- +0.20\sqrt{A_{ihe}C_{ihe}},
-\tag{2}
+ +0.20\sqrt{A_{ihe}C_{ihe}}.
 $$
 
 $$
 L^{M}_{ihe}=100R_{ihe}B^{M}_{ihe}.
-\tag{3}
 $$
 
 Control has the largest direct coefficient. The geometric balance term rewards
@@ -294,29 +307,26 @@ with:
 
 $$
 0\leq \text{earned}\leq\text{possible}\leq10^{12}.
-\tag{4}
 $$
 
 RSCTF calculates:
 
 $$
 E_{iht}=\frac{a^+_{iht}}{a^\ast_{iht}},\qquad
-I_{iht}=\frac{v_{iht}}{n_{iht}},
-\tag{5}
+I_{iht}=\frac{v_{iht}}{n_{iht}}.
 $$
 
 $$
 p_{ihtj}=\frac{o^+_{ihtj}}{o^\ast_{ihtj}},\qquad
 P_{iht}=\frac{1}{m}\sum_{j=1}^{m}p_{ihtj},
 \quad 1\leq m\leq16.
-\tag{6}
 $$
 
 Each objective is converted to a fixed integer normalization scale before the
-mean. This makes Equation (6) deterministic without trusting floating-point
-values in the signed request. More importantly, native scale does not imply
-weight: a `9/10` objective and a `900/1000` objective each contribute one
-normalized component.
+mean. This makes the objective mean deterministic without trusting
+floating-point values in the signed request. More importantly, native scale
+does not imply weight: a `9/10` objective and a `900/1000` objective each
+contribute one normalized component.
 
 ### 3.3 API tick formula
 
@@ -329,7 +339,6 @@ B^{A}_{iht}=
 \displaystyle
 \frac{1}{0.35/E_{iht}+0.65/P_{iht}}, & \text{otherwise}.
 \end{cases}
-\tag{7}
 $$
 
 The immutable tick score rate and point value are:
@@ -337,7 +346,6 @@ The immutable tick score rate and point value are:
 $$
 G_{iht}=I_{iht}B^{A}_{iht},\qquad
 L^{A}_{iht}=100G_{iht}.
-\tag{8}
 $$
 
 Both activity and objective performance are necessary. The larger objective
@@ -349,22 +357,22 @@ For an epoch containing $T_{he}$ scorable API ticks, RSCTF displays the mean
 channels but scores the mean of immutable tick results:
 
 $$
-\bar E_{ihe}=\frac{1}{T_{he}}\sum_t E_{iht},\quad
-\bar P_{ihe}=\frac{1}{T_{he}}\sum_t P_{iht},\quad
-\bar I_{ihe}=\frac{1}{T_{he}}\sum_t I_{iht},
-\tag{9}
+\begin{aligned}
+\bar E_{ihe}&=\frac{1}{T_{he}}\sum_t E_{iht},&
+\bar P_{ihe}&=\frac{1}{T_{he}}\sum_t P_{iht},\\
+\bar I_{ihe}&=\frac{1}{T_{he}}\sum_t I_{iht}.&&
+\end{aligned}
 $$
 
 $$
 L^{A}_{ihe}
 =100\left(\frac{1}{T_{he}}\sum_t G_{iht}\right).
-\tag{10}
 $$
 
-RSCTF does not insert the averages from Equation (9) back into Equation (7).
-That would permit temporal mixing. For example, perfect performance with zero
-integrity in one tick and perfect integrity with no play in another tick must
-remain two zero-score ticks.
+RSCTF does not insert the displayed channel averages back into the harmonic
+tick formula. That would permit temporal mixing. For example, perfect
+performance with zero integrity in one tick and perfect integrity with no play
+in another tick must remain two zero-score ticks.
 
 ### 3.4 Hill normalization
 
@@ -377,13 +385,12 @@ $$
 E_{ie}
 =\frac{\sum_h z_{he}w_hL_{ihe}}
        {\sum_h z_{he}w_h}.
-\tag{11}
 $$
 
-Here $L_{ihe}$ is Equation (3) for a marker hill or Equation (10) for an API
-hill. A wholly void hill contributes no numerator or denominator. Once a hill
-has valid field evidence, omitted API teams retain explicit zero rows rather
-than removing that hill from their personal calculation.
+Here $L_{ihe}$ is the marker local score or the mean immutable API tick score.
+A wholly void hill contributes no numerator or denominator. Once a hill has
+valid field evidence, omitted API teams retain explicit zero rows rather than
+removing that hill from their personal calculation.
 
 ### 3.5 Epoch weight, settlement, and rank
 
@@ -392,14 +399,12 @@ $r_e$ of the configured $n$ scoring ticks in its final epoch:
 
 $$
 q_e=\frac{r_e}{n}.
-\tag{12}
 $$
 
 The event score is:
 
 $$
 T_i=\frac{\sum_e q_eE_{ie}}{\sum_e q_e}.
-\tag{13}
 $$
 
 There is no late-epoch multiplier. **Projected** includes open evidence;
@@ -412,6 +417,8 @@ objective/integrity/activity for API arenas.
 ### 3.6 Reading the scoreboard
 
 The hill badge and column labels are part of the scoring contract:
+
+<p class="journal-table-caption"><strong>Table 3.</strong> Production scoreboard labels.</p>
 
 | Badge | First metric | Second metric | Third metric | Crown state |
 | --- | --- | --- | --- | --- |
@@ -430,6 +437,8 @@ Suppose a team confirms one of two eligible acquisition windows, controls three
 of eight personally eligible ticks, and keeps the service healthy in four of
 five responsible ticks:
 
+<div class="journal-wide">
+
 $$
 A=1/2=0.5000,\quad C=3/8=0.3750,\quad R=4/5=0.8000.
 $$
@@ -443,6 +452,8 @@ B^M
 L^M&=100(0.8000)(0.417853)\approx33.43.
 \end{aligned}
 $$
+
+</div>
 
 The team receives control evidence from the first stable eligible observation,
 but acquisition appears only after the healthy confirmation threshold.
@@ -464,6 +475,8 @@ Suppose one API tick reports:
 
 The two objective scales are normalized independently:
 
+<div class="journal-wide">
+
 $$
 E=4/5=0.8000,\quad
 P=((7/10)+(750/1000))/2=0.7250,\quad
@@ -480,15 +493,17 @@ $$
 L^A=100(0.9500)(0.749596)\approx71.21.
 $$
 
+</div>
+
 Adding zeros to the native throughput scale would not change its normalized
 share. Adding a duplicate objective entry would change the declared evidence
 model and is prohibited by the organizer guidelines as hidden weighting.
 
 ### 4.3 Why activity is mandatory
 
-If $E=0$, $P=1$, and $I=1$, Equation (7) sets the core to zero. A referee
-cannot grant points by reporting performance without verified activity.
-Likewise, $E=1$ and $P=0$ scores zero.
+If $E=0$, $P=1$, and $I=1$, the harmonic core is zero. A referee cannot grant
+points by reporting performance without verified activity. Likewise, $E=1$
+and $P=0$ scores zero.
 
 At $E=0.2$, $P=0.9$, and $I=1$:
 
@@ -503,15 +518,17 @@ strong objective channel alone.
 
 Consider two ticks:
 
+<p class="journal-table-caption koth-keep-table"><strong>Table 4.</strong> Same-tick calculation prevents temporal mixing.</p>
+
 | Tick | $E$ | $P$ | $I$ | Tick score |
 | ---: | ---: | ---: | ---: | ---: |
 | 1 | 1 | 1 | 0 | 0 |
 | 2 | 0 | 0 | 1 | 0 |
 
-The displayed channel means are each `0.5`, but Equation (10) averages the two
-stored zero score rates and returns zero. Calculating a formula from the channel
-means would incorrectly create points for behavior that never had performance
-and integrity together.
+The displayed channel means are each `0.5`, but the epoch calculation averages
+the two stored zero score rates and returns zero. Calculating a formula from
+the channel means would incorrectly create points for behavior that never had
+performance and integrity together.
 
 ### 4.5 Missing team and field void
 
@@ -540,6 +557,8 @@ $$
 ## 5. Failure adjudication and recovery {#failure-adjudication}
 
 ### 5.1 Functional verdicts
+
+<p class="journal-table-caption"><strong>Table 5.</strong> Checker and evidence failure treatment.</p>
 
 | Verdict or condition | Marker treatment | API arena treatment |
 | --- | --- | --- |
@@ -696,13 +715,170 @@ field-wide void evidence, the challenge must isolate and bound work per
 capability so one participant cannot turn resource exhaustion into a scoring
 veto. These are operational and challenge-design responsibilities.
 
-## 9. Conclusion {#conclusion}
+## 9. Target Leaderboard contract {#leaderboard-contract}
 
-RSCTF does not treat API KotH as boot2root KotH with a different transport.
-Marker hills remain exclusive contests scored by qualified acquisition,
-sustained control, and service reliability. API arenas let every team score
-concurrently from platform-normalized activity, objective, and integrity
-evidence.
+This section defines the proposed atomic replacement for API arena. It is
+included here so the repository publishes one KotH paper, but it is not the
+production scoring contract until the stored source name, schema, engine,
+scoreboard, tests, and organizer guidance migrate together.
+
+### 9.1 Evidence boundary
+
+Every eligible team plays the same application or protocol during one scoring
+tick. The challenge records capability-bound events. A trusted referee outside
+the attacker-controlled runtime converts those events into bounded integer
+ratios and signs one complete field snapshot. It submits evidence, never
+points.
+
+Players may probe, fuzz, crash their own session, submit malformed challenge
+inputs, and fail while developing an exploit unless the published event rules
+prohibit a specific action. Those attempts are part of hacking. Leaderboard
+scoring therefore removes the production integrity multiplier. Authenticity
+remains a gate: forged, replayed, stale, wrongly scoped, or incomplete evidence
+is rejected or void rather than converted into a fractional penalty.
+
+Activity $E_{iht}$ counts meaningful completed actions against a published
+target. Objective $j$ reports bounded evidence
+$o^+_{ihtj}/o^\ast_{ihtj}$. RSCTF normalizes every objective independently:
+
+$$
+E_{iht}=\frac{\text{meaningful activity completed}}
+              {\text{published activity target}}.
+$$
+
+$$
+p_{ihtj}=\frac{o^+_{ihtj}}{o^\ast_{ihtj}},\qquad
+P_{iht}=\frac{1}{m}\sum_{j=1}^{m}p_{ihtj},
+\quad 1\leq m\leq16.
+$$
+
+A native result of `9/10` and another of `900/1000` both become `0.9`.
+Numerical scale cannot become accidental weight. Suitable activity units
+include distinct tasks completed, protocol phases reached, valid transactions
+committed, unique puzzles solved, or verified work units. Request, packet, and
+connection volume are unsuitable because spam would become a scoring strategy.
+
+### 9.2 Performance and sustained leadership
+
+The fixed performance core remains a weighted harmonic mean:
+
+$$
+B_{iht}=
+\begin{cases}
+0, & E_{iht}=0\ \text{or}\ P_{iht}=0,\\[4pt]
+\displaystyle
+\frac{1}{0.35/E_{iht}+0.65/P_{iht}}, & \text{otherwise}.
+\end{cases}
+$$
+
+RSCTF stores this result before aggregation, so activity from one moment cannot
+combine with performance from another. For $T$ field-scorable ticks in an
+epoch, absolute challenge performance is:
+
+$$
+Q_{ihe}=\frac{1}{T}\sum_{t=1}^{T}B_{iht}.
+$$
+
+A competitive tick requires at least two teams with positive performance. The
+highest stored $B$ receives lead credit $\ell_{iht}$. If $k$ teams share the
+exact highest result, each receives $1/k$ rather than an arbitrary team-ID
+tie-break. Lead coverage and adjacent-tick sustained lead are:
+
+$$
+L_{ihe}=\frac{1}{T}\sum_{t=1}^{T}\ell_{iht}.
+$$
+
+$$
+S_{ihe}=
+\begin{cases}
+0, & T<2,\\[4pt]
+\displaystyle
+\frac{1}{T-1}\sum_{t=2}^{T}
+\min(\ell_{ih,t-1},\ell_{iht}), & T\geq2.
+\end{cases}
+$$
+
+$L$ rewards reaching first place. $S$ distinguishes consecutive leadership
+from scattered wins. Their bounded dominance rate mirrors the shape of the
+Boot2Root acquisition/control core:
+
+$$
+D_{ihe}=0.25L_{ihe}+0.55S_{ihe}
+       +0.20\sqrt{L_{ihe}S_{ihe}}.
+$$
+
+### 9.3 Bounded local score
+
+The proposed Leaderboard hill score is:
+
+$$
+H^{\mathrm{lead}}_{ihe}
+=100\left[
+Q_{ihe}
++0.5Q_{ihe}(1-Q_{ihe})D_{ihe}
+\right].
+$$
+
+The first term pays for absolute performance. The second is a bounded
+sustained-first-place bonus. It creates no points when $Q=0$, cannot push a
+perfect result above 100, and contributes at most 12.5 points.
+
+<p class="journal-table-caption koth-keep-table"><strong>Table 6.</strong> Equal performance with different first-place patterns.</p>
+
+| Ten-tick pattern at $Q=0.80$ | $L$ | $S$ | $D$ | Final score |
+| --- | ---: | ---: | ---: | ---: |
+| Never first | 0.000 | 0.000 | 0.000 | 80.00 |
+| First on five alternating ticks | 0.500 | 0.000 | 0.125 | 81.00 |
+| First for five consecutive ticks | 0.500 | 0.444 | 0.464 | 83.71 |
+| First for all ten ticks | 1.000 | 1.000 | 1.000 | 88.00 |
+
+The alternating team reaches first as often as the five-tick leader but never
+retains it across adjacent ticks. The consecutive leader earns the larger
+bonus. At $Q=0.20$ and $D=1$, the result is 28 rather than a winner jackpot:
+
+$$
+100[0.20+0.5(0.20)(0.80)(1)]=28.
+$$
+
+### 9.4 Selection, evidence admission, and migration
+
+Choose Boot2Root when the intended skill is obtaining privileged access to one
+shared target, exactly one team should control it at a time, takeover and
+persistence are central, and service health can be attributed to the holder.
+Choose Leaderboard when teams should score concurrently, the challenge exposes
+measurable outcomes, activity and objectives can be independently verified,
+and first-place continuity should matter. An HTTP API alone is not a reason to
+choose Leaderboard.
+
+The proposed engine rejects or voids invalid HMAC, revoked credentials,
+non-monotonic or replayed bodies, stale capability hashes, wrong runtime
+context, a changed objective scheme, incomplete field snapshots, snapshot
+changes during the functional probe, and platform-wide checker failures. One
+omitted team in a valid field snapshot receives explicit zero; a missing or
+untrustworthy whole-field snapshot is void for everyone. Neither carries an
+earlier score forward.
+
+Migration must occur while no affected event is scoring:
+
+1. rename the source from API arena to Leaderboard KotH;
+2. remove integrity from scoring while retaining authenticity gates;
+3. persist immutable per-tick lead and adjacent-tick sustained-lead evidence;
+4. calculate dominance only from finalized, field-scorable ticks;
+5. update board columns to **Activity**, **Objectives**, and
+   **Sustained lead**; and
+6. migrate or void incompatible open evidence without rewriting settled
+   historical rollups.
+
+RSCTF must not retain the superseded formula as an organizer-selectable scoring
+version. The transition changes one constant format contract into another at a
+controlled event boundary.
+
+## 10. Conclusion {#conclusion}
+
+RSCTF does not treat concurrent KotH as Boot2Root with a different transport.
+Boot2Root hills remain exclusive contests scored by qualified acquisition,
+sustained control, and service reliability. Concurrent hills let every team
+score from platform-normalized challenge evidence.
 
 The API formula uses a fixed weighted harmonic mean so play and performance are
 both necessary, then applies same-tick integrity. Independent normalization
@@ -710,6 +886,12 @@ prevents native numeric scale from becoming accidental weight. Per-tick
 calculation prevents temporal recombination. Dense zero rows prevent stale
 team scores, while field-wide voids prevent infrastructure failures from
 becoming participant penalties.
+
+The current API arena formula uses same-tick integrity. The proposed
+Leaderboard replacement instead treats authenticity as an evidence gate and
+rewards sustained first place through a bounded bonus. Keeping both contracts
+in this one handbook makes the transition visible without pretending it has
+already happened.
 
 Both formats retain exact identity fences, independent health checking,
 pristine lifecycle resets, fixed-ceiling hill aggregation, and finalized epoch
@@ -772,16 +954,29 @@ the new arena formula.
 Yes, subject to event rules. RSCTF validates evidence and scope rather than
 classifying a participant as human or automated.
 
+### A.11 Is Leaderboard scoring live?
+
+Not in the production revision documented here. The UI badge `API arena` and
+the `E/P/I` tick formula remain authoritative until an atomic migration adopts
+the Leaderboard source, persistence, formula, board labels, tests, and
+organizer guidance. Section 9 is the target contract.
+
 ## Appendix B. Nomenclature
+
+<p class="journal-table-caption"><strong>Table 7.</strong> Symbols and operational terms.</p>
 
 | Symbol or term | Definition |
 | --- | --- |
 | $A,C,R$ | marker acquisition, control, and reliability rates |
-| $E,P,I$ | API activity, objective, and integrity rates for one tick |
+| $E,P,I$ | production API activity, objective, and integrity rates for one tick |
 | $B^M$ | marker acquisition/control core |
 | $B^A$ | API weighted harmonic core for one tick |
 | $G$ | integrity-adjusted API tick score rate |
 | $L^M,L^A$ | local marker/API hill score in `[0,100]` |
+| $Q$ | proposed Leaderboard mean per-tick performance |
+| $\ell,L,S$ | proposed tick lead credit, lead coverage, and sustained-lead rate |
+| $D$ | proposed Leaderboard dominance rate |
+| $H^{\mathrm{lead}}$ | proposed Leaderboard local score in `[0,100]` |
 | $w_h$ | frozen hill weight in `[0.8,1.2]` |
 | $z_{he}$ | field evidence switch for one hill and epoch |
 | $q_e$ | complete or partial epoch weight |
@@ -794,6 +989,8 @@ classifying a participant as human or automated.
 ## Appendix C. Implementation traceability {#implementation-traceability}
 
 Paths are relative to the repository revision containing this handbook.
+
+<p class="journal-table-caption"><strong>Table 8.</strong> Production implementation traceability and proposal status.</p>
 
 | Responsibility | Source of truth |
 | --- | --- |
@@ -811,8 +1008,11 @@ Paths are relative to the repository revision containing this handbook.
 | Crown and constant marker schema | `src/migrations/m0046_koth_crown_cycles.rs` through `m0058_constant_koth_scoring.rs` |
 | Referee credential/replay schema | `src/migrations/m0083_koth_api_observers.rs` |
 | Challenge-owned objective scheme, normalized API snapshot, and score schema | `src/migrations/m0084_koth_api_arena.rs` |
+| Proposed Leaderboard replacement | Section 9; no runtime source path until the atomic migration is implemented |
 
 ### C.1 Core HTTP surface
+
+<p class="journal-table-caption"><strong>Table 9.</strong> KotH player, operator, and referee HTTP surface.</p>
 
 | Method and route | Purpose |
 | --- | --- |
@@ -826,8 +1026,8 @@ Paths are relative to the repository revision containing this handbook.
 | `GET /api/v1/koth/games/{id}/challenges/{challengeId}/context` | exact round/runtime fence and eligible capability hashes |
 | `POST /api/v1/koth/games/{id}/challenges/{challengeId}/observations` | signed bounded evidence snapshot; never points |
 
-Wire models use camelCase and Unix-millisecond timestamps. Enums are strings
-unless the platform's documented global exception applies.
+Wire models use camelCase, Unix-millisecond timestamps, and string enums except
+for documented global exceptions.
 
 ### C.2 Verification scope
 
@@ -836,20 +1036,19 @@ normalization, same-tick integrity, malformed evidence, HMAC scope, clock skew,
 replay, context rotation, current capability-hash resolution, unknown hashes,
 dense omitted-team zeros, stable snapshot bracketing, marker confirmation,
 personal cooldown denominators, tied champions, partial epochs, rollups, and
-ordinal ranks. The example repository additionally exercises one-use play,
+ordinal ranks. The example repository also exercises one-use play,
 invalid attempts, token hashing, evidence pagination, persistent referee
 restart, feed-gap failure, and exact signed bodies.
 
-The JavaScript lifecycle harness exercises current and stale capabilities,
-concurrent polling, cycle replacement, checker evidence, BYOC tunnels, and
-duplicate/integrity queries against the composed platform. Performance results
-belong in `tests/load/REPORT.md`; this handbook does not convert a benchmark
-into a fairness claim.
+Lifecycle tests cover current and stale capabilities, concurrent polling,
+cycle replacement, checker evidence, BYOC tunnels, and duplicate/integrity
+queries. Benchmarks remain in `tests/load/REPORT.md` and do not establish
+fairness.
 
 ## References
 
 1. <span id="ref-1"></span>RSCTF Project, “King of the Hill implementation,” repository-local source artifact, fixed marker and API-arena formulas, verified 28 July 2026.
-2. <span id="ref-2"></span>K. Bock, G. Hughey, and D. Levin, “King of the Hill: A Novel Cybersecurity Competition for Teaching Penetration Testing,” in *Proceedings of the 2018 USENIX Workshop on Advances in Security Education*, Baltimore, MD, USA, 2018. [Online]. Available: [https://www.usenix.org/conference/ase18/presentation/bock](https://www.usenix.org/conference/ase18/presentation/bock). Accessed: 28 July 2026.
-3. <span id="ref-3"></span>CTFd, “King of the Hill,” *CTFd Documentation*, 2026. [Online]. Available: [https://docs.ctfd.io/docs/custom-challenges/king-of-the-hill/](https://docs.ctfd.io/docs/custom-challenges/king-of-the-hill/). Accessed: 28 July 2026.
-4. <span id="ref-4"></span>FAU Security Team, “Rules,” *FAUST CTF 2025*, 2025. [Online]. Available: [https://2025.faustctf.net/information/rules/](https://2025.faustctf.net/information/rules/). Accessed: 28 July 2026.
-5. <span id="ref-5"></span>OtterSec, “Submit dynamic scores,” *rCTF Documentation*, 2026. [Online]. Available: [https://github.com/otter-sec/rctf/blob/main/apps/docs/src/content/docs/api/challenges/submit-dynamic-scores.md](https://github.com/otter-sec/rctf/blob/main/apps/docs/src/content/docs/api/challenges/submit-dynamic-scores.md). Accessed: 28 July 2026.
+2. <span id="ref-2"></span>K. Bock, G. Hughey, and D. Levin, “King of the Hill: A Novel Cybersecurity Competition for Teaching Penetration Testing,” in *Proceedings of the 2018 USENIX Workshop on Advances in Security Education*, Baltimore, MD, USA, 2018. [Online]. Available: [USENIX paper](https://www.usenix.org/conference/ase18/presentation/bock). Accessed: 28 July 2026.
+3. <span id="ref-3"></span>CTFd, “King of the Hill,” *CTFd Documentation*, 2026. [Online]. Available: [CTFd KotH documentation](https://docs.ctfd.io/docs/custom-challenges/king-of-the-hill/). Accessed: 28 July 2026.
+4. <span id="ref-4"></span>FAU Security Team, “Rules,” *FAUST CTF 2025*, 2025. [Online]. Available: [FAUST CTF rules](https://2025.faustctf.net/information/rules/). Accessed: 28 July 2026.
+5. <span id="ref-5"></span>OtterSec, “Submit dynamic scores,” *rCTF Documentation*, 2026. [Online]. Available: [rCTF dynamic-score documentation](https://github.com/otter-sec/rctf/blob/main/apps/docs/src/content/docs/api/challenges/submit-dynamic-scores.md). Accessed: 28 July 2026.
