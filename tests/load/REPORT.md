@@ -102,8 +102,107 @@ Across twelve corresponding resource samples the two web replicas used 54.44%
 CPU combined on average (80.91% maximum sample) and 215.00 MiB combined RAM on
 average (218.50 MiB maximum). PostgreSQL averaged 32.12% CPU and 551.58 MiB RAM;
 Redis averaged 17.77% CPU and 5.37 MiB RAM. The immutable production **after**
-pass will use this exact rate, cohort, scheduling capacity, endpoint mix, and
-sampling rule after rollout.
+pass below uses this exact rate, cohort, scheduling capacity, endpoint mix, and
+sampling rule.
+
+### Production rollout, compression correction, and held-rate after
+
+The first production rollout, `v0.1.33`, made the Overall route functional but
+also exposed a transport regression during the required after test. The
+100-team identity body was 39,076 bytes and ignored both gzip and Brotli
+negotiation. Its second 300 requests/s observation completed 18,001 requests
+with no functional failure, but transferred 597,806,388 bytes. Overall HTTP
+p95 was 73.930 ms and the Overall endpoint p95 was 78.877 ms. This sample also
+crossed a repeatable host scheduling pause: both web replicas logged one Redis
+command timeout and safely used their process-local limiter fallback. There
+were still no 429s, non-200s, 5xxs, drops, or invalid boards.
+
+`v0.1.34` moved the already-tested A&D encoding bundle to the game scoreboard
+layer and reused it for Overall. The raw, gzip, and Brotli representations are
+built once on `spawn_blocking`, stored atomically in the existing bounded
+two-tier cache, and selected as zero-copy `Bytes` slices. A rolling deployment
+continues to accept both the preceding raw entry and the established bundle
+marker. Scoring fields, JSON after decoding, cache TTLs, and rank behavior did
+not change. Live byte-for-byte checks produced the following result:
+
+| Representation | Bytes | Change from identity |
+| --- | ---: | ---: |
+| Identity | 39,076 | baseline |
+| gzip | 987 | -97.47% |
+| Brotli | 623 | -98.41% |
+
+The final production pass explicitly advertised gzip because k6 does not do so
+by default, whereas browsers do. A clean observation window used the same 300
+requests/s, 60 seconds, 1,000 identities, and 960 VUs. All 18,001
+arrivals completed at 299.996 requests/s. All 2,999 Overall responses were
+compressed and semantically valid. There were zero dropped iterations, 429s,
+authentication rejections, non-200s, 5xxs, and compression regressions.
+
+| Path | Average | p50 | p90 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 6.611 ms | 3.086 ms | 10.943 ms | 20.646 ms | 71.900 ms | 266.748 ms |
+| Game catalog | 6.994 ms | 3.895 ms | 11.988 ms | 20.328 ms | 54.392 ms | 223.606 ms |
+| Jeopardy scoreboard | 5.613 ms | 2.524 ms | 9.988 ms | 18.564 ms | 53.691 ms | 259.769 ms |
+| A&D scoreboard | 6.317 ms | 3.121 ms | 10.717 ms | 19.277 ms | 63.710 ms | 202.124 ms |
+| KotH scoreboard | 7.465 ms | 3.156 ms | 11.731 ms | 25.000 ms | 88.102 ms | 251.212 ms |
+| Overall scoreboard | 6.200 ms | 2.586 ms | 9.886 ms | 19.322 ms | 82.873 ms | 210.939 ms |
+| KotH timeline | 7.078 ms | 2.954 ms | 11.013 ms | 22.132 ms | 85.738 ms | 266.748 ms |
+
+The complete response mix transferred 483,130,260 bytes, 19.18% less than the
+uncompressed `v0.1.33` pass. The noisy uncompressed-to-compressed observation
+was Overall HTTP p95 73.930 -> 20.646 ms (-72.07%) and Overall endpoint p95
+78.877 -> 19.322 ms (-75.50%). Those tail reductions include removal of the
+observed host pause and are not attributed solely to compression; the exact
+wire-size reduction above is the causal transport result. Against the original
+`v0.1.32` production control, where Overall did not exist, aggregate p95 was
+20.405 -> 20.646 ms (+1.18%) while all new Overall calculations completed.
+
+The matching sampler made twelve observations using the same cadence as the
+pre-change control:
+
+| Component | CPU min | CPU average | CPU max | RAM min | RAM average | RAM max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Two web replicas combined | 0.16% | 30.01% | 54.77% | 199.39 MiB | 215.83 MiB | 224.10 MiB |
+| Control replica | 0.31% | 1.98% | 17.57% | 31.31 MiB | 31.33 MiB | 31.34 MiB |
+| PostgreSQL | 1.08% | 23.24% | 74.23% | 471.80 MiB | 516.62 MiB | 540.50 MiB |
+| Redis | 0.45% | 11.73% | 24.41% | 5.67 MiB | 6.07 MiB | 6.27 MiB |
+
+These CPU percentages are retained as operational observations, not an
+optimization claim. A post-run audit found that each `docker stats --no-stream`
+call took about 2.5 seconds in this environment; sleeping five seconds after
+each call therefore extended both the before and after samplers beyond their
+k6 windows. Combined web RAM remained bounded at 215.83 MiB average and 224.10
+MiB maximum. Redis held only 1.58 MiB after the run and reported zero evictions.
+
+An additional exact-boundary instrumentation audit deliberately started all
+twelve `docker stats` calls at five-second wall-clock intervals. It again
+completed 18,001/18,001 arrivals at 299.951 requests/s with zero drops, 429s,
+authentication rejections, non-200s, 5xxs, invalid Overall boards, or
+uncompressed Overall boards. However, at 12:21:02 UTC the host stalled Redis
+long enough for both web replicas to log one command timeout and use the safe
+process-local limiter fallback. Aggregate p95 was 358.295 ms and Overall p95
+was 334.365 ms during this perturbed audit. The final sample simultaneously
+reported 259.19% web, 231.59% PostgreSQL, and 79.11% Redis CPU while the host
+kernel reported suppressed audit callbacks. These results confirm graceful
+degradation, but they are excluded from the optimization comparison because
+the measuring process materially perturbed the host.
+
+Production runs `v0.1.34` commit
+`656ba7e261c873c24c2a2eca4f425d50c290a6e0` from immutable multi-platform
+manifest `sha256:65bd5945534cd67a39d351aa02fc88c0abc86a66a4e7c3bbf44034d674a84aad`
+(`amd64 sha256:c6386ddfbffea21e5476fb6540bda249bb3d0f056e6651692339f2354db3a203`,
+`arm64 sha256:31866b32b566c347c25703f1219b0f160fe1847286c63a4ed380d15f2d29b383`).
+Both web replicas and the control replica are healthy with zero restarts and
+zero OOM kills; PostgreSQL reports exactly two fresh web heartbeats and one
+control heartbeat on one build fingerprint. `/healthz` returned HTTP 200 with
+exact body `ok`. Three-mode game 161 and two-mode game 172 passed live range,
+weight, rank, freeze, and team-count validation. The Linux and Windows
+bootstrap endpoints both returned HTTP 200, their unchanged bodies matched the
+previously tested bootstraps, POSIX parsing passed, and the public latest
+release resolved to `v0.1.34`. Logs contained no panic, migration failure,
+restart loop, OOM, or 5xx. Redis fallback warnings occurred only in the two
+explicitly documented noisy/instrumented observations (once per web replica in
+each), never in the clean after pass.
 
 ## Normalized multi-team API arena acceptance — 28 July 2026
 

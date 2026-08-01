@@ -962,8 +962,10 @@ and the live ownership assertion are in
 All 16 July rows compare adjacent images with the common workload above. The
 max-batch 19 July row is a frozen pre-submit-fence campaign using the isolated
 A&D harness documented in
-[`REPORT.md`](REPORT.md#attack-defense-max-batch-hardening-and-fixed-rate-optimization--19-july-2026),
-so its held throughput and CPU window are not comparable to the replicated
+[`REPORT.md`](REPORT.md#attack-defense-max-batch-hardening-and-fixed-rate-optimization--19-july-2026);
+the 1 August row uses the production polled-read harness documented in
+[`REPORT.md`](REPORT.md#equal-weight-overall-scoreboard-acceptance--1-august-2026).
+Their held throughput and CPU windows are not comparable to the replicated
 player-load rows. App CPU is both web replicas plus control for the 16 July
 campaign and the single web-only rsctf container for the 19 July campaign;
 stack CPU adds PostgreSQL and Redis. The Caddy and Redis incident rows compare
@@ -983,6 +985,7 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 | 2026-07-19 | Memoize repeated A&D batch work and bound victim lookup | 1 → 1 batch/s target | Adjudications 100 → 1/repeated batch | 6.033 → 0.135 | 20.742 → 0.850 | Repeated-batch 694.49 → 38.74 ms | 0 429/5xx; attacks 107 → 107; unknown p95 +6.42% |
 | 2026-07-19 | Refresh Caddy Docker DNS and retry replica connection failures | 20 → 20 iterations/s target | Retired-address 5xx 800 → 0; drops 33 → 0 | — | — | HTTP 3,001.818 → 7.521 ms | 0 5xx after; over-quota 429 retained |
 | 2026-07-19 | Bound Redis commands and fall back to the local limiter during outage | 1 → 1 request/s target | Outage responses 15/15 → 16/16 expected 400 | — | — | HTTP 18,084.879 → 207.823 ms | 0 drops after; recovered without restart |
+| 2026-08-01 | Precompress cached Overall scoreboard representations | 299.929 → 299.996 req/s | Overall wire bytes 39,076 → 987 gzip (-97.47%) | — | — | Overall board 78.88 → 19.32 ms | 0 drops/429/non-200/5xx; 2,999/2,999 compressed and valid |
 
 At the same one-batch/s load, the 100-distinct-known case also improved: p95
 790.76 → 367.97 ms and stack CPU 21.644 → 10.811 CPU-seconds. The
@@ -998,6 +1001,18 @@ retired-upstream 5xx/drop/p95 change. The Redis row compares the same scheduled
 arrival rate: the old requests blocked long enough that k6 drained at only
 0.509901 requests/s, so it is not presented as an achieved-throughput win. No
 CPU claim is inferred for either incident row.
+
+The Overall row's uncompressed pass crossed one observed host/Redis scheduling
+pause, so the p95 change is retained as an observation rather than attributed
+entirely to compression. The byte reduction is exact and causal. CPU is shown
+as unavailable because a later audit found that the legacy `docker stats`
+sampler extended beyond the k6 window; inventing a bracketed CPU comparison
+from those samples would be misleading. The clean after pass's aggregate p95
+of 20.646 ms was within 1.18% of the pre-feature `v0.1.32` production control
+while doing the new Overall calculation. A deliberately tighter sampler also
+confirmed that a host/Redis stall degraded latency but did not cause a drop,
+429, non-200, 5xx, invalid board, or uncompressed board; its perturbed numbers
+are disclosed in the full report and excluded from this ledger.
 
 ### Historical comparison
 

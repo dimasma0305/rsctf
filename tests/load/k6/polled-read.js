@@ -94,11 +94,15 @@ export default function () {
   // the same fifth of the cohort to `/api/game` eventually measures its
   // deliberate heavy-query quota instead of the application read path.
   const tokenIndex = (sequence + Math.floor(sequence / endpoints.length)) % TOKENS.length;
+  const headers = {
+    Authorization: `Bearer ${TOKENS[tokenIndex]}`,
+    'X-Real-IP': sourceIp(tokenIndex),
+  };
+  // k6 does not advertise a content coding by default. Browsers do, so make
+  // the acceptance request explicit and fail if the cached gzip body regresses.
+  if (endpoint.name === 'combined_scoreboard') headers['Accept-Encoding'] = 'gzip';
   const response = http.get(`${TARGET}${endpoint.path}`, {
-    headers: {
-      Authorization: `Bearer ${TOKENS[tokenIndex]}`,
-      'X-Real-IP': sourceIp(tokenIndex),
-    },
+    headers,
     responseType: endpoint.name === 'combined_scoreboard' ? 'text' : 'none',
     tags: { endpoint: endpoint.name },
   });

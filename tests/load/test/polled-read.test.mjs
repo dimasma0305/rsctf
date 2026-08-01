@@ -24,6 +24,7 @@ test('polled-read is fixed-rate, read-only, and covers every dominant board', ()
   assert.match(scenario, /validCombinedBoard/);
   assert.match(scenario, /combined_board_invalid/);
   assert.match(scenario, /combined_board_uncompressed/);
+  assert.match(scenario, /headers\['Accept-Encoding'\]\s*=\s*'gzip'/);
   assert.match(scenario, /response\.headers\['Content-Encoding'\]/);
   assert.match(scenario, /responseType:\s*endpoint\.name === 'combined_scoreboard' \? 'text' : 'none'/);
 });
