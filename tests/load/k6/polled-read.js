@@ -56,6 +56,7 @@ const server5xx = new Rate('server_5xx');
 const rateLimited = new Rate('rate_limited');
 const authRejected = new Rate('auth_rejected');
 const combinedBoardInvalid = new Rate('combined_board_invalid');
+const combinedBoardUncompressed = new Rate('combined_board_uncompressed');
 
 export const options = {
   discardResponseBodies: true,
@@ -75,6 +76,7 @@ export const options = {
     rate_limited: ['rate==0'],
     auth_rejected: ['rate==0'],
     combined_board_invalid: ['rate==0'],
+    combined_board_uncompressed: ['rate==0'],
     server_5xx: ['rate==0'],
     dropped_iterations: ['count==0'],
     http_req_duration: ['p(95)<800'],
@@ -113,5 +115,7 @@ export default function () {
       // Invalid JSON is reported by the semantic metric below.
     }
     combinedBoardInvalid.add(response.status !== 200 || !validCombinedBoard(model));
+    const encoding = String(response.headers['Content-Encoding'] || '').toLowerCase();
+    combinedBoardUncompressed.add(response.status === 200 && encoding !== 'gzip' && encoding !== 'br');
   }
 }

@@ -5,6 +5,7 @@
 //! arithmetic mean. No field-relative or leader-relative scaling is used.
 
 use super::*;
+use axum::http::HeaderMap;
 
 const SCORE_UNITS_PER_POINT: i64 = 10_000;
 const MAX_COMPONENT_UNITS: i64 = 100 * SCORE_UNITS_PER_POINT;
@@ -536,28 +537,52 @@ async fn build_combined_scoreboard(
     ))
 }
 
-pub(crate) async fn build_combined_scoreboard_json(
+async fn encode_combined_scoreboard(
+    model: &CombinedScoreboardModel,
+) -> AppResult<super::scoreboard_encoding::BuiltBoardBody> {
+    let raw = bytes::Bytes::from(
+        serde_json::to_vec(model).map_err(|error| AppError::internal(error.to_string()))?,
+    );
+    super::scoreboard_encoding::build_bundle(raw).await
+}
+
+async fn cached_combined_scoreboard_bundle(st: &SharedState, key: &str) -> Option<bytes::Bytes> {
+    let bytes = st.cache.get(key).await?;
+    if super::scoreboard_encoding::valid_bundle(&bytes) {
+        return Some(bytes);
+    }
+    tracing::warn!(
+        cache_key = key,
+        "evicting corrupt Overall scoreboard cache entry"
+    );
+    st.cache.remove(key).await;
+    None
+}
+
+async fn build_combined_scoreboard_bundle(
     st: &SharedState,
     game: &game::Model,
     is_monitor: bool,
 ) -> AppResult<bytes::Bytes> {
     let key = combined_cache_key(game.id, is_monitor);
-    if let Some(bytes) = st.cache.get(&key).await {
+    if let Some(bytes) = cached_combined_scoreboard_bundle(st, &key).await {
         return Ok(bytes);
     }
     let (st2, game2, key2) = (st.clone(), game.clone(), key.clone());
     let result = COMBINED_SCOREBOARD_SF
         .run(&key, move || async move {
-            if let Some(bytes) = st2.cache.get(&key2).await {
+            if let Some(bytes) = cached_combined_scoreboard_bundle(&st2, &key2).await {
                 return Some(bytes);
             }
             let model = build_combined_scoreboard(&st2, &game2, is_monitor)
                 .await
                 .ok()?;
             let ttl = combined_cache_ttl(model.generated_at, Utc::now());
-            let json = serde_json::to_vec(&model).ok()?;
-            st2.cache.set(&key2, &json, Some(ttl)).await;
-            Some(bytes::Bytes::from(json))
+            let built = encode_combined_scoreboard(&model).await.ok()?;
+            if built.cacheable {
+                st2.cache.set(&key2, &built.bytes, Some(ttl)).await;
+            }
+            Some(built.bytes)
         })
         .await;
     result.ok_or_else(|| AppError::internal("combined scoreboard cache fill failed"))
@@ -569,6 +594,7 @@ pub async fn combined_scoreboard(
     State(st): State<SharedState>,
     MaybeUser(maybe): MaybeUser,
     Path(id): Path<i32>,
+    headers: HeaderMap,
 ) -> AppResult<Response> {
     let game = load_game_cached(&st, id).await?;
     let is_monitor = maybe.as_ref().is_some_and(|user| user.is_monitor());
@@ -578,8 +604,8 @@ pub async fn combined_scoreboard(
     if Utc::now() < game.start_time_utc {
         return Err(AppError::game_not_started());
     }
-    let json = build_combined_scoreboard_json(&st, &game, is_monitor).await?;
-    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
+    let bundle = build_combined_scoreboard_bundle(&st, &game, is_monitor).await?;
+    super::scoreboard_encoding::response(bundle, &headers)
 }
 
 #[cfg(test)]
@@ -793,5 +819,47 @@ mod tests {
         assert_eq!(rows[0].model.division_rank, Some(1));
         assert_eq!(rows[1].model.division_rank, Some(2));
         assert_eq!(rows[3].model.division_rank, Some(2));
+    }
+
+    #[tokio::test]
+    async fn large_overall_board_uses_the_shared_precompressed_bundle() {
+        use std::io::Read;
+
+        let mut item = rankable(1, 500, 500, Some(1)).model;
+        item.name = "A".repeat(8 * 1024);
+        let model = CombinedScoreboardModel {
+            generated_at: Utc::now(),
+            freeze: None,
+            is_frozen_view: false,
+            fully_settled: true,
+            modes: CombinedModes::new(ModePresence {
+                jeopardy: true,
+                attack_defense: true,
+                koth: true,
+            }),
+            divisions: vec![CombinedDivision {
+                id: 1,
+                name: "Open".to_owned(),
+            }],
+            items: vec![item],
+        };
+        let raw = serde_json::to_vec(&model).unwrap();
+        let bundle = encode_combined_scoreboard(&model).await.unwrap();
+        assert!(bundle.cacheable);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT_ENCODING, "gzip".parse().unwrap());
+        let response = super::super::scoreboard_encoding::response(bundle.bytes, &headers).unwrap();
+        assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+        assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+
+        let encoded = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(encoded.len() < raw.len() / 10);
+        let mut decoder = flate2::read::GzDecoder::new(encoded.as_ref());
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, raw);
     }
 }

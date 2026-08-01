@@ -957,6 +957,7 @@ mod membership;
 mod play;
 mod scoreboard;
 mod scoreboard_board;
+mod scoreboard_encoding;
 mod submit;
 mod traffic;
 mod writeup;

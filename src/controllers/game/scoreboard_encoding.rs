@@ -6,6 +6,10 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::utils::error::{AppError, AppResult};
 
+// Retain the original marker so a rolling deployment can consume an A&D
+// bundle written by the preceding release. The format is now shared by every
+// large scoreboard response; changing the marker would turn a valid L2 entry
+// into a transient 500 during rollout.
 const MAGIC: &[u8; 8] = b"RSADENC1";
 const HEADER_LEN: usize = MAGIC.len() + 3 * size_of::<u32>();
 const MIN_COMPRESSION_SIZE: usize = 4 * 1024;
@@ -155,10 +159,10 @@ pub(super) fn valid_bundle(bytes: &[u8]) -> bool {
 
 /// Return the identity JSON representation from an atomic encoding bundle.
 /// The slice is zero-copy, so internal callers can deserialize the same cached
-/// A&D board without rebuilding it or decompressing a negotiated response.
+/// board without rebuilding it or decompressing a negotiated response.
 pub(super) fn identity_body(bundle: Bytes) -> AppResult<Bytes> {
     if !valid_bundle(&bundle) {
-        return Err(AppError::internal("Corrupt A&D scoreboard cache bundle"));
+        return Err(AppError::internal("Corrupt scoreboard cache bundle"));
     }
     Ok(match bundle_ranges(&bundle) {
         Some(ranges) => bundle.slice(ranges.raw_start..ranges.raw_end),
@@ -187,16 +191,16 @@ fn encode_bundle(raw: Bytes) -> AppResult<BuiltBoardBody> {
     }
     let (gzip, brotli) = compress(&raw).map_err(|error| AppError::internal(error.to_string()))?;
     let raw_len = u32::try_from(raw.len())
-        .map_err(|_| AppError::internal("A&D scoreboard exceeds the cache bundle limit"))?;
+        .map_err(|_| AppError::internal("scoreboard exceeds the cache bundle limit"))?;
     let gzip_len = u32::try_from(gzip.len())
-        .map_err(|_| AppError::internal("A&D gzip body exceeds the cache bundle limit"))?;
+        .map_err(|_| AppError::internal("scoreboard gzip body exceeds the cache bundle limit"))?;
     let brotli_len = u32::try_from(brotli.len())
-        .map_err(|_| AppError::internal("A&D Brotli body exceeds the cache bundle limit"))?;
+        .map_err(|_| AppError::internal("scoreboard Brotli body exceeds the cache bundle limit"))?;
     let capacity = HEADER_LEN
         .checked_add(raw.len())
         .and_then(|size| size.checked_add(gzip.len()))
         .and_then(|size| size.checked_add(brotli.len()))
-        .ok_or_else(|| AppError::internal("A&D scoreboard cache bundle is too large"))?;
+        .ok_or_else(|| AppError::internal("scoreboard cache bundle is too large"))?;
     if capacity > MAX_CACHE_BUNDLE_SIZE {
         return Ok(BuiltBoardBody {
             bytes: raw,
@@ -247,7 +251,7 @@ pub(super) fn response(bundle: Bytes, headers: &HeaderMap) -> AppResult<Response
     let ranges = bundle_ranges(&bundle);
     if !valid_bundle(&bundle) {
         return Err(AppError::internal(
-            "Corrupt A&D scoreboard cache bundle; retry after cache expiry",
+            "Corrupt scoreboard cache bundle; retry after cache expiry",
         ));
     }
     if requested.encoding == Encoding::NotAcceptable {

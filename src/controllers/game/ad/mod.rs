@@ -23,6 +23,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::scoreboard_encoding;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
@@ -396,7 +397,6 @@ fn fill_random(buf: &mut [u8]) {
 mod byoc;
 mod byoc_authorization;
 mod scoreboard;
-mod scoreboard_encoding;
 mod ssh;
 mod state_tail;
 mod submit;
