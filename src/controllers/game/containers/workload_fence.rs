@@ -13,7 +13,7 @@ type DefinitionSnapshot = (
 /// Take the definition used by a per-team launch while ordered against a
 /// concurrent workload save. The advisory guard is deliberately released
 /// before the backend launch begins.
-pub(super) async fn load_playable_definition_snapshot(
+async fn load_playable_definition_snapshot_once(
     st: &SharedState,
     game_id: i32,
     challenge_id: i32,
@@ -33,6 +33,31 @@ pub(super) async fn load_playable_definition_snapshot(
         runtime.identity,
         runtime.publication_fence,
         runtime.legacy_image,
+    ))
+}
+
+pub(super) async fn load_playable_definition_snapshot(
+    st: &SharedState,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<DefinitionSnapshot> {
+    for _ in 0..2 {
+        let snapshot = load_playable_definition_snapshot_once(st, game_id, challenge_id).await?;
+        let repaired = match snapshot.4.as_deref() {
+            Some(image) => {
+                super::image_repair::repair_missing_legacy_image(st, &snapshot.0, image).await?
+            }
+            None => false,
+        };
+        if repaired {
+            // A rebuild may publish a new immutable ID. Retake the complete
+            // definition snapshot instead of launching the stale missing ID.
+            continue;
+        }
+        return Ok(snapshot);
+    }
+    Err(AppError::unavailable(
+        "The repaired challenge image could not be verified on this container host.",
     ))
 }
 
@@ -68,7 +93,7 @@ pub(super) async fn acquire_playable_publication_lock(
 }
 
 /// Shared challenges use the same fence but a stricter eligibility reload.
-pub(super) async fn load_shared_definition_snapshot(
+async fn load_shared_definition_snapshot_once(
     st: &SharedState,
     game_id: i32,
     challenge_id: i32,
@@ -88,6 +113,29 @@ pub(super) async fn load_shared_definition_snapshot(
         runtime.identity,
         runtime.publication_fence,
         runtime.legacy_image,
+    ))
+}
+
+pub(super) async fn load_shared_definition_snapshot(
+    st: &SharedState,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<DefinitionSnapshot> {
+    for _ in 0..2 {
+        let snapshot = load_shared_definition_snapshot_once(st, game_id, challenge_id).await?;
+        let repaired = match snapshot.4.as_deref() {
+            Some(image) => {
+                super::image_repair::repair_missing_legacy_image(st, &snapshot.0, image).await?
+            }
+            None => false,
+        };
+        if repaired {
+            continue;
+        }
+        return Ok(snapshot);
+    }
+    Err(AppError::unavailable(
+        "The repaired shared challenge image could not be verified on this container host.",
     ))
 }
 

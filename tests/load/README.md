@@ -147,6 +147,10 @@ builder publish their tags, reserved labels, immutable identities, and ownership
 It proves that `force=true` deletion and global pruning cannot remove referenced images,
 deletes both challenge definitions through `/api/edit`, then exactly deletes one orphan
 and prunes the other. No Docker tag/commit or ownership-ledger seeding is used. It also
+imports a separate runnable archive, removes its published daemon-local image exactly as
+an external host prune would, and starts the challenge as a real Accepted player. The
+start must create one successful `RuntimeRepair` build record, republish an inspectable
+immutable image, and launch a real container before exact cleanup. It also
 mutates global branding and configuration before restoring them. Build retry/delete/prune
 and repository scan paths really run. The repository fixture links a solved challenge to
 its stable manifest identity, performs two real HTTP scans of the same retryable commit,

@@ -20,6 +20,12 @@ mod backfill_tests;
 mod local_image_tests;
 
 const MAX_BUILD_ARCHIVE_BLOB_BYTES: usize = crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES;
+const RUNTIME_REPAIR_STATE_SQL: &str = r#"SELECT build_status = $2 AS successful,
+              build_image_digest,
+              last_build_log
+         FROM "GameChallenges"
+        WHERE id = $1
+          AND deletion_pending = FALSE"#;
 const BACKFILL_TERMINAL_BUILD_RECORDS_SQL: &str = r#"
 WITH inserted AS (
     INSERT INTO "BuildRecords" (
@@ -62,6 +68,12 @@ WITH inserted AS (
 SELECT COUNT(*)::BIGINT FROM inserted
 "#;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BuildIntent {
+    Requested,
+    RepairMissingRuntime,
+}
+
 pub(super) fn invalidated_build_status(
     container_image: Option<&str>,
     _original_archive_blob_path: Option<&str>,
@@ -98,6 +110,34 @@ pub(crate) async fn run_challenge_build(
     challenge: &game_challenge::Model,
     trigger: &str,
     attempt: i32,
+) -> (BuildOutcome, Option<build_record::Model>) {
+    run_challenge_build_with_intent(st, challenge, trigger, attempt, BuildIntent::Requested).await
+}
+
+/// Rebuild a vanished daemon-local runtime image from its authoritative source
+/// archive. The build lock rechecks the current published digest first, so a
+/// burst of player starts across replicas performs at most one repair.
+pub(crate) async fn repair_missing_challenge_image(
+    st: &SharedState,
+    challenge: &game_challenge::Model,
+) -> BuildOutcome {
+    run_challenge_build_with_intent(
+        st,
+        challenge,
+        "RuntimeRepair",
+        1,
+        BuildIntent::RepairMissingRuntime,
+    )
+    .await
+    .0
+}
+
+async fn run_challenge_build_with_intent(
+    st: &SharedState,
+    challenge: &game_challenge::Model,
+    trigger: &str,
+    attempt: i32,
+    intent: BuildIntent,
 ) -> (BuildOutcome, Option<build_record::Model>) {
     // `started` doubles as the enqueue instant — this port runs the build inline,
     // so it is enqueued and started in the same breath.
@@ -189,6 +229,82 @@ pub(crate) async fn run_challenge_build(
         let _ = build_lock.release().await;
         let record = record_build(st, challenge, trigger, attempt, started, &outcome).await;
         return (outcome, record);
+    }
+
+    if intent == BuildIntent::RepairMissingRuntime {
+        let repair_state =
+            sqlx::query_as::<_, (bool, Option<String>, Option<String>)>(RUNTIME_REPAIR_STATE_SQL)
+                .bind(challenge.id)
+                .bind(ChallengeBuildStatus::Success as i16)
+                .fetch_optional(build_lock.connection_mut())
+                .await;
+        match repair_state {
+            Ok(Some((true, Some(current_image), _)))
+                if st.containers.image_exists(current_image.trim()).await =>
+            {
+                let outcome = BuildOutcome {
+                    status: ChallengeBuildStatus::Success,
+                    log: Some(
+                        "The immutable runtime image was already restored by another request."
+                            .to_string(),
+                    ),
+                    image_digest: Some(current_image),
+                };
+                if let Err(error) = build_lock.release().await {
+                    tracing::warn!(
+                        challenge = challenge.id,
+                        %error,
+                        "runtime image repair lock release failed after a completed peer repair"
+                    );
+                }
+                return (outcome, None);
+            }
+            Ok(Some((true, _, _))) => {}
+            Ok(Some((false, _, current_log))) => {
+                let outcome = BuildOutcome {
+                    status: ChallengeBuildStatus::Failed,
+                    log: current_log.or_else(|| {
+                        Some(
+                            "Automatic runtime repair stopped because the current build is no longer successful."
+                                .to_string(),
+                        )
+                    }),
+                    image_digest: None,
+                };
+                if let Err(error) = build_lock.release().await {
+                    tracing::warn!(
+                        challenge = challenge.id,
+                        %error,
+                        "runtime image repair lock release failed after a terminal peer repair"
+                    );
+                }
+                return (outcome, None);
+            }
+            Ok(None) => {
+                let outcome = superseded_build_outcome(
+                    "Automatic runtime repair stopped because the challenge was deleted.",
+                );
+                let _ = build_lock.release().await;
+                return (outcome, None);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    challenge = challenge.id,
+                    %error,
+                    "runtime image repair state read failed"
+                );
+                let outcome = BuildOutcome {
+                    status: ChallengeBuildStatus::Failed,
+                    log: Some(
+                        "Automatic runtime repair could not verify the current build state."
+                            .to_string(),
+                    ),
+                    image_digest: None,
+                };
+                let _ = build_lock.release().await;
+                return (outcome, None);
+            }
+        }
     }
 
     let mut outcome = build_challenge_image(st, challenge).await;

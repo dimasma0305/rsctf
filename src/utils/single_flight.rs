@@ -74,6 +74,18 @@ impl<T: Clone + Default + Send + 'static> SingleFlight<T> {
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = T> + Send + 'static,
     {
+        self.run_with_timeout(key, LEADER_TIMEOUT, f).await
+    }
+
+    /// Run a detached single-flight operation with a caller-selected deadline.
+    /// Cache fills use the short default through [`Self::run`]; infrequent
+    /// runtime repairs can legitimately need several minutes to rebuild an
+    /// image and must still survive cancellation of the initiating request.
+    pub async fn run_with_timeout<F, Fut>(&'static self, key: &str, timeout: Duration, f: F) -> T
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = T> + Send + 'static,
+    {
         // Every caller subscribes before the leader starts, so a very fast
         // recompute cannot publish between map lookup and subscription.
         let (mut receiver, leader) = {
@@ -116,7 +128,7 @@ impl<T: Clone + Default + Send + 'static> SingleFlight<T> {
                     key: key.clone(),
                     armed: true,
                 };
-                let value = match tokio::time::timeout(LEADER_TIMEOUT, f()).await {
+                let value = match tokio::time::timeout(timeout, f()).await {
                     Ok(value) => value,
                     Err(_) => {
                         tracing::warn!(single_flight_key = %key, "single-flight recompute timed out");
@@ -189,6 +201,23 @@ mod tests {
             .await;
         assert_eq!(value, Some(7));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn custom_timeout_returns_default_and_allows_a_new_flight() {
+        let flight: &'static SingleFlight<bool> = Box::leak(Box::new(SingleFlight::new()));
+        let timed_out = flight
+            .run_with_timeout("bounded", Duration::from_millis(10), || async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                true
+            })
+            .await;
+        assert!(!timed_out);
+
+        let retried = flight
+            .run_with_timeout("bounded", Duration::from_secs(1), || async { true })
+            .await;
+        assert!(retried);
     }
 
     #[tokio::test]

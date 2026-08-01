@@ -516,6 +516,20 @@ test('owned image acceptance uses application import/build/delete flows without 
   assert.doesNotMatch(source, /(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+['"`]BuildImageOwnerships/i);
 });
 
+test('container acceptance emulates an external image prune and requires one automatic repair', () => {
+  const orchestrator = readFileSync(join(REPOSITORY, 'tests/load/admin-lifecycle.mjs'), 'utf8');
+  const drill = orchestrator.slice(
+    orchestrator.indexOf('async function runtimeImageRepairLifecycle()'),
+    orchestrator.indexOf('async function observabilityAndRuntime()'),
+  );
+  assert.match(drill, /runnableChallengeArchive/);
+  assert.match(drill, /docker\(\['image', 'rm', '--force', oldImage\]\)/);
+  assert.match(drill, /trigger='RuntimeRepair'/);
+  assert.match(drill, /\/api\/game\/\$\{authorizationGameId\}\/container\/\$\{runtimeRepairFixture\.challengeId\}/);
+  assert.match(drill, /repairAudit\.count === beforeRepairs \+ 1/);
+  assert.match(drill, /docker\(\['container', 'inspect', runtimeRepairContainerId\]\)/);
+});
+
 test('cleanup acceptance requires two identical all-zero snapshots', () => {
   assert.deepEqual(
     assertStableZeroResidualSnapshots([{ users: 0, blobs: 0 }, { users: 0, blobs: 0 }]),

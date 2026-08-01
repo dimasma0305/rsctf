@@ -402,25 +402,28 @@ export async function multipartRequest(path, {
   return expectStatus(response, expected, label);
 }
 
-/**
- * Build a trusted-import package whose two conventional src/Dockerfile trees
- * contain only `FROM scratch`. The application owns tag creation, reserved
- * labels, immutable identity publication, and ownership-ledger persistence.
- */
-export function scratchChallengeArchive(entries) {
+function challengeSourceArchive(entries, { scratchOnly }) {
   if (!Array.isArray(entries) || entries.length === 0) {
-    throw new Error('scratch challenge archive requires at least one entry');
+    throw new Error('challenge source archive requires at least one entry');
   }
-  const root = mkdtempSync(join(tmpdir(), 'rsctf-admin-scratch-'));
+  const root = mkdtempSync(join(tmpdir(), 'rsctf-admin-source-'));
   const archive = `${root}.zip`;
   try {
     entries.forEach((entry, index) => {
       if (!entry || typeof entry.title !== 'string' || typeof entry.flag !== 'string') {
-        throw new Error(`scratch challenge entry ${index} is invalid`);
+        throw new Error(`challenge source entry ${index} is invalid`);
+      }
+      const dockerfile = scratchOnly ? 'FROM scratch\n' : String(entry.dockerfile || '');
+      if (!dockerfile.trim() || (!scratchOnly && !/^FROM\s+/m.test(dockerfile))) {
+        throw new Error(`challenge source entry ${index} has no Dockerfile base`);
+      }
+      const exposePort = Number(entry.exposePort ?? 31337);
+      if (!Number.isSafeInteger(exposePort) || exposePort < 1 || exposePort > 65535) {
+        throw new Error(`challenge source entry ${index} has an invalid exposed port`);
       }
       const directory = join(root, `challenge-${index + 1}`);
       mkdirSync(join(directory, 'src'), { recursive: true });
-      writeFileSync(join(directory, 'src', 'Dockerfile'), 'FROM scratch\n', { mode: 0o600 });
+      writeFileSync(join(directory, 'src', 'Dockerfile'), dockerfile, { mode: 0o600 });
       writeFileSync(
         join(directory, 'challenge.yaml'),
         [
@@ -436,7 +439,7 @@ export function scratchChallengeArchive(entries) {
           'container:',
           '  memoryLimit: 64',
           '  cpuCount: 1',
-          '  exposePort: 31337',
+          `  exposePort: ${exposePort}`,
           '  enableTrafficCapture: false',
           '',
         ].join('\n'),
@@ -449,6 +452,20 @@ export function scratchChallengeArchive(entries) {
     rmSync(root, { recursive: true, force: true });
     rmSync(archive, { force: true });
   }
+}
+
+/**
+ * Build a trusted-import package whose conventional src/Dockerfile trees
+ * contain only `FROM scratch`. The application owns tag creation, reserved
+ * labels, immutable identity publication, and ownership-ledger persistence.
+ */
+export function scratchChallengeArchive(entries) {
+  return challengeSourceArchive(entries, { scratchOnly: true });
+}
+
+/** Build a trusted source archive for a runnable missing-image repair drill. */
+export function runnableChallengeArchive(entries) {
+  return challengeSourceArchive(entries, { scratchOnly: false });
 }
 
 export function userByEmail(email) {

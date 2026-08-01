@@ -36,6 +36,7 @@ import {
   rawRequest,
   removeRecovery,
   repositoryCleanupRescheduleSql,
+  runnableChallengeArchive,
   shouldRetainLifecycleManifest,
   scratchChallengeArchive,
   sqlLiteral,
@@ -118,6 +119,11 @@ let repoChallengeId = null;
 let antiCheatBlockId = null;
 let containerGuid = null;
 let containerRuntimeId = null;
+let fixturePlayerId = null;
+let fixturePlayerJwt = null;
+let runtimeRepairContainerGuid = null;
+let runtimeRepairContainerId = null;
+let runtimeRepairFixture = null;
 
 function saveRecovery() {
   persistRecovery(recoveryPath, state);
@@ -1004,10 +1010,12 @@ async function eventFixture() {
   state.participationIds.push(...cohort.partIds);
   fixtureParticipation = cohort.partIds[0];
   const playerId = cohort.userIds[0];
+  fixturePlayerId = playerId;
   const playerStamp = sql(
     `SELECT security_stamp FROM "AspNetUsers" WHERE id=${sqlLiteral(playerId)}::uuid`,
   );
   const playerJwt = mintJwt(playerId, playerStamp, 1);
+  fixturePlayerJwt = playerJwt;
   sql(
     `INSERT INTO "GameManagers"(game_id,user_id) VALUES (` +
       `${fixtureGame},${sqlLiteral(fixtureUsers.manager.id)}::uuid)`,
@@ -1222,6 +1230,197 @@ async function eventFixture() {
   saveRecovery();
 
   return { cohort, playerId, playerJwt, fixtureFlag, minimalPdf };
+}
+
+async function runtimeImageRepairLifecycle() {
+  console.log('\nmissing local challenge image repair…');
+  requireCondition(
+    authorizationGameId && fixtureParticipation && fixturePlayerId && fixturePlayerJwt,
+    'runtime repair drill requires the initialized event identities',
+  );
+  const title = `Admin Runtime Repair ${tag}`;
+  runtimeRepairFixture = {
+    role: 'runtime-repair',
+    title,
+    flag: `flag{admin_runtime_repair_${tag}}`,
+    gameId: authorizationGameId,
+    challengeId: null,
+    imageRef: `rsctf/${authorizationGameId}/${imageSlug(title)}:latest`,
+    archiveHash: null,
+    definitionDeleted: false,
+    imageRemoved: false,
+  };
+  state.buildImageFixtures.push(runtimeRepairFixture);
+  saveRecovery();
+
+  const sourceArchive = runnableChallengeArchive([{
+    title,
+    flag: runtimeRepairFixture.flag,
+    exposePort: 80,
+    dockerfile:
+      `FROM nginx:alpine\n` +
+      `RUN printf 'rsctf runtime repair ${tag}\\n' > /usr/share/nginx/html/index.html\n`,
+  }]);
+  const imported = await multipartRequest(
+    `/api/edit/games/${authorizationGameId}/challenges/import`,
+    {
+      filename: `${tag}-runtime-repair.zip`,
+      content: sourceArchive,
+      contentType: 'application/zip',
+      timeoutMs: 300_000,
+      label: 'trusted runtime-repair challenge import',
+    },
+  );
+  requireCondition(
+    imported.json?.imported === 1 && imported.json?.updated === 0 && imported.json?.failed === 0,
+    `trusted runtime-repair import failed: ${imported.text}`,
+  );
+  await waitForOwnedScratchBuilds([runtimeRepairFixture], 300_000);
+  await A.setChallenge(authorizationGameId, runtimeRepairFixture.challengeId, { isEnabled: true });
+
+  const teamId = positiveId(
+    sql(`SELECT team_id FROM "Participations" WHERE id=${fixtureParticipation}`),
+    'runtime repair team',
+  );
+  const repairParticipationId = positiveId(
+    sql(
+      `WITH participation AS (` +
+        `INSERT INTO "Participations"(status,token,game_id,team_id,division_id,suspicion_score) ` +
+        `VALUES (1,substr(md5(gen_random_uuid()::text),1,16),${authorizationGameId},${teamId},NULL,0) ` +
+        `RETURNING id` +
+      `), linked AS (` +
+        `INSERT INTO "UserParticipations"(user_id,game_id,team_id,participation_id) ` +
+        `SELECT ${sqlLiteral(fixturePlayerId)}::uuid,${authorizationGameId},${teamId},id FROM participation ` +
+        `RETURNING participation_id` +
+      `) SELECT participation_id FROM linked`,
+    ),
+    'runtime repair participation',
+  );
+  state.participationIds.push(repairParticipationId);
+  saveRecovery();
+
+  let drillError = null;
+  const cleanupErrors = [];
+  try {
+    const activated = sql(
+      `UPDATE "Games" SET start_time_utc=clock_timestamp()-interval '1 minute', ` +
+        `end_time_utc=clock_timestamp()+interval '1 hour' ` +
+        `WHERE id=${authorizationGameId} AND title=${sqlLiteral(`ADMIN-AUTHORIZATION-${tag}`)} ` +
+        `RETURNING id`,
+    );
+    requireCondition(Number(activated) === authorizationGameId, 'runtime repair game activation failed closed');
+
+    const oldImage = sql(
+      `SELECT build_image_digest FROM "GameChallenges" ` +
+        `WHERE id=${runtimeRepairFixture.challengeId} AND game_id=${authorizationGameId} AND build_status=1`,
+    );
+    requireCondition(/^sha256:[a-f0-9]{64}$/.test(oldImage), 'repair fixture has no daemon-local image id');
+    const removal = docker(['image', 'rm', '--force', oldImage]);
+    requireCondition(
+      removal.status === 0 && docker(['image', 'inspect', oldImage]).status !== 0,
+      `could not emulate external image pruning: ${String(removal.stderr || removal.stdout).trim()}`,
+    );
+
+    const beforeRepairs = Number(sql(
+      `SELECT count(*) FROM "BuildRecords" WHERE challenge_id=${runtimeRepairFixture.challengeId} ` +
+        `AND trigger='RuntimeRepair'`,
+    ));
+    const response = await A.api(
+      'POST',
+      `/api/game/${authorizationGameId}/container/${runtimeRepairFixture.challengeId}`,
+      { jwt: fixturePlayerJwt, ip: '10.252.21.40', timeoutMs: 300_000 },
+    );
+    expectStatus(response, 200, 'container start after external image prune');
+    runtimeRepairContainerGuid = response.json?.id;
+    requireCondition(
+      /^[0-9a-f-]{36}$/i.test(runtimeRepairContainerGuid || ''),
+      `runtime repair start returned an invalid container id: ${response.text}`,
+    );
+    state.containerIds.push(runtimeRepairContainerGuid);
+    runtimeRepairContainerId = sql(
+      `SELECT container_id FROM "Containers" ` +
+        `WHERE id=${sqlLiteral(runtimeRepairContainerGuid)}::uuid`,
+    );
+    requireCondition(runtimeRepairContainerId.length > 0, 'runtime repair container omitted its backend id');
+    state.runtimeContainerIds.push(runtimeRepairContainerId);
+
+    const repairAudit = JSON.parse(sql(
+      `SELECT json_build_object(` +
+        `'count',count(*),'successes',count(*) FILTER (WHERE status=1),` +
+        `'failures',count(*) FILTER (WHERE status<>1)` +
+      `)::text FROM "BuildRecords" WHERE challenge_id=${runtimeRepairFixture.challengeId} ` +
+        `AND trigger='RuntimeRepair'`,
+    ));
+    requireCondition(
+      repairAudit.count === beforeRepairs + 1 && repairAudit.successes === 1 && repairAudit.failures === 0,
+      `runtime repair audit is not exact: ${JSON.stringify(repairAudit)}`,
+    );
+    const repairedImage = sql(
+      `SELECT build_image_digest FROM "GameChallenges" WHERE id=${runtimeRepairFixture.challengeId}`,
+    );
+    requireCondition(
+      /^sha256:[a-f0-9]{64}$/.test(repairedImage) &&
+        docker(['image', 'inspect', repairedImage]).status === 0 &&
+        docker(['container', 'inspect', runtimeRepairContainerId]).status === 0,
+      'automatic repair did not republish a launchable immutable image',
+    );
+    state.evidence.runtimeImageRepair = {
+      challengeId: runtimeRepairFixture.challengeId,
+      prunedImage: oldImage,
+      repairedImage,
+      buildRecords: repairAudit,
+    };
+    console.log(`  ✓ pruned ${oldImage.slice(0, 19)}… rebuilt once and launched successfully`);
+    saveRecovery();
+  } catch (error) {
+    drillError = error;
+  }
+
+  const cleanup = async (label, action) => {
+    try {
+      await action();
+    } catch (error) {
+      cleanupErrors.push(`${label}: ${error.message}`);
+    }
+  };
+  await cleanup('runtime repair container', async () => {
+    if (!runtimeRepairContainerGuid) return;
+    const response = await adminApi(
+      'DELETE',
+      `/api/admin/instances/${runtimeRepairContainerGuid}`,
+      { timeoutMs: 120_000 },
+    );
+    expectStatus(response, 200, 'runtime repair container cleanup');
+    requireCondition(
+      docker(['container', 'inspect', runtimeRepairContainerId]).status !== 0,
+      'runtime repair Docker container survived cleanup',
+    );
+    runtimeRepairContainerGuid = null;
+    runtimeRepairContainerId = null;
+  });
+  await cleanup('runtime repair schedule and participation', async () => {
+    sql(
+      `BEGIN; ` +
+        `DELETE FROM "UserParticipations" WHERE participation_id=${repairParticipationId}; ` +
+        `DELETE FROM "Participations" WHERE id=${repairParticipationId} AND game_id=${authorizationGameId}; ` +
+        `UPDATE "Games" SET start_time_utc=clock_timestamp()+interval '1 day', ` +
+          `end_time_utc=clock_timestamp()+interval '2 days' ` +
+          `WHERE id=${authorizationGameId} AND title=${sqlLiteral(`ADMIN-AUTHORIZATION-${tag}`)}; ` +
+        `COMMIT;`,
+    );
+  });
+  await cleanup('runtime repair challenge definition', async () => {
+    await deleteScratchBuildDefinition(runtimeRepairFixture);
+  });
+  await cleanup('runtime repair image', async () => {
+    await cleanupOwnedScratchImage(runtimeRepairFixture);
+  });
+  if (drillError || cleanupErrors.length) {
+    const details = [];
+    if (drillError) details.push(drillError.stack || drillError.message);
+    details.push(...cleanupErrors);
+    throw new Error(details.join('; '));
+  }
 }
 
 async function observabilityAndRuntime() {
@@ -1506,7 +1705,7 @@ async function buildLifecycle() {
   // The future authorization game is deliberately unstarted, so normal
   // challenge deletion can later release each reference without SQL shortcuts.
   const imageFixtures = scratchBuildImagePlan(authorizationGameId);
-  state.buildImageFixtures = imageFixtures;
+  state.buildImageFixtures.push(...imageFixtures);
   saveRecovery();
   const sourceArchive = scratchChallengeArchive(imageFixtures);
   const importedImages = await multipartRequest(
@@ -2292,6 +2491,21 @@ async function cleanup() {
     containerGuid = null;
     containerRuntimeId = null;
   });
+  await attempt('runtime repair container', async () => {
+    if (!runtimeRepairContainerGuid) return;
+    const response = await adminApi(
+      'DELETE',
+      `/api/admin/instances/${runtimeRepairContainerGuid}`,
+      { timeoutMs: 120_000 },
+    );
+    if (response.status !== 404) expectStatus(response, 200, 'runtime repair container cleanup');
+    requireCondition(
+      !runtimeRepairContainerId || docker(['container', 'inspect', runtimeRepairContainerId]).status !== 0,
+      'runtime repair container survived fallback cleanup',
+    );
+    runtimeRepairContainerGuid = null;
+    runtimeRepairContainerId = null;
+  });
   await attempt('repository binding', async () => {
     if (!repoBindingId) return;
     const deletingId = repoBindingId;
@@ -2507,6 +2721,18 @@ async function cleanup() {
   await attempt('admin build records', async () => {
     const ownedGameIds = integerArraySql(state.gameIds);
     sql(`DELETE FROM "BuildRecords" WHERE game_id=ANY(${ownedGameIds})`);
+  });
+  await attempt('runtime repair fixture reset', async () => {
+    if (!authorizationGameId) return;
+    sql(
+      `BEGIN; ` +
+        `DELETE FROM "UserParticipations" WHERE game_id=${authorizationGameId}; ` +
+        `DELETE FROM "Participations" WHERE game_id=${authorizationGameId}; ` +
+        `UPDATE "Games" SET start_time_utc=clock_timestamp()+interval '1 day', ` +
+          `end_time_utc=clock_timestamp()+interval '2 days' ` +
+          `WHERE id=${authorizationGameId} AND title=${sqlLiteral(`ADMIN-AUTHORIZATION-${tag}`)}; ` +
+        `COMMIT;`,
+    );
   });
   await attempt('owned scratch build images', async () => {
     for (const fixture of state.buildImageFixtures) {
@@ -2727,6 +2953,7 @@ async function main() {
     await identityLifecycle();
     await configurationLifecycle();
     await eventFixture();
+    await runtimeImageRepairLifecycle();
     await observabilityAndRuntime();
     await buildLifecycle();
     await repositoryLifecycle();

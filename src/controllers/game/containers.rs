@@ -5,6 +5,7 @@ mod eligibility;
 use eligibility::{
     load_eligible_shared_challenge, player_container_request_is_eligible, ContainerRequestMode,
 };
+mod image_repair;
 mod publication;
 pub(crate) use publication::refresh_shared_container_lease_locked;
 use publication::{

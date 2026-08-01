@@ -562,23 +562,36 @@ impl ContainerManager for DockerContainerManager {
         let docker = self.client()?;
         let launch_fingerprint = launch_spec_fingerprint(&spec);
 
-        // 1. Pull the immutable reference only if it is not present locally.
-        // Repository digests can be fetched without changing identity. A
-        // daemon-local image ID cannot be reconstructed elsewhere; a missing ID
-        // therefore falls through to create and surfaces the runtime error.
-        if docker.inspect_image(&spec.image).await.is_err()
-            && crate::services::challenge_images::is_repository_digest(&spec.image)
-        {
-            let options = CreateImageOptions {
-                from_image: spec.image.clone(),
-                ..Default::default()
-            };
-            let mut pull = docker.create_image(Some(options), None, None);
-            while let Some(item) = pull.next().await {
-                if let Err(e) = item {
-                    tracing::warn!(image = %spec.image, error = %e, "image pull reported an error (continuing)");
-                    break;
+        // 1. Pull an absent repository digest without changing identity. A
+        // vanished daemon-local ID must have been repaired from its trusted
+        // archive before this boundary; surface a retryable infrastructure
+        // response if a prune races the final create instead of leaking a 500.
+        match docker.inspect_image(&spec.image).await {
+            Ok(_) => {}
+            Err(_) if crate::services::challenge_images::is_repository_digest(&spec.image) => {
+                let options = CreateImageOptions {
+                    from_image: spec.image.clone(),
+                    ..Default::default()
+                };
+                let mut pull = docker.create_image(Some(options), None, None);
+                while let Some(item) = pull.next().await {
+                    if let Err(error) = item {
+                        tracing::warn!(image = %spec.image, %error, "immutable image pull failed");
+                        break;
+                    }
                 }
+                if let Err(error) = docker.inspect_image(&spec.image).await {
+                    tracing::error!(image = %spec.image, %error, "immutable repository image remains unavailable after pull");
+                    return Err(AppError::unavailable(
+                        "The challenge image could not be pulled by the container host. Retry later or ask an administrator to rebuild it.",
+                    ));
+                }
+            }
+            Err(error) => {
+                tracing::error!(image = %spec.image, %error, "immutable challenge image is unavailable at container create");
+                return Err(AppError::unavailable(
+                    "The challenge image is unavailable on this container host. Retry later or ask an administrator to rebuild it.",
+                ));
             }
         }
 
