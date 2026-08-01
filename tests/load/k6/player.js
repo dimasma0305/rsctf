@@ -1,7 +1,7 @@
 // A&D + KotH player load — mimics real team behaviour under an intensive event.
 //
 // Every simulated player, each cycle:
-//   1. polls the three LIVE boards (general + A&D + KotH scoreboards) — the dominant,
+//   1. polls the four LIVE boards (general + A&D + KotH + Overall) — the dominant,
 //      always-on load a real client generates,
 //   2. periodically pulls the KotH timeline + its own A&D state/targets,
 //   3. checks its KotH token + the hill's live holder,
@@ -22,6 +22,7 @@
 import http from 'k6/http';
 import { sleep } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
+import { validCombinedBoard } from '../combined-scoreboard.js';
 
 const TARGET = __ENV.TARGET || 'http://127.0.0.1:8080';
 const GAME = __ENV.GAME || '10';
@@ -46,10 +47,12 @@ if (
 const errors = new Rate('errors'); //         non-2xx on a board poll (should be ~0)
 const server5xx = new Rate('server_5xx'); //  any 5xx anywhere (the real failure signal)
 const epochBoardInvalid = new Rate('ad_epoch_board_invalid');
+const combinedBoardInvalid = new Rate('combined_board_invalid');
 const board = new Trend('board_poll_ms', true);
 const mainBoard = new Trend('main_board_ms', true);
 const epochBoard = new Trend('ad_epoch_board_ms', true);
 const kothBoard = new Trend('koth_board_ms', true);
+const combinedBoard = new Trend('combined_board_ms', true);
 const kothTimeline = new Trend('koth_timeline_ms', true);
 const adState = new Trend('ad_state_ms', true);
 const adTargets = new Trend('ad_targets_ms', true);
@@ -73,6 +76,7 @@ export const options = {
     server_5xx: ['rate<0.01'], //     <1% 5xx — a real defect if breached
     errors: ['rate<0.01'],
     ad_epoch_board_invalid: ['rate==0'],
+    combined_board_invalid: ['rate==0'],
     board_poll_ms: ['p(95)<800'], //  boards stay responsive under load
     ad_epoch_board_ms: ['p(95)<800'], // SQL-aggregated official board stays bounded
   },
@@ -135,6 +139,7 @@ export default function () {
     ['GET', `${TARGET}/api/game/${GAME}/scoreboard`, null, pub],
     ['GET', `${TARGET}/api/Game/${GAME}/Ad/Scoreboard`, null, pub],
     ['GET', `${TARGET}/api/game/${GAME}/ad/koth/scoreboard`, null, pub],
+    ['GET', `${TARGET}/api/game/${GAME}/scoreboard/combined`, null, pub],
   ]);
   for (const r of b) {
     if (r.status === 200) board.add(r.timings.duration);
@@ -143,6 +148,7 @@ export default function () {
   }
   if (b[0].status === 200) mainBoard.add(b[0].timings.duration);
   if (b[2].status === 200) kothBoard.add(b[2].timings.duration);
+  if (b[3].status === 200) combinedBoard.add(b[3].timings.duration);
   let officialBoard = null;
   try {
     officialBoard = b[1].json();
@@ -159,6 +165,13 @@ export default function () {
     validServiceBreakdown(officialBoard);
   epochBoardInvalid.add(!validOfficialBoard);
   if (validOfficialBoard) epochBoard.add(b[1].timings.duration);
+  let combinedModel = null;
+  try {
+    combinedModel = b[3].json();
+  } catch (_) {
+    // Invalid JSON is reported by the semantic metric below.
+  }
+  combinedBoardInvalid.add(b[3].status !== 200 || !validCombinedBoard(combinedModel));
 
   // 2. KotH timeline + this team's own A&D view (~every 3rd cycle).
   if (it % 3 === 0) {

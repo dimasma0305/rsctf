@@ -153,6 +153,19 @@ pub(super) fn valid_bundle(bytes: &[u8]) -> bool {
     )
 }
 
+/// Return the identity JSON representation from an atomic encoding bundle.
+/// The slice is zero-copy, so internal callers can deserialize the same cached
+/// A&D board without rebuilding it or decompressing a negotiated response.
+pub(super) fn identity_body(bundle: Bytes) -> AppResult<Bytes> {
+    if !valid_bundle(&bundle) {
+        return Err(AppError::internal("Corrupt A&D scoreboard cache bundle"));
+    }
+    Ok(match bundle_ranges(&bundle) {
+        Some(ranges) => bundle.slice(ranges.raw_start..ranges.raw_end),
+        None => bundle,
+    })
+}
+
 fn compress(raw: &[u8]) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
     let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     gzip.write_all(raw)?;
@@ -333,6 +346,7 @@ mod tests {
         let mut decoded = Vec::new();
         gzip.read_to_end(&mut decoded).unwrap();
         assert_eq!(decoded, raw);
+        assert_eq!(identity_body(bundle.clone()).unwrap(), raw);
 
         let mut brotli = brotli::Decompressor::new(
             Cursor::new(&bundle[ranges.gzip_end..ranges.brotli_end]),
@@ -346,6 +360,7 @@ mod tests {
     #[test]
     fn legacy_single_replica_raw_entry_stays_identity_encoded() {
         let raw = Bytes::from_static(br#"{"teams":[]}"#);
+        assert_eq!(identity_body(raw.clone()).unwrap(), raw);
         let response = response(raw.clone(), &headers("br, gzip")).unwrap();
         assert_eq!(response.headers().get(header::CONTENT_ENCODING), None);
         assert_eq!(response.headers()[header::VARY], "Accept-Encoding");

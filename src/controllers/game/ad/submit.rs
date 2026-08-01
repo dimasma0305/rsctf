@@ -433,6 +433,7 @@ pub async fn submit(
         ] {
             st.cache.remove(&k).await;
         }
+        crate::controllers::game::invalidate_combined_scoreboard(&st, id).await;
     }
     for broadcast in broadcasts {
         broadcast.publish(&st);

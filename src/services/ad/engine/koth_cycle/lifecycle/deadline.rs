@@ -464,6 +464,7 @@ pub(super) async fn cleanup_completed_cycle(
     ] {
         st.cache.remove(&key).await;
     }
+    crate::controllers::game::invalidate_combined_scoreboard(st, cycle.game_id).await;
     for participation_id in &config.roster {
         st.cache
             .remove(&format!(
@@ -606,6 +607,7 @@ pub(super) async fn terminate_interrupted_cycle(
     ] {
         st.cache.remove(&key).await;
     }
+    crate::controllers::game::invalidate_combined_scoreboard(st, cycle.game_id).await;
     for participation_id in &config.roster {
         st.cache
             .remove(&format!(

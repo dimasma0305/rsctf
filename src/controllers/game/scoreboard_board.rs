@@ -75,6 +75,32 @@ fn banker_round(x: f64) -> i32 {
     rounded as i32
 }
 
+fn blood_factor(bonus: i64, slot: usize) -> f32 {
+    let bits = match slot {
+        0 => (bonus >> 20) & 0x3ff,
+        1 => (bonus >> 10) & 0x3ff,
+        _ => bonus & 0x3ff,
+    };
+    bits as f32 / 1000.0 + 1.0
+}
+
+pub(crate) fn blood_adjusted_score(score: i32, bonus: i64, slot: usize) -> i32 {
+    banker_round((score.max(0) as f32 * blood_factor(bonus, slot)) as f64)
+}
+
+/// Maximum contribution one scoring-eligible team can earn from a Jeopardy
+/// challenge at its current dynamic worth. The combined board uses this fixed
+/// attainable ceiling instead of normalizing against the current leader.
+pub(crate) fn maximum_jeopardy_contribution(score: i32, bonus: i64, blood_eligible: bool) -> i32 {
+    let score = score.max(0);
+    if !blood_eligible {
+        return score;
+    }
+    (0..3)
+        .map(|slot| blood_adjusted_score(score, bonus, slot))
+        .fold(score, i32::max)
+}
+
 fn compare_scoreboard_rows(
     a: &(ScoreboardItem, DateTime<Utc>),
     b: &(ScoreboardItem, DateTime<Utc>),
@@ -434,14 +460,6 @@ pub(crate) async fn build_scoreboard(
     // Packed blood-bonus bits -> per-tier multiplicative factor (`bits/1000 + 1`),
     // computed in `f32` like RSCTF (`int * float` then banker's round).
     let bonus = g.blood_bonus_value;
-    let blood_factor = |slot: usize| -> f32 {
-        let bits = match slot {
-            0 => (bonus >> 20) & 0x3ff,
-            1 => (bonus >> 10) & 0x3ff,
-            _ => bonus & 0x3ff,
-        };
-        bits as f32 / 1000.0 + 1.0
-    };
 
     // Assign blood tiers + per-solve contributions in submit-time order.
     solve_list.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
@@ -489,11 +507,9 @@ pub(crate) async fn build_scoreboard(
         // exactly 1.0, so this collapses to the base score (RSCTF `NoBonus` branch).
         let contribution = if *score_eligible {
             match sub_type {
-                SubmissionType::FirstBlood => banker_round((score as f32 * blood_factor(0)) as f64),
-                SubmissionType::SecondBlood => {
-                    banker_round((score as f32 * blood_factor(1)) as f64)
-                }
-                SubmissionType::ThirdBlood => banker_round((score as f32 * blood_factor(2)) as f64),
+                SubmissionType::FirstBlood => blood_adjusted_score(score, bonus, 0),
+                SubmissionType::SecondBlood => blood_adjusted_score(score, bonus, 1),
+                SubmissionType::ThirdBlood => blood_adjusted_score(score, bonus, 2),
                 _ => score,
             }
         } else {
@@ -675,6 +691,14 @@ mod tests {
         let score =
             calculate_challenge_score(100, f64::NAN, f64::INFINITY, 10, ScoreCurve::Standard);
         assert!((0..=100).contains(&score));
+    }
+
+    #[test]
+    fn attainable_jeopardy_ceiling_reserves_largest_blood_bonus() {
+        let bonus = (500_i64 << 20) | (250_i64 << 10) | 100_i64;
+        assert_eq!(maximum_jeopardy_contribution(100, bonus, true), 150);
+        assert_eq!(maximum_jeopardy_contribution(100, bonus, false), 100);
+        assert_eq!(maximum_jeopardy_contribution(-100, bonus, true), 0);
     }
 
     #[test]

@@ -276,6 +276,72 @@ export const useKothScoreboard = (numId: number, doFetch: boolean = true) => {
   return { kothScoreboard, error, mutate }
 }
 
+export interface CombinedMode {
+  active: boolean
+  /** Constant share in [0, 1]. */
+  weight: number
+}
+
+export interface CombinedScoreComponent {
+  active: boolean
+  score: number
+  projectedScore: number
+  earnedPoints?: number
+  attainablePoints?: number
+}
+
+export interface CombinedScoreboardItem {
+  id: number
+  name: string
+  avatar: string | null
+  divisionId: number | null
+  division: string | null
+  rank: number
+  divisionRank: number | null
+  score: number
+  projectedScore: number
+  components: {
+    jeopardy: CombinedScoreComponent
+    attackDefense: CombinedScoreComponent
+    koth: CombinedScoreComponent
+  }
+}
+
+export interface CombinedScoreboardModel {
+  /** Unix milliseconds. */
+  generatedAt: number
+  /** Unix milliseconds. */
+  freeze: number | null
+  isFrozenView: boolean
+  fullySettled: boolean
+  modes: {
+    jeopardy: CombinedMode
+    attackDefense: CombinedMode
+    koth: CombinedMode
+  }
+  divisions: { id: number; name: string }[]
+  items: CombinedScoreboardItem[]
+}
+
+/** Fixed, equal-weight 0-100 board across every active competition format. */
+export const useCombinedScoreboard = (numId: number, doFetch: boolean = true) => {
+  const { game } = useGame(numId)
+  const { status } = getGameStatus(game)
+  const {
+    data: combinedScoreboard,
+    error,
+    mutate,
+  } = useSWR<CombinedScoreboardModel>(doFetch && numId > 0 ? `/api/game/${numId}/scoreboard/combined` : null, {
+    ...OnceSWRConfig,
+    compare: Object.is,
+    refreshInterval: (latest) => {
+      if (!doFetch) return 0
+      return status === GameStatus.OnGoing || latest?.fullySettled !== true ? 10 * 1000 : 60 * 1000
+    },
+  })
+  return { combinedScoreboard, error, mutate }
+}
+
 /** A&D — team API token hint (never plaintext); used by the per-challenge modal. */
 export const useAdTokenHint = (numId: number, doFetch: boolean = true) => {
   const {

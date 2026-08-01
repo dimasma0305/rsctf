@@ -14,12 +14,16 @@ test('polled-read is fixed-rate, read-only, and covers every dominant board', ()
     '/scoreboard',
     '/Ad/Scoreboard',
     '/ad/koth/scoreboard',
+    '/scoreboard/combined',
     '/ad/koth/timeline',
   ]) {
     assert.ok(scenario.includes(path), `missing polled path ${path}`);
   }
   assert.match(scenario, /dropped_iterations:\s*\['count==0'\]/);
   assert.match(scenario, /server_5xx:\s*\['rate==0'\]/);
+  assert.match(scenario, /validCombinedBoard/);
+  assert.match(scenario, /combined_board_invalid/);
+  assert.match(scenario, /responseType:\s*endpoint\.name === 'combined_scoreboard' \? 'text' : 'none'/);
 });
 
 test('polled-read protects disposable credentials and avoids endpoint-correlated buckets', () => {

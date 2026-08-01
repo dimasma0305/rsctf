@@ -282,6 +282,7 @@ pub async fn recover_hill(
     st.cache
         .remove(&format!("_KothHillState_{game_id}_{challenge_id}"))
         .await;
+    crate::controllers::game::invalidate_combined_scoreboard(&st, game_id).await;
     super::invalidate_live_lifecycle_cache(st.cache.as_ref(), game_id).await;
     Ok(RequestResponse::ok(RecoverKothHillModel {
         challenge_id,

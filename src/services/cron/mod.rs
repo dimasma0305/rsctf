@@ -834,7 +834,7 @@ async fn flush_stale_scoreboards(state: &SharedState) -> AppResult<u64> {
 }
 
 /// Scoreboard cache entries whose time-dependent view changes at event close.
-fn scoreboard_cache_keys(game_id: i32) -> [String; 10] {
+fn scoreboard_cache_keys(game_id: i32) -> [String; 12] {
     [
         format!("_ScoreBoard_{game_id}"),
         format!("_ScoreBoardFrozen_{game_id}"),
@@ -846,6 +846,8 @@ fn scoreboard_cache_keys(game_id: i32) -> [String; 10] {
         format!("_KothScoreBoardFrozen_{game_id}"),
         format!("_KothTimeline_{game_id}"),
         format!("_KothTimelineFrozen_{game_id}"),
+        format!("_CombinedScoreBoard_{game_id}"),
+        format!("_CombinedScoreBoardFrozen_{game_id}"),
     ]
 }
 

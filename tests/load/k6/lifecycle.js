@@ -10,6 +10,7 @@ import { check, sleep } from 'k6';
 import { Trend, Rate, Counter } from 'k6/metrics';
 import { SharedArray } from 'k6/data';
 import { lifecycleStateOpenPath } from '../lifecycle-state-file.js';
+import { validCombinedBoard } from '../combined-scoreboard.js';
 import {
   buildLifecycleFleet,
   lifecycleFleetIp,
@@ -70,11 +71,13 @@ if (!Number.isFinite(PLAYER_THINK_SECONDS) || PLAYER_THINK_SECONDS < 0) {
 const server5xx = new Rate('server_5xx');
 const non2xx = new Rate('non_2xx'); // excludes 429
 const epochBoardInvalid = new Rate('ad_epoch_board_invalid');
+const combinedBoardInvalid = new Rate('combined_board_invalid');
 const kothLifecycleInvalid = new Rate('koth_lifecycle_invalid');
 const onboardingFlowInvalid = new Rate('onboarding_flow_invalid');
 const containerLifecycleInvalid = new Rate('container_lifecycle_invalid');
 const board = new Trend('board_poll_ms', true);
 const adEpochBoard = new Trend('ad_epoch_board_ms', true);
+const combinedBoard = new Trend('combined_board_ms', true);
 const details = new Trend('details_ms', true);
 const adState = new Trend('ad_state_ms', true);
 const adTargets = new Trend('ad_targets_ms', true);
@@ -585,6 +588,7 @@ export const options = {
     ],
     non_2xx: [STRICT_ZERO_ERRORS ? 'rate==0' : 'rate<0.01'],
     ad_epoch_board_invalid: ['rate==0'],
+    combined_board_invalid: ['rate==0'],
     koth_lifecycle_invalid: ['rate==0'],
     onboarding_flow_invalid: ['rate==0'],
     container_lifecycle_invalid: ['rate==0'],
@@ -743,6 +747,12 @@ export function ad() {
     );
   }
   if (validOfficial) adEpochBoard.add(official.timings.duration);
+  const combined = get(`/api/game/${S.mixGame}/scoreboard/combined`, ip, jwt);
+  rec(combined, 'combined scoreboard', combinedBoard);
+  const combinedModel = responseJson(combined);
+  if (shouldValidateSemanticResponse(combined.status)) {
+    combinedBoardInvalid.add(combined.status !== 200 || !validCombinedBoard(combinedModel));
+  }
   if (__ITER % 4 === 0) rec(get(`/api/game/${S.mixGame}/ad/koth/scoreboard`, ip, jwt), 'ad koth board', kothHills);
   if (__ITER % 5 === 0 && S.plantedFlags.length) {
     // submit a DIFFERENT team's planted flag (a valid capture) mixed with wrong ones.

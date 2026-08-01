@@ -31,6 +31,8 @@ Configure whether the scoreboard and submission views are available and when the
 
 Score behavior also comes from each challenge: initial score, minimum score, decay method, and blood bonuses.
 
+When at least two challenge formats are active, the public scoreboard opens on an **Overall** tab. RSCTF normalizes each format to 0-100 and uses a constant equal share for every active format. Jeopardy is divided by the attainable score allowed by the team's division, including blood-bonus headroom; A&D and KotH use their official settled epoch totals. The formula is absolute rather than leader-relative, so the field composition cannot rescale a team's result. See the [Overall scoreboard guide](../players/overall-scoreboard).
+
 ## Writeups
 
 If writeups are required, set the deadline and explain the accepted format to players. The current server accepts one lowercase `.pdf` per team, up to 20 MiB; a replacement upload overwrites the previous submission.

@@ -1,4 +1,4 @@
-// Fixed-rate, read-only production smoke for RSCTF's five dominant polling paths.
+// Fixed-rate, read-only production smoke for RSCTF's dominant polling paths.
 //
 // The runner supplies a large disposable-user token cohort so the test measures
 // application capacity instead of intentionally exhausting one account's query
@@ -6,6 +6,7 @@
 // comparable to HTTP requests/second.
 import http from 'k6/http';
 import { Rate, Trend } from 'k6/metrics';
+import { validCombinedBoard } from '../combined-scoreboard.js';
 
 const TARGET = __ENV.TARGET || 'http://127.0.0.1:8080';
 const JEO_GAME = __ENV.JEO_GAME || '';
@@ -39,6 +40,11 @@ const endpoints = [
     trend: new Trend('koth_scoreboard_ms', true),
   },
   {
+    name: 'combined_scoreboard',
+    path: `/api/game/${AD_GAME}/scoreboard/combined`,
+    trend: new Trend('combined_scoreboard_ms', true),
+  },
+  {
     name: 'koth_timeline',
     path: `/api/game/${AD_GAME}/ad/koth/timeline`,
     trend: new Trend('koth_timeline_ms', true),
@@ -49,6 +55,7 @@ const non200 = new Rate('non_200');
 const server5xx = new Rate('server_5xx');
 const rateLimited = new Rate('rate_limited');
 const authRejected = new Rate('auth_rejected');
+const combinedBoardInvalid = new Rate('combined_board_invalid');
 
 export const options = {
   discardResponseBodies: true,
@@ -67,6 +74,7 @@ export const options = {
     non_200: ['rate==0'],
     rate_limited: ['rate==0'],
     auth_rejected: ['rate==0'],
+    combined_board_invalid: ['rate==0'],
     server_5xx: ['rate==0'],
     dropped_iterations: ['count==0'],
     http_req_duration: ['p(95)<800'],
@@ -89,6 +97,7 @@ export default function () {
       Authorization: `Bearer ${TOKENS[tokenIndex]}`,
       'X-Real-IP': sourceIp(tokenIndex),
     },
+    responseType: endpoint.name === 'combined_scoreboard' ? 'text' : 'none',
     tags: { endpoint: endpoint.name },
   });
   endpoint.trend.add(response.timings.duration);
@@ -96,4 +105,13 @@ export default function () {
   server5xx.add(response.status >= 500);
   rateLimited.add(response.status === 429);
   authRejected.add(response.status === 401 || response.status === 403);
+  if (endpoint.name === 'combined_scoreboard') {
+    let model = null;
+    try {
+      model = response.json();
+    } catch (_) {
+      // Invalid JSON is reported by the semantic metric below.
+    }
+    combinedBoardInvalid.add(response.status !== 200 || !validCombinedBoard(model));
+  }
 }

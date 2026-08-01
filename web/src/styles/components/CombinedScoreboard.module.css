@@ -1,0 +1,33 @@
+.table {
+  min-width: 100%;
+  table-layout: fixed;
+
+  & th,
+  & td {
+    white-space: nowrap;
+  }
+
+  & th:nth-child(1),
+  & th:nth-child(2),
+  & td:nth-child(1),
+  & td:nth-child(2) {
+    width: 72px;
+  }
+
+  & th:nth-child(3),
+  & td:nth-child(3) {
+    width: 240px;
+  }
+
+  & th:nth-child(n + 4),
+  & td:nth-child(n + 4) {
+    min-width: 130px;
+  }
+}
+
+.rawPoints {
+  max-width: 128px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

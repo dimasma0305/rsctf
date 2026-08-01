@@ -1,12 +1,13 @@
 import { Alert, Center, SegmentedControl, Stack } from '@mantine/core'
 import { useLocalStorage } from '@mantine/hooks'
-import { mdiCrown, mdiFlagOutline, mdiSnowflake, mdiSwordCross } from '@mdi/js'
+import { mdiCrown, mdiFlagOutline, mdiScaleBalance, mdiSnowflake, mdiSwordCross } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import { FC, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { AdScoreboardTable } from '@Components/AdScoreboardTable'
+import { CombinedScoreboardTable } from '@Components/CombinedScoreboardTable'
 import { KothScoreboardTable } from '@Components/KothScoreboardTable'
 import { ScoreboardTable } from '@Components/ScoreboardTable'
 import { TeamRank } from '@Components/TeamRank'
@@ -18,6 +19,7 @@ import { useIsMobile } from '@Utils/ThemeOverride'
 import {
   getGameStatus,
   useAdScoreboard,
+  useCombinedScoreboard,
   useGame,
   useGameScoreboard,
   useGameTeamInfo,
@@ -25,8 +27,8 @@ import {
 } from '@Hooks/useGame'
 import classes from '@Styles/GameScoreboard.module.css'
 
-type ScoreboardTab = 'jeopardy' | 'ad' | 'koth'
-const ALL_TABS: ScoreboardTab[] = ['jeopardy', 'ad', 'koth']
+type ScoreboardTab = 'overall' | 'jeopardy' | 'ad' | 'koth'
+const ALL_TABS: ScoreboardTab[] = ['overall', 'jeopardy', 'ad', 'koth']
 // Per-game last-tab memory key. Keyed on gameId so switching between games
 // doesn't carry the wrong tab over.
 const tabStorageKey = (gameId: number) => `scoreboard-tab-${gameId}`
@@ -55,13 +57,13 @@ const Scoreboard: FC = () => {
   //
   // Detect from the PUBLIC scoreboard's challenge list so anonymous (logged-out)
   // visitors get the correct board — the richer teamInfo (/Details) is
-  // [RequireUser]-gated and 401s for the public, which would otherwise collapse an
-  // A&D/KotH game to an empty jeopardy table. Prefer teamInfo when present (logged
-  // in) for parity, else fall back to the public scoreboard.
+  // [RequireUser]-gated and 401s for the public. Prefer the public catalog because
+  // Overall weights are game-wide and must not change with one division's VIEW
+  // permissions; teamInfo is only a startup fallback.
   const { hasJeopardyChallenges, hasAdChallenges, hasKothChallenges } = useMemo(() => {
     const fromTeam = Object.values(teamInfo?.challenges ?? {}).flat()
     const fromBoard = Object.values(scoreboard?.challenges ?? {}).flat()
-    const all = fromTeam.length > 0 ? fromTeam : fromBoard
+    const all = fromBoard.length > 0 ? fromBoard : fromTeam
     return {
       hasJeopardyChallenges: all.some((c) => c.type !== 'AttackDefense' && c.type !== 'KingOfTheHill'),
       hasAdChallenges: all.some((c) => c.type === 'AttackDefense'),
@@ -72,14 +74,22 @@ const Scoreboard: FC = () => {
 
   const presentTabs = (hasJeopardyChallenges ? 1 : 0) + (hasAdChallenges ? 1 : 0) + (hasKothChallenges ? 1 : 0)
   const showTabs = presentTabs >= 2
-  // Default tab in priority: jeopardy if present, else AD, else KotH.
-  const defaultTab: ScoreboardTab = hasJeopardyChallenges ? 'jeopardy' : hasAdChallenges ? 'ad' : 'koth'
+  // Mixed-format games open on the normalized Overall board. A single-format
+  // game keeps the existing direct board without an unnecessary selector.
+  const defaultTab: ScoreboardTab = showTabs
+    ? 'overall'
+    : hasJeopardyChallenges
+      ? 'jeopardy'
+      : hasAdChallenges
+        ? 'ad'
+        : 'koth'
 
   // Hash → tab parser (used on mount AND when the hash changes externally,
   // e.g. user pastes a new URL or clicks a #-link). Aliases accepted so a
   // friendly share-link form like #king-of-the-hill works too.
   const parseHash = (h: string): ScoreboardTab | null => {
     const raw = h.replace(/^#/, '').toLowerCase()
+    if (raw === 'overall' || raw === 'combined') return 'overall'
     if (raw === 'koth' || raw === 'king-of-the-hill' || raw === 'kingofthehill') return 'koth'
     if (raw === 'ad' || raw === 'attack-defense' || raw === 'attackdefense') return 'ad'
     if (raw === 'jeopardy' || raw === 'ctf') return 'jeopardy'
@@ -102,6 +112,7 @@ const Scoreboard: FC = () => {
   const requestedTab = parseHash(location.hash)
   const preferredTab = requestedTab ?? storedTab ?? defaultTab
   const effectiveTab: ScoreboardTab =
+    (preferredTab === 'overall' && !showTabs) ||
     (preferredTab === 'jeopardy' && !hasJeopardyChallenges) ||
     (preferredTab === 'ad' && !hasAdChallenges) ||
     (preferredTab === 'koth' && !hasKothChallenges)
@@ -140,14 +151,24 @@ const Scoreboard: FC = () => {
   // while the page needs freeze metadata before rendering its shared banner.
   const { adScoreboard } = useAdScoreboard(numId, hasAdChallenges && effectiveTab === 'ad')
   const { kothScoreboard } = useKothScoreboard(numId, hasKothChallenges && effectiveTab === 'koth')
+  const { combinedScoreboard } = useCombinedScoreboard(numId, showTabs && effectiveTab === 'overall')
+  const onOverallTab = effectiveTab === 'overall' && showTabs
   const onAdTab = effectiveTab === 'ad' && hasAdChallenges
   const onKothTab = effectiveTab === 'koth' && hasKothChallenges
-  const frozenView = onAdTab
-    ? adScoreboard?.isFrozenView
-    : onKothTab
-      ? kothScoreboard?.isFrozenView
-      : scoreboard?.isFrozenView
-  const frozenAt = onAdTab ? adScoreboard?.freeze : onKothTab ? kothScoreboard?.freeze : scoreboard?.freeze
+  const frozenView = onOverallTab
+    ? combinedScoreboard?.isFrozenView
+    : onAdTab
+      ? adScoreboard?.isFrozenView
+      : onKothTab
+        ? kothScoreboard?.isFrozenView
+        : scoreboard?.isFrozenView
+  const frozenAt = onOverallTab
+    ? combinedScoreboard?.freeze
+    : onAdTab
+      ? adScoreboard?.freeze
+      : onKothTab
+        ? kothScoreboard?.freeze
+        : scoreboard?.freeze
 
   // Once an event has ended, the returned board is already the final view. Do
   // not promise a future reveal or format a missing freeze timestamp (KotH can
@@ -170,6 +191,15 @@ const Scoreboard: FC = () => {
         onChange={(v) => v && setActiveTab(v)}
         aria-label={t('game.content.scoreboard.board_selector', 'Scoreboard type')}
         data={[
+          {
+            value: 'overall',
+            label: (
+              <Center style={{ gap: 4 }} aria-label={t('game.content.scoreboard.tab.overall', 'Overall')}>
+                <Icon path={mdiScaleBalance} size={0.8} color="var(--mantine-color-yellow-7)" aria-hidden="true" />
+                <span>{t('game.content.scoreboard.tab.overall', 'Overall')}</span>
+              </Center>
+            ),
+          },
           ...(hasJeopardyChallenges
             ? [
                 {
@@ -227,6 +257,7 @@ const Scoreboard: FC = () => {
   const showJeopardy = effectiveTab === 'jeopardy' && hasJeopardyChallenges
   const showAd = effectiveTab === 'ad' && hasAdChallenges
   const showKoth = effectiveTab === 'koth' && hasKothChallenges
+  const showOverall = effectiveTab === 'overall' && showTabs
 
   return (
     <WithNavBar width={GAME_PAGE_CONTENT_WIDTH}>
@@ -236,7 +267,9 @@ const Scoreboard: FC = () => {
             {freezeBanner}
             {teamInfo && !error && showJeopardy && <TeamRank />}
             {tabNavbar}
-            {showAd ? (
+            {showOverall ? (
+              <CombinedScoreboardTable numId={numId} />
+            ) : showAd ? (
               <AdScoreboardTable numId={numId} />
             ) : showKoth ? (
               <KothScoreboardTable numId={numId} />
@@ -248,7 +281,9 @@ const Scoreboard: FC = () => {
           <Stack pb="2rem">
             {freezeBanner}
             {tabNavbar}
-            {showAd ? (
+            {showOverall ? (
+              <CombinedScoreboardTable numId={numId} />
+            ) : showAd ? (
               <AdScoreboardTable numId={numId} />
             ) : showKoth ? (
               <KothScoreboardTable numId={numId} />

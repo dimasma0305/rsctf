@@ -99,7 +99,7 @@ fn koth_check_status_label(status: i16) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// One hill column on the KotH board (`KothScoreboardHill` in useGame.ts).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KothScoreboardHill {
     pub challenge_id: i32,
@@ -125,7 +125,7 @@ pub struct KothScoreboardHill {
 }
 
 /// One team's score on one hill (`KothHillScore` in useGame.ts).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KothHillScore {
     pub challenge_id: i32,
@@ -141,7 +141,7 @@ pub struct KothHillScore {
     pub is_current_holder: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KothEpochScore {
     pub epoch: i32,
@@ -152,7 +152,7 @@ pub struct KothEpochScore {
 
 /// One team row on the KotH board (`KothTeamScoreRow`), shared by the player
 /// scoreboard and the admin console.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KothTeamScoreRow {
     pub rank: i32,
@@ -181,7 +181,7 @@ pub struct KothCycleChampion {
 /// `GET /api/game/{id}/ad/koth/scoreboard` response (`KothScoreboardModel`).
 ///
 /// Timestamps follow the platform wire invariant and serialize as Unix millis.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KothScoreboardModel {
     pub epoch_ticks: i32,
@@ -828,6 +828,17 @@ async fn koth_scoreboard_json(
         Some(bytes) => Ok(bytes),
         None => Err(AppError::internal("KotH scoreboard cache fill failed")),
     }
+}
+
+/// Cached KotH board as a model for internal projections such as the combined
+/// multi-format standings. The dedicated endpoint remains the zero-copy path.
+pub(crate) async fn build_koth_scoreboard_cached(
+    st: &SharedState,
+    game: &game::Model,
+    is_monitor: bool,
+) -> AppResult<KothScoreboardModel> {
+    let bytes = koth_scoreboard_json(st, game, is_monitor).await?;
+    serde_json::from_slice(&bytes).map_err(|error| AppError::internal(error.to_string()))
 }
 
 /// `GET /api/game/{id}/ad/koth/scoreboard` — the player KotH board: one column per

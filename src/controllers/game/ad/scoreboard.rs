@@ -160,6 +160,7 @@ pub(crate) async fn hard_invalidate_ad_scoreboard(st: &SharedState, game_id: i32
         tracing::warn!(game = game_id, %error, "A&D scoreboard revision barrier failed");
     }
     hard_invalidate_ad_scoreboard_cache(st.cache.as_ref(), game_id).await;
+    crate::controllers::game::invalidate_combined_scoreboard(st, game_id).await;
 }
 
 async fn hard_invalidate_ad_scoreboard_cache(
@@ -420,6 +421,33 @@ pub async fn scoreboard(
         fill_scoreboard_bundle(st, id, is_monitor, cache_key, stale_key).await,
     )?;
     super::scoreboard_encoding::response(bytes, &headers)
+}
+
+/// Cached A&D board as a model for internal projections such as the combined
+/// multi-format standings. This follows the exact same fresh/stale/SWR path as
+/// the public handler and extracts the identity body without a copy.
+pub(crate) async fn build_ad_scoreboard_cached(
+    st: &SharedState,
+    id: i32,
+    is_monitor: bool,
+) -> AppResult<crate::services::ad::scoring::AdScoreboard> {
+    let cache_key = scoreboard_cache_key(id, is_monitor);
+    let bundle = if let Some(bytes) = cached_scoreboard_bundle(st.cache.as_ref(), &cache_key).await
+    {
+        bytes
+    } else {
+        let stale_key = stale_scoreboard_key(&cache_key);
+        if let Some(bytes) = cached_scoreboard_bundle(st.cache.as_ref(), &stale_key).await {
+            refresh_scoreboard_detached(st.clone(), id, is_monitor, cache_key, stale_key);
+            bytes
+        } else {
+            completed_scoreboard_bundle(
+                fill_scoreboard_bundle(st.clone(), id, is_monitor, cache_key, stale_key).await,
+            )?
+        }
+    };
+    let raw = super::scoreboard_encoding::identity_body(bundle)?;
+    serde_json::from_slice(&raw).map_err(|error| AppError::internal(error.to_string()))
 }
 
 /// Game-global half of `Ad/State` — config + the challenge title/policy map. Shared by

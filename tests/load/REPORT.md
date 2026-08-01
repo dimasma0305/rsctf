@@ -5,6 +5,106 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## Equal-weight Overall scoreboard acceptance — 1 August 2026
+
+Mixed-format events now have one official **Overall** board without changing
+any format's native rules. RSCTF maps every active format to the fixed interval
+0-100 and takes their equal arithmetic mean: one active format has 100% weight,
+two have 50% each, and three have exactly one-third each. These weights are
+constant; there is no organizer setting, scoring version, or leader-relative
+rescaling.
+
+Jeopardy contributes `earned / attainable * 100`. The attainable ceiling is
+recomputed from the same scoreboard snapshot, includes only challenges that
+the team's division may score, and reserves the largest blood bonus that the
+division is allowed to earn. A&D and KotH contribute their existing bounded
+`settledTotal`; unfinished epochs are exposed separately as a live projection
+and never affect official rank. All arithmetic is performed in fixed-point
+10,000ths of a point, clamped to 0-100, and exact official ties share a rank.
+
+The endpoint is `/api/game/{id}/scoreboard/combined`. It uses the same public
+freeze cutoffs as the three source boards, a monitor-specific cache key, a
+two-tier five-second cache, raw `Bytes` responses, and single-flight fills. Its
+TTL is reduced by the age of the oldest source snapshot, so the derived cache
+cannot silently stack another full five seconds of staleness on top of an aged
+component.
+
+### Correctness and freeze simulation
+
+The disposable three-format game had two divisions with different raw scoring
+schemes. Alpha earned 150 of 150 available Jeopardy points because its division
+allowed the configured first-blood bonus; Beta earned 100 of 100 because its
+division disabled blood. Both normalized to exactly 100.0000 for Jeopardy and
+33.3333 Overall while the not-yet-started A&D and KotH components remained
+zero. Both teams received rank 1, proving that raw point magnitude and the
+stable team-id display key cannot break an exact normalized tie.
+
+A separate freeze pass placed the public cutoff before Beta's solve. The public
+board returned `isFrozenView=true`, Alpha remained at 33.3333/rank 1, and Beta
+remained at 0/rank 2; the monitor path retained the live result. No post-freeze
+score, component, rank, or attainable-point change leaked into the public
+projection.
+
+### Release-candidate held-rate baseline
+
+The optimized release binary ran against disposable PostgreSQL and Redis at a
+constant 200 requests/s for 60 seconds with 240 preallocated VUs. One iteration
+made one request across the six dominant read paths. All 12,001 arrivals
+completed: no dropped iteration, 429, authentication rejection, non-200, 5xx,
+or invalid Overall model was observed. The semantic check independently
+recomputed every row's equal-weight settled and projected means.
+
+| Path | Average | p50 | p90 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 6.724 ms | 2.550 ms | 9.309 ms | 14.748 ms | 85.061 ms | 737.374 ms |
+| Game catalog | 7.761 ms | 3.430 ms | 11.051 ms | 17.141 ms | 122.722 ms | 701.449 ms |
+| Jeopardy scoreboard | 6.709 ms | 2.548 ms | 9.316 ms | 15.072 ms | 85.150 ms | 737.374 ms |
+| A&D scoreboard | 6.195 ms | 2.248 ms | 8.033 ms | 12.427 ms | 71.248 ms | 709.025 ms |
+| KotH scoreboard | 6.196 ms | 2.121 ms | 8.637 ms | 14.494 ms | 80.440 ms | 677.210 ms |
+| Overall scoreboard | 5.773 ms | 2.175 ms | 7.926 ms | 12.730 ms | 49.114 ms | 627.159 ms |
+| KotH timeline | 7.711 ms | 2.722 ms | 10.564 ms | 16.183 ms | 116.544 ms | 646.157 ms |
+
+Twelve five-second samples covered the same sustained-load interval:
+
+| Component | CPU min | CPU average | CPU max | RAM min | RAM average | RAM max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| RSCTF release process | 16.00% | 22.32% | 33.00% | 60.21 MiB | 63.47 MiB | 66.20 MiB |
+| Disposable PostgreSQL | 5.62% | 26.92% | 229.54% | 184.90 MiB | 206.66 MiB | 262.60 MiB |
+| Disposable Redis | 6.83% | 13.29% | 29.07% | 4.20 MiB | 4.27 MiB | 4.30 MiB |
+
+The PostgreSQL maximum is one isolated maintenance burst; the fixed arrival
+rate completed without a drop through it. This is the first latency baseline
+for a real Overall endpoint, not an optimization-ledger claim.
+
+### Pre-change production control
+
+The exact new six-endpoint harness also ran against the current `v0.1.32`
+production deployment at 300 requests/s for 60 seconds with 1,000 disposable
+identities and 960 scheduling VUs. It completed 18,001/18,001 arrivals at
+299.993 requests/s with no drops, 429s, authentication failures, non-200s, or
+5xx responses. As expected, all 3,001 Overall samples failed semantic
+validation: that route did not exist and the old SPA fallback returned HTML
+with HTTP 200. This is the functional **before** result; an endpoint latency
+comparison would be dishonest because the old server performed no Overall
+calculation.
+
+| Path | Average | p50 | p90 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 7.764 ms | 3.461 ms | 11.500 ms | 20.405 ms | 94.709 ms | 490.768 ms |
+| Game catalog | 8.393 ms | 4.523 ms | 12.600 ms | 21.051 ms | 82.433 ms | 284.934 ms |
+| Jeopardy scoreboard | 7.100 ms | 3.045 ms | 10.916 ms | 20.310 ms | 85.723 ms | 351.271 ms |
+| A&D scoreboard | 8.201 ms | 3.756 ms | 11.504 ms | 20.869 ms | 104.240 ms | 327.631 ms |
+| KotH scoreboard | 9.406 ms | 3.623 ms | 12.223 ms | 23.640 ms | 148.132 ms | 490.768 ms |
+| Absent Overall route | 5.400 ms | 2.306 ms | 8.086 ms | 13.921 ms | 63.792 ms | 376.504 ms |
+| KotH timeline | 8.087 ms | 3.552 ms | 12.266 ms | 22.084 ms | 101.270 ms | 334.561 ms |
+
+Across twelve corresponding resource samples the two web replicas used 54.44%
+CPU combined on average (80.91% maximum sample) and 215.00 MiB combined RAM on
+average (218.50 MiB maximum). PostgreSQL averaged 32.12% CPU and 551.58 MiB RAM;
+Redis averaged 17.77% CPU and 5.37 MiB RAM. The immutable production **after**
+pass will use this exact rate, cohort, scheduling capacity, endpoint mix, and
+sampling rule after rollout.
+
 ## Normalized multi-team API arena acceptance — 28 July 2026
 
 This campaign replaces the earlier exclusive-holder API observer with an

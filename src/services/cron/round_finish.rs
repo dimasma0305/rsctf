@@ -883,6 +883,7 @@ pub(super) async fn finish_prepared_round(
         .cache
         .remove(&format!("_KothTimelineFrozen_{}", game.id))
         .await;
+    crate::controllers::game::invalidate_combined_scoreboard(state, game.id).await;
     if let Ok(challenge_ids) =
         sqlx::query_scalar::<_, i32>(r#"SELECT challenge_id FROM "KothTargets" WHERE game_id = $1"#)
             .bind(game.id)

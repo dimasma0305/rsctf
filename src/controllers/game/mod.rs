@@ -950,6 +950,7 @@ fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
 }
 
 mod cheat;
+mod combined_scoreboard;
 mod containers;
 mod lookups;
 mod membership;
@@ -961,6 +962,7 @@ mod traffic;
 mod writeup;
 
 pub use cheat::*;
+pub use combined_scoreboard::*;
 pub use containers::*;
 use lookups::*;
 pub use play::*;

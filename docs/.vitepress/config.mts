@@ -98,6 +98,7 @@ export default defineConfig({
           items: [
             { text: 'Start here', link: '/players/' },
             { text: 'Accounts and teams', link: '/players/accounts-and-teams' },
+            { text: 'Overall scoreboard', link: '/players/overall-scoreboard' },
             { text: 'Jeopardy games', link: '/players/jeopardy' },
             { text: 'Attack & Defense', link: '/players/attack-defense' },
             { text: 'King of the Hill', link: '/players/koth' },

@@ -31,6 +31,10 @@ fn router_with_domains(
         // halves the limiter work on the single hottest endpoint. A deliberate
         // divergence from RSCTF, which keeps a Query limit here.
         .route("/api/game/{id}/scoreboard", get(scoreboard))
+        .route(
+            "/api/game/{id}/scoreboard/combined",
+            get(combined_scoreboard),
+        )
         .route("/api/game/{id}/scoreboardsheet", get(scoreboard_sheet))
         .route("/api/game/{id}/submissions", get(submissions))
         .route("/api/game/{id}/submissionsheet", get(submission_sheet))

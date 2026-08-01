@@ -14,7 +14,7 @@ cd tests/load
       npm run multi-domain    # destructive 2×A&D + 2×KotH isolation/recovery acceptance
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
-      npm run polled-read   # fixed-rate, read-only five-endpoint production smoke
+      npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
       npm run redis-outage  # disposable Redis failure/recovery micro-harness
@@ -45,6 +45,7 @@ tests/load/
   organizer-hubs.js pure SignalR, topology, and response contracts
   organizer-hubs.mjs destructive AdminHub/containerExec lifecycle (npm run organizer-hubs)
   player-model.js   deterministic competitive player profiles and A&D/Jeopardy/KotH decisions
+  combined-scoreboard.js pure Overall-board normalization contract validator
   team-clients.mjs  one WireGuard+k6 container per team, plus verified teardown
   observe.mjs       read-only health/resource/evidence sampler for long event runs
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
@@ -60,8 +61,8 @@ tests/load/
     admin-lifecycle.js fixed-rate admin reads, SignalR connection, replica/control health
     edit-lifecycle.js  fixed-rate organizer reads across future/A&D/KotH fixtures
     organizer-hubs.js  fixed-rate privileged negotiate, WebSocket, and exec traffic
-    polled-read.js     one read per iteration across the five dominant polled endpoints
-    player.js         A&D + KotH player: poll boards/timelines, tokens/state, submit flags
+    polled-read.js     one read per iteration across the dominant polled endpoints
+    player.js         A&D + KotH player: poll format/Overall boards, tokens/state, submit flags
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable
     byoc-requests.js  flood BYOC tunnel listeners
@@ -73,10 +74,11 @@ tests/load/
     fixtures/         subprocess fixtures used only by those tests
 ```
 
-The player scenario records separate trends for the main, A&D epoch, and KotH
+The player scenario records separate trends for the main, A&D epoch, KotH, and Overall
 boards, plus A&D State, A&D Targets, KotH timeline, token, and State. The
 lifecycle scenario also keeps every official `/Ad/Scoreboard` poll in the
-separate `ad_epoch_board_ms` trend. This prevents one combined distribution from
+separate `ad_epoch_board_ms` trend and validates the equal-weight Overall formula.
+This prevents one blended distribution from
 hiding which endpoint changed. The standalone player scenario uses a constant
 arrival rate (`RATE`, default `VUS/2` iterations/s). Board trends accept valid
 HTTP 200 responses; the A&D epoch trend additionally requires a semantically
