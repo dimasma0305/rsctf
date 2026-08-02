@@ -1,6 +1,7 @@
 //! Shared validation for jeopardy-style challenge scoring parameters.
 
 use crate::utils::error::{AppError, AppResult};
+use chrono::{DateTime, Utc};
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
 // Keep jeopardy flag changes linearizable with an in-flight submission. Existing
@@ -14,6 +15,18 @@ use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 // dynamic container rotation is instead fenced by submit's row locks on the
 // exact `GameInstances` + `FlagContexts` pair.
 const JEOPARDY_FLAG_LOCK_NAMESPACE: i32 = 0x4a46_4c47;
+
+/// Whether a public scoreboard is currently hiding post-freeze evidence.
+/// Event end is still an immutable evidence cutoff, but it is not a "frozen
+/// view": once the event ends the final public result is revealed.
+pub fn public_scoreboard_frozen(
+    freeze: Option<DateTime<Utc>>,
+    end: DateTime<Utc>,
+    now: DateTime<Utc>,
+    is_monitor: bool,
+) -> bool {
+    !is_monitor && freeze.is_some_and(|freeze| now >= freeze && now < end)
+}
 
 pub async fn lock_jeopardy_flags_shared(
     connection: &mut sqlx::PgConnection,
@@ -98,7 +111,7 @@ pub fn validate_challenge_scoring(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_challenge_scoring;
+    use super::{public_scoreboard_frozen, validate_challenge_scoring};
 
     #[test]
     fn valid_scoring_boundaries_are_accepted() {
@@ -115,5 +128,24 @@ mod tests {
         assert!(validate_challenge_scoring(100, 0.25, 0.0, 0).is_err());
         assert!(validate_challenge_scoring(100, 0.25, f64::INFINITY, 0).is_err());
         assert!(validate_challenge_scoring(100, 0.25, 5.0, -1).is_err());
+    }
+
+    #[test]
+    fn public_freeze_is_live_only_and_reveals_at_event_end() {
+        let end = chrono::Utc::now();
+        let freeze = end - chrono::Duration::minutes(30);
+        assert!(public_scoreboard_frozen(
+            Some(freeze),
+            end,
+            end - chrono::Duration::minutes(1),
+            false,
+        ));
+        assert!(!public_scoreboard_frozen(Some(freeze), end, end, false));
+        assert!(!public_scoreboard_frozen(
+            Some(freeze),
+            end,
+            end - chrono::Duration::minutes(1),
+            true,
+        ));
     }
 }

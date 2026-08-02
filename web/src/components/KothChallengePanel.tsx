@@ -60,7 +60,7 @@ interface KothChallengePanelProps {
  *   - the hill IP:port (one shared container per challenge — copy-button so the
  *     player can drop it straight into curl);
  *   - the team's exact capability for this hill and crown cycle;
- *   - marker-holder state, or the API-arena play model;
+ *   - marker-holder state, or the Leaderboard play model;
  *   - the latest functional verdict on the hill.
  *
  * Uses useSWR with 5s polling so the holder + status update without manual
@@ -119,7 +119,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
             color={isApiArena ? 'var(--mantine-color-blue-6)' : 'var(--mantine-color-violet-6)'}
           />
           <Text fw="bold" size="sm">
-            {isApiArena ? t('game.content.koth.api_arena', 'API arena') : t('game.content.koth.hill', 'The hill')}
+            {isApiArena ? t('game.content.koth.api_arena', 'Leaderboard') : t('game.content.koth.hill', 'The hill')}
           </Text>
           <Badge size="sm" color={statusColor(displayedStatus)} variant={displayedStatus ? 'filled' : 'light'}>
             {displayedStatus ?? t('game.content.ad.no_checks_yet', 'no checks yet')}
@@ -152,7 +152,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
           <Text size="xs">
             {t(
               'game.content.koth.api_play',
-              'Every team can score in the same tick. Use your current capability only in the challenge’s documented actions; RSCTF scores verified activity, normalized objectives, and valid-action integrity. There is no exclusive king.'
+              'Every team can score in the same tick. Use your current capability in the challenge’s documented actions; RSCTF scores verified activity and normalized objectives, then adds a bounded bonus for sustained first place. Failed hacking attempts are not negative points, and there is no exclusive king.'
             )}
           </Text>
         </Alert>
@@ -263,7 +263,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
       )}
 
       {/* The team's cycle-scoped capability: marker hills plant it, while an
-          API arena consumes it only through challenge-defined player actions. */}
+          Leaderboard consumes it only through challenge-defined player actions. */}
       <Group gap={6} align="center" wrap="nowrap">
         <Text size="xs" c="dimmed">
           {`${

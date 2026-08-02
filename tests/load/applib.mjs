@@ -1466,7 +1466,6 @@ export function kothApiEvidence(token, index) {
   const tokenHash = createHash('sha256').update(token).digest('hex');
   const objectiveTenths = 5 + (index % 6);
   const activityEarned = 3 + (index % 3);
-  const validActions = 18 + (index % 3);
   // Alternate the challenge-native objective budget while preserving the
   // ratio. The platform must normalize 5/10 and 5,000/10,000 identically.
   const firstObjective = Math.floor(index / 6) % 2 === 0
@@ -1479,7 +1478,6 @@ export function kothApiEvidence(token, index) {
       firstObjective,
       { earned: 750, possible: 1_000 },
     ],
-    integrity: { earned: validActions, possible: 20 },
   };
 }
 
@@ -1528,7 +1526,11 @@ export async function kothApiObservation(
   const teams = selectedTokens
     .map((token, index) => kothApiEvidence(token, index))
     .filter(Boolean);
-  const rawBody = JSON.stringify({ context, teams });
+  const rawBody = JSON.stringify({
+    context,
+    objectiveIds: ['quality', 'throughput'],
+    teams,
+  });
   const timestamp = Math.max(Date.now(), lastKothObservationTimestamp + 1);
   lastKothObservationTimestamp = timestamp;
   return api(
@@ -1558,7 +1560,7 @@ export async function kothApiCaptureWrite(
   );
   if (response.status !== 200) {
     throw new Error(
-      `write KotH API arena evidence → ${response.status} ${response.text?.slice(0, 200)}`,
+      `write KotH Leaderboard evidence → ${response.status} ${response.text?.slice(0, 200)}`,
     );
   }
   return unwrap(response);

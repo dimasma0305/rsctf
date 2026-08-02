@@ -129,8 +129,9 @@ jobs:
       - name: Run database regressions and enforce coverage floor
         # Migration fixtures share database-scoped catalog state even though
         # their data lives in isolated schemas, so this half is deterministic
-        # only when serialized. Live S3 and pre-migrated/pre-provisioned checks
-        # remain explicit environment tests rather than pretending to pass.
+        # only when serialized. Live S3 checks remain explicit environment
+        # tests rather than pretending to pass. The A&D scoring regressions
+        # provision their own fully migrated event fixture here.
         run: >-
           cargo llvm-cov
           --no-clean
@@ -146,10 +147,6 @@ jobs:
           --skip s3_round_trip
           --skip target_fk_deletes_scoped_tokens
           --skip ownership_constraints_are_validated_cascades
-          --skip database_board_is_finite_bounded_and_serializable
-          --skip database_aggregate_is_bounded_by_stable_roster
-          --skip database_epoch_rollup_is_idempotent
-          --skip database_rollup_invalidation_keeps_only_the_safe_prefix
 
   byoc-agent:
     name: BYOC agent

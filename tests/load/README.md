@@ -15,6 +15,7 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      npm run scoreboard-evidence # isolated fixed-rate canonical FirstSolve query benchmark
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
       npm run redis-outage  # disposable Redis failure/recovery micro-harness
@@ -50,6 +51,7 @@ tests/load/
   observe.mjs       read-only health/resource/evidence sampler for long event runs
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
   polled-read.mjs   read-only broad-token fixed-rate polling smoke
+  scoreboard-evidence.mjs isolated accepted-history versus FirstSolves DB benchmark
   player.mjs        → runs k6/player.js         (npm run player)
   ad-submit-batch.mjs → runs k6/ad-submit-batch.js (npm run ad-submit-batch)
   redis-outage.mjs  → stops/restores one acknowledged disposable Redis + runs k6/redis-outage.js
@@ -93,6 +95,25 @@ query bucket. One iteration is exactly one HTTP request. Supply both game IDs:
 TARGET=https://ctf.example JEO_GAME=162 AD_GAME=163 RATE=300 \
   DURATION=60s npm run polled-read
 ```
+
+`scoreboard-evidence` isolates the database work behind a Jeopardy scoreboard
+cache fill. Its default disposable fixture contains 100 teams, 20 challenges,
+20 accepted-history rows per solve, and one canonical `FirstSolves` row per
+team/challenge. The Node runner drives both query shapes through PostgreSQL 18
+`pgbench` with the same pinned arrival schedule, captures every transaction
+latency, samples PostgreSQL CPU/RAM only inside the measured windows, and then
+removes its schema and temporary files. It refuses the production database
+container unless an explicit destructive-test acknowledgement is supplied.
+
+```sh
+SUMMARY_JSON=/tmp/scoreboard-evidence.json npm run scoreboard-evidence
+```
+
+`RATE`, `DURATION`, `WARMUP`, `VUS`, `TEAMS`, `CHALLENGES`, and
+`ACCEPTED_PER_SOLVE` are bounded and configurable. `SCOREBOARD_BENCH_PG`,
+`SCOREBOARD_BENCH_USER`, and `SCOREBOARD_BENCH_DATABASE` select the disposable
+PostgreSQL target. This is a focused SQL scalability comparison; use
+`polled-read` and `lifecycle` for HTTP and whole-event acceptance.
 
 Every knob is env-overridable: `TARGET`, `GAME`, `CID`, `VUS`, `RATE`, `DURATION`, `N`,
 `RSCTF_JWT_SECRET`, `PG_CONTAINER`, `RSCTF_CONTAINER`, `NET`, `AD_NET`,
@@ -986,6 +1007,7 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 | 2026-07-19 | Refresh Caddy Docker DNS and retry replica connection failures | 20 → 20 iterations/s target | Retired-address 5xx 800 → 0; drops 33 → 0 | — | — | HTTP 3,001.818 → 7.521 ms | 0 5xx after; over-quota 429 retained |
 | 2026-07-19 | Bound Redis commands and fall back to the local limiter during outage | 1 → 1 request/s target | Outage responses 15/15 → 16/16 expected 400 | — | — | HTTP 18,084.879 → 207.823 ms | 0 drops after; recovered without restart |
 | 2026-08-01 | Precompress cached Overall scoreboard representations | 299.929 → 299.996 req/s | Overall wire bytes 39,076 → 987 gzip (-97.47%) | — | — | Overall board 78.88 → 19.32 ms | 0 drops/429/non-200/5xx; 2,999/2,999 compressed and valid |
+| 2026-08-02 | Bound Jeopardy evidence reads to canonical `FirstSolves` | 5.067 → 5.067 tx/s target | Rows/query 40,000 → 2,000 (-95.0%) | — | — | Query 116.35 → 27.35 ms (-76.5%) | PostgreSQL CPU 24.72% → 7.88% (-68.1%); 0 failures |
 
 At the same one-batch/s load, the 100-distinct-known case also improved: p95
 790.76 → 367.97 ms and stack CPU 21.644 → 10.811 CPU-seconds. The

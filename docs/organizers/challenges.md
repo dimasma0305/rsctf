@@ -89,18 +89,19 @@ Choose one format before official scoring; RSCTF freezes it with the hill:
 - **Container marker** is exclusive boot2root KotH. RSCTF reads
   `/koth/king`, qualifies one holder, and scores acquisition, control, and
   reliability.
-- **Signed API arena** is multi-team application KotH. Every team can score in
-  the same tick. A trusted referee reports bounded activity, objective, and
-  integrity evidence; RSCTF normalizes it and applies the fixed arena formula.
+- **Leaderboard KotH** is multi-team application or protocol KotH. Every
+  eligible team can score in the same tick. A trusted independent referee
+  reports bounded activity and ordered objective evidence; RSCTF normalizes it
+  and applies the constant performance-plus-sustained-lead formula.
 
-API mode is not merely another marker transport. It has no single holder,
+Leaderboard mode is not merely another marker transport. It has no single holder,
 provisional crown, or champion-cooldown score. It still uses pristine lifecycle
 resets, exact capability generations, an independent functional checker, and
 field-wide voids for platform failures.
 
 Configure the referee from the KotH operations table before official scoring.
 Keep its HMAC secret outside the player-facing application. See
-[Signed KotH API arena referee](./koth-api-observer) for evidence design,
+[Signed Leaderboard KotH referee](./koth-api-observer) for evidence design,
 normalization, anti-cheat rules, the wire contract, and the runnable example.
 
 ## Review and enable

@@ -1,4 +1,4 @@
-//! Durable evidence writer for API-native KotH arenas.
+//! Durable evidence writer for Leaderboard KotH.
 
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, QueryBuilder};
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use super::koth::LiveHill;
 use crate::models::data::ad_round;
 use crate::services::ad::engine::{
-    koth_api::{api_tick_rates, KothApiSnapshot, API_OBJECTIVE_NORMALIZATION_SCALE},
+    koth_api::{leaderboard_tick_core, KothApiSnapshot, API_OBJECTIVE_NORMALIZATION_SCALE},
     AdCheckStatus,
 };
 use crate::utils::error::{AppError, AppResult};
@@ -33,8 +33,9 @@ pub(super) async fn persist_api_arena_result(
                   AND current.container_id = $4
                   AND current.ad_round_id = $5
                   AND current.snapshot_hash = $6
-                  AND current.accepted_at >= $7
-                  AND current.accepted_at < $8
+                  AND current.objective_schema_hash = $7
+                  AND current.accepted_at >= $8
+                  AND current.accepted_at < $9
                 FOR SHARE"#,
         )
         .bind(hill.target_id)
@@ -43,6 +44,7 @@ pub(super) async fn persist_api_arena_result(
         .bind(&hill.container_id)
         .bind(round.id)
         .bind(snapshot.hash.as_slice())
+        .bind(snapshot.objective_schema_hash.as_slice())
         .bind(hill.round_start)
         .bind(hill.round_end)
         .fetch_optional(&mut *connection)
@@ -55,9 +57,9 @@ pub(super) async fn persist_api_arena_result(
     let void_reason = if is_scorable {
         None
     } else if !snapshot_is_current {
-        Some(message.unwrap_or("API arena snapshot was unavailable or unstable"))
+        Some(message.unwrap_or("Leaderboard snapshot was unavailable or unstable"))
     } else {
-        Some("shared API arena failed its functional checker")
+        Some("shared Leaderboard application failed its functional checker")
     };
     let inserted = sqlx::query(
         r#"INSERT INTO "KothControlResults"
@@ -114,7 +116,7 @@ pub(super) async fn persist_api_arena_result(
         )
         .bind(hill.cycle_id)
         .bind(&hill.container_id)
-        .bind("active API arena container stopped; recovery reset scheduled")
+        .bind("active Leaderboard container stopped; recovery reset scheduled")
         .execute(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -136,14 +138,12 @@ async fn insert_dense_score_rows(
         activity_possible: i64,
         objective_earned: i64,
         objective_possible: i64,
-        valid_actions: i64,
-        total_actions: i64,
         objective_count: i16,
         activity_rate: f64,
         objective_rate: f64,
-        integrity_rate: f64,
         core_rate: f64,
-        score_rate: f64,
+        performance_rate: f64,
+        lead_credit: f64,
     }
 
     let submitted: HashMap<_, _> = snapshot
@@ -160,10 +160,9 @@ async fn insert_dense_score_rows(
         )
         .bind(game_id)
         .bind(challenge_id)
-        .fetch_optional(&mut *connection)
+        .fetch_one(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?
-        .unwrap_or(1)
     };
     let zero_objective_possible = API_OBJECTIVE_NORMALIZATION_SCALE * i64::from(objective_count);
     let rows: Vec<_> = eligible_roster
@@ -174,58 +173,69 @@ async fn insert_dense_score_rows(
                 activity_possible,
                 objective_earned,
                 objective_possible,
-                valid_actions,
-                total_actions,
                 objective_count,
             ) = submitted.get(participation_id).map_or(
-                (0, 1, 0, zero_objective_possible, 0, 1, objective_count),
+                (0, 1, 0, zero_objective_possible, objective_count),
                 |row| {
                     (
                         row.activity_earned,
                         row.activity_possible,
                         row.objective_earned,
                         row.objective_possible,
-                        row.valid_actions,
-                        row.total_actions,
                         row.objective_count,
                     )
                 },
             );
             let activity_rate = activity_earned as f64 / activity_possible as f64;
             let objective_rate = objective_earned as f64 / objective_possible as f64;
-            let integrity_rate = valid_actions as f64 / total_actions as f64;
-            let (core_rate, score_rate) =
-                api_tick_rates(activity_rate, objective_rate, integrity_rate);
+            let core_rate = leaderboard_tick_core(activity_rate, objective_rate);
             DenseScoreRow {
                 participation_id: *participation_id,
                 activity_earned,
                 activity_possible,
                 objective_earned,
                 objective_possible,
-                valid_actions,
-                total_actions,
                 objective_count,
                 activity_rate,
                 objective_rate,
-                integrity_rate,
                 core_rate,
-                score_rate,
+                performance_rate: core_rate,
+                lead_credit: 0.0,
             }
         })
         .collect();
     if rows.is_empty() {
         return Err(AppError::internal(
-            "API arena cannot persist an empty official roster",
+            "Leaderboard cannot persist an empty official roster",
         ));
     }
+    let positive_teams = rows.iter().filter(|row| row.core_rate > 0.0).count();
+    let highest_core = rows.iter().map(|row| row.core_rate).fold(0.0_f64, f64::max);
+    let tied_leaders = rows
+        .iter()
+        .filter(|row| row.core_rate == highest_core)
+        .count();
+    let lead_credit = if positive_teams >= 2 {
+        1.0 / tied_leaders as f64
+    } else {
+        0.0
+    };
+    let rows: Vec<_> = rows
+        .into_iter()
+        .map(|mut row| {
+            if positive_teams >= 2 && row.core_rate == highest_core {
+                row.lead_credit = lead_credit;
+            }
+            row
+        })
+        .collect();
     let mut query = QueryBuilder::<Postgres>::new(
         r#"INSERT INTO "KothApiScoreResults"
            (game_id, challenge_id, ad_round_id, participation_id,
             activity_earned, activity_possible,
             objective_earned, objective_possible,
-            valid_actions, total_actions, objective_count,
-            activity_rate, objective_rate, integrity_rate,
-            core_rate, score_rate) "#,
+            objective_count, activity_rate, objective_rate,
+            core_rate, performance_rate, lead_credit) "#,
     );
     query.push_values(&rows, |mut values, row| {
         values
@@ -237,14 +247,12 @@ async fn insert_dense_score_rows(
             .push_bind(row.activity_possible)
             .push_bind(row.objective_earned)
             .push_bind(row.objective_possible)
-            .push_bind(row.valid_actions)
-            .push_bind(row.total_actions)
             .push_bind(row.objective_count)
             .push_bind(row.activity_rate)
             .push_bind(row.objective_rate)
-            .push_bind(row.integrity_rate)
             .push_bind(row.core_rate)
-            .push_bind(row.score_rate);
+            .push_bind(row.performance_rate)
+            .push_bind(row.lead_credit);
     });
     query.push(" ON CONFLICT (game_id, challenge_id, ad_round_id, participation_id) DO NOTHING");
     let inserted = query
@@ -255,7 +263,7 @@ async fn insert_dense_score_rows(
         .rows_affected();
     if inserted != eligible_roster.len() as u64 {
         return Err(AppError::internal(
-            "API arena score evidence did not cover the complete eligible roster",
+            "Leaderboard score evidence did not cover the complete eligible roster",
         ));
     }
     Ok(())
@@ -272,8 +280,8 @@ mod tests {
         let source = include_str!("koth_api.rs");
         assert!(source.contains("zero_objective_possible"));
         assert!(source.contains("eligible_roster"));
-        assert!(source.contains("api_tick_rates"));
-        assert!(source.contains("score_rate"));
+        assert!(source.contains("leaderboard_tick_core"));
+        assert!(source.contains("lead_credit"));
     }
 
     #[tokio::test]
@@ -291,12 +299,11 @@ mod tests {
                  game_id INTEGER, challenge_id INTEGER, ad_round_id INTEGER,
                  participation_id INTEGER, activity_earned BIGINT,
                  activity_possible BIGINT, objective_earned BIGINT,
-                 objective_possible BIGINT, valid_actions BIGINT,
-                 total_actions BIGINT, objective_count SMALLINT,
+                 objective_possible BIGINT, objective_count SMALLINT,
                  activity_rate DOUBLE PRECISION,
                  objective_rate DOUBLE PRECISION,
-                 integrity_rate DOUBLE PRECISION,
-                 core_rate DOUBLE PRECISION, score_rate DOUBLE PRECISION,
+                 core_rate DOUBLE PRECISION, performance_rate DOUBLE PRECISION,
+                 lead_credit DOUBLE PRECISION,
                  PRIMARY KEY (
                    game_id, challenge_id, ad_round_id, participation_id
                  )
@@ -307,24 +314,23 @@ mod tests {
         .unwrap();
         let snapshot = KothApiSnapshot {
             hash: [7; 32],
+            objective_schema_hash: [8; 32],
             rows: vec![KothApiEvidence {
                 participation_id: 11,
                 activity_earned: 4,
                 activity_possible: 5,
                 objective_earned: 500_000,
                 objective_possible: 1_000_000,
-                valid_actions: 3,
-                total_actions: 4,
                 objective_count: 1,
             }],
         };
         insert_dense_score_rows(&mut connection, 7, 9, 51, &[11, 12], &snapshot)
             .await
             .unwrap();
-        let rows = sqlx::query_as::<_, (i32, i64, i64, i64, i64, i64, i16, f64)>(
+        let rows = sqlx::query_as::<_, (i32, i64, i64, i64, i16, f64, f64)>(
             r#"SELECT participation_id, activity_earned, activity_possible,
-                      objective_earned, objective_possible, valid_actions,
-                      objective_count, score_rate
+                      objective_earned, objective_count, performance_rate,
+                      lead_credit
                  FROM "KothApiScoreResults"
                 ORDER BY participation_id"#,
         )
@@ -333,15 +339,19 @@ mod tests {
         .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(
-            (rows[0].0, rows[0].1, rows[0].2, rows[0].3, rows[0].4, rows[0].5, rows[0].6),
-            (11, 4, 5, 500_000, 1_000_000, 3, 1)
+            (rows[0].0, rows[0].1, rows[0].2, rows[0].3, rows[0].4),
+            (11, 4, 5, 500_000, 1)
         );
-        let expected = 0.75 / (0.35 / 0.8 + 0.65 / 0.5);
-        assert!((rows[0].7 - expected).abs() < 1e-12);
+        let expected = 1.0 / (0.35 / 0.8 + 0.65 / 0.5);
+        assert!((rows[0].5 - expected).abs() < 1e-12);
+        assert_eq!(
+            rows[0].6, 0.0,
+            "one positive team is not a competitive tick"
+        );
         assert_eq!((rows[1].0, rows[1].1, rows[1].2), (12, 0, 1));
         assert_eq!(
-            (rows[1].3, rows[1].4, rows[1].5, rows[1].6, rows[1].7),
-            (0, 1_000_000, 0, 1, 0.0)
+            (rows[1].3, rows[1].4, rows[1].5, rows[1].6),
+            (0, 1, 0.0, 0.0)
         );
     }
 }

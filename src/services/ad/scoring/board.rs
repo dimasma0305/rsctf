@@ -194,10 +194,10 @@ fn scoreboard_evidence_cutoff(
     now: DateTime<Utc>,
     is_monitor: bool,
 ) -> Option<DateTime<Utc>> {
-    let freeze_cutoff = match freeze {
-        Some(freeze) if !is_monitor && now >= freeze && now < end => Some(freeze),
-        _ => None,
-    };
+    let freeze_cutoff =
+        crate::utils::scoring::public_scoreboard_frozen(freeze, end, now, is_monitor)
+            .then_some(freeze)
+            .flatten();
     if now >= end {
         Some(freeze_cutoff.map_or(end, |value| value.min(end)))
     } else {
@@ -396,6 +396,12 @@ pub async fn build_ad_scoreboard(
     // Event end is an evidence boundary for every viewer, including monitors.
     let cutoff =
         scoreboard_evidence_cutoff(game.freeze_time_utc, game.end_time_utc, now, is_monitor);
+    let is_frozen_view = crate::utils::scoring::public_scoreboard_frozen(
+        game.freeze_time_utc,
+        game.end_time_utc,
+        now,
+        is_monitor,
+    );
     let event_end_settlement = now >= game.end_time_utc;
 
     let round_clock = sqlx::query_as::<_, AdScoreboardRoundRow>(
@@ -801,8 +807,8 @@ pub async fn build_ad_scoreboard(
                     .map(i64::from)
                     .unwrap_or(TICK_SECONDS_DEFAULT)
             }),
-        is_frozen_view: cutoff.is_some(),
-        freeze: cutoff,
+        is_frozen_view,
+        freeze: game.freeze_time_utc,
         challenges,
         detail_epoch_limit: TEAM_DETAIL_EPOCH_LIMIT,
         evidence: status,

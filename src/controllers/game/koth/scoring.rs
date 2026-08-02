@@ -45,9 +45,9 @@ struct TeamEvidenceRow {
     personal_eligible_windows: i64,
     api_activity_rate: Option<f64>,
     api_objective_rate: Option<f64>,
-    api_integrity_rate: Option<f64>,
-    api_core_rate: Option<f64>,
-    api_score_rate: Option<f64>,
+    api_performance_rate: Option<f64>,
+    api_lead_rate: Option<f64>,
+    api_sustained_lead_rate: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -217,11 +217,13 @@ fn score_evidence_rows(
                     objective_rate: team
                         .and_then(|value| value.api_objective_rate)
                         .unwrap_or(0.0),
-                    integrity_rate: team
-                        .and_then(|value| value.api_integrity_rate)
+                    performance_rate: team
+                        .and_then(|value| value.api_performance_rate)
                         .unwrap_or(0.0),
-                    core_rate: team.and_then(|value| value.api_core_rate).unwrap_or(0.0),
-                    score_rate: team.and_then(|value| value.api_score_rate).unwrap_or(0.0),
+                    lead_rate: team.and_then(|value| value.api_lead_rate).unwrap_or(0.0),
+                    sustained_lead_rate: team
+                        .and_then(|value| value.api_sustained_lead_rate)
+                        .unwrap_or(0.0),
                     service_weight: row.service_weight,
                 })
             } else {

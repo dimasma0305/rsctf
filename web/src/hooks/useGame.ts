@@ -169,7 +169,7 @@ export interface KothScoreboardHill extends KothLifecycleFields {
   challengeId: number
   title: string
   category: string
-  /** Marker is exclusive boot2root control; Api is normalized multi-team arena scoring. */
+  /** Marker is exclusive boot2root control; Api is concurrent Leaderboard scoring. */
   claimSource: 'Api' | 'Marker' | string
   /** Confirmed king only. A claim still proving control is exposed separately. */
   currentHolderTeamName: string | null
@@ -201,11 +201,11 @@ export interface KothHillScore {
   settledPoints: number
   /** Weighted average including the current, unfinished epoch. */
   projectedPoints: number
-  /** Marker acquisition, or API-arena verified activity. */
+  /** Marker acquisition, or Leaderboard verified activity. */
   acquisitionRate: number
-  /** Marker control, or API-arena normalized objective performance. */
+  /** Marker control, or Leaderboard normalized objective performance. */
   controlRate: number
-  /** Marker reliability, or API-arena valid-action integrity. */
+  /** Marker reliability, or Leaderboard sustained first-place continuity. */
   reliabilityRate: number
   acquisitionWindows: number
   controlledTicks: number
@@ -440,8 +440,12 @@ export interface AdminKothObserverModel {
   claimSource: 'Api' | 'Marker' | string
   configured: boolean
   secretHint: string | null
-  /** Frozen by the first accepted snapshot containing a recognized team. */
+  /** Frozen by the first accepted signed Leaderboard snapshot. */
   objectiveCount: number | null
+  /** Stable ordered objective identities frozen with objectiveCount. */
+  objectiveIds: string[] | null
+  /** SHA-256 of the ordered objective schema. */
+  objectiveSchemaHash: string | null
   /** Unix milliseconds. */
   createdAt: number | null
   /** Unix milliseconds. */

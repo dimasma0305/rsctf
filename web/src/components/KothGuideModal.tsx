@@ -182,7 +182,7 @@ write_to_hill "/koth/king" "$TOKEN"`,
             {hasApiArena && (
               <Alert
                 color="blue"
-                title={t('game.content.koth.guide.api_notice_title', 'API arenas are not king-takes-all')}
+                title={t('game.content.koth.guide.api_notice_title', 'Leaderboards are not king-takes-all')}
               >
                 {t(
                   'game.content.koth.guide.api_notice',
@@ -230,7 +230,7 @@ write_to_hill "/koth/king" "$TOKEN"`,
               {hasApiArena && (
                 <Accordion.Item value="api">
                   <Accordion.Control icon={<Icon path={mdiApi} size={1} color="var(--mantine-color-blue-6)" />}>
-                    <Text fw={600}>{t('game.content.koth.guide.api.title', 'Play an API arena')}</Text>
+                    <Text fw={600}>{t('game.content.koth.guide.api.title', 'Play a Leaderboard hill')}</Text>
                   </Accordion.Control>
                   <Accordion.Panel>
                     <Stack gap="sm">
@@ -266,12 +266,12 @@ write_to_hill "/koth/king" "$TOKEN"`,
                         <List.Item>
                           {t(
                             'game.content.koth.guide.api.integrity',
-                            'Integrity scales the whole tick, so invalid, replayed, or forbidden actions cannot be hidden by one strong metric.'
+                            'Sustained lead rewards consecutive first-place ticks. A tied first place splits that tick’s lead credit; at least two teams must post positive performance.'
                           )}
                         </List.Item>
                       </List>
                       <Code block className={misc.ffmono} style={{ fontSize: '0.78rem' }}>
-                        {'Tick = 100 × I ÷ (0.35/E + 0.65/P) · zero if E = 0 or P = 0'}
+                        {'Qₜ = 1 ÷ (0.35/Eₜ + 0.65/Pₜ) · zero if Eₜ = 0 or Pₜ = 0'}
                       </Code>
                       <Text size="xs" c="dimmed">
                         {t(
@@ -499,11 +499,11 @@ write_to_hill "/koth/king" "$TOKEN"`,
                         <Text size="sm">
                           {t(
                             'game.content.koth.guide.api.scoring',
-                            'API arenas use E for verified activity, P for equal-weight normalized objective performance, and I for valid-action integrity. Both E and P must be positive.'
+                            'Leaderboard hills use E for verified activity and P for equal-weight normalized objective performance. Their harmonic tick core requires both channels. L is tied first-place coverage and S is adjacent-tick lead continuity.'
                           )}
                         </Text>
                         <Code block className={misc.ffmono} style={{ fontSize: '0.78rem' }}>
-                          {'API tick = 100 × I ÷ (0.35/E + 0.65/P)'}
+                          {'H = 100[Q + 0.5Q(1−Q)D], D = 0.25L + 0.55S + 0.20√(LS)'}
                         </Code>
                       </>
                     )}

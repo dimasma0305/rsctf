@@ -101,7 +101,7 @@ pub(crate) use repository::{manifest_candidate_in_checkout, tombstone_missing_ch
 mod runtime;
 use runtime::{live_runtime_update_deferred, LiveRuntimeIntent};
 mod grading;
-use grading::{grading_fence_locked, GradingIntent};
+use grading::{competition_scoring_started_locked, grading_fence_locked, GradingIntent};
 
 /// Whether an import may run executable preparation while ingesting its manifest.
 /// User submissions must remain inert until a separate, isolated approval worker
@@ -832,6 +832,8 @@ pub async fn import_manifest(
     };
     let persisted: AppResult<(game_challenge::Model, bool)> = async {
         let transaction = st.db.begin().await?;
+        let competition_scoring_started =
+            competition_scoring_started_locked(&transaction, game_id).await?;
         if existing
             .as_ref()
             .is_some_and(|challenge| !challenge.challenge_type.uses_ad_engine())
@@ -842,12 +844,17 @@ pub async fn import_manifest(
             )
             .await?;
         }
-        // This is the authoritative start/evidence decision. It runs after the
-        // submit-side exclusive grading fence and immediately before the write,
-        // so slow packaging/checker preparation cannot leave a stale pre-start
-        // decision capable of changing live or historical grading.
-        let grading_fence =
-            grading_fence_locked(&transaction, game_id, existing.as_ref(), &grading_intent).await?;
+        // Games is locked before JFLG, matching normal submissions. Slow
+        // packaging/checker preparation therefore cannot leave a stale
+        // pre-start decision capable of changing live or historical grading.
+        let grading_fence = grading_fence_locked(
+            &transaction,
+            game_id,
+            existing.as_ref(),
+            competition_scoring_started,
+            &grading_intent,
+        )
+        .await?;
         if !grading_fence.protected {
             am.submission_limit = Set(submission_limit);
             am.disable_blood_bonus = Set(disable_blood_bonus);

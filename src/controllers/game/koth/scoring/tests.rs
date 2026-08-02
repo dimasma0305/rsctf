@@ -98,9 +98,9 @@ fn scoring_uses_each_teams_personal_cooldown_denominator() {
             personal_eligible_windows: 1,
             api_activity_rate: None,
             api_objective_rate: None,
-            api_integrity_rate: None,
-            api_core_rate: None,
-            api_score_rate: None,
+            api_performance_rate: None,
+            api_lead_rate: None,
+            api_sustained_lead_rate: None,
         },
         TeamEvidenceRow {
             participation_id: 9,
@@ -114,9 +114,9 @@ fn scoring_uses_each_teams_personal_cooldown_denominator() {
             personal_eligible_windows: 1,
             api_activity_rate: None,
             api_objective_rate: None,
-            api_integrity_rate: None,
-            api_core_rate: None,
-            api_score_rate: None,
+            api_performance_rate: None,
+            api_lead_rate: None,
+            api_sustained_lead_rate: None,
         },
     ];
 
@@ -203,9 +203,9 @@ fn wholly_void_hill_does_not_dilute_an_available_hill() {
         personal_eligible_windows: 1,
         api_activity_rate: None,
         api_objective_rate: None,
-        api_integrity_rate: None,
-        api_core_rate: None,
-        api_score_rate: None,
+        api_performance_rate: None,
+        api_lead_rate: None,
+        api_sustained_lead_rate: None,
     }];
 
     let scored = score_evidence_rows(&meta, &evidence, &[7], 3, false).unwrap();
@@ -219,7 +219,7 @@ fn wholly_void_hill_does_not_dilute_an_available_hill() {
 }
 
 #[test]
-fn api_arena_uses_normalized_channels_for_every_team_simultaneously() {
+fn leaderboard_uses_normalized_channels_and_sustained_lead_for_every_team() {
     let meta = vec![HillEpochMetaRow {
         challenge_id: 8,
         claim_source: "Api".to_string(),
@@ -247,9 +247,9 @@ fn api_arena_uses_normalized_channels_for_every_team_simultaneously() {
             personal_eligible_windows: 3,
             api_activity_rate: Some(1.0),
             api_objective_rate: Some(0.8),
-            api_integrity_rate: Some(1.0),
-            api_core_rate: Some(1.0 / (0.35 + 0.65 / 0.8)),
-            api_score_rate: Some(1.0 / (0.35 + 0.65 / 0.8)),
+            api_performance_rate: Some(1.0 / (0.35 + 0.65 / 0.8)),
+            api_lead_rate: Some(1.0),
+            api_sustained_lead_rate: Some(1.0),
         },
         TeamEvidenceRow {
             participation_id: 9,
@@ -263,9 +263,9 @@ fn api_arena_uses_normalized_channels_for_every_team_simultaneously() {
             personal_eligible_windows: 3,
             api_activity_rate: Some(0.5),
             api_objective_rate: Some(0.4),
-            api_integrity_rate: Some(0.8),
-            api_core_rate: Some(1.0 / (0.35 / 0.5 + 0.65 / 0.4)),
-            api_score_rate: Some(0.8 / (0.35 / 0.5 + 0.65 / 0.4)),
+            api_performance_rate: Some(1.0 / (0.35 / 0.5 + 0.65 / 0.4)),
+            api_lead_rate: Some(0.0),
+            api_sustained_lead_rate: Some(0.0),
         },
     ];
     let scored = score_evidence_rows(&meta, &evidence, &[7, 9], 3, false).unwrap();

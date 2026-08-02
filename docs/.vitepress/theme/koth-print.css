@@ -106,7 +106,8 @@
 
   .koth-handbook .journal-table th,
   .koth-handbook .journal-table td {
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
+    word-break: normal;
   }
 
   .koth-handbook .journal-nowrap {
@@ -212,6 +213,15 @@
   .koth-handbook .journal-keep-next {
     break-after: avoid;
     page-break-after: avoid;
+  }
+
+  .koth-handbook .vp-doc #references + ol {
+    font-size: 7.6pt;
+    line-height: 1.08;
+  }
+
+  .koth-handbook .vp-doc #references + ol > li {
+    margin-bottom: 0;
   }
 
 }

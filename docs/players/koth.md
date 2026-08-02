@@ -1,21 +1,18 @@
 # King of the Hill
 
-RSCTF supports two KotH formats. Read the challenge instructions and the format
-badge before playing:
+RSCTF supports two constant KotH formats. Read the format badge and challenge
+instructions before playing:
 
-- **Boot2root marker KotH** has one shared machine and one holder at a time.
-- **API arena KotH** lets every team play and score in the same tick.
+- **Boot2Root KotH** has one shared machine and one confirmed holder at a time.
+- **Leaderboard KotH** lets every eligible team play and score in the same
+  tick.
 
-For the complete formulas, worked examples, fault rules, and organizer
-guidance, read the [KotH scoring handbook](/players/koth-scoring-handbook) or
+For proofs, worked examples, fault rules, and organizer guidance, read the
+[KotH scoring handbook](/players/koth-scoring-handbook) or
 [download the journal PDF](/downloads/king-of-the-hill-scoring-handbook.pdf).
-This is the single canonical KotH paper: it documents the live
-Marker/API-arena contract and clearly labels the proposed transition to the
-transport-neutral **Boot2Root KotH** and **Leaderboard KotH** names. The
-proposal is not the live scoring contract until its status notice says
-otherwise.
+That paper is the canonical contract for both formats.
 
-## Boot2root marker KotH
+## Boot2Root KotH
 
 Exploit or administer the shared hill and place your current per-hill
 capability in:
@@ -28,69 +25,78 @@ The first healthy observation creates a provisional claim. The same capability
 must remain present and the service must remain healthy for the configured
 confirmation streak before the team becomes confirmed king.
 
-The platform aggregates three rates for each team, hill, and epoch:
+For one team, hill, and epoch:
 
-- **Acquisition (`A`)**: eligible crown-cycle windows in which your claim was
-  confirmed.
-- **Control (`C`)**: personally eligible scorable ticks your capability
-  controlled.
-- **Reliability (`R`)**: healthy ticks divided by ticks for which your team was
-  responsible.
+- `A` is the share of eligible crown-cycle windows acquired;
+- `C` is the share of personally eligible scorable ticks controlled; and
+- `R` is the healthy share of ticks for which that team was responsible.
 
 ```text
 Core  = 0.25A + 0.55C + 0.20 * sqrt(A * C)
 Local = 100 * R * Core
 ```
 
-Control matters most directly, the balance term rewards taking and retaining
-the hill, and reliability constrains the whole score.
+Control matters most, the balance term rewards taking and retaining the hill,
+and reliability constrains the entire result.
 
-## API arena KotH
+## Leaderboard KotH
 
-Follow the application's published API or gameplay mechanic. You still use
-your current per-hill capability to identify your team to the challenge, but
-you do not call RSCTF's signed referee endpoint. The organizer's independent
-referee converts verified challenge events into bounded evidence.
+Use the application's published gameplay mechanic. Your current per-hill
+capability identifies the team to the challenge; players never call RSCTF's
+signed referee endpoint. An independent organizer-controlled referee converts
+verified challenge events into bounded evidence.
 
-Every scorable tick has three normalized rates:
+For each scorable tick:
 
-- **Activity (`E`)**: meaningful verified actions divided by the published
-  activity target.
-- **Objective performance (`P`)**: the equal-weight mean of the challenge's
-  independently normalized objective ratios.
-- **Integrity (`I`)**: valid actions divided by all counted actions.
+- `E_t` is meaningful verified activity divided by its published target;
+- `P_t` is the equal-weight mean of independently normalized objectives; and
+- `Q_t` is their weighted harmonic mean.
 
 ```text
-B = 0                                  if E = 0 or P = 0
-B = 1 / (0.35 / E + 0.65 / P)         otherwise
-
-Tick score = 100 * I * B
+Q_t = 0                                  if E_t = 0 or P_t = 0
+Q_t = 1 / (0.35 / E_t + 0.65 / P_t)     otherwise
 ```
 
-The harmonic mean requires both play and performance. Guessing or malformed
-actions lower integrity. RSCTF calculates each tick before averaging the epoch,
-so evidence from separate moments cannot be combined into a result that never
-occurred. If your team produces no current-tick evidence, that tick is an
-explicit zero; an earlier score is never carried forward.
+For an epoch of `T` scorable ticks, `Q` is the mean of `Q_t`. A team tied for
+the highest positive `Q_t` receives lead credit `l_t = 1/k`, where `k` is the
+number of exact leaders; lead credit is zero unless at least two teams have a
+positive score in that tick.
 
-An API arena has no exclusive holder, provisional crown, or champion-cooldown
-score. Several teams can earn points simultaneously.
+```text
+L = mean(l_t)
+S = 0                                      if T < 2
+S = sum(min(l_(t-1), l_t)) / (T - 1)      otherwise
 
-## Ticks, clean resets, and epochs
+D = 0.25L + 0.55S + 0.20 * sqrt(L * S)
+Local = 100 * [Q + 0.50 * Q * (1 - Q) * D]
+```
 
-The checker samples every hill once per scorable tick at a
-server-randomized time. Do not rely on a round boundary as the check time.
-Several ticks form a crown cycle. At its boundary, RSCTF pauses the hill,
-finalizes evidence, destroys the old container, creates one pristine
-replacement from the snapshotted image, revokes old capabilities, runs
-readiness, and resumes only after the replacement works.
+The harmonic mean requires both play and performance. The bounded bonus
+rewards consistently staying first, while a single spike produces little
+continuity. It adds at most 12.5 points and cannot rescue zero performance.
+Failed hacking attempts do not subtract points; the challenge instead makes
+scored evidence require real, verified, non-replayable work.
 
-The reset makes old capabilities, sessions, patches, and implants invalid.
+If your team produces no evidence, that tick is an explicit zero. Earlier
+evidence is never carried forward. Leaderboard KotH has no exclusive holder,
+provisional crown, or champion-cooldown score, and several teams can score at
+the same time.
+
+## Ticks, pristine resets, and epochs
+
+The checker samples each hill once per scorable tick at a server-randomized
+time. Do not rely on the round boundary as the check time. Several ticks form a
+crown cycle. At its boundary, RSCTF pauses the hill, finalizes evidence,
+destroys the old container, creates a pristine replacement from the official
+image snapshot, revokes old capabilities, runs readiness, and resumes only
+after the replacement works.
+
+The reset invalidates old capabilities, sessions, patches, and implants.
 Reset/readiness time, incomplete capability issuance, and platform-attributed
 failures are void rather than charged to teams.
 
-Several crown cycles form an epoch. Complete evidence-bearing epochs have equal
-weight. A shortened final epoch has proportional weight, and a wholly
+Several crown cycles form an epoch. Complete evidence-bearing epochs have
+equal weight. A shortened final epoch has proportional weight, and a wholly
 field-void hill is omitted from hill normalization. Bounded hill weights never
 raise the epoch ceiling above 100.
 
@@ -99,50 +105,54 @@ raise the epoch ceiling above 100.
 1. Open the KotH toolkit.
 2. Copy the current capability for the specific hill.
 3. Use only the challenge's published marker or application endpoint.
-4. Re-fetch the capability after every reset.
+4. Fetch a new capability after every reset.
 5. Keep it out of logs, screenshots, writeups, and public automation output.
 
 Capabilities are bearer secrets bound to one hill, target, container, crown
 cycle, and reset attempt. A stale capability cannot score on the replacement.
-A ban, team deletion, or invalid roster removes live access; the frozen
-official roster remains as historical scoring identity.
+A ban or deleted team removes live access; the frozen official roster remains
+the historical scoring identity.
 
 ## Read the scoreboard
 
-The per-hill badge identifies **Marker** or **API arena**:
+The per-hill badge identifies **Boot2Root** or **Leaderboard**:
 
-- marker hills show Acquisition, Control, Reliability, confirmed king, and
-  provisional progress;
-- API arenas show Activity, Objective, and Integrity and do not show a crown
-  holder.
+- Boot2Root shows Acquisition, Control, Reliability, confirmed king, and
+  provisional progress.
+- Leaderboard shows Activity, Objective, Sustained lead, and no crown holder.
 
-**Projected** includes unfinished evidence and can change. **Settled** includes
-only finalized epochs and determines official rank.
+**Projected** includes unfinished evidence and may change. **Settled** includes
+only finalized epochs and determines official rank. Rank sorts by settled
+points, Control/Objective rate, Reliability/Sustained-lead rate, then the count
+of acquisition windows or activity-positive ticks, and finally stable
+participation ID. The live projection never breaks an official tie. Ranks are
+ordinal; the final ID makes the order deterministic.
 
 ![Live RSCTF crown-cycle scoring board showing a provisional claim, projected points, and acquisition, control, and reliability rates](/screenshots/koth-scoreboard-desktop.png)
 
-*Marker-KotH scoreboard captured from the deployed Docker Compose platform on
-13 July 2026. The provisional claim and score evidence are real application
+*Boot2Root KotH scoreboard captured from the deployed Docker Compose platform
+on 13 July 2026. The provisional claim and score evidence are application
 state, not a mockup.*
 
 ## Practical strategy
 
-For marker KotH:
+For Boot2Root:
 
-- automate capability fetch, exploitation, claim placement, and health checks;
-- keep the exact capability stable until confirmation;
-- make reversible patches and prepare to reapply them after each clean reset;
+- automate capability fetch, exploitation, marker placement, and health
+  checks;
+- keep the exact capability stable through confirmation;
+- make reversible patches and prepare to reapply them after each reset; and
 - avoid changes that break the checked service for everyone.
 
-For API arenas:
+For Leaderboard:
 
-- automate the documented challenge interaction, not the organizer referee;
+- automate the documented challenge interaction, not the trusted referee;
 - complete enough distinct verified actions to satisfy activity;
 - optimize every published objective rather than farming the largest native
   number;
-- solve server-issued tasks locally instead of guessing against the endpoint;
-- monitor per-tick evidence because omitted or late work does not carry.
+- solve server-issued tasks instead of guessing; and
+- monitor tick evidence because omitted or late work does not carry.
 
-For both formats, respect the allowed network scope and rate limits, protect
-credentials, and verify the scoreboard rather than assuming an action was
-sampled.
+For both formats, stay within the allowed network scope and rate limits,
+protect credentials, and verify the scoreboard rather than assuming an action
+was sampled.

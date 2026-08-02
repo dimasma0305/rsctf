@@ -548,7 +548,7 @@ fn common_router() -> Router<SharedState> {
             "/api/v1/koth/games/{id}/challenges/{challengeId}/observations",
             post(submit_observation).layer(DefaultBodyLimit::max(api_contract::MAX_BODY_BYTES)),
         )
-    // No player score endpoint: marker hills read /koth/king, while an API arena
+    // No player score endpoint: Boot2Root hills read /koth/king, while Leaderboard
     // accepts evidence only from its challenge-scoped trusted referee.
 }
 
@@ -727,10 +727,14 @@ async fn build_koth_scoreboard(
     // ICPC freeze: a non-monitor inside `[FreezeTimeUtc, EndTimeUtc)` sees the
     // FROZEN board; monitors always see it live.
     let now = Utc::now();
-    let mut cutoff: Option<DateTime<Utc>> = match game.freeze_time_utc {
-        Some(freeze) if !is_monitor && now >= freeze && now < game.end_time_utc => Some(freeze),
-        _ => None,
-    };
+    let is_frozen_view = crate::utils::scoring::public_scoreboard_frozen(
+        game.freeze_time_utc,
+        game.end_time_utc,
+        now,
+        is_monitor,
+    );
+    let mut cutoff: Option<DateTime<Utc>> =
+        is_frozen_view.then_some(game.freeze_time_utc).flatten();
     // After the game ends, freeze the rendered board at the end instant.
     if now >= game.end_time_utc {
         cutoff = Some(cutoff.map_or(game.end_time_utc, |c| c.min(game.end_time_utc)));
@@ -794,7 +798,7 @@ async fn build_koth_scoreboard(
         current_round_ends_at: board.current_round_ends_at,
         tick_seconds: board.tick_seconds,
         generated_at: Utc::now(),
-        is_frozen_view: cutoff.is_some(),
+        is_frozen_view,
         freeze: board.freeze,
         hills,
         teams,

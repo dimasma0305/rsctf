@@ -126,10 +126,14 @@ async fn build_timeline_model(
 ) -> AppResult<KothScoreTimelineModel> {
     let now = Utc::now();
     let event_ended = now >= game.end_time_utc;
-    let mut cutoff = match game.freeze_time_utc {
-        Some(freeze) if !is_monitor && now >= freeze && now < game.end_time_utc => Some(freeze),
-        _ => None,
-    };
+    let mut cutoff = crate::utils::scoring::public_scoreboard_frozen(
+        game.freeze_time_utc,
+        game.end_time_utc,
+        now,
+        is_monitor,
+    )
+    .then_some(game.freeze_time_utc)
+    .flatten();
     if event_ended {
         cutoff = Some(cutoff.map_or(game.end_time_utc, |value| value.min(game.end_time_utc)));
     }

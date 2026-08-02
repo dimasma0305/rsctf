@@ -171,8 +171,7 @@ const Scoreboard: FC = () => {
         : scoreboard?.freeze
 
   // Once an event has ended, the returned board is already the final view. Do
-  // not promise a future reveal or format a missing freeze timestamp (KotH can
-  // legitimately return isFrozenView=true with freeze=null after closeout).
+  // not promise a future reveal or format a missing freeze timestamp.
   const freezeBanner =
     frozenView && !finished && frozenAt ? (
       <Alert color="blue" icon={<Icon path={mdiSnowflake} size={1} />}>

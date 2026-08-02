@@ -47,6 +47,17 @@ pub(super) async fn assert_submission_evidence_fence(
     let mut submit_fence = crate::utils::database::begin_sqlx_transaction(state.pg())
         .await
         .unwrap();
+    crate::utils::single_flight::acquire_transaction_advisory_lock_shared(
+        &mut submit_fence,
+        &crate::services::ad_engine::game_lock_key(game_id),
+    )
+    .await
+    .unwrap();
+    sqlx::query(r#"SELECT id FROM "Games" WHERE id = $1 FOR SHARE"#)
+        .bind(game_id)
+        .execute(&mut *submit_fence)
+        .await
+        .unwrap();
     crate::utils::scoring::lock_jeopardy_flags_shared(&mut submit_fence, challenge_id)
         .await
         .unwrap();

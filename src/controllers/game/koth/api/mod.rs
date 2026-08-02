@@ -1,4 +1,4 @@
-//! Signed, challenge-scoped API-arena referee.
+//! Signed, challenge-scoped Leaderboard referee.
 //!
 //! Referees report bounded evidence ratios, never points. The round checker is
 //! the only component that can turn a stable, healthy snapshot into score.
@@ -41,19 +41,22 @@ pub(super) struct ActiveObserverContext {
     pub(super) round_number: i32,
     pub(super) round_starts_at: DateTime<Utc>,
     pub(super) round_ends_at: DateTime<Utc>,
+    pub(super) objective_ids: Option<Vec<String>>,
+    pub(super) objective_schema_hash: Option<Vec<u8>>,
 }
 
 impl ActiveObserverContext {
     pub(super) fn opaque_context(&self, game_id: i32, challenge_id: i32) -> String {
-        opaque_context(
+        opaque_context(OpaqueContext {
             game_id,
             challenge_id,
-            self.target_id,
-            self.cycle_id,
-            self.reset_attempt,
-            &self.container_id,
-            self.round_id,
-        )
+            target_id: self.target_id,
+            cycle_id: self.cycle_id,
+            reset_attempt: self.reset_attempt,
+            container_id: &self.container_id,
+            round_id: self.round_id,
+            objective_schema_hash: self.objective_schema_hash.as_deref(),
+        })
     }
 }
 
@@ -70,6 +73,8 @@ pub struct KothObserverContextModel {
     #[serde(with = "crate::utils::datetime::millis")]
     round_ends_at: DateTime<Utc>,
     eligible_token_hashes: Vec<String>,
+    objective_ids: Vec<String>,
+    objective_schema_hash: Option<String>,
     #[serde(with = "crate::utils::datetime::millis")]
     generated_at: DateTime<Utc>,
 }
@@ -101,7 +106,9 @@ where
                   target.container_id AS container_id,
                   round.id AS round_id, round.number AS round_number,
                   round.start_time_utc AS round_starts_at,
-                  round.end_time_utc AS round_ends_at
+                  round.end_time_utc AS round_ends_at,
+                  scheme.objective_ids,
+                  scheme.objective_schema_hash
              FROM "KothTargets" target
              JOIN "Games" game
                ON game.id = target.game_id
@@ -119,6 +126,9 @@ where
              JOIN "KothApiObservers" observer
                ON observer.game_id = target.game_id
               AND observer.challenge_id = target.challenge_id
+        LEFT JOIN "KothApiArenaSchemes" scheme
+               ON scheme.game_id = target.game_id
+              AND scheme.challenge_id = target.challenge_id
              JOIN LATERAL (
                SELECT crown.id, crown.cycle_number, crown.reset_attempt,
                       crown.replacement_container_id,
@@ -162,7 +172,7 @@ pub async fn observer_context(
 ) -> AppResult<RequestResponse<KothObserverContextModel>> {
     let context = load_active_context(st.pg(), game_id, challenge_id)
         .await?
-        .ok_or_else(|| AppError::conflict("KotH API arena context is not active"))?;
+        .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
     let eligible_tokens: Vec<String> = sqlx::query_scalar(
         r#"SELECT token.token
              FROM "KothTokens" token
@@ -212,7 +222,7 @@ pub async fn observer_context(
     .map_err(|error| AppError::internal(error.to_string()))?;
     if eligible_tokens.len() > super::api_contract::MAX_TEAM_ENTRIES {
         return Err(AppError::conflict(
-            "KotH API arena roster exceeds the supported 2,000 teams",
+            "Leaderboard KotH roster exceeds the supported 2,000 teams",
         ));
     }
     Ok(RequestResponse::ok(KothObserverContextModel {
@@ -227,6 +237,8 @@ pub async fn observer_context(
             .iter()
             .map(|token| hex::encode(Sha256::digest(token.as_bytes())))
             .collect(),
+        objective_ids: context.objective_ids.clone().unwrap_or_default(),
+        objective_schema_hash: context.objective_schema_hash.as_ref().map(hex::encode),
         generated_at: Utc::now(),
     }))
 }
@@ -274,24 +286,28 @@ pub(super) fn verify_signature(
         .map_err(|_| AppError::Unauthorized)
 }
 
-fn opaque_context(
+struct OpaqueContext<'a> {
     game_id: i32,
     challenge_id: i32,
     target_id: i32,
     cycle_id: i64,
     reset_attempt: i32,
-    container_id: &str,
+    container_id: &'a str,
     round_id: i32,
-) -> String {
+    objective_schema_hash: Option<&'a [u8]>,
+}
+
+fn opaque_context(context: OpaqueContext<'_>) -> String {
     let mut digest = Sha256::new();
-    digest.update(game_id.to_be_bytes());
-    digest.update(challenge_id.to_be_bytes());
-    digest.update(target_id.to_be_bytes());
-    digest.update(cycle_id.to_be_bytes());
-    digest.update(reset_attempt.to_be_bytes());
-    digest.update((container_id.len() as u64).to_be_bytes());
-    digest.update(container_id.as_bytes());
-    digest.update(round_id.to_be_bytes());
+    digest.update(context.game_id.to_be_bytes());
+    digest.update(context.challenge_id.to_be_bytes());
+    digest.update(context.target_id.to_be_bytes());
+    digest.update(context.cycle_id.to_be_bytes());
+    digest.update(context.reset_attempt.to_be_bytes());
+    digest.update((context.container_id.len() as u64).to_be_bytes());
+    digest.update(context.container_id.as_bytes());
+    digest.update(context.round_id.to_be_bytes());
+    digest.update(context.objective_schema_hash.unwrap_or(&[0_u8; 32]));
     hex::encode(digest.finalize())
 }
 
@@ -342,14 +358,37 @@ mod tests {
 
     #[test]
     fn context_changes_for_every_runtime_and_scoring_window() {
-        let base = opaque_context(7, 9, 3, 41, 1, "container-a", 51);
+        let context = |game_id,
+                       challenge_id,
+                       target_id,
+                       cycle_id,
+                       reset_attempt,
+                       container_id,
+                       round_id,
+                       objective_schema_hash| {
+            opaque_context(OpaqueContext {
+                game_id,
+                challenge_id,
+                target_id,
+                cycle_id,
+                reset_attempt,
+                container_id,
+                round_id,
+                objective_schema_hash,
+            })
+        };
+        let base = context(7, 9, 3, 41, 1, "container-a", 51, None);
         assert_eq!(base.len(), 64);
-        assert_ne!(base, opaque_context(8, 9, 3, 41, 1, "container-a", 51));
-        assert_ne!(base, opaque_context(7, 9, 4, 41, 1, "container-a", 51));
-        assert_ne!(base, opaque_context(7, 9, 3, 42, 1, "container-a", 51));
-        assert_ne!(base, opaque_context(7, 9, 3, 41, 2, "container-a", 51));
-        assert_ne!(base, opaque_context(7, 9, 3, 41, 1, "container-b", 51));
-        assert_ne!(base, opaque_context(7, 9, 3, 41, 1, "container-a", 52));
+        assert_ne!(base, context(8, 9, 3, 41, 1, "container-a", 51, None));
+        assert_ne!(base, context(7, 9, 4, 41, 1, "container-a", 51, None));
+        assert_ne!(base, context(7, 9, 3, 42, 1, "container-a", 51, None));
+        assert_ne!(base, context(7, 9, 3, 41, 2, "container-a", 51, None));
+        assert_ne!(base, context(7, 9, 3, 41, 1, "container-b", 51, None));
+        assert_ne!(base, context(7, 9, 3, 41, 1, "container-a", 52, None));
+        assert_ne!(
+            base,
+            context(7, 9, 3, 41, 1, "container-a", 51, Some(&[1; 32]))
+        );
     }
 
     #[test]

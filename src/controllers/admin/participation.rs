@@ -125,6 +125,13 @@ async fn persist_participation_status(
     )
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    // Submissions lock Games before Participations. Retain that global order so
+    // a division/status edit cannot deadlock an in-flight first solve.
+    let competition_scoring_started = crate::controllers::edit::competition_scoring_started_locked(
+        &mut transaction,
+        identity.game_id,
+    )
+    .await?;
 
     let live: Option<(i16, Option<i32>, i32, bool, bool)> = sqlx::query_as(
         r#"SELECT participation.status,
@@ -184,7 +191,7 @@ async fn persist_participation_status(
         division_id,
     )
     .await?;
-    let scoring_started = crate::controllers::edit::ad_epoch_scoring_started_locked(
+    let engine_scoring_started = crate::controllers::edit::ad_epoch_scoring_started_locked(
         &mut transaction,
         identity.game_id,
     )
@@ -193,11 +200,11 @@ async fn persist_participation_status(
     // after scoring starts. They retain the same participation and division;
     // rejection remains subject to both the engine boundary and evidence fence.
     crate::controllers::edit::ensure_ad_roster_status_mutable(
-        scoring_started,
+        engine_scoring_started,
         Some(live_status),
         requested_status,
     )?;
-    ensure_scored_division_unchanged(scoring_started, live_division_id, division_id)?;
+    ensure_scored_division_unchanged(competition_scoring_started, live_division_id, division_id)?;
     sqlx::query(
         r#"UPDATE "Participations"
               SET status = $1, division_id = $2
@@ -301,6 +308,11 @@ async fn update_division_only(
     )
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let scoring_started = crate::controllers::edit::competition_scoring_started_locked(
+        &mut transaction,
+        identity.game_id,
+    )
+    .await?;
 
     let live: Option<(i16, Option<i32>, i32, bool, bool)> = sqlx::query_as(
         r#"SELECT participation.status,
@@ -354,11 +366,6 @@ async fn update_division_only(
         live_status,
         live_division_id,
         division_id,
-    )
-    .await?;
-    let scoring_started = crate::controllers::edit::ad_epoch_scoring_started_locked(
-        &mut transaction,
-        identity.game_id,
     )
     .await?;
     ensure_scored_division_unchanged(scoring_started, live_division_id, division_id)?;

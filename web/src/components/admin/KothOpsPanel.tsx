@@ -103,7 +103,7 @@ const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill
         >
           {hill.claimSource === 'Api'
             ? hill.apiObserverConfigured
-              ? t('admin.content.ad_ops.koth.observer_api', 'API arena')
+              ? t('admin.content.ad_ops.koth.observer_api', 'Leaderboard')
               : t('admin.content.ad_ops.koth.observer_missing', 'API key missing')
             : hill.cycleNumber > 0
               ? t('admin.content.ad_ops.koth.observer_marker_locked', 'Container marker · locked')
@@ -127,7 +127,7 @@ const KothClaimInputCell: FC<{ hill: AdminKothHill; onOpen: (hill: AdminKothHill
             ? t('admin.button.ad_ops.koth.observer_view', 'View input')
             : hill.apiObserverConfigured
               ? t('admin.button.ad_ops.koth.observer_manage', 'Manage API')
-              : t('admin.button.ad_ops.koth.observer_enable', 'Enable API')}
+              : t('admin.button.ad_ops.koth.observer_enable', 'Enable Leaderboard')}
         </Button>
       </Stack>
     </Table.Td>
@@ -302,7 +302,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
       !window.confirm(
         t(
           'admin.confirm.ad_ops.koth.observer_revoke',
-          'Revoke this referee secret? API arena evidence will stop until a new secret is created.'
+          'Revoke this referee secret? Leaderboard evidence will stop until a new secret is created.'
         )
       )
     )
@@ -776,7 +776,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         centered
         title={t('admin.content.ad_ops.koth.observer_title', {
           hill: observerHill?.title ?? '',
-          defaultValue: 'API arena referee — {{hill}}',
+          defaultValue: 'Leaderboard referee — {{hill}}',
         })}
       >
         {observerLoading || !observer ? (
@@ -795,15 +795,15 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                   ? observer.configured
                     ? t(
                         'admin.content.ad_ops.koth.observer_active',
-                        'This API arena accepts signed, normalized evidence for every team. RSCTF binds it to the current tick, brackets it around the functional checker, and calculates every point.'
+                        'This Leaderboard hill accepts signed, normalized evidence for every team. RSCTF binds it to the current tick, brackets it around the functional checker, and calculates every point.'
                       )
                     : t(
                         'admin.content.ad_ops.koth.observer_required',
-                        'This hill is officially locked to API arena scoring but has no active referee credential. Create one before resuming scoring.'
+                        'This hill is officially locked to Leaderboard scoring but has no active referee credential. Create one before resuming scoring.'
                       )
                   : t(
                       'admin.content.ad_ops.koth.observer_marker_mode',
-                      'This boot2root hill currently reads /koth/king. Enabling the referee before the official snapshot selects multi-team API arena scoring; the mode cannot change after scoring starts.'
+                      'This boot2root hill currently reads /koth/king. Enabling the referee before the official snapshot selects multi-team Leaderboard scoring; the mode cannot change after scoring starts.'
                     )}
               </Text>
               {observer.claimSource === 'Api' && observer.configured && (
@@ -811,13 +811,29 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                   {observer.objectiveCount === null
                     ? t(
                         'admin.content.ad_ops.koth.observer_scheme_pending',
-                        'The objective component count will lock on the first accepted snapshot containing a recognized team.'
+                        'The ordered objective IDs will lock on the first accepted signed snapshot, including an explicit all-zero snapshot.'
                       )
                     : t('admin.content.ad_ops.koth.observer_scheme_locked', {
                         count: observer.objectiveCount,
                         defaultValue:
-                          'Objective scheme locked: {{count}} equally normalized components for the event. Referee credential changes cannot alter it.',
+                          'Objective scheme locked: {{count}} identified, equally normalized components for the event. Referee credential changes cannot alter it.',
                       })}
+                </Text>
+              )}
+              {observer.objectiveIds && observer.objectiveIds.length > 0 && (
+                <Text size="xs" mt={4} className={misc.ffmono} style={{ overflowWrap: 'anywhere' }}>
+                  {t('admin.content.ad_ops.koth.observer_objective_ids', {
+                    ids: observer.objectiveIds.join(' · '),
+                    defaultValue: 'Objectives: {{ids}}',
+                  })}
+                </Text>
+              )}
+              {observer.objectiveSchemaHash && (
+                <Text size="xs" mt={2} c="dimmed" className={misc.ffmono} style={{ overflowWrap: 'anywhere' }}>
+                  {t('admin.content.ad_ops.koth.observer_schema_hash', {
+                    hash: observer.objectiveSchemaHash,
+                    defaultValue: 'Schema SHA-256: {{hash}}',
+                  })}
                 </Text>
               )}
             </Alert>
@@ -862,12 +878,12 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
 X-RSCTF-Timestamp: <Unix milliseconds>
 X-RSCTF-Signature: sha256=<HMAC-SHA256>
 
-{"context":"<context>","teams":[{"tokenHash":"<sha256-current-capability>","activity":{"earned":4,"possible":5},"objectives":[{"earned":7,"possible":10},{"earned":750,"possible":1000}],"integrity":{"earned":19,"possible":20}}]}`}
+{"context":"<context>","objectiveIds":["quality","throughput"],"teams":[{"tokenHash":"<sha256-current-capability>","activity":{"earned":4,"possible":5},"objectives":[{"earned":7,"possible":10},{"earned":750,"possible":1000}]}]}`}
               </Code>
               <Text size="xs" c="dimmed">
                 {t(
                   'admin.content.ad_ops.koth.observer_signature',
-                  'Hash each current capability with SHA-256 and sign the exact raw body as timestamp.gameId.challengeId.body. RSCTF normalizes each objective independently; raw capabilities and points are never accepted. Requests expire after five minutes and accepted signatures cannot be replayed.'
+                  'Hash each current capability with SHA-256 and sign the exact raw body as timestamp.gameId.challengeId.body. Stable ordered objectiveIds are frozen and bound into later contexts; RSCTF normalizes each objective independently, and raw capabilities or points are never accepted. Requests expire after five minutes and accepted signatures cannot be replayed.'
                 )}
               </Text>
             </Stack>

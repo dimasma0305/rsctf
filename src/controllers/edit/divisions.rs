@@ -164,7 +164,7 @@ fn ensure_scored_division_policy_unchanged(
         .is_some_and(|configs| normalized_challenge_configs(configs) != *current_challenge_configs);
     if default_changed || configs_changed {
         return Err(AppError::bad_request(
-            "Division permissions are locked after A&D/KotH epoch scoring has started.",
+            "Division scoring permissions are locked after competition scoring has started.",
         ));
     }
     Ok(())
@@ -181,6 +181,7 @@ async fn guard_division_policy_update(
     requested_default_permissions: Option<i32>,
     requested_challenge_configs: Option<&[DivisionChallengeConfigInput]>,
 ) -> AppResult<()> {
+    let scoring_started = competition_scoring_started_locked(connection, game_id).await?;
     let current_default_permissions: Option<i32> = sqlx::query_scalar(
         r#"SELECT default_permissions FROM "Divisions"
             WHERE id = $1 AND game_id = $2
@@ -193,7 +194,6 @@ async fn guard_division_policy_update(
     .map_err(|error| AppError::internal(error.to_string()))?;
     let current_default_permissions =
         current_default_permissions.ok_or_else(|| AppError::not_found("Division not found"))?;
-    let scoring_started = ad_epoch_scoring_started_locked(connection, game_id).await?;
 
     let current_challenge_configs = if scoring_started && requested_challenge_configs.is_some() {
         sqlx::query_as::<_, (i32, i32)>(
@@ -282,6 +282,11 @@ pub async fn create_division(
     validate_challenge_configs(&st, id, model.challenge_configs.as_deref()).await?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     require_game_mutable(control.transaction_mut(), id).await?;
+    if competition_scoring_started_locked(control.transaction_mut(), id).await? {
+        return Err(AppError::bad_request(
+            "Divisions cannot be added after competition scoring has started.",
+        ));
+    }
     let created_id: i32 = sqlx::query_scalar(
         r#"INSERT INTO "Divisions" (game_id, name, invite_code, default_permissions)
            VALUES ($1, $2, $3, $4) RETURNING id"#,
@@ -380,6 +385,11 @@ pub async fn delete_division(
     manager_or_admin(&st, &user, id).await?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     require_game_mutable(control.transaction_mut(), id).await?;
+    if competition_scoring_started_locked(control.transaction_mut(), id).await? {
+        return Err(AppError::bad_request(
+            "Divisions cannot be deleted after competition scoring has started.",
+        ));
+    }
     let existing_id: Option<i32> = sqlx::query_scalar(
         r#"SELECT id FROM "Divisions"
             WHERE id = $1 AND game_id = $2

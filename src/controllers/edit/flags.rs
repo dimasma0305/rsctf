@@ -13,6 +13,35 @@ async fn cleanup_staged_flag_attachments(st: &SharedState, flags: &[(String, Opt
     }
 }
 
+/// The accepted static flags and a dynamic flag template are scoring policy,
+/// not ordinary challenge content. Production callers own the game-control
+/// lock and the challenge-scoped JFLG lock, making this decision linearizable
+/// with both engine startup and a first accepted submit.
+async fn ensure_flag_policy_mutable_locked(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<()> {
+    let challenge_exists = sqlx::query_scalar::<_, bool>(
+        r#"SELECT TRUE FROM "GameChallenges"
+            WHERE game_id = $1 AND id = $2"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Challenge not found"))?;
+    debug_assert!(challenge_exists);
+    let scoring_started = competition_scoring_started_locked(connection, game_id).await?;
+    if scoring_started {
+        return Err(AppError::bad_request(
+            "Challenge flags are locked after competition scoring has started.",
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /api/edit/games/{id}/challenges/{cId}/flags` — void.
 pub async fn add_flags(
     State(st): State<SharedState>,
@@ -40,6 +69,16 @@ pub async fn add_flags(
         flags.push((m.flag, attachment_id));
     }
 
+    // Global order is game-control -> challenge definition -> JFLG. The game
+    // lock prevents an A&D/KotH first round from crossing the policy check;
+    // JFLG provides the corresponding first-Jeopardy-solve fence.
+    let game_control = match crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await {
+        Ok(lock) => lock,
+        Err(error) => {
+            cleanup_staged_flag_attachments(&st, &flags).await;
+            return Err(error);
+        }
+    };
     let mut definition_lock = match crate::services::challenge_workloads::acquire_definition_lock(
         st.pg(),
         id,
@@ -49,6 +88,7 @@ pub async fn add_flags(
     {
         Ok(lock) => lock,
         Err(error) => {
+            drop(game_control);
             cleanup_staged_flag_attachments(&st, &flags).await;
             return Err(AppError::internal(error.to_string()));
         }
@@ -59,6 +99,7 @@ pub async fn add_flags(
         // their key-share row locks survive until every flag insert commits.
         challenges::reject_pending_mutation(&mut **definition_lock.transaction_mut(), id, c_id)
             .await?;
+        ensure_flag_policy_mutable_locked(definition_lock.transaction_mut(), id, c_id).await?;
         crate::utils::scoring::lock_jeopardy_flags_exclusive(
             definition_lock.transaction_mut(),
             c_id,
@@ -84,12 +125,17 @@ pub async fn add_flags(
 
     if let Err(error) = mutation {
         drop(definition_lock);
+        drop(game_control);
         cleanup_staged_flag_attachments(&st, &flags).await;
         return Err(error);
     }
     if let Err(error) = definition_lock.release().await {
+        drop(game_control);
         cleanup_staged_flag_attachments(&st, &flags).await;
         return Err(AppError::internal(error.to_string()));
+    }
+    if let Err(error) = game_control.release().await {
+        tracing::warn!(%error, id, c_id, "flag-policy game lock release failed after commit");
     }
     Ok(MessageResponse::ok(""))
 }
@@ -103,6 +149,7 @@ pub async fn remove_flag(
     Path((id, c_id, f_id)): Path<(i32, i32, i32)>,
 ) -> AppResult<RequestResponse<String>> {
     manager_or_admin(&st, &user, id).await?;
+    let game_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     let mut definition_lock =
         crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
     let removal = match remove_flag_locked(definition_lock.transaction_mut(), id, c_id, f_id).await
@@ -112,6 +159,7 @@ pub async fn remove_flag(
             if let Err(rollback_error) = definition_lock.rollback().await {
                 tracing::warn!(%rollback_error, f_id, "flag removal rollback failed");
             }
+            drop(game_control);
             return Err(error);
         }
     };
@@ -119,6 +167,9 @@ pub async fn remove_flag(
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Err(error) = game_control.release().await {
+        tracing::warn!(%error, id, c_id, f_id, "flag-policy game lock release failed after commit");
+    }
     let Some(deleted_hash) = removal else {
         return Ok(RequestResponse::ok("NotFound".to_string()));
     };
@@ -143,6 +194,7 @@ pub(super) async fn remove_flag_locked(
     flag_id: i32,
 ) -> AppResult<Option<Option<String>>> {
     challenges::reject_pending_mutation(&mut **transaction, game_id, challenge_id).await?;
+    ensure_flag_policy_mutable_locked(transaction, game_id, challenge_id).await?;
     crate::utils::scoring::lock_jeopardy_flags_exclusive(transaction, challenge_id).await?;
 
     // Capture the hand-out attachment in the same statement that removes the

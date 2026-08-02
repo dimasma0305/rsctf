@@ -207,7 +207,7 @@ const HillCard: FC<HillCardProps> = ({ hill, score, cycleTicks, confirmationTick
     ? t('game.content.scoreboard.koth.api.objective', 'Objective')
     : t('game.content.scoreboard.koth.epoch.column.control', 'Control')
   const thirdMetric = isApiArena
-    ? t('game.content.scoreboard.koth.api.integrity', 'Integrity')
+    ? t('game.content.scoreboard.koth.api.integrity', 'Sustained lead')
     : t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')
 
   return (
@@ -223,7 +223,7 @@ const HillCard: FC<HillCardProps> = ({ hill, score, cycleTicks, confirmationTick
             </Group>
             <Text size="xs" c="dimmed" truncate>
               {isApiArena
-                ? t('game.content.scoreboard.koth.api.mode', 'Normalized API arena')
+                ? t('game.content.scoreboard.koth.api.mode', 'Leaderboard')
                 : hill.currentHolderTeamName
                   ? t('game.content.scoreboard.koth.held_by', {
                       defaultValue: 'Confirmed king: {{team}}',
@@ -255,9 +255,11 @@ const HillCard: FC<HillCardProps> = ({ hill, score, cycleTicks, confirmationTick
               <Text size="xs" c="dimmed">
                 {isApiArena
                   ? t('game.content.scoreboard.koth.api.evidence_value', {
-                      defaultValue: '{{active}} active ticks · {{objective}} objective ticks · {{samples}} samples',
+                      defaultValue:
+                        '{{active}} active ticks · {{objective}} objective ticks · {{lead}} lead ticks · {{samples}} samples',
                       active: score.acquisitionWindows,
                       objective: score.controlledTicks,
+                      lead: healthyTicks,
                       samples: score.responsibleTicks,
                     })
                   : t('game.content.scoreboard.koth.evidence_value', {
@@ -321,9 +323,9 @@ const KothScoreDetailModal: FC<KothScoreDetailModalProps> = ({
       ? t('game.content.scoreboard.koth.api.objective_control', 'Objective / control')
       : t('game.content.scoreboard.koth.epoch.column.control', 'Control')
   const thirdMetric = onlyApi
-    ? t('game.content.scoreboard.koth.api.integrity', 'Integrity')
+    ? t('game.content.scoreboard.koth.api.integrity', 'Sustained lead')
     : mixed
-      ? t('game.content.scoreboard.koth.api.integrity_reliability', 'Integrity / reliability')
+      ? t('game.content.scoreboard.koth.api.integrity_reliability', 'Sustained lead / reliability')
       : t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')
 
   return (
@@ -546,24 +548,24 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
           <Alert color="blue" variant="light">
             <Stack gap={4}>
               <Text size="sm" fw={700}>
-                {t('game.content.scoreboard.koth.api.info_title', 'API arena scoring')}
+                {t('game.content.scoreboard.koth.api.info_title', 'Leaderboard scoring')}
               </Text>
               <Text size="xs">
                 {t(
                   'game.content.scoreboard.koth.api.info_body',
-                  'API arenas are not single-holder hills. Every team can score in the same tick. RSCTF independently normalizes each signed integer objective, then derives Activity (E), Objective performance (P), and Integrity (I); the referee cannot submit points.'
+                  'Leaderboard hills are not single-holder hills. Every team can score in the same tick. RSCTF independently normalizes each signed integer objective, derives a harmonic performance core from Activity (E) and Objective performance (P), and awards a bounded bonus for tied first-place coverage (L) and sustained lead (S). The referee cannot submit points.'
                 )}
               </Text>
               <Text size="xs" fw={700} className={cx(misc.ffmono, classes.scoringFormula)}>
                 {t(
                   'game.content.scoreboard.koth.api.formula',
-                  'Arena score = 100 × I ÷ (35% ÷ E + 65% ÷ P); zero if E or P is zero'
+                  'H = 100[Q + 0.5Q(1−Q)D], where D = 0.25L + 0.55S + 0.20√(LS)'
                 )}
               </Text>
               <Text size="xs">
                 {t(
                   'game.content.scoreboard.koth.api.anti_cheat',
-                  'The harmonic mean requires both real activity and objective performance. Only current-tick evidence that stays unchanged around the functional checker is scored. Omitted teams receive zero; stale, replayed, late, or changing snapshots cannot carry points forward.'
+                  'Each tick core is Qₜ = 1/(0.35/Eₜ + 0.65/Pₜ), or zero if either channel is zero; Q is its epoch mean. A first-place tie splits lead credit, and fewer than two positive teams earn no lead bonus. Failed hacking attempts are not negative points. Only current-tick evidence that stays unchanged around the functional checker is scored; omitted teams receive zero.'
                 )}
               </Text>
             </Stack>
@@ -739,9 +741,9 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
       ? t('game.content.scoreboard.koth.api.objective_control', 'Objective / control')
       : t('game.content.scoreboard.koth.epoch.column.control', 'Control')
   const thirdMetricLabel = onlyApiArena
-    ? t('game.content.scoreboard.koth.api.integrity', 'Integrity')
+    ? t('game.content.scoreboard.koth.api.integrity', 'Sustained lead')
     : hasApiArena
-      ? t('game.content.scoreboard.koth.api.integrity_reliability', 'Integrity / reliability')
+      ? t('game.content.scoreboard.koth.api.integrity_reliability', 'Sustained lead / reliability')
       : t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')
 
   return (
@@ -778,7 +780,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                 {hasApiArena
                   ? t(
                       'game.content.scoreboard.koth.api.compact_description',
-                      'Settled epochs determine rank. API arenas score every team from normalized current-tick evidence; marker hills score exclusive control.'
+                      'Settled epochs determine rank. Leaderboard hills score every team from normalized current-tick evidence and sustained first place; marker hills score exclusive control.'
                     )
                   : t(
                       'game.content.scoreboard.koth.epoch.compact_description',
@@ -894,7 +896,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                               </Badge>
                               {hill.claimSource === 'Api' && (
                                 <Badge size="xs" variant="light" color="blue">
-                                  {t('game.content.scoreboard.koth.api.badge', 'API arena')}
+                                  {t('game.content.scoreboard.koth.api.badge', 'Leaderboard')}
                                 </Badge>
                               )}
                               {hill.currentHolderTeamName && (
@@ -944,7 +946,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                         ? t('game.content.scoreboard.koth.api.objective', 'Objective')
                         : t('game.content.scoreboard.koth.epoch.column.control', 'Control')
                       const thirdMetric = isApiArena
-                        ? t('game.content.scoreboard.koth.api.integrity', 'Integrity')
+                        ? t('game.content.scoreboard.koth.api.integrity', 'Sustained lead')
                         : t('game.content.scoreboard.koth.epoch.column.reliability', 'Reliability')
                       return [
                         <Table.Th
@@ -1045,7 +1047,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                         const isApiArena = hill.claimSource === 'Api'
                         const firstMetric = isApiArena ? 'activity' : 'acquisition'
                         const secondMetric = isApiArena ? 'objective performance' : 'control'
-                        const thirdMetric = isApiArena ? 'integrity' : 'reliability'
+                        const thirdMetric = isApiArena ? 'sustained lead' : 'reliability'
                         const holderAccent = score.isCurrentHolder
                           ? `inset 3px 0 0 ${theme.colors.violet[dark ? 4 : 7]}`
                           : undefined
@@ -1237,7 +1239,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
               {hasApiArena
                 ? t('game.content.scoreboard.koth.api.footer_hint', {
                     defaultValue:
-                      'API arena labels are shown per hill; crown icons apply only to marker hills. Updated {{time}}.',
+                      'Leaderboard labels are shown per hill; crown icons apply only to marker hills. Updated {{time}}.',
                     time: dayjs(scoreboard.generatedAt).format('LT'),
                   })
                 : t('game.content.scoreboard.koth.epoch.footer_hint', {

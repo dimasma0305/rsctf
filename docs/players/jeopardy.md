@@ -34,9 +34,32 @@ Repeatedly guessing the submission endpoint is not a productive strategy and may
 
 ## Understand scoring
 
-Depending on organizer settings, challenge values may remain fixed or decay as more teams solve them. rsctf supports standard exponential, linear, and logarithmic decay toward a configured minimum. First, second, and third solves can also receive blood bonuses.
+Depending on the challenge settings, its value may stay fixed or decay as more
+eligible teams solve it. For initial score `O`, minimum rate `m`, difficulty
+`d`, and eligible solve count `n`, the value remains `O` through the first
+solve. After that, RSCTF floors `O` times the selected factor:
+
+```text
+Linear:      max(m, 1 - (1-m)(n-1)/d)
+Logarithmic: m + (1-m)/(1 + ln(n)/d)
+Standard:    m + (1-m)exp((1-n)/d)
+```
+
+First-, second-, and third-blood bonuses multiply the current value by their
+configured factors and use round-half-to-even. A challenge may disable blood.
+The same snapshot value applies to every eligible solver of that challenge.
+
+The scoreboard orders teams by points, then by the earlier last
+score-eligible solve, then stable team ID. Jeopardy ranks are ordinal. An
+ineligible solve cannot consume a blood slot, affect dynamic decay, or change
+the scoring tie-break.
 
 During a scoreboard freeze, your submission is still graded. The public board may hide recent changes until the organizer reveals or unfreezes it.
+
+Once competition scoring begins or a durable solve exists, organizers cannot
+change score-affecting event, challenge, flag/template, or division settings.
+This prevents a repository sync or operator edit from reinterpreting existing
+solves.
 
 ## Writeups
 

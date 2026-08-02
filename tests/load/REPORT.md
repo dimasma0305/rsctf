@@ -5,6 +5,92 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## Constant Leaderboard scoring and evidence integrity — 2 August 2026
+
+The scoring review removed the remaining configurable/versioned choices from
+official KotH settlement and separated the two formats by what their challenge
+actually measures. Boot2root KotH retains its fixed controller formula. The
+API-native format is now presented as **Leaderboard** and uses one fixed,
+platform-owned formula across every event. The `/api/v1` observation transport
+and persisted source discriminant remain unchanged for worker/referee wire
+compatibility; they are not scoring-version selectors.
+
+For every tick, RSCTF independently normalizes verified activity `E` and each
+native objective before taking their equal mean `P`. The absolute-performance
+core is zero when either channel is zero; otherwise:
+
+```text
+Q_t = 1 / (0.35/E + 0.65/P)
+Q   = mean(Q_t)
+L   = mean(exact tied-leader credit per competitive tick)
+S   = mean(minimum adjacent lead credit)
+D   = 0.25L + 0.55S + 0.20sqrt(LS)
+score = 100[Q + 0.5Q(1-Q)D]
+```
+
+A positive top tie splits one point equally. A tick with fewer than two
+positive teams is non-competitive and gives no leader credit. The consistency
+bonus is therefore field-relative but cannot replace real play: it is zero
+when `Q` is zero or perfect, needs adjacent competitive ticks for `S`, and is
+mathematically bounded to 12.5 points. Failed exploitation attempts remain
+rate-limitable security telemetry; they cannot be turned into an organizer-
+defined negative score or a subjective “clean play” multiplier.
+
+Signed snapshots now carry the ordered top-level `objectiveIds`; their SHA-256
+schema hash is frozen with the hill and covered by the signature. The checker
+persists one dense row for every frozen eligible team on every scorable tick,
+so an omission is an explicit zero rather than missing evidence. Tie credit,
+continuity, native normalization, service weights, and the final 0–100 bound
+are all calculated by RSCTF. No challenge-supplied point value enters official
+settlement.
+
+The same audit closed cross-format event-integrity gaps:
+
+- scoring metadata, accepted flags/templates, divisions, team placement, and
+  score-affecting game fields become immutable at the first competition
+  boundary: scheduled start, first A&D/KotH round, or first Jeopardy solve;
+- challenge edits and submissions share advisory locks, while game-row edits
+  synchronize with submissions, removing first-solve/edit races;
+- Jeopardy scoring reads only the canonical `FirstSolves` evidence set and
+  joins back to its accepted submission for time/user attribution;
+- the public freeze view applies only from freeze until event end; after end,
+  the immutable final result is visible while the event end remains the
+  evidence cutoff; and
+- A&D/KotH ordering and exact-tie behavior are deterministic, with database
+  regressions for duplicate rounds, dense Leaderboard ticks, continuity,
+  snapshot binding, canonical solves, division policy, and edit boundaries.
+
+### Same-fixture fixed-rate evidence-query comparison
+
+The focused JavaScript harness used an otherwise idle disposable PostgreSQL
+18.4 container. Its isolated schema represented 100 teams × 20 challenges,
+with 20 accepted-history rows per solve (40,000 rows) and exactly 2,000
+canonical `FirstSolves` rows. Both prepared query shapes received the same
+pinned `pgbench` arrival schedule: target 5 transactions/s, eight clients, a
+five-second warmup, and a 30-second measured window. Each phase processed the
+same 152 transactions (5.067/s), with zero failures. Thirteen PostgreSQL
+resource samples fell inside each measured window.
+
+| Metric | Accepted-history scan (before) | Canonical `FirstSolves` (after) | Change |
+| --- | ---: | ---: | ---: |
+| Rows returned per query | 40,000 | 2,000 | -95.0% |
+| Average latency | 41.942 ms | 14.351 ms | -65.8% |
+| p50 latency | 26.076 ms | 12.190 ms | -53.3% |
+| p95 latency | 116.347 ms | 27.346 ms | -76.5% |
+| p99 latency | 467.965 ms | 30.047 ms | -93.6% |
+| Maximum latency | 598.053 ms | 57.933 ms | -90.3% |
+| PostgreSQL CPU average | 24.723% | 7.878% | -68.1% |
+| PostgreSQL CPU p95 | 63.710% | 17.830% | -72.0% |
+| PostgreSQL RAM peak | 203.9 MiB | 203.4 MiB | -0.2% |
+
+This comparison isolates the code path changed by the optimization and does
+not claim equivalent end-to-end HTTP reductions on warm cache hits. The
+five-second tiered scoreboard cache and single-flight behavior are unchanged;
+the gain applies to cache fills and prevents accepted-submission history from
+becoming an unbounded database/network scan during a long or adversarial event.
+The retained machine-readable result is reproducible with
+`SUMMARY_JSON=<path> npm run scoreboard-evidence`.
+
 ## Equal-weight Overall scoreboard acceptance — 1 August 2026
 
 Mixed-format events now have one official **Overall** board without changing
@@ -204,7 +290,11 @@ restart loop, OOM, or 5xx. Redis fallback warnings occurred only in the two
 explicitly documented noisy/instrumented observations (once per web replica in
 each), never in the clean after pass.
 
-## Normalized multi-team API arena acceptance — 28 July 2026
+## Historical normalized multi-team API arena acceptance — 28 July 2026
+
+> This section records the `v0.1.30` acceptance contract. The constant
+> Leaderboard formula and ordered objective-schema binding documented above
+> supersede its integrity multiplier and objective-count-only schema.
 
 This campaign replaces the earlier exclusive-holder API observer with an
 application-native KotH arena. Marker KotH remains the boot2root format: one

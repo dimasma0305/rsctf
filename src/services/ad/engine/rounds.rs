@@ -730,7 +730,7 @@ async fn prepare_round_transaction(
     // has a prepared checker, every A&D service and KotH target exists, at least
     // two teams are frozen, and the crown-cycle configuration is valid.
     // Boot2root marker hills additionally require the managed VPN because their
-    // champion cooldown is network-enforced; API arenas have no champion.
+    // champion cooldown is network-enforced; Leaderboard hills have no champion.
     let scoring_boundary_missing = game_settings.ad_scoring_start_round.is_none()
         || (has_koth && game_settings.koth_scoring_start_round.is_none());
     if scoring_roster_ready && scoring_boundary_missing {

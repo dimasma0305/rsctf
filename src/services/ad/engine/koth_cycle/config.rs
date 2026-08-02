@@ -106,10 +106,10 @@ pub(crate) async fn snapshot_official_config(
         ));
     }
     if has_api_arena
-        && roster_count > crate::services::ad::engine::koth_api::MAX_API_ARENA_TEAMS as i64
+        && roster_count > crate::services::ad::engine::koth_api::MAX_LEADERBOARD_TEAMS as i64
     {
         return Err(AppError::bad_request(
-            "KotH API arena scoring supports at most 2,000 accepted teams",
+            "Leaderboard KotH supports at most 2,000 accepted teams",
         ));
     }
     let exists = sqlx::query_scalar::<_, bool>(

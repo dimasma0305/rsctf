@@ -239,6 +239,42 @@ pub(super) async fn load_evidence(
                          token.reset_attempt
            ), epoch_numbers AS (
                SELECT DISTINCT epoch FROM scoring_rounds
+           ), api_ticks_raw AS (
+               SELECT api_score.participation_id,
+                      observation.challenge_id, observation.epoch,
+                      observation.number,
+                      api_score.activity_rate, api_score.objective_rate,
+                      api_score.performance_rate, api_score.lead_credit
+                 FROM observations observation
+                 JOIN "KothApiScoreResults" api_score
+                   ON api_score.game_id = $1
+                  AND api_score.challenge_id = observation.challenge_id
+                  AND api_score.ad_round_id = observation.round_id
+                WHERE observation.claim_source = 'Api'
+                  AND observation.result_id IS NOT NULL
+                  AND observation.is_scorable
+           ), api_ticks AS (
+               SELECT tick.*,
+                      LAG(tick.lead_credit) OVER (
+                        PARTITION BY tick.participation_id,
+                                     tick.challenge_id, tick.epoch
+                        ORDER BY tick.number
+                      ) AS previous_lead_credit
+                 FROM api_ticks_raw tick
+           ), api_epochs AS (
+               SELECT participation_id, challenge_id, epoch,
+                      AVG(activity_rate) AS activity_rate,
+                      AVG(objective_rate) AS objective_rate,
+                      AVG(performance_rate) AS performance_rate,
+                      AVG(lead_credit) AS lead_rate,
+                      CASE WHEN COUNT(*) < 2 THEN 0.0
+                           ELSE COALESCE(SUM(LEAST(
+                             lead_credit, previous_lead_credit
+                           )) FILTER (WHERE previous_lead_credit IS NOT NULL), 0.0)
+                             / (COUNT(*) - 1)::double precision
+                      END AS sustained_lead_rate
+                 FROM api_ticks
+                GROUP BY participation_id, challenge_id, epoch
            )
            SELECT roster.participation_id, hill.challenge_id, epoch.epoch,
                   CASE WHEN hill.claim_source = 'Api'
@@ -280,7 +316,7 @@ pub(super) async fn load_evidence(
                     THEN COUNT(*) FILTER (
                       WHERE observation.result_id IS NOT NULL
                         AND observation.is_scorable
-                        AND api_score.integrity_rate = 1.0
+                        AND api_score.lead_credit > 0.0
                     )
                     ELSE COUNT(*) FILTER (
                       WHERE observation.result_id IS NOT NULL
@@ -301,31 +337,11 @@ pub(super) async fn load_evidence(
                       AND observation.is_scorable
                       AND cooldown.participation_id IS NULL
                   )::bigint AS personal_eligible_windows,
-                  AVG(api_score.activity_rate) FILTER (
-                    WHERE hill.claim_source = 'Api'
-                      AND observation.result_id IS NOT NULL
-                      AND observation.is_scorable
-                  ) AS api_activity_rate,
-                  AVG(api_score.objective_rate) FILTER (
-                    WHERE hill.claim_source = 'Api'
-                      AND observation.result_id IS NOT NULL
-                      AND observation.is_scorable
-                  ) AS api_objective_rate,
-                  AVG(api_score.integrity_rate) FILTER (
-                    WHERE hill.claim_source = 'Api'
-                      AND observation.result_id IS NOT NULL
-                      AND observation.is_scorable
-                  ) AS api_integrity_rate,
-                  AVG(api_score.core_rate) FILTER (
-                    WHERE hill.claim_source = 'Api'
-                      AND observation.result_id IS NOT NULL
-                      AND observation.is_scorable
-                  ) AS api_core_rate,
-                  AVG(api_score.score_rate) FILTER (
-                    WHERE hill.claim_source = 'Api'
-                      AND observation.result_id IS NOT NULL
-                      AND observation.is_scorable
-                  ) AS api_score_rate
+                  MAX(api_epoch.activity_rate) AS api_activity_rate,
+                  MAX(api_epoch.objective_rate) AS api_objective_rate,
+                  MAX(api_epoch.performance_rate) AS api_performance_rate,
+                  MAX(api_epoch.lead_rate) AS api_lead_rate,
+                  MAX(api_epoch.sustained_lead_rate) AS api_sustained_lead_rate
              FROM roster
              CROSS JOIN hills hill
              CROSS JOIN epoch_numbers epoch
@@ -348,6 +364,10 @@ pub(super) async fn load_evidence(
               AND api_score.challenge_id = hill.challenge_id
               AND api_score.ad_round_id = observation.round_id
               AND api_score.participation_id = roster.participation_id
+             LEFT JOIN api_epochs api_epoch
+               ON api_epoch.participation_id = roster.participation_id
+              AND api_epoch.challenge_id = hill.challenge_id
+              AND api_epoch.epoch = epoch.epoch
             GROUP BY roster.participation_id, hill.challenge_id,
                      hill.claim_source, epoch.epoch
             ORDER BY roster.participation_id, epoch.epoch, hill.challenge_id"#,
@@ -403,8 +423,8 @@ mod tests {
             CREATE TEMP TABLE "KothApiScoreResults" (
               game_id INTEGER, challenge_id INTEGER, ad_round_id INTEGER,
               participation_id INTEGER, activity_rate DOUBLE PRECISION,
-              objective_rate DOUBLE PRECISION, integrity_rate DOUBLE PRECISION,
-              core_rate DOUBLE PRECISION, score_rate DOUBLE PRECISION
+              objective_rate DOUBLE PRECISION, core_rate DOUBLE PRECISION,
+              performance_rate DOUBLE PRECISION, lead_credit DOUBLE PRECISION
             );
             CREATE TEMP TABLE "KothCycleCooldowns" (
               cycle_id BIGINT, participation_id INTEGER,
@@ -584,7 +604,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn api_epoch_averages_platform_calculated_tick_scores_not_mixed_channels() {
+    async fn leaderboard_epoch_averages_tick_performance_and_adjacent_lead_credit() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
         let mut connection = PgConnection::connect(&database_url).await.unwrap();
@@ -628,10 +648,10 @@ mod tests {
         .unwrap();
         sqlx::raw_sql(
             r#"INSERT INTO "KothApiScoreResults" VALUES
-                 (61,8,1,7,1.0,1.0,0.0,1.0,0.0),
-                 (61,8,2,7,0.0,0.0,1.0,0.0,0.0),
-                 (61,8,1,9,0.5,0.5,1.0,0.5,0.5),
-                 (61,8,2,9,0.5,0.5,1.0,0.5,0.5)"#,
+                 (61,8,1,7,1.0,1.0,1.0,1.0,1.0),
+                 (61,8,2,7,0.4,0.4,0.4,0.4,0.0),
+                 (61,8,1,9,0.5,0.5,0.5,0.5,0.0),
+                 (61,8,2,9,0.5,0.5,0.5,0.5,1.0)"#,
         )
         .execute(&mut connection)
         .await
@@ -646,17 +666,18 @@ mod tests {
             (
                 mixed.api_activity_rate,
                 mixed.api_objective_rate,
-                mixed.api_integrity_rate,
-                mixed.api_core_rate,
-                mixed.api_score_rate,
+                mixed.api_performance_rate,
+                mixed.api_lead_rate,
+                mixed.api_sustained_lead_rate,
             ),
-            (Some(0.5), Some(0.5), Some(0.5), Some(0.5), Some(0.0))
+            (Some(0.7), Some(0.7), Some(0.7), Some(0.5), Some(0.0))
         );
         let steady = teams.iter().find(|row| row.participation_id == 9).unwrap();
-        assert_eq!(steady.api_score_rate, Some(0.5));
+        assert_eq!(steady.api_performance_rate, Some(0.5));
+        assert_eq!(steady.api_sustained_lead_rate, Some(0.0));
 
         let scored = super::super::score_evidence_rows(&meta, &teams, &[7, 9], 2, false).unwrap();
-        assert_eq!(scored.teams[&7].projected_total, 0.0);
-        assert_eq!(scored.teams[&9].projected_total, 50.0);
+        assert!((scored.teams[&7].projected_total - 71.3125).abs() < 1e-10);
+        assert!((scored.teams[&9].projected_total - 51.5625).abs() < 1e-10);
     }
 }

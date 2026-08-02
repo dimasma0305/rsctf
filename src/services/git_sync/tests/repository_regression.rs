@@ -476,7 +476,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .await
         .unwrap()
         .is_some());
-
     let race_id = repository_concurrency::assert_submission_evidence_fence(
         &state,
         &root,
@@ -557,6 +556,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     assert!(!dynamic_second.created);
     assert!(dynamic_second.build_queued);
     assert!(!dynamic_second.runtime_update_deferred);
+    assert!(dynamic_second.grading_update_deferred);
     let disabled_refresh = game_challenge::Entity::find_by_id(dynamic_id)
         .one(&state.db)
         .await
@@ -568,7 +568,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     assert_eq!(disabled_refresh.expose_port, Some(9090));
     assert_eq!(
         disabled_refresh.flag_template.as_deref(),
-        Some("rsctf{two_[TEAM_HASH]}")
+        Some("rsctf{one_[TEAM_HASH]}")
     );
     assert!(disabled_refresh.enable_traffic_capture);
     assert!(flag_context::Entity::find_by_id(runtime_flag.id)
@@ -626,7 +626,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
 
     tokio::fs::write(
         &dynamic_manifest,
-        "name: Dynamic runtime v2\ndescription: metadata-only live edit\ntype: DynamicContainer\ncategory: Web\nflagTemplate: 'rsctf{two_[TEAM_HASH]}'\ncontainer:\n  memoryLimit: 96\n  storageLimit: 256\n  cpuCount: 2\n  exposePort: 9090\n  enableTrafficCapture: true\n",
+        "name: Dynamic runtime v2\ndescription: metadata-only live edit\ntype: DynamicContainer\ncategory: Web\nflagTemplate: 'rsctf{one_[TEAM_HASH]}'\ncontainer:\n  memoryLimit: 96\n  storageLimit: 256\n  cpuCount: 2\n  exposePort: 9090\n  enableTrafficCapture: true\n",
     )
     .await
     .unwrap();
@@ -687,7 +687,8 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .await
         .unwrap()
         .is_some());
-    // Defer a live static flag change until explicit disable.
+    // A durable score in another challenge freezes this event's flag policy;
+    // disabling a challenge does not reopen the historical scoring boundary.
     let static_dir = root
         .join("repos")
         .join(binding.id.to_string())
@@ -730,7 +731,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .await
         .unwrap();
     assert!(live_static.runtime_update_deferred);
-    assert!(!live_static.grading_update_deferred);
+    assert!(live_static.grading_update_deferred);
     assert_eq!(
         sqlx::query_scalar::<_, String>(
             r#"SELECT flag FROM "FlagContexts" WHERE challenge_id = $1"#,
@@ -750,6 +751,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .await
         .unwrap();
     assert!(!disabled_static.runtime_update_deferred);
+    assert!(disabled_static.grading_update_deferred);
     assert_eq!(
         sqlx::query_scalar::<_, String>(
             r#"SELECT flag FROM "FlagContexts" WHERE challenge_id = $1"#,
@@ -758,7 +760,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .fetch_all(state.pg())
         .await
         .unwrap(),
-        vec!["flag{static_new}".to_string()]
+        vec!["flag{static_old}".to_string()]
     );
 
     repository_concurrency::assert_cleanup_reenable_transition(&state, static_id).await;
@@ -975,7 +977,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     .unwrap();
     assert_eq!(retry, vec![retired.challenge_id]);
     game_lock.release().await.unwrap();
-
     repository_concurrency::assert_queued_pushback_remote_head(
         &state, &root, binding.id, game.id, static_id,
     )
@@ -988,7 +989,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         challenge_id,
     )
     .await;
-
     drop(state);
     pool.close().await;
     let _ = tokio::fs::remove_dir_all(&root).await;

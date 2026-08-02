@@ -288,25 +288,45 @@ impl MigrationTrait for Migration {
 
 #[cfg(test)]
 mod tests {
-    use sea_orm_migration::sea_orm::Database;
+    use std::str::FromStr;
+
+    use sea_orm::SqlxPostgresConnector;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
     use super::Migration;
     use crate::migrations::{MigrationTrait, Migrator, MigratorTrait, SchemaManager};
 
     #[tokio::test]
     #[ignore = "requires a disposable PostgreSQL database via RSCTF_TEST_DATABASE_URL"]
-    async fn fresh_schema_has_one_constant_koth_formula_and_rolling_conflict_targets() {
+    async fn historical_m0058_has_one_constant_formula_and_rolling_conflict_targets() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
-        let db = Database::connect(database_url).await.unwrap();
-        Migrator::fresh(&db).await.unwrap();
-        let pool = db.get_postgres_connection_pool();
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("rsctf_m0058_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let db = SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
+        Migrator::up(&db, Some(58)).await.unwrap();
         let manager = SchemaManager::new(&db);
 
         let constant_columns = sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(*)
                  FROM information_schema.columns
-                WHERE table_schema = 'public'
+                WHERE table_schema = current_schema()
                   AND is_nullable = 'NO'
                   AND column_default LIKE '2%'
                   AND (
@@ -317,7 +337,7 @@ mod tests {
                     ) AND column_name = 'formula_version')
                   )"#,
         )
-        .fetch_one(pool)
+        .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(constant_columns, 6);
@@ -333,9 +353,10 @@ mod tests {
                   'ck_koth_epoch_team_rollups_constant_formula',
                   'ck_koth_epoch_hill_rollups_constant_formula'
                 )
+                  AND connamespace = current_schema()::regnamespace
                   AND pg_get_constraintdef(oid) ~ '= 2'"#,
         )
-        .fetch_one(pool)
+        .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(constant_constraints, 6);
@@ -362,7 +383,7 @@ mod tests {
                  now() + interval '2 hours', '', 0, FALSE, FALSE, 12, 3, 1, 2
                )"#,
         )
-        .execute(pool)
+        .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
@@ -372,7 +393,7 @@ mod tests {
                  roster_snapshot, hills_snapshot
                ) VALUES (900001, 2, 1, 12, 3, 1, 2, '[]', '[]')"#,
         )
-        .execute(pool)
+        .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
@@ -385,7 +406,7 @@ mod tests {
                  (900001, 1, 1, 1, 8, 8, 1, 8, now(), 8, 2, 8, 2),
                  (900001, 2, 1, 10, 21, 12, 1, 21, now(), 12, 4, 12, 4)"#,
         )
-        .execute(pool)
+        .execute(&pool)
         .await
         .unwrap();
 
@@ -394,14 +415,14 @@ mod tests {
             r#"SELECT COUNT(*), MIN(start_round)
                  FROM "KothEpochRollups" WHERE game_id = 900001"#,
         )
-        .fetch_one(pool)
+        .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(surviving_rollup, (1, 10));
         let official_configs = sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(*) FROM "KothOfficialConfigs" WHERE game_id = 900001"#,
         )
-        .fetch_one(pool)
+        .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(official_configs, 1);
@@ -453,8 +474,14 @@ mod tests {
               DO NOTHING;
             "#,
         )
-        .execute(pool)
+        .execute(&pool)
         .await
         .unwrap();
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }

@@ -1,26 +1,21 @@
-//! Stable, exact-tick reads for normalized API-arena snapshots.
+//! Stable, exact-tick reads for normalized Leaderboard snapshots.
 
 use chrono::{DateTime, Utc};
 
-pub(crate) const MAX_API_ARENA_TEAMS: usize = 2_000;
+pub(crate) const MAX_LEADERBOARD_TEAMS: usize = 2_000;
 pub(crate) const API_OBJECTIVE_NORMALIZATION_SCALE: i64 = 1_000_000;
 pub(crate) const API_ACTIVITY_WEIGHT: f64 = 0.35;
 pub(crate) const API_OBJECTIVE_WEIGHT: f64 = 0.65;
 
-/// Calculate one normalized API-arena tick. Callers validate that each input is
+/// Calculate one normalized Leaderboard performance tick. Callers validate that each input is
 /// finite and in `[0,1]` before invoking this pure formula.
-pub(crate) fn api_tick_rates(
-    activity_rate: f64,
-    objective_rate: f64,
-    integrity_rate: f64,
-) -> (f64, f64) {
-    let core_rate = if activity_rate == 0.0 || objective_rate == 0.0 {
+pub(crate) fn leaderboard_tick_core(activity_rate: f64, objective_rate: f64) -> f64 {
+    if activity_rate == 0.0 || objective_rate == 0.0 {
         0.0
     } else {
         (1.0 / (API_ACTIVITY_WEIGHT / activity_rate + API_OBJECTIVE_WEIGHT / objective_rate))
             .clamp(0.0, 1.0)
-    };
-    (core_rate, (integrity_rate * core_rate).clamp(0.0, 1.0))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,14 +25,13 @@ pub(super) struct KothApiEvidence {
     pub(super) activity_possible: i64,
     pub(super) objective_earned: i64,
     pub(super) objective_possible: i64,
-    pub(super) valid_actions: i64,
-    pub(super) total_actions: i64,
     pub(super) objective_count: i16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct KothApiSnapshot {
     pub(super) hash: [u8; 32],
+    pub(super) objective_schema_hash: [u8; 32],
     pub(super) rows: Vec<KothApiEvidence>,
 }
 
@@ -58,13 +52,12 @@ impl KothApiSnapshotRead {
 #[derive(sqlx::FromRow)]
 struct SnapshotRow {
     snapshot_hash: Vec<u8>,
+    objective_schema_hash: Vec<u8>,
     participation_id: Option<i32>,
     activity_earned: Option<i64>,
     activity_possible: Option<i64>,
     objective_earned: Option<i64>,
     objective_possible: Option<i64>,
-    valid_actions: Option<i64>,
-    total_actions: Option<i64>,
     objective_count: Option<i16>,
 }
 
@@ -82,11 +75,10 @@ pub(super) async fn read_koth_api_snapshot(
     round_end: DateTime<Utc>,
 ) -> KothApiSnapshotRead {
     let rows = sqlx::query_as::<_, SnapshotRow>(
-        r#"SELECT snapshot.snapshot_hash,
+        r#"SELECT snapshot.snapshot_hash, snapshot.objective_schema_hash,
                   score.participation_id,
                   score.activity_earned, score.activity_possible,
                   score.objective_earned, score.objective_possible,
-                  score.valid_actions, score.total_actions,
                   score.objective_count
              FROM "KothApiSnapshots" snapshot
         LEFT JOIN "KothApiSnapshotScores" score
@@ -138,6 +130,23 @@ pub(super) async fn read_koth_api_snapshot(
             "KotH API snapshot changed during its read".to_string(),
         );
     }
+    let objective_schema_hash: [u8; 32] = match rows[0].objective_schema_hash.as_slice().try_into()
+    {
+        Ok(hash) => hash,
+        Err(_) => {
+            return KothApiSnapshotRead::Unavailable(
+                "Leaderboard snapshot has an invalid objective schema digest".to_string(),
+            )
+        }
+    };
+    if rows
+        .iter()
+        .any(|row| row.objective_schema_hash.as_slice() != objective_schema_hash.as_slice())
+    {
+        return KothApiSnapshotRead::Unavailable(
+            "Leaderboard objective schema changed during its read".to_string(),
+        );
+    }
     let evidence = rows
         .into_iter()
         .filter_map(|row| {
@@ -147,14 +156,13 @@ pub(super) async fn read_koth_api_snapshot(
                 activity_possible: row.activity_possible?,
                 objective_earned: row.objective_earned?,
                 objective_possible: row.objective_possible?,
-                valid_actions: row.valid_actions?,
-                total_actions: row.total_actions?,
                 objective_count: row.objective_count?,
             })
         })
         .collect();
     KothApiSnapshotRead::Observed(KothApiSnapshot {
         hash,
+        objective_schema_hash,
         rows: evidence,
     })
 }
@@ -195,14 +203,13 @@ mod tests {
     fn snapshot(value: i64) -> KothApiSnapshotRead {
         KothApiSnapshotRead::Observed(KothApiSnapshot {
             hash: [value as u8; 32],
+            objective_schema_hash: [7; 32],
             rows: vec![KothApiEvidence {
                 participation_id: 7,
                 activity_earned: value,
                 activity_possible: 10,
                 objective_earned: value,
                 objective_possible: 10,
-                valid_actions: 1,
-                total_actions: 1,
                 objective_count: 1,
             }],
         })
@@ -229,10 +236,9 @@ mod tests {
     }
 
     #[test]
-    fn api_tick_requires_both_play_channels_and_applies_integrity_same_tick() {
-        assert_eq!(api_tick_rates(0.0, 1.0, 1.0), (0.0, 0.0));
-        assert_eq!(api_tick_rates(1.0, 0.0, 1.0), (0.0, 0.0));
-        assert_eq!(api_tick_rates(1.0, 1.0, 0.0), (1.0, 0.0));
-        assert_eq!(api_tick_rates(1.0, 1.0, 1.0), (1.0, 1.0));
+    fn leaderboard_tick_requires_both_play_channels() {
+        assert_eq!(leaderboard_tick_core(0.0, 1.0), 0.0);
+        assert_eq!(leaderboard_tick_core(1.0, 0.0), 0.0);
+        assert_eq!(leaderboard_tick_core(1.0, 1.0), 1.0);
     }
 }

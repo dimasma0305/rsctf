@@ -93,8 +93,16 @@ impl DivisionPolicyFixture {
             r#"
             CREATE TABLE "Games" (
               id INTEGER PRIMARY KEY,
+              start_time_utc TIMESTAMPTZ NOT NULL,
               ad_scoring_start_round INTEGER,
               koth_scoring_start_round INTEGER
+            );
+            CREATE TABLE "Participations" (
+              id INTEGER PRIMARY KEY,
+              game_id INTEGER NOT NULL REFERENCES "Games"(id)
+            );
+            CREATE TABLE "FirstSolves" (
+              participation_id INTEGER NOT NULL REFERENCES "Participations"(id)
             );
             CREATE TABLE "Divisions" (
               id INTEGER PRIMARY KEY,
@@ -115,7 +123,18 @@ impl DivisionPolicyFixture {
         let seed = (uuid::Uuid::new_v4().as_u128() % 100_000_000) as i32 + 1_000;
         let game_id = seed;
         let division_id = seed + 1;
-        sqlx::query(r#"INSERT INTO "Games" VALUES ($1, NULL, NULL)"#)
+        sqlx::query(
+            r#"INSERT INTO "Games"
+                 (id, start_time_utc, ad_scoring_start_round,
+                  koth_scoring_start_round)
+               VALUES ($1, clock_timestamp() + interval '1 hour', NULL, NULL)"#,
+        )
+        .bind(game_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(r#"INSERT INTO "Participations" VALUES ($1, $2)"#)
+            .bind(seed + 2)
             .bind(game_id)
             .execute(&pool)
             .await
@@ -147,6 +166,41 @@ impl DivisionPolicyFixture {
             .await
             .expect("drop isolated test schema");
     }
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn jeopardy_first_solve_locks_division_scoring_policy() {
+    let fixture = DivisionPolicyFixture::create().await;
+    let participation_id: i32 =
+        sqlx::query_scalar(r#"SELECT id FROM "Participations" WHERE game_id = $1"#)
+            .bind(fixture.game_id)
+            .fetch_one(&fixture.pool)
+            .await
+            .unwrap();
+    sqlx::query(r#"INSERT INTO "FirstSolves" VALUES ($1)"#)
+        .bind(participation_id)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(
+        &sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(fixture.pool.clone()),
+        fixture.game_id,
+    )
+    .await
+    .unwrap();
+    let error = guard_division_policy_update(
+        control.transaction_mut(),
+        fixture.game_id,
+        fixture.division_id,
+        Some(8),
+        None,
+    )
+    .await
+    .expect_err("division policy changed after durable Jeopardy evidence");
+    assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+    control.release().await.unwrap();
+    fixture.destroy().await;
 }
 
 /// The first official round and a division edit can arrive on different

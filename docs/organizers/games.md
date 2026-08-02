@@ -23,13 +23,22 @@ When a participation becomes accepted, rsctf can lock the team's roster. Late ro
 
 Use divisions when groups need separate eligibility, rankings, review rules, or access. Create divisions before teams join, document which division each team should choose, and test one join in every permission combination.
 
-Avoid changing division semantics after many teams are accepted. If a change is unavoidable, announce it and review affected participations before the event resumes.
+Finalize division scoring permissions and assignments before the event. Once
+the scheduled competition begins or durable scoring evidence exists, RSCTF
+rejects division creation/deletion, scoring-permission changes, and team moves
+that would reinterpret scores. Names and invite-only metadata remain editable
+when they do not affect scoring.
 
 ## Scoreboard and submissions
 
 Configure whether the scoreboard and submission views are available and when the public scoreboard freezes. A freeze hides recent public results; it does not stop grading.
 
-Score behavior also comes from each challenge: initial score, minimum score, decay method, and blood bonuses.
+Score behavior also comes from each challenge: initial score, minimum score,
+decay method, and blood bonuses. RSCTF locks these inputs, challenge scoring
+eligibility, accepted flags and dynamic flag templates,
+schedule/practice/blood settings, and format cadence at the competition
+boundary. Configure and rehearse them before start; there is no formula-version
+selector or live scoring-policy override.
 
 When at least two challenge formats are active, the public scoreboard opens on an **Overall** tab. RSCTF normalizes each format to 0-100 and uses a constant equal share for every active format. Jeopardy is divided by the attainable score allowed by the team's division, including blood-bonus headroom; A&D and KotH use their official settled epoch totals. The formula is absolute rather than leader-relative, so the field composition cannot rescale a team's result. See the [Overall scoreboard guide](../players/overall-scoreboard).
 
@@ -46,10 +55,10 @@ For games containing A&D or KotH, also review:
 - A&D flag lifetime
 - Service reset cooldown
 - Checker/getflag timing and grace periods
-- KotH epoch length, crown-cycle length, champion cooldown, claim-confirmation length, and hill difficulty weights
+- KotH epoch length, crown-cycle length, champion cooldown, claim-confirmation length, and bounded hill weights
 - Snapshot and retention behavior
 
-The KotH defaults are a 12-tick epoch, three-tick crown cycle, one-tick previous-champion cooldown, and two consecutive healthy checks for claim confirmation. The epoch must divide cleanly into crown cycles. Official scoring snapshots the cadence, roster, hills, images, weights, and formula, so settle these values before starting it. Champion cooldown requires enforceable per-hill VPN/firewall isolation; do not enable official crown scoring for an external target where that isolation cannot be enforced.
+The KotH defaults are a 12-tick epoch, three-tick crown cycle, one-tick previous-champion cooldown, and two consecutive healthy checks for claim confirmation. The epoch must divide cleanly into crown cycles. Official scoring snapshots the cadence, roster, hills, images, and weights and uses one constant formula per format, so settle these values before starting it. Champion cooldown requires enforceable per-hill VPN/firewall isolation; do not enable official crown scoring for an external target where that isolation cannot be enforced.
 
 Run at least several accelerated test ticks with two test teams. Verify flag rotation, target visibility, checker results, provisional-to-confirmed capture, pristine same-image crown reset, exact replacement identity, old-capability rejection, champion cooldown, scoring, and crash recovery before restoring production timing.
 

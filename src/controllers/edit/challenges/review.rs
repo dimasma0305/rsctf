@@ -62,25 +62,17 @@ pub async fn approve_challenge(
             spec,
         )?;
     }
-    let mut engine_control = if challenge.challenge_type.uses_ad_engine() {
-        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?)
-    } else {
-        None
-    };
-    if challenge.challenge_type.uses_ad_engine()
-        && ad_epoch_scoring_started_locked(
-            engine_control
-                .as_mut()
-                .expect("engine challenge holds the game control lock")
-                .transaction_mut(),
-            id,
-        )
-        .await?
-    {
+    let mut engine_control =
+        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
+    let control = engine_control
+        .as_mut()
+        .expect("challenge approval holds the game control lock");
+    if competition_scoring_started_locked(control.transaction_mut(), id).await? {
         return Err(AppError::bad_request(
-            "A&D/KotH challenge review state is locked after epoch scoring has started.",
+            "Challenge review state is locked after competition scoring has started.",
         ));
     }
+    crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
 
     // A submitted archive is immutable blob content. Prepare its reviewed
     // process checker into a unique revision while holding the same distributed
@@ -208,15 +200,15 @@ pub async fn approve_challenge(
             )));
         }
         challenge = load_challenge(&st, id, c_id).await?;
-        if challenge.challenge_type.uses_ad_engine() {
-            let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-            if ad_epoch_scoring_started_locked(control.transaction_mut(), id).await? {
-                return Err(AppError::bad_request(
-                    "The challenge image was built but remains pending because A&D/KotH epoch scoring started during approval.",
-                ));
-            }
-            engine_control = Some(control);
+        let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+        if competition_scoring_started_locked(control.transaction_mut(), id).await? {
+            return Err(AppError::bad_request(
+                "The challenge image was built but remains pending because competition scoring started during approval.",
+            ));
         }
+        crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id)
+            .await?;
+        engine_control = Some(control);
     }
 
     let updated = if let Some(control) = engine_control.as_mut() {
@@ -316,25 +308,17 @@ pub async fn reject_challenge(
             .await?;
     let challenge = load_challenge(&st, id, c_id).await?;
     deletion::reject_pending_mutation(st.pg(), id, c_id).await?;
-    let mut engine_control = if challenge.challenge_type.uses_ad_engine() {
-        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?)
-    } else {
-        None
-    };
-    if challenge.challenge_type.uses_ad_engine()
-        && ad_epoch_scoring_started_locked(
-            engine_control
-                .as_mut()
-                .expect("engine challenge holds the game control lock")
-                .transaction_mut(),
-            id,
-        )
-        .await?
-    {
+    let mut engine_control =
+        Some(crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?);
+    let control = engine_control
+        .as_mut()
+        .expect("challenge rejection holds the game control lock");
+    if competition_scoring_started_locked(control.transaction_mut(), id).await? {
         return Err(AppError::bad_request(
-            "A&D/KotH challenge review state is locked after epoch scoring has started.",
+            "Challenge review state is locked after competition scoring has started.",
         ));
     }
+    crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
     let rejected = sqlx::query(
         r#"UPDATE "GameChallenges"
               SET review_status = $3,

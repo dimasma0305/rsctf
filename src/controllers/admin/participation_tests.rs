@@ -55,6 +55,7 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
         r#"
         CREATE TABLE "Games" (
           id INTEGER PRIMARY KEY,
+          start_time_utc TIMESTAMPTZ NOT NULL,
           ad_scoring_start_round INTEGER,
           koth_scoring_start_round INTEGER,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
@@ -92,8 +93,10 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
     };
     let division_id = seed + 3;
     sqlx::query(
-        r#"INSERT INTO "Games" (id, ad_scoring_start_round, koth_scoring_start_round)
-           VALUES ($1, NULL, NULL)"#,
+        r#"INSERT INTO "Games"
+             (id, start_time_utc, ad_scoring_start_round,
+              koth_scoring_start_round)
+           VALUES ($1, clock_timestamp() + interval '1 hour', NULL, NULL)"#,
     )
     .bind(identity.game_id)
     .execute(&pool)
@@ -288,6 +291,7 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
         r#"
         CREATE TABLE "Games" (
           id INTEGER PRIMARY KEY,
+          start_time_utc TIMESTAMPTZ NOT NULL,
           ad_scoring_start_round INTEGER,
           koth_scoring_start_round INTEGER,
           deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
@@ -329,8 +333,10 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
     let division_id = seed + 3;
     let other_division_id = seed + 4;
     sqlx::query(
-        r#"INSERT INTO "Games" (id, ad_scoring_start_round, koth_scoring_start_round)
-           VALUES ($1, NULL, NULL)"#,
+        r#"INSERT INTO "Games"
+             (id, start_time_utc, ad_scoring_start_round,
+              koth_scoring_start_round)
+           VALUES ($1, clock_timestamp() + interval '1 hour', NULL, NULL)"#,
     )
     .bind(identity.game_id)
     .execute(&pool)

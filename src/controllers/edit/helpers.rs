@@ -178,6 +178,37 @@ pub(crate) async fn ad_epoch_scoring_started_locked(
     .ok_or_else(|| AppError::not_found("Game not found"))
 }
 
+/// Return whether any competition score has crossed its immutable policy
+/// boundary while the caller owns the per-game control lock.
+///
+/// The scheduled start is the normal boundary. Durable evidence is also a
+/// boundary so an imported/practice solve or an engine round cannot be made to
+/// move by editing its scoring inputs after the fact.
+pub(crate) async fn competition_scoring_started_locked(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+) -> AppResult<bool> {
+    sqlx::query_scalar::<_, bool>(
+        r#"SELECT clock_timestamp() >= game.start_time_utc
+                  OR game.ad_scoring_start_round IS NOT NULL
+                  OR game.koth_scoring_start_round IS NOT NULL
+                  OR EXISTS (
+                       SELECT 1
+                         FROM "FirstSolves" first_solve
+                         JOIN "Participations" participation
+                           ON participation.id = first_solve.participation_id
+                        WHERE participation.game_id = game.id
+                  )
+             FROM "Games" game
+            WHERE game.id = $1"#,
+    )
+    .bind(game_id)
+    .fetch_optional(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))
+}
+
 pub(crate) fn ensure_ad_roster_status_mutable(
     scoring_started: bool,
     current: Option<ParticipationStatus>,

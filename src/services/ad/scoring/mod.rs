@@ -9,6 +9,8 @@ mod evidence;
 mod formula;
 mod rollup;
 mod service_rollup;
+#[cfg(test)]
+mod test_fixture;
 
 pub use aggregate::{
     aggregate_team_epoch, average_equal_epochs, average_weighted_epochs, score_team_epoch,

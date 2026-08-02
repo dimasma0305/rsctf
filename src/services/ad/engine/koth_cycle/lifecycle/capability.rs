@@ -59,7 +59,7 @@ pub(super) async fn rotate_capability_window(
     }
 
     // A fresh reset window invalidates both qualified crown state and any
-    // API-arena snapshot staged against the previous container/capabilities.
+    // Leaderboard snapshot staged against the previous container/capabilities.
     sqlx::query(
         r#"WITH cleared_claim AS (
              DELETE FROM "KothClaimStates" WHERE target_id = $1

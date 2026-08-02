@@ -238,17 +238,8 @@ fn five_hundred_team_ten_service_payload_stays_bounded() {
 #[tokio::test]
 #[ignore = "requires a migrated Postgres with an A&D game"]
 async fn database_board_is_finite_bounded_and_serializable() {
-    let url = std::env::var("RSCTF_TEST_DATABASE_URL").expect("test database URL");
-    let game_id: i32 = std::env::var("RSCTF_TEST_GAME_ID")
-        .expect("test game id")
-        .parse()
-        .expect("numeric game id");
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&url)
-        .await
-        .expect("connect test database");
-    let board = build_ad_scoreboard(&pool, game_id, false, Utc::now())
+    let fixture = super::super::test_fixture::ad_scoring_fixture().await;
+    let board = build_ad_scoreboard(&fixture.pool, fixture.game_id, false, Utc::now())
         .await
         .expect("build official board");
 
@@ -303,4 +294,5 @@ async fn database_board_is_finite_bounded_and_serializable() {
         service_count,
         payload_budget
     );
+    fixture.cleanup().await;
 }

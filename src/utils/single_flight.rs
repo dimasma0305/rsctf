@@ -354,6 +354,20 @@ pub(crate) async fn acquire_transaction_advisory_lock(
     Ok(())
 }
 
+/// Add a shared transaction-scoped lock in an existing exclusive advisory-lock
+/// domain. Shared readers remain concurrent, while configuration writers that
+/// take the exclusive form linearize before or after every reader transaction.
+pub(crate) async fn acquire_transaction_advisory_lock_shared(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    key: &str,
+) -> anyhow::Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock_shared($1)")
+        .bind(advisory_lock_key(key))
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn try_acquire_transaction_advisory_lock(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     key: &str,

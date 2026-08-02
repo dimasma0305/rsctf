@@ -26,8 +26,6 @@ struct ResolvedInputRow {
     activity_possible: i64,
     objective_earned: i64,
     objective_possible: i64,
-    valid_actions: i64,
-    total_actions: i64,
     objective_count: i16,
 }
 
@@ -37,9 +35,14 @@ struct CurrentCapabilityRow {
     token: String,
 }
 
-fn snapshot_hash(context: &str, rows: &[ResolvedInputRow]) -> [u8; 32] {
+fn snapshot_hash(
+    context: &str,
+    objective_schema_hash: &[u8; 32],
+    rows: &[ResolvedInputRow],
+) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(context.as_bytes());
+    digest.update(objective_schema_hash);
     digest.update((rows.len() as u64).to_be_bytes());
     for row in rows {
         digest.update(row.participation_id.to_be_bytes());
@@ -47,8 +50,6 @@ fn snapshot_hash(context: &str, rows: &[ResolvedInputRow]) -> [u8; 32] {
         digest.update(row.activity_possible.to_be_bytes());
         digest.update(row.objective_earned.to_be_bytes());
         digest.update(row.objective_possible.to_be_bytes());
-        digest.update(row.valid_actions.to_be_bytes());
-        digest.update(row.total_actions.to_be_bytes());
         digest.update(row.objective_count.to_be_bytes());
     }
     digest.finalize().into()
@@ -122,8 +123,6 @@ async fn resolve_current_capabilities(
                 activity_possible: row.activity_possible,
                 objective_earned: row.objective_earned,
                 objective_possible: row.objective_possible,
-                valid_actions: row.valid_actions,
-                total_actions: row.total_actions,
                 objective_count: row.objective_count,
             });
         }
@@ -147,8 +146,7 @@ async fn replace_snapshot_rows(
     let mut query = QueryBuilder::<Postgres>::new(
         r#"INSERT INTO "KothApiSnapshotScores"
            (target_id, participation_id, activity_earned, activity_possible,
-            objective_earned, objective_possible, valid_actions, total_actions,
-            objective_count) "#,
+            objective_earned, objective_possible, objective_count) "#,
     );
     query.push_values(rows, |mut values, row| {
         values
@@ -158,8 +156,6 @@ async fn replace_snapshot_rows(
             .push_bind(row.activity_possible)
             .push_bind(row.objective_earned)
             .push_bind(row.objective_possible)
-            .push_bind(row.valid_actions)
-            .push_bind(row.total_actions)
             .push_bind(row.objective_count);
     });
     query
@@ -197,7 +193,7 @@ async fn record_replay(
         .rows_affected();
     if inserted != 1 {
         return Err(AppError::conflict(
-            "KotH arena referee request was already accepted",
+            "Leaderboard referee request was already accepted",
         ));
     }
     Ok(())
@@ -225,7 +221,7 @@ async fn accept_observation(
 ) -> AppResult<KothObservationAcceptedModel> {
     if body.len() > MAX_BODY_BYTES {
         return Err(AppError::payload_too_large(
-            "KotH arena snapshot body must be at most 512 KiB",
+            "Leaderboard snapshot body must be at most 512 KiB",
         ));
     }
     let now = Utc::now();
@@ -258,7 +254,9 @@ async fn accept_observation(
     )?;
     let input = parse_and_normalize(body)?;
     let submitted_teams = input.teams.len();
-    let submitted_objective_count = input.teams.first().map(|team| team.objectives.len() as i16);
+    let objective_ids = input.objective_ids.clone();
+    let objective_count = objective_ids.len() as i16;
+    let objective_schema_hash = input.objective_schema_hash();
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -286,23 +284,14 @@ async fn accept_observation(
     }
     let context = load_active_context(&mut *transaction, game_id, challenge_id)
         .await?
-        .ok_or_else(|| AppError::conflict("KotH API arena context is not active"))?;
+        .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
     if input.context != context.opaque_context(game_id, challenge_id) {
         return Err(AppError::conflict(
-            "KotH API arena context changed; fetch context and retry",
+            "Leaderboard KotH context changed; fetch context and retry",
         ));
     }
-    let rows = resolve_current_capabilities(
-        &mut transaction,
-        &context,
-        game_id,
-        challenge_id,
-        input.teams.into_iter().map(flatten).collect(),
-    )
-    .await?;
-    let recognized_objective_count = rows.first().map(|row| row.objective_count);
-    let frozen_objective_count: Option<i16> = sqlx::query_scalar(
-        r#"SELECT objective_count
+    let frozen_scheme = sqlx::query_as::<_, (Vec<String>, Vec<u8>)>(
+        r#"SELECT objective_ids, objective_schema_hash
              FROM "KothApiArenaSchemes"
             WHERE game_id = $1 AND challenge_id = $2
             FOR UPDATE"#,
@@ -312,27 +301,30 @@ async fn accept_observation(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    if let (Some(expected), Some(submitted)) = (frozen_objective_count, submitted_objective_count) {
-        if expected != submitted {
-            return Err(AppError::conflict(format!(
-                "KotH arena objective scheme is fixed at {expected} components"
-            )));
+    if let Some((stored_ids, stored_hash)) = frozen_scheme {
+        if stored_ids != objective_ids || stored_hash.as_slice() != objective_schema_hash {
+            return Err(AppError::conflict(
+                "Leaderboard objective IDs and order are frozen for this challenge",
+            ));
         }
-    } else if let Some(recognized) = recognized_objective_count {
+    } else {
         sqlx::query(
             r#"INSERT INTO "KothApiArenaSchemes"
-                 (challenge_id, game_id, objective_count)
-               VALUES ($2, $1, $3)
+                 (challenge_id, game_id, objective_count, objective_ids,
+                  objective_schema_hash)
+               VALUES ($2, $1, $3, $4, $5)
                ON CONFLICT (challenge_id) DO NOTHING"#,
         )
         .bind(game_id)
         .bind(challenge_id)
-        .bind(recognized)
+        .bind(objective_count)
+        .bind(&objective_ids)
+        .bind(objective_schema_hash.as_slice())
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        let stored: i16 = sqlx::query_scalar(
-            r#"SELECT objective_count
+        let stored = sqlx::query_as::<_, (Vec<String>, Vec<u8>)>(
+            r#"SELECT objective_ids, objective_schema_hash
                  FROM "KothApiArenaSchemes"
                 WHERE game_id = $1 AND challenge_id = $2
                 FOR UPDATE"#,
@@ -342,22 +334,34 @@ async fn accept_observation(
         .fetch_one(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        if stored != recognized {
-            return Err(AppError::conflict(format!(
-                "KotH arena objective scheme is fixed at {stored} components"
-            )));
+        if stored.0 != objective_ids || stored.1.as_slice() != objective_schema_hash {
+            return Err(AppError::conflict(
+                "Leaderboard objective IDs and order are frozen for this challenge",
+            ));
         }
     }
-    let digest = snapshot_hash(&input.context, &rows);
+    let rows = resolve_current_capabilities(
+        &mut transaction,
+        &context,
+        game_id,
+        challenge_id,
+        input
+            .teams
+            .into_iter()
+            .map(|team| flatten(team, objective_count as usize))
+            .collect(),
+    )
+    .await?;
+    let digest = snapshot_hash(&input.context, &objective_schema_hash, &rows);
     record_replay(&mut transaction, challenge_id, &signature).await?;
 
     let accepted_at = sqlx::query_scalar::<_, DateTime<Utc>>(
         r#"INSERT INTO "KothApiSnapshots"
              (target_id, game_id, challenge_id, cycle_id, reset_attempt,
               container_id, ad_round_id, context_hash, snapshot_hash,
-              request_timestamp_ms, accepted_at)
-           SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,clock_timestamp()
-            WHERE clock_timestamp() < $11
+              objective_schema_hash, request_timestamp_ms, accepted_at)
+           SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,clock_timestamp()
+            WHERE clock_timestamp() < $12
            ON CONFLICT (target_id) DO UPDATE SET
              game_id = EXCLUDED.game_id,
              challenge_id = EXCLUDED.challenge_id,
@@ -367,6 +371,7 @@ async fn accept_observation(
              ad_round_id = EXCLUDED.ad_round_id,
              context_hash = EXCLUDED.context_hash,
              snapshot_hash = EXCLUDED.snapshot_hash,
+             objective_schema_hash = EXCLUDED.objective_schema_hash,
              request_timestamp_ms = EXCLUDED.request_timestamp_ms,
              accepted_at = EXCLUDED.accepted_at
            WHERE "KothApiSnapshots".ad_round_id <> EXCLUDED.ad_round_id
@@ -386,6 +391,7 @@ async fn accept_observation(
     .bind(context.round_id)
     .bind(&input.context)
     .bind(digest.as_slice())
+    .bind(objective_schema_hash.as_slice())
     .bind(timestamp)
     .bind(context.round_ends_at)
     .fetch_optional(&mut *transaction)
@@ -436,19 +442,31 @@ mod tests {
             activity_possible: 10,
             objective_earned: earned * 2,
             objective_possible: 20,
-            valid_actions: 9,
-            total_actions: 10,
             objective_count: 2,
         }
     }
 
     #[test]
     fn snapshot_digest_binds_resolved_identity_and_every_budget() {
-        let base = snapshot_hash("context", &[row(1, 5), row(2, 6)]);
-        assert_ne!(base, snapshot_hash("other", &[row(1, 5), row(2, 6)]));
-        assert_ne!(base, snapshot_hash("context", &[row(1, 5)]));
-        assert_ne!(base, snapshot_hash("context", &[row(1, 6), row(2, 6)]));
-        assert_ne!(base, snapshot_hash("context", &[row(2, 6), row(1, 5)]));
+        let schema = [7; 32];
+        let base = snapshot_hash("context", &schema, &[row(1, 5), row(2, 6)]);
+        assert_ne!(
+            base,
+            snapshot_hash("other", &schema, &[row(1, 5), row(2, 6)])
+        );
+        assert_ne!(
+            base,
+            snapshot_hash("context", &[8; 32], &[row(1, 5), row(2, 6)])
+        );
+        assert_ne!(base, snapshot_hash("context", &schema, &[row(1, 5)]));
+        assert_ne!(
+            base,
+            snapshot_hash("context", &schema, &[row(1, 6), row(2, 6)])
+        );
+        assert_ne!(
+            base,
+            snapshot_hash("context", &schema, &[row(2, 6), row(1, 5)])
+        );
     }
 
     fn signed_headers(
@@ -527,7 +545,8 @@ mod tests {
             );
             CREATE TEMP TABLE "KothApiArenaSchemes" (
               challenge_id INTEGER PRIMARY KEY, game_id INTEGER,
-              objective_count SMALLINT, frozen_at TIMESTAMPTZ
+              objective_count SMALLINT, objective_ids TEXT[],
+              objective_schema_hash BYTEA, frozen_at TIMESTAMPTZ
                 DEFAULT clock_timestamp()
             );
             CREATE TEMP TABLE "Participations" (
@@ -553,14 +572,14 @@ mod tests {
               target_id INTEGER PRIMARY KEY, game_id INTEGER,
               challenge_id INTEGER, cycle_id BIGINT, reset_attempt INTEGER,
               container_id TEXT, ad_round_id INTEGER, context_hash CHAR(64),
-              snapshot_hash BYTEA, request_timestamp_ms BIGINT,
+              snapshot_hash BYTEA, objective_schema_hash BYTEA,
+              request_timestamp_ms BIGINT,
               accepted_at TIMESTAMPTZ
             );
             CREATE TEMP TABLE "KothApiSnapshotScores" (
               target_id INTEGER, participation_id INTEGER,
               activity_earned BIGINT, activity_possible BIGINT,
               objective_earned BIGINT, objective_possible BIGINT,
-              valid_actions BIGINT, total_actions BIGINT,
               objective_count SMALLINT
             );
             CREATE TEMP TABLE "KothApiRequestReplays" (
@@ -619,6 +638,7 @@ mod tests {
         let unknown_hash = hex::encode(Sha256::digest(b"stale-token"));
         let body = serde_json::to_vec(&serde_json::json!({
             "context": context,
+            "objectiveIds": ["quality", "throughput"],
             "teams": [
                 {
                     "tokenHash": valid_hash,
@@ -626,8 +646,7 @@ mod tests {
                     "objectives": [
                         {"earned": 1, "possible": 10},
                         {"earned": 900, "possible": 1000}
-                    ],
-                    "integrity": {"earned": 9, "possible": 10}
+                    ]
                 },
                 {
                     "tokenHash": unknown_hash,
@@ -635,8 +654,7 @@ mod tests {
                     "objectives": [
                         {"earned": 1, "possible": 1},
                         {"earned": 1, "possible": 1}
-                    ],
-                    "integrity": {"earned": 1, "possible": 1}
+                    ]
                 }
             ]
         }))
@@ -651,21 +669,28 @@ mod tests {
             (accepted.submitted_teams, accepted.recognized_teams),
             (2, 1)
         );
-        let frozen_objective_count: i16 =
-            sqlx::query_scalar(r#"SELECT objective_count FROM "KothApiArenaSchemes""#)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(frozen_objective_count, 2);
-        let staged: (i32, i64, i64, i64, i16) = sqlx::query_as(
+        let frozen_scheme: (i16, Vec<String>, Vec<u8>) = sqlx::query_as(
+            r#"SELECT objective_count, objective_ids, objective_schema_hash
+                 FROM "KothApiArenaSchemes""#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(frozen_scheme.0, 2);
+        assert_eq!(frozen_scheme.1, ["quality", "throughput"]);
+        assert_eq!(
+            frozen_scheme.2,
+            crate::controllers::game::koth::api_contract::objective_schema_hash(&frozen_scheme.1)
+        );
+        let staged: (i32, i64, i64, i16) = sqlx::query_as(
             r#"SELECT participation_id, objective_earned, objective_possible,
-                      valid_actions, objective_count
+                      objective_count
                  FROM "KothApiSnapshotScores""#,
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(staged, (11, 1_000_000, 2_000_000, 9, 2));
+        assert_eq!(staged, (11, 1_000_000, 2_000_000, 2));
 
         let replay = accept_observation(&pool, 7, 9, &headers, &body)
             .await
@@ -682,13 +707,18 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        let current_context = load_active_context(&pool, 7, 9)
+            .await
+            .unwrap()
+            .unwrap()
+            .opaque_context(7, 9);
         let changed_scheme_body = serde_json::to_vec(&serde_json::json!({
-            "context": context,
+            "context": current_context,
+            "objectiveIds": ["quality"],
             "teams": [{
                 "tokenHash": valid_hash,
                 "activity": {"earned": 1, "possible": 1},
-                "objectives": [{"earned": 1, "possible": 1}],
-                "integrity": {"earned": 1, "possible": 1}
+                "objectives": [{"earned": 1, "possible": 1}]
             }]
         }))
         .unwrap();

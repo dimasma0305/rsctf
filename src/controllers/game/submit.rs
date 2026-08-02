@@ -200,6 +200,17 @@ pub async fn submit(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
+    // Submissions share the engine/configuration fence for this game. Readers
+    // remain fully concurrent, while an edit, repository import, or scoring
+    // round that owns the exclusive form must land wholly before or after this
+    // grading transaction. Acquire it before every narrower submission lock.
+    crate::utils::single_flight::acquire_transaction_advisory_lock_shared(
+        &mut transaction,
+        &crate::services::ad_engine::game_lock_key(id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+
     // A post-commit suspicion writer locks this participation's running score
     // before taking its game/challenge audit fences. Use the same outer lock
     // order here, ahead of submit's narrower pair lock. Without it, submissions

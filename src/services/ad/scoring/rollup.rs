@@ -642,25 +642,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a migrated Postgres with an A&D game"]
     async fn database_epoch_rollup_is_idempotent() {
-        let url = std::env::var("RSCTF_TEST_DATABASE_URL").expect("test database URL");
-        let game_id: i32 = std::env::var("RSCTF_TEST_GAME_ID")
-            .expect("test game id")
-            .parse()
-            .expect("numeric game id");
-        let start_round: i32 = std::env::var("RSCTF_TEST_START_ROUND")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(1);
-        let epoch_ticks: i32 = std::env::var("RSCTF_TEST_EPOCH_TICKS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(8);
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("connect test database");
-        let mut transaction = pool.begin().await.expect("begin transaction");
+        let fixture = super::super::test_fixture::ad_scoring_fixture().await;
+        let game_id = fixture.game_id;
+        let start_round = 1;
+        let epoch_ticks = 8;
+        let mut transaction = fixture.pool.begin().await.expect("begin transaction");
         sqlx::query(r#"DELETE FROM "AdEpochRollups" WHERE game_id = $1"#)
             .bind(game_id)
             .execute(&mut *transaction)
@@ -778,26 +764,16 @@ mod tests {
                 .expect("load pre-finalization cutoff");
         assert!(before_finalization.is_none());
         transaction.rollback().await.expect("rollback fixture");
+        fixture.cleanup().await;
     }
 
     #[tokio::test]
     #[ignore = "requires a migrated Postgres with an A&D game"]
     async fn database_rollup_invalidation_keeps_only_the_safe_prefix() {
-        let url = std::env::var("RSCTF_TEST_DATABASE_URL").expect("test database URL");
-        let game_id: i32 = std::env::var("RSCTF_TEST_GAME_ID")
-            .expect("test game id")
-            .parse()
-            .expect("numeric game id");
-        let start_round: i32 = std::env::var("RSCTF_TEST_START_ROUND")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(1);
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .expect("connect test database");
-        let mut transaction = pool.begin().await.expect("begin transaction");
+        let fixture = super::super::test_fixture::ad_scoring_fixture().await;
+        let game_id = fixture.game_id;
+        let start_round = 1;
+        let mut transaction = fixture.pool.begin().await.expect("begin transaction");
 
         sqlx::query(
             r#"UPDATE "Games"
@@ -882,5 +858,6 @@ mod tests {
         assert!(epochs(&mut transaction, game_id).await.is_empty());
 
         transaction.rollback().await.expect("rollback fixture");
+        fixture.cleanup().await;
     }
 }

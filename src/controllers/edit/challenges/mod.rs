@@ -94,15 +94,8 @@ pub async fn add_challenge(
     if !game_accepts_children {
         return Err(AppError::conflict("Game is being deleted"));
     }
-    if model.challenge_type.uses_ad_engine() {
-        if ad_epoch_scoring_started_locked(control.transaction_mut(), id).await? {
-            return Err(AppError::bad_request(
-                "A&D/KotH challenges cannot be added after epoch scoring has started.",
-            ));
-        }
-        if model.challenge_type == ChallengeType::KingOfTheHill {
-            super::games::validate_koth_game_shape_locked(control.transaction_mut(), id).await?;
-        }
+    if model.challenge_type == ChallengeType::KingOfTheHill {
+        super::games::validate_koth_game_shape_locked(control.transaction_mut(), id).await?;
     }
 
     let am = game_challenge::ActiveModel {
@@ -174,6 +167,46 @@ fn uses_shared_container(c: &game_challenge::Model) -> bool {
         && crate::services::challenge_workloads::has_runtime(c)
 }
 
+fn challenge_scoring_fields_changed(
+    model: &ChallengeUpdateModel,
+    challenge: &game_challenge::Model,
+) -> bool {
+    let deadline_changed = model.deadline_utc.is_some_and(|deadline| {
+        let requested = (deadline.timestamp() != 0).then_some(deadline);
+        requested != challenge.deadline_utc
+    });
+    let flag_template_changed = model.flag_template.as_ref().is_some_and(|template| {
+        let requested = (!template.trim().is_empty()).then_some(template.as_str());
+        requested != challenge.flag_template.as_deref()
+    });
+    model
+        .is_enabled
+        .is_some_and(|value| value != challenge.is_enabled)
+        || deadline_changed
+        || flag_template_changed
+        || model
+            .submission_limit
+            .is_some_and(|value| value != challenge.submission_limit)
+        || model
+            .original_score
+            .is_some_and(|value| value != challenge.original_score)
+        || model
+            .min_score_rate
+            .is_some_and(|value| value != challenge.min_score_rate)
+        || model
+            .difficulty
+            .is_some_and(|value| value != challenge.difficulty)
+        || model
+            .score_curve
+            .is_some_and(|value| value != challenge.score_curve)
+        || model
+            .disable_blood_bonus
+            .is_some_and(|value| value != challenge.disable_blood_bonus)
+        || model
+            .ad_scoring_weight
+            .is_some_and(|value| (value - challenge.ad_scoring_weight).abs() > f64::EPSILON)
+}
+
 /// `PUT /api/edit/games/{id}/challenges/{cId}`
 pub async fn update_challenge(
     State(st): State<SharedState>,
@@ -208,15 +241,22 @@ pub async fn update_challenge(
         model.difficulty.unwrap_or(challenge.difficulty),
         model.submission_limit.unwrap_or(challenge.submission_limit),
     )?;
+    // A normal submit locks Games before its challenge-scoped grading lock.
+    // Preserve that order here so the global boundary and this challenge's
+    // policy are both linearizable without a lock inversion.
+    let control = engine_control
+        .as_mut()
+        .expect("challenge update holds the game control lock");
+    let competition_scoring_started =
+        competition_scoring_started_locked(control.transaction_mut(), id).await?;
+    crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id).await?;
+    if competition_scoring_started && challenge_scoring_fields_changed(&model, &challenge) {
+        return Err(AppError::bad_request(
+            "Challenge scoring settings are locked after competition scoring has started.",
+        ));
+    }
     let scoring_started = if ch_type.uses_ad_engine() {
-        ad_epoch_scoring_started_locked(
-            engine_control
-                .as_mut()
-                .expect("engine challenge holds the game control lock")
-                .transaction_mut(),
-            id,
-        )
-        .await?
+        ad_epoch_scoring_started_locked(control.transaction_mut(), id).await?
     } else {
         false
     };

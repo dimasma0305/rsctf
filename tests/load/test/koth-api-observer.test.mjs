@@ -45,7 +45,7 @@ test('KotH API signing rejects ambiguous identities and oversized payloads', () 
   );
 });
 
-test('API arena load evidence uses hashes and equivalent native score scales', () => {
+test('Leaderboard load evidence uses hashes and equivalent native score scales', () => {
   const small = kothApiEvidence('koth_team_small', 0);
   const large = kothApiEvidence('koth_team_large', 6);
 
@@ -55,7 +55,8 @@ test('API arena load evidence uses hashes and equivalent native score scales', (
   );
   assert.equal(Object.hasOwn(small, 'token'), false);
   assert.deepEqual(small.activity, large.activity);
-  assert.deepEqual(small.integrity, large.integrity);
+  assert.equal(Object.hasOwn(small, 'integrity'), false);
+  assert.equal(Object.hasOwn(large, 'integrity'), false);
   assert.equal(
     small.objectives[0].earned / small.objectives[0].possible,
     large.objectives[0].earned / large.objectives[0].possible,

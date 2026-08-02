@@ -44,9 +44,9 @@ const PDF_PROFILES = {
       title: 'RSCTF King of the Hill Handbook: Boot2Root and Leaderboard Formats',
       author: 'Dimas Maulana',
       subject:
-        'Unified technical handbook for current RSCTF KotH operation and the proposed Leaderboard contract',
+        'Canonical technical handbook for RSCTF Boot2Root and Leaderboard KotH scoring and operations',
       keywords:
-        'King of the Hill CTF; Boot2Root; Leaderboard KotH; API arena; normalization; sustained lead; RSCTF',
+        'King of the Hill CTF; Boot2Root; Leaderboard KotH; normalization; sustained lead; RSCTF',
     },
   },
 }

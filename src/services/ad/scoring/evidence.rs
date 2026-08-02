@@ -714,32 +714,17 @@ mod tests {
         );
     }
 
-    /// Read-only query-contract smoke test for a real migrated Postgres. Run with:
-    /// `RSCTF_TEST_DATABASE_URL=... RSCTF_TEST_GAME_ID=... cargo test
-    /// database_aggregate_is_bounded_by_stable_roster -- --ignored`.
+    /// Read-only query-contract test against the suite's isolated, fully
+    /// migrated A&D event.
     #[tokio::test]
     #[ignore = "requires a migrated Postgres with an A&D game"]
     async fn database_aggregate_is_bounded_by_stable_roster() {
-        let url = std::env::var("RSCTF_TEST_DATABASE_URL").expect("test database URL");
-        let game_id: i32 = std::env::var("RSCTF_TEST_GAME_ID")
-            .expect("test game id")
-            .parse()
-            .expect("numeric game id");
-        let start_round = std::env::var("RSCTF_TEST_START_ROUND")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(1);
-        let epoch_ticks = std::env::var("RSCTF_TEST_EPOCH_TICKS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(8);
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(3)
-            .connect(&url)
-            .await
-            .expect("connect test database");
+        let fixture = super::super::test_fixture::ad_scoring_fixture().await;
+        let game_id = fixture.game_id;
+        let start_round = 1;
+        let epoch_ticks = 8;
 
-        let mut transaction = pool.begin().await.expect("begin read transaction");
+        let mut transaction = fixture.pool.begin().await.expect("begin read transaction");
         let services = load_stable_services(&mut transaction, game_id, start_round, None, false)
             .await
             .expect("stable roster query");
@@ -785,6 +770,8 @@ mod tests {
                 && row.sla_credit_sum >= 0.0
                 && row.sla_credit_sum <= row.sla_tick_count as f64
         }));
+        transaction.rollback().await.expect("rollback fixture");
+        fixture.cleanup().await;
     }
 }
 

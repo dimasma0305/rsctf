@@ -22,8 +22,10 @@ pub struct AdminKothObserverModel {
     pub claim_source: String,
     pub configured: bool,
     pub secret_hint: Option<String>,
-    /// Frozen by the first accepted snapshot containing a recognized team.
+    /// Frozen by the first accepted signed Leaderboard snapshot.
     pub objective_count: Option<i16>,
+    pub objective_ids: Option<Vec<String>>,
+    pub objective_schema_hash: Option<String>,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(with = "crate::utils::datetime::millis_opt")]
@@ -42,6 +44,8 @@ type ObserverMetaRow = (
     Option<String>,
     Option<String>,
     Option<i16>,
+    Option<Vec<String>>,
+    Option<Vec<u8>>,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
@@ -69,6 +73,7 @@ async fn observer_model(
                     ELSE 'Marker'
                   END AS claim_source,
                   observer.secret_hint, scheme.objective_count,
+                  scheme.objective_ids, scheme.objective_schema_hash,
                   observer.created_at, observer.rotated_at,
                   observer.last_used_at, snapshot.accepted_at,
                   observer.challenge_id IS NOT NULL AS configured
@@ -106,13 +111,15 @@ async fn observer_model(
     Ok(AdminKothObserverModel {
         challenge_id,
         claim_source: row.0.unwrap_or_else(|| "Marker".to_string()),
-        configured: row.7,
+        configured: row.9,
         secret_hint: row.1,
         objective_count: row.2,
-        created_at: row.3,
-        rotated_at: row.4,
-        last_used_at: row.5,
-        last_observation_at: row.6,
+        objective_ids: row.3,
+        objective_schema_hash: row.4.map(hex::encode),
+        created_at: row.5,
+        rotated_at: row.6,
+        last_used_at: row.7,
+        last_observation_at: row.8,
         context_path,
         observation_path,
         secret,
@@ -262,5 +269,5 @@ pub async fn revoke_observer(
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(MessageResponse::ok("KotH API arena referee revoked"))
+    Ok(MessageResponse::ok("KotH Leaderboard referee revoked"))
 }

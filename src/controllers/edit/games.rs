@@ -360,7 +360,7 @@ fn validate_start_time_transition(
 ) -> AppResult<()> {
     if scoring_started && requested != current {
         return Err(AppError::bad_request(
-            "The event start is locked after A&D or KotH scoring starts.",
+            "The event start is locked after competition scoring starts.",
         ));
     }
     Ok(())
@@ -396,6 +396,8 @@ pub async fn update_game(
         current_koth_claim_confirmation_ticks,
         current_start_time,
         current_end_time,
+        current_practice_mode,
+        current_blood_bonus_value,
         deletion_pending,
     ) = sqlx::query_as::<
         _,
@@ -414,6 +416,8 @@ pub async fn update_game(
             DateTime<Utc>,
             DateTime<Utc>,
             bool,
+            i64,
+            bool,
         ),
     >(
         r#"SELECT ad_epoch_ticks, ad_scoring_start_round,
@@ -423,7 +427,8 @@ pub async fn update_game(
                       koth_epoch_ticks, koth_cycle_ticks,
                       koth_champion_cooldown_ticks,
                       koth_claim_confirmation_ticks,
-                      start_time_utc, end_time_utc, deletion_pending
+                      start_time_utc, end_time_utc, practice_mode,
+                      blood_bonus_value, deletion_pending
                  FROM "Games"
                 WHERE id = $1
                 FOR UPDATE"#,
@@ -436,6 +441,11 @@ pub async fn update_game(
     if deletion_pending {
         return Err(AppError::conflict("Game is being deleted"));
     }
+
+    // Normal submissions hold the Games row FOR SHARE through commit. This
+    // FOR UPDATE therefore waits for every in-flight FirstSolve, blocks new
+    // ones, and makes the following immutable-boundary decision race-free.
+    let competition_scoring_started = competition_scoring_started_locked(&mut *tx, id).await?;
 
     let requested_epoch_ticks = model.ad_epoch_ticks.unwrap_or(current_epoch_ticks);
     validate_scoring_transition(
@@ -460,6 +470,24 @@ pub async fn update_game(
     let requested_koth_claim_confirmation_ticks = model
         .koth_claim_confirmation_ticks
         .unwrap_or(current_koth_claim_confirmation_ticks);
+    let constant_scoring_settings_changed = model.start_time_utc != current_start_time
+        || model.end_time_utc != current_end_time
+        || model.practice_mode != current_practice_mode
+        || super::blood_bonus_from_value(model.blood_bonus_value) != current_blood_bonus_value
+        || requested_epoch_ticks != current_epoch_ticks
+        || model.ad_flag_lifetime_ticks != current_lifetime
+        || model.ad_tick_seconds != current_tick_seconds
+        || model.ad_getflag_window_fraction != current_getflag_fraction
+        || model.ad_min_grace_period_seconds != current_grace_seconds
+        || requested_koth_epoch_ticks != current_koth_epoch_ticks
+        || requested_koth_cycle_ticks != current_koth_cycle_ticks
+        || requested_koth_champion_cooldown_ticks != current_koth_champion_cooldown_ticks
+        || requested_koth_claim_confirmation_ticks != current_koth_claim_confirmation_ticks;
+    if competition_scoring_started && constant_scoring_settings_changed {
+        return Err(AppError::bad_request(
+            "Game scoring settings are locked after competition scoring has started.",
+        ));
+    }
     validate_koth_crown_shape(
         requested_koth_epoch_ticks,
         requested_koth_cycle_ticks,
@@ -488,7 +516,7 @@ pub async fn update_game(
     validate_start_time_transition(
         current_start_time,
         model.start_time_utc,
-        current_start_round.is_some() || current_koth_start_round.is_some() || config_snapshotted,
+        competition_scoring_started || config_snapshotted,
     )?;
     if current_koth_start_round.is_some()
         && (requested_koth_epoch_ticks != current_koth_epoch_ticks

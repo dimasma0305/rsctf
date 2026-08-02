@@ -22,6 +22,38 @@ pub(super) struct GradingFence {
     pub update_deferred: bool,
 }
 
+/// Evaluate the event-wide immutable scoring boundary while the repository
+/// caller owns the engine's exclusive per-game advisory lock. Normal
+/// submissions take that same lock in shared mode, so no row lock is needed to
+/// linearize the boundary with FirstSolve creation across replicas.
+pub(super) async fn competition_scoring_started_locked(
+    transaction: &DatabaseTransaction,
+    game_id: i32,
+) -> AppResult<bool> {
+    let row = transaction
+        .query_one(Statement::from_sql_and_values(
+            DatabaseBackend::Postgres,
+            r#"SELECT clock_timestamp() >= game.start_time_utc
+                      OR game.ad_scoring_start_round IS NOT NULL
+                      OR game.koth_scoring_start_round IS NOT NULL
+                      OR EXISTS (
+                           SELECT 1
+                             FROM "FirstSolves" first_solve
+                             JOIN "Participations" participation
+                               ON participation.id = first_solve.participation_id
+                            WHERE participation.game_id = game.id
+                      ) AS scoring_started
+                 FROM "Games" game
+                WHERE game.id = $1"#,
+            [game_id.into()],
+        ))
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::not_found("Game not found"))?;
+    row.try_get::<bool>("", "scoring_started")
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
 async fn stored_static_flag_policy_locked(
     transaction: &DatabaseTransaction,
     challenge_id: i32,
@@ -58,21 +90,29 @@ pub(super) async fn grading_fence_locked(
     transaction: &DatabaseTransaction,
     game_id: i32,
     challenge: Option<&game_challenge::Model>,
+    competition_scoring_started: bool,
     intent: &GradingIntent<'_>,
 ) -> AppResult<GradingFence> {
-    let Some(challenge) = challenge.filter(|challenge| !challenge.challenge_type.uses_ad_engine())
-    else {
+    let Some(challenge) = challenge else {
+        // New rows are always inert (`is_enabled = false`). They do not enter
+        // scoring, and the review/eligibility boundary prevents enabling them
+        // until a future event configuration.
         return Ok(GradingFence {
             protected: false,
             update_deferred: false,
         });
     };
+    if challenge.challenge_type.uses_ad_engine() {
+        return Ok(GradingFence {
+            protected: false,
+            update_deferred: false,
+        });
+    }
     let row = transaction
         .query_one(Statement::from_sql_and_values(
             DatabaseBackend::Postgres,
             r#"SELECT (
-                       game.start_time_utc <= clock_timestamp()
-                       OR challenge.accepted_count > 0
+                       challenge.accepted_count > 0
                        OR challenge.submission_count > 0
                        OR EXISTS (
                              SELECT 1 FROM "Submissions" submission
@@ -83,18 +123,17 @@ pub(super) async fn grading_fence_locked(
                               WHERE solve.challenge_id = challenge.id
                        )
                    ) AS protected
-                 FROM "Games" game
-                 JOIN "GameChallenges" challenge
-                   ON challenge.game_id = game.id
-                WHERE game.id = $1 AND challenge.id = $2"#,
+                 FROM "GameChallenges" challenge
+                WHERE challenge.game_id = $1 AND challenge.id = $2"#,
             [game_id.into(), challenge.id.into()],
         ))
         .await
         .map_err(|error| AppError::internal(error.to_string()))?
         .ok_or_else(|| AppError::not_found("Challenge not found"))?;
-    let protected = row
-        .try_get::<bool>("", "protected")
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let protected = competition_scoring_started
+        || row
+            .try_get::<bool>("", "protected")
+            .map_err(|error| AppError::internal(error.to_string()))?;
     if !protected {
         return Ok(GradingFence {
             protected: false,

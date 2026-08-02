@@ -49,6 +49,10 @@ impl AttachmentHarness {
             );
             CREATE TABLE "Games" (
               id INTEGER PRIMARY KEY,
+              start_time_utc TIMESTAMPTZ NOT NULL
+                DEFAULT (clock_timestamp() + interval '1 hour'),
+              ad_scoring_start_round INTEGER,
+              koth_scoring_start_round INTEGER,
               deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
               poster_hash TEXT
             );
@@ -73,12 +77,17 @@ impl AttachmentHarness {
               challenge_id INTEGER,
               attachment_id INTEGER
             );
+            CREATE TABLE "FirstSolves" (
+              participation_id INTEGER NOT NULL,
+              challenge_id INTEGER NOT NULL
+            );
             CREATE TABLE "ExerciseChallenges" (
               id INTEGER PRIMARY KEY,
               attachment_id INTEGER
             );
             CREATE TABLE "Participations" (
               id INTEGER PRIMARY KEY,
+              game_id INTEGER,
               writeup_id INTEGER
             );
             CREATE TABLE "AspNetUsers" (
@@ -453,6 +462,68 @@ async fn flag_removal_honors_deletion_fences_and_rolls_back_cleanup_failure() {
     .unwrap();
     assert_eq!(retained, (1, 1));
     harness.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn flag_policy_is_immutable_after_any_competition_boundary() {
+    for boundary in ["scheduled", "jeopardy", "engine"] {
+        let harness = AttachmentHarness::new().await;
+        harness.seed(false, false).await;
+        sqlx::query(
+            r#"INSERT INTO "FlagContexts" (id, challenge_id)
+               VALUES (70, 11)"#,
+        )
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+        if boundary == "jeopardy" {
+            sqlx::query(r#"INSERT INTO "Participations" (id, game_id) VALUES (99, 1)"#)
+                .execute(&harness.pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                r#"INSERT INTO "GameChallenges"
+                     (id, game_id, "Type", deletion_pending)
+                   VALUES (12, 1, $1, FALSE)"#,
+            )
+            .bind(ChallengeType::StaticAttachment as i16)
+            .execute(&harness.pool)
+            .await
+            .unwrap();
+            sqlx::query(r#"INSERT INTO "FirstSolves" VALUES (99, 12)"#)
+                .execute(&harness.pool)
+                .await
+                .unwrap();
+        } else if boundary == "engine" {
+            sqlx::query(r#"UPDATE "Games" SET ad_scoring_start_round = 1 WHERE id = 1"#)
+                .execute(&harness.pool)
+                .await
+                .unwrap();
+        } else {
+            sqlx::query(
+                r#"UPDATE "Games"
+                      SET start_time_utc = clock_timestamp() - interval '1 minute'
+                    WHERE id = 1"#,
+            )
+            .execute(&harness.pool)
+            .await
+            .unwrap();
+        }
+
+        let error = execute_flag_removal(&harness.pool, 70)
+            .await
+            .expect_err("live scoring flag policy changed");
+        assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "FlagContexts" WHERE id = 70"#)
+                .fetch_one(&harness.pool)
+                .await
+                .unwrap(),
+            1
+        );
+        harness.cleanup().await;
+    }
 }
 
 #[derive(Default)]

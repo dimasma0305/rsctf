@@ -1,146 +1,167 @@
-# Signed KotH API arena referee
+# Signed Leaderboard KotH referee
 
-RSCTF has two deliberately different King of the Hill formats:
+RSCTF has two constant King of the Hill scoring formats:
 
-- **Marker KotH** is an exclusive boot2root hill. One team controls the shared
-  machine at a time, and RSCTF scores acquisition, control, and reliability.
-- **API arena KotH** is a multi-team application challenge. Every team may
-  produce evidence in the same scoring tick. RSCTF normalizes challenge-native
-  measurements and scores activity, objective performance, and integrity.
+- **Boot2Root KotH** is exclusive control of a shared machine. One team is the
+  confirmed holder at a time.
+- **Leaderboard KotH** is a concurrent application or protocol challenge.
+  Every eligible team can produce evidence in the same scoring tick.
 
-The API is not a dynamic-points webhook. A trusted referee submits bounded
-integer evidence, never team IDs, raw bearer capabilities, or points. This is
-stricter than rCTF's signed dynamic-score API, which accepts externally
-calculated per-user point values. RSCTF owns normalization, missing-team
-behavior, the fixed formula, tick settlement, and the 0-100 ceiling. See
-[rCTF's API contract](https://github.com/otter-sec/rctf/blob/main/apps/docs/src/content/docs/api/challenges/submit-dynamic-scores.md)
-for the comparison.
+Leaderboard KotH is not a dynamic-points webhook. A trusted referee submits
+bounded integer evidence, never team IDs, bearer capabilities, or points.
+RSCTF owns normalization, zero treatment, the fixed formula, lead detection,
+tick settlement, and the 0–100 ceiling. There is no organizer-selectable
+formula version.
 
-## Fixed scoring rule
+## Constant scoring rule
 
 For one team in one scorable tick, the referee reports:
 
-- activity evidence `earned / possible`;
-- between one and sixteen objective evidence ratios; and
-- integrity evidence `valid actions / total actions`.
+- activity evidence `earned / possible`; and
+- one to sixteen named objective evidence ratios.
 
-RSCTF calculates:
+RSCTF normalizes every objective independently, then calculates:
 
 ```text
-E = activity earned / activity possible
-P = mean(each objective earned / each objective possible)
-I = valid actions / total actions
+E_t = activity earned / activity possible
+P_t = mean(each objective earned / each objective possible)
 
-B = 0                                      when E = 0 or P = 0
-B = 1 / (0.35 / E + 0.65 / P)             otherwise
-
-tick score = 100 * I * B
+Q_t = 0                                      when E_t = 0 or P_t = 0
+Q_t = 1 / (0.35 / E_t + 0.65 / P_t)         otherwise
 ```
 
-`B` is a weighted harmonic mean. Both activity and objective performance are
-required, objective performance has the larger influence, and one excellent
-channel cannot hide a weak channel. Integrity multiplies the same tick's
-result. RSCTF persists that tick score before aggregating an epoch, so activity
-from one tick cannot be combined with integrity or performance from another
-tick to manufacture an outcome that never occurred.
+For an epoch containing `T` immutable scorable ticks:
 
-Each native objective is normalized independently before the objective mean is
-calculated. A challenge may therefore report, for example, `7/10` correctness
-and `750/1000` throughput without the larger native scale dominating the
-smaller one. The referee cannot configure weights or a scoring version.
+```text
+Q = mean(Q_t)
+
+l_t = 1 / k   when this team is tied for the highest positive Q_t
+              with k teams and at least two teams have positive Q_t
+l_t = 0       otherwise
+
+L = mean(l_t)
+S = 0                                      when T < 2
+S = sum(min(l_(t-1), l_t)) / (T - 1)      otherwise
+
+D = 0.25L + 0.55S + 0.20 * sqrt(L * S)
+Local = 100 * [Q + 0.50 * Q * (1 - Q) * D]
+```
+
+`Q_t` is a weighted harmonic mean: both meaningful play and objective
+performance are necessary, with objective performance receiving the larger
+influence. `L` measures exact first-place coverage and splits an exact tie.
+`S` measures adjacent-tick continuity, so repeatedly holding first place is
+more valuable than isolated peaks. The bonus is zero when `Q` is zero or one
+and can never exceed 12.5 points. The final local score remains in `[0, 100]`.
+
+Failed exploit attempts are not negative points. They may still be logged,
+rate-limited, or reviewed as security telemetry, but the challenge must make
+the scored action require real play: unpredictable tasks, verified results,
+one-use receipts, and bounded capability-scoped quotas.
+
+Each objective is normalized before the mean. For example, `7/10` correctness
+and `750/1000` throughput contribute `0.70` and `0.75`; the larger native scale
+does not dominate. Objective IDs and their order are frozen by the first
+accepted snapshot and cannot change during the event.
 
 An omitted eligible team receives explicit zero evidence for that tick. A
-field-wide missing, changing, late, unhealthy, or incomplete snapshot voids the
-tick instead of carrying an earlier result forward.
+field-wide missing, changing, late, unhealthy, or incomplete snapshot voids
+the tick for everyone instead of carrying an earlier result forward.
 
-## Security boundary
+## Trust and isolation boundary
 
-Run the referee as an independent trusted service. Do not put its HMAC secret
-in the player-facing arena image, environment, filesystem, browser, or logs. A
-team may legitimately control or break challenge behavior; it must not acquire
-the credential that speaks for the referee.
+Run the referee as an independent trusted service. HMAC authenticates that a
+body came from that service and was not changed in transit; it does **not**
+prove that the measurements are honest. The referee must therefore be outside
+the player-controlled challenge workload and use a separate identity,
+filesystem, process/container boundary, and secret store.
+
+The recommended deployment has these properties:
+
+1. The player-facing arena cannot read the HMAC secret or referee state.
+2. The referee has read-only access to the smallest evidence feed it needs and
+   outbound access only to the arena and RSCTF.
+3. The arena cannot call the signed RSCTF endpoint directly.
+4. A team controls only work keyed by its KotH capability hash; it cannot spend
+   another team's quota or an unbounded shared admission budget.
+5. The independent RSCTF functional checker is read-only and does not accept
+   the scoring feed as proof of health.
+
+Do not put the HMAC secret in the player image, player-visible environment,
+browser, logs, repository, or challenge backup. PostgreSQL backups contain the
+symmetric referee key and remain sensitive. Use HTTPS, synchronize the clock,
+restrict service identities and networks, and rotate the key after suspected
+disclosure.
 
 The arena should hash a submitted KotH capability immediately and retain only
 its lowercase SHA-256 digest. The referee submits that digest as `tokenHash`.
-RSCTF resolves it only against capabilities that are current for the exact
-game, hill, cycle, reset attempt, target, and container. Raw bearer
-capabilities never enter the signed evidence body.
+RSCTF resolves it only against capabilities current for the exact game, hill,
+cycle, reset attempt, target, and container. Raw capabilities never enter the
+signed body.
 
-The context response includes the current eligible capability hashes. The
-referee must filter its untrusted arena feed against this set before building a
-snapshot. This prevents fabricated token hashes from filling the bounded
-submission. The hashes are identity filters, not bearer credentials.
+The context response contains the current eligible hashes. Filter the
+untrusted arena feed against this set before constructing the snapshot. These
+hashes are identity filters, not bearer credentials.
 
-Use HTTPS, synchronize the referee clock, store the secret under a dedicated OS
-or orchestrator identity, restrict its outbound destinations, and rotate it
-after suspected disclosure. PostgreSQL backups contain the symmetric referee
-key and remain sensitive.
+## Challenge-design contract
 
-## Challenge-design requirements
-
-The platform can validate evidence shape and identity, but the challenge
-defines what an action proves. A fair API arena should follow these rules:
+A fair Leaderboard challenge must satisfy all of the following:
 
 1. Count only verified, challenge-relevant actions as activity. Page views,
-   polling, and unauthenticated requests are not play.
-2. Use unpredictable, server-issued, expiring, one-use tasks or proofs. Bind
-   each result to the capability hash that started it.
-3. Publish fixed denominators and objective definitions before play. Do not
-   choose a denominator after seeing team results.
-4. Keep objectives conceptually distinct. Do not duplicate an objective entry
-   to give it hidden weight; RSCTF intentionally gives each component equal
-   normalized influence. Every team in a snapshot must use the same objective
-   component count. RSCTF freezes that count on the first accepted snapshot
-   containing a recognized team and rejects later changes. The frozen scheme
-   belongs to the challenge and survives referee credential rotation or
-   revocation. The meaning and order of those components must also remain
-   fixed for the event.
-5. Include failed attempts in integrity. Silently dropping failures makes
-   guessing indistinguishable from correct play.
-6. Make replay idempotent. A solved session, nonce, or receipt must not produce
-   a second evidence event.
-7. Bound request sizes, sessions, event retention, pagination, and rate-limit
-   state. Apply per-capability, per-client, and global limits so arbitrary
-   identities cannot grow memory without bound.
-   Isolate per-capability work so one participant cannot exhaust shared
-   capacity and manufacture a field-wide checker void.
-8. Expose an ordered evidence cursor. If the referee detects a retention gap,
-   it must fail closed and alert an operator rather than score a partial feed.
-9. Keep the RSCTF functional checker independent and read-only. It verifies
-   that the shared application works; it does not trust the scoring feed as a
-   health check.
-10. Rehearse at least one full epoch with honest clients, invalid attempts,
-    referee restart, arena reset, stale capability, replay, and feed-gap
-    scenarios before enabling official scoring.
+   polling, and unauthenticated traffic are not play.
+2. Issue unpredictable, expiring, one-use tasks or proofs. Bind each result to
+   the capability hash that began it.
+3. Publish fixed activity targets, objective IDs, order, and meanings before
+   play. Never choose a denominator after seeing results.
+4. Keep objectives conceptually distinct. Duplicating an objective to create a
+   hidden weight is prohibited; RSCTF gives every normalized objective equal
+   influence.
+5. Make replay idempotent. A completed session, nonce, or receipt cannot
+   produce a second evidence event.
+6. Bound request size, sessions, evidence retention, pagination, and
+   rate-limit state. Key the team quota by capability identity, not source IP,
+   so proxying or distributed addresses cannot consume extra team capacity.
+7. Isolate per-team work and reserve referee/checker capacity. One participant
+   must not be able to exhaust a global queue and manufacture field-wide voids.
+8. Expose an ordered evidence cursor. A retention gap fails closed and alerts
+   an operator; it never produces a partial score snapshot.
+9. Keep the RSCTF functional checker independent of the referee and arena
+   scoring database.
+10. Rehearse at least one complete epoch at expected peak capacity, including
+    valid play, invalid traffic, referee restart, arena reset, stale
+    capabilities, replay, feed gaps, and one deliberately overloaded team.
 
 The bundled
 [`api-observed-hill`](https://github.com/dimasma0305/rsctf-challenges/tree/main/Koth/Web/api-observed-hill)
-implements these properties with expiring one-use proof-of-work sessions,
-bounded event pagination, persistent referee state, capability-hash filtering,
+demonstrates expiring one-use proof sessions, bounded evidence pagination,
+persistent referee state, capability-hash filtering, team-scoped admission,
 and two differently scaled objective channels.
 
-## Enable an API arena
+## Enable Leaderboard KotH
 
-1. Open the game's **A&D / KotH operations** page.
-2. Select **KotH**.
-3. In the hill's **Claim input** column, choose **Enable API**.
-4. Copy the one-time referee secret. RSCTF never returns its plaintext again.
-5. Keep scoring paused and start the official KotH lifecycle.
-6. Configure the referee with the game ID, challenge ID, RSCTF origin, stable
-   arena URL, secret, and a persistent state-file path.
-7. Run one preflight poll. Confirm that the operator view shows a current
-   snapshot and that submitted and recognized team counts agree.
-8. Exercise valid and invalid player actions, wait for checker evidence, then
-   resume scoring.
+1. Open the game's **A&D / KotH operations** page and select **KotH**.
+2. In the hill's **Claim input** column, choose **Enable Leaderboard**.
+3. Copy the one-time referee secret. RSCTF never returns its plaintext again.
+4. Keep scoring paused and start the official KotH lifecycle.
+5. Configure the referee with the game ID, challenge ID, RSCTF origin, stable
+   arena URL, secret, and persistent state path.
+6. Fetch context and submit a preflight snapshot using the final ordered
+   `objectiveIds`. The first accepted snapshot freezes that schema.
+7. Fetch context again and confirm the returned IDs and schema hash match the
+   referee configuration.
+8. Exercise valid work, invalid traffic, omission, and restart behavior. Wait
+   for checker evidence and verify submitted/recognized counts before resuming
+   scoring.
 
-The source is frozen in the official hill snapshot. A configured credential
-selects `Api`; otherwise the hill uses `Marker`. It cannot change after scoring
-starts. Rotating or revoking a live referee clears the current snapshot. Pause
-scoring, rotate, submit fresh evidence, verify it, and resume.
+The official hill snapshot stores the source. A configured credential selects
+the internal `Api` claim source; otherwise the hill uses `Marker`. `Api` is a
+stable wire/storage identifier, not a legacy formula selector. The source
+cannot change after scoring starts.
 
-API arenas support at most 2,000 accepted teams and 2,000 submitted team
-entries. RSCTF rejects the official start when an enabled API arena exceeds
-that roster bound.
+Rotating or revoking a live credential clears the current snapshot. Pause
+scoring, rotate, submit fresh evidence, verify it, and resume. Leaderboard
+hills support at most 2,000 accepted teams and 2,000 submitted rows; official
+start is rejected above that bound.
 
 ## Wire contract
 
@@ -150,7 +171,7 @@ Fetch the current scoring fence:
 GET /api/v1/koth/games/{gameId}/challenges/{challengeId}/context
 ```
 
-Example response:
+Example response after the objective schema is frozen:
 
 ```json
 {
@@ -164,13 +185,16 @@ Example response:
   "eligibleTokenHashes": [
     "ad4f...64-lowercase-hex-characters"
   ],
+  "objectiveIds": ["proof-strength", "solve-speed"],
+  "objectiveSchemaHash": "64-lowercase-hex-characters",
   "generatedAt": 1785123401000
 }
 ```
 
-`context` changes for every scoring round and every runtime/reset identity.
-`eligibleTokenHashes` is the exact allowlist the referee should use for that
-context.
+Before the first accepted snapshot, `objectiveIds` is empty and
+`objectiveSchemaHash` is `null`. The referee supplies the final schema in that
+first submission. Thereafter the context is bound to its hash. `context`
+changes with the scoring round, runtime/reset identity, or objective schema.
 
 Submit one complete current-tick snapshot:
 
@@ -182,6 +206,7 @@ X-RSCTF-Signature: sha256=<lowercase-hex-HMAC-SHA256>
 
 {
   "context": "<context>",
+  "objectiveIds": ["proof-strength", "solve-speed"],
   "teams": [
     {
       "tokenHash": "<sha256-current-capability>",
@@ -189,26 +214,26 @@ X-RSCTF-Signature: sha256=<lowercase-hex-HMAC-SHA256>
       "objectives": [
         {"earned": 7, "possible": 10},
         {"earned": 750, "possible": 1000}
-      ],
-      "integrity": {"earned": 19, "possible": 20}
+      ]
     }
   ]
 }
 ```
 
-Send an empty `teams` array when nobody produced evidence. Do not omit the
-snapshot; an explicit zero state lets operators distinguish no play from a
+The objective array positions must match `objectiveIds` exactly. Send an empty
+`teams` array when nobody produced evidence, while retaining the same
+`objectiveIds`. This explicit zero snapshot distinguishes no play from a
 failed referee.
 
-Every ratio must satisfy:
+Every evidence ratio must satisfy:
 
 ```text
 0 <= earned <= possible <= 1,000,000,000,000
 ```
 
 The body is limited to 512 KiB. `teams` is limited to 2,000 unique lowercase
-64-character token hashes, and each team must contain one to sixteen objective
-components. Every team in one snapshot must use the same component count.
+64-character token hashes. Objective IDs are unique, lowercase, 1–64 bytes,
+begin with `a-z`, and otherwise contain only `a-z`, `0-9`, `-`, `_`, or `.`.
 Unknown or stale hashes are ignored and counted as submitted but not
 recognized.
 
@@ -240,23 +265,19 @@ Example success:
 }
 ```
 
-Require `recognizedTeams === submittedTeams` after filtering. A mismatch means
-the capability window changed or the referee constructed evidence from an
-invalid identity.
+Require `recognizedTeams === submittedTeams` after local filtering. A mismatch
+means the capability window changed or the referee used an invalid identity.
 
 | Status | Meaning |
 | --- | --- |
-| `200` | The snapshot was staged for the checker; no score was awarded by the request itself. |
-| `400` | JSON, evidence bounds, objective count, context shape, or hash shape is invalid. |
+| `200` | Snapshot staged for the checker; this request itself awards no score. |
+| `400` | JSON, evidence bounds, objective IDs/order, context, or hash shape is invalid. |
 | `401` | Credential, timestamp window, or signature is invalid. These cases intentionally share one response. |
-| `409` | Context changed, the snapshot is late/older, an accepted request was replayed, or the objective count differs from the event's frozen scheme. Fetch context and rebuild without changing the scheme. |
-| `413` | The signed body exceeds 512 KiB. |
-| `429` | The source exceeded the API rate limit. Back off. |
+| `409` | Context changed, snapshot is late/older, replay was detected, or the objective schema differs from the frozen scheme. |
+| `413` | Signed body exceeds 512 KiB. |
+| `429` | Source exceeded the API rate limit; back off. |
 
 ## Minimal signing example
-
-This example assumes `teams` was built from independently verified,
-current-round arena evidence:
 
 ```python
 import hashlib
@@ -269,11 +290,15 @@ import urllib.request
 ORIGIN = "https://ctf.example"
 GAME_ID = 7
 CHALLENGE_ID = 42
+OBJECTIVE_IDS = ["proof-strength", "solve-speed"]
 SECRET = os.environ["RSCTF_KOTH_OBSERVER_SECRET"]
 
 base = f"{ORIGIN}/api/v1/koth/games/{GAME_ID}/challenges/{CHALLENGE_ID}"
 with urllib.request.urlopen(f"{base}/context", timeout=5) as response:
     model = json.load(response)
+
+if model["objectiveIds"] not in ([], OBJECTIVE_IDS):
+    raise RuntimeError("RSCTF objective schema does not match this referee")
 
 eligible = set(model["eligibleTokenHashes"])
 teams = [
@@ -281,7 +306,11 @@ teams = [
     if row["tokenHash"] in eligible
 ]
 body = json.dumps(
-    {"context": model["context"], "teams": teams},
+    {
+        "context": model["context"],
+        "objectiveIds": OBJECTIVE_IDS,
+        "teams": teams,
+    },
     separators=(",", ":"),
     sort_keys=True,
 ).encode()
@@ -305,27 +334,24 @@ with urllib.request.urlopen(request, timeout=5) as response:
 
 ## What RSCTF does after submission
 
-At the server-randomized checker time, RSCTF:
+At a server-randomized checker time, RSCTF:
 
 1. allows one bounded six-second arrival window for the exact current-round
-   snapshot, reserving the complete checker and persistence budget;
+   snapshot;
 2. runs the independent functional checker;
 3. reads the snapshot again;
-4. accepts only byte-equivalent, current evidence that bracketed the probe;
+4. accepts only byte-equivalent current evidence bracketing that probe;
 5. voids the field-wide tick if the shared application is unhealthy or the
-   snapshot is missing/changing;
+   snapshot is missing or changing;
 6. writes one immutable normalized row for every eligible team, including
    explicit zero rows for omitted teams;
-7. calculates each team's harmonic-mean core and integrity-adjusted score for
-   that tick; and
-8. averages immutable tick results into projected and settled epochs.
+7. calculates harmonic performance and tied lead credit for that tick; and
+8. derives sustained-lead continuity and the constant score when projecting or
+   settling the epoch.
 
-The arena still receives pristine container replacements at crown-cycle
-boundaries, which clears transient sessions and stale capabilities. API mode
-does not elect a single holder, use provisional capture confirmation, or apply
-champion cooldown scoring.
-
-The arrival window accommodates the bundled referee's five-second default poll
-without carrying evidence between rounds. A snapshot still has to match the
-exact current round, cycle, reset attempt, target, and container; after six
-seconds, absence remains a field-wide void.
+The arena receives a pristine replacement at every crown-cycle boundary,
+clearing transient sessions and stale capabilities. Leaderboard mode does not
+elect a holder, use provisional capture confirmation, or apply champion
+cooldown scoring. A snapshot must match the exact current round, cycle, reset
+attempt, target, container, and objective schema; after the arrival window,
+absence remains a field-wide void.

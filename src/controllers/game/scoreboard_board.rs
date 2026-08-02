@@ -6,6 +6,20 @@ type FirstSolve = (DateTime<Utc>, Option<Uuid>);
 type SolvesByParticipation = HashMap<i32, HashMap<i32, FirstSolve>>;
 type EligibleSolve = (DateTime<Utc>, i32, i32, bool, bool, Option<Uuid>);
 
+const FIRST_SOLVE_SCOREBOARD_SQL: &str = r#"SELECT submission.participation_id, submission.challenge_id,
+              submission.submit_time_utc, submission.user_id
+         FROM "FirstSolves" first_solve
+         JOIN "Submissions" submission
+           ON submission.id = first_solve.submission_id
+          AND submission.participation_id = first_solve.participation_id
+          AND submission.challenge_id = first_solve.challenge_id
+         JOIN "GameChallenges" challenge
+           ON challenge.id = submission.challenge_id
+          AND challenge.game_id = submission.game_id
+          AND challenge.is_enabled
+          AND challenge.review_status = $3
+        WHERE submission.game_id = $1 AND submission.status = $2"#;
+
 #[derive(Clone, Default)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum GameLoadFlight {
@@ -287,32 +301,19 @@ pub(crate) async fn build_scoreboard(
     let meta_of: HashMap<i32, &game_challenge::Model> =
         challenges.iter().map(|c| (c.id, c)).collect();
 
-    // Accepted submissions -> distinct solved challenges (earliest solve time per
-    // participation+challenge). This is RSCTF's `FirstSolve` snapshot set.
-    // Raw SQL on the heaviest scan in the board build: fetch ONLY the four
-    // columns the aggregation reads. `submission::Entity::find().all()` would pull
-    // every column — including `answer` (the submitted flag string, unbounded) —
-    // and entity-map it, for every accepted submission (a table that grows without
-    // bound). `Accepted as i16` binds the enum's own `#[repr(i16)]` discriminant,
-    // so there is no magic number. Runs on the same pool sea-orm uses (shared
-    // connections + prepared-statement cache).
-    let subs: Vec<(i32, i32, DateTime<Utc>, Option<Uuid>)> = sqlx::query_as(
-        r#"SELECT submission.participation_id, submission.challenge_id,
-                  submission.submit_time_utc, submission.user_id
-             FROM "Submissions" submission
-             JOIN "GameChallenges" challenge
-               ON challenge.id = submission.challenge_id
-              AND challenge.game_id = submission.game_id
-              AND challenge.is_enabled
-              AND challenge.review_status = $3
-            WHERE submission.game_id = $1 AND submission.status = $2"#,
-    )
-    .bind(game_id)
-    .bind(AnswerResult::Accepted as i16)
-    .bind(ChallengeReviewStatus::Active as i16)
-    .fetch_all(st.pg())
-    .await
-    .map_err(|e| AppError::internal(e.to_string()))?;
+    // FirstSolves is the canonical one-row-per-team-and-challenge scoring set.
+    // Joining back to its accepted submission provides the timestamp/user while
+    // bounding this hot read by teams × challenges instead of the unbounded
+    // submission history. The redundant key joins fail closed if legacy data is
+    // inconsistent; the Rust map below remains a defensive uniqueness guard.
+    let subs: Vec<(i32, i32, DateTime<Utc>, Option<Uuid>)> =
+        sqlx::query_as(FIRST_SOLVE_SCOREBOARD_SQL)
+            .bind(game_id)
+            .bind(AnswerResult::Accepted as i16)
+            .bind(ChallengeReviewStatus::Active as i16)
+            .fetch_all(st.pg())
+            .await
+            .map_err(|e| AppError::internal(e.to_string()))?;
 
     // participation_id -> (challenge_id -> (earliest solve time, that solve's user_id)).
     // RSCTF's `FirstSolve` snapshot carries UserName, so we track the submitting user
@@ -394,10 +395,14 @@ pub(crate) async fn build_scoreboard(
     // contribute to dynamic solve counts, blood, ranks, or timelines). Monitors always
     // see the live board. Mirrors RSCTF `GameController.Scoreboard` + `GenScoreboard`.
     let now = Utc::now();
-    let cutoff: Option<DateTime<Utc>> = match g.freeze_time_utc {
-        Some(freeze) if !is_monitor && now >= freeze && now < g.end_time_utc => Some(freeze),
-        _ => None,
-    };
+    let cutoff = crate::utils::scoring::public_scoreboard_frozen(
+        g.freeze_time_utc,
+        g.end_time_utc,
+        now,
+        is_monitor,
+    )
+    .then_some(g.freeze_time_utc)
+    .flatten();
     let is_frozen_view = cutoff.is_some();
 
     // Per-snapshot eligibility (RSCTF `GenScoreboard`): a solve is "valid" when it lands
@@ -639,6 +644,7 @@ pub(crate) async fn build_scoreboard(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::Connection;
 
     fn row(id: i32, score: i64, last: DateTime<Utc>) -> (ScoreboardItem, DateTime<Utc>) {
         (
@@ -707,5 +713,52 @@ mod tests {
         let before = game_row_cache_generation(game_id);
         invalidate_game_row_cache(game_id);
         assert_ne!(game_row_cache_generation(game_id), before);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn canonical_first_solve_query_ignores_duplicate_accepted_history() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let mut connection = sqlx::PgConnection::connect(&database_url).await.unwrap();
+        sqlx::raw_sql(
+            r#"CREATE TEMP TABLE "GameChallenges" (
+                 id INTEGER PRIMARY KEY, game_id INTEGER,
+                 is_enabled BOOLEAN, review_status SMALLINT
+               );
+               CREATE TEMP TABLE "Submissions" (
+                 id INTEGER PRIMARY KEY, participation_id INTEGER,
+                 challenge_id INTEGER, game_id INTEGER, status SMALLINT,
+                 submit_time_utc TIMESTAMPTZ, user_id UUID
+               );
+               CREATE TEMP TABLE "FirstSolves" (
+                 participation_id INTEGER, challenge_id INTEGER,
+                 submission_id INTEGER
+               );
+               INSERT INTO "GameChallenges" VALUES (9, 7, TRUE, 0);
+               INSERT INTO "Submissions" VALUES
+                 (101, 11, 9, 7, 1, '2026-01-01T00:00:00Z', NULL),
+                 (102, 11, 9, 7, 1, '2026-01-01T00:01:00Z', NULL);
+               INSERT INTO "FirstSolves" VALUES (11, 9, 101);"#,
+        )
+        .execute(&mut connection)
+        .await
+        .unwrap();
+
+        let rows = sqlx::query_as::<_, (i32, i32, DateTime<Utc>, Option<Uuid>)>(
+            FIRST_SOLVE_SCOREBOARD_SQL,
+        )
+        .bind(7)
+        .bind(AnswerResult::Accepted as i16)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].0, rows[0].1), (11, 9));
+        assert_eq!(
+            rows[0].2,
+            "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
     }
 }

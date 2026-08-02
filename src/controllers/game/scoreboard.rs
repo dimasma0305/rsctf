@@ -64,19 +64,25 @@ pub async fn notices(
     // suppressed in `submit`; this closes the polling path). After the game ends,
     // everyone sees them again. Applied BEFORE skip/take, mirroring RSCTF
     // `GameController.Notices` (filter the notice set, then paginate).
-    if let Some(freeze) = g.freeze_time_utc {
-        if !is_monitor && now >= freeze && now < g.end_time_utc {
-            query = query.filter(
-                Condition::any()
-                    .add(game_notice::Column::PublishTimeUtc.lt(freeze))
-                    .add(
-                        Condition::all()
-                            .add(game_notice::Column::NoticeType.ne(NoticeType::FirstBlood))
-                            .add(game_notice::Column::NoticeType.ne(NoticeType::SecondBlood))
-                            .add(game_notice::Column::NoticeType.ne(NoticeType::ThirdBlood)),
-                    ),
-            );
-        }
+    if crate::utils::scoring::public_scoreboard_frozen(
+        g.freeze_time_utc,
+        g.end_time_utc,
+        now,
+        is_monitor,
+    ) {
+        let freeze = g
+            .freeze_time_utc
+            .expect("a frozen scoreboard view has a freeze timestamp");
+        query = query.filter(
+            Condition::any()
+                .add(game_notice::Column::PublishTimeUtc.lt(freeze))
+                .add(
+                    Condition::all()
+                        .add(game_notice::Column::NoticeType.ne(NoticeType::FirstBlood))
+                        .add(game_notice::Column::NoticeType.ne(NoticeType::SecondBlood))
+                        .add(game_notice::Column::NoticeType.ne(NoticeType::ThirdBlood)),
+                ),
+        );
     }
 
     // RSCTF orders `Type == Normal ? now : PublishTimeUtc` DESC: Normal (admin) notices
