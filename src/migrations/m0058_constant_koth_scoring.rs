@@ -306,14 +306,19 @@ mod tests {
             .connect(&database_url)
             .await
             .unwrap();
-        let schema = format!("rsctf_m0058_{}", uuid::Uuid::new_v4().simple());
-        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        // m0058 is already shipped and intentionally probes the production
+        // `public` schema before cleaning legacy formula rows. Give this
+        // historical migration its own database so the regression exercises
+        // that exact boundary without mutating or depending on another test's
+        // schema.
+        let database = format!("rsctf_m0058_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE DATABASE "{database}""#))
             .execute(&admin)
             .await
             .unwrap();
         let options = PgConnectOptions::from_str(&database_url)
             .unwrap()
-            .options([("search_path", schema.as_str())]);
+            .database(&database);
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .connect_with(options)
@@ -478,10 +483,12 @@ mod tests {
         .await
         .unwrap();
 
+        drop(db);
         pool.close().await;
-        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        sqlx::query(&format!(r#"DROP DATABASE "{database}""#))
             .execute(&admin)
             .await
             .unwrap();
+        admin.close().await;
     }
 }

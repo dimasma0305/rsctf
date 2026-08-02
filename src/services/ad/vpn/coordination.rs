@@ -376,6 +376,12 @@ async fn wait_for_listener_retry(
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use sea_orm::SqlxPostgresConnector;
+    use sea_orm_migration::MigratorTrait;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
     use super::*;
 
     #[test]
@@ -405,9 +411,29 @@ mod tests {
     #[ignore = "requires migrated PostgreSQL via RSCTF_TEST_DATABASE_URL"]
     async fn postgres_ticket_notify_and_snapshot_ack_are_durable() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to a disposable migrated database");
-        let db = sea_orm::Database::connect(&database_url).await.unwrap();
-        let pool = db.get_postgres_connection_pool();
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("rsctf_ad_network_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let db = SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
+        crate::migrations::Migrator::up(&db, Some(54))
+            .await
+            .unwrap();
         sqlx::query(
             r#"UPDATE "AdNetworkReconcileState"
                   SET requested_generation = 0,
@@ -416,11 +442,11 @@ mod tests {
                       applied_at = NULL
                 WHERE id = 1"#,
         )
-        .execute(pool)
+        .execute(&pool)
         .await
         .unwrap();
 
-        let mut listener = connect_listener(pool).await.unwrap();
+        let mut listener = connect_listener(&pool).await.unwrap();
         let first = request(&db).await.unwrap();
         let notification = tokio::time::timeout(Duration::from_secs(2), listener.recv())
             .await
@@ -432,7 +458,7 @@ mod tests {
         let snapshot = pending_snapshot(&db).await.unwrap().unwrap();
         let newer = request(&db).await.unwrap();
         acknowledge(&db, snapshot).await.unwrap();
-        let cursor = load_cursor(pool).await.unwrap();
+        let cursor = load_cursor(&pool).await.unwrap();
         assert!(cursor.has_applied(snapshot));
         assert_eq!(cursor.pending_snapshot(), Some(newer));
 
@@ -445,5 +471,14 @@ mod tests {
         )
         .await
         .unwrap();
+
+        drop(listener);
+        drop(db);
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
     }
 }
