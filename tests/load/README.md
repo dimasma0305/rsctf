@@ -876,6 +876,20 @@ distributed event are in [`REPORT.md`](REPORT.md).
 
 ## Baselines & findings (single-node, docker)
 
+**Production scoring acceptance** (2 August 2026) compared the same 20-team
+Jeopardy plus 20-team A&D/Leaderboard fixture for five minutes at 400 VUs and
+four BYOC tunnels before and after A&D publication was decoupled from the
+independent KotH crown transition. Publication p95 improved from 9.638 to 5.662
+seconds (-41.3%), maximum lag improved from 10.453 to 5.703 seconds (-45.4%),
+and unpublished/late rounds changed from one to zero. The after run served
+1,189,584 requests at 3,840.847 req/s, passed 1,190,232 semantic checks, and had
+zero server 5xx, unexpected non-2xx, readiness, liveness, scoring-integrity,
+anti-cheat, or panic failures. It dropped 34 of 337,785 scheduled iterations
+(0.0101%); this and the mixed endpoint p95 movements are retained in the full
+report rather than omitted. Exact distributions, resource samples, immutable
+release digests, and teardown evidence are in
+[`REPORT.md`](REPORT.md#production-full-event-acceptance-and-ad-publication-runway--2-august-2026).
+
 **Sustained-event operational hardening** (25 July 2026) corrected the live
 30-second A&D/KotH cadence from approximately 35 seconds to exactly 30 seconds,
 bounded persistent delivery/checker incident logs, shortened burst-connection
@@ -986,6 +1000,9 @@ A&D harness documented in
 [`REPORT.md`](REPORT.md#attack-defense-max-batch-hardening-and-fixed-rate-optimization--19-july-2026);
 the 1 August row uses the production polled-read harness documented in
 [`REPORT.md`](REPORT.md#equal-weight-overall-scoreboard-acceptance--1-august-2026).
+The A&D publication row uses the same five-minute production lifecycle shape
+on both adjacent release images; its directly affected metric is the durable
+flag-publication lag rather than aggregate closed-loop request throughput.
 Their held throughput and CPU windows are not comparable to the replicated
 player-load rows. App CPU is both web replicas plus control for the 16 July
 campaign and the single web-only rsctf container for the 19 July campaign;
@@ -1008,6 +1025,7 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 | 2026-07-19 | Bound Redis commands and fall back to the local limiter during outage | 1 → 1 request/s target | Outage responses 15/15 → 16/16 expected 400 | — | — | HTTP 18,084.879 → 207.823 ms | 0 drops after; recovered without restart |
 | 2026-08-01 | Precompress cached Overall scoreboard representations | 299.929 → 299.996 req/s | Overall wire bytes 39,076 → 987 gzip (-97.47%) | — | — | Overall board 78.88 → 19.32 ms | 0 drops/429/non-200/5xx; 2,999/2,999 compressed and valid |
 | 2026-08-02 | Bound Jeopardy evidence reads to canonical `FirstSolves` | 5.067 → 5.067 tx/s target | Rows/query 40,000 → 2,000 (-95.0%) | — | — | Query 116.35 → 27.35 ms (-76.5%) | PostgreSQL CPU 24.72% → 7.88% (-68.1%); 0 failures |
+| 2026-08-02 | Start A&D publication concurrently with the independent KotH transition | Same 400-VU/4-tunnel/300-s shape; 3,796.390 → 3,840.847 req/s observed | Unpublished/late rounds 1 → 0 | — | — | Publication 9.638 → 5.662 s (-41.3%) | Maximum 10.453 → 5.703 s; 0 5xx/integrity failures after |
 
 At the same one-batch/s load, the 100-distinct-known case also improved: p95
 790.76 → 367.97 ms and stack CPU 21.644 → 10.811 CPU-seconds. The
@@ -1147,7 +1165,10 @@ state, anonymous browsing, an admin monitor feed, and a concurrent same-flag ded
 - `provision.mjs` — stands the two events up, installs a prepared exact checker, seeds
   `TEAMS_JEO`/`TEAMS_AD`, then waits for the automatic scheduler to freeze the complete
   A&D roster and settle the current publication pipeline → `.lifecycle-state.json` or
-  its tagged variant.
+  its tagged variant. New fixtures remain future-dated while every scoring-affecting
+  challenge and game setting is configured, then move to their historical live window
+  in one final schedule mutation. This models the organizer lifecycle without trying to
+  edit immutable scoring settings after competition has begun.
   Default capacity mode does not start a relay for every seeded team. Competitive mode
   pauses official scoring, starts the complete relay and isolated-service cohort, and
   resumes scoring only after every service is reachable. `-- --down` tears the namespace
@@ -1156,7 +1177,10 @@ state, anonymous browsing, an admin monitor feed, and a concurrent same-flag ded
   finalized-epoch rollups before any timed measurement; lifecycle repeats that assertion
   after restart.
 - `k6/lifecycle.js` — the multi-scenario load (onboarding / jeopardy / ad / koth / browse
-  / monitor / dedupBurst), each VU on a distinct `X-Real-IP`.
+  / monitor / dedupBurst), each VU on a distinct `X-Real-IP`. The fixed-rate browse
+  executor reserves two VUs per requested arrival/s and may grow to five per
+  arrival/s, so normal multi-second tail latency does not create an artificial
+  insufficient-VU failure while the configured arrival rate remains unchanged.
 - `lifecycle.mjs` — preflight (JWT secret), fail-fast checks for `startRound`, the frozen
   roster, current planted flags, and an active crown cycle, then starts exactly `FLEET`
   relays and requires a post-connect round with durable delivery and exact checker

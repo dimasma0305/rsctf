@@ -91,6 +91,145 @@ becoming an unbounded database/network scan during a long or adversarial event.
 The retained machine-readable result is reproducible with
 `SUMMARY_JSON=<path> npm run scoreboard-evidence`.
 
+## Production full-event acceptance and A&D publication runway — 2 August 2026
+
+Release `v0.1.36` removes an avoidable serialization point at the shared A&D/KotH
+round boundary. Previously, `finish_prepared_round` completed the independent
+KotH crown transition before it began A&D flag publication. A slow hill reset
+could therefore consume several seconds of the A&D publication window even
+though the two operations do not depend on one another. Publication now begins
+at the durable round boundary and runs concurrently with the crown transition.
+The checker still waits for the transition and consumes successfully published
+receipts through the existing handoff, preserving checker order and scoring
+behavior. The deadlock-style regression
+`hill_transition_cannot_serialize_flag_publication` proves that neither branch
+can wait for the other to finish before making progress.
+
+The release image is
+`ghcr.io/dimasma0305/rsctf@sha256:59301690dc4758a52468cf633a5a8ffb1d8ef2778e148e555b882661dc2b52ee`.
+Both Linux architectures carry version `0.1.36`, revision
+`5eae66ca02b4a0e3a2a77fb75a5756e014f5745f`, and the same embedded BYOC-agent
+digest, `sha256:3fddecc7af5f7fbcd12c81d77bc00cad5a5d7bd0f24bcc50ad93a2bb0cb7322c`.
+Production ran two healthy web replicas and one healthy control replica on the
+server digest, with zero restarts or OOM kills. Public `/healthz` and `/livez`
+returned the exact body `ok`; the runtime registry reported two compatible web
+heartbeats and one compatible control heartbeat.
+
+Before deployment, PostgreSQL and the file volume were archived under
+`/root/rsctf-production/backups/20260802T151003Z-pre-v0.1.36/`. Both archives and
+their SHA-256 manifest passed validation. The Compose replacement itself was a
+coordinated-role restart, not a zero-downtime rolling handoff: an external
+250-millisecond probe observed 74 consecutive unavailable samples over 25.221
+seconds while the singleton control fingerprint and both web fingerprints
+converged. This rollout interval is excluded from the load result below.
+
+### Same-shape production before and after
+
+Both campaigns used the same isolated production fixture and scheduling shape:
+20 Jeopardy teams, 20 mixed A&D/Leaderboard teams, three static challenges, one
+real Jeopardy container challenge, one A&D service, one API-native Leaderboard
+hill, four real BYOC tunnels, 400 VUs, and a 300-second window. The trusted
+private TLS gateway assigned distinct synthetic client identities without
+weakening the public proxy trust boundary. The fixed browse-arrival schedule
+was unchanged; the remaining scenarios used the same closed-loop VU allocation.
+Aggregate request rate is reported as an operational observation, not as a
+peak-throughput claim.
+
+| Metric | `v0.1.35` before | `v0.1.36` after | Change |
+| --- | ---: | ---: | ---: |
+| HTTP requests | 1,181,613 | 1,189,584 | +0.7% |
+| Aggregate request rate | 3,796.390 req/s | 3,840.847 req/s | +1.2% |
+| Dropped arrivals | 37 | 34 | -8.1% |
+| All-HTTP p95 | 171.691 ms | 151.778 ms | -11.6% |
+| A&D publication p95 | 9.638 s | 5.662 s | **-41.3%** |
+| A&D publication maximum | 10.453 s | 5.703 s | **-45.4%** |
+| Unpublished or late A&D rounds | 1 | 0 | fixed |
+| Server 5xx / unexpected non-2xx | 0 / 0 | 0 / 0 | clean |
+
+The after run dropped 34 of 337,785 scheduled iterations (0.0101%); there was
+no insufficient-VU warning and k6 exited zero. It executed 1,190,232 semantic
+checks with zero failures. The before run's health counters were invalid because
+its standalone `curl` probe did not trust the private test CA; direct checks at
+the time returned 200. The after run supplied that CA explicitly and recorded
+321/321 successful readiness checks and 321/321 successful liveness checks,
+with liveness p95 108 ms and maximum 341 ms.
+
+End-to-end p95s moved in both directions even though the fixture and scheduling
+shape were held constant. This is disclosed because the full lifecycle includes
+randomized container journeys, attachment transfers, rate-limit pressure, and
+round-boundary work; these values are not attributed to the narrow publication
+change.
+
+| Endpoint | Before p95 | After p95 | Change |
+| --- | ---: | ---: | ---: |
+| Main board | 1,075.044 ms | 1,121.866 ms | +4.4% |
+| A&D epoch board | 846.646 ms | 1,350.636 ms | +59.5% |
+| Overall board | 3,859.854 ms | 1,117.095 ms | -71.1% |
+| Leaderboard hill | 1,111.946 ms | 645.803 ms | -41.9% |
+| Jeopardy details | 837.843 ms | 941.967 ms | +12.4% |
+| A&D State | 1,098.720 ms | 1,069.927 ms | -2.6% |
+| A&D Targets | 2,400.259 ms | 1,028.000 ms | -57.2% |
+| A&D submit | 3,264.456 ms | 5,352.248 ms | +64.0% |
+| Jeopardy submit | 1,553.820 ms | 2,774.214 ms | +78.5% |
+| Onboarding | 4,297.800 ms | 5,891.500 ms | +37.1% |
+| Container lifecycle | 4,187.494 ms | 7,743.281 ms | +84.9% |
+| Attachment transfer | 3,616.374 ms | 4,470.511 ms | +23.6% |
+
+### After-run latency distribution and resources
+
+Values below are milliseconds. The summary preserves the complete
+average/p50/p90/p95/p99/maximum distribution rather than reporting only the
+passing threshold.
+
+| Path | Average | p50 | p90 | p95 | p99 | Maximum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 90.464 | 35.314 | 99.171 | 151.778 | 2,187.012 | 8,103.814 |
+| Main board | 180.183 | 52.904 | 337.847 | 1,121.866 | 1,768.538 | 5,244.320 |
+| A&D epoch board | 296.239 | 52.594 | 796.264 | 1,350.636 | 3,166.651 | 4,318.425 |
+| Overall board | 338.719 | 82.574 | 1,002.782 | 1,117.095 | 3,132.224 | 4,651.089 |
+| Leaderboard hill | 151.789 | 17.749 | 143.638 | 645.803 | 3,081.664 | 4,592.768 |
+| Jeopardy details | 278.217 | 82.313 | 806.101 | 941.967 | 1,374.457 | 3,684.536 |
+| A&D State | 349.145 | 212.223 | 692.287 | 1,069.927 | 2,267.169 | 3,624.082 |
+| A&D Targets | 371.206 | 179.684 | 745.548 | 1,028.000 | 2,796.807 | 3,940.303 |
+| A&D submit | 1,592.420 | 871.490 | 4,634.656 | 5,352.248 | 5,845.544 | 6,040.617 |
+| Jeopardy submit | 975.034 | 558.134 | 2,594.640 | 2,774.214 | 3,739.282 | 4,304.391 |
+| Onboarding | 4,022.986 | 3,947.000 | 4,774.500 | 5,891.500 | 6,896.200 | 7,255.000 |
+| Container lifecycle | 4,395.016 | 3,867.496 | 6,952.537 | 7,743.281 | 8,050.922 | 8,103.814 |
+| Attachment transfer | 2,684.415 | 2,447.863 | 3,856.242 | 4,470.511 | 7,153.074 | 7,961.425 |
+
+Five samples covered the sustained phase. CPU percentages use Docker's
+one-core-equals-100% convention.
+
+| Component | CPU average | CPU peak | RAM average | RAM peak |
+| --- | ---: | ---: | ---: | ---: |
+| Two web replicas + control | 217.67% | 249.17% | 262.31 MiB | 283.58 MiB |
+| PostgreSQL | 182.78% | 201.06% | 796.00 MiB | 869.20 MiB |
+| Redis | 34.00% | 39.28% | 5.47 MiB | 5.66 MiB |
+
+| UTC sample | App CPU | App RAM | PostgreSQL CPU | PostgreSQL RAM | Redis CPU | Redis RAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 15:21:32 | 249.17% | 237.93 MiB | 183.29% | 701.50 MiB | 31.35% | 5.379 MiB |
+| 15:22:19 | 234.70% | 248.47 MiB | 183.04% | 765.70 MiB | 39.28% | 5.660 MiB |
+| 15:23:16 | 200.74% | 268.19 MiB | 201.06% | 804.60 MiB | 37.00% | 5.469 MiB |
+| 15:24:26 | 213.58% | 283.58 MiB | 181.04% | 839.00 MiB | 33.01% | 5.395 MiB |
+| 15:25:33 | 190.17% | 273.37 MiB | 165.49% | 869.20 MiB | 29.35% | 5.430 MiB |
+
+The run spawned and reaped 33 real challenge containers, transferred the real
+attachment, maintained four BYOC tunnels, wrote 96 API-native capture
+observations, and completed four crown cycles. Six of ten Leaderboard ticks
+were competitive; they produced 120 dense rows for all 20 frozen teams,
+including 102 explicit omission-zero rows and simultaneous positive evidence
+for three teams. The four remaining ticks were correctly classified as
+field-wide noncompetitive voids rather than scored omissions.
+
+Every duplicate-round, duplicate-attack, duplicate-token, overlapping-cycle,
+stale-container, cross-cycle, cooldown, cadence, flag-delivery, publication,
+self-capture, post-deadline, normalization, density, lead-credit, readiness,
+liveness, anti-cheat, and panic gate was zero. Teardown removed games `201` and
+`202` and every run-owned container. The persistent Leaderboard table counts
+returned exactly to their pre-run values: 260 API score rows, 31 epoch rollups,
+and 2,597 team and hill rollups.
+
 ## Equal-weight Overall scoreboard acceptance — 1 August 2026
 
 Mixed-format events now have one official **Overall** board without changing
