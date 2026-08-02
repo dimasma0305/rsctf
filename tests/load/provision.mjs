@@ -14,6 +14,7 @@ import {
 } from './process-control.mjs';
 import { teardownVpnTeamClients } from './team-clients.mjs';
 import { kothContainerOverride } from './fixture-image-config.js';
+import { stagedEventSchedule } from './provision-plan.js';
 
 function positiveIntegerEnv(name, fallback) {
   const raw = process.env[name];
@@ -301,12 +302,10 @@ async function main() {
   const competitionRunId = REALISTIC_COMPETITION ? randomUUID() : null;
   activeProvision.createdAtMs = now;
   persistRecoveryManifest(activeProvision);
-  const start = now - 3600_000;
   const eventDurationMs = EVENT_DURATION_SECONDS * 1000;
-  if (!Number.isSafeInteger(now + eventDurationMs)) {
-    throw new Error('EVENT_DURATION_SECONDS produces an invalid event end time');
-  }
-  const end = now + eventDurationMs;
+  const schedule = stagedEventSchedule(now, eventDurationMs);
+  const start = schedule.liveStart;
+  const end = schedule.liveEnd;
 
   // ── G_JEO: a Jeopardy event ────────────────────────────────────────────────
   const jeoGame = await interruptibleMutation(A.createGame({
@@ -314,8 +313,8 @@ async function main() {
     hidden: false,
     practiceMode: false,
     acceptWithoutReview: true,
-    start,
-    end,
+    start: schedule.stagingStart,
+    end: schedule.stagingEnd,
     teamMemberCountLimit: 0,
     containerCountLimit: 3,
     allowUserSubmissions: false,
@@ -404,8 +403,8 @@ async function main() {
     hidden: false,
     practiceMode: false,
     acceptWithoutReview: true,
-    start,
-    end,
+    start: schedule.stagingStart,
+    end: schedule.stagingEnd,
     adTickSeconds: 30,
     adFlagLifetimeTicks: 5,
     adGetflagWindowFraction: 0.9,
@@ -496,6 +495,13 @@ async function main() {
   A.seedKothTarget(mixGame, kothChal);
   const kothContainer = A.startHill(mixGame, kothChal, kothImage, kothPort); // bootstrap with the snapshotted image
   console.log(`  KotH hill container ${kothContainer.slice(0, 12)}`);
+  // Real organizers finish every scoring-affecting definition before the
+  // scheduled start. Arm the completed fixtures only after their challenge,
+  // roster, referee, service, and hill state exists; otherwise the immutable
+  // scoring boundary correctly rejects the setup edits.
+  await interruptibleMutation(A.setGameSchedule(jeoGame, start, end));
+  await interruptibleMutation(A.setGameSchedule(mixGame, start, end));
+  console.log('  completed fixtures armed at the immutable scoring boundary');
   if (REALISTIC_COMPETITION) {
     await interruptibleMutation(A.setAdScoringPaused(mixGame, false));
     console.log('  official scoring resumed after every team service became reachable');

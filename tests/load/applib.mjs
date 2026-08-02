@@ -122,6 +122,21 @@ export async function createGame(body) {
   const r = await must(await api('POST', '/api/edit/games', { ...jwtOpt(), body }), 'createGame');
   return unwrap(r).id;
 }
+export async function setGameSchedule(gid, start, end) {
+  if (![gid, start, end].every(Number.isSafeInteger) || gid <= 0 || start >= end) {
+    throw new Error('setGameSchedule requires a valid game and increasing millisecond timestamps');
+  }
+  const current = unwrap(
+    await must(await api('GET', `/api/edit/games/${gid}`, jwtOpt()), 'getGame')
+  );
+  return must(
+    await api('PUT', `/api/edit/games/${gid}`, {
+      ...jwtOpt(),
+      body: { ...current, start, end },
+    }),
+    'setGameSchedule'
+  );
+}
 export async function createChallenge(gid, body) {
   const r = await must(
     await api('POST', `/api/edit/games/${gid}/challenges`, {

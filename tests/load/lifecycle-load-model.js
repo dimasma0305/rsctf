@@ -12,6 +12,17 @@ export function shouldValidateSemanticResponse(status) {
 
 export const FORWARDED_IDENTITY_PROBE_IP = "198.51.100.77";
 
+export function fixedRateExecutorCapacity(ratePerSecond) {
+  const rate = Number(ratePerSecond);
+  if (!Number.isSafeInteger(rate) || rate < 1) {
+    throw new Error("fixed arrival rate must be a positive integer");
+  }
+  return Object.freeze({
+    preAllocatedVUs: rate * 2,
+    maxVUs: rate * 5,
+  });
+}
+
 export function assertTrustedForwardedIdentity(
   response,
   expectedIp = FORWARDED_IDENTITY_PROBE_IP,

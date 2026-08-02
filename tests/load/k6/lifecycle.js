@@ -13,6 +13,7 @@ import { lifecycleStateOpenPath } from '../lifecycle-state-file.js';
 import { validCombinedBoard } from '../combined-scoreboard.js';
 import {
   buildLifecycleFleet,
+  fixedRateExecutorCapacity,
   lifecycleFleetIp,
   lifecycleFleetSlot,
   lifecycleFleetSlots,
@@ -30,6 +31,8 @@ const STABLE_IPS = __ENV.STABLE_IPS === '1';
 const PLAYER_THINK_SECONDS = Number(__ENV.PLAYER_THINK_SECONDS || 0);
 const STRICT_ZERO_ERRORS = __ENV.STRICT_ZERO_ERRORS === '1';
 const DIAGNOSE_SEMANTICS = __ENV.DIAGNOSE_SEMANTICS === '1';
+const BROWSE_RATE = 40;
+const BROWSE_CAPACITY = fixedRateExecutorCapacity(BROWSE_RATE);
 
 const S = new SharedArray('state', () => [
   JSON.parse(open(lifecycleStateOpenPath(__ENV.LIFECYCLE_STATE_FILE))),
@@ -558,10 +561,10 @@ export const options = {
     browse: {
       executor: 'constant-arrival-rate',
       exec: 'browse',
-      rate: 40,
+      rate: BROWSE_RATE,
       timeUnit: '1s',
       duration: DUR,
-      preAllocatedVUs: 40,
+      ...BROWSE_CAPACITY,
     },
     monitor: {
       executor: 'constant-vus',

@@ -456,6 +456,17 @@ fn cap_flag_publication_deadlines(
     (publication_deadline, delivery_deadline)
 }
 
+async fn run_publication_with_checker<P, C>(
+    publisher: P,
+    checker_after_hill_transition: C,
+) -> (P::Output, C::Output)
+where
+    P: std::future::Future,
+    C: std::future::Future,
+{
+    tokio::join!(publisher, checker_after_hill_transition)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn publish_round_flags(
     state: &SharedState,
@@ -775,30 +786,10 @@ pub(super) async fn finish_prepared_round(
     .fetch_one(state.pg())
     .await
     .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
-    // Crown-cycle hills cross their durable reset state machine before the
-    // checker starts. A reset/readiness failure leaves the cycle outside
-    // `Active`, so the checker records no participant-attributed sample and the
-    // round remains a field-wide void for that hill.
-    if let Err(error) = crate::services::ad_engine::koth_cycle::drive_cycle_transitions(
-        state,
-        game.id,
-        round_id,
-        next_number,
-    )
-    .await
-    {
-        tracing::warn!(
-            game = game.id,
-            round = next_number,
-            %error,
-            "cron: KotH crown-cycle transition remains pending"
-        );
-    }
-
-    // A newly prepared round begins publication after bounded KotH transition
-    // work. Its persisted boundary was captured after managed readiness; the
-    // pipeline deadline still caps any transition delay. Recovery retains the
-    // persisted anchor so repeated crashes cannot extend publication indefinitely.
+    // Start A&D publication at its own durable boundary. KotH hill replacement
+    // is independent runtime work and must not consume the seven-second flag
+    // publication budget. Recovery retains the persisted anchor so repeated
+    // crashes cannot extend publication indefinitely.
     let publication_anchor = if newly_prepared {
         chrono::Utc::now()
     } else {
@@ -826,16 +817,39 @@ pub(super) async fn finish_prepared_round(
         pipeline_deadline,
         receipt_sender,
     );
-    let checker = crate::services::ad_engine::run_checker(
-        &state.db,
-        state.containers.as_ref(),
-        game.id,
-        round_id,
-        lease,
-        pipeline_deadline,
-        receipt_receiver,
-    );
-    let (delivery, checker) = tokio::join!(publisher, checker);
+    let checker_after_hill_transition = async {
+        // Crown-cycle hills still cross their durable reset state machine before
+        // the checker starts. Successful A&D receipts buffer in the unbounded
+        // handoff while that independent work runs, preserving the per-service
+        // checker schedule without delaying flag publication.
+        if let Err(error) = crate::services::ad_engine::koth_cycle::drive_cycle_transitions(
+            state,
+            game.id,
+            round_id,
+            next_number,
+        )
+        .await
+        {
+            tracing::warn!(
+                game = game.id,
+                round = next_number,
+                %error,
+                "cron: KotH crown-cycle transition remains pending"
+            );
+        }
+        crate::services::ad_engine::run_checker(
+            &state.db,
+            state.containers.as_ref(),
+            game.id,
+            round_id,
+            lease,
+            pipeline_deadline,
+            receipt_receiver,
+        )
+        .await
+    };
+    let (delivery, checker) =
+        run_publication_with_checker(publisher, checker_after_hill_transition).await;
     let delivery = delivery?;
     super::delivery_health::report(state, game.id, next_number, delivery.failure_count).await;
     if let Err(error) = checker {

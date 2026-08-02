@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assertTrustedForwardedIdentity,
   buildLifecycleFleet,
+  fixedRateExecutorCapacity,
   FORWARDED_IDENTITY_PROBE_IP,
   lifecycleFleetIp,
   lifecycleFleetSlot,
@@ -53,6 +54,17 @@ test("semantic integrity samples exclude expected rate-limit responses", () => {
   assert.equal(shouldValidateSemanticResponse(400), true);
   assert.equal(shouldValidateSemanticResponse(500), true);
   assert.equal(shouldValidateSemanticResponse(429), false);
+});
+
+test("fixed-rate browsing has enough bounded executor headroom", () => {
+  assert.deepEqual(fixedRateExecutorCapacity(40), {
+    preAllocatedVUs: 80,
+    maxVUs: 200,
+  });
+  assert.throws(
+    () => fixedRateExecutorCapacity(0),
+    /positive integer/,
+  );
 });
 
 test("lifecycle rejects a proxy path that collapses synthetic client identities", () => {

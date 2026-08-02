@@ -1,8 +1,37 @@
 use super::{
     cap_flag_publication_deadlines, deliver_initial_round_flags, delivery_order_key,
-    managed_flag_command, run_delivery_attempts, DeliveryAttempt, DeliveryAttemptSummary,
-    DeliveryAttemptTracker,
+    managed_flag_command, run_delivery_attempts, run_publication_with_checker, DeliveryAttempt,
+    DeliveryAttemptSummary, DeliveryAttemptTracker,
 };
+
+#[tokio::test]
+async fn hill_transition_cannot_serialize_flag_publication() {
+    let publication_started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let transition_started = std::sync::Arc::new(tokio::sync::Notify::new());
+
+    let publisher = {
+        let publication_started = publication_started.clone();
+        let transition_started = transition_started.clone();
+        async move {
+            publication_started.notify_one();
+            transition_started.notified().await;
+            "published"
+        }
+    };
+    let checker_after_transition = async move {
+        transition_started.notify_one();
+        publication_started.notified().await;
+        "checked"
+    };
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        run_publication_with_checker(publisher, checker_after_transition),
+    )
+    .await
+    .expect("publication and hill transition were serialized");
+    assert_eq!(result, ("published", "checked"));
+}
 
 fn failed_summary(
     participant_attempts: usize,
