@@ -213,6 +213,15 @@ async fn recovery_mints_one_immutable_window_per_reset_attempt() {
         CREATE TEMP TABLE "KothApiSnapshots" (
           target_id INTEGER PRIMARY KEY
         );
+        CREATE TEMP TABLE "KothOfficialConfigs" (
+          game_id INTEGER PRIMARY KEY, hills_snapshot JSONB NOT NULL
+        );
+        CREATE TEMP TABLE "KothApiTeamTokens" (
+          game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
+          participation_id INTEGER NOT NULL, token TEXT NOT NULL,
+          PRIMARY KEY (game_id, challenge_id, participation_id),
+          UNIQUE (token)
+        );
         CREATE TEMP TABLE "KothTokens" (
           id SERIAL PRIMARY KEY,
           target_id INTEGER NOT NULL,
@@ -386,4 +395,12 @@ async fn recovery_mints_one_immutable_window_per_reset_attempt() {
     .await
     .unwrap();
     assert_eq!(active, attempt_two);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "KothApiTeamTokens""#)
+            .fetch_one(&mut connection)
+            .await
+            .unwrap(),
+        0,
+        "a marker hill must not gain an event-stable API capability"
+    );
 }
