@@ -63,10 +63,10 @@ pub async fn timeline(
     Path(game_id): Path<i32>,
 ) -> AppResult<RequestResponse<KothScoreTimelineModel>> {
     let game = crate::controllers::game::load_game_cached(&st, game_id).await?;
-    if game.hidden {
+    let is_monitor = maybe.as_ref().is_some_and(|user| user.is_monitor());
+    if !super::can_view_koth_standings(game.hidden, is_monitor) {
         return Err(AppError::not_found("Game not found"));
     }
-    let is_monitor = maybe.as_ref().is_some_and(|user| user.is_monitor());
     let key = if is_monitor {
         format!("_KothTimeline_{game_id}")
     } else {

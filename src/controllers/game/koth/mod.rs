@@ -608,7 +608,8 @@ async fn redirect_recover_hill(Path((game_id, challenge_id)): Path<(i32, i32)>) 
 #[allow(clippy::items_after_test_module)]
 mod token_cache_tests {
     use super::{
-        control_evidence_is_current, holder_identity_is_current, koth_token_cache_key, KothHillBase,
+        can_view_koth_standings, control_evidence_is_current, holder_identity_is_current,
+        koth_token_cache_key, KothHillBase,
     };
 
     #[test]
@@ -617,6 +618,14 @@ mod token_cache_tests {
             koth_token_cache_key(1, 10, 7, 3),
             koth_token_cache_key(1, 11, 7, 3)
         );
+    }
+
+    #[test]
+    fn hidden_standings_are_monitor_only() {
+        assert!(can_view_koth_standings(false, false));
+        assert!(can_view_koth_standings(false, true));
+        assert!(can_view_koth_standings(true, true));
+        assert!(!can_view_koth_standings(true, false));
     }
 
     #[test]
@@ -723,6 +732,13 @@ fn koth_cache_key(game_id: i32, is_monitor: bool) -> String {
     } else {
         format!("_KothScoreBoardFrozen_{game_id}")
     }
+}
+
+/// Hidden event standings stay undiscoverable to ordinary callers while the
+/// authenticated monitor retains the same operational view exposed by the
+/// combined scoreboard and other game read endpoints.
+pub(super) fn can_view_koth_standings(game_hidden: bool, is_monitor: bool) -> bool {
+    !game_hidden || is_monitor
 }
 
 /// Compute the rendered KotH board for `(game, is_monitor)`: derive the ICPC
@@ -862,13 +878,13 @@ pub async fn scoreboard(
     MaybeUser(maybe): MaybeUser,
     Path(game_id): Path<i32>,
 ) -> AppResult<Response> {
-    // A hidden game 404s for everyone (no monitor exemption; the monitor flag only
-    // lifts the freeze cutoff, applied inside the board build). 1s-cached game row.
+    // Keep hidden events undiscoverable to ordinary callers while allowing the
+    // authenticated monitor to operate the private event. 1s-cached game row.
     let game = super::load_game_cached(&st, game_id).await?;
-    if game.hidden {
+    let is_monitor = maybe.as_ref().is_some_and(|u| u.is_monitor());
+    if !can_view_koth_standings(game.hidden, is_monitor) {
         return Err(AppError::not_found("Game not found"));
     }
-    let is_monitor = maybe.as_ref().is_some_and(|u| u.is_monitor());
     let json = koth_scoreboard_json(&st, &game, is_monitor).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
