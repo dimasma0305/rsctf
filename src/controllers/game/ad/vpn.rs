@@ -11,18 +11,18 @@ use axum::response::{IntoResponse, Response};
 use super::*;
 use crate::services::ad_vpn;
 
-pub(super) struct RosterAccessGuard {
+pub(crate) struct RosterAccessGuard {
     distributed: crate::utils::single_flight::PgAdvisoryLock,
     local: crate::utils::single_flight::CoalesceGuard,
     _admission: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl RosterAccessGuard {
-    pub(super) fn transaction_mut(&mut self) -> &mut sqlx::Transaction<'static, sqlx::Postgres> {
+    pub(crate) fn transaction_mut(&mut self) -> &mut sqlx::Transaction<'static, sqlx::Postgres> {
         self.distributed.transaction_mut()
     }
 
-    pub(super) async fn release(self) -> AppResult<()> {
+    pub(crate) async fn release(self) -> AppResult<()> {
         let Self {
             distributed,
             local,
@@ -37,7 +37,7 @@ impl RosterAccessGuard {
 
 /// Serialize new credential issuance with roster/team/user revocation, then
 /// re-check the live membership and account role without the participation cache.
-pub(super) async fn acquire_roster_access(
+pub(crate) async fn acquire_roster_access(
     st: &SharedState,
     user: &CurrentUser,
     part: &participation::Model,

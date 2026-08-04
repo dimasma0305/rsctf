@@ -93,11 +93,12 @@ symmetric referee key and remain sensitive. Use HTTPS, synchronize the clock,
 restrict service identities and networks, and rotate the key after suspected
 disclosure.
 
-The arena should hash a submitted KotH capability immediately and retain only
-its lowercase SHA-256 digest. The referee submits that digest as `tokenHash`.
-RSCTF resolves it only against capabilities current for the exact game, hill,
-cycle, reset attempt, target, and container. Raw capabilities never enter the
-signed body.
+The arena should exchange a submitted KotH capability with RSCTF immediately,
+then retain only the returned lowercase SHA-256 pseudonym. The referee submits
+that value as `tokenHash`. RSCTF resolves it against the current event
+capability for the exact game, hill, and official participation. The signed
+context separately binds the cycle, reset attempt, target, container, round,
+and objective schema. Raw capabilities never enter the signed body.
 
 The context response contains the current eligible hashes. Filter the
 untrusted arena feed against this set before constructing the snapshot. These
@@ -165,7 +166,22 @@ start is rejected above that bound.
 
 ## Wire contract
 
-Fetch the current scoring fence:
+The player-facing arena authenticates one token without accepting a local team
+ID or crew name:
+
+```http
+POST /api/v1/koth/capability/authenticate
+Content-Type: application/json
+
+{"token":"koth_…","gameId":203,"challengeId":995}
+```
+
+RSCTF returns `{"teamId":"<sha256-token>","teamName":"<official name>"}`.
+The arena must discard the raw token after issuing its narrow local session.
+The token remains valid across crown-cycle resets; an explicit player rotation
+invalidates the old value immediately and requires a new arena session.
+
+The organizer-controlled referee then fetches the current scoring fence:
 
 ```http
 GET /api/v1/koth/games/{gameId}/challenges/{challengeId}/context
@@ -350,7 +366,7 @@ At a server-randomized checker time, RSCTF:
    settling the epoch.
 
 The arena receives a pristine replacement at every crown-cycle boundary,
-clearing transient sessions and stale capabilities. Leaderboard mode does not
+clearing transient sessions while preserving event capabilities. Leaderboard mode does not
 elect a holder, use provisional capture confirmation, or apply champion
 cooldown scoring. A snapshot must match the exact current round, cycle, reset
 attempt, target, container, and objective schema; after the arrival window,

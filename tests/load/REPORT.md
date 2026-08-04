@@ -5,6 +5,141 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## Event-stable Leaderboard capability rollout — 4 August 2026
+
+Leaderboard/API KotH now gives each frozen participation one opaque capability
+for the whole event. A pristine crown-cycle reset no longer changes that value;
+Boot2Root/Marker capabilities still rotate with the crown cycle. Players paste
+only the `koth_…` capability into an arena. The arena exchanges it for an
+authoritative team name and a challenge-local SHA-256 pseudonym, so it neither
+accepts nor trusts a player-supplied local crew ID or crew name. An explicit
+player rotation invalidates the old capability immediately and clears only that
+participation's unsettled current-snapshot row. Settled score and every other
+team's evidence remain intact.
+
+Migration `m0086_koth_api_event_tokens` was exercised on the disposable live
+fixture, not only through a unit test. It backfilled all 20 API-hill
+participations. The ordered capability-set SHA-256 was
+`28bb1f154512e03f20755373310475984a72b4ddaf2942c102d11e4dd53b3aba`
+both before and after migration; row, distinct-participation, and distinct-token
+counts were all 20. There were no duplicate event capabilities or duplicate
+snapshot-score rows. A live route smoke test then proved `200` for the current
+capability, `401` for a wrong capability, and an exact two-field identity
+response (`teamId`, `teamName`) whose `teamId` was 64 lowercase hexadecimal
+characters. A separate rotation smoke test proved `200` for the replacement,
+`401` for the old value, continued `200` for another team's value, a preserved
+20-row token cardinality, and `private, no-store` on the plaintext response.
+
+### Same-runtime, fixed-rate adjacent A/B
+
+The performance gate used disposable game 8 with 20 accepted teams, one API
+hill, and one A&D challenge. Its schedule was kept live for both passes. The
+exact `v0.1.36` binary and the final candidate binary ran sequentially in the
+same Ubuntu 24.04 runtime image, on the same host, database, Redis, frontend,
+and Docker network. Redis was flushed and each web process was restarted before
+its pass. The baseline binary SHA-256 was
+`f4ef7a0eb00d7291f1a3d128ac2d344860d38e9d0ff83fe86b2b703ec432588d`;
+the candidate binary SHA-256 was
+`5da213e337b1f5885aa210c1ba6b5af3f854c191d6648d080eb9baa56ebe7391`.
+
+Both commands used the same read-only player harness:
+
+```text
+TARGET=http://127.0.0.1:18080 GAME=8 VUS=60 RATE=10 DURATION=30s \
+READ_ONLY=1 SUMMARY_JSON=<pass>.json npm run player
+```
+
+The constant-arrival scheduler completed 301 iterations and 2,166 HTTP
+requests in each pass, with no dropped or interrupted iteration. Aggregate
+request rate is an observation over the arrival window plus graceful drain,
+not a peak-throughput claim.
+
+| Metric | `v0.1.36` before | Candidate after | Change |
+| --- | ---: | ---: | ---: |
+| Scheduled arrival target | 10 iterations/s | 10 iterations/s | held |
+| Completed iterations | 301 | 301 | equal |
+| HTTP requests | 2,166 | 2,166 | equal |
+| Observed HTTP rate | 62.889 req/s | 62.377 req/s | -0.8% |
+| KotH token p95 | 179.492 ms | 46.276 ms | **-74.2%** |
+| All-HTTP p95 | 123.968 ms | 54.595 ms | -56.0% |
+| Failed HTTP / server 5xx | 0 / 0 | 0 / 0 | clean |
+| Semantic player errors | 0 | 0 | clean |
+| Invalid A&D / combined boards | 0 / 0 | 0 / 0 | clean |
+
+The affected token read now takes an event-capability primary-key lookup and
+an indexed hill-existence check. It no longer reparses the frozen hill JSON or
+joins crown-cycle and target tables on an API token cache fill. Session and
+roster authorization still run on every request; the optimization does not
+weaken revocation freshness.
+
+#### Before latency distribution
+
+All values are milliseconds.
+
+| Endpoint | avg | p50 | p90 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 30.354 | 9.511 | 46.689 | 123.968 | 371.654 | 1,724.105 |
+| KotH token | 30.999 | 12.499 | 54.263 | 179.492 | 307.314 | 388.253 |
+| Main board | 20.965 | 9.606 | 34.942 | 91.500 | 236.238 | 332.651 |
+| A&D epoch board | 18.494 | 9.520 | 32.945 | 72.976 | 155.069 | 255.553 |
+| KotH board | 29.674 | 9.872 | 74.445 | 130.842 | 412.783 | 609.498 |
+| Combined board | 27.322 | 9.956 | 45.133 | 124.562 | 339.261 | 622.308 |
+| Board poll aggregate | 24.114 | 9.745 | 39.112 | 105.964 | 260.499 | 622.308 |
+| A&D State | 30.099 | 11.583 | 71.182 | 121.373 | 337.228 | 400.916 |
+| A&D Targets | 38.215 | 10.692 | 69.735 | 301.882 | 394.353 | 447.857 |
+| KotH State | 19.900 | 6.676 | 35.972 | 67.526 | 269.405 | 312.889 |
+| KotH timeline | 109.970 | 5.145 | 73.814 | 1,577.050 | 1,673.036 | 1,724.105 |
+
+#### After latency distribution
+
+| Endpoint | avg | p50 | p90 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 19.315 | 9.535 | 31.120 | 54.595 | 229.127 | 509.395 |
+| KotH token | 18.608 | 11.689 | 28.170 | 46.276 | 144.227 | 173.741 |
+| Main board | 15.308 | 9.802 | 27.434 | 43.998 | 113.214 | 223.774 |
+| A&D epoch board | 15.753 | 9.494 | 25.913 | 39.594 | 146.814 | 287.664 |
+| KotH board | 20.081 | 9.697 | 31.701 | 66.154 | 225.245 | 426.835 |
+| Combined board | 19.838 | 9.621 | 28.862 | 53.249 | 223.338 | 460.637 |
+| Board poll aggregate | 17.745 | 9.609 | 27.710 | 46.931 | 200.433 | 460.637 |
+| A&D State | 26.489 | 13.273 | 55.682 | 80.616 | 242.860 | 251.813 |
+| A&D Targets | 28.799 | 11.844 | 45.658 | 71.229 | 311.774 | 323.218 |
+| KotH State | 12.595 | 6.409 | 23.120 | 46.814 | 105.550 | 109.444 |
+| KotH timeline | 37.036 | 5.461 | 39.800 | 238.563 | 502.621 | 509.395 |
+
+#### Resource samples
+
+The five `docker stats --no-stream` samples in each 30-second arrival window
+used the same cadence. CPU is percent of one core; memory is resident container
+usage. The application-only CPU result regressed and is retained below. The
+database and Redis reductions were larger, so sampled whole-stack CPU fell
+31.5% at the held arrival rate.
+
+| Sample | App before | DB before | Redis before | App after | DB after | Redis after |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 40.13% | 158.83% | 51.02% | 19.93% | 23.51% | 14.07% |
+| 2 | 27.12% | 20.57% | 33.52% | 24.47% | 29.06% | 18.95% |
+| 3 | 21.25% | 50.85% | 10.97% | 18.40% | 9.23% | 10.52% |
+| 4 | 19.28% | 34.83% | 18.75% | 38.84% | 39.56% | 10.39% |
+| 5 | 16.14% | 14.44% | 3.95% | 33.91% | 50.35% | 16.38% |
+| Average | 24.784% | 55.904% | 23.642% | 27.110% | 30.342% | 14.062% |
+
+| Resource | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Application CPU | 7.435 CPU-s | 8.133 CPU-s | **+9.4%** |
+| PostgreSQL CPU | 16.771 CPU-s | 9.103 CPU-s | -45.7% |
+| Redis CPU | 7.093 CPU-s | 4.219 CPU-s | -40.5% |
+| Whole-stack CPU | 31.299 CPU-s | 21.454 CPU-s | **-31.5%** |
+| Application RAM peak | 95.10 MiB | 80.41 MiB | -15.4% |
+| PostgreSQL RAM peak | 159.40 MiB | 140.50 MiB | -11.9% |
+| Redis RAM peak | 4.84 MiB | 4.82 MiB | -0.5% |
+| Whole-stack RAM peak | 259.34 MiB | 225.73 MiB | -13.0% |
+
+An earlier candidate pass was deliberately excluded after the disposable game
+crossed its end time during the 17-minute release link. Post-event reads do not
+represent the live-event baseline. The fixture was restored to a live schedule,
+both binaries were then rerun adjacently as described above, and only that pair
+is used for the ledger.
+
 ## Constant Leaderboard scoring and evidence integrity — 2 August 2026
 
 The scoring review removed the remaining configurable/versioned choices from

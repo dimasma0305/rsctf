@@ -93,6 +93,18 @@ pub(crate) async fn revoke_game_capabilities(
                   AND participation.game_id = $2
                   AND token.participation_id = ANY($1)
                RETURNING token.id
+           ), revoked_api_tokens AS (
+               DELETE FROM "KothApiTeamTokens" token
+                WHERE token.game_id = $2
+                  AND token.participation_id = ANY($1)
+               RETURNING token.participation_id
+           ), cleared_api_snapshot_scores AS (
+               DELETE FROM "KothApiSnapshotScores" score
+                USING "KothApiSnapshots" snapshot
+                WHERE snapshot.target_id = score.target_id
+                  AND snapshot.game_id = $2
+                  AND score.participation_id = ANY($1)
+               RETURNING score.participation_id
            ), cleared_claims AS (
                UPDATE "KothClaimStates" claim
                   SET token_id = CASE
@@ -345,6 +357,16 @@ mod tests {
               id INTEGER PRIMARY KEY, participation_id INTEGER NOT NULL,
               revoked_at TIMESTAMPTZ
             );
+            CREATE TEMP TABLE "KothApiTeamTokens" (
+              game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
+              participation_id INTEGER NOT NULL, token TEXT NOT NULL
+            );
+            CREATE TEMP TABLE "KothApiSnapshots" (
+              target_id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL
+            );
+            CREATE TEMP TABLE "KothApiSnapshotScores" (
+              target_id INTEGER NOT NULL, participation_id INTEGER NOT NULL
+            );
             CREATE TEMP TABLE "KothTargets" (
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
               challenge_id INTEGER NOT NULL,
@@ -378,6 +400,10 @@ mod tests {
             INSERT INTO "Games" VALUES (7, clock_timestamp() + interval '1 hour');
             INSERT INTO "Participations" VALUES (11, 7), (12, 7);
             INSERT INTO "KothTokens" VALUES (101, 11, NULL), (102, 12, NULL);
+            INSERT INTO "KothApiTeamTokens" VALUES
+              (7, 70, 11, 'koth_team_11'), (7, 70, 12, 'koth_team_12');
+            INSERT INTO "KothApiSnapshots" VALUES (3, 7);
+            INSERT INTO "KothApiSnapshotScores" VALUES (3, 11), (3, 12);
             INSERT INTO "KothTargets"
               VALUES (3, 7, 70, 11, clock_timestamp());
             INSERT INTO "AdRounds" VALUES (7, 5, FALSE);
@@ -404,6 +430,14 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(revoked, vec![(101, true), (102, false)]);
+        let api_state: (i64, i64) = sqlx::query_as(
+            r#"SELECT (SELECT COUNT(*) FROM "KothApiTeamTokens"),
+                      (SELECT COUNT(*) FROM "KothApiSnapshotScores")"#,
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(api_state, (1, 1));
         let claim: (Option<i32>, Option<i32>, i32, Option<i32>) = sqlx::query_as(
             r#"SELECT token_id, provisional_participation_id,
                       confirmation_streak, confirmed_participation_id

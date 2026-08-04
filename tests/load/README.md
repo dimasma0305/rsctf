@@ -1003,6 +1003,9 @@ the 1 August row uses the production polled-read harness documented in
 The A&D publication row uses the same five-minute production lifecycle shape
 on both adjacent release images; its directly affected metric is the durable
 flag-publication lag rather than aggregate closed-loop request throughput.
+The 4 August capability row uses the same-runtime adjacent player harness in
+[`REPORT.md`](REPORT.md#event-stable-leaderboard-capability-rollout--4-august-2026);
+both sides completed the same 301 scheduled iterations after a cold Redis start.
 Their held throughput and CPU windows are not comparable to the replicated
 player-load rows. App CPU is both web replicas plus control for the 16 July
 campaign and the single web-only rsctf container for the 19 July campaign;
@@ -1026,6 +1029,7 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 | 2026-08-01 | Precompress cached Overall scoreboard representations | 299.929 → 299.996 req/s | Overall wire bytes 39,076 → 987 gzip (-97.47%) | — | — | Overall board 78.88 → 19.32 ms | 0 drops/429/non-200/5xx; 2,999/2,999 compressed and valid |
 | 2026-08-02 | Bound Jeopardy evidence reads to canonical `FirstSolves` | 5.067 → 5.067 tx/s target | Rows/query 40,000 → 2,000 (-95.0%) | — | — | Query 116.35 → 27.35 ms (-76.5%) | PostgreSQL CPU 24.72% → 7.88% (-68.1%); 0 failures |
 | 2026-08-02 | Start A&D publication concurrently with the independent KotH transition | Same 400-VU/4-tunnel/300-s shape; 3,796.390 → 3,840.847 req/s observed | Unpublished/late rounds 1 → 0 | — | — | Publication 9.638 → 5.662 s (-41.3%) | Maximum 10.453 → 5.703 s; 0 5xx/integrity failures after |
+| 2026-08-04 | Event-stable Leaderboard capabilities with a primary-key token read | 10 → 10 iterations/s target; 301 → 301 completed | API token fill: crown/target join → PK lookup; 20/20 values preserved | 7.435 → 8.133 (+9.4%) | 31.299 → 21.454 (-31.5%) | KotH token 179.49 → 46.28 ms (-74.2%) | App CPU regression disclosed; DB -45.7%, Redis -40.5%; 0 errors/5xx/invalid boards |
 
 At the same one-batch/s load, the 100-distinct-known case also improved: p95
 790.76 → 367.97 ms and stack CPU 21.644 → 10.811 CPU-seconds. The

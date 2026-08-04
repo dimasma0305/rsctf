@@ -88,12 +88,14 @@ The checker samples each hill once per scorable tick at a server-randomized
 time. Do not rely on the round boundary as the check time. Several ticks form a
 crown cycle. At its boundary, RSCTF pauses the hill, finalizes evidence,
 destroys the old container, creates a pristine replacement from the official
-image snapshot, revokes old capabilities, runs readiness, and resumes only
-after the replacement works.
+image snapshot, rotates Boot2Root capabilities, runs readiness, and resumes
+only after the replacement works. A Leaderboard capability remains valid
+across these resets so the same opaque token can re-enter the replacement.
 
-The reset invalidates old capabilities, sessions, patches, and implants.
-Reset/readiness time, incomplete capability issuance, and platform-attributed
-failures are void rather than charged to teams.
+The reset invalidates Boot2Root capabilities plus transient challenge sessions,
+patches, and implants. It does not rotate a Leaderboard token. Reset/readiness
+time, incomplete capability issuance, and platform-attributed failures are void
+rather than charged to teams.
 
 Several crown cycles form an epoch. Complete evidence-bearing epochs have
 equal weight. A shortened final epoch has proportional weight, and a wholly
@@ -105,13 +107,18 @@ raise the epoch ceiling above 100.
 1. Open the KotH toolkit.
 2. Copy the current capability for the specific hill.
 3. Use only the challenge's published marker or application endpoint.
-4. Fetch a new capability after every reset.
-5. Keep it out of logs, screenshots, writeups, and public automation output.
+4. For Boot2Root, fetch the replacement after every crown-cycle reset. For
+   Leaderboard, keep using the event token unless you deliberately rotate it.
+5. Keep every capability out of logs, screenshots, writeups, and public
+   automation output.
 
-Capabilities are bearer secrets bound to one hill, target, container, crown
-cycle, and reset attempt. A stale capability cannot score on the replacement.
-A ban or deleted team removes live access; the frozen official roster remains
-the historical scoring identity.
+Boot2Root capabilities are bearer secrets bound to one hill, target, container,
+crown cycle, and reset attempt. Leaderboard capabilities are bearer secrets
+bound to one game, hill, and participation for the event. An explicit
+Leaderboard rotation invalidates the previous token immediately and clears
+that team's unsettled snapshot row; other teams and settled score remain. A
+ban or deleted team removes live access, while the frozen official roster
+remains the historical scoring identity.
 
 ## Read the scoreboard
 

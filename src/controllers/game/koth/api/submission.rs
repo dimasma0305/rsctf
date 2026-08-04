@@ -57,7 +57,6 @@ fn snapshot_hash(
 
 async fn resolve_current_capabilities(
     connection: &mut sqlx::PgConnection,
-    context: &super::ActiveObserverContext,
     game_id: i32,
     challenge_id: i32,
     rows: Vec<NormalizedInputRow>,
@@ -68,13 +67,13 @@ async fn resolve_current_capabilities(
     let mut submitted: HashMap<_, _> = rows.into_iter().map(|row| (row.token_hash, row)).collect();
     let capabilities = sqlx::query_as::<_, CurrentCapabilityRow>(
         r#"SELECT capability.participation_id, capability.token
-             FROM "KothTokens" capability
+             FROM "KothApiTeamTokens" capability
              JOIN "Participations" participation
                ON participation.id = capability.participation_id
-              AND participation.game_id = $5
-              AND participation.status = $6
+              AND participation.game_id = $1
+              AND participation.status = $3
              JOIN "Teams" team ON team.id = participation.team_id
-             JOIN "KothOfficialConfigs" config ON config.game_id = $5
+             JOIN "KothOfficialConfigs" config ON config.game_id = $1
              JOIN LATERAL jsonb_array_elements(config.roster_snapshot) roster(item)
                ON participation.id = CASE jsonb_typeof(roster.item)
                     WHEN 'number' THEN (roster.item #>> '{}')::integer
@@ -82,11 +81,8 @@ async fn resolve_current_capabilities(
                       NULLIF(roster.item->>'participationId', '')::integer
                     ELSE NULL
                   END
-            WHERE capability.target_id = $1
-              AND capability.cycle_id = $2
-              AND capability.challenge_id = $3
-              AND capability.reset_attempt = $4
-              AND capability.revoked_at IS NULL
+            WHERE capability.game_id = $1
+              AND capability.challenge_id = $2
               AND NOT team.deletion_pending
               AND NOT EXISTS (
                     SELECT 1
@@ -99,15 +95,13 @@ async fn resolve_current_capabilities(
                       ) roster_member
                       LEFT JOIN "AspNetUsers" account
                         ON account.id = roster_member.user_id
-                     WHERE account.id IS NULL OR account.role = $7
+                     WHERE account.id IS NULL OR account.role = $4
               )
-            ORDER BY capability.participation_id"#,
+            ORDER BY capability.participation_id
+            FOR SHARE OF capability"#,
     )
-    .bind(context.target_id)
-    .bind(context.cycle_id)
-    .bind(challenge_id)
-    .bind(context.reset_attempt)
     .bind(game_id)
+    .bind(challenge_id)
     .bind(ParticipationStatus::Accepted as i16)
     .bind(Role::Banned as i16)
     .fetch_all(&mut *connection)
@@ -115,7 +109,7 @@ async fn resolve_current_capabilities(
     .map_err(|error| AppError::internal(error.to_string()))?;
     let mut resolved = Vec::with_capacity(submitted.len().min(capabilities.len()));
     for capability in capabilities {
-        let token_hash: [u8; 32] = Sha256::digest(capability.token.as_bytes()).into();
+        let token_hash = crate::services::ad::koth_api_capability::token_hash(&capability.token);
         if let Some(row) = submitted.remove(&token_hash) {
             resolved.push(ResolvedInputRow {
                 participation_id: capability.participation_id,
@@ -342,7 +336,6 @@ async fn accept_observation(
     }
     let rows = resolve_current_capabilities(
         &mut transaction,
-        &context,
         game_id,
         challenge_id,
         input
@@ -563,10 +556,9 @@ mod tests {
             CREATE TEMP TABLE "AspNetUsers" (
               id INTEGER PRIMARY KEY, role SMALLINT
             );
-            CREATE TEMP TABLE "KothTokens" (
-              target_id INTEGER, cycle_id BIGINT, challenge_id INTEGER,
-              reset_attempt INTEGER, participation_id INTEGER,
-              token TEXT, revoked_at TIMESTAMPTZ
+            CREATE TEMP TABLE "KothApiTeamTokens" (
+              game_id INTEGER, challenge_id INTEGER,
+              participation_id INTEGER, token TEXT
             );
             CREATE TEMP TABLE "KothApiSnapshots" (
               target_id INTEGER PRIMARY KEY, game_id INTEGER,
@@ -607,9 +599,9 @@ mod tests {
                  (9, 7, 'observer-secret', NULL);
                INSERT INTO "AspNetUsers" VALUES (101, 1), (102, 1);
                INSERT INTO "Teams" VALUES (21, 101, FALSE), (22, 102, FALSE);
-               INSERT INTO "KothTokens" VALUES
-                 (3, 41, 9, 2, 11, 'current-token-a', NULL),
-                 (3, 41, 9, 2, 12, 'current-token-b', NULL);"#,
+               INSERT INTO "KothApiTeamTokens" VALUES
+                 (7, 9, 11, 'current-token-a'),
+                 (7, 9, 12, 'current-token-b');"#,
         )
         .execute(&pool)
         .await

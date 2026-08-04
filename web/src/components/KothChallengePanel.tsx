@@ -1,9 +1,12 @@
-import { Alert, Badge, CopyButton, Group, Loader, Stack, Text, Tooltip } from '@mantine/core'
-import { mdiAlertCircleOutline, mdiApi, mdiCrown } from '@mdi/js'
+import { Alert, Badge, Button, CopyButton, Group, Loader, Stack, Text, Tooltip } from '@mantine/core'
+import { useModals } from '@mantine/modals'
+import { showNotification } from '@mantine/notifications'
+import { mdiAlertCircleOutline, mdiApi, mdiCheck, mdiCrown, mdiRefresh } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC } from 'react'
+import { FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
+import { showErrorMsg } from '@Utils/Shared'
 import { isKothResetTransition, kothConfirmationProgress, maxKothCooldownTicks } from '@Utils/kothLifecycle'
 import { selectCurrentKothTarget } from '@Utils/kothTarget'
 import type { KothLifecycleFields } from '@Hooks/useGame'
@@ -68,14 +71,16 @@ interface KothChallengePanelProps {
  */
 export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challengeId }) => {
   const { t } = useTranslation()
+  const modals = useModals()
+  const [rotating, setRotating] = useState(false)
 
   // The Token endpoint requires player auth (cookie session). The token is
-  // scoped to this hill and crown cycle. All three related views poll at the
-  // same bounded cadence so a replacement address and capability converge
-  // together without creating per-team database work.
-  const { data: tokenData } = useSWR<KothTokenModel>(`/api/game/${gameId}/ad/koth/${challengeId}/token`, {
-    refreshInterval: KOTH_POLL_INTERVAL_MS,
-  })
+  // scoped to this hill. Marker tokens rotate per crown cycle; Leaderboard
+  // capabilities remain stable for the event unless the player rotates one.
+  const { data: tokenData, mutate: mutateToken } = useSWR<KothTokenModel>(
+    `/api/game/${gameId}/ad/koth/${challengeId}/token`,
+    { refreshInterval: KOTH_POLL_INTERVAL_MS }
+  )
   const { data: stateData } = useSWR<KothHillStateModel>(`/api/game/${gameId}/ad/koth/${challengeId}/state`, {
     refreshInterval: KOTH_POLL_INTERVAL_MS,
   })
@@ -97,6 +102,48 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
   )
   const cooldown = stateData?.cooldownParticipants ?? []
   const isApiArena = stateData?.claimSource === 'Api'
+
+  const confirmRotation = () => {
+    modals.openConfirmModal({
+      title: t('game.content.koth.rotate_capability_title', 'Rotate arena capability?'),
+      children: (
+        <Text size="sm">
+          {t(
+            'game.content.koth.rotate_capability_warning',
+            'The old token stops scoring immediately. Your settled RSCTF points remain, but you must reconnect to the arena with the new token.'
+          )}
+        </Text>
+      ),
+      labels: {
+        confirm: t('game.button.koth.rotate_capability', 'Rotate token'),
+        cancel: t('common.cancel', 'Cancel'),
+      },
+      confirmProps: { color: 'orange' },
+      onConfirm: async () => {
+        setRotating(true)
+        try {
+          const response = await api.request<KothTokenModel>({
+            path: `/api/game/${gameId}/ad/koth/${challengeId}/token`,
+            method: 'POST',
+            format: 'json',
+          })
+          await mutateToken(response.data, { revalidate: false })
+          showNotification({
+            color: 'teal',
+            icon: <Icon path={mdiCheck} size={1} />,
+            message: t(
+              'game.notification.koth.capability_rotated',
+              'Arena capability rotated. Reconnect with the new token.'
+            ),
+          })
+        } catch (error) {
+          showErrorMsg(error, t)
+        } finally {
+          setRotating(false)
+        }
+      },
+    })
+  }
 
   // Loading: neither came back yet → show a single spinner so the modal
   // doesn't flash empty.
@@ -262,8 +309,8 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
         </Group>
       )}
 
-      {/* The team's cycle-scoped capability: marker hills plant it, while an
-          Leaderboard consumes it only through challenge-defined player actions. */}
+      {/* Marker hills plant a cycle capability. A Leaderboard challenge consumes
+          its event-stable capability only through challenge-defined actions. */}
       <Group gap={6} align="center" wrap="nowrap">
         <Text size="xs" c="dimmed">
           {`${
@@ -286,7 +333,9 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
         )}
         {tokenData?.status === 'no-cycle-token' && (
           <Text size="xs" c="orange" fs="italic">
-            {t('game.content.koth.no_token', 'No capability was issued for this crown cycle')}
+            {isApiArena
+              ? t('game.content.koth.no_api_token', 'No arena capability has been issued yet')
+              : t('game.content.koth.no_token', 'No capability was issued for this crown cycle')}
           </Text>
         )}
         {tokenData?.status === 'ready' && tokenData.token && (
@@ -299,7 +348,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
                     : isApiArena
                       ? t(
                           'game.tooltip.copy.koth_api_token',
-                          'Copy this capability — use it only in the arena action described by the challenge'
+                          'Copy this capability — paste it as the arena’s only login value'
                         )
                       : t(
                           'game.tooltip.copy.koth_token',
@@ -318,7 +367,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
                     isApiArena
                       ? t(
                           'game.tooltip.copy.koth_api_token',
-                          'Copy this capability — use it only in the arena action described by the challenge'
+                          'Copy this capability — paste it as the arena’s only login value'
                         )
                       : t(
                           'game.tooltip.copy.koth_token',
@@ -340,6 +389,18 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
             )}
           </CopyButton>
         )}
+        {isApiArena && tokenData?.status === 'ready' && (
+          <Button
+            size="compact-xs"
+            color="orange"
+            variant="subtle"
+            loading={rotating}
+            leftSection={<Icon path={mdiRefresh} size={0.7} />}
+            onClick={confirmRotation}
+          >
+            {t('game.button.koth.rotate_capability', 'Rotate token')}
+          </Button>
+        )}
       </Group>
 
       {/* No hill rendered yet — operator hasn't ensured containers, or a crown-cycle
@@ -359,7 +420,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
         {isApiArena
           ? t(
               'game.content.koth.api_capability_lifetime',
-              'The capability identifies your play without exposing your team identity to the arena. It expires at the next pristine reset; fetch the replacement before continuing.'
+              'Use only this token to enter the arena; RSCTF supplies your team identity automatically. It stays valid for the entire event unless you rotate it after exposure.'
             )
           : t(
               'game.content.koth.patch_lifetime',

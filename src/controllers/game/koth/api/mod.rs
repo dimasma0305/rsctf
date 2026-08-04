@@ -16,9 +16,11 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
 mod admin;
+mod authentication;
 mod submission;
 
 pub use admin::{get_observer, revoke_observer, rotate_observer};
+pub use authentication::authenticate_capability;
 pub use submission::submit_observation;
 
 pub(super) const TIMESTAMP_HEADER: &str = "x-rsctf-timestamp";
@@ -175,13 +177,13 @@ pub async fn observer_context(
         .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
     let eligible_tokens: Vec<String> = sqlx::query_scalar(
         r#"SELECT token.token
-             FROM "KothTokens" token
+             FROM "KothApiTeamTokens" token
              JOIN "Participations" participation
                ON participation.id = token.participation_id
-              AND participation.game_id = $5
-              AND participation.status = $6
+              AND participation.game_id = $1
+              AND participation.status = $3
              JOIN "Teams" team ON team.id = participation.team_id
-             JOIN "KothOfficialConfigs" config ON config.game_id = $5
+             JOIN "KothOfficialConfigs" config ON config.game_id = $1
              JOIN LATERAL jsonb_array_elements(config.roster_snapshot) roster(item)
                ON participation.id = CASE jsonb_typeof(roster.item)
                     WHEN 'number' THEN (roster.item #>> '{}')::integer
@@ -189,11 +191,8 @@ pub async fn observer_context(
                       NULLIF(roster.item->>'participationId', '')::integer
                     ELSE NULL
                   END
-            WHERE token.target_id = $1
-              AND token.cycle_id = $2
-              AND token.challenge_id = $3
-              AND token.reset_attempt = $4
-              AND token.revoked_at IS NULL
+            WHERE token.game_id = $1
+              AND token.challenge_id = $2
               AND NOT team.deletion_pending
               AND NOT EXISTS (
                     SELECT 1
@@ -206,15 +205,12 @@ pub async fn observer_context(
                       ) roster_member
                       LEFT JOIN "AspNetUsers" account
                         ON account.id = roster_member.user_id
-                     WHERE account.id IS NULL OR account.role = $7
+                     WHERE account.id IS NULL OR account.role = $4
               )
             ORDER BY token.participation_id"#,
     )
-    .bind(context.target_id)
-    .bind(context.cycle_id)
-    .bind(challenge_id)
-    .bind(context.reset_attempt)
     .bind(game_id)
+    .bind(challenge_id)
     .bind(ParticipationStatus::Accepted as i16)
     .bind(Role::Banned as i16)
     .fetch_all(st.pg())
@@ -235,7 +231,7 @@ pub async fn observer_context(
         round_ends_at: context.round_ends_at,
         eligible_token_hashes: eligible_tokens
             .iter()
-            .map(|token| hex::encode(Sha256::digest(token.as_bytes())))
+            .map(|token| crate::services::ad::koth_api_capability::token_hash_hex(token))
             .collect(),
         objective_ids: context.objective_ids.clone().unwrap_or_default(),
         objective_schema_hash: context.objective_schema_hash.as_ref().map(hex::encode),

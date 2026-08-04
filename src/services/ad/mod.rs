@@ -2,6 +2,7 @@
 
 pub mod api_token;
 pub mod engine;
+pub(crate) mod koth_api_capability;
 pub(crate) mod roster;
 pub mod scoring;
 pub(crate) mod service_lifecycle;

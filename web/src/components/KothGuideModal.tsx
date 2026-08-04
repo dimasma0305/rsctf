@@ -237,7 +237,7 @@ write_to_hill "/koth/king" "$TOKEN"`,
                       <Text size="sm">
                         {t(
                           'game.content.koth.guide.api.intro',
-                          'Use the current hill capability only where the challenge tells you to authenticate an action. The arena turns real activity into evidence; RSCTF resolves its SHA-256 hash, normalizes every objective independently, and calculates the score.'
+                          'Paste the hill capability into the challenge as your only login value. RSCTF supplies the authoritative team identity automatically; no local crew ID or crew name is required. The arena turns real activity into evidence, and RSCTF normalizes every objective independently.'
                         )}
                       </Text>
                       <Text size="sm" fw={600}>
@@ -276,7 +276,7 @@ write_to_hill "/koth/king" "$TOKEN"`,
                       <Text size="xs" c="dimmed">
                         {t(
                           'game.content.koth.guide.api.fences',
-                          'Scores are calculated per tick before averaging. Missing-team evidence is an explicit zero; a missing, changing, late, or unhealthy field snapshot is void for everyone. Capabilities expire at each pristine reset.'
+                          'Scores are calculated per tick before averaging. Missing-team evidence is an explicit zero; a missing, changing, late, or unhealthy field snapshot is void for everyone. Your capability lasts for the event and changes only when you explicitly rotate it after exposure.'
                         )}
                       </Text>
                     </Stack>

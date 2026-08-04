@@ -92,6 +92,7 @@ mod m0082_ad_service_snapshots;
 mod m0083_koth_api_observers;
 mod m0084_koth_api_arena;
 mod m0085_constant_leaderboard_scoring;
+mod m0086_koth_api_event_tokens;
 
 pub struct Migrator;
 
@@ -184,6 +185,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0083_koth_api_observers::Migration),
             Box::new(m0084_koth_api_arena::Migration),
             Box::new(m0085_constant_leaderboard_scoring::Migration),
+            Box::new(m0086_koth_api_event_tokens::Migration),
         ]
     }
 }

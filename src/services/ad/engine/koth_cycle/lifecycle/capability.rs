@@ -170,6 +170,19 @@ pub(super) async fn rotate_capability_window(
         .execute(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+
+        // Marker hills keep using the freshly minted cycle rows above. For a
+        // Leaderboard/API hill, capture only its first token per participant;
+        // every later pristine reset leaves the event capability untouched.
+        crate::services::ad::koth_api_capability::ensure_for_cycle(
+            connection,
+            window.game_id,
+            window.challenge_id,
+            window.cycle_id,
+            window.reset_attempt,
+            window.target_id,
+        )
+        .await?;
     }
     let active: Vec<i32> = sqlx::query_scalar(
         r#"SELECT participation_id

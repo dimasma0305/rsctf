@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use crate::app_state::SharedState;
 use crate::controllers::game::ad::resolve_participation;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};
+use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::{game, game_challenge, koth_target};
 use crate::utils::enums::{
     ChallengeCategory, ChallengeReviewStatus, ChallengeType, ParticipationStatus,
@@ -62,7 +63,8 @@ mod timeline;
 mod tokens;
 pub use admin::{admin_state, audit_receipts, recover_hill};
 pub use api::{
-    get_observer, observer_context, revoke_observer, rotate_observer, submit_observation,
+    authenticate_capability, get_observer, observer_context, revoke_observer, rotate_observer,
+    submit_observation,
 };
 use board::*;
 pub use capture::ensure_koth_hills;
@@ -80,7 +82,9 @@ pub use timeline::{timeline, KothScoreTimelineModel, KothTeamTimeline, KothTimel
 #[cfg(test)]
 use tokens::koth_token_cache_key;
 pub(crate) use tokens::load_latest_round_cached;
-pub use tokens::{koth_hill_token, koth_token_all, KothHillTokenModel, KothTokenModel};
+pub use tokens::{
+    koth_hill_token, koth_token_all, rotate_koth_api_token, KothHillTokenModel, KothTokenModel,
+};
 
 const KOTH_DETAIL_EPOCH_LIMIT: usize = 3;
 
@@ -522,7 +526,7 @@ fn common_router() -> Router<SharedState> {
         // Per-hill player token + state (KothChallengePanel polls these).
         .route(
             "/api/game/{id}/ad/koth/{challengeId}/token",
-            get(koth_hill_token),
+            get(koth_hill_token).merge(limited(Policy::Container, post(rotate_koth_api_token))),
         )
         .route(
             "/api/game/{id}/ad/koth/{challengeId}/state",
@@ -547,6 +551,10 @@ fn common_router() -> Router<SharedState> {
         .route(
             "/api/v1/koth/games/{id}/challenges/{challengeId}/observations",
             post(submit_observation).layer(DefaultBodyLimit::max(api_contract::MAX_BODY_BYTES)),
+        )
+        .route(
+            "/api/v1/koth/capability/authenticate",
+            post(authenticate_capability).layer(DefaultBodyLimit::max(1_024)),
         )
     // No player score endpoint: Boot2Root hills read /koth/king, while Leaderboard
     // accepts evidence only from its challenge-scoped trusted referee.
