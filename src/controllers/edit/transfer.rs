@@ -644,7 +644,7 @@ async fn resolve_export_attachment(
                 }
                 if let Ok(bytes) = st
                     .storage
-                    .load_bounded(h, crate::utils::upload::ASSET_FILE_BYTES)
+                    .load_bounded(h, MAX_GAME_EXPORT_ATTACHMENT_BYTES)
                     .await
                 {
                     *embed_bytes = embed_bytes

@@ -9,8 +9,10 @@ const MULTIPART_OVERHEAD_BYTES: usize = MIB;
 
 pub const IMAGE_FILE_BYTES: usize = 3 * MIB;
 pub const WRITEUP_FILE_BYTES: usize = 20 * MIB;
-pub const ASSET_FILE_BYTES: usize = 32 * MIB;
-pub const ASSET_TOTAL_BYTES: usize = 64 * MIB;
+/// Generic challenge attachments may include signed desktop clients. Uploads
+/// remain admin-only and bounded; the download path streams files this large.
+pub const ASSET_FILE_BYTES: usize = 192 * MIB;
+pub const ASSET_TOTAL_BYTES: usize = 192 * MIB;
 pub const ARCHIVE_FILE_BYTES: usize = 64 * MIB;
 /// Repository-generated source ZIPs may add central-directory overhead to the
 /// 64 MiB uncompressed source budget.

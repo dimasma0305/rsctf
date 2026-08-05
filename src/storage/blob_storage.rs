@@ -1,6 +1,12 @@
 //! Ported from RSCTF `Storage/Interface/IBlobStorage.cs`.
 
+use std::io;
+use std::ops::Range;
+use std::pin::Pin;
+
 use async_trait::async_trait;
+use bytes::Bytes;
+use futures::Stream;
 
 use crate::utils::error::AppResult;
 
@@ -11,6 +17,11 @@ pub struct StoredBlob {
     pub size: i64,
     pub name: String,
 }
+
+/// A fallible byte stream returned by storage backends for large downloads.
+/// Keeping this type backend-neutral lets the HTTP layer forward blobs without
+/// first collecting their complete contents in memory.
+pub type BlobByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send + 'static>>;
 
 #[async_trait]
 pub trait BlobStorage: Send + Sync {
@@ -36,6 +47,30 @@ pub trait BlobStorage: Send + Sync {
             ));
         }
         Ok(bytes)
+    }
+    /// Return the stored byte length without loading the blob body.
+    ///
+    /// The default preserves compatibility for small in-memory test doubles;
+    /// production backends override it with a metadata lookup.
+    async fn size(&self, hash: &str) -> AppResult<u64> {
+        Ok(self.load(hash).await?.len() as u64)
+    }
+    /// Stream an exclusive byte range from a blob.
+    ///
+    /// Production backends override this to avoid buffering. The default is
+    /// intentionally simple for test doubles and validates the requested range
+    /// before taking a slice.
+    async fn stream_range(&self, hash: &str, range: Range<u64>) -> AppResult<BlobByteStream> {
+        let bytes = self.load(hash).await?;
+        let start = usize::try_from(range.start)
+            .map_err(|_| crate::utils::error::AppError::not_found("blob not found"))?;
+        let end = usize::try_from(range.end)
+            .map_err(|_| crate::utils::error::AppError::not_found("blob not found"))?;
+        let slice = bytes
+            .get(start..end)
+            .ok_or_else(|| crate::utils::error::AppError::not_found("blob not found"))?;
+        let chunk = Bytes::copy_from_slice(slice);
+        Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })))
     }
     /// Delete a blob by hash (idempotent).
     async fn delete(&self, hash: &str) -> AppResult<()>;

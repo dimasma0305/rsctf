@@ -5,7 +5,7 @@ pub mod s3_blob_storage;
 use std::str::FromStr;
 use std::sync::Arc;
 
-pub use blob_storage::{BlobStorage, StoredBlob};
+pub use blob_storage::{BlobByteStream, BlobStorage, StoredBlob};
 pub use local_blob_storage::LocalBlobStorage;
 pub use s3_blob_storage::S3BlobStorage;
 

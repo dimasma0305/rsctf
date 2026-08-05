@@ -6,7 +6,7 @@
 
 use axum::body::Body;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use bytes::Bytes;
 use std::net::SocketAddr;
+use std::ops::Range;
 use std::time::Duration;
 
 use crate::app_state::SharedState;
@@ -368,21 +369,120 @@ async fn authorize_asset_download(
     Err(AppError::Forbidden)
 }
 
-/// Load a blob, serving cached `Bytes` zero-copy on a hit. Content-hash blobs are
-/// immutable, so small ones are cached; larger ones stream from disk to bound memory.
-async fn load_asset_bytes(st: &SharedState, hash: &str) -> AppResult<Bytes> {
+/// Load a small blob, serving cached `Bytes` zero-copy on a hit. Callers check
+/// the stored size first, so this never allocates for a large attachment.
+async fn load_small_asset_bytes(st: &SharedState, hash: &str) -> AppResult<Bytes> {
     let key = asset_bytes_key(hash);
     if let Some(b) = st.cache.get(&key).await {
         return Ok(b);
     }
-    let bytes = st
-        .storage
-        .load_bounded(hash, crate::utils::upload::ASSET_FILE_BYTES)
-        .await?;
-    if bytes.len() <= ASSET_CACHE_MAX_BYTES {
-        st.cache.set(&key, &bytes, Some(ASSET_BYTES_TTL)).await;
-    }
+    let bytes = st.storage.load_bounded(hash, ASSET_CACHE_MAX_BYTES).await?;
+    st.cache.set(&key, &bytes, Some(ASSET_BYTES_TTL)).await;
     Ok(Bytes::from(bytes))
+}
+
+/// Parse one RFC 9110 byte range and return an exclusive range. Multi-range
+/// responses are deliberately rejected: resumable downloads need only a
+/// single range, while multipart range bodies add substantial complexity.
+fn parse_byte_range(value: &str, size: u64) -> Result<Range<u64>, ()> {
+    let value = value.strip_prefix("bytes=").ok_or(())?;
+    if value.is_empty() || value.contains(',') || size == 0 {
+        return Err(());
+    }
+    let (start, end) = value.split_once('-').ok_or(())?;
+    if start.is_empty() {
+        let suffix = end.parse::<u64>().map_err(|_| ())?;
+        if suffix == 0 {
+            return Err(());
+        }
+        return Ok(size.saturating_sub(suffix)..size);
+    }
+
+    let start = start.parse::<u64>().map_err(|_| ())?;
+    if start >= size {
+        return Err(());
+    }
+    let end = if end.is_empty() {
+        size
+    } else {
+        let inclusive = end.parse::<u64>().map_err(|_| ())?;
+        if inclusive < start {
+            return Err(());
+        }
+        inclusive.saturating_add(1).min(size)
+    };
+    Ok(start..end)
+}
+
+fn range_not_satisfiable(size: u64, etag: &str, cache_policy: AssetCachePolicy) -> Response {
+    let mut response = StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(
+        header::CONTENT_RANGE,
+        HeaderValue::from_str(&format!("bytes */{size}")).expect("valid content range"),
+    );
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(etag).expect("hash ETag is ASCII"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_policy.header()),
+    );
+    response
+}
+
+fn asset_response(
+    body: Body,
+    status: StatusCode,
+    size: u64,
+    range: Option<&Range<u64>>,
+    filename: &str,
+    etag: &str,
+    cache_policy: AssetCachePolicy,
+) -> AppResult<Response> {
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(content_type_for(filename)),
+    );
+    let disposition = format!("attachment; filename=\"{}\"", sanitize(filename));
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&disposition)
+            .map_err(|_| AppError::bad_request("Invalid attachment filename"))?,
+    );
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(
+            &(range.map(|range| range.end - range.start).unwrap_or(size)).to_string(),
+        )
+        .expect("u64 content length is ASCII"),
+    );
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if let Some(range) = range {
+        headers.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {}-{}/{size}", range.start, range.end - 1))
+                .expect("valid content range"),
+        );
+    }
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(etag).expect("hash ETag is ASCII"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_policy.header()),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok(response)
 }
 
 /// `GET /assets/{hash}/{filename}` — stream a blob back by content hash.
@@ -453,24 +553,81 @@ async fn serve_asset(
             .into_response());
     }
 
-    let bytes = match load_asset_bytes(st, hash).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            // RSCTF `AssetsController` audit event (`Assets_FileNotFound`):
-            // Warning-level, TaskStatus.NotFound, no acting user.
-            let short = hash.get(..8).unwrap_or(hash);
-            crate::services::audit::log(
-                st,
-                "Warning",
-                "AssetsController",
-                None,
-                crate::services::anti_cheat::client_ip(headers, Some(peer.ip())),
-                "NotFound",
-                format!("Attempting to fetch non-existing file [{short}] {filename}"),
-            )
-            .await;
-            return Err(AppError::not_found("File not found"));
+    // Preserve the small-asset zero-copy cache. On a miss, fetch metadata only;
+    // large attachments are opened as a stream rather than collected in RAM.
+    let cached = st.cache.get(&asset_bytes_key(hash)).await;
+    let size = match &cached {
+        Some(bytes) => bytes.len() as u64,
+        None => match st.storage.size(hash).await {
+            Ok(size) => size,
+            Err(_) => {
+                // RSCTF `AssetsController` audit event (`Assets_FileNotFound`):
+                // Warning-level, TaskStatus.NotFound, no acting user.
+                let short = hash.get(..8).unwrap_or(hash);
+                crate::services::audit::log(
+                    st,
+                    "Warning",
+                    "AssetsController",
+                    None,
+                    crate::services::anti_cheat::client_ip(headers, Some(peer.ip())),
+                    "NotFound",
+                    format!("Attempting to fetch non-existing file [{short}] {filename}"),
+                )
+                .await;
+                return Err(AppError::not_found("File not found"));
+            }
+        },
+    };
+
+    // If-Range permits a client to resume only while it still has this exact
+    // immutable object. A stale validator falls back to a normal full response.
+    let requested_range = if headers
+        .get(header::IF_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|validator| validator != etag)
+    {
+        None
+    } else {
+        match headers.get(header::RANGE) {
+            Some(value) => match value
+                .to_str()
+                .map_err(|_| ())
+                .and_then(|value| parse_byte_range(value, size))
+            {
+                Ok(range) => Some(range),
+                Err(()) => return Ok(range_not_satisfiable(size, &etag, cache_policy)),
+            },
+            None => None,
         }
+    };
+
+    let body = match (&cached, &requested_range) {
+        (Some(bytes), Some(range)) => {
+            let start = usize::try_from(range.start).expect("cached asset fits usize");
+            let end = usize::try_from(range.end).expect("cached asset fits usize");
+            Body::from(bytes.slice(start..end))
+        }
+        (Some(bytes), None) => Body::from(bytes.clone()),
+        (None, None) if size == 0 => Body::empty(),
+        (None, None) if size <= ASSET_CACHE_MAX_BYTES as u64 => {
+            match load_small_asset_bytes(st, hash).await {
+                Ok(bytes) => Body::from(bytes),
+                Err(_) => return Err(AppError::not_found("File not found")),
+            }
+        }
+        (None, range) => {
+            let range = range.clone().unwrap_or(0..size);
+            match st.storage.stream_range(hash, range).await {
+                Ok(stream) => Body::from_stream(stream),
+                Err(_) => return Err(AppError::not_found("File not found")),
+            }
+        }
+    };
+
+    let status = if requested_range.is_some() {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
     };
 
     // Mirror RSCTF `AssetsController`: a successful challenge-attachment download by a
@@ -488,20 +645,15 @@ async fn serve_asset(
         });
     }
 
-    let disposition = format!("attachment; filename=\"{}\"", sanitize(filename));
-    let response = (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, content_type_for(filename).to_string()),
-            (header::CONTENT_DISPOSITION, disposition),
-            (header::ETAG, etag),
-            (header::CACHE_CONTROL, cache_policy.header().to_string()),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-        ],
-        Body::from(bytes),
+    asset_response(
+        body,
+        status,
+        size,
+        requested_range.as_ref(),
+        filename,
+        &etag,
+        cache_policy,
     )
-        .into_response();
-    Ok(response)
 }
 
 /// Infer a response Content-Type from the filename extension. Formats that a
@@ -681,7 +833,10 @@ fn sanitize(filename: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::content_type_for;
+    use axum::body::Body;
+    use axum::http::{header, StatusCode};
+
+    use super::{asset_response, content_type_for, parse_byte_range, AssetCachePolicy};
 
     #[test]
     fn caller_chosen_active_extensions_are_always_inert() {
@@ -708,5 +863,52 @@ mod tests {
         assert_eq!(content_type_for("image.png"), "image/png");
         assert_eq!(content_type_for("notes.txt"), "text/plain; charset=utf-8");
         assert_eq!(content_type_for("archive.zip"), "application/zip");
+    }
+
+    #[test]
+    fn byte_ranges_cover_resume_open_ended_and_suffix_requests() {
+        assert_eq!(parse_byte_range("bytes=0-0", 100), Ok(0..1));
+        assert_eq!(parse_byte_range("bytes=40-", 100), Ok(40..100));
+        assert_eq!(parse_byte_range("bytes=-10", 100), Ok(90..100));
+        assert_eq!(parse_byte_range("bytes=-200", 100), Ok(0..100));
+        assert_eq!(parse_byte_range("bytes=90-200", 100), Ok(90..100));
+    }
+
+    #[test]
+    fn invalid_or_multi_ranges_are_rejected() {
+        for value in [
+            "items=0-1",
+            "bytes=",
+            "bytes=100-",
+            "bytes=5-4",
+            "bytes=-0",
+            "bytes=0-1,4-5",
+        ] {
+            assert_eq!(parse_byte_range(value, 100), Err(()), "{value}");
+        }
+        assert_eq!(parse_byte_range("bytes=0-0", 0), Err(()));
+    }
+
+    #[test]
+    fn partial_download_response_exposes_resume_metadata() {
+        let response = asset_response(
+            Body::from("four"),
+            StatusCode::PARTIAL_CONTENT,
+            10,
+            Some(&(3..7)),
+            "challenge.zip",
+            "\"12345678\"",
+            AssetCachePolicy::Private,
+        )
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()[header::ACCEPT_RANGES], "bytes");
+        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes 3-6/10");
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "4");
+        assert_eq!(
+            response.headers()[header::CONTENT_DISPOSITION],
+            "attachment; filename=\"challenge.zip\""
+        );
     }
 }

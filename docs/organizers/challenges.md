@@ -36,6 +36,8 @@ Choose an initial score, minimum score, and decay method. rsctf supports standar
 
 Upload only the files players need. Remove credentials, source-control history, internal hostnames, and unintended answers. Download the attachment using a normal player account before enabling the challenge.
 
+Local challenge attachments may be up to 192 MiB per upload request. The player download is content-addressed and streamed, and supports a single HTTP byte range so interrupted downloads can resume without loading the complete file into an rsctf replica's memory.
+
 ## Container challenges
 
 Configure the image, exposed port, memory, CPU, and lifetime. Then:

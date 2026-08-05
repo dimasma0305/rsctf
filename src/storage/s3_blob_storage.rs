@@ -10,11 +10,13 @@ use futures::StreamExt;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
 use object_store::path::Path as ObjectPath;
 use object_store::{
-    Error as ObjectStoreError, ObjectStore, ObjectStoreExt, PutOptions, PutPayload,
+    Error as ObjectStoreError, GetOptions, ObjectStore, ObjectStoreExt, PutOptions, PutPayload,
 };
+use std::io;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::storage::blob_storage::{BlobStorage, StoredBlob};
+use crate::storage::blob_storage::{BlobByteStream, BlobStorage, StoredBlob};
 use crate::utils::codec::sha256_hex;
 use crate::utils::error::{AppError, AppResult};
 
@@ -200,6 +202,32 @@ impl BlobStorage for S3BlobStorage {
             bytes.extend_from_slice(&chunk);
         }
         Ok(bytes)
+    }
+
+    async fn size(&self, hash: &str) -> AppResult<u64> {
+        let key = self
+            .key_for(hash)
+            .ok_or_else(|| AppError::not_found("blob not found"))?;
+        self.client
+            .head(&key)
+            .await
+            .map(|metadata| metadata.size)
+            .map_err(map_err)
+    }
+
+    async fn stream_range(&self, hash: &str, range: Range<u64>) -> AppResult<BlobByteStream> {
+        let key = self
+            .key_for(hash)
+            .ok_or_else(|| AppError::not_found("blob not found"))?;
+        let result = self
+            .client
+            .get_opts(&key, GetOptions::new().with_range(Some(range)))
+            .await
+            .map_err(map_err)?;
+        let stream = result
+            .into_stream()
+            .map(|chunk| chunk.map_err(|error| io::Error::other(format!("s3 storage: {error}"))));
+        Ok(stream.boxed())
     }
 
     async fn delete(&self, hash: &str) -> AppResult<()> {

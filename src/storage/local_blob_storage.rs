@@ -1,12 +1,15 @@
 //! Ported from RSCTF `Storage/LocalBlobStorage.cs` — filesystem blob store,
 //! content-addressed by SHA-256 and sharded two levels deep.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use tokio::io::AsyncReadExt;
+use futures::StreamExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio_util::io::ReaderStream;
 
-use crate::storage::blob_storage::{BlobStorage, StoredBlob};
+use crate::storage::blob_storage::{BlobByteStream, BlobStorage, StoredBlob};
 use crate::utils::codec::sha256_hex;
 use crate::utils::error::{AppError, AppResult};
 
@@ -113,6 +116,38 @@ impl BlobStorage for LocalBlobStorage {
         Ok(bytes)
     }
 
+    async fn size(&self, hash: &str) -> AppResult<u64> {
+        let path = self
+            .path_for(hash)
+            .ok_or_else(|| AppError::not_found("blob not found"))?;
+        tokio::fs::metadata(path)
+            .await
+            .map(|metadata| metadata.len())
+            .map_err(|_| AppError::not_found("blob not found"))
+    }
+
+    async fn stream_range(&self, hash: &str, range: Range<u64>) -> AppResult<BlobByteStream> {
+        let path = self
+            .path_for(hash)
+            .ok_or_else(|| AppError::not_found("blob not found"))?;
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|_| AppError::not_found("blob not found"))?;
+        let size = file
+            .metadata()
+            .await
+            .map_err(|_| AppError::not_found("blob not found"))?
+            .len();
+        if range.start > range.end || range.end > size {
+            return Err(AppError::not_found("blob not found"));
+        }
+        file.seek(std::io::SeekFrom::Start(range.start))
+            .await
+            .map_err(|_| AppError::not_found("blob not found"))?;
+        let reader = ReaderStream::new(file.take(range.end - range.start));
+        Ok(reader.boxed())
+    }
+
     async fn delete(&self, hash: &str) -> AppResult<()> {
         if let Some(path) = self.path_for(hash) {
             match tokio::fs::remove_file(&path).await {
@@ -170,6 +205,32 @@ mod tests {
             storage.load_bounded(&stored.hash, 4).await.unwrap(),
             b"four"
         );
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn range_stream_reads_only_the_requested_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "rsctf-local-blob-range-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let storage = LocalBlobStorage::new(&root);
+        let stored = storage.store("test", b"0123456789").await.unwrap();
+
+        assert_eq!(storage.size(&stored.hash).await.unwrap(), 10);
+        let chunks: Vec<_> = storage
+            .stream_range(&stored.hash, 3..7)
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let bytes = chunks
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .concat();
+        assert_eq!(bytes, b"3456");
+
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }
