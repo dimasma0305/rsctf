@@ -325,48 +325,57 @@ async fn authorize_asset_download(
         return Err(AppError::Forbidden);
     };
     for target in targets {
-        if let Some(challenge_id) = target.challenge_id {
-            let playable = game_challenge::Entity::find()
-                .filter(game_challenge::Column::Id.eq(challenge_id))
-                .filter(game_challenge::Column::GameId.eq(target.game_id))
-                .filter(game_challenge::Column::IsEnabled.eq(true))
-                .filter(game_challenge::Column::ReviewStatus.eq(ChallengeReviewStatus::Active))
-                .count(&st.db)
-                .await?
-                > 0;
-            let visible_game = game::Entity::find_by_id(target.game_id)
-                .one(&st.db)
-                .await?
-                .is_some_and(|game| !game.hidden);
-            if !playable || !visible_game {
-                continue;
-            }
-        }
-
-        let Some(link) = user_participation::Entity::find_by_id((u.id, target.game_id))
-            .one(&st.db)
-            .await?
-        else {
-            continue;
-        };
-        let Some(part) = participation::Entity::find_by_id(link.participation_id)
-            .one(&st.db)
-            .await?
-            .filter(|part| {
-                part.game_id == target.game_id
-                    && part.team_id == link.team_id
-                    && part.status == ParticipationStatus::Accepted
-            })
-        else {
-            continue;
-        };
-        match target.source_team {
-            None => return Ok(AssetCachePolicy::Private), // static attachment
-            Some(team) if part.team_id == team => return Ok(AssetCachePolicy::Private),
-            Some(_) => continue, // participant, but not on the owning team
+        if participant_can_download_target(st.pg(), u.id, &target).await? {
+            return Ok(AssetCachePolicy::Private);
         }
     }
     Err(AppError::Forbidden)
+}
+
+/// Check one protected target in a single query. Hidden games deliberately use
+/// the same rule as public games: an accepted participant who can open the
+/// challenge can download its attachment. Game visibility controls discovery,
+/// not access for already-enrolled players.
+async fn participant_can_download_target(
+    pool: &sqlx::PgPool,
+    user_id: uuid::Uuid,
+    target: &AssetTarget,
+) -> AppResult<bool> {
+    sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+              FROM "UserParticipations" up
+              JOIN "Participations" p ON p.id = up.participation_id
+             WHERE up.user_id = $1
+               AND up.game_id = $2
+               AND p.game_id = $2
+               AND p.team_id = up.team_id
+               AND p.status = $3
+               AND ($4::integer IS NULL OR p.team_id = $4)
+               AND (
+                    $5::integer IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                          FROM "GameChallenges" c
+                         WHERE c.id = $5
+                           AND c.game_id = $2
+                           AND c.is_enabled
+                           AND c.review_status = $6
+                    )
+               )
+        )
+        "#,
+    )
+    .bind(user_id)
+    .bind(target.game_id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(target.source_team)
+    .bind(target.challenge_id)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
 }
 
 /// Load a small blob, serving cached `Bytes` zero-copy on a hit. Callers check
@@ -912,3 +921,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "assets_tests.rs"]
+mod database_tests;
