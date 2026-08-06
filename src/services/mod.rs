@@ -1,4 +1,5 @@
 pub mod ad;
+pub mod asset_admission;
 pub use ad::{engine as ad_engine, ssh as ad_ssh, vpn as ad_vpn};
 pub mod anti_cheat;
 pub mod audit;

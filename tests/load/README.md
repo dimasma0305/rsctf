@@ -15,6 +15,7 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      npm run asset-download # fixed-rate authenticated 1 MiB attachment ranges
       npm run scoreboard-evidence # isolated fixed-rate canonical FirstSolve query benchmark
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
@@ -51,6 +52,8 @@ tests/load/
   observe.mjs       read-only health/resource/evidence sampler for long event runs
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
   polled-read.mjs   read-only broad-token fixed-rate polling smoke
+  asset-download.mjs fixed-rate range/resume delivery benchmark
+  asset-download-model.js shared asset-path and deterministic range rules
   scoreboard-evidence.mjs isolated accepted-history versus FirstSolves DB benchmark
   player.mjs        → runs k6/player.js         (npm run player)
   ad-submit-batch.mjs → runs k6/ad-submit-batch.js (npm run ad-submit-batch)
@@ -64,6 +67,7 @@ tests/load/
     edit-lifecycle.js  fixed-rate organizer reads across future/A&D/KotH fixtures
     organizer-hubs.js  fixed-rate privileged negotiate, WebSocket, and exec traffic
     polled-read.js     one read per iteration across the dominant polled endpoints
+    asset-download.js  one authenticated deterministic attachment range per iteration
     player.js         A&D + KotH player: poll format/Overall boards, tokens/state, submit flags
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable
@@ -114,6 +118,24 @@ SUMMARY_JSON=/tmp/scoreboard-evidence.json npm run scoreboard-evidence
 `SCOREBOARD_BENCH_USER`, and `SCOREBOARD_BENCH_DATABASE` select the disposable
 PostgreSQL target. This is a focused SQL scalability comparison; use
 `polled-read` and `lifecycle` for HTTP and whole-event acceptance.
+
+`asset-download` measures large-file delivery at a fixed request and byte rate.
+It sends one exact, authenticated range per iteration and fails on malformed
+resume headers, authorization rejection, 5xx responses, or dropped iterations.
+Use the same attachment, range, rate, duration, and host for before/after data:
+
+```sh
+TARGET=https://ctf.example \
+ASSET_URL=/assets/<sha256>/challenge.zip \
+RATE=20 RANGE_BYTES=1048576 DURATION=30s \
+SUMMARY_JSON=/tmp/asset-download.json npm run asset-download
+```
+
+The runner reads the referenced size and accepted-participant security stamps
+from the selected PostgreSQL container, keeps generated tokens in a mode-0600
+temporary file, and removes it after k6 exits. It calls no mutation endpoint;
+RSCTF still performs its normal deduplicated attachment-download audit write.
+`RSCTF_JWT_SECRET` is required for local token minting.
 
 Every knob is env-overridable: `TARGET`, `GAME`, `CID`, `VUS`, `RATE`, `DURATION`, `N`,
 `RSCTF_JWT_SECRET`, `PG_CONTAINER`, `RSCTF_CONTAINER`, `NET`, `AD_NET`,

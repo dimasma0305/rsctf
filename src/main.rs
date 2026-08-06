@@ -198,6 +198,11 @@ async fn async_main() -> anyhow::Result<()> {
         .await
         .map_err(|_| anyhow::anyhow!("storage backend health check timed out"))?
         .map_err(|error| anyhow::anyhow!("storage backend is unavailable: {error}"))?;
+    if config.asset_signed_url_ttl_secs.is_some() && !storage.supports_signed_downloads() {
+        return Err(anyhow::anyhow!(
+            "RSCTF_ASSET_SIGNED_URL_TTL_SECS requires RSCTF_STORAGE_BACKEND=s3"
+        ));
+    }
     let token = TokenService::new(&config.jwt_secret, config.jwt_ttl_secs);
 
     // Resolve the backend once. VPN deployments must choose explicitly because

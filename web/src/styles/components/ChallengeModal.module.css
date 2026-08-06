@@ -11,6 +11,13 @@
   padding-bottom: 0;
 }
 
+.attachment {
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+  background: var(--mantine-color-default-hover);
+}
+
 .content {
   display: flex;
   flex-direction: column;

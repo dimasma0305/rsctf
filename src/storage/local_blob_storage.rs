@@ -13,6 +13,11 @@ use crate::storage::blob_storage::{BlobByteStream, BlobStorage, StoredBlob};
 use crate::utils::codec::sha256_hex;
 use crate::utils::error::{AppError, AppResult};
 
+/// A regular-file download should not become one HTTP body frame per 4 KiB
+/// filesystem block. 128 KiB cuts frame/read scheduling by 32x while keeping
+/// the per-active-download memory budget modest under event-scale concurrency.
+const DOWNLOAD_STREAM_BUFFER_BYTES: usize = 128 * 1024;
+
 pub struct LocalBlobStorage {
     root: PathBuf,
 }
@@ -144,7 +149,10 @@ impl BlobStorage for LocalBlobStorage {
         file.seek(std::io::SeekFrom::Start(range.start))
             .await
             .map_err(|_| AppError::not_found("blob not found"))?;
-        let reader = ReaderStream::new(file.take(range.end - range.start));
+        let reader = ReaderStream::with_capacity(
+            file.take(range.end - range.start),
+            DOWNLOAD_STREAM_BUFFER_BYTES,
+        );
         Ok(reader.boxed())
     }
 
@@ -230,6 +238,37 @@ mod tests {
             .unwrap()
             .concat();
         assert_eq!(bytes, b"3456");
+
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn large_range_stream_uses_bounded_transfer_chunks() {
+        let root = std::env::temp_dir().join(format!(
+            "rsctf-local-blob-chunks-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let storage = LocalBlobStorage::new(&root);
+        let data = vec![0x5a; DOWNLOAD_STREAM_BUFFER_BYTES * 2 + 17];
+        let stored = storage.store("large.bin", &data).await.unwrap();
+
+        let chunks = storage
+            .stream_range(&stored.hash, 0..data.len() as u64)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.len() <= DOWNLOAD_STREAM_BUFFER_BYTES));
+        assert_eq!(
+            chunks.iter().map(bytes::Bytes::len).sum::<usize>(),
+            data.len()
+        );
 
         tokio::fs::remove_dir_all(root).await.unwrap();
     }

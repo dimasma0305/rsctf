@@ -12,6 +12,7 @@ data:
   RSCTF_BIND: "0.0.0.0:8080"
   RSCTF_STORAGE_ROOT: {{ .Values.persistence.mountPath | quote }}
   RSCTF_STORAGE_BACKEND: {{ .Values.storage.backend | quote }}
+  RSCTF_ASSET_SIGNED_URL_TTL_SECS: {{ .Values.storage.s3.signedUrlTtlSeconds | quote }}
   {{- if and (ne .Values.runtimeRole "all") (ne .Values.runtimeRole "migrate") }}
   # The chart's split-role validation requires one existing RWX claim. This
   # acknowledgement prevents the binary from silently accepting local storage

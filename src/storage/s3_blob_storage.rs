@@ -9,12 +9,15 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
 use object_store::path::Path as ObjectPath;
+use object_store::signer::Signer;
 use object_store::{
-    Error as ObjectStoreError, GetOptions, ObjectStore, ObjectStoreExt, PutOptions, PutPayload,
+    Attribute, Attributes, Error as ObjectStoreError, GetOptions, ObjectStore, ObjectStoreExt,
+    PutOptions, PutPayload,
 };
 use std::io;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::storage::blob_storage::{BlobByteStream, BlobStorage, StoredBlob};
 use crate::utils::codec::sha256_hex;
@@ -161,8 +164,26 @@ impl BlobStorage for S3BlobStorage {
             .expect("sha256_hex always yields 64 hex digits");
 
         let payload = PutPayload::from(bytes.to_vec());
+        let attributes = Attributes::from_iter([
+            (
+                Attribute::ContentDisposition,
+                crate::utils::content_disposition::attachment(name),
+            ),
+            (
+                Attribute::ContentType,
+                "application/octet-stream".to_string(),
+            ),
+            (Attribute::CacheControl, "private, no-store".to_string()),
+        ]);
         self.client
-            .put_opts(&key, payload, PutOptions::default())
+            .put_opts(
+                &key,
+                payload,
+                PutOptions {
+                    attributes,
+                    ..PutOptions::default()
+                },
+            )
             .await
             .map_err(map_err)?;
 
@@ -230,6 +251,25 @@ impl BlobStorage for S3BlobStorage {
         Ok(stream.boxed())
     }
 
+    fn supports_signed_downloads(&self) -> bool {
+        true
+    }
+
+    async fn signed_download_url(
+        &self,
+        hash: &str,
+        expires_in: Duration,
+    ) -> AppResult<Option<String>> {
+        let key = self
+            .key_for(hash)
+            .ok_or_else(|| AppError::not_found("blob not found"))?;
+        self.client
+            .signed_url(axum::http::Method::GET, &key, expires_in)
+            .await
+            .map(|url| Some(url.to_string()))
+            .map_err(map_err)
+    }
+
     async fn delete(&self, hash: &str) -> AppResult<()> {
         let Some(key) = self.key_for(hash) else {
             return Ok(());
@@ -259,8 +299,8 @@ mod tests {
             client: AmazonS3Builder::new()
                 .with_bucket_name("rsctf-test")
                 .with_region("us-east-1")
-                .with_access_key_id("test")
-                .with_secret_access_key("test")
+                .with_access_key_id("test-access-key")
+                .with_secret_access_key("super-secret-never-url")
                 .build()
                 .unwrap(),
             prefix: prefix.to_string(),
@@ -278,6 +318,23 @@ mod tests {
         assert_eq!(
             test_storage("assets").key_for(&hash).unwrap().as_ref(),
             format!("assets/aa/bb/{hash}")
+        );
+    }
+
+    #[tokio::test]
+    async fn signed_download_is_scoped_to_one_hash_and_short_expiry() {
+        let hash = "aabb".to_string() + &"c".repeat(60);
+        let url = test_storage("assets")
+            .signed_download_url(&hash, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(url.contains(&format!("/assets/aa/bb/{hash}")));
+        assert!(url.contains("X-Amz-Expires=60"));
+        assert!(
+            !url.contains("super-secret-never-url"),
+            "secret material leaked into signed URL"
         );
     }
 

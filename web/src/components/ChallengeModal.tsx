@@ -1,7 +1,10 @@
 import {
+  ActionIcon,
   Alert,
   Avatar,
+  Badge,
   Button,
+  CopyButton,
   Divider,
   Group,
   Modal,
@@ -15,17 +18,20 @@ import {
   ScrollAreaAutosize,
   Input,
   Textarea,
+  Tooltip,
 } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import {
   mdiAlertCircleOutline,
+  mdiCheck,
+  mdiContentCopy,
+  mdiDownload,
   mdiFlag,
   mdiHexagonSlice2,
   mdiHexagonSlice4,
   mdiHexagonSlice6,
   mdiLightbulbOnOutline,
   mdiOpenInNew,
-  mdiPackageVariantClosed,
   mdiThumbUp,
   mdiThumbDown,
 } from '@mdi/js'
@@ -33,7 +39,7 @@ import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import duration from 'dayjs/plugin/duration'
 import relativeTime from 'dayjs/plugin/relativeTime'
-import { FC, useEffect, useMemo, useRef, useState } from 'react'
+import { FC, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdChallengePanel } from '@Components/AdChallengePanel'
 import { FlagVerdictOverlay } from '@Components/FlagVerdictOverlay'
@@ -41,9 +47,10 @@ import { InstanceEntry } from '@Components/InstanceEntry'
 import { KothChallengePanel } from '@Components/KothChallengePanel'
 import { ContentPlaceholder, InlineMarkdown, Markdown } from '@Components/MarkdownRenderer'
 import { ScrollingText } from '@Components/ScrollingText'
+import { abbreviatedSha256, attachmentDownloadInfo } from '@Utils/AttachmentDownload'
 import { FlagVerdictKind, FlagVerdictState } from '@Utils/FlagVerdict'
 import { useLanguage } from '@Utils/I18n'
-import { ChallengeCategoryItemProps } from '@Utils/Shared'
+import { ChallengeCategoryItemProps, HunamizeSize } from '@Utils/Shared'
 import { useTicker } from '@Hooks/useTicker'
 import { ChallengeDetailModel, ChallengeType, ReviewRating, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengeModal.module.css'
@@ -384,33 +391,82 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const withAttachment = !!challenge?.context?.url || onDownload
 
   const link = challenge?.context?.url
-  const local = link && link.startsWith('/assets')
+  const downloadInfo = attachmentDownloadInfo(link, challenge?.context?.sha256)
+  const local = downloadInfo.isLocal
+  const attachmentSize = challenge?.context?.fileSize
 
   const attachment = withAttachment && (
-    <Group gap="xs" justify="flex-start" align="center" wrap="nowrap">
-      <Text fw="bold" size="sm">
-        {t('challenge.button.download.attachment')}
-      </Text>
-      <Button
-        component="a"
-        href={link ?? '#'}
-        variant="light"
-        size="compact-sm"
-        target="_blank"
-        rel="noreferrer"
-        leftSection={<Icon path={local ? mdiPackageVariantClosed : mdiOpenInNew} size={0.8} />}
-        maw="20rem"
-        onClick={
-          onDownload &&
-          ((e: any) => {
-            e.preventDefault()
-            onDownload()
-          })
-        }
-      >
-        {local ? link.split('/').pop() : t('common.content.external_link')}
-      </Button>
-    </Group>
+    <Stack className={classes.attachment} gap={6}>
+      <Group gap="sm" justify="space-between" align="flex-start" wrap="wrap">
+        <Stack gap={1} style={{ flex: '1 1 14rem', minWidth: 0 }}>
+          <Text fw={700} size="sm">
+            {t('challenge.button.download.attachment')}
+          </Text>
+          {downloadInfo.filename && (
+            <Text size="xs" c="dimmed" title={downloadInfo.filename} truncate>
+              {downloadInfo.filename}
+            </Text>
+          )}
+        </Stack>
+        <Button
+          component="a"
+          href={link ?? '#'}
+          variant="light"
+          size="compact-sm"
+          target={local || onDownload ? undefined : '_blank'}
+          rel={local || onDownload ? undefined : 'noreferrer'}
+          download={local ? (downloadInfo.filename ?? true) : undefined}
+          leftSection={<Icon path={local ? mdiDownload : mdiOpenInNew} size={0.8} />}
+          onClick={
+            onDownload &&
+            ((e: ReactMouseEvent<HTMLAnchorElement>) => {
+              e.preventDefault()
+              onDownload()
+            })
+          }
+        >
+          {local ? t('challenge.button.download.now', 'Download now') : t('common.content.external_link')}
+        </Button>
+      </Group>
+
+      {local && (
+        <Group gap={6} align="center" wrap="wrap">
+          {typeof attachmentSize === 'number' && attachmentSize >= 0 && (
+            <Badge variant="light" color="gray" size="sm">
+              {HunamizeSize(attachmentSize)}
+            </Badge>
+          )}
+          <Badge variant="light" color="green" size="sm">
+            {t('challenge.content.attachment.resumable', 'Resumable')}
+          </Badge>
+          {downloadInfo.sha256 && (
+            <Group gap={3} wrap="nowrap" style={{ minWidth: 0 }}>
+              <Text size="xs" c="dimmed">
+                SHA-256
+              </Text>
+              <Text size="xs" ff="monospace" c="dimmed">
+                {abbreviatedSha256(downloadInfo.sha256)}
+              </Text>
+              <CopyButton value={downloadInfo.sha256} timeout={1500}>
+                {({ copied, copy }) => (
+                  <Tooltip label={copied ? t('common.content.copied', 'Copied') : t('common.button.copy')}>
+                    <ActionIcon
+                      variant="subtle"
+                      size="sm"
+                      color={copied ? 'green' : 'gray'}
+                      onClick={copy}
+                      aria-label={copied ? t('common.content.copied', 'Copied') : t('common.button.copy')}
+                    >
+                      <Icon path={copied ? mdiCheck : mdiContentCopy} size={0.7} />
+                    </ActionIcon>
+                  </Tooltip>
+                )}
+              </CopyButton>
+            </Group>
+          )}
+        </Group>
+      )}
+    </Stack>
   )
 
   const withInstance = !readOnlyArchive && isContainer && challenge?.context

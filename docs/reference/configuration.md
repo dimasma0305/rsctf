@@ -53,6 +53,7 @@ new resolution.
 | `RSCTF_S3_REGION` | Provider default | Optional region |
 | `RSCTF_S3_ENDPOINT` | AWS default | Optional S3-compatible endpoint, including MinIO |
 | `RSCTF_S3_PREFIX` | `assets` | Object-key prefix for content-addressed blobs |
+| `RSCTF_ASSET_SIGNED_URL_TTL_SECS` | `0` (disabled) | `30..3600` enables short-lived direct S3 URLs for authorized, static challenge attachments |
 
 Once any S3 setting is present, incomplete configuration fails startup instead
 of falling back to local disk. S3 stores blob assets only. Persist and share
@@ -61,6 +62,25 @@ files, packet captures, or snapshots.
 Startup and readiness probe a small `.rsctf-health` object. Switching an
 existing local installation to S3 requires copying its existing content hashes
 first; rsctf does not silently dual-read or migrate historical objects.
+
+Direct delivery is deliberately opt-in. RSCTF still performs the live user and
+participation check, records the download event, and then returns a temporary
+credential that authorizes only that immutable object for the configured TTL.
+The redirect itself is `private, no-store`. Dynamic per-team attachments,
+writeups, branding, range requests carrying `If-Range`, and all local-storage
+downloads stay on the normal RSCTF stream. Enabling the option with a non-S3
+backend fails startup instead of silently changing behavior. A generated URL
+must be absolute HTTPS; an HTTP/custom-endpoint URL is rejected and the request
+falls back to the authenticated RSCTF stream.
+
+Keep the bucket private and the TTL short. If a CDN fronts S3, it must validate
+the S3 signature before serving a hit. Do not configure a CDN rule that ignores
+the signature query string before authorization: that would turn a protected
+attachment into a public cache object. The safe default (`0`) preserves the
+existing proxy boundary. Uploaded objects carry `private, no-store` metadata,
+so direct S3 delivery offloads bandwidth but does not silently create a shared
+cache. A provider-specific cache override is safe only behind signature
+validation and must retain the same short authorization window.
 
 ## Registration
 

@@ -56,6 +56,9 @@ storage:
     region: ""
     endpoint: ""
     prefix: assets
+    # 0 keeps downloads on rsctf. Set 30..3600 to allow authorized static
+    # attachments to use short-lived direct object-store URLs.
+    signedUrlTtlSeconds: 0
     accessKey: ""
     secretKey: ""
     existingSecret:

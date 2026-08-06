@@ -45,6 +45,9 @@ pub struct AppState {
     pub worker_store: crate::services::worker_store::WorkerStore,
     /// Sharded, process-local fairness limits for long-lived player proxies.
     pub(crate) proxy_admission: crate::services::proxy_admission::ProxyAdmission,
+    /// Bounded active large-attachment streams. The permit is owned by the
+    /// response body so slow or disconnected clients release capacity safely.
+    pub(crate) asset_download_admission: crate::services::asset_admission::AssetDownloadAdmission,
     /// Bounded handoff to the per-process best-effort user-activity writer.
     /// Requests only `try_send`; the worker owns all PostgreSQL interaction.
     pub(crate) user_activity: crate::middlewares::user_activity::ActivityQueue,
@@ -153,6 +156,7 @@ impl AppState {
             workers,
             worker_store,
             proxy_admission: crate::services::proxy_admission::ProxyAdmission::new(),
+            asset_download_admission: Default::default(),
             events,
             user_activity: crate::middlewares::user_activity::ActivityQueue::new(),
         })

@@ -160,6 +160,10 @@ pub struct AppConfig {
     /// the expected scheme from `cookie_secure` and the request Host header.
     pub public_url: Option<String>,
     pub storage_root: String,
+    /// Optional short-lived object-store GET signature. `None` keeps the
+    /// backwards-compatible RSCTF streaming path.
+    pub asset_signed_url_ttl_secs: Option<u64>,
+    asset_signed_url_ttl_error: Option<String>,
     pub account: AccountPolicy,
     pub global: GlobalConfig,
 }
@@ -228,6 +232,8 @@ impl AppConfig {
             Err(_) => (RuntimeRole::All, None),
         };
         let (jwt_ttl_secs, jwt_ttl_error) = parse_jwt_ttl(env::var("RSCTF_JWT_TTL_SECS").ok());
+        let (asset_signed_url_ttl_secs, asset_signed_url_ttl_error) =
+            parse_asset_signed_url_ttl(env::var("RSCTF_ASSET_SIGNED_URL_TTL_SECS").ok());
         Self {
             // Invalid values are rejected by `validate`. Keeping `from_env`
             // infallible preserves its existing public contract.
@@ -247,6 +253,8 @@ impl AppConfig {
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
             storage_root: env_or("RSCTF_STORAGE_ROOT", "./files"),
+            asset_signed_url_ttl_secs,
+            asset_signed_url_ttl_error,
             account: AccountPolicy {
                 allow_register: env_bool("RSCTF_ALLOW_REGISTER", true),
                 email_confirmation_required: env_bool("RSCTF_EMAIL_CONFIRM", false),
@@ -269,6 +277,9 @@ impl AppConfig {
         }
         if self.jwt_ttl_secs <= 0 {
             anyhow::bail!("RSCTF_JWT_TTL_SECS must be a positive integer");
+        }
+        if let Some(error) = self.asset_signed_url_ttl_error.as_deref() {
+            anyhow::bail!(error.to_string());
         }
         if let Some(public_url) = self.public_url.as_deref() {
             validate_public_url(public_url)?;
@@ -295,6 +306,26 @@ fn parse_jwt_ttl(value: Option<String>) -> (i64, Option<String>) {
         Err(_) => (
             604_800,
             Some("RSCTF_JWT_TTL_SECS must be a positive integer".to_string()),
+        ),
+    }
+}
+
+fn parse_asset_signed_url_ttl(value: Option<String>) -> (Option<u64>, Option<String>) {
+    let Some(value) = value else {
+        return (None, None);
+    };
+    let value = value.trim();
+    if value.is_empty() || value == "0" {
+        return (None, None);
+    }
+    match value.parse::<u64>() {
+        Ok(ttl @ 30..=3600) => (Some(ttl), None),
+        _ => (
+            None,
+            Some(
+                "RSCTF_ASSET_SIGNED_URL_TTL_SECS must be 0 (disabled) or 30 through 3600"
+                    .to_string(),
+            ),
         ),
     }
 }
@@ -332,7 +363,10 @@ impl Default for AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_jwt_ttl, validate_jwt_secret, validate_public_url, RuntimeRole};
+    use super::{
+        parse_asset_signed_url_ttl, parse_jwt_ttl, validate_jwt_secret, validate_public_url,
+        RuntimeRole,
+    };
 
     #[test]
     fn rejects_known_or_short_jwt_secrets() {
@@ -352,6 +386,21 @@ mod tests {
         assert_eq!(parse_jwt_ttl(Some(" 60 ".to_string())), (60, None));
         let (_, error) = parse_jwt_ttl(Some("forever".to_string()));
         assert!(error.is_some());
+    }
+
+    #[test]
+    fn signed_asset_ttl_is_explicit_and_short_lived() {
+        assert_eq!(parse_asset_signed_url_ttl(None), (None, None));
+        assert_eq!(parse_asset_signed_url_ttl(Some("0".into())), (None, None));
+        assert_eq!(
+            parse_asset_signed_url_ttl(Some(" 300 ".into())),
+            (Some(300), None)
+        );
+        assert!(parse_asset_signed_url_ttl(Some("29".into())).1.is_some());
+        assert!(parse_asset_signed_url_ttl(Some("3601".into())).1.is_some());
+        assert!(parse_asset_signed_url_ttl(Some("forever".into()))
+            .1
+            .is_some());
     }
 
     #[test]

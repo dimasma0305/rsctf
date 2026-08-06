@@ -332,6 +332,9 @@ pub struct ClientFlagContext {
     pub is_shared_instance: bool,
     pub url: Option<String>,
     pub file_size: Option<i64>,
+    /// SHA-256 of a local attachment. Clients can display/copy this before
+    /// downloading without making a separate metadata request.
+    pub sha256: Option<String>,
 }
 
 /// Port of RSCTF `GameChallenge.UsesSharedContainer`: true when a challenge serves

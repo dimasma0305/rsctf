@@ -621,6 +621,7 @@ pub async fn get_challenge(
                             {
                                 context.url = Some(format!("/assets/{}/{}", lf.hash, lf.name));
                                 context.file_size = Some(lf.file_size);
+                                context.sha256 = Some(lf.hash);
                             }
                         }
                     }

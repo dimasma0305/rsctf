@@ -99,6 +99,7 @@ services:
       RSCTF_S3_PREFIX: "${RSCTF_S3_PREFIX:-assets}"
       RSCTF_S3_ACCESS_KEY: "${RSCTF_S3_ACCESS_KEY:-}"
       RSCTF_S3_SECRET_KEY: "${RSCTF_S3_SECRET_KEY:-}"
+      RSCTF_ASSET_SIGNED_URL_TTL_SECS: "${RSCTF_ASSET_SIGNED_URL_TTL_SECS:-0}"
       RUST_LOG: info
       # Public host that spawned challenge/A&D container ports advertise to players.
       # Without this, services are published on 127.0.0.1 (only reachable on the

@@ -11,10 +11,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
-use serde::{Deserialize, Serialize};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use serde::Serialize;
 
 use bytes::Bytes;
+use futures::StreamExt;
 use std::net::SocketAddr;
 use std::ops::Range;
 use std::time::Duration;
@@ -22,12 +23,14 @@ use std::time::Duration;
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser, MaybeUser};
 use crate::models::data::{
-    attachment, config, flag_context, game, game_challenge, game_event, game_instance, local_file,
-    participation, team, user, user_participation,
+    attachment, flag_context, game_challenge, game_event, local_file, user_participation,
 };
-use crate::utils::enums::{ChallengeReviewStatus, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::MessageResponse;
+
+mod authorization;
+
+use authorization::{authorize_asset_download, AssetCachePolicy};
 
 /// Response row for an uploaded blob (mirrors RSCTF `LocalFile`).
 #[derive(Debug, Serialize)]
@@ -117,266 +120,14 @@ pub async fn upload(
     Ok(Json(results))
 }
 
-/// Port of RSCTF `AssetsController.IsDownloadAllowed` + `ResolveDownloadTargetsByHash`
-/// (by-hash path). Resolves every download *target* a blob backs, then authorizes once:
-///
-/// - A blob backing **no** target (avatars/posters/logos/orphan uploads) is public
-///   (RSCTF `Targets.Count == 0 ⇒ allow`).
-/// - A **static** challenge attachment (`game_challenge.attachment_id`) has no source
-///   team: any monitor/admin or a participant of that challenge's game may download.
-/// - A **dynamic** per-instance attachment (`flag_context.attachment_id` on a
-///   `game_instance`) and a **writeup** blob (`participation.writeup_id`) carry the
-///   owning team: only a monitor/admin, or a caller whose participation in that game
-///   is on the owning team, may download — closing the world-readable hole where anyone
-///   with the content hash could pull another team's writeup / dynamic attachment.
-///
-/// The team gate mirrors RSCTF `GetParticipationsByUser` + `IsTargetAuthorized`:
-/// participation membership (a `user_participation` row for the game whose `team_id`
-/// equals the source team), not bare team roster.
 fn asset_bytes_key(hash: &str) -> String {
     format!("assetblob:{hash}")
 }
-/// Blob bytes are content-hash immutable. Only small blobs are cached; authorization
-/// is deliberately resolved live so membership/challenge revocation is immediate.
+/// Blob bytes are content-hash immutable. Only small blobs are cached. The
+/// user-specific authorization check remains live; the relationship half has
+/// the short bounded cache documented in `authorization`.
 const ASSET_BYTES_TTL: Duration = Duration::from_secs(600);
 const ASSET_CACHE_MAX_BYTES: usize = 512 * 1024;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AssetTarget {
-    game_id: i32,
-    source_team: Option<i32>,
-    challenge_id: Option<i32>,
-}
-
-enum AssetGate {
-    Public,
-    Protected(Vec<AssetTarget>),
-    Private,
-}
-
-#[derive(Clone, Copy)]
-enum AssetCachePolicy {
-    Public,
-    Private,
-}
-
-impl AssetCachePolicy {
-    fn header(self) -> &'static str {
-        match self {
-            Self::Public => "public, max-age=31536000, immutable",
-            Self::Private => "private, no-store",
-        }
-    }
-}
-
-async fn is_explicit_public_reference(st: &SharedState, hash: &str) -> AppResult<bool> {
-    if user::Entity::find()
-        .filter(user::Column::AvatarHash.eq(hash))
-        .count(&st.db)
-        .await?
-        > 0
-        || team::Entity::find()
-            .filter(team::Column::AvatarHash.eq(hash))
-            .count(&st.db)
-            .await?
-            > 0
-        || game::Entity::find()
-            .filter(game::Column::PosterHash.eq(hash))
-            .count(&st.db)
-            .await?
-            > 0
-        || config::Entity::find()
-            .filter(config::Column::ConfigKey.is_in([
-                "GlobalConfig:LogoHash".to_string(),
-                "GlobalConfig:FaviconHash".to_string(),
-            ]))
-            .filter(config::Column::Value.eq(hash))
-            .count(&st.db)
-            .await?
-            > 0
-    {
-        return Ok(true);
-    }
-    Ok(false)
-}
-
-/// Resolve a blob's download gate — the DB-heavy, user-INDEPENDENT half of
-/// authorization: the `(game_id, source_team)` targets that gate this hash (empty ⇒
-/// public). Cached by [`cached_asset_gate`]; the cheap per-user check stays per-request.
-async fn compute_asset_gate(st: &SharedState, hash: &str) -> AppResult<AssetGate> {
-    // Avatar/poster/global uploads predate the Files metadata table and are keyed
-    // directly from their owning row. Resolve those references before requiring a
-    // LocalFile record so public branding never becomes an accidental 403.
-    if is_explicit_public_reference(st, hash).await? {
-        return Ok(AssetGate::Public);
-    }
-
-    let Some(lf) = local_file::Entity::find()
-        .filter(local_file::Column::Hash.eq(hash))
-        .filter(local_file::Column::ReferenceCount.gt(0))
-        .one(&st.db)
-        .await?
-    else {
-        return Ok(AssetGate::Private);
-    };
-
-    // Each target is `(game_id, source_team)`: `None` = static (any participant),
-    // `Some(team)` = team-owned (only that team's participants).
-    let mut targets = Vec::new();
-
-    let att_ids: Vec<i32> = attachment::Entity::find()
-        .filter(attachment::Column::LocalFileId.eq(lf.id))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|a| a.id)
-        .collect();
-
-    if !att_ids.is_empty() {
-        // Static challenge attachments — no source team.
-        for c in game_challenge::Entity::find()
-            .filter(game_challenge::Column::AttachmentId.is_in(att_ids.clone()))
-            .all(&st.db)
-            .await?
-        {
-            targets.push(AssetTarget {
-                game_id: c.game_id,
-                source_team: None,
-                challenge_id: Some(c.id),
-            });
-        }
-
-        // Dynamic per-instance attachments: flag_context (attachment) -> game_instance
-        // (flag_id) -> participation. Gated to the instance's participation team.
-        let fc_ids: Vec<i32> = flag_context::Entity::find()
-            .filter(flag_context::Column::AttachmentId.is_in(att_ids))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .map(|f| f.id)
-            .collect();
-        if !fc_ids.is_empty() {
-            let instances = game_instance::Entity::find()
-                .filter(game_instance::Column::FlagId.is_in(fc_ids))
-                .all(&st.db)
-                .await?;
-            let part_ids: Vec<i32> = instances.iter().map(|i| i.participation_id).collect();
-            if !part_ids.is_empty() {
-                let parts: std::collections::HashMap<i32, participation::Model> =
-                    participation::Entity::find()
-                        .filter(participation::Column::Id.is_in(part_ids))
-                        .all(&st.db)
-                        .await?
-                        .into_iter()
-                        .map(|part| (part.id, part))
-                        .collect();
-                for instance in instances {
-                    if let Some(part) = parts.get(&instance.participation_id) {
-                        targets.push(AssetTarget {
-                            game_id: part.game_id,
-                            source_team: Some(part.team_id),
-                            challenge_id: Some(instance.challenge_id),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // Writeup blobs are referenced directly by `participation.writeup_id` (an FK to
-    // `Files.id`), not via an Attachment — gated to the owning participation team.
-    for p in participation::Entity::find()
-        .filter(participation::Column::WriteupId.eq(lf.id))
-        .all(&st.db)
-        .await?
-    {
-        targets.push(AssetTarget {
-            game_id: p.game_id,
-            source_team: Some(p.team_id),
-            challenge_id: None,
-        });
-    }
-
-    if targets.is_empty() {
-        Ok(AssetGate::Private)
-    } else {
-        Ok(AssetGate::Protected(targets))
-    }
-}
-
-/// Authorize a download against the (cached) gate: public ⇒ open; otherwise a
-/// monitor/admin, or a participant on a team that satisfies one of the targets.
-async fn authorize_asset_download(
-    st: &SharedState,
-    hash: &str,
-    user: &Option<CurrentUser>,
-) -> AppResult<AssetCachePolicy> {
-    let gate = compute_asset_gate(st, hash).await?;
-    if matches!(gate, AssetGate::Public) {
-        return Ok(AssetCachePolicy::Public);
-    }
-    let Some(u) = user else {
-        return Err(AppError::Forbidden);
-    };
-    if u.is_monitor() {
-        return Ok(AssetCachePolicy::Private);
-    }
-    let AssetGate::Protected(targets) = gate else {
-        return Err(AppError::Forbidden);
-    };
-    for target in targets {
-        if participant_can_download_target(st.pg(), u.id, &target).await? {
-            return Ok(AssetCachePolicy::Private);
-        }
-    }
-    Err(AppError::Forbidden)
-}
-
-/// Check one protected target in a single query. Hidden games deliberately use
-/// the same rule as public games: an accepted participant who can open the
-/// challenge can download its attachment. Game visibility controls discovery,
-/// not access for already-enrolled players.
-async fn participant_can_download_target(
-    pool: &sqlx::PgPool,
-    user_id: uuid::Uuid,
-    target: &AssetTarget,
-) -> AppResult<bool> {
-    sqlx::query_scalar::<_, bool>(
-        r#"
-        SELECT EXISTS (
-            SELECT 1
-              FROM "UserParticipations" up
-              JOIN "Participations" p ON p.id = up.participation_id
-             WHERE up.user_id = $1
-               AND up.game_id = $2
-               AND p.game_id = $2
-               AND p.team_id = up.team_id
-               AND p.status = $3
-               AND ($4::integer IS NULL OR p.team_id = $4)
-               AND (
-                    $5::integer IS NULL
-                    OR EXISTS (
-                        SELECT 1
-                          FROM "GameChallenges" c
-                         WHERE c.id = $5
-                           AND c.game_id = $2
-                           AND c.is_enabled
-                           AND c.review_status = $6
-                    )
-               )
-        )
-        "#,
-    )
-    .bind(user_id)
-    .bind(target.game_id)
-    .bind(ParticipationStatus::Accepted as i16)
-    .bind(target.source_team)
-    .bind(target.challenge_id)
-    .bind(ChallengeReviewStatus::Active as i16)
-    .fetch_one(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))
-}
 
 /// Load a small blob, serving cached `Bytes` zero-copy on a hit. Callers check
 /// the stored size first, so this never allocates for a large attachment.
@@ -458,7 +209,7 @@ fn asset_response(
         header::CONTENT_TYPE,
         HeaderValue::from_static(content_type_for(filename)),
     );
-    let disposition = format!("attachment; filename=\"{}\"", sanitize(filename));
+    let disposition = crate::utils::content_disposition::attachment(filename);
     headers.insert(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str(&disposition)
@@ -492,6 +243,70 @@ fn asset_response(
         HeaderValue::from_static("nosniff"),
     );
     Ok(response)
+}
+
+fn signed_download_response(location: &str) -> AppResult<Response> {
+    let uri = location
+        .parse::<axum::http::Uri>()
+        .map_err(|_| AppError::internal("storage returned an invalid signed URL"))?;
+    if uri.scheme_str() != Some("https") || uri.authority().is_none() {
+        return Err(AppError::internal(
+            "signed asset delivery requires an absolute HTTPS URL",
+        ));
+    }
+    let mut response = StatusCode::TEMPORARY_REDIRECT.into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::LOCATION,
+        HeaderValue::from_str(location)
+            .map_err(|_| AppError::internal("storage returned an invalid signed URL"))?,
+    );
+    // Never cache a credential-bearing redirect. The immutable object response
+    // may be cached according to the storage/CDN policy after it validates the
+    // short-lived signature.
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok(response)
+}
+
+fn spawn_attachment_download_log(
+    st: &SharedState,
+    hash: &str,
+    user: &Option<CurrentUser>,
+    token: Option<&str>,
+) {
+    let st = st.clone();
+    let hash = hash.to_string();
+    let user = user.clone();
+    let token = token.map(str::to_string);
+    tokio::spawn(async move {
+        if let Err(error) = log_attachment_download(&st, &hash, &user, token.as_deref()).await {
+            tracing::warn!(%error, hash = %hash, "attachment download audit failed");
+        }
+    });
+}
+
+fn permitted_stream_body(
+    stream: crate::storage::BlobByteStream,
+    permit: crate::services::asset_admission::AssetDownloadPermit,
+) -> Body {
+    // The unfold state owns the permit for exactly as long as Axum owns the
+    // response body. Completion, transport error, or client disconnect all drop
+    // it without a background cleanup task.
+    let held = futures::stream::unfold((stream, permit), |(mut stream, permit)| async move {
+        stream.next().await.map(|item| (item, (stream, permit)))
+    });
+    Body::from_stream(held)
 }
 
 /// `GET /assets/{hash}/{filename}` — stream a blob back by content hash.
@@ -542,7 +357,8 @@ async fn serve_asset(
     filename: &str,
     token: Option<&str>,
 ) -> AppResult<Response> {
-    let cache_policy = authorize_asset_download(st, hash, user).await?;
+    let authorization = authorize_asset_download(st, hash, user).await?;
+    let cache_policy = authorization.cache_policy;
 
     // Conditional caching (RSCTF `AssetsController`): a content-hash blob is
     // immutable, so an `ETag` of hash[8..16] lets the browser skip re-downloading.
@@ -567,6 +383,9 @@ async fn serve_asset(
     let cached = st.cache.get(&asset_bytes_key(hash)).await;
     let size = match &cached {
         Some(bytes) => bytes.len() as u64,
+        None if authorization.file_size.is_some_and(|size| size > 0) => {
+            authorization.file_size.expect("positive stored file size")
+        }
         None => match st.storage.size(hash).await {
             Ok(size) => size,
             Err(_) => {
@@ -610,6 +429,45 @@ async fn serve_asset(
         }
     };
 
+    // When an operator explicitly enables signed object-store delivery, RSCTF
+    // remains the authorization/audit control plane while the storage endpoint
+    // carries the large byte stream. If-Range stays on the proxy path because
+    // the object store may use a different ETag; forwarding that validator
+    // could unexpectedly restart a resumed download from byte zero.
+    if size > ASSET_CACHE_MAX_BYTES as u64
+        && authorization.signed_delivery_allowed
+        && headers.get(header::IF_RANGE).is_none()
+    {
+        if let Some(ttl_secs) = st.config.asset_signed_url_ttl_secs {
+            match st
+                .storage
+                .signed_download_url(hash, Duration::from_secs(ttl_secs))
+                .await
+            {
+                Ok(Some(location)) => match signed_download_response(&location) {
+                    Ok(response) => {
+                        spawn_attachment_download_log(st, hash, user, token);
+                        return Ok(response);
+                    }
+                    Err(error) => tracing::warn!(
+                        hash = %hash,
+                        %error,
+                        "storage returned an unsafe signed asset URL; using proxy stream"
+                    ),
+                },
+                Ok(None) => tracing::warn!(
+                    hash = %hash,
+                    "signed asset delivery is configured but unavailable; using proxy stream"
+                ),
+                Err(error) => tracing::warn!(
+                    hash = %hash,
+                    %error,
+                    "signed asset URL generation failed; using proxy stream"
+                ),
+            }
+        }
+    }
+
     let body = match (&cached, &requested_range) {
         (Some(bytes), Some(range)) => {
             let start = usize::try_from(range.start).expect("cached asset fits usize");
@@ -626,8 +484,14 @@ async fn serve_asset(
         }
         (None, range) => {
             let range = range.clone().unwrap_or(0..size);
+            let permit = st
+                .asset_download_admission
+                .try_acquire(user.as_ref().map(|user| user.id), hash)
+                .ok_or_else(|| {
+                    AppError::unavailable("Attachment download capacity is busy; retry in a moment")
+                })?;
             match st.storage.stream_range(hash, range).await {
-                Ok(stream) => Body::from_stream(stream),
+                Ok(stream) => permitted_stream_body(stream, permit),
                 Err(_) => return Err(AppError::not_found("File not found")),
             }
         }
@@ -644,15 +508,7 @@ async fn serve_asset(
     // (`NoDownload` / `FastSolve-Download`) have input. This is anti-cheat input, NOT part
     // of the response — spawn it so the download isn't billed the event write + dedup scan
     // on the request path (best-effort; a logging failure never breaks the download).
-    {
-        let st = st.clone();
-        let hash = hash.to_string();
-        let user = user.clone();
-        let token = token.map(|t| t.to_string());
-        tokio::spawn(async move {
-            let _ = log_attachment_download(&st, &hash, &user, token.as_deref()).await;
-        });
-    }
+    spawn_attachment_download_log(st, hash, user, token);
 
     asset_response(
         body,
@@ -835,17 +691,15 @@ pub async fn delete_asset(
     Ok(MessageResponse::ok(""))
 }
 
-/// Strip characters that would break a `Content-Disposition` header.
-fn sanitize(filename: &str) -> String {
-    filename.replace(['"', '\r', '\n'], "")
-}
-
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
     use axum::http::{header, StatusCode};
 
-    use super::{asset_response, content_type_for, parse_byte_range, AssetCachePolicy};
+    use super::{
+        asset_response, content_type_for, parse_byte_range, signed_download_response,
+        AssetCachePolicy,
+    };
 
     #[test]
     fn caller_chosen_active_extensions_are_always_inert() {
@@ -907,7 +761,7 @@ mod tests {
             Some(&(3..7)),
             "challenge.zip",
             "\"12345678\"",
-            AssetCachePolicy::Private,
+            AssetCachePolicy::PrivateNoStore,
         )
         .unwrap();
 
@@ -917,8 +771,31 @@ mod tests {
         assert_eq!(response.headers()[header::CONTENT_LENGTH], "4");
         assert_eq!(
             response.headers()[header::CONTENT_DISPOSITION],
-            "attachment; filename=\"challenge.zip\""
+            "attachment; filename=\"challenge.zip\"; filename*=UTF-8''challenge.zip"
         );
+    }
+
+    #[test]
+    fn signed_redirect_never_caches_or_leaks_through_referrers() {
+        let response = signed_download_response(
+            "https://storage.example/assets/hash?X-Amz-Signature=temporary",
+        )
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+        assert_eq!(
+            response.headers()[header::LOCATION],
+            "https://storage.example/assets/hash?X-Amz-Signature=temporary"
+        );
+        assert!(
+            signed_download_response("http://storage.example/assets/hash?token=temporary").is_err()
+        );
+        assert!(signed_download_response("/relative/path").is_err());
     }
 }
 

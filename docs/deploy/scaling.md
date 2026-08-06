@@ -106,6 +106,17 @@ and `/healthz` verify access to the selected backend using a small
 `.rsctf-health` object; that proves credentials and reachability, not that a
 manual historical copy was complete.
 
+Large static challenge downloads can bypass application bandwidth only when
+the operator explicitly sets `RSCTF_ASSET_SIGNED_URL_TTL_SECS=30..3600` with
+the S3 backend. Authorization and audit remain in RSCTF; the returned S3 URL is
+short-lived and limited to one immutable object. Leave the setting at `0` for
+local storage. Team-generated attachments and writeups are never redirected.
+When placing a CDN in front of S3, require signature validation before cache
+lookup and keep the origin bucket private; never strip or ignore signed query
+parameters at an unauthenticated edge. Objects default to `private, no-store`;
+shared edge caching requires an explicit provider-specific override after that
+signature gate and must not outlive the signed authorization window.
+
 ## Container backend constraint
 
 Roles are a startup boundary, not an internal RPC boundary. Public API handlers

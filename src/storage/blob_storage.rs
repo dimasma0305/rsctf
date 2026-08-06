@@ -3,6 +3,7 @@
 use std::io;
 use std::ops::Range;
 use std::pin::Pin;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -71,6 +72,21 @@ pub trait BlobStorage: Send + Sync {
             .ok_or_else(|| crate::utils::error::AppError::not_found("blob not found"))?;
         let chunk = Bytes::copy_from_slice(slice);
         Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })))
+    }
+    /// Whether this backend can mint a short-lived direct GET URL. The default
+    /// is deliberately false so local files and lightweight test doubles retain
+    /// the in-process streaming path.
+    fn supports_signed_downloads(&self) -> bool {
+        false
+    }
+    /// Mint a backend-authorized GET URL without exposing long-lived storage
+    /// credentials. Callers must authorize the RSCTF user before invoking this.
+    async fn signed_download_url(
+        &self,
+        _hash: &str,
+        _expires_in: Duration,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
     }
     /// Delete a blob by hash (idempotent).
     async fn delete(&self, hash: &str) -> AppResult<()>;

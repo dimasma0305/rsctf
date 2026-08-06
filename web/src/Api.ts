@@ -3370,6 +3370,8 @@ export interface ClientFlagContext {
    * @format int64
    */
   fileSize?: number | null;
+  /** SHA-256 of a local attachment */
+  sha256?: string | null;
 }
 
 export interface ChallengeReviewModel {
