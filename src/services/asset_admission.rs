@@ -42,10 +42,10 @@ impl AssetDownloadAdmission {
 
     pub fn try_acquire(&self, user_id: Option<Uuid>, hash: &str) -> Option<AssetDownloadPermit> {
         let user = match user_id {
-            Some(user_id) => match increment(&self.inner.users, user_id, MAX_PER_USER_STREAMS) {
-                Some(counter) => Some((user_id, counter)),
-                None => return None,
-            },
+            Some(user_id) => {
+                let counter = increment(&self.inner.users, user_id, MAX_PER_USER_STREAMS)?;
+                Some((user_id, counter))
+            }
             None => None,
         };
         let hash_key = hash.to_string();
