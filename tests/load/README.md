@@ -1263,6 +1263,24 @@ field-void rather than a synthetic scoring opportunity. Distributed player simul
 remains marker-based because its clients exercise the hill's real player-facing capture
 endpoint, not a trusted referee credential.
 
+**Current finalized-wave acceptance** (8 August 2026): release `v0.1.43` completed a
+production lifecycle with 100 Jeopardy teams, 100 mixed A&D/Leaderboard teams, 100 VUs,
+and 80 real BYOC tunnels. All 814,981 requests, 204 liveness probes, 204 readiness
+probes, 80 tunnel deliveries, four scorable waves, and 400 dense score rows passed with
+zero 5xx, invalid boards, duplicate evidence, stale capability acceptance, or integrity
+failure. A scheduler regression found during the first diagnostic allowed one event's
+long round pipeline to delay another event; per-event leased tasks changed A&D cadence
+drift from two to zero while an independent live Rythme event kept exact 60-second
+rounds. The same-fixture v0.1.42/v0.1.43 fixed-rate gate completed an identical 301
+iterations and 2,166 requests per image with zero errors. Sampled web CPU moved
+9.245% → 8.432% and whole-stack CPU 28.029% → 25.025%, while the retained adjacent
+HTTP p95 moved 12.746 → 28.534 ms; medians remained approximately flat and every
+endpoint stayed below 39 ms p95. This is recorded as no-regression/cost evidence, not
+an optimization-ledger row, because the web-only A/B does not execute the changed
+control scheduler. Formula, security boundary, complete distributions, resource data,
+rollout availability, and limitations are in
+[`REPORT.md`](REPORT.md#finalized-wave-leaderboard-scoring-and-100-team-acceptance--8-august-2026).
+
 ### Competitive player simulation
 
 `REALISTIC_COMPETITION=1` changes the distributed lifecycle from uniform request load

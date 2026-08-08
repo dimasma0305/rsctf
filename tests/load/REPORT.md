@@ -5,6 +5,250 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## Finalized-wave Leaderboard scoring and 100-team acceptance — 8 August 2026
+
+RSCTF's API-native KotH format now scores challenge-native, finalized waves
+instead of treating an external game's raw score as if it were comparable across
+games. The format remains named **Leaderboard** in player and organizer surfaces;
+Boot2Root KotH keeps its existing controller-owned scoring. There is no scoring
+version selector and no organizer-defined multiplier. The constants below are the
+single platform rule.
+
+For every finalized wave, RSCTF first normalizes every ordered native objective
+independently. Let `o_ij = earned_ij / possible_ij`, let `O_i` be their arithmetic
+mean, and let `E_i` mean that the wave's required activity was fully completed.
+RSCTF calculates:
+
+```text
+N_i    = O_i when E_i is complete; otherwise 0
+P_i    = (N_i / max(N))^0.75             when max(N) > 0; otherwise 0
+C_i    = 1 for the signed unique tied-best Crown; otherwise 0
+Wave_i = 100 * (0.95 * P_i + 0.05 * C_i)
+Epoch_i = arithmetic mean of Wave_i across finalized waves
+```
+
+The challenge must submit a fresh completion for the current wave. Missing,
+expired, incomplete, and omitted results become explicit zero rows; malformed or
+out-of-range ratios are rejected. An old high score cannot keep paying while its
+player is absent. The `0.75` exponent compresses large raw-score gaps enough that
+a developing player still sees useful progress, while preserving order.
+Ninety-five percent of each wave therefore comes from actually playing the challenge. The recurring five-point
+Crown creates a visible short-term target without allowing a one-time win or a
+streak to dominate the event.
+
+The Crown is the first-place distinction; there is no duplicate winner bonus.
+The independent referee resolves equal native scores by retaining a participating
+incumbent, then earliest server-confirmed completion, then stable identity. RSCTF
+requires the signed assertion to name exactly one tied-best team. Only one team
+receives `C_i = 1`. Every finalized wave has equal weight in the epoch, so
+consistent participation beats one exceptional run followed by inactivity.
+Exploitation attempts, failed requests, subjective “clean play,” and anti-cheat telemetry never add or subtract
+official points.
+
+### Evidence and anti-cheat boundary
+
+The player-facing arena cannot award itself normalized points or provide a trusted
+player name. Each player receives one opaque event-stable `koth_…` capability for
+that hill. The independent trusted observer resolves it to RSCTF's challenge-local
+identity, then submits a dense field through the authenticated referee API. Each
+observation is HMAC-signed over the ordered payload and a cycle-scoped observer
+context. RSCTF rejects invalid signatures, replayed/future timestamps, stale
+contexts, old-cycle observer credentials, duplicate identities, unknown participants, excessive rows,
+and evidence outside the 20-second ingestion allowance.
+
+The server, rather than the challenge, performs native normalization, omission
+zero-filling, tied-best Crown validation, relative scoring, and the epoch mean.
+The trusted referee selects the deterministic winner among an exact tie; HMAC proves
+which referee sent the evidence, not that the referee measured honestly. A snapshot is
+bounded to 2,000 rows and an epoch to 64 waves. Durable dense rows make omission
+and equivocation auditable without exposing suspicion or anti-cheat findings on a
+separate player scoreboard. Rotation invalidates a leaked player capability while
+preserving settled evidence; pristine cycle reset rotates observer context but does
+not force every player to paste a new capability.
+
+### Real challenge and 100-team event simulation
+
+The private Rythme challenge completed a real official run before the synthetic
+load: all 461 judgements arrived, accuracy was 98.742%, the native result was
+4,815,308, the observer accepted it, and RSCTF projected the present team to 100
+points against an absent team's explicit zero. This exercised the Windows client,
+arena, signed observer link, public RSCTF endpoint, durable snapshot, settlement,
+and player board together.
+
+The release candidate then ran the complete production lifecycle with 100
+Jeopardy teams, 100 mixed A&D/Leaderboard teams, 100 HTTP VUs, and 80 real BYOC
+tunnels for 120 seconds. The run produced 814,981 requests. Its observed
+6,011.198 requests/s is a closed-loop workload observation, not a fixed-rate
+capacity claim. Results were:
+
+- 0 failed requests, 0 non-2xx responses, and 0 server 5xx responses;
+- 204/204 liveness and 204/204 readiness probes successful;
+- 80/80 BYOC tunnels connected and 80/80 checker deliveries verified;
+- four of four Leaderboard waves scorable, 400 dense rows, 79 positive teams,
+  and 162 explicit omission-zero rows;
+- zero duplicate rounds, attacks, tokens, crown cycles, snapshots, runtime
+  operations, or participations;
+- zero invalid receipts, stale-container or cross-cycle evidence, self-captures,
+  holder leaks, cooldown leaks, late evidence, overdue pipelines, or score-bound
+  violations; and
+- zero panics, restart loops, or liveness/readiness failures.
+
+The complete retained lifecycle distributions are below. All values are
+milliseconds.
+
+| Operation | avg | p50 | p90 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 14.135 | 6.485 | 15.245 | 28.096 | 205.489 | 2,004.375 |
+| Board poll aggregate | 18.636 | 8.319 | 26.962 | 40.449 | 338.719 | 729.255 |
+| Combined board | 20.159 | 9.252 | 38.527 | 56.055 | 196.223 | 295.422 |
+| KotH hills | 13.360 | 8.552 | 27.657 | 35.085 | 55.417 | 274.383 |
+| A&D epoch board | 31.884 | 8.653 | 37.198 | 107.864 | 631.186 | 672.310 |
+| A&D State | 40.648 | 34.365 | 60.889 | 82.603 | 145.077 | 204.086 |
+| A&D Targets | 40.928 | 35.295 | 61.332 | 78.227 | 176.552 | 216.867 |
+| Jeopardy details | 39.993 | 12.275 | 126.674 | 157.229 | 203.205 | 317.897 |
+| A&D submit | 107.626 | 96.803 | 182.569 | 224.613 | 297.677 | 338.435 |
+| Jeopardy submit | 205.758 | 190.732 | 305.230 | 365.667 | 455.653 | 637.059 |
+| Attachment operation | 202.665 | 170.285 | 322.291 | 440.264 | 683.229 | 1,155.284 |
+| Container operation | 1,261.872 | 1,296.187 | 1,869.746 | 1,901.123 | 1,983.724 | 2,004.375 |
+| Onboarding | 1,475.493 | 1,336.000 | 2,334.500 | 2,456.500 | 2,641.900 | 2,929.000 |
+
+The 39 production resource samples covered both web replicas, singleton control,
+PostgreSQL, and Redis. CPU is percent of one core and memory is resident usage.
+
+| Container | CPU avg | CPU p95 | CPU max | RAM avg | RAM max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Web replica 4 | 0.892% | 8.710% | 9.410% | 23.59 MiB | 24.47 MiB |
+| Web replica 5 | 57.581% | 181.750% | 184.050% | 103.11 MiB | 164.60 MiB |
+| Control | 29.353% | 100.750% | 122.060% | 65.27 MiB | 112.80 MiB |
+| PostgreSQL | 74.947% | 183.680% | 281.910% | 578.94 MiB | 757.40 MiB |
+| Redis | 14.030% | 39.330% | 41.340% | 5.35 MiB | 6.65 MiB |
+
+The uneven web split reflects connection affinity in this closed-loop run; it is
+not evidence that one replica requires that placement. Peak aggregate RSCTF CPU
+remained well below the eight-core host's capacity, and all error and integrity
+gates remained clean.
+
+### Cross-event scheduler regression and fix
+
+The first diagnostic candidate completed its Leaderboard work but reported two
+A&D cadence drifts. Timestamps showed that the global five-second scheduler awaited
+one event's approximately 60-second round pipeline before scanning the next event.
+The long-running Rythme game could therefore delay an unrelated event even though
+neither event had corrupt data.
+
+The final scheduler scan now claims each event's durable lease and starts an
+independent owned pipeline task. Per-event serialization and database leases still
+prevent duplicate work, while one slow checker no longer creates cross-event
+head-of-line blocking. The final lifecycle reported zero cadence drift. During the
+subsequent fixed-rate comparison, production Rythme game 210 continued to create
+rounds exactly 60.000 seconds apart; completed pipelines advanced while the 100-team
+fixture was created, exercised, and removed.
+
+The diagnostic and final lifecycle used the same 100/100-team, 80-tunnel, 120-second
+shape, but their request generator is closed-loop and only the final run has the
+complete resource series. The 4,541.885 → 6,011.198 requests/s observation is
+therefore not entered as a performance optimization. The causal result is cadence
+drift `2 → 0` under a concurrent active event.
+
+### Same-fixture fixed-rate v0.1.42 → v0.1.43 comparison
+
+The no-regression gate cloned the already-provisioned 100-team mixed event into an
+isolated PostgreSQL/Redis network. A web-only v0.1.42 image and the immutable v0.1.43
+image ran sequentially against that same database, same 100 identities, same A&D
+challenge, same Leaderboard hill, same host, and the same loopback listener. Redis
+and each process-local cache started empty. PostgreSQL was warmed before the retained
+pair to remove first-pass buffer-cache bias. The read-only k6 workload held 10
+iterations/s for 30 seconds with 60 preallocated VUs.
+
+Both images completed exactly 301 iterations and 2,166 requests. Both recorded zero
+failed HTTP requests, semantic errors, server 5xx responses, invalid A&D boards, and
+invalid combined boards. v0.1.42 observed 62.343 requests/s and v0.1.43 observed
+62.965 requests/s over the arrival window plus graceful drain; these are not peak
+throughput measurements.
+
+#### Before: v0.1.42 latency distribution
+
+All values are milliseconds.
+
+| Endpoint | avg | p50 | p90 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 5.890 | 3.587 | 9.500 | 12.746 | 48.414 | 311.352 |
+| Board poll aggregate | 5.734 | 3.338 | 8.329 | 10.565 | 42.036 | 311.352 |
+| A&D epoch board | 6.039 | 3.281 | 7.556 | 9.643 | 16.847 | 298.543 |
+| Combined board | 6.743 | 3.375 | 8.836 | 11.109 | 78.171 | 311.352 |
+| KotH board | 5.527 | 3.323 | 8.386 | 10.821 | 49.324 | 138.385 |
+| KotH State | 3.919 | 2.517 | 8.759 | 12.793 | 16.161 | 33.524 |
+| A&D State | 8.446 | 5.825 | 14.387 | 17.122 | 47.828 | 65.807 |
+| A&D Targets | 9.250 | 6.220 | 15.518 | 19.716 | 64.623 | 65.301 |
+| KotH timeline | 6.445 | 1.882 | 6.737 | 29.487 | 89.929 | 90.274 |
+| KotH token | 5.904 | 4.704 | 10.617 | 12.750 | 23.890 | 29.923 |
+| Main board | 4.627 | 3.425 | 7.923 | 9.971 | 16.518 | 49.487 |
+
+#### After: v0.1.43 latency distribution
+
+| Endpoint | avg | p50 | p90 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 7.500 | 3.395 | 13.244 | 28.534 | 68.804 | 285.392 |
+| Board poll aggregate | 7.595 | 3.209 | 12.775 | 35.440 | 63.721 | 285.392 |
+| A&D epoch board | 7.009 | 3.054 | 11.698 | 22.285 | 60.041 | 209.171 |
+| Combined board | 8.236 | 3.286 | 12.097 | 37.817 | 69.501 | 285.392 |
+| KotH board | 8.614 | 3.229 | 13.444 | 38.546 | 78.626 | 270.755 |
+| KotH State | 5.005 | 2.206 | 12.296 | 21.312 | 36.535 | 78.150 |
+| A&D State | 8.088 | 5.340 | 14.387 | 28.580 | 42.368 | 62.283 |
+| A&D Targets | 9.017 | 5.462 | 13.670 | 36.656 | 62.106 | 68.428 |
+| KotH timeline | 6.408 | 1.750 | 7.753 | 34.242 | 82.367 | 82.563 |
+| KotH token | 9.213 | 4.284 | 14.539 | 30.261 | 97.129 | 189.104 |
+| Main board | 6.520 | 3.220 | 12.580 | 22.192 | 51.411 | 76.832 |
+
+Medians improved by 2.6–12.4% on every listed read; the p95 tail moved in the
+opposite direction in this pass.
+All p95 values remained below 39 ms and far inside the harness's 800 ms gate. An
+earlier reverse-order pair showed lower v0.1.43 tails, so the report treats the p95
+movement as host/runtime variance rather than claiming either a speedup or a proven
+regression. The exact retained adjacent pair above is disclosed rather than selecting
+the favorable pass.
+
+Resource sampling was aligned to each measured command instead of including an idle
+tail. Seventeen before and sixteen after samples completed because
+`docker stats --no-stream` has host-dependent collection time.
+
+| Resource | Before avg CPU | After avg CPU | Change | Before peak RAM | After peak RAM |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RSCTF web | 9.245% | 8.432% | -8.8% | 28.41 MiB | 30.93 MiB |
+| PostgreSQL | 15.874% | 13.344% | -15.9% | 154.90 MiB | 155.10 MiB |
+| Redis | 2.910% | 3.249% | +11.6% | 8.52 MiB | 8.34 MiB |
+| Whole stack | 28.029% | 25.025% | -10.7% | 190.69 MiB | 194.24 MiB |
+
+At the held rate, application CPU and sampled whole-stack CPU decreased while peak
+stack memory increased 1.9%. No optimization-ledger row is added: the scheduler's
+control-role code was deliberately absent from this web-only latency gate, and the
+full lifecycle comparison lacks a same-window before CPU series. The table is a
+no-regression and cost disclosure for the scoring release, not a causal scheduler
+performance claim.
+
+### Verification and production release
+
+Before release, the main crate completed 815 tests with 185 intentionally ignored,
+the worker agent completed 45 tests, the BYOC agent completed six tests, and the Node
+load suite completed 301 tests. Release builds and Clippy completed with zero warnings.
+GitHub CI, container, binary release, and Helm workflows all succeeded.
+
+Production runs release `v0.1.43` at commit `60a629351176b8b8f145bbca67836d6037fccacb`.
+Both web replicas and the singleton control use immutable image digest
+`sha256:15eec0359c03ca09c31ac0761e147490ec369cc6772a68f98ca8d97cb593b789`;
+the companion BYOC image digest is
+`sha256:1228ec6687f933ae5ce2019477020b2be18dd46bb5faa9eebb35481c3f77f3b0`.
+All three processes report the same runtime fingerprint, are healthy with zero
+restarts/OOM kills, and `/healthz` plus `/livez` return HTTP 200 with exact body `ok`.
+Post-deploy logs contain no panic, fatal error, migration failure, restart loop, or
+unexpected 5xx. Linux and Windows installers resolve to the v0.1.43 release assets.
+
+The coordinated Compose rollout was not zero-downtime: of 240 availability probes,
+160 returned `ok`, 62 returned the expected topology HTTP 503 while roles restarted,
+and 18 received a Cloudflare HTTP 500. The unavailable interval was approximately 24
+seconds in a 72-second observation. This does not affect the post-rollout acceptance,
+but it is retained as an operational limitation for the next deployment improvement.
+
 ## Event-stable Leaderboard capability rollout — 4 August 2026
 
 Leaderboard/API KotH now gives each frozen participation one opaque capability
