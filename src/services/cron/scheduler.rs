@@ -11,7 +11,7 @@ use chrono::{Duration, Utc};
 use futures::StreamExt;
 use sea_orm::EntityTrait;
 
-use super::round_finish::{drive_round_pipeline, PipelineDrive};
+use super::round_finish::drive_round_pipeline;
 use super::{RoundSchedulerScope, ADVANCE_BUDGET_SECS};
 use crate::app_state::SharedState;
 use crate::models::data::game;
@@ -38,6 +38,7 @@ struct LatestRound {
     number: i32,
     end_time_utc: chrono::DateTime<Utc>,
     pipeline_complete: bool,
+    pipeline_in_flight: bool,
 }
 
 impl LatestRound {
@@ -182,7 +183,10 @@ async fn advance_game(
 
     let latest = sqlx::query_as::<_, LatestRound>(
         r#"SELECT id, number, end_time_utc,
-                  pipeline_completed_at IS NOT NULL AS pipeline_complete
+                  pipeline_completed_at IS NOT NULL AS pipeline_complete,
+                  pipeline_lease_token IS NOT NULL
+                    AND pipeline_lease_until > clock_timestamp()
+                    AS pipeline_in_flight
              FROM "AdRounds" WHERE game_id = $1
             ORDER BY number DESC, id DESC LIMIT 1"#,
     )
@@ -190,9 +194,6 @@ async fn advance_game(
     .fetch_optional(state.pg())
     .await
     .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
-    let mut game_model = None;
-
-    let mut advanced = false;
     // A committed round may be unfinished after a crash. Recover it before
     // considering its successor; the durable lease rejects duplicate owners.
     // Once its authoritative deadline passes, fence remaining writers and turn
@@ -200,30 +201,19 @@ async fn advance_game(
     // every later round.
     if let Some(current) = &latest {
         if !current.pipeline_complete {
+            if current.pipeline_in_flight {
+                return Ok(false);
+            }
             let game = load_game_model(state, schedule.id).await?;
-            game_model = Some(game);
-            match drive_round_pipeline(
+            spawn_round_pipeline(
                 state,
-                game_model.as_ref().expect("game model was loaded"),
+                game,
                 current.id,
+                current.number,
                 None,
                 pipeline_budget(current.end_time_utc),
-            )
-            .await
-            {
-                Ok(PipelineDrive::Complete) => {}
-                Ok(PipelineDrive::InFlight) => return Ok(advanced),
-                Ok(PipelineDrive::Finished | PipelineDrive::Expired) => advanced = true,
-                Err(error) => {
-                    tracing::warn!(
-                        game = schedule.id,
-                        round = current.number,
-                        %error,
-                        "cron: prepared-round recovery failed"
-                    );
-                    return Ok(advanced);
-                }
-            }
+            );
+            return Ok(true);
         }
     }
 
@@ -237,7 +227,7 @@ async fn advance_game(
         |round| round.end_time_utc <= now,
     );
     if !due {
-        return Ok(advanced);
+        return Ok(false);
     }
     if !has_minimum_round_runway(
         schedule.end_time_utc,
@@ -247,17 +237,14 @@ async fn advance_game(
         // A clipped terminal pseudo-round would make every participant's flag
         // and checker sample platform-owned. Stop cleanly instead; event-end
         // settlement closes the last real round.
-        return Ok(advanced);
+        return Ok(false);
     }
 
     // Readiness work can include a slow container-runtime call. Keep that delay
     // outside the persisted scoring window so a healthy service still receives
     // a truthful tick after the platform becomes ready. Preparation revalidates
     // every service identity while holding the game lock.
-    let game = match game_model {
-        Some(game) => game,
-        None => load_game_model(state, schedule.id).await?,
-    };
+    let game = load_game_model(state, schedule.id).await?;
     let repair_failures = match crate::controllers::edit::ensure_ad_containers(
         state, &game, None, false, false,
     )
@@ -289,7 +276,7 @@ async fn advance_game(
         // Do not create a terminal pseudo-round when readiness consumed the
         // remaining event window. The failed work is platform downtime, not a
         // participant sample.
-        return Ok(advanced);
+        return Ok(false);
     }
 
     let prepared = match crate::services::ad_engine::prepare_round(
@@ -314,19 +301,34 @@ async fn advance_game(
     let round_id = prepared.id;
     let round_number = prepared.number;
     let budget = pipeline_budget(prepared.ends_at);
-    match drive_round_pipeline(state, &game, round_id, Some(prepared), budget).await {
-        Ok(PipelineDrive::Finished | PipelineDrive::Expired) => Ok(true),
-        Ok(PipelineDrive::Complete | PipelineDrive::InFlight) => Ok(advanced),
-        Err(error) => {
+    spawn_round_pipeline(state, game, round_id, round_number, Some(prepared), budget);
+    Ok(true)
+}
+
+/// Run one game's long-lived publication/checker pipeline independently of the
+/// five-second discovery scan. PostgreSQL's durable round lease remains the
+/// authority when another replica or a later scan observes the same round.
+/// Keeping this work out of the scan prevents one 60-second event from delaying
+/// the boundary of every other concurrently active event.
+fn spawn_round_pipeline(
+    state: &SharedState,
+    game: game::Model,
+    round_id: i32,
+    round_number: i32,
+    prepared: Option<crate::services::ad_engine::AdvancedRound>,
+    budget: StdDuration,
+) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        if let Err(error) = drive_round_pipeline(&state, &game, round_id, prepared, budget).await {
             tracing::warn!(
                 game = game.id,
                 round = round_number,
                 %error,
-                "cron: round finishing failed"
+                "cron: round pipeline failed"
             );
-            Ok(advanced)
         }
-    }
+    });
 }
 
 /// Container reconciliation still consumes the established complete game
