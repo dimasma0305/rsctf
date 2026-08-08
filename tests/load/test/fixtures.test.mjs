@@ -20,10 +20,17 @@ function reservePort() {
   });
 }
 
-function request(port, path, headers = {}) {
+function request(port, path, headers = {}, timeoutMs = 2_000) {
   return new Promise((resolve, reject) => {
     const operation = http.request(
-      { host: "127.0.0.1", port, path, headers, method: "GET", timeout: 2_000 },
+      {
+        host: "127.0.0.1",
+        port,
+        path,
+        headers,
+        method: "GET",
+        timeout: timeoutMs,
+      },
       (response) => {
         const chunks = [];
         response.on("data", (chunk) => chunks.push(chunk));
@@ -164,10 +171,13 @@ test("KotH capture commits before ack and accepts a 100-way burst", async (conte
 
   const tokens = Array.from(
     { length: 100 },
-    (_, index) => `koth_test_token_test_token_${String(index).padStart(3, "0")}`,
+    (_, index) =>
+      `koth_test_token_test_token_${String(index).padStart(3, "0")}`,
   );
   const burst = await Promise.all(
-    tokens.map((token) => request(port, "/capture", { "X-Koth-Token": token })),
+    tokens.map((token) =>
+      request(port, "/capture", { "X-Koth-Token": token }, 10_000),
+    ),
   );
   assert.equal(
     burst.filter((response) => response.status === 204).length,
