@@ -1657,6 +1657,27 @@ export function kothCapturable(gid, cid) {
     });
 }
 
+/** Snapshot every team's event-scoped Leaderboard/API capability. */
+export function kothApiCapturable(gid, cid) {
+  const rows = sql(
+    `SELECT capability.participation_id||'|'||capability.token ` +
+      `FROM "KothApiTeamTokens" capability ` +
+      `JOIN "Participations" participation ` +
+      `ON participation.id=capability.participation_id ` +
+      `AND participation.game_id=capability.game_id ` +
+      `WHERE capability.game_id=${Number(gid)} ` +
+      `AND capability.challenge_id=${Number(cid)} ` +
+      `ORDER BY capability.participation_id`
+  );
+  return (rows || '')
+    .split('\n')
+    .filter(keepId)
+    .map((line) => {
+      const [pid, token] = line.split('|');
+      return { pid: Number(pid), token };
+    });
+}
+
 /** Durable crown-cycle state used by provision, the capture driver, and integrity checks. */
 export function crownReadiness(gid, cid) {
   const gameId = Number(gid);

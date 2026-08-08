@@ -9,6 +9,8 @@ import {
   lifecycleFleetIp,
   lifecycleFleetSlot,
   lifecycleFleetSlots,
+  isStableApiCapabilityAcceptance,
+  responseCookieHeader,
   reserveLifecycleContainerUsers,
   retryAfterDelaySeconds,
   selectKothCapacityClaimant,
@@ -54,6 +56,48 @@ test("semantic integrity samples exclude expected rate-limit responses", () => {
   assert.equal(shouldValidateSemanticResponse(400), true);
   assert.equal(shouldValidateSemanticResponse(500), true);
   assert.equal(shouldValidateSemanticResponse(429), false);
+});
+
+test("Leaderboard player capabilities remain recognized after a pristine reset", () => {
+  const accepted = {
+    status: 200,
+    json: {
+      accepted: true,
+      submittedWaves: 1,
+      submittedTeams: 1,
+      recognizedTeams: 1,
+    },
+  };
+  assert.equal(isStableApiCapabilityAcceptance(accepted), true);
+  assert.equal(
+    isStableApiCapabilityAcceptance({
+      ...accepted,
+      json: { ...accepted.json, recognizedTeams: 0 },
+    }),
+    false,
+  );
+  assert.equal(
+    isStableApiCapabilityAcceptance({ ...accepted, status: 409 }),
+    false,
+  );
+});
+
+test("internal HTTPS-origin simulations replay only a safe issued session cookie", () => {
+  assert.equal(
+    responseCookieHeader(
+      { cookies: { RSCTF_Token: [{ value: "eyJhbGciOiJIUzI1NiJ9.payload_signature" }] } },
+      "RSCTF_Token",
+    ),
+    "RSCTF_Token=eyJhbGciOiJIUzI1NiJ9.payload_signature",
+  );
+  assert.equal(
+    responseCookieHeader(
+      { cookies: { RSCTF_Token: [{ value: "unsafe\r\nCookie: injected" }] } },
+      "RSCTF_Token",
+    ),
+    null,
+  );
+  assert.equal(responseCookieHeader({}, "RSCTF_Token"), null);
 });
 
 test("fixed-rate browsing has enough bounded executor headroom", () => {

@@ -10,6 +10,7 @@ import { lifecycleStateBasenameFromPath } from "./lifecycle-state-file.js";
 import {
   assertTrustedForwardedIdentity,
   FORWARDED_IDENTITY_PROBE_IP,
+  isStableApiCapabilityAcceptance,
   selectKothCapacityClaimant,
 } from "./lifecycle-load-model.js";
 import { readCheatResult, mergeCheatResult } from "./cheat-result.js";
@@ -1536,7 +1537,8 @@ async function main() {
       kothCaps = 0,
       kothCaptureRaces = 0;
     let staleWrites = 0,
-      staleRejections = 0;
+      staleRejections = 0,
+      stableApiCapabilityChecks = 0;
     let capture = null,
       lastCycleCapture = null,
       staleProbe = null;
@@ -1831,21 +1833,13 @@ async function main() {
               } catch {
                 kothCaptureRaces++;
               }
-              const staleModel = response?.json?.data ?? response?.json;
-              if (
-                response?.status === 200 &&
-                staleModel?.accepted === true &&
-                staleModel?.submittedWaves === 1 &&
-                staleModel?.submittedTeams === 1 &&
-                staleModel?.recognizedTeams === 0
-              ) {
-                staleWrites++;
-                staleRejections++;
+              if (isStableApiCapabilityAcceptance(response)) {
+                stableApiCapabilityChecks++;
                 staleCyclesProbed.add(view.cycleId);
                 capture = null;
               } else if (response && response.status !== 409) {
                 throw new Error(
-                  `old-cycle KotH API capability was not rejected: ${response.status} ${response.text?.slice(0, 160)}`,
+                  `event-stable KotH API capability did not survive the pristine reset: ${response.status} ${response.text?.slice(0, 160)}`,
                 );
               }
             } else {
@@ -1874,7 +1868,7 @@ async function main() {
             if (!staleProbe) {
               if (st.kothClaimSource === "Api") {
                 const fleetSet = new Set(fleetPids);
-                const capabilities = A.kothCapturable(
+                const capabilities = A.kothApiCapturable(
                   st.mixGame,
                   st.kothChal,
                 ).filter(({ pid }) => fleetSet.has(pid));
@@ -2172,7 +2166,9 @@ async function main() {
       : null;
     console.log(
       `  KotH captures written: ${kothCaps} · reset races ${kothCaptureRaces} · ` +
-        `stale-token rejections ${staleRejections}/${staleWrites} · ` +
+        (st.kothClaimSource === "Api"
+          ? `reset-stable API capabilities ${stableApiCapabilityChecks} · `
+          : `stale-token rejections ${staleRejections}/${staleWrites} · `) +
         `cycles ${crownCyclesSeen.size} · phases ${[...crownPhasesSeen].sort().join(",")}`,
     );
     if (apiArenaEvidence) {
@@ -2946,10 +2942,14 @@ async function main() {
     );
     const minStaleRejections = Number(
       process.env.CROWN_MIN_STALE_REJECTIONS ??
-        (duration >= 300 && (!REALISTIC_COMPETITION || duration >= 1800)
+        (st.kothClaimSource === "Marker" &&
+        duration >= 300 &&
+        (!REALISTIC_COMPETITION || duration >= 1800)
           ? 1
           : 0),
     );
+    const minStableApiCapabilityChecks =
+      st.kothClaimSource === "Api" && duration >= 120 ? 1 : 0;
     const defaultStableConfirmations =
       st.kothClaimSource === "Api"
         ? 0
@@ -2980,6 +2980,10 @@ async function main() {
     checks["missing stale-token rejections"] = Math.max(
       0,
       minStaleRejections - staleRejections,
+    );
+    checks["missing reset-stable API capability"] = Math.max(
+      0,
+      minStableApiCapabilityChecks - stableApiCapabilityChecks,
     );
     checks["missing stable confirmations"] = Math.max(
       0,

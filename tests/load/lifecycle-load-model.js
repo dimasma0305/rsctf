@@ -10,6 +10,40 @@ export function shouldValidateSemanticResponse(status) {
   return Number(status) !== 429;
 }
 
+/**
+ * Leaderboard player capabilities are event-scoped, so the capability used in
+ * the previous pristine container must still resolve after a Crown reset. The
+ * observer context and signature remain cycle-scoped; this helper validates
+ * only the server's acknowledgement of that one stable player identity.
+ */
+export function isStableApiCapabilityAcceptance(response) {
+  const model = response?.json?.data ?? response?.json;
+  return (
+    response?.status === 200 &&
+    model?.accepted === true &&
+    model?.submittedWaves === 1 &&
+    model?.submittedTeams === 1 &&
+    model?.recognizedTeams === 1
+  );
+}
+
+/**
+ * Return one server-issued cookie in request-header form. Production cookies
+ * are Secure, so an internal HTTP benchmark target has to replay the value
+ * explicitly while preserving the public HTTPS Origin used by the browser.
+ */
+export function responseCookieHeader(response, cookieName) {
+  const cookies = response?.cookies?.[cookieName];
+  if (!Array.isArray(cookies)) return null;
+  const value = cookies.find(
+    (cookie) =>
+      typeof cookie?.value === "string" &&
+      cookie.value.length > 0 &&
+      /^[A-Za-z0-9._~-]+$/.test(cookie.value),
+  )?.value;
+  return value ? `${cookieName}=${value}` : null;
+}
+
 export const FORWARDED_IDENTITY_PROBE_IP = "198.51.100.77";
 
 export function fixedRateExecutorCapacity(ratePerSecond) {

@@ -17,12 +17,14 @@ import {
   lifecycleFleetIp,
   lifecycleFleetSlot,
   lifecycleFleetSlots,
+  responseCookieHeader,
   reserveLifecycleContainerUsers,
   retryAfterDelaySeconds,
   shouldValidateSemanticResponse,
 } from '../lifecycle-load-model.js';
 
 const TARGET = __ENV.TARGET || 'http://127.0.0.1:8080';
+const BROWSER_ORIGIN = __ENV.BROWSER_ORIGIN || TARGET;
 const SECRET = __ENV.SECRET;
 if (!SECRET) throw new Error('SECRET is required for load-test token minting');
 const VUS = Number(__ENV.VUS || 400);
@@ -629,9 +631,18 @@ export function onboarding() {
     playerThink();
     return;
   }
-  // cookie carried by the per-VU jar; create a team then join the jeopardy game.
+  // The default jar carries this on public HTTPS. Internal reverse-proxy load
+  // tests target HTTP directly, where a Secure cookie is correctly withheld,
+  // so replay only the exact server-issued session value for that topology.
+  const sessionCookie = responseCookieHeader(reg, 'RSCTF_Token');
+  const sessionHeaders = sessionCookie ? { Cookie: sessionCookie } : {};
   const team = http.post(`${TARGET}/api/team`, JSON.stringify({ name: u }), {
-    headers: { ...hdr(ip), Origin: TARGET, 'Content-Type': 'application/json' },
+    headers: {
+      ...hdr(ip),
+      ...sessionHeaders,
+      Origin: BROWSER_ORIGIN,
+      'Content-Type': 'application/json',
+    },
   });
   rec(team, 'createTeam');
   const teamModel = responseJson(team);
@@ -641,13 +652,20 @@ export function onboarding() {
   let joinStatus = 0;
   if (teamAccepted) {
     const join = http.post(`${TARGET}/api/game/${S.jeoGame}`, JSON.stringify({ teamId }), {
-      headers: { ...hdr(ip), Origin: TARGET, 'Content-Type': 'application/json' },
+      headers: {
+        ...hdr(ip),
+        ...sessionHeaders,
+        Origin: BROWSER_ORIGIN,
+        'Content-Type': 'application/json',
+      },
     });
     rec(join, 'joinGame');
     check(join, { 'joinGame accepted': () => join.status === 200 });
     joinStatus = join.status;
   }
-  const profile = get(`/api/account/profile`, ip);
+  const profile = http.get(`${TARGET}/api/account/profile`, {
+    headers: { ...hdr(ip), ...sessionHeaders },
+  });
   rec(profile, 'profile');
   const profileModel = responseJson(profile);
   const profileJsonValid = profileModel !== null && typeof profileModel === 'object';

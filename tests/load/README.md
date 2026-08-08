@@ -1226,7 +1226,8 @@ state, anonymous browsing, an admin monitor feed, and a concurrent same-flag ded
   whole active fleet. It deliberately omits one eligible team to prove that RSCTF writes
   a dense zero, alternates equivalent 5/10 and 5,000/10,000 native objective scales to
   verify application-side normalization, and proves an old capability hash is accepted
-  only as unrecognized evidence. API acceptance also requires multiple positive teams
+  as the same player after a pristine reset while the observer fetches a fresh,
+  cycle-bound context and signature. API acceptance also requires multiple positive teams
   and zero holder, acquisition, or cooldown state. The harness never calls the disabled
   manual round endpoint.
 
@@ -1241,6 +1242,15 @@ To run the same fixed-rate capacity lifecycle through signed API observations:
 ```sh
 KOTH_CLAIM_SOURCE=api npm run provision
 KOTH_CLAIM_SOURCE=api VUS=400 DURATION=300s KEEP=1 npm run lifecycle
+```
+
+When the benchmark intentionally bypasses the public TLS proxy and targets an internal
+HTTP listener, set `BROWSER_ORIGIN` to the canonical HTTPS origin. The harness replays
+only the exact `RSCTF_Token` value issued by registration because a real browser
+correctly withholds that `Secure` cookie from the internal HTTP URL:
+
+```sh
+TARGET=http://10.0.0.20:8080 BROWSER_ORIGIN=https://ctf.example npm run lifecycle
 ```
 
 The one-time referee key is kept only in the ignored mode-`0600` lifecycle state
