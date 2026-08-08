@@ -4,13 +4,12 @@ use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, QueryBuilder};
-use std::collections::HashMap;
 
 use crate::app_state::SharedState;
 use crate::controllers::game::koth::api_contract::{
-    flatten, parse_and_normalize, NormalizedInputRow, MAX_BODY_BYTES,
+    flatten_waves, parse_and_normalize, MAX_BODY_BYTES,
 };
-use crate::utils::enums::{ChallengeType, ParticipationStatus, Role};
+use crate::utils::enums::ChallengeType;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
@@ -19,138 +18,97 @@ use super::{
     KothObservationAcceptedModel, INSERT_REPLAY_SQL,
 };
 
-#[derive(Clone, Debug, sqlx::FromRow)]
-struct ResolvedInputRow {
-    participation_id: i32,
-    activity_earned: i64,
-    activity_possible: i64,
-    objective_earned: i64,
-    objective_possible: i64,
-    objective_count: i16,
-}
+mod evidence;
 
-#[derive(sqlx::FromRow)]
-struct CurrentCapabilityRow {
-    participation_id: i32,
-    token: String,
-}
+use evidence::{
+    ensure_finalized_waves_are_append_only, load_stored_waves, resolve_current_capabilities,
+    validate_resolved_crowns, ResolvedWave,
+};
 
 fn snapshot_hash(
     context: &str,
     objective_schema_hash: &[u8; 32],
-    rows: &[ResolvedInputRow],
+    waves: &[ResolvedWave],
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(context.as_bytes());
     digest.update(objective_schema_hash);
-    digest.update((rows.len() as u64).to_be_bytes());
-    for row in rows {
-        digest.update(row.participation_id.to_be_bytes());
-        digest.update(row.activity_earned.to_be_bytes());
-        digest.update(row.activity_possible.to_be_bytes());
-        digest.update(row.objective_earned.to_be_bytes());
-        digest.update(row.objective_possible.to_be_bytes());
-        digest.update(row.objective_count.to_be_bytes());
-    }
-    digest.finalize().into()
-}
-
-async fn resolve_current_capabilities(
-    connection: &mut sqlx::PgConnection,
-    game_id: i32,
-    challenge_id: i32,
-    rows: Vec<NormalizedInputRow>,
-) -> AppResult<Vec<ResolvedInputRow>> {
-    if rows.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut submitted: HashMap<_, _> = rows.into_iter().map(|row| (row.token_hash, row)).collect();
-    let capabilities = sqlx::query_as::<_, CurrentCapabilityRow>(
-        r#"SELECT capability.participation_id, capability.token
-             FROM "KothApiTeamTokens" capability
-             JOIN "Participations" participation
-               ON participation.id = capability.participation_id
-              AND participation.game_id = $1
-              AND participation.status = $3
-             JOIN "Teams" team ON team.id = participation.team_id
-             JOIN "KothOfficialConfigs" config ON config.game_id = $1
-             JOIN LATERAL jsonb_array_elements(config.roster_snapshot) roster(item)
-               ON participation.id = CASE jsonb_typeof(roster.item)
-                    WHEN 'number' THEN (roster.item #>> '{}')::integer
-                    WHEN 'object' THEN
-                      NULLIF(roster.item->>'participationId', '')::integer
-                    ELSE NULL
-                  END
-            WHERE capability.game_id = $1
-              AND capability.challenge_id = $2
-              AND NOT team.deletion_pending
-              AND NOT EXISTS (
-                    SELECT 1
-                      FROM (
-                          SELECT team.captain_id AS user_id
-                          UNION
-                          SELECT member.user_id
-                            FROM "TeamMembers" member
-                           WHERE member.team_id = team.id
-                      ) roster_member
-                      LEFT JOIN "AspNetUsers" account
-                        ON account.id = roster_member.user_id
-                     WHERE account.id IS NULL OR account.role = $4
-              )
-            ORDER BY capability.participation_id
-            FOR SHARE OF capability"#,
-    )
-    .bind(game_id)
-    .bind(challenge_id)
-    .bind(ParticipationStatus::Accepted as i16)
-    .bind(Role::Banned as i16)
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let mut resolved = Vec::with_capacity(submitted.len().min(capabilities.len()));
-    for capability in capabilities {
-        let token_hash = crate::services::ad::koth_api_capability::token_hash(&capability.token);
-        if let Some(row) = submitted.remove(&token_hash) {
-            resolved.push(ResolvedInputRow {
-                participation_id: capability.participation_id,
-                activity_earned: row.activity_earned,
-                activity_possible: row.activity_possible,
-                objective_earned: row.objective_earned,
-                objective_possible: row.objective_possible,
-                objective_count: row.objective_count,
-            });
+    digest.update((waves.len() as u64).to_be_bytes());
+    for wave in waves {
+        digest.update((wave.wave_id.len() as u64).to_be_bytes());
+        digest.update(wave.wave_id.as_bytes());
+        digest.update(wave.ended_at.timestamp_millis().to_be_bytes());
+        digest.update((wave.rows.len() as u64).to_be_bytes());
+        for row in &wave.rows {
+            digest.update(row.participation_id.to_be_bytes());
+            digest.update(row.activity_earned.to_be_bytes());
+            digest.update(row.activity_possible.to_be_bytes());
+            digest.update(row.objective_earned.to_be_bytes());
+            digest.update(row.objective_possible.to_be_bytes());
+            digest.update(row.objective_count.to_be_bytes());
+            digest.update([u8::from(row.is_crown)]);
         }
     }
-    Ok(resolved)
+    digest.finalize().into()
 }
 
 async fn replace_snapshot_rows(
     connection: &mut sqlx::PgConnection,
     target_id: i32,
-    rows: &[ResolvedInputRow],
+    waves: &[ResolvedWave],
 ) -> AppResult<()> {
     sqlx::query(r#"DELETE FROM "KothApiSnapshotScores" WHERE target_id = $1"#)
         .bind(target_id)
         .execute(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(r#"DELETE FROM "KothApiSnapshotWaves" WHERE target_id = $1"#)
+        .bind(target_id)
+        .execute(&mut *connection)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if waves.is_empty() {
+        return Ok(());
+    }
+    let mut wave_query = QueryBuilder::<Postgres>::new(
+        r#"INSERT INTO "KothApiSnapshotWaves" (target_id, wave_id, ended_at) "#,
+    );
+    wave_query.push_values(waves, |mut values, wave| {
+        values
+            .push_bind(target_id)
+            .push_bind(&wave.wave_id)
+            .push_bind(wave.ended_at);
+    });
+    wave_query
+        .build()
+        .execute(&mut *connection)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    let rows: Vec<_> = waves
+        .iter()
+        .flat_map(|wave| wave.rows.iter().map(move |row| (&wave.wave_id, row)))
+        .collect();
     if rows.is_empty() {
         return Ok(());
     }
     let mut query = QueryBuilder::<Postgres>::new(
         r#"INSERT INTO "KothApiSnapshotScores"
-           (target_id, participation_id, activity_earned, activity_possible,
-            objective_earned, objective_possible, objective_count) "#,
+           (target_id, wave_id, participation_id,
+            activity_earned, activity_possible,
+            objective_earned, objective_possible, objective_count, is_crown) "#,
     );
-    query.push_values(rows, |mut values, row| {
+    query.push_values(rows, |mut values, (wave_id, row)| {
         values
             .push_bind(target_id)
+            .push_bind(wave_id)
             .push_bind(row.participation_id)
             .push_bind(row.activity_earned)
             .push_bind(row.activity_possible)
             .push_bind(row.objective_earned)
             .push_bind(row.objective_possible)
-            .push_bind(row.objective_count);
+            .push_bind(row.objective_count)
+            .push_bind(row.is_crown);
     });
     query
         .build()
@@ -247,7 +205,13 @@ async fn accept_observation(
         &signature,
     )?;
     let input = parse_and_normalize(body)?;
-    let submitted_teams = input.teams.len();
+    let submitted_waves = input.waves.len();
+    let submitted_team_hashes: std::collections::HashSet<_> = input
+        .waves
+        .iter()
+        .flat_map(|wave| wave.teams.iter().map(|team| team.token_hash.as_str()))
+        .collect();
+    let submitted_teams = submitted_team_hashes.len();
     let objective_ids = input.objective_ids.clone();
     let objective_count = objective_ids.len() as i16;
     let objective_schema_hash = input.objective_schema_hash();
@@ -279,7 +243,9 @@ async fn accept_observation(
     let context = load_active_context(&mut *transaction, game_id, challenge_id)
         .await?
         .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
-    if input.context != context.opaque_context(game_id, challenge_id) {
+    let eligible_tokens =
+        super::load_eligible_tokens(&mut *transaction, game_id, challenge_id).await?;
+    if input.context != context.opaque_context(game_id, challenge_id, &eligible_tokens) {
         return Err(AppError::conflict(
             "Leaderboard KotH context changed; fetch context and retry",
         ));
@@ -334,18 +300,46 @@ async fn accept_observation(
             ));
         }
     }
-    let rows = resolve_current_capabilities(
+    let normalized_waves = flatten_waves(input.waves, objective_count as usize);
+    let (wave_window_start, wave_window_end) = context.wave_window();
+    for wave in &normalized_waves {
+        let Some(ended_at) = DateTime::from_timestamp_millis(wave.ended_at_unix_ms) else {
+            return Err(AppError::bad_request(
+                "Leaderboard wave timestamp is out of range",
+            ));
+        };
+        if ended_at < wave_window_start || ended_at >= wave_window_end {
+            return Err(AppError::conflict(
+                "Leaderboard waves must end inside the active settlement window",
+            ));
+        }
+        if ended_at > now {
+            return Err(AppError::conflict(
+                "Leaderboard waves cannot be finalized in the future",
+            ));
+        }
+    }
+    let waves =
+        resolve_current_capabilities(&mut transaction, game_id, challenge_id, normalized_waves)
+            .await?;
+    validate_resolved_crowns(&waves)?;
+    if let Some(stored) = load_stored_waves(
         &mut transaction,
-        game_id,
-        challenge_id,
-        input
-            .teams
-            .into_iter()
-            .map(|team| flatten(team, objective_count as usize))
-            .collect(),
+        context.target_id,
+        context.round_id,
+        context.cycle_id,
+        context.reset_attempt,
+        &context.container_id,
     )
-    .await?;
-    let digest = snapshot_hash(&input.context, &objective_schema_hash, &rows);
+    .await?
+    {
+        ensure_finalized_waves_are_append_only(&stored, &waves)?;
+    }
+    let recognized_team_ids: std::collections::HashSet<_> = waves
+        .iter()
+        .flat_map(|wave| wave.rows.iter().map(|row| row.participation_id))
+        .collect();
+    let digest = snapshot_hash(&input.context, &objective_schema_hash, &waves);
     record_replay(&mut transaction, challenge_id, &signature).await?;
 
     let accepted_at = sqlx::query_scalar::<_, DateTime<Utc>>(
@@ -393,7 +387,7 @@ async fn accept_observation(
     .ok_or_else(|| {
         AppError::conflict("KotH arena snapshot is late or older than the accepted snapshot")
     })?;
-    replace_snapshot_rows(&mut transaction, context.target_id, &rows).await?;
+    replace_snapshot_rows(&mut transaction, context.target_id, &waves).await?;
     sqlx::query(
         r#"UPDATE "KothApiObservers"
               SET last_used_at = clock_timestamp()
@@ -415,51 +409,121 @@ async fn accept_observation(
         cycle_number: context.cycle_number,
         reset_attempt: context.reset_attempt,
         round_number: context.round_number,
+        submitted_waves,
         submitted_teams,
-        recognized_teams: rows.len(),
+        recognized_teams: recognized_team_ids.len(),
         accepted_at,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::evidence::ResolvedInputRow;
     use super::*;
     use axum::http::HeaderValue;
     use hmac::{Hmac, KeyInit, Mac};
     use sqlx::postgres::PgPoolOptions;
 
+    use crate::utils::enums::ParticipationStatus;
+
     fn row(participation_id: i32, earned: i64) -> ResolvedInputRow {
         ResolvedInputRow {
             participation_id,
-            activity_earned: earned,
+            activity_earned: 10,
             activity_possible: 10,
             objective_earned: earned * 2,
             objective_possible: 20,
             objective_count: 2,
+            is_crown: participation_id == 1,
+        }
+    }
+
+    fn wave(id: &str, rows: Vec<ResolvedInputRow>) -> ResolvedWave {
+        ResolvedWave {
+            wave_id: id.to_string(),
+            ended_at: DateTime::from_timestamp_millis(1).unwrap(),
+            rows,
         }
     }
 
     #[test]
     fn snapshot_digest_binds_resolved_identity_and_every_budget() {
         let schema = [7; 32];
-        let base = snapshot_hash("context", &schema, &[row(1, 5), row(2, 6)]);
-        assert_ne!(
-            base,
-            snapshot_hash("other", &schema, &[row(1, 5), row(2, 6)])
+        let base = snapshot_hash(
+            "context",
+            &schema,
+            &[wave("wave-1", vec![row(1, 5), row(2, 6)])],
         );
         assert_ne!(
             base,
-            snapshot_hash("context", &[8; 32], &[row(1, 5), row(2, 6)])
+            snapshot_hash(
+                "other",
+                &schema,
+                &[wave("wave-1", vec![row(1, 5), row(2, 6)])]
+            )
         );
-        assert_ne!(base, snapshot_hash("context", &schema, &[row(1, 5)]));
         assert_ne!(
             base,
-            snapshot_hash("context", &schema, &[row(1, 6), row(2, 6)])
+            snapshot_hash(
+                "context",
+                &[8; 32],
+                &[wave("wave-1", vec![row(1, 5), row(2, 6)])]
+            )
         );
         assert_ne!(
             base,
-            snapshot_hash("context", &schema, &[row(2, 6), row(1, 5)])
+            snapshot_hash("context", &schema, &[wave("wave-2", vec![row(1, 5)])])
         );
+        assert_ne!(
+            base,
+            snapshot_hash(
+                "context",
+                &schema,
+                &[wave("wave-1", vec![row(1, 6), row(2, 6)])]
+            )
+        );
+        assert_ne!(
+            base,
+            snapshot_hash(
+                "context",
+                &schema,
+                &[wave("wave-1", vec![row(2, 6), row(1, 5)])]
+            )
+        );
+    }
+
+    #[test]
+    fn resolved_crown_must_be_one_tied_best_completed_team() {
+        let valid = wave("wave-1", vec![row(1, 8), row(2, 8)]);
+        assert!(validate_resolved_crowns(&[valid]).is_ok());
+
+        let mut missing = wave("wave-1", vec![row(1, 8), row(2, 8)]);
+        missing.rows[0].is_crown = false;
+        assert!(validate_resolved_crowns(&[missing]).is_err());
+
+        let mut weaker = wave("wave-1", vec![row(1, 7), row(2, 8)]);
+        weaker.rows[0].is_crown = true;
+        weaker.rows[1].is_crown = false;
+        assert!(validate_resolved_crowns(&[weaker]).is_err());
+
+        let mut zero = wave("wave-1", vec![row(1, 0)]);
+        zero.rows[0].is_crown = false;
+        assert!(validate_resolved_crowns(&[zero]).is_ok());
+    }
+
+    #[test]
+    fn finalized_waves_may_only_gain_an_unchanged_suffix() {
+        let first = wave("wave-1", vec![row(1, 8), row(2, 7)]);
+        let second = wave("wave-2", vec![row(1, 7), row(2, 8)]);
+        assert!(ensure_finalized_waves_are_append_only(
+            std::slice::from_ref(&first),
+            &[first.clone(), second]
+        )
+        .is_ok());
+        assert!(ensure_finalized_waves_are_append_only(std::slice::from_ref(&first), &[]).is_err());
+        let mut changed = first.clone();
+        changed.rows[0].objective_earned += 1;
+        assert!(ensure_finalized_waves_are_append_only(&[first], &[changed]).is_err());
     }
 
     fn signed_headers(
@@ -569,10 +633,13 @@ mod tests {
               accepted_at TIMESTAMPTZ
             );
             CREATE TEMP TABLE "KothApiSnapshotScores" (
-              target_id INTEGER, participation_id INTEGER,
+              target_id INTEGER, wave_id TEXT, participation_id INTEGER,
               activity_earned BIGINT, activity_possible BIGINT,
               objective_earned BIGINT, objective_possible BIGINT,
-              objective_count SMALLINT
+              objective_count SMALLINT, is_crown BOOLEAN
+            );
+            CREATE TEMP TABLE "KothApiSnapshotWaves" (
+              target_id INTEGER, wave_id TEXT, ended_at TIMESTAMPTZ
             );
             CREATE TEMP TABLE "KothApiRequestReplays" (
               request_hash BYTEA PRIMARY KEY, challenge_id INTEGER,
@@ -625,30 +692,41 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
-            .opaque_context(7, 9);
+            .opaque_context(
+                7,
+                9,
+                &["current-token-a".to_string(), "current-token-b".to_string()],
+            );
         let valid_hash = hex::encode(Sha256::digest(b"current-token-a"));
         let unknown_hash = hex::encode(Sha256::digest(b"stale-token"));
+        let ended_at = Utc::now().timestamp_millis();
         let body = serde_json::to_vec(&serde_json::json!({
             "context": context,
             "objectiveIds": ["quality", "throughput"],
-            "teams": [
-                {
-                    "tokenHash": valid_hash,
-                    "activity": {"earned": 4, "possible": 5},
-                    "objectives": [
-                        {"earned": 1, "possible": 10},
-                        {"earned": 900, "possible": 1000}
-                    ]
-                },
-                {
-                    "tokenHash": unknown_hash,
-                    "activity": {"earned": 1, "possible": 1},
-                    "objectives": [
-                        {"earned": 1, "possible": 1},
-                        {"earned": 1, "possible": 1}
-                    ]
-                }
-            ]
+            "waves": [{
+                "waveId": "heat-17",
+                "endedAtUnixMs": ended_at,
+                "teams": [
+                    {
+                        "tokenHash": valid_hash,
+                        "activity": {"earned": 1, "possible": 1},
+                        "objectives": [
+                            {"earned": 1, "possible": 10},
+                            {"earned": 900, "possible": 1000}
+                        ],
+                        "isCrown": true
+                    },
+                    {
+                        "tokenHash": unknown_hash,
+                        "activity": {"earned": 1, "possible": 1},
+                        "objectives": [
+                            {"earned": 1, "possible": 1},
+                            {"earned": 1, "possible": 1}
+                        ],
+                        "isCrown": false
+                    }
+                ]
+            }]
         }))
         .unwrap();
         assert!(!String::from_utf8_lossy(&body).contains("current-token-a"));
@@ -658,8 +736,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            (accepted.submitted_teams, accepted.recognized_teams),
-            (2, 1)
+            (
+                accepted.submitted_waves,
+                accepted.submitted_teams,
+                accepted.recognized_teams
+            ),
+            (1, 2, 1)
         );
         let frozen_scheme: (i16, Vec<String>, Vec<u8>) = sqlx::query_as(
             r#"SELECT objective_count, objective_ids, objective_schema_hash
@@ -674,20 +756,152 @@ mod tests {
             frozen_scheme.2,
             crate::controllers::game::koth::api_contract::objective_schema_hash(&frozen_scheme.1)
         );
-        let staged: (i32, i64, i64, i16) = sqlx::query_as(
-            r#"SELECT participation_id, objective_earned, objective_possible,
-                      objective_count
+        let staged: (String, i32, i64, i64, i16, bool) = sqlx::query_as(
+            r#"SELECT wave_id, participation_id, objective_earned, objective_possible,
+                      objective_count, is_crown
                  FROM "KothApiSnapshotScores""#,
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(staged, (11, 1_000_000, 2_000_000, 2));
+        assert_eq!(
+            staged,
+            ("heat-17".to_string(), 11, 1_000_000, 2_000_000, 2, true)
+        );
 
         let replay = accept_observation(&pool, 7, 9, &headers, &body)
             .await
             .unwrap_err();
         assert_eq!(replay.status(), axum::http::StatusCode::CONFLICT);
+
+        let rewritten_body = serde_json::to_vec(&serde_json::json!({
+            "context": context,
+            "objectiveIds": ["quality", "throughput"],
+            "waves": [{
+                "waveId": "heat-17",
+                "endedAtUnixMs": ended_at,
+                "teams": [{
+                    "tokenHash": valid_hash,
+                    "activity": {"earned": 1, "possible": 1},
+                    "objectives": [
+                        {"earned": 2, "possible": 10},
+                        {"earned": 900, "possible": 1000}
+                    ],
+                    "isCrown": true
+                }]
+            }]
+        }))
+        .unwrap();
+        let rewritten_timestamp = (timestamp.parse::<i64>().unwrap() + 1).to_string();
+        let rewritten_headers = signed_headers(
+            "observer-secret",
+            &rewritten_timestamp,
+            7,
+            9,
+            &rewritten_body,
+        );
+        let rewritten = accept_observation(&pool, 7, 9, &rewritten_headers, &rewritten_body)
+            .await
+            .unwrap_err();
+        assert_eq!(rewritten.status(), axum::http::StatusCode::CONFLICT);
+
+        // Rotating one player's event capability changes the opaque context.
+        // The old referee fence is rejected, but the new context cannot rewrite
+        // another player's finalized evidence in this scoring round.
+        sqlx::query(
+            r#"UPDATE "KothApiTeamTokens"
+                  SET token = 'rotated-token-b'
+                WHERE game_id = 7 AND challenge_id = 9
+                  AND participation_id = 12"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let stale_context_timestamp = (timestamp.parse::<i64>().unwrap() + 2).to_string();
+        let stale_context_headers =
+            signed_headers("observer-secret", &stale_context_timestamp, 7, 9, &body);
+        let stale_context = accept_observation(&pool, 7, 9, &stale_context_headers, &body)
+            .await
+            .unwrap_err();
+        assert_eq!(stale_context.status(), axum::http::StatusCode::CONFLICT);
+        let rotated_context = load_active_context(&pool, 7, 9)
+            .await
+            .unwrap()
+            .unwrap()
+            .opaque_context(
+                7,
+                9,
+                &["current-token-a".to_string(), "rotated-token-b".to_string()],
+            );
+        let rotated_body = serde_json::to_vec(&serde_json::json!({
+            "context": rotated_context,
+            "objectiveIds": ["quality", "throughput"],
+            "waves": [{
+                "waveId": "heat-17",
+                "endedAtUnixMs": ended_at,
+                "teams": [{
+                    "tokenHash": valid_hash,
+                    "activity": {"earned": 1, "possible": 1},
+                    "objectives": [
+                        {"earned": 1, "possible": 10},
+                        {"earned": 900, "possible": 1000}
+                    ],
+                    "isCrown": true
+                }]
+            }]
+        }))
+        .unwrap();
+        let rotated_timestamp = (timestamp.parse::<i64>().unwrap() + 3).to_string();
+        let mut tampered_rotated: serde_json::Value =
+            serde_json::from_slice(&rotated_body).unwrap();
+        tampered_rotated["waves"][0]["teams"][0]["objectives"][0]["earned"] = serde_json::json!(2);
+        let tampered_rotated = serde_json::to_vec(&tampered_rotated).unwrap();
+        let tampered_headers = signed_headers(
+            "observer-secret",
+            &rotated_timestamp,
+            7,
+            9,
+            &tampered_rotated,
+        );
+        let tampered = accept_observation(&pool, 7, 9, &tampered_headers, &tampered_rotated)
+            .await
+            .unwrap_err();
+        assert_eq!(tampered.status(), axum::http::StatusCode::CONFLICT);
+
+        let rotated_timestamp = (timestamp.parse::<i64>().unwrap() + 4).to_string();
+        let rotated_headers =
+            signed_headers("observer-secret", &rotated_timestamp, 7, 9, &rotated_body);
+        assert!(
+            accept_observation(&pool, 7, 9, &rotated_headers, &rotated_body)
+                .await
+                .is_ok()
+        );
+
+        let future_body = serde_json::to_vec(&serde_json::json!({
+            "context": context,
+            "objectiveIds": ["quality", "throughput"],
+            "waves": [{
+                "waveId": "heat-from-the-future",
+                "endedAtUnixMs": Utc::now().timestamp_millis() + 30_000,
+                "teams": [{
+                    "tokenHash": valid_hash,
+                    "activity": {"earned": 1, "possible": 1},
+                    "objectives": [
+                        {"earned": 1, "possible": 1},
+                        {"earned": 1, "possible": 1}
+                    ],
+                    "isCrown": true
+                }]
+            }]
+        }))
+        .unwrap();
+        let future_timestamp = Utc::now().timestamp_millis().to_string();
+        let future_headers =
+            signed_headers("observer-secret", &future_timestamp, 7, 9, &future_body);
+        let future = accept_observation(&pool, 7, 9, &future_headers, &future_body)
+            .await
+            .unwrap_err();
+        assert_eq!(future.status(), axum::http::StatusCode::CONFLICT);
 
         // The frozen scoring dimensions belong to the challenge, not the
         // credential. Revoking and recreating the referee cannot change them.
@@ -703,14 +917,23 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
-            .opaque_context(7, 9);
+            .opaque_context(
+                7,
+                9,
+                &["current-token-a".to_string(), "rotated-token-b".to_string()],
+            );
         let changed_scheme_body = serde_json::to_vec(&serde_json::json!({
             "context": current_context,
             "objectiveIds": ["quality"],
-            "teams": [{
-                "tokenHash": valid_hash,
-                "activity": {"earned": 1, "possible": 1},
-                "objectives": [{"earned": 1, "possible": 1}]
+            "waves": [{
+                "waveId":"heat-17",
+                "endedAtUnixMs":ended_at,
+                "teams": [{
+                    "tokenHash": valid_hash,
+                    "activity": {"earned": 1, "possible": 1},
+                    "objectives": [{"earned": 1, "possible": 1}],
+                    "isCrown":true
+                }]
             }]
         }))
         .unwrap();

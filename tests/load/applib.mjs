@@ -1475,12 +1475,12 @@ export async function configureKothApiObserver(gid, cid) {
 }
 
 let lastKothObservationTimestamp = 0;
+const kothObservationLedgers = new Map();
 
 export function kothApiEvidence(token, index) {
   if (typeof token !== 'string') return null;
   const tokenHash = createHash('sha256').update(token).digest('hex');
   const objectiveTenths = 5 + (index % 6);
-  const activityEarned = 3 + (index % 3);
   // Alternate the challenge-native objective budget while preserving the
   // ratio. The platform must normalize 5/10 and 5,000/10,000 identically.
   const firstObjective = Math.floor(index / 6) % 2 === 0
@@ -1488,11 +1488,12 @@ export function kothApiEvidence(token, index) {
     : { earned: objectiveTenths * 1_000, possible: 10_000 };
   return {
     tokenHash,
-    activity: { earned: activityEarned, possible: 5 },
+    activity: { earned: 1, possible: 1 },
     objectives: [
       firstObjective,
       { earned: 750, possible: 1_000 },
     ],
+    isCrown: false,
   };
 }
 
@@ -1525,8 +1526,8 @@ export async function kothApiObservation(
     typeof context !== 'string' ||
     !/^[0-9a-f]{64}$/.test(context) ||
     !Number.isSafeInteger(contextModel?.roundNumber) ||
-    !Number.isSafeInteger(contextModel?.roundStartsAt) ||
-    !Number.isSafeInteger(contextModel?.roundEndsAt) ||
+    !Number.isSafeInteger(contextModel?.waveWindowStartsAt) ||
+    !Number.isSafeInteger(contextModel?.waveWindowEndsAt) ||
     !Array.isArray(contextModel?.eligibleTokenHashes)
   ) {
     throw new Error('KotH API context response is malformed');
@@ -1541,14 +1542,51 @@ export async function kothApiObservation(
   const teams = selectedTokens
     .map((token, index) => kothApiEvidence(token, index))
     .filter(Boolean);
+  let crownIndex = -1;
+  let crownScore = 0;
+  teams.forEach((team, index) => {
+    const score = team.objectives.reduce(
+      (total, objective) => total + objective.earned / objective.possible,
+      0,
+    );
+    if (score > crownScore) {
+      crownScore = score;
+      crownIndex = index;
+    }
+  });
+  if (crownIndex >= 0) teams[crownIndex].isCrown = true;
+  const scope = `${gameId}:${challengeId}`;
+  const previous = kothObservationLedgers.get(scope);
+  const ledger = previous?.context === context
+    ? previous
+    : { context, sequence: 0, waves: [] };
+  if (ledger.waves.length >= 64) {
+    throw new Error('KotH API load fixture exhausted the 64-wave settlement bound');
+  }
+  const earliest = ledger.waves.length === 0
+    ? contextModel.waveWindowStartsAt
+    : ledger.waves.at(-1).endedAtUnixMs;
+  const endedAtUnixMs = Math.max(
+    earliest,
+    Math.min(Date.now(), contextModel.waveWindowEndsAt - 1),
+  );
+  if (endedAtUnixMs >= contextModel.waveWindowEndsAt) {
+    throw new Error('KotH API load fixture settlement window has no timestamp left');
+  }
+  const nextWave = {
+    waveId: `load-${contextModel.roundNumber}-${String(ledger.sequence).padStart(2, '0')}`,
+    endedAtUnixMs,
+    teams,
+  };
+  const proposedWaves = [...ledger.waves, nextWave];
   const rawBody = JSON.stringify({
     context,
     objectiveIds: ['quality', 'throughput'],
-    teams,
+    waves: proposedWaves,
   });
   const timestamp = Math.max(Date.now(), lastKothObservationTimestamp + 1);
   lastKothObservationTimestamp = timestamp;
-  return api(
+  const response = await api(
     'POST',
     `/api/v1/koth/games/${gameId}/challenges/${challengeId}/observations`,
     {
@@ -1557,6 +1595,12 @@ export async function kothApiObservation(
       ip: '10.9.9.10',
     },
   );
+  if (response.status === 200) {
+    ledger.sequence += 1;
+    ledger.waves = proposedWaves;
+    kothObservationLedgers.set(scope, ledger);
+  }
+  return response;
 }
 
 export async function kothApiCaptureWrite(

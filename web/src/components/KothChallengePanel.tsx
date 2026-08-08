@@ -199,7 +199,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
           <Text size="xs">
             {t(
               'game.content.koth.api_play',
-              'Every team can score in the same tick. Use your current capability in the challenge’s documented actions; RSCTF scores verified activity and normalized objectives, then adds a bounded bonus for sustained first place. Failed hacking attempts are not negative points, and there is no exclusive king.'
+              'Every team can score in each challenge-native wave. Complete a fresh run through the challenge’s documented actions; RSCTF awards 95% from performance relative to that wave’s best result and 5% for its first-place Crown. Failed hacking attempts are not negative points, and an absent team receives zero.'
             )}
           </Text>
         </Alert>

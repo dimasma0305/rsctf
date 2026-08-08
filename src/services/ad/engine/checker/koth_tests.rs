@@ -1,3 +1,4 @@
+use super::scheduling::API_SNAPSHOT_ARRIVAL_GRACE;
 use super::*;
 use sqlx::{Connection, PgConnection};
 
@@ -51,6 +52,23 @@ fn api_snapshot_arrival_wait_preserves_probe_and_commit_runway() {
 }
 
 #[test]
+fn api_checker_starts_at_the_lagged_wave_cutoff() {
+    let wall_now = Utc::now();
+    let monotonic_now = tokio::time::Instant::now();
+    let round_end = wall_now + chrono::Duration::seconds(60);
+    assert_eq!(
+        api_settlement_start_instant(round_end, wall_now, monotonic_now),
+        monotonic_now
+            + Duration::from_secs(
+                60 - u64::try_from(
+                    crate::services::ad::engine::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS
+                )
+                .unwrap()
+            )
+    );
+}
+
+#[test]
 fn recovery_roster_excludes_already_committed_hills() {
     assert!(PENDING_KOTH_CHALLENGES_SQL.contains("NOT EXISTS"));
     assert!(PENDING_KOTH_CHALLENGES_SQL.contains("result.ad_round_id = $2"));
@@ -82,13 +100,13 @@ async fn recovery_query_returns_only_unresolved_hills() {
     .execute(&mut connection)
     .await
     .unwrap();
-    let pending: Vec<i32> = sqlx::query_scalar(PENDING_KOTH_CHALLENGES_SQL)
+    let pending: Vec<(i32, String)> = sqlx::query_as(PENDING_KOTH_CHALLENGES_SQL)
         .bind(7_i32)
         .bind(101_i32)
         .fetch_all(&mut connection)
         .await
         .unwrap();
-    assert_eq!(pending, vec![10]);
+    assert_eq!(pending, vec![(10, "Marker".to_string())]);
 }
 
 #[tokio::test]

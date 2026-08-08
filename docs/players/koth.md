@@ -5,7 +5,7 @@ instructions before playing:
 
 - **Boot2Root KotH** has one shared machine and one confirmed holder at a time.
 - **Leaderboard KotH** lets every eligible team play and score in the same
-  tick.
+  finalized wave.
 
 For proofs, worked examples, fault rules, and organizer guidance, read the
 [KotH scoring handbook](/players/koth-scoring-handbook) or
@@ -46,41 +46,32 @@ capability identifies the team to the challenge; players never call RSCTF's
 signed referee endpoint. An independent organizer-controlled referee converts
 verified challenge events into bounded evidence.
 
-For each scorable tick:
+For team `i` in finalized wave `t`:
 
-- `E_t` is meaningful verified activity divided by its published target;
-- `P_t` is the equal-weight mean of independently normalized objectives; and
-- `Q_t` is their weighted harmonic mean.
-
-```text
-Q_t = 0                                  if E_t = 0 or P_t = 0
-Q_t = 1 / (0.35 / E_t + 0.65 / P_t)     otherwise
-```
-
-For an epoch of `T` scorable ticks, `Q` is the mean of `Q_t`. A team tied for
-the highest positive `Q_t` receives lead credit `l_t = 1/k`, where `k` is the
-number of exact leaders; lead credit is zero unless at least two teams have a
-positive score in that tick.
+- `S_it` is its completed, server-confirmed native result;
+- `S*_t` is the best positive completed result in that wave;
+- `R_it = (S_it / S*_t)^(3/4)` is relative performance; and
+- `K_it` is `1` for the unique Crown and `0` otherwise.
 
 ```text
-L = mean(l_t)
-S = 0                                      if T < 2
-S = sum(min(l_(t-1), l_t)) / (T - 1)      otherwise
-
-D = 0.25L + 0.55S + 0.20 * sqrt(L * S)
-Local = 100 * [Q + 0.50 * Q * (1 - Q) * D]
+R_it = 0                              if the run is missing or incomplete
+R_it = (S_it / S*_t)^(3/4)            otherwise
+Wave = 100 * (0.95 * R_it + 0.05 * K_it)
 ```
 
-The harmonic mean requires both play and performance. The bounded bonus
-rewards consistently staying first, while a single spike produces little
-continuity. It adds at most 12.5 points and cannot rescue zero performance.
-Failed hacking attempts do not subtract points; the challenge instead makes
-scored evidence require real, verified, non-replayable work.
+The three-quarter-power curve keeps nearby results competitive without sharing
+or dividing a fixed point pool. Ten teams with similar scores can all earn
+nearly 95 performance points. The Crown is the same thing as first place and
+adds five recurring points; there is no separate first-place or streak bonus.
+On an exact top-score tie, a participating incumbent keeps the Crown. If the
+incumbent did not complete the wave, the earliest server-confirmed tied result
+wins. Failed hacking attempts do not subtract points, but every new wave needs
+a fresh verified completion.
 
-If your team produces no evidence, that tick is an explicit zero. Earlier
-evidence is never carried forward. Leaderboard KotH has no exclusive holder,
-provisional crown, or champion-cooldown score, and several teams can score at
-the same time.
+If your team produces no completed evidence in a finalized wave, that wave is
+an explicit zero. Earlier evidence is never carried forward. Leaderboard KotH
+has one challenge-native Crown per wave but no Boot2Root marker, provisional
+claim, or champion-cooldown score; several teams score at the same time.
 
 ## Ticks, pristine resets, and epochs
 
@@ -126,12 +117,14 @@ The per-hill badge identifies **Boot2Root** or **Leaderboard**:
 
 - Boot2Root shows Acquisition, Control, Reliability, confirmed king, and
   provisional progress.
-- Leaderboard shows Activity, Objective, Sustained lead, and no crown holder.
+- Leaderboard shows Completion, normalized Objective performance, and Crown
+  share. The Crown is finalized per challenge-native wave rather than exposed
+  as an exclusive live holder.
 
 **Projected** includes unfinished evidence and may change. **Settled** includes
 only finalized epochs and determines official rank. Rank sorts by settled
-points, Control/Objective rate, Reliability/Sustained-lead rate, then the count
-of acquisition windows or activity-positive ticks, and finally stable
+points, Control/Objective rate, Reliability/Crown-share rate, then acquisition
+windows for Boot2Root or completed waves for Leaderboard, and finally stable
 participation ID. The live projection never breaks an official tie. Ranks are
 ordinal; the final ID makes the order deterministic.
 
@@ -154,11 +147,10 @@ For Boot2Root:
 For Leaderboard:
 
 - automate the documented challenge interaction, not the trusted referee;
-- complete enough distinct verified actions to satisfy activity;
-- optimize every published objective rather than farming the largest native
-  number;
+- complete a fresh verified run in every wave you want to score;
+- optimize the published official result relative to the current field;
 - solve server-issued tasks instead of guessing; and
-- monitor tick evidence because omitted or late work does not carry.
+- monitor wave evidence because omitted or late work does not carry.
 
 For both formats, stay within the allowed network scope and rate limits,
 protect credentials, and verify the scoreboard rather than assuming an action

@@ -46,7 +46,7 @@ const PDF_PROFILES = {
       subject:
         'Canonical technical handbook for RSCTF Boot2Root and Leaderboard KotH scoring and operations',
       keywords:
-        'King of the Hill CTF; Boot2Root; Leaderboard KotH; normalization; sustained lead; RSCTF',
+        'King of the Hill CTF; Boot2Root; Leaderboard KotH; relative scoring; Crown; RSCTF',
     },
   },
 }

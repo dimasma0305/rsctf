@@ -9,7 +9,7 @@ pageClass: koth-handbook
   <h1>RSCTF King of the Hill Handbook: Boot2Root and Leaderboard Formats</h1>
   <p class="journal-authors">Dimas Maulana</p>
   <p class="journal-affiliation">RSCTF Project · Competition Platform</p>
-  <p class="journal-correspondence">Unified edition · Version 5.1 · 4 August 2026</p>
+  <p class="journal-correspondence">Unified edition · Version 6.0 · 8 August 2026</p>
   <p class="journal-policy">Scoring policy: one constant formula per KotH format; no scoring versions</p>
 </div>
 
@@ -18,16 +18,16 @@ pageClass: koth-handbook
 ## Abstract
 
 <div class="journal-abstract">
-<p>RSCTF defines two King of the Hill (KotH) formats with different competitive meanings. <strong>Boot2Root KotH</strong> is an exclusive-control contest over one shared machine: teams acquire the hill, retain control, and accept responsibility for service health. <strong>Leaderboard KotH</strong> is a concurrent application or protocol contest: every eligible team can play in the same tick, challenge-native outcomes are normalized by RSCTF, and consistently remaining first earns a bounded bonus. Boot2Root uses the constant score 100R(0.25A + 0.55C + 0.20√AC). Leaderboard uses a per-tick harmonic activity/objective performance rate, exact tied-leader credit, and adjacent-tick continuity. Failed hacking attempts are not negative points; authenticity, replay protection, exact runtime identity, independent checking, and challenge-level proof design determine whether evidence is admitted. Boot2Root capabilities rotate with pristine crown cycles; a Leaderboard capability is one opaque event token and changes only through explicit security rotation. Both formats use scoped capabilities, pristine crown-cycle replacement, bounded hill aggregation, and finalized epoch settlement. This paper is the canonical deployed scoring and operations contract.</p>
+<p>RSCTF defines two King of the Hill (KotH) formats with different competitive meanings. <strong>Boot2Root KotH</strong> is an exclusive-control contest over one shared machine: teams acquire the hill, retain control, and accept responsibility for service health. <strong>Leaderboard KotH</strong> is a concurrent application or protocol contest: every eligible team may complete each challenge-native wave, and RSCTF compares every completed result with the best result from that same wave. Boot2Root uses the constant score 100R(0.25A + 0.55C + 0.20√AC). Leaderboard uses the constant wave score 100[0.95(S/S*)^(3/4) + 0.05K], where K is the unique Crown. The incumbent retains an exact top-score tie only by completing the current wave; otherwise the earliest server-confirmed tied result wins. Missing or incomplete teams receive zero for that wave. Points are not divided by field size, there is no separate winner or streak multiplier, and failed hacking attempts are not negative points. Authenticity, replay protection, exact runtime identity, independent checking, and challenge-level proof design determine whether evidence is admitted. Boot2Root capabilities rotate with pristine crown cycles; a Leaderboard capability is one opaque event token and changes only through explicit security rotation. Both formats use scoped capabilities, pristine crown-cycle replacement, bounded hill aggregation, and finalized epoch settlement. This paper is the canonical deployed scoring and operations contract.</p>
 </div>
 
-<p class="journal-keywords"><strong>Keywords:</strong> King of the Hill; Boot2Root; Leaderboard KotH; normalization; sustained lead; anti-cheat; crown cycle; RSCTF</p>
+<p class="journal-keywords"><strong>Keywords:</strong> King of the Hill; Boot2Root; Leaderboard KotH; relative scoring; Crown; anti-cheat; crown cycle; RSCTF</p>
 
 <p class="journal-status"><strong>Document status:</strong> current implementation contract for the repository revision containing this paper. Public names are Boot2Root and Leaderboard; the stable internal claim-source identifiers remain <code>Marker</code> and <code>Api</code>. Those identifiers are not selectable scoring versions. This is a technical-practice report, not a claim of peer review or empirical validation.</p>
 
 <figure class="journal-figure">
   <img src="/diagrams/koth-two-format-model.svg" alt="Two King of the Hill formats: exclusive Boot2Root control and concurrent Leaderboard competition, both entering bounded epoch settlement">
-  <figcaption><strong>Figure 1.</strong> Boot2Root measures exclusive machine control. Leaderboard measures normalized concurrent performance and sustained first place.</figcaption>
+  <figcaption><strong>Figure 1.</strong> Boot2Root measures exclusive machine control. Leaderboard measures fresh, relative concurrent performance and one recurring per-wave Crown.</figcaption>
 </figure>
 
 ## Start here: KotH in 90 seconds {#start-here}
@@ -44,9 +44,9 @@ pageClass: koth-handbook
 **Leaderboard** means every eligible team may score concurrently:
 
 1. use the challenge's player-facing mechanic;
-2. complete meaningful, verified work;
-3. optimize every published objective; and
-4. sustain first place across adjacent ticks.
+2. finish a fresh, verified run in each wave;
+3. maximize the published official result relative to the field; and
+4. take or defend the unique Crown.
 
 Players never call the organizer's signed referee endpoint.
 
@@ -58,14 +58,14 @@ Core  = 0.25A + 0.55C + 0.20 * sqrt(A * C)
 Local = 100 * R * Core
 
 LEADERBOARD
-Q_t   = 0 if E_t=0 or P_t=0; otherwise 1/(0.35/E_t + 0.65/P_t)
-D     = 0.25L + 0.55S + 0.20 * sqrt(L * S)
-Local = 100 * [Q + 0.50 * Q * (1-Q) * D]
+R_t   = 0 if incomplete; otherwise (S_t / S*_t)^(3/4)
+K_t   = 1 for the unique Crown; otherwise 0
+Wave  = 100 * (0.95R_t + 0.05K_t)
 ```
 
 The first formula uses acquisition `A`, control `C`, and reliability `R`. The
-second uses tick activity `E_t`, normalized objective performance `P_t`, mean
-tick performance `Q`, lead coverage `L`, and sustained-lead continuity `S`.
+second uses team result `S_t`, best result `S*_t`, relative performance `R_t`,
+and Crown indicator `K_t` for each finalized wave.
 
 ### What resets and what settles
 
@@ -96,7 +96,7 @@ RSCTF therefore freezes one competitive meaning per hill:
 | Public format | Internal source | Concurrent scorers | Evidence |
 | --- | --- | ---: | --- |
 | Boot2Root | `Marker` | at most one observed controller | acquisition, control, reliability |
-| Leaderboard | `Api` | every eligible team | activity, objectives, sustained lead |
+| Leaderboard | `Api` | every eligible team | completion, relative performance, Crown |
 
 An API credential configured before official scoring selects internal source
 `Api`; otherwise the hill uses `Marker`. The source cannot change after scoring
@@ -118,7 +118,7 @@ Both formats preserve these requirements:
    zero; a missing field snapshot is void. Neither repeats old evidence.
 6. **Infrastructure neutrality.** Reset, readiness, incomplete issuance, and
    attributable platform failures do not penalize participants.
-7. **Auditable settlement.** Immutable tick evidence precedes final rollups,
+7. **Auditable settlement.** Immutable wave evidence precedes final rollups,
    and retries cannot create duplicate credit.
 8. **Frozen bounded state.** Rosters, hills, cadence, images, weights, objective
    identities, request sizes, replay memory, and retained evidence are bounded.
@@ -177,36 +177,51 @@ token and records only the lowercase pseudonym beside independently verified
 events. A trusted referee runs outside the player-controlled runtime.
 
 For every active scoring round, the referee fetches a context bound to the
-exact runtime, objective schema, and eligible capability hashes. It filters its
-untrusted feed against that set and submits:
+exact runtime, objective schema, eligible capability hashes, and a published
+settlement window. It filters its untrusted feed against that set and submits
+zero or more finalized waves. Each wave contains:
 
-- one activity `earned/possible` ratio;
-- one to sixteen objective `earned/possible` ratios; and
-- an ordered `objectiveIds` list defining those positions.
+- a stable wave ID and server-confirmed end time;
+- one completed `activity` ratio and one to sixteen objective ratios per team;
+- an ordered `objectiveIds` list defining those positions; and
+- at most one best-scoring `isCrown` assertion.
 
 The signed body contains `tokenHash`, not the bearer token. It contains no team
-ID, floating-point score, integrity multiplier, or point value. RSCTF resolves
-hashes against current capabilities and reports submitted and recognized row
-counts.
+ID, floating-point platform score, integrity multiplier, or point value. RSCTF
+resolves hashes against current capabilities and reports finalized-wave plus
+unique submitted/recognized-team counts.
+
+Within one scoring context, every accepted finalized wave is append-only. A
+later snapshot may add a new wave but cannot alter or remove an earlier one.
 
 The capability survives pristine crown-cycle replacement. A player may
 explicitly rotate it after suspected exposure. Rotation immediately removes
 the old digest from the eligible set and clears only that team's current
-unsettled row; every other team's evidence and already settled epoch evidence
+unsettled rows; every other team's evidence and already settled epoch evidence
 remain immutable. The player must reconnect with the replacement token.
 
 The first accepted snapshot freezes the exact objective IDs and order. The
 schema survives credential rotation. A later reorder, rename, insertion, or
 deletion is rejected even when the component count stays the same.
 
-The checker allows a bounded six-second arrival window, reads the complete
-snapshot, performs an independent probe, and reads it again. Only a
-byte-equivalent current snapshot plus a healthy verdict produces one dense
-result row per frozen eligible team. Omitted teams receive zero. A changing
-snapshot or unhealthy shared application voids the field-wide tick.
+Settlement runs 20 seconds behind the live round boundary. The checker waits
+for the published cutoff without holding a hill lock; the next round's window
+starts at the previous cutoff, so finalized-wave end times are covered without
+gaps. The checker then allows a bounded six-second arrival window, reads the
+complete snapshot, performs an independent probe, and reads it again. Only a
+byte-equivalent current snapshot plus a healthy verdict produces dense results
+for every frozen eligible team across every finalized wave. Omitted teams
+receive zero in that wave. A changing snapshot or unhealthy shared application
+voids the field-wide checker tick.
 
-Leaderboard does not elect a holder, create a provisional crown, or apply
-champion-cooldown scoring. Multiple teams can score in one tick.
+The final published window end is the Leaderboard scoring cutoff. A challenge
+must stop opening scoreable waves that cannot finish before it; the final
+20-second reserve exists for the functional check and durable settlement, not
+late gameplay.
+
+Leaderboard names one challenge-native Crown per positive finalized wave. It
+does not use the Boot2Root marker, provisional confirmation, or champion
+cooldown. Multiple teams can score in the same wave.
 
 ### 2.3 Crown-cycle lifecycle
 
@@ -224,8 +239,8 @@ readiness succeeds. A retry continues the stored phase instead of starting a
 parallel replacement. Reset and readiness time create no scoring opportunity.
 
 <figure class="journal-figure">
-  <img src="/diagrams/koth-scoring-pipeline.svg" alt="KotH evidence pipeline from capability-scoped gameplay through checking, immutable tick evidence, epoch scoring, and settlement">
-  <figcaption><strong>Figure 2.</strong> The checker admits current evidence; only immutable tick rows enter epoch scoring.</figcaption>
+  <img src="/diagrams/koth-scoring-pipeline.svg" alt="KotH evidence pipeline from capability-scoped gameplay through checking, immutable evidence, epoch scoring, and settlement">
+  <figcaption><strong>Figure 2.</strong> The checker admits current evidence; only immutable results enter epoch scoring.</figcaption>
 </figure>
 
 ### 2.4 Exact attribution and voids
@@ -286,101 +301,89 @@ reduces every earned control point through `R`.
 
 ## 4. Leaderboard scoring {#leaderboard-scoring}
 
-### 4.1 Independent normalization
+### 4.1 Fresh completion and native normalization
 
-For team `i`, hill `h`, tick `t`, activity evidence is
-`activityEarned/activityPossible`. Objective `j` is
-`objectiveEarned/objectivePossible`. Every budget is an integer satisfying:
+For team `i` and finalized wave `t`, activity is a completion gate. A scored
+row must report a fresh server-confirmed completion for that wave. Partial
+progress, polling, a previous result, or an omitted row produces zero.
 
-$$0\leq\mathrm{earned}\leq\mathrm{possible}\leq10^{12}.$$
+For native objective `j`, every integer budget satisfies:
 
-RSCTF calculates:
+$$0\leq o^+_{itj}\leq o^*_{itj}\leq10^{12}.$$
 
-$$E_t=\frac{a_t^+}{a_t^*}.$$
+RSCTF normalizes each objective independently and takes their equal mean:
 
-$$p_{tj}=\frac{o_{tj}^+}{o_{tj}^*},\qquad
-P_t=\frac{1}{m}\sum_{j=1}^{m}p_{tj}.$$
+$$O_{it}=\frac{1}{m}\sum_{j=1}^{m}\frac{o^+_{itj}}{o^*_{itj}}.$$
 
-Each native objective is first converted to a fixed integer normalization
-scale. A `9/10` result and a `900/1000` result both contribute `0.9`; a larger
-unit cannot become an accidental weight. Every objective has equal influence
-unless the challenge publishes a single combined objective by design.
+A `9/10` result and a `900/1000` result both contribute `0.9`; a larger unit
+cannot become an accidental weight. A challenge such as Rythme may publish one
+combined official score as its single objective. The referee still submits an
+integer ratio rather than platform points.
 
-### 4.2 Per-tick performance
+### 4.2 Relative performance without field dilution
 
-If either required channel is zero, then `Q_t = 0`. Otherwise:
+Let `O*_t` be the highest positive completed objective result in wave `t`.
+Relative performance is zero without fresh completion. Otherwise:
 
-$$Q_t=\frac{1}{0.35/E_t+0.65/P_t}.$$
+$$R_{it}=\left(\frac{O_{it}}{O^*_t}\right)^{3/4}.$$
 
-This weighted harmonic mean makes both actual play and objective performance
-necessary. The objective channel has greater influence, while either weak
-channel remains a bottleneck. RSCTF stores `Q_t` before epoch aggregation, so
-activity in one tick cannot combine with performance in another.
+The three-quarter-power curve is fixed. It preserves order, maps the best
+result to one, and keeps close competitors close. It does not divide a point
+pool by the number of teams. Adding a new participant therefore cannot reduce
+an existing team's points unless that participant posts a new best result.
+
+### 4.3 One Crown, including exact ties
+
+`K_it` is one only for the wave's unique Crown and zero for every other team.
+The Crown must have the highest positive completed result. An exact top-score
+tie follows this deterministic rule:
+
+1. the incumbent retains the Crown only if it completed the current wave;
+2. otherwise the earliest server-confirmed tied completion wins; and
+3. a stable identity is used only if those confirmation times are equal.
+
+The Crown and first place are the same award. A tied challenger receives full
+relative-performance credit but not a fractional Crown. An absent incumbent
+cannot retain it, so every Crown holder must keep playing.
+
+### 4.4 Constant wave score and epoch mean
+
+The local result for one finalized wave is:
+
+$$H^L_{it}=100\left(0.95R_{it}+0.05K_{it}\right).$$
+
+Performance supplies at most 95 points and the recurring Crown supplies five.
+There is no separate first-place bonus, participation bonus, exploit-status
+multiplier, or growing streak multiplier. The official challenge result may
+naturally include legal mechanics or an exploit-derived multiplier; RSCTF does
+not convert a binary “exploited” label into points.
+
+For `W` finalized waves in an epoch, RSCTF gives every wave equal influence:
+
+$$H^L_i=\frac{1}{W}\sum_{t=1}^{W}H^L_{it}.$$
+
+Several waves may finish inside one RSCTF checker round. Their signed summary
+retains the wave count, so later epoch aggregation still weights each wave
+equally rather than each transport submission equally.
+
+<p class="journal-table-caption koth-keep-table"><strong>Table 3.</strong> One wave with native results 150, 20, 5, and 1.</p>
+
+| Native result | Relative $R$ | Crown $K$ | Wave points |
+| ---: | ---: | ---: | ---: |
+| 150 | 1.0000 | 1 | 100.00 |
+| 20 | 0.2207 | 0 | 20.96 |
+| 5 | 0.0780 | 0 | 7.41 |
+| 1 | 0.0233 | 0 | 2.22 |
+
+If several teams score near 150, each receives nearly 95 performance points;
+their scores do not collapse because the field is crowded. If only one team
+completes with a positive result—even a native result of `1`—it is best for
+that wave and receives 100. An exact tied challenger receives 95 while the
+eligible incumbent receives 100. Missing teams receive zero for the wave.
 
 Failed hacking attempts are not subtracted. Invalid, forged, replayed, stale,
-or wrongly scoped evidence is rejected or excluded as telemetry. The scored
-mechanic must still require meaningful verified work; Section 7 defines that
-challenge-design obligation.
-
-### 4.3 Exact lead credit
-
-For an epoch with `T` field-scorable ticks:
-
-$$Q=\frac{1}{T}\sum_{t=1}^{T}Q_t.$$
-
-A tick is competitive only when at least two teams have positive `Q_t`. If `k`
-teams share the exact highest positive value, each receives `l_t = 1/k`. Every
-other team receives zero. This avoids awarding a solo-field bonus and avoids a
-team-ID tie-break.
-
-Lead coverage is:
-
-$$L=\frac{1}{T}\sum_{t=1}^{T}l_t.$$
-
-For `T < 2`, sustained lead `S` is zero. Otherwise:
-
-$$S=\frac{1}{T-1}\sum_{t=2}^{T}\min(l_{t-1},l_t).$$
-
-The minimum preserves fractional tied-leader credit. `L` rewards reaching
-first; `S` distinguishes consecutive leadership from scattered peaks.
-
-### 4.4 Bounded sustained-first bonus
-
-The dominance rate mirrors the Boot2Root acquisition/control shape:
-
-$$D=0.25L+0.55S+0.20\sqrt{LS}.$$
-
-The local Leaderboard score is:
-
-$$H^{L}=100\left[Q+0.50Q(1-Q)D\right].$$
-
-The first term pays for absolute challenge performance. The second rewards
-sustained first place. It contributes nothing when `Q=0`, cannot push perfect
-performance above 100, and is bounded by 12.5 points because
-`Q(1-Q) <= 0.25` and `D <= 1`.
-
-<p class="journal-table-caption koth-keep-table"><strong>Table 3.</strong> Equal absolute performance with different first-place patterns.</p>
-
-| Ten-tick pattern at `Q = 0.80` | `L` | `S` | `D` | Score |
-| --- | ---: | ---: | ---: | ---: |
-| Never first | 0.000 | 0.000 | 0.000 | 80.00 |
-| First on five alternating ticks | 0.500 | 0.000 | 0.125 | 81.00 |
-| First for five consecutive ticks | 0.500 | 0.444 | 0.464 | 83.71 |
-| First for all ten ticks | 1.000 | 1.000 | 1.000 | 88.00 |
-
-The alternating and consecutive teams reach first equally often, but only the
-second retains it across adjacent ticks. At `Q=0.20` and `D=1`, the result is
-28 rather than a winner jackpot:
-
-$$100[0.20+0.50(0.20)(0.80)]=28.$$
-
-### 4.5 Same-tick rule
-
-Consider two ticks. In tick one a team has activity `1.0` but objective
-performance `0`; in tick two it has activity `0` and objective performance
-`1.0`. Both `Q_t` values are zero, so the epoch performance is zero. Computing
-the harmonic mean from the displayed epoch averages would incorrectly create
-a positive score. RSCTF therefore persists and averages the per-tick core.
+or wrongly scoped evidence is rejected or excluded as telemetry. Section 7
+defines the challenge-design obligations that make a completion meaningful.
 
 ## 5. Hill aggregation, epochs, and rank {#aggregation}
 
@@ -407,8 +410,8 @@ Official KotH rank sorts by:
 
 1. Settled score descending;
 2. Control for Boot2Root or Objective rate for Leaderboard;
-3. Reliability for Boot2Root or Sustained-lead rate for Leaderboard;
-4. acquisition-window count or activity-positive-tick count; and
+3. Reliability for Boot2Root or Crown-share rate for Leaderboard;
+4. acquisition-window count or completed-wave count; and
 5. stable participation ID.
 
 The live projection never breaks an official tie. Displayed KotH ranks are
@@ -419,7 +422,7 @@ ordinal; the final ID provides deterministic ordering.
 | Badge | First metric | Second metric | Third metric | Crown state |
 | --- | --- | --- | --- | --- |
 | Boot2Root | Acquisition | Control | Reliability | confirmed / pending |
-| Leaderboard | Activity | Objective | Sustained lead | none |
+| Leaderboard | Completion | Relative objective | Crown share | per-wave Crown |
 
 ## 6. Fault and admission policy {#fault-policy}
 
@@ -432,7 +435,7 @@ ordinal; the final ID provides deterministic ordering.
 | Functional checker fails globally | attributed only when responsibility is authoritative; otherwise void/recovery | field-wide void |
 | Invalid/revoked capability | no claim | row rejected or unrecognized |
 | Old cycle/reset/container | no claim | signed context rejected; event token remains usable after readiness |
-| Replay or old timestamp | not a marker operation | request rejected |
+| Replay, old timestamp, or future wave | not a marker operation | request rejected |
 | Objective IDs/order changed | not applicable | request rejected |
 | Reset/readiness/incomplete issuance | void | void |
 | Failed player exploit attempt | no score by itself | no negative points; telemetry/rate limits still apply |
@@ -465,7 +468,7 @@ A defensible Leaderboard challenge:
 2. issues unpredictable, expiring, one-use tasks or proofs;
 3. binds each task and result to the capability hash that began it;
 4. verifies results server-side and makes replay idempotent;
-5. publishes fixed activity targets, objective IDs/order, and denominators;
+5. publishes fixed completion rules, objective IDs/order, and denominators;
 6. bounds sessions, requests, evidence retention, pagination, and queue work;
 7. keys team quotas by capability identity rather than source IP;
 8. isolates per-team work so one team cannot exhaust shared admission;
@@ -506,11 +509,10 @@ Before official scoring:
   and enforceable cooldown;
 - for Leaderboard, verify the same event token works after a pristine reset,
   explicit rotation rejects the prior token and only that team's unsettled
-  row, and then
-  freeze the final objective IDs/order and verify HMAC,
-  recognized/submitted equality, independent normalization, tied lead credit,
-  explicit zero, referee restart, stale hash, replay, clock skew, feed gap, and
-  changing-snapshot behavior; and
+  rows, and then freeze the final objective IDs/order and verify HMAC,
+  submitted-wave and recognized/submitted equality, independent normalization,
+  exact-tie Crown retention, explicit zero, referee restart, stale hash, replay,
+  clock skew, feed gap, and changing-snapshot behavior; and
 - run a complete accelerated epoch at expected peak capacity, including one
   deliberately overloaded team, while confirming that other teams and the
   referee retain reserved capacity.
@@ -530,7 +532,7 @@ verify it, then resume.
 At event end, reject late evidence, complete authoritative in-flight checks
 within the deadline fence, settle the proportional tail, and publish awards
 from Settled results. Retain official configuration, capability issuance and
-revocation, immutable checker rows, Leaderboard tick evidence, lifecycle
+revocation, immutable checker rows, Leaderboard wave evidence, lifecycle
 receipts, and epoch rollups through the appeal period.
 
 ### 8.3 Signed body summary
@@ -541,14 +543,26 @@ The complete wire contract and signing example are in the
 ```json
 {
   "context": "<64 lowercase hex characters>",
-  "objectiveIds": ["proof-strength", "solve-speed"],
-  "teams": [
+  "objectiveIds": ["official-score"],
+  "waves": [
     {
-      "tokenHash": "<sha256 of current capability>",
-      "activity": {"earned": 4, "possible": 5},
-      "objectives": [
-        {"earned": 7, "possible": 10},
-        {"earned": 750, "possible": 1000}
+      "waveId": "heat-42",
+      "endedAtUnixMs": 1786200000000,
+      "teams": [
+        {
+          "tokenHash": "<sha256 of current capability>",
+          "activity": {
+            "earned": 1,
+            "possible": 1
+          },
+          "objectives": [
+            {
+              "earned": 150,
+              "possible": 150
+            }
+          ],
+          "isCrown": true
+        }
       ]
     }
   ]
@@ -561,7 +575,7 @@ The equations prove boundedness and zero conditions. Unit, database, and
 lifecycle tests establish behavior for exercised cases. Neither proves that an
 organizer chose competitively valid objectives.
 
-Organizers should measure activity and objective distributions, lead
+Organizers should measure completion and objective distributions, Crown
 concentration, missing/void frequency, referee lag, feed-retention margin,
 marker confirmation failures, control changes, repeat winners, reset latency,
 and score sensitivity to targets and cadence.
@@ -577,8 +591,8 @@ remain challenge-design and operational responsibilities.
 
 RSCTF does not treat concurrent KotH as Boot2Root with a different transport.
 Boot2Root rewards qualified acquisition, sustained exclusive control, and
-service reliability. Leaderboard rewards absolute normalized performance and
-adds a small, bounded premium for consistently remaining first.
+service reliability. Leaderboard rewards fresh performance relative to the
+same wave's field and adds one recurring five-point Crown premium.
 
 Both formulas are constant and platform-owned. Dense zero rows prevent stale
 team scores; field-wide voids prevent infrastructure failures becoming
@@ -592,19 +606,20 @@ objective design, referee isolation, network equality, and incident review.
 ### A.1 Is Leaderboard an observer for `/koth/king`?
 
 No. Boot2Root has one holder and acquisition/control/reliability evidence.
-Leaderboard has concurrent teams and activity/objective/sustained-lead
+Leaderboard has concurrent teams and completion/relative-performance/Crown
 evidence. Only the lifecycle infrastructure is shared.
 
 ### A.2 Can the referee submit points or team IDs?
 
-No. It submits integer evidence ratios and current capability hashes. RSCTF
-resolves identity, normalizes evidence, detects leaders, and computes points.
+No. It submits integer evidence ratios, one per-wave Crown assertion, and
+current capability hashes. RSCTF resolves identity, normalizes relative
+performance, validates the Crown, and computes points.
 
-### A.3 Why a harmonic mean?
+### A.3 Why the three-quarter-power curve?
 
-It returns zero when either required play channel is zero and remains sensitive
-to a weak channel. The fixed 35/65 weights give objective performance greater
-influence without allowing it to replace activity.
+It preserves rank and maps the best completed result to one while keeping close
+results competitive. It also avoids a shared point pool: field size alone
+cannot dilute an existing score.
 
 ### A.4 Why normalize objectives separately?
 
@@ -613,11 +628,11 @@ objective the same `[0,1]` range before the equal mean.
 
 ### A.5 What if my team is omitted from a valid snapshot?
 
-RSCTF writes an explicit zero for that tick. It never repeats an old result.
+RSCTF writes an explicit zero for that wave. It never repeats an old result.
 
 ### A.6 What if the whole snapshot or application is unavailable?
 
-The tick is field-wide void and enters no team's denominator.
+The checker tick is field-wide void and enters no team's denominator.
 
 ### A.7 Do failed hacking attempts lose points?
 
@@ -647,19 +662,17 @@ guessing whether a participant is human or automated.
 | Symbol or term | Definition |
 | --- | --- |
 | $A,C,R$ | Boot2Root acquisition, control, and reliability rates |
-| $E_t,P_t$ | Leaderboard activity and normalized objective rates for tick `t` |
-| $Q_t,Q$ | per-tick harmonic performance and its epoch mean |
-| $l_t,L$ | tied-leader tick credit and epoch lead coverage |
-| $S,D$ | sustained-lead continuity and bounded dominance rate |
+| $S_{it},S^*_t$ | team and best completed native results in wave `t` |
+| $R_{it}$ | three-quarter-power relative performance in wave `t` |
+| $K_{it}$ | unique Crown indicator in wave `t` |
 | $H^M,H^L$ | local Boot2Root and Leaderboard scores in `[0,100]` |
 | $w_h$ | frozen hill weight in `[0.8,1.2]` |
 | $z_{he}$ | field-evidence switch for one hill and epoch |
 | $q_e$ | complete or proportional final-epoch weight |
-| **Provisional** | Boot2Root capability observed but not confirmed |
 | **Settled** | official value using finalized epochs |
 | **Projected** | information that also includes open evidence |
 | **Field void** | sample excluded from every team's denominator |
-| **Explicit zero** | omitted Leaderboard team in an otherwise valid tick |
+| **Explicit zero** | omitted or incomplete Leaderboard team in a valid wave |
 
 ## Appendix C. Implementation traceability {#implementation-traceability}
 
@@ -675,14 +688,15 @@ Paths are relative to the repository revision containing this paper.
 | Exact marker read | `src/services/ad/engine/koth_marker.rs` |
 | Leaderboard event-token authentication and rotation | `src/services/ad/koth_api_capability.rs`, `src/controllers/game/koth/tokens.rs` |
 | Signed context, HMAC, replay, schema, and submission | `src/controllers/game/koth/api/`, `api_contract.rs` |
-| Stable snapshot read and tick core | `src/services/ad/engine/koth_api.rs` |
-| Checker persistence, dense zeros, and tied leaders | `src/services/ad/engine/checker/koth_api.rs` |
+| Stable finalized-wave snapshot read and relative curve | `src/services/ad/engine/koth_api.rs` |
+| Checker persistence, dense zeros, and Crown validation | `src/services/ad/engine/checker/koth_api.rs` |
 | Constant pure formulas | `src/controllers/game/koth/scoring_formula.rs` |
-| SQL epoch evidence and lead continuity | `src/controllers/game/koth/scoring/evidence.rs` |
+| Equal-wave SQL epoch aggregation | `src/controllers/game/koth/scoring/evidence.rs` |
 | Final rollups | `src/controllers/game/koth/scoring/rollup/` |
 | Board labels and rank | `src/controllers/game/koth/board.rs`, `web/src/components/KothScoreboardTable.tsx` |
 | Constant Leaderboard schema and removal of formula selectors | `src/migrations/m0085_constant_leaderboard_scoring.rs` |
 | Event-scoped Leaderboard token schema and live-token preservation | `src/migrations/m0086_koth_api_event_tokens.rs` |
+| Finalized-wave contract and constant 95/5 relative scoring | `src/migrations/m0088_koth_api_wave_scoring.rs` |
 
 ### C.1 HTTP surface
 
@@ -709,7 +723,7 @@ Wire DTOs use camelCase and Unix-millisecond timestamps.
 The suite covers formula bounds and zero conditions, objective normalization,
 ordered schema identity, malformed evidence, HMAC scope, clock skew, replay,
 context rotation, current capability resolution, unknown hashes, dense zeros,
-snapshot bracketing, tied lead credit, continuity, marker confirmation,
+snapshot bracketing, relative performance, exact-tie Crown assertions, marker confirmation,
 cooldown denominators, tied champions, partial epochs, rollups, and ordinal
 ranks. The bundled challenge exercises one-use proofs, invalid traffic,
 capability hashing, bounded pagination, persistent referee restart, feed-gap

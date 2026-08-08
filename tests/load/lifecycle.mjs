@@ -1835,6 +1835,7 @@ async function main() {
               if (
                 response?.status === 200 &&
                 staleModel?.accepted === true &&
+                staleModel?.submittedWaves === 1 &&
                 staleModel?.submittedTeams === 1 &&
                 staleModel?.recognizedTeams === 0
               ) {
@@ -2109,18 +2110,18 @@ async function main() {
                 `'invalidRows',(SELECT count(*) FROM scored WHERE ` +
                   `abs(activity_rate-activity_earned::double precision/activity_possible)>1e-12 ` +
                   `OR abs(objective_rate-objective_earned::double precision/objective_possible)>1e-12 ` +
-                  `OR abs(core_rate-(CASE WHEN activity_rate=0 OR objective_rate=0 THEN 0 ` +
-                    `ELSE 1.0/(0.35/activity_rate+0.65/objective_rate) END))>1e-12 ` +
-                  `OR abs(performance_rate-core_rate)>1e-12 ` +
+                  `OR abs(core_rate-objective_rate)>1e-12 ` +
+                  `OR performance_rate+1e-12<core_rate ` +
                   `OR lead_credit<0 OR lead_credit>1 ` +
-                  `OR objective_possible<>objective_count::bigint*1000000),` +
+                  `OR activity_possible<1000000 ` +
+                  `OR activity_possible%1000000<>0 ` +
+                  `OR objective_possible<>objective_count::bigint*activity_possible),` +
                 `'invalidLeadTicks',(SELECT count(*) FROM (` +
-                  `SELECT ad_round_id,MAX(performance_rate) AS highest,` +
-                  `COUNT(*) FILTER (WHERE performance_rate>0) AS positive,` +
+                  `SELECT ad_round_id,COUNT(*) FILTER (WHERE performance_rate>0) AS positive,` +
                   `SUM(lead_credit) AS lead_sum ` +
                   `FROM scored GROUP BY ad_round_id` +
-                `) leaders WHERE (positive>=2 AND abs(lead_sum-1)>1e-12) ` +
-                  `OR (positive<2 AND abs(lead_sum)>1e-12)),` +
+                `) leaders WHERE lead_sum < -1e-12 OR lead_sum > 1+1e-12 ` +
+                  `OR (positive>0 AND lead_sum<=0)),` +
                 `'exclusiveTicks',(SELECT count(*) FROM ticks WHERE ` +
                   `controlling_participation_id IS NOT NULL ` +
                   `OR responsible_participation_id IS NOT NULL OR token_id IS NOT NULL ` +
@@ -2176,7 +2177,7 @@ async function main() {
     );
     if (apiArenaEvidence) {
       console.log(
-        `  Leaderboard ticks: ${apiArenaEvidence.scorableTicks}/${apiArenaEvidence.observedTicks} scorable · ` +
+        `  Leaderboard checker rounds: ${apiArenaEvidence.scorableTicks}/${apiArenaEvidence.observedTicks} scorable · ` +
           `${apiArenaEvidence.denseRows} dense rows for ${officialKothRoster} teams · ` +
           `${apiArenaEvidence.positiveTeams} positive teams · ${apiArenaEvidence.zeroRows} explicit zero rows`,
       );
@@ -2526,7 +2527,7 @@ async function main() {
         officialKothRoster,
         Math.max(0, FLEET - 1),
       );
-      checks["missing Leaderboard ticks"] = Math.max(
+      checks["missing scorable Leaderboard checker rounds"] = Math.max(
         0,
         minimumScorableTicks - Number(apiArenaEvidence.scorableTicks),
       );

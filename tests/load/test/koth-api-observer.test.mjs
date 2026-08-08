@@ -11,7 +11,7 @@ import {
 
 const secret = `koth_api_${'a'.repeat(43)}`;
 const timestamp = 1_785_130_000_123;
-const body = '{"context":"abc","teams":[]}';
+const body = '{"context":"abc","waves":[]}';
 
 test('KotH API signatures bind the timestamp, game, challenge, and exact raw body', () => {
   const message = `${timestamp}.7.9.${body}`;
@@ -57,6 +57,8 @@ test('Leaderboard load evidence uses hashes and equivalent native score scales',
   assert.deepEqual(small.activity, large.activity);
   assert.equal(Object.hasOwn(small, 'integrity'), false);
   assert.equal(Object.hasOwn(large, 'integrity'), false);
+  assert.deepEqual(small.activity, { earned: 1, possible: 1 });
+  assert.equal(small.isCrown, false);
   assert.equal(
     small.objectives[0].earned / small.objectives[0].possible,
     large.objectives[0].earned / large.objectives[0].possible,

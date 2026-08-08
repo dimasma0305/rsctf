@@ -4,7 +4,8 @@ use std::fmt::{Display, Formatter};
 pub const ACQUISITION_WEIGHT: f64 = 0.25;
 pub const CONTROL_WEIGHT: f64 = 0.55;
 pub const BALANCE_WEIGHT: f64 = 0.20;
-pub const LEADERBOARD_BONUS_SCALE: f64 = 0.50;
+pub const LEADERBOARD_PERFORMANCE_WEIGHT: f64 = 0.95;
+pub const LEADERBOARD_CROWN_WEIGHT: f64 = 0.05;
 pub const MIN_SERVICE_WEIGHT: f64 = 0.8;
 pub const MAX_SERVICE_WEIGHT: f64 = 1.2;
 
@@ -43,14 +44,13 @@ pub struct KothEpochHillEvidence {
 /// Normalized evidence for one Leaderboard team, hill, and epoch.
 ///
 /// The signed referee submits integer evidence budgets. SQL aggregates their
-/// platform-calculated ratios and immutable tied-leader credits.
+/// platform-calculated ratios and immutable Crown credits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KothApiEpochHillEvidence {
     pub activity_rate: f64,
     pub objective_rate: f64,
     pub performance_rate: f64,
     pub lead_rate: f64,
-    pub sustained_lead_rate: f64,
     pub service_weight: f64,
 }
 
@@ -220,23 +220,24 @@ pub fn score_epoch_hill(
     score_epoch_hill_with_weights(formula_weights(), evidence)
 }
 
-/// Score averaged immutable Leaderboard ticks without importing challenge points.
+/// Score averaged immutable Leaderboard waves without importing challenge points.
 ///
 /// ```text
-/// E = verified activity / required activity
-/// P = mean(normalize(each native objective))
-/// TickCore = 0 when E=0 or P=0; otherwise 1/(0.35/E + 0.65/P)
-/// Q = mean(TickCore)
-/// D = 0.25*L + 0.55*S + 0.20*sqrt(L*S)
-/// Local = 100*(Q + 0.5*Q*(1-Q)*D)
+/// E = verified completion / required completion
+/// O = mean(normalize(each native objective))
+/// Native = O when E=1, otherwise 0
+/// P = (Native / best Native in the same wave)^(3/4)
+/// Q = mean(P)
+/// K = share of finalized waves held as the unique Crown owner
+/// Local = 100*(0.95*Q + 0.05*K)
 /// ```
 ///
-/// The weighted harmonic mean makes both play and objective performance
-/// necessary, gives objective performance the greater influence, and resists a
-/// single excellent channel hiding a weak one. `L` is exact tied-leader
-/// coverage and `S` is adjacent-scorable-tick continuity. The bonus is bounded
-/// to 12.5 points and is zero without absolute performance. These constants are
-/// not organizer-configurable.
+/// Every team has its own fixed 100-point ceiling, so adding participants cannot
+/// dilute an existing score. A fresh completed run is required in every wave.
+/// Exact ties are resolved by the arena's signed Crown assertion; challengers
+/// must strictly beat a participating incumbent. The recurring five-point Crown
+/// credits first place in each wave without a separate or growing streak bonus.
+/// These constants are not organizer-configurable.
 pub fn score_api_epoch_hill(
     evidence: &KothApiEpochHillEvidence,
 ) -> Result<KothEpochHillScore, KothScoringError> {
@@ -244,21 +245,20 @@ pub fn score_api_epoch_hill(
     validate_fraction(evidence.objective_rate, "objective_rate")?;
     validate_fraction(evidence.performance_rate, "performance_rate")?;
     validate_fraction(evidence.lead_rate, "lead_rate")?;
-    validate_fraction(evidence.sustained_lead_rate, "sustained_lead_rate")?;
     validate_service_weight(evidence.service_weight)?;
-    let dominance_rate = (ACQUISITION_WEIGHT * evidence.lead_rate
-        + CONTROL_WEIGHT * evidence.sustained_lead_rate
-        + BALANCE_WEIGHT * (evidence.lead_rate * evidence.sustained_lead_rate).sqrt())
-    .clamp(0.0, 1.0);
     let performance = evidence.performance_rate;
-    let local_points = (100.0
-        * (performance
-            + LEADERBOARD_BONUS_SCALE * performance * (1.0 - performance) * dominance_rate))
-        .clamp(0.0, 100.0);
+    let local_points = if performance == 0.0 {
+        0.0
+    } else {
+        (100.0
+            * (LEADERBOARD_PERFORMANCE_WEIGHT * performance
+                + LEADERBOARD_CROWN_WEIGHT * evidence.lead_rate))
+            .clamp(0.0, 100.0)
+    };
     Ok(KothEpochHillScore {
         acquisition_rate: evidence.activity_rate,
         control_rate: evidence.objective_rate,
-        reliability_rate: evidence.sustained_lead_rate,
+        reliability_rate: evidence.lead_rate,
         core_rate: performance,
         local_points,
         service_weight: evidence.service_weight,
@@ -404,27 +404,20 @@ mod tests {
     }
 
     #[test]
-    fn leaderboard_normalizes_native_budgets_and_adds_bounded_continuity() {
-        let performance_rate =
-            crate::services::ad::engine::koth_api::leaderboard_tick_core(0.8, 0.6);
+    fn leaderboard_combines_relative_performance_and_crown_share() {
+        let performance_rate = 0.6;
         let score = score_api_epoch_hill(&KothApiEpochHillEvidence {
-            activity_rate: 0.8,
+            activity_rate: 1.0,
             objective_rate: 0.6,
             performance_rate,
             lead_rate: 0.5,
-            sustained_lead_rate: 4.0 / 9.0,
             service_weight: 1.0,
         })
         .unwrap();
-        let expected_core = 1.0 / (0.35 / 0.8 + 0.65 / 0.6);
-        close(score.acquisition_rate, 0.8);
+        close(score.acquisition_rate, 1.0);
         close(score.control_rate, 0.6);
-        let dominance = 0.25 * 0.5 + 0.55 * (4.0 / 9.0) + 0.20 * f64::sqrt(0.5 * (4.0 / 9.0));
-        close(score.reliability_rate, 4.0 / 9.0);
-        close(
-            score.local_points,
-            100.0 * (expected_core + 0.5 * expected_core * (1.0 - expected_core) * dominance),
-        );
+        close(score.reliability_rate, 0.5);
+        close(score.local_points, 59.5);
     }
 
     #[test]
@@ -435,7 +428,6 @@ mod tests {
                 objective_rate: 1.0,
                 performance_rate: 0.0,
                 lead_rate: 1.0,
-                sustained_lead_rate: 1.0,
                 service_weight: 1.0,
             },
             KothApiEpochHillEvidence {
@@ -443,7 +435,6 @@ mod tests {
                 objective_rate: 0.0,
                 performance_rate: 0.0,
                 lead_rate: 1.0,
-                sustained_lead_rate: 1.0,
                 service_weight: 1.0,
             },
         ] {
@@ -452,30 +443,17 @@ mod tests {
     }
 
     #[test]
-    fn leaderboard_continuity_distinguishes_consecutive_from_alternating_leads() {
-        let alternating = score_api_epoch_hill(&KothApiEpochHillEvidence {
+    fn leaderboard_crown_share_is_a_bounded_recurring_bonus() {
+        let score = score_api_epoch_hill(&KothApiEpochHillEvidence {
             activity_rate: 0.8,
             objective_rate: 0.8,
             performance_rate: 0.8,
             lead_rate: 0.5,
-            sustained_lead_rate: 0.0,
             service_weight: 1.0,
         })
         .unwrap();
-        let consecutive = score_api_epoch_hill(&KothApiEpochHillEvidence {
-            sustained_lead_rate: 4.0 / 9.0,
-            ..KothApiEpochHillEvidence {
-                activity_rate: 0.8,
-                objective_rate: 0.8,
-                performance_rate: 0.8,
-                lead_rate: 0.5,
-                sustained_lead_rate: 0.0,
-                service_weight: 1.0,
-            }
-        })
-        .unwrap();
-        close(alternating.local_points, 81.0);
-        assert!(consecutive.local_points > alternating.local_points);
+        close(score.local_points, 78.5);
+        assert!(score.local_points <= 100.0);
     }
 
     #[test]
@@ -486,7 +464,6 @@ mod tests {
                 objective_rate: 0.5,
                 performance_rate: 0.5,
                 lead_rate: 0.5,
-                sustained_lead_rate: 0.5,
                 service_weight: 1.0,
             })
             .is_err());

@@ -795,7 +795,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                   ? observer.configured
                     ? t(
                         'admin.content.ad_ops.koth.observer_active',
-                        'This Leaderboard hill accepts signed, normalized evidence for every team. RSCTF binds it to the current tick, brackets it around the functional checker, and calculates every point.'
+                        'This Leaderboard hill accepts signed finalized-wave evidence for every team. RSCTF binds it to the current scoring round, brackets it around the functional checker, normalizes every result, and calculates every point.'
                       )
                     : t(
                         'admin.content.ad_ops.koth.observer_required',
@@ -811,7 +811,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                   {observer.objectiveCount === null
                     ? t(
                         'admin.content.ad_ops.koth.observer_scheme_pending',
-                        'The ordered objective IDs will lock on the first accepted signed snapshot, including an explicit all-zero snapshot.'
+                        'The ordered objective IDs will lock on the first accepted signed snapshot, including an explicit no-wave snapshot.'
                       )
                     : t('admin.content.ad_ops.koth.observer_scheme_locked', {
                         count: observer.objectiveCount,
@@ -878,12 +878,12 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
 X-RSCTF-Timestamp: <Unix milliseconds>
 X-RSCTF-Signature: sha256=<HMAC-SHA256>
 
-{"context":"<context>","objectiveIds":["quality","throughput"],"teams":[{"tokenHash":"<sha256-current-capability>","activity":{"earned":4,"possible":5},"objectives":[{"earned":7,"possible":10},{"earned":750,"possible":1000}]}]}`}
+{"context":"<context>","objectiveIds":["official-score"],"waves":[{"waveId":"heat-42","endedAtUnixMs":1786200000000,"teams":[{"tokenHash":"<sha256-current-capability>","activity":{"earned":1,"possible":1},"objectives":[{"earned":150,"possible":150}],"isCrown":true}]}]}`}
               </Code>
               <Text size="xs" c="dimmed">
                 {t(
                   'admin.content.ad_ops.koth.observer_signature',
-                  'Hash each current capability with SHA-256 and sign the exact raw body as timestamp.gameId.challengeId.body. Stable ordered objectiveIds are frozen and bound into later contexts; RSCTF normalizes each objective independently, and raw capabilities or points are never accepted. Requests expire after five minutes and accepted signatures cannot be replayed.'
+                  'Hash each current capability with SHA-256 and sign the exact raw body as timestamp.gameId.challengeId.body. Every wave needs a unique ID, its server-confirmed end time, completed native results, and at most one best-scoring Crown. Stable ordered objectiveIds are frozen and bound into later contexts; raw capabilities and platform points are never accepted. Requests expire after five minutes and accepted signatures cannot be replayed.'
                 )}
               </Text>
             </Stack>

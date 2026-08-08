@@ -7,7 +7,10 @@ use std::collections::HashMap;
 use super::koth::LiveHill;
 use crate::models::data::ad_round;
 use crate::services::ad::engine::{
-    koth_api::{leaderboard_tick_core, KothApiSnapshot, API_OBJECTIVE_NORMALIZATION_SCALE},
+    koth_api::{
+        leaderboard_relative_performance, leaderboard_tick_core, KothApiSnapshot,
+        API_OBJECTIVE_NORMALIZATION_SCALE,
+    },
     AdCheckStatus,
 };
 use crate::utils::error::{AppError, AppResult};
@@ -53,13 +56,16 @@ pub(super) async fn persist_api_arena_result(
         .unwrap_or(false),
         None => false,
     };
-    let is_scorable = status == AdCheckStatus::Ok && snapshot_is_current;
+    let has_finalized_wave = snapshot.is_some_and(|snapshot| !snapshot.waves.is_empty());
+    let is_scorable = status == AdCheckStatus::Ok && snapshot_is_current && has_finalized_wave;
     let void_reason = if is_scorable {
         None
     } else if !snapshot_is_current {
         Some(message.unwrap_or("Leaderboard snapshot was unavailable or unstable"))
-    } else {
+    } else if status != AdCheckStatus::Ok {
         Some("shared Leaderboard application failed its functional checker")
+    } else {
+        Some("no finalized Leaderboard wave ended in this scoring round")
     };
     let inserted = sqlx::query(
         r#"INSERT INTO "KothControlResults"
@@ -132,6 +138,7 @@ async fn insert_dense_score_rows(
     eligible_roster: &[i32],
     snapshot: &KothApiSnapshot,
 ) -> AppResult<()> {
+    #[derive(Clone)]
     struct DenseScoreRow {
         participation_id: i32,
         activity_earned: i64,
@@ -146,89 +153,129 @@ async fn insert_dense_score_rows(
         lead_credit: f64,
     }
 
-    let submitted: HashMap<_, _> = snapshot
-        .rows
-        .iter()
-        .map(|row| (row.participation_id, row))
-        .collect();
-    let objective_count = if let Some(row) = snapshot.rows.first() {
-        row.objective_count
-    } else {
-        sqlx::query_scalar(
-            r#"SELECT objective_count FROM "KothApiArenaSchemes"
-                WHERE game_id = $1 AND challenge_id = $2"#,
-        )
-        .bind(game_id)
-        .bind(challenge_id)
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-    };
-    let zero_objective_possible = API_OBJECTIVE_NORMALIZATION_SCALE * i64::from(objective_count);
-    let rows: Vec<_> = eligible_roster
-        .iter()
-        .map(|participation_id| {
-            let (
-                activity_earned,
-                activity_possible,
-                objective_earned,
-                objective_possible,
-                objective_count,
-            ) = submitted.get(participation_id).map_or(
-                (0, 1, 0, zero_objective_possible, objective_count),
-                |row| {
-                    (
-                        row.activity_earned,
-                        row.activity_possible,
-                        row.objective_earned,
-                        row.objective_possible,
-                        row.objective_count,
-                    )
-                },
-            );
-            let activity_rate = activity_earned as f64 / activity_possible as f64;
-            let objective_rate = objective_earned as f64 / objective_possible as f64;
-            let core_rate = leaderboard_tick_core(activity_rate, objective_rate);
-            DenseScoreRow {
-                participation_id: *participation_id,
-                activity_earned,
-                activity_possible,
-                objective_earned,
-                objective_possible,
-                objective_count,
-                activity_rate,
-                objective_rate,
-                core_rate,
-                performance_rate: core_rate,
-                lead_credit: 0.0,
-            }
-        })
-        .collect();
-    if rows.is_empty() {
+    if eligible_roster.is_empty() {
         return Err(AppError::internal(
             "Leaderboard cannot persist an empty official roster",
         ));
     }
-    let positive_teams = rows.iter().filter(|row| row.core_rate > 0.0).count();
-    let highest_core = rows.iter().map(|row| row.core_rate).fold(0.0_f64, f64::max);
-    let tied_leaders = rows
+    if snapshot.waves.is_empty() {
+        return Err(AppError::internal(
+            "Leaderboard snapshot contains no finalized scoring wave",
+        ));
+    }
+    let objective_count =
+        if let Some(row) = snapshot.waves.iter().find_map(|wave| wave.rows.first()) {
+            row.objective_count
+        } else {
+            sqlx::query_scalar(
+                r#"SELECT objective_count FROM "KothApiArenaSchemes"
+                WHERE game_id = $1 AND challenge_id = $2"#,
+            )
+            .bind(game_id)
+            .bind(challenge_id)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+        };
+    let scale = API_OBJECTIVE_NORMALIZATION_SCALE;
+    let objective_scale = scale * i64::from(objective_count);
+    let wave_count = snapshot.waves.len() as i64;
+    let mut rows: HashMap<_, _> = eligible_roster
         .iter()
-        .filter(|row| row.core_rate == highest_core)
-        .count();
-    let lead_credit = if positive_teams >= 2 {
-        1.0 / tied_leaders as f64
-    } else {
-        0.0
-    };
-    let rows: Vec<_> = rows
-        .into_iter()
-        .map(|mut row| {
-            if positive_teams >= 2 && row.core_rate == highest_core {
-                row.lead_credit = lead_credit;
+        .map(|participation_id| {
+            (
+                *participation_id,
+                DenseScoreRow {
+                    participation_id: *participation_id,
+                    activity_earned: 0,
+                    activity_possible: scale * wave_count,
+                    objective_earned: 0,
+                    objective_possible: objective_scale * wave_count,
+                    objective_count,
+                    activity_rate: 0.0,
+                    objective_rate: 0.0,
+                    core_rate: 0.0,
+                    performance_rate: 0.0,
+                    lead_credit: 0.0,
+                },
+            )
+        })
+        .collect();
+
+    for wave in &snapshot.waves {
+        let submitted: HashMap<_, _> = wave
+            .rows
+            .iter()
+            .map(|row| (row.participation_id, row))
+            .collect();
+        let mut wave_rates = Vec::with_capacity(eligible_roster.len());
+        for participation_id in eligible_roster {
+            let (completion_rate, objective_rate, core_rate, is_crown) = submitted
+                .get(participation_id)
+                .map_or((0.0, 0.0, 0.0, false), |row| {
+                    let activity_rate = row.activity_earned as f64 / row.activity_possible as f64;
+                    let submitted_objective_rate =
+                        row.objective_earned as f64 / row.objective_possible as f64;
+                    let core_rate = leaderboard_tick_core(activity_rate, submitted_objective_rate);
+                    (
+                        if activity_rate >= 1.0 { 1.0 } else { 0.0 },
+                        core_rate,
+                        core_rate,
+                        row.is_crown,
+                    )
+                });
+            wave_rates.push((
+                *participation_id,
+                completion_rate,
+                objective_rate,
+                core_rate,
+                is_crown,
+            ));
+        }
+        let highest_core = wave_rates.iter().map(|row| row.3).fold(0.0_f64, f64::max);
+        let crown_rows: Vec<_> = wave_rates.iter().filter(|row| row.4).collect();
+        if highest_core == 0.0 {
+            if !crown_rows.is_empty() {
+                return Err(AppError::internal(format!(
+                    "Leaderboard wave {} crowns a team without a completed positive score",
+                    wave.wave_id
+                )));
             }
+        } else if crown_rows.len() != 1 || (crown_rows[0].3 - highest_core).abs() > f64::EPSILON {
+            return Err(AppError::internal(format!(
+                "Leaderboard wave {} must crown exactly one tied best completed score",
+                wave.wave_id
+            )));
+        }
+
+        for (participation_id, completion_rate, objective_rate, core_rate, is_crown) in wave_rates {
+            let row = rows
+                .get_mut(&participation_id)
+                .expect("dense roster was initialized before wave scoring");
+            row.activity_earned += (completion_rate * scale as f64).round() as i64;
+            row.objective_earned += (objective_rate * objective_scale as f64).round() as i64;
+            row.activity_rate += completion_rate;
+            row.objective_rate += objective_rate;
+            row.core_rate += core_rate;
+            row.performance_rate += leaderboard_relative_performance(core_rate, highest_core);
+            if is_crown {
+                row.lead_credit += 1.0;
+            }
+        }
+    }
+    let divisor = snapshot.waves.len() as f64;
+    let mut rows: Vec<_> = rows
+        .into_values()
+        .map(|mut row| {
+            row.activity_rate /= divisor;
+            row.objective_rate /= divisor;
+            row.core_rate /= divisor;
+            row.performance_rate /= divisor;
+            row.lead_credit /= divisor;
             row
         })
         .collect();
+    rows.sort_by_key(|row| row.participation_id);
     let mut query = QueryBuilder::<Postgres>::new(
         r#"INSERT INTO "KothApiScoreResults"
            (game_id, challenge_id, ad_round_id, participation_id,
@@ -272,21 +319,29 @@ async fn insert_dense_score_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::ad::engine::koth_api::KothApiEvidence;
+    use crate::services::ad::engine::koth_api::{KothApiEvidence, KothApiWaveSnapshot};
     use sqlx::Connection;
 
     #[test]
     fn absent_teams_are_explicit_zeroes_not_stale_carry_forward() {
         let source = include_str!("koth_api.rs");
-        assert!(source.contains("zero_objective_possible"));
         assert!(source.contains("eligible_roster"));
+        assert!(source.contains("objective_possible: objective_scale * wave_count"));
         assert!(source.contains("leaderboard_tick_core"));
-        assert!(source.contains("lead_credit"));
+        assert!(source.contains("leaderboard_relative_performance"));
+        assert!(source.contains("must crown exactly one tied best"));
+    }
+
+    #[test]
+    fn an_empty_window_is_a_field_void_not_a_synthetic_zero_wave() {
+        let source = include_str!("koth_api.rs");
+        assert!(source.contains("has_finalized_wave"));
+        assert!(source.contains("no finalized Leaderboard wave ended"));
     }
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn dense_tick_persists_every_team_and_zeroes_an_omission() {
+    async fn dense_tick_zeroes_omissions_and_incomplete_waves() {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
         let mut connection = sqlx::PgConnection::connect(&database_url).await.unwrap();
@@ -315,14 +370,34 @@ mod tests {
         let snapshot = KothApiSnapshot {
             hash: [7; 32],
             objective_schema_hash: [8; 32],
-            rows: vec![KothApiEvidence {
-                participation_id: 11,
-                activity_earned: 4,
-                activity_possible: 5,
-                objective_earned: 500_000,
-                objective_possible: 1_000_000,
-                objective_count: 1,
-            }],
+            waves: vec![
+                KothApiWaveSnapshot {
+                    wave_id: "wave-1".to_string(),
+                    ended_at_ms: 1,
+                    rows: vec![KothApiEvidence {
+                        participation_id: 11,
+                        activity_earned: 1,
+                        activity_possible: 1,
+                        objective_earned: 500_000,
+                        objective_possible: 1_000_000,
+                        objective_count: 1,
+                        is_crown: true,
+                    }],
+                },
+                KothApiWaveSnapshot {
+                    wave_id: "wave-2".to_string(),
+                    ended_at_ms: 2,
+                    rows: vec![KothApiEvidence {
+                        participation_id: 11,
+                        activity_earned: 1,
+                        activity_possible: 2,
+                        objective_earned: 1_000_000,
+                        objective_possible: 1_000_000,
+                        objective_count: 1,
+                        is_crown: false,
+                    }],
+                },
+            ],
         };
         insert_dense_score_rows(&mut connection, 7, 9, 51, &[11, 12], &snapshot)
             .await
@@ -340,15 +415,10 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(
             (rows[0].0, rows[0].1, rows[0].2, rows[0].3, rows[0].4),
-            (11, 4, 5, 500_000, 1)
+            (11, 1_000_000, 2_000_000, 500_000, 1)
         );
-        let expected = 1.0 / (0.35 / 0.8 + 0.65 / 0.5);
-        assert!((rows[0].5 - expected).abs() < 1e-12);
-        assert_eq!(
-            rows[0].6, 0.0,
-            "one positive team is not a competitive tick"
-        );
-        assert_eq!((rows[1].0, rows[1].1, rows[1].2), (12, 0, 1));
+        assert_eq!((rows[0].5, rows[0].6), (0.5, 0.5));
+        assert_eq!((rows[1].0, rows[1].1, rows[1].2), (12, 0, 2_000_000));
         assert_eq!(
             (rows[1].3, rows[1].4, rows[1].5, rows[1].6),
             (0, 1, 0.0, 0.0)

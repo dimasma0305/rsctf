@@ -94,6 +94,7 @@ mod m0084_koth_api_arena;
 mod m0085_constant_leaderboard_scoring;
 mod m0086_koth_api_event_tokens;
 mod m0087_asset_download_indexes;
+mod m0088_koth_api_wave_scoring;
 
 pub struct Migrator;
 
@@ -188,6 +189,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0085_constant_leaderboard_scoring::Migration),
             Box::new(m0086_koth_api_event_tokens::Migration),
             Box::new(m0087_asset_download_indexes::Migration),
+            Box::new(m0088_koth_api_wave_scoring::Migration),
         ]
     }
 }

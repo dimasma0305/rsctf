@@ -1246,10 +1246,12 @@ KOTH_CLAIM_SOURCE=api VUS=400 DURATION=300s KEEP=1 npm run lifecycle
 The one-time referee key is kept only in the ignored mode-`0600` lifecycle state
 file and removed with the namespace. API mode still uses the real shared hill and
 functional checker, but its scoring semantics are intentionally different from marker
-KotH: each eligible team receives an independently normalized arena result on every
-stable tick, with explicit zeros for omissions and no exclusive crown. Distributed
-player simulation remains marker-based because its clients exercise the hill's real
-player-facing capture endpoint, not a trusted referee credential.
+KotH: each challenge-native finalized wave requires a fresh completion, normalizes the
+official result relative to that wave's best, and names one small recurring Crown.
+Omissions become explicit zero rows, and a checker round with no finalized wave is
+field-void rather than a synthetic scoring opportunity. Distributed player simulation
+remains marker-based because its clients exercise the hill's real player-facing capture
+endpoint, not a trusted referee credential.
 
 ### Competitive player simulation
 

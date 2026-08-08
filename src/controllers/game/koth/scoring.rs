@@ -47,7 +47,6 @@ struct TeamEvidenceRow {
     api_objective_rate: Option<f64>,
     api_performance_rate: Option<f64>,
     api_lead_rate: Option<f64>,
-    api_sustained_lead_rate: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -221,9 +220,6 @@ fn score_evidence_rows(
                         .and_then(|value| value.api_performance_rate)
                         .unwrap_or(0.0),
                     lead_rate: team.and_then(|value| value.api_lead_rate).unwrap_or(0.0),
-                    sustained_lead_rate: team
-                        .and_then(|value| value.api_sustained_lead_rate)
-                        .unwrap_or(0.0),
                     service_weight: row.service_weight,
                 })
             } else {

@@ -41,6 +41,7 @@ pub(super) struct ActiveObserverContext {
     pub(super) container_id: String,
     pub(super) round_id: i32,
     pub(super) round_number: i32,
+    pub(super) game_starts_at: DateTime<Utc>,
     pub(super) round_starts_at: DateTime<Utc>,
     pub(super) round_ends_at: DateTime<Utc>,
     pub(super) objective_ids: Option<Vec<String>>,
@@ -48,7 +49,12 @@ pub(super) struct ActiveObserverContext {
 }
 
 impl ActiveObserverContext {
-    pub(super) fn opaque_context(&self, game_id: i32, challenge_id: i32) -> String {
+    pub(super) fn opaque_context(
+        &self,
+        game_id: i32,
+        challenge_id: i32,
+        eligible_tokens: &[String],
+    ) -> String {
         opaque_context(OpaqueContext {
             game_id,
             challenge_id,
@@ -58,7 +64,23 @@ impl ActiveObserverContext {
             container_id: &self.container_id,
             round_id: self.round_id,
             objective_schema_hash: self.objective_schema_hash.as_deref(),
+            eligible_tokens,
         })
+    }
+
+    pub(super) fn wave_window(&self) -> (DateTime<Utc>, DateTime<Utc>) {
+        let lag = chrono::Duration::seconds(
+            crate::services::ad::engine::koth_api::API_WAVE_SETTLEMENT_LAG_SECONDS,
+        );
+        let shifted_start = if self.round_number <= 1 {
+            self.round_starts_at
+        } else {
+            self.round_starts_at - lag
+        };
+        (
+            std::cmp::max(self.game_starts_at, shifted_start),
+            self.round_ends_at - lag,
+        )
     }
 }
 
@@ -71,9 +93,9 @@ pub struct KothObserverContextModel {
     reset_attempt: i32,
     round_number: i32,
     #[serde(with = "crate::utils::datetime::millis")]
-    round_starts_at: DateTime<Utc>,
+    wave_window_starts_at: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
-    round_ends_at: DateTime<Utc>,
+    wave_window_ends_at: DateTime<Utc>,
     eligible_token_hashes: Vec<String>,
     objective_ids: Vec<String>,
     objective_schema_hash: Option<String>,
@@ -88,6 +110,7 @@ pub struct KothObservationAcceptedModel {
     pub(super) cycle_number: i32,
     pub(super) reset_attempt: i32,
     pub(super) round_number: i32,
+    pub(super) submitted_waves: usize,
     pub(super) submitted_teams: usize,
     pub(super) recognized_teams: usize,
     #[serde(with = "crate::utils::datetime::millis")]
@@ -107,6 +130,7 @@ where
                   cycle.cycle_number, cycle.reset_attempt,
                   target.container_id AS container_id,
                   round.id AS round_id, round.number AS round_number,
+                  game.start_time_utc AS game_starts_at,
                   round.start_time_utc AS round_starts_at,
                   round.end_time_utc AS round_ends_at,
                   scheme.objective_ids,
@@ -167,15 +191,15 @@ where
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
-/// Public, non-secret fence bound to the exact container, cycle, and scoring tick.
-pub async fn observer_context(
-    State(st): State<SharedState>,
-    Path((game_id, challenge_id)): Path<(i32, i32)>,
-) -> AppResult<RequestResponse<KothObserverContextModel>> {
-    let context = load_active_context(st.pg(), game_id, challenge_id)
-        .await?
-        .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
-    let eligible_tokens: Vec<String> = sqlx::query_scalar(
+pub(super) async fn load_eligible_tokens<'e, E>(
+    executor: E,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<Vec<String>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query_scalar(
         r#"SELECT token.token
              FROM "KothApiTeamTokens" token
              JOIN "Participations" participation
@@ -207,15 +231,28 @@ pub async fn observer_context(
                         ON account.id = roster_member.user_id
                      WHERE account.id IS NULL OR account.role = $4
               )
-            ORDER BY token.participation_id"#,
+            ORDER BY token.participation_id
+            FOR SHARE OF token"#,
     )
     .bind(game_id)
     .bind(challenge_id)
     .bind(ParticipationStatus::Accepted as i16)
     .bind(Role::Banned as i16)
-    .fetch_all(st.pg())
+    .fetch_all(executor)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
+/// Public, non-secret fence bound to the exact container, cycle, and scoring tick.
+pub async fn observer_context(
+    State(st): State<SharedState>,
+    Path((game_id, challenge_id)): Path<(i32, i32)>,
+) -> AppResult<RequestResponse<KothObserverContextModel>> {
+    let context = load_active_context(st.pg(), game_id, challenge_id)
+        .await?
+        .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
+    let (wave_window_starts_at, wave_window_ends_at) = context.wave_window();
+    let eligible_tokens = load_eligible_tokens(st.pg(), game_id, challenge_id).await?;
     if eligible_tokens.len() > super::api_contract::MAX_TEAM_ENTRIES {
         return Err(AppError::conflict(
             "Leaderboard KotH roster exceeds the supported 2,000 teams",
@@ -223,12 +260,12 @@ pub async fn observer_context(
     }
     Ok(RequestResponse::ok(KothObserverContextModel {
         api_version: "v1",
-        context: context.opaque_context(game_id, challenge_id),
+        context: context.opaque_context(game_id, challenge_id, &eligible_tokens),
         cycle_number: context.cycle_number,
         reset_attempt: context.reset_attempt,
         round_number: context.round_number,
-        round_starts_at: context.round_starts_at,
-        round_ends_at: context.round_ends_at,
+        wave_window_starts_at,
+        wave_window_ends_at,
         eligible_token_hashes: eligible_tokens
             .iter()
             .map(|token| crate::services::ad::koth_api_capability::token_hash_hex(token))
@@ -291,6 +328,7 @@ struct OpaqueContext<'a> {
     container_id: &'a str,
     round_id: i32,
     objective_schema_hash: Option<&'a [u8]>,
+    eligible_tokens: &'a [String],
 }
 
 fn opaque_context(context: OpaqueContext<'_>) -> String {
@@ -304,6 +342,10 @@ fn opaque_context(context: OpaqueContext<'_>) -> String {
     digest.update(context.container_id.as_bytes());
     digest.update(context.round_id.to_be_bytes());
     digest.update(context.objective_schema_hash.unwrap_or(&[0_u8; 32]));
+    digest.update((context.eligible_tokens.len() as u64).to_be_bytes());
+    for token in context.eligible_tokens {
+        digest.update(crate::services::ad::koth_api_capability::token_hash(token));
+    }
     hex::encode(digest.finalize())
 }
 
@@ -361,7 +403,8 @@ mod tests {
                        reset_attempt,
                        container_id,
                        round_id,
-                       objective_schema_hash| {
+                       objective_schema_hash,
+                       eligible_tokens| {
             opaque_context(OpaqueContext {
                 game_id,
                 challenge_id,
@@ -371,20 +414,78 @@ mod tests {
                 container_id,
                 round_id,
                 objective_schema_hash,
+                eligible_tokens,
             })
         };
-        let base = context(7, 9, 3, 41, 1, "container-a", 51, None);
+        let tokens = vec!["token-a".to_string(), "token-b".to_string()];
+        let base = context(7, 9, 3, 41, 1, "container-a", 51, None, &tokens);
         assert_eq!(base.len(), 64);
-        assert_ne!(base, context(8, 9, 3, 41, 1, "container-a", 51, None));
-        assert_ne!(base, context(7, 9, 4, 41, 1, "container-a", 51, None));
-        assert_ne!(base, context(7, 9, 3, 42, 1, "container-a", 51, None));
-        assert_ne!(base, context(7, 9, 3, 41, 2, "container-a", 51, None));
-        assert_ne!(base, context(7, 9, 3, 41, 1, "container-b", 51, None));
-        assert_ne!(base, context(7, 9, 3, 41, 1, "container-a", 52, None));
         assert_ne!(
             base,
-            context(7, 9, 3, 41, 1, "container-a", 51, Some(&[1; 32]))
+            context(8, 9, 3, 41, 1, "container-a", 51, None, &tokens)
         );
+        assert_ne!(
+            base,
+            context(7, 9, 4, 41, 1, "container-a", 51, None, &tokens)
+        );
+        assert_ne!(
+            base,
+            context(7, 9, 3, 42, 1, "container-a", 51, None, &tokens)
+        );
+        assert_ne!(
+            base,
+            context(7, 9, 3, 41, 2, "container-a", 51, None, &tokens)
+        );
+        assert_ne!(
+            base,
+            context(7, 9, 3, 41, 1, "container-b", 51, None, &tokens)
+        );
+        assert_ne!(
+            base,
+            context(7, 9, 3, 41, 1, "container-a", 52, None, &tokens)
+        );
+        assert_ne!(
+            base,
+            context(7, 9, 3, 41, 1, "container-a", 51, Some(&[1; 32]), &tokens)
+        );
+        assert_ne!(
+            base,
+            context(
+                7,
+                9,
+                3,
+                41,
+                1,
+                "container-a",
+                51,
+                None,
+                &["token-a".to_string(), "rotated-token".to_string()]
+            )
+        );
+    }
+
+    #[test]
+    fn wave_windows_are_contiguous_and_never_include_warmup() {
+        let at = |seconds| DateTime::from_timestamp(seconds, 0).unwrap();
+        let context = |round_number, round_start, round_end| ActiveObserverContext {
+            target_id: 3,
+            cycle_id: 41,
+            cycle_number: 1,
+            reset_attempt: 0,
+            container_id: "runtime-a".to_string(),
+            round_id: round_number,
+            round_number,
+            game_starts_at: at(100),
+            round_starts_at: at(round_start),
+            round_ends_at: at(round_end),
+            objective_ids: None,
+            objective_schema_hash: None,
+        };
+        let first = context(1, 130, 190).wave_window();
+        let second = context(2, 190, 250).wave_window();
+        assert_eq!(first, (at(130), at(170)));
+        assert_eq!(second, (at(170), at(230)));
+        assert_eq!(first.1, second.0);
     }
 
     #[test]

@@ -5,54 +5,48 @@ RSCTF has two constant King of the Hill scoring formats:
 - **Boot2Root KotH** is exclusive control of a shared machine. One team is the
   confirmed holder at a time.
 - **Leaderboard KotH** is a concurrent application or protocol challenge.
-  Every eligible team can produce evidence in the same scoring tick.
+  Every eligible team can produce evidence in the same finalized wave.
 
 Leaderboard KotH is not a dynamic-points webhook. A trusted referee submits
 bounded integer evidence, never team IDs, bearer capabilities, or points.
-RSCTF owns normalization, zero treatment, the fixed formula, lead detection,
-tick settlement, and the 0–100 ceiling. There is no organizer-selectable
+RSCTF owns normalization, zero treatment, the fixed formula, wave settlement,
+and the 0–100 ceiling. There is no organizer-selectable
 formula version.
 
 ## Constant scoring rule
 
-For one team in one scorable tick, the referee reports:
+For every challenge-native wave finalized inside the current RSCTF scoring
+round, the referee reports:
 
-- activity evidence `earned / possible`; and
-- one to sixteen named objective evidence ratios.
+- a stable wave ID and server-confirmed end time;
+- completed activity evidence `1 / 1` for each submitted team;
+- one to sixteen named objective evidence ratios; and
+- at most one Crown assertion.
 
-RSCTF normalizes every objective independently, then calculates:
-
-```text
-E_t = activity earned / activity possible
-P_t = mean(each objective earned / each objective possible)
-
-Q_t = 0                                      when E_t = 0 or P_t = 0
-Q_t = 1 / (0.35 / E_t + 0.65 / P_t)         otherwise
-```
-
-For an epoch containing `T` immutable scorable ticks:
+RSCTF normalizes every objective independently. Let `O_it` be team `i`'s mean
+normalized objective result in wave `t`, and let `O*_t` be the highest positive
+completed result in that wave. It then calculates:
 
 ```text
-Q = mean(Q_t)
-
-l_t = 1 / k   when this team is tied for the highest positive Q_t
-              with k teams and at least two teams have positive Q_t
-l_t = 0       otherwise
-
-L = mean(l_t)
-S = 0                                      when T < 2
-S = sum(min(l_(t-1), l_t)) / (T - 1)      otherwise
-
-D = 0.25L + 0.55S + 0.20 * sqrt(L * S)
-Local = 100 * [Q + 0.50 * Q * (1 - Q) * D]
+R_it = 0                               when completion is not exactly 1
+R_it = (O_it / O*_t)^(3/4)             otherwise
+K_it = 1 for the unique Crown, 0 otherwise
+Wave_it = 100 * (0.95 * R_it + 0.05 * K_it)
 ```
 
-`Q_t` is a weighted harmonic mean: both meaningful play and objective
-performance are necessary, with objective performance receiving the larger
-influence. `L` measures exact first-place coverage and splits an exact tie.
-`S` measures adjacent-tick continuity, so repeatedly holding first place is
-more valuable than isolated peaks. The bonus is zero when `Q` is zero or one
-and can never exceed 12.5 points. The final local score remains in `[0, 100]`.
+The exponent is concave: close results remain close to the 95-point performance
+ceiling, while weak results still separate. Points are not divided by the
+number of players. The Crown is first place and contributes the remaining five
+points in every wave. There is no separate winner award, shared-pool dilution,
+or growing streak multiplier. The epoch result is the mean of immutable wave
+results and remains in `[0, 100]`.
+
+The referee must assert exactly one Crown when a wave has a positive completed
+result. The asserted team must share the best normalized result. On an exact
+tie, retain the incumbent only if it completed the current wave; otherwise use
+the earliest server-confirmed tied result, then a stable identity only as the
+final deterministic fallback. RSCTF verifies that the signed Crown is uniquely
+best or tied-best but the arena is responsible for the server-time tie rule.
 
 Failed exploit attempts are not negative points. They may still be logged,
 rate-limited, or reviewed as security telemetry, but the challenge must make
@@ -64,9 +58,11 @@ and `750/1000` throughput contribute `0.70` and `0.75`; the larger native scale
 does not dominate. Objective IDs and their order are frozen by the first
 accepted snapshot and cannot change during the event.
 
-An omitted eligible team receives explicit zero evidence for that tick. A
-field-wide missing, changing, late, unhealthy, or incomplete snapshot voids
-the tick for everyone instead of carrying an earlier result forward.
+An omitted eligible team receives explicit zero evidence for that wave. A
+signed wave with no team rows means nobody completed it and has no Crown. A
+snapshot with no finalized waves means there was no competition opportunity in
+that RSCTF round. A field-wide missing, changing, late, unhealthy, or incomplete
+snapshot voids the checker tick instead of carrying an earlier result forward.
 
 ## Trust and isolation boundary
 
@@ -112,7 +108,7 @@ A fair Leaderboard challenge must satisfy all of the following:
    polling, and unauthenticated traffic are not play.
 2. Issue unpredictable, expiring, one-use tasks or proofs. Bind each result to
    the capability hash that began it.
-3. Publish fixed activity targets, objective IDs, order, and meanings before
+3. Publish the completion condition, objective IDs, order, and meanings before
    play. Never choose a denominator after seeing results.
 4. Keep objectives conceptually distinct. Duplicating an objective to create a
    hidden weight is prohibited; RSCTF gives every normalized objective equal
@@ -161,8 +157,8 @@ cannot change after scoring starts.
 
 Rotating or revoking a live credential clears the current snapshot. Pause
 scoring, rotate, submit fresh evidence, verify it, and resume. Leaderboard
-hills support at most 2,000 accepted teams and 2,000 submitted rows; official
-start is rejected above that bound.
+hills support at most 2,000 accepted teams, 64 waves per snapshot, and 2,000
+total team-wave rows; official start is rejected above the roster bound.
 
 ## Wire contract
 
@@ -196,12 +192,12 @@ Example response after the objective schema is frozen:
   "cycleNumber": 4,
   "resetAttempt": 0,
   "roundNumber": 17,
-  "roundStartsAt": 1785123390000,
-  "roundEndsAt": 1785123450000,
+  "waveWindowStartsAt": 1785123370000,
+  "waveWindowEndsAt": 1785123430000,
   "eligibleTokenHashes": [
     "ad4f...64-lowercase-hex-characters"
   ],
-  "objectiveIds": ["proof-strength", "solve-speed"],
+  "objectiveIds": ["official-score"],
   "objectiveSchemaHash": "64-lowercase-hex-characters",
   "generatedAt": 1785123401000
 }
@@ -210,9 +206,12 @@ Example response after the objective schema is frozen:
 Before the first accepted snapshot, `objectiveIds` is empty and
 `objectiveSchemaHash` is `null`. The referee supplies the final schema in that
 first submission. Thereafter the context is bound to its hash. `context`
-changes with the scoring round, runtime/reset identity, or objective schema.
+changes with the scoring round, runtime/reset identity, objective schema, or
+eligible capability set. A player token rotation therefore requires a fresh
+context before the next submission.
 
-Submit one complete current-tick snapshot:
+Submit the complete set of finalized waves whose end times fall inside the
+current context's settlement window:
 
 ```http
 POST /api/v1/koth/games/{gameId}/challenges/{challengeId}/observations
@@ -222,24 +221,54 @@ X-RSCTF-Signature: sha256=<lowercase-hex-HMAC-SHA256>
 
 {
   "context": "<context>",
-  "objectiveIds": ["proof-strength", "solve-speed"],
-  "teams": [
+  "objectiveIds": ["official-score"],
+  "waves": [
     {
-      "tokenHash": "<sha256-current-capability>",
-      "activity": {"earned": 4, "possible": 5},
-      "objectives": [
-        {"earned": 7, "possible": 10},
-        {"earned": 750, "possible": 1000}
+      "waveId": "heat-42",
+      "endedAtUnixMs": 1785123400000,
+      "teams": [
+        {
+          "tokenHash": "<sha256-current-capability>",
+          "activity": {"earned": 1, "possible": 1},
+          "objectives": [
+            {"earned": 150, "possible": 150}
+          ],
+          "isCrown": true
+        }
       ]
     }
   ]
 }
 ```
 
-The objective array positions must match `objectiveIds` exactly. Send an empty
-`teams` array when nobody produced evidence, while retaining the same
-`objectiveIds`. This explicit zero snapshot distinguishes no play from a
-failed referee.
+The objective array positions must match `objectiveIds` exactly. `waveId` is a
+stable 1–128 byte identifier using ASCII letters, digits, `.`, `_`, `:`, or
+`-`; it must begin with a letter or digit. `endedAtUnixMs` must fall inside the
+context's `[waveWindowStartsAt, waveWindowEndsAt)` interval and cannot be later
+than the RSCTF server's current time. Send an empty `teams` array
+when nobody completed that finalized wave. Send an empty `waves` array when no
+wave finalized in the settlement window. Retain the same `objectiveIds` in both
+cases.
+
+RSCTF closes each settlement window 20 seconds behind the live checker-round
+boundary. The checker waits for that cutoff before it acquires the hill lock,
+then allows the referee a bounded arrival period. From round two onward, the
+next window starts at the previous cutoff, so the intervals are contiguous and
+no challenge-native wave end can fall into a gap. Use the published window
+fields exactly; do not derive them from the round number or local clock. The
+last published window end is the event's Leaderboard scoring cutoff. The arena
+must not open a new scoreable wave that cannot finalize by that cutoff; the
+remaining 20 seconds are reserved for checking and durable settlement.
+
+Every completed positive wave must contain exactly one `isCrown: true` row,
+and that row must have the highest normalized completed result. A zero-result
+wave has no Crown. Token hashes are unique within a wave; the same team may and
+normally will appear in several waves.
+
+Finalized waves are append-only within a context. Every later snapshot must
+preserve the already accepted wave prefix exactly after capability resolution,
+then may append newly finalized waves. Changing or removing an older wave is
+rejected; a referee must fail closed rather than revise history.
 
 Every evidence ratio must satisfy:
 
@@ -247,11 +276,11 @@ Every evidence ratio must satisfy:
 0 <= earned <= possible <= 1,000,000,000,000
 ```
 
-The body is limited to 512 KiB. `teams` is limited to 2,000 unique lowercase
-64-character token hashes. Objective IDs are unique, lowercase, 1–64 bytes,
-begin with `a-z`, and otherwise contain only `a-z`, `0-9`, `-`, `_`, or `.`.
-Unknown or stale hashes are ignored and counted as submitted but not
-recognized.
+The body is limited to 512 KiB. `waves` is limited to 64 entries and the whole
+snapshot to 2,000 team-wave rows. `tokenHash` is a lowercase 64-character
+SHA-256 value. Objective IDs are unique, lowercase, 1–64 bytes, begin with
+`a-z`, and otherwise contain only `a-z`, `0-9`, `-`, `_`, or `.`. Unknown or
+stale hashes are ignored and counted as submitted but not recognized.
 
 Compute the signature over the exact body bytes:
 
@@ -275,21 +304,25 @@ Example success:
   "cycleNumber": 4,
   "resetAttempt": 0,
   "roundNumber": 17,
+  "submittedWaves": 2,
   "submittedTeams": 2,
   "recognizedTeams": 2,
   "acceptedAt": 1785123402050
 }
 ```
 
-Require `recognizedTeams === submittedTeams` after local filtering. A mismatch
-means the capability window changed or the referee used an invalid identity.
+Require `submittedWaves` to equal the emitted wave count and
+`recognizedTeams === submittedTeams` after local filtering. Team counts are
+unique identities across all waves, not the number of team-wave rows. A
+mismatch means the capability window changed or the referee used an invalid
+identity.
 
 | Status | Meaning |
 | --- | --- |
 | `200` | Snapshot staged for the checker; this request itself awards no score. |
 | `400` | JSON, evidence bounds, objective IDs/order, context, or hash shape is invalid. |
 | `401` | Credential, timestamp window, or signature is invalid. These cases intentionally share one response. |
-| `409` | Context changed, snapshot is late/older, replay was detected, or the objective schema differs from the frozen scheme. |
+| `409` | Context changed, snapshot is late/older, a finalized wave changed, replay was detected, or the objective schema differs from the frozen scheme. |
 | `413` | Signed body exceeds 512 KiB. |
 | `429` | Source exceeded the API rate limit; back off. |
 
@@ -306,7 +339,7 @@ import urllib.request
 ORIGIN = "https://ctf.example"
 GAME_ID = 7
 CHALLENGE_ID = 42
-OBJECTIVE_IDS = ["proof-strength", "solve-speed"]
+OBJECTIVE_IDS = ["official-score"]
 SECRET = os.environ["RSCTF_KOTH_OBSERVER_SECRET"]
 
 base = f"{ORIGIN}/api/v1/koth/games/{GAME_ID}/challenges/{CHALLENGE_ID}"
@@ -317,15 +350,21 @@ if model["objectiveIds"] not in ([], OBJECTIVE_IDS):
     raise RuntimeError("RSCTF objective schema does not match this referee")
 
 eligible = set(model["eligibleTokenHashes"])
-teams = [
-    row for row in independently_verified_evidence()
-    if row["tokenHash"] in eligible
-]
+waves = []
+for wave in finalized_waves(
+    model["waveWindowStartsAt"], model["waveWindowEndsAt"]
+):
+    teams = [row for row in wave["teams"] if row["tokenHash"] in eligible]
+    waves.append({
+        "waveId": wave["id"],
+        "endedAtUnixMs": wave["endedAtUnixMs"],
+        "teams": teams,
+    })
 body = json.dumps(
     {
         "context": model["context"],
         "objectiveIds": OBJECTIVE_IDS,
-        "teams": teams,
+        "waves": waves,
     },
     separators=(",", ":"),
     sort_keys=True,
@@ -353,21 +392,23 @@ with urllib.request.urlopen(request, timeout=5) as response:
 At a server-randomized checker time, RSCTF:
 
 1. allows one bounded six-second arrival window for the exact current-round
-   snapshot;
+   snapshot containing zero or more finalized waves;
 2. runs the independent functional checker;
 3. reads the snapshot again;
 4. accepts only byte-equivalent current evidence bracketing that probe;
 5. voids the field-wide tick if the shared application is unhealthy or the
    snapshot is missing or changing;
-6. writes one immutable normalized row for every eligible team, including
-   explicit zero rows for omitted teams;
-7. calculates harmonic performance and tied lead credit for that tick; and
-8. derives sustained-lead continuity and the constant score when projecting or
-   settling the epoch.
+6. writes dense immutable evidence for every eligible team in every submitted
+   wave, including explicit zero rows for omitted teams;
+7. calculates the leader-relative three-quarter-power performance for each
+   wave and validates its unique tied-best Crown assertion; and
+8. averages relative performance and Crown share before applying the constant
+   95/5 score when projecting or settling the epoch.
 
 The arena receives a pristine replacement at every crown-cycle boundary,
-clearing transient sessions while preserving event capabilities. Leaderboard mode does not
-elect a holder, use provisional capture confirmation, or apply champion
-cooldown scoring. A snapshot must match the exact current round, cycle, reset
-attempt, target, container, and objective schema; after the arrival window,
-absence remains a field-wide void.
+clearing transient sessions while preserving event capabilities. Leaderboard
+mode has a challenge-native per-wave Crown but does not use the Boot2Root
+marker, provisional capture confirmation, or champion cooldown. A snapshot
+must match the exact current round, cycle, reset attempt, target, container,
+and objective schema; after the arrival window, absence remains a field-wide
+void.

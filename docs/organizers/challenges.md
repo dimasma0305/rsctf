@@ -92,9 +92,10 @@ Choose one format before official scoring; RSCTF freezes it with the hill:
   `/koth/king`, qualifies one holder, and scores acquisition, control, and
   reliability.
 - **Leaderboard KotH** is multi-team application or protocol KotH. Every
-  eligible team can score in the same tick. A trusted independent referee
-  reports bounded activity and ordered objective evidence; RSCTF normalizes it
-  and applies the constant performance-plus-sustained-lead formula.
+  eligible team can score in each challenge-native finalized wave. A trusted
+  independent referee reports completed activity, ordered objective evidence,
+  and the tied-best Crown; RSCTF normalizes it and applies the constant 95%
+  relative-performance plus 5% Crown formula.
 
 Leaderboard mode is not merely another marker transport. It has no single holder,
 provisional crown, or champion-cooldown score. It still uses pristine lifecycle

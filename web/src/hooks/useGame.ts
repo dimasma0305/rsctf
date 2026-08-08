@@ -205,7 +205,7 @@ export interface KothHillScore {
   acquisitionRate: number
   /** Marker control, or Leaderboard normalized objective performance. */
   controlRate: number
-  /** Marker reliability, or Leaderboard sustained first-place continuity. */
+  /** Marker reliability, or Leaderboard share of finalized waves with the Crown. */
   reliabilityRate: number
   acquisitionWindows: number
   controlledTicks: number

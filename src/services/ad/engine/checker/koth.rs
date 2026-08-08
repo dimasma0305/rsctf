@@ -1,6 +1,7 @@
 //! Authoritative crown-cycle KotH checker and immutable evidence writer.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -28,6 +29,13 @@ use crate::services::container::{ContainerLiveness, ContainerManager};
 use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 
+mod scheduling;
+
+use scheduling::{
+    api_settlement_start_instant, api_snapshot_arrival_deadline, API_MAX_PROBE_BUDGET,
+    API_SNAPSHOT_POLL_INTERVAL, KOTH_COMPLETION_MARGIN,
+};
+
 #[derive(Debug, PartialEq, Eq)]
 enum ManagedHillLiveness {
     Running,
@@ -35,18 +43,8 @@ enum ManagedHillLiveness {
     Unknown(String),
 }
 
-// One marker read follows the functional probe and the verdict still needs a
-// durable transaction. The pre-probe marker is guarded separately after it
-// completes, so it cannot consume this reserved tail.
-const KOTH_COMPLETION_MARGIN: Duration = Duration::from_secs(4);
-// A referee learns a new round by polling its signed context. Give the bundled
-// five-second poll cadence one bounded arrival window before sampling. This
-// never carries evidence across rounds: the database read still requires the
-// exact round, cycle, reset attempt, and container identity.
-const API_SNAPSHOT_ARRIVAL_GRACE: Duration = Duration::from_secs(6);
-const API_SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_millis(250);
-
-const PENDING_KOTH_CHALLENGES_SQL: &str = r#"SELECT (frozen.item->>'challengeId')::integer
+const PENDING_KOTH_CHALLENGES_SQL: &str = r#"SELECT (frozen.item->>'challengeId')::integer,
+              COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker')
          FROM "KothOfficialConfigs" config
          CROSS JOIN LATERAL jsonb_array_elements(config.hills_snapshot) frozen(item)
         WHERE config.game_id = $1
@@ -131,22 +129,6 @@ async fn read_claim_input(
             "unsupported snapshotted KotH claim source {source:?}"
         ))),
     }
-}
-
-fn api_snapshot_arrival_deadline(
-    effective_deadline: tokio::time::Instant,
-    planned_timeout: Duration,
-    now: tokio::time::Instant,
-) -> tokio::time::Instant {
-    let reserved = planned_timeout
-        .checked_add(KOTH_COMPLETION_MARGIN)
-        .unwrap_or(Duration::MAX);
-    let latest_safe_probe_start = effective_deadline.checked_sub(reserved).unwrap_or(now);
-    std::cmp::min(
-        now.checked_add(API_SNAPSHOT_ARRIVAL_GRACE)
-            .unwrap_or(latest_safe_probe_start),
-        latest_safe_probe_start,
-    )
 }
 
 async fn read_initial_claim_input(
@@ -899,7 +881,7 @@ pub(super) async fn check_hills(
     // Recovery must never re-run a completed hill. The immutable duplicate
     // fence in `check_one_hill` remains necessary for concurrent owners, while
     // this prefilter preserves capacity for genuinely unresolved hills.
-    let challenge_ids: Vec<i32> = sqlx::query_scalar(PENDING_KOTH_CHALLENGES_SQL)
+    let challenges: Vec<(i32, String)> = sqlx::query_as(PENDING_KOTH_CHALLENGES_SQL)
         .bind(game_id)
         .bind(round.id)
         .fetch_all(db.get_postgres_connection_pool())
@@ -923,10 +905,38 @@ pub(super) async fn check_hills(
             budget_now,
         )
     });
-    let outcomes = futures::stream::iter(challenge_ids)
-        .map(|challenge_id| {
+    let challenge_count = challenges.len();
+    let permits = Arc::new(tokio::sync::Semaphore::new(checker_concurrency()));
+    let outcomes = futures::stream::iter(challenges)
+        .map(|(challenge_id, claim_source)| {
             let checker_dir = checker_dirs.get(&challenge_id).and_then(Option::as_deref);
+            let is_api = claim_source == "Api";
+            let permits = Arc::clone(&permits);
+            let challenge_timeout = if is_api {
+                planned_timeout.map(|timeout| timeout.min(API_MAX_PROBE_BUDGET))
+            } else {
+                planned_timeout
+            };
             async move {
+                // Leaderboard evidence remains appendable until the fixed
+                // settlement cutoff. Waiting here, before any hill/lifecycle
+                // lock is acquired, lets the referee publish the complete
+                // contiguous window without blocking resets or other hills.
+                if is_api {
+                    tokio::time::sleep_until(api_settlement_start_instant(
+                        round.end_time_utc,
+                        Utc::now(),
+                        tokio::time::Instant::now(),
+                    ))
+                    .await;
+                }
+                // API hills wait without consuming checker capacity. This
+                // keeps marker hills responsive even when more than one
+                // concurrency batch is waiting on the settlement cutoff.
+                let _permit = permits
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| AppError::internal("KotH checker capacity closed unexpectedly"))?;
                 check_one_hill(
                     db,
                     containers,
@@ -934,7 +944,7 @@ pub(super) async fn check_hills(
                     challenge_id,
                     round,
                     checker_dir,
-                    planned_timeout,
+                    challenge_timeout,
                     nominal_timeout.unwrap_or(timeout),
                     effective_deadline,
                     lease,
@@ -942,7 +952,7 @@ pub(super) async fn check_hills(
                 .await
             }
         })
-        .buffer_unordered(checker_concurrency())
+        .buffer_unordered(challenge_count.max(1))
         .collect::<Vec<_>>()
         .await;
     let first_error = outcomes.into_iter().find_map(Result::err);

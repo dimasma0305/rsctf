@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="880" viewBox="0 0 1600 880" role="img" aria-labelledby="title desc">
   <title id="title">Boot2Root and Leaderboard King of the Hill formats</title>
-  <desc id="desc">Boot2Root King of the Hill measures exclusive acquisition, control, and reliability on one shared machine. Leaderboard King of the Hill measures concurrent normalized activity and objectives, then awards a bounded bonus for reaching and sustaining first place. Both formats settle to a bounded score from zero to one hundred.</desc>
+  <desc id="desc">Boot2Root King of the Hill measures exclusive acquisition, control, and reliability on one shared machine. Leaderboard King of the Hill measures each completed result relative to the best result in the same wave and awards one small Crown premium. Both formats settle to a bounded score from zero to one hundred.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
       <path d="M0 0 L10 5 L0 10 z" fill="#222222"/>
@@ -47,24 +47,24 @@
 
     <rect x="868" y="266" width="620" height="114" rx="10" fill="#ffffff" stroke="#555555" stroke-width="2"/>
     <text x="900" y="305" fill="#111111" font-size="21" font-weight="800">ONE OBJECTIVE SET · EVERY TEAM MAY SCORE</text>
-    <text x="900" y="340" fill="#333333" font-size="18">Play → normalize → reach first → sustain first place</text>
+    <text x="900" y="340" fill="#333333" font-size="18">Complete wave → compare with best → take or defend Crown</text>
 
     <g>
       <rect x="868" y="418" width="176" height="118" rx="10" fill="#ffffff" stroke="#555555" stroke-width="2"/>
       <rect x="1070" y="418" width="176" height="118" rx="10" fill="#ffffff" stroke="#555555" stroke-width="2"/>
       <rect x="1272" y="418" width="216" height="118" rx="10" fill="#ffffff" stroke="#555555" stroke-width="2"/>
-      <text x="956" y="463" fill="#111111" font-size="30" font-weight="800" text-anchor="middle">Q</text>
-      <text x="956" y="501" fill="#444444" font-size="17" font-weight="700" text-anchor="middle">PERFORMANCE</text>
-      <text x="1158" y="463" fill="#111111" font-size="30" font-weight="800" text-anchor="middle">L</text>
-      <text x="1158" y="501" fill="#444444" font-size="17" font-weight="700" text-anchor="middle">FIRST PLACE</text>
-      <text x="1380" y="463" fill="#111111" font-size="30" font-weight="800" text-anchor="middle">S</text>
-      <text x="1380" y="501" fill="#444444" font-size="17" font-weight="700" text-anchor="middle">SUSTAINED LEAD</text>
+      <text x="956" y="463" fill="#111111" font-size="30" font-weight="800" text-anchor="middle">E</text>
+      <text x="956" y="501" fill="#444444" font-size="17" font-weight="700" text-anchor="middle">COMPLETION</text>
+      <text x="1158" y="463" fill="#111111" font-size="30" font-weight="800" text-anchor="middle">R</text>
+      <text x="1158" y="501" fill="#444444" font-size="17" font-weight="700" text-anchor="middle">RELATIVE RESULT</text>
+      <text x="1380" y="463" fill="#111111" font-size="30" font-weight="800" text-anchor="middle">K</text>
+      <text x="1380" y="501" fill="#444444" font-size="17" font-weight="700" text-anchor="middle">UNIQUE CROWN</text>
     </g>
 
-    <text x="1178" y="579" fill="#111111" font-family="Georgia, 'DejaVu Serif', serif" font-size="19" font-weight="700" text-anchor="middle">100[Q + 0.5Q(1 − Q)D]</text>
-    <text x="1178" y="608" fill="#444444" font-family="Georgia, 'DejaVu Serif', serif" font-size="16" text-anchor="middle">D = 0.25L + 0.55S + 0.20√LS</text>
+    <text x="1178" y="579" fill="#111111" font-family="Georgia, 'DejaVu Serif', serif" font-size="19" font-weight="700" text-anchor="middle">100(0.95R + 0.05K)</text>
+    <text x="1178" y="608" fill="#444444" font-family="Georgia, 'DejaVu Serif', serif" font-size="16" text-anchor="middle">R = (team result / wave best)^(3/4)</text>
     <rect x="973" y="618" width="410" height="46" rx="23" fill="#4d4d4d"/>
-    <text x="1178" y="648" fill="#ffffff" font-size="17" font-weight="800" text-anchor="middle">CONSISTENCY = KEEP FIRST PLACE</text>
+    <text x="1178" y="648" fill="#ffffff" font-size="17" font-weight="800" text-anchor="middle">ENGAGEMENT = COMPLETE EVERY WAVE</text>
 
     <line x1="422" y1="694" x2="422" y2="736" stroke="#222222" stroke-width="4"/>
     <line x1="1178" y1="694" x2="1178" y2="736" stroke="#222222" stroke-width="4"/>

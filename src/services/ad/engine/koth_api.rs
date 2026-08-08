@@ -4,17 +4,33 @@ use chrono::{DateTime, Utc};
 
 pub(crate) const MAX_LEADERBOARD_TEAMS: usize = 2_000;
 pub(crate) const API_OBJECTIVE_NORMALIZATION_SCALE: i64 = 1_000_000;
-pub(crate) const API_ACTIVITY_WEIGHT: f64 = 0.35;
-pub(crate) const API_OBJECTIVE_WEIGHT: f64 = 0.65;
+pub(crate) const API_RELATIVE_PERFORMANCE_EXPONENT: f64 = 0.75;
+/// Finalized waves use a lagged, contiguous settlement window so the referee
+/// can publish through the cutoff before the functional probe begins. The
+/// next round owns the previous round's short tail; waves are never sampled
+/// from a still-open interval.
+pub(crate) const API_WAVE_SETTLEMENT_LAG_SECONDS: i64 = 20;
 
-/// Calculate one normalized Leaderboard performance tick. Callers validate that each input is
-/// finite and in `[0,1]` before invoking this pure formula.
+/// Gate one normalized objective score on completion of the current wave.
+/// Partial activity is progress telemetry, not a scoreable completed run.
 pub(crate) fn leaderboard_tick_core(activity_rate: f64, objective_rate: f64) -> f64 {
-    if activity_rate == 0.0 || objective_rate == 0.0 {
+    if activity_rate < 1.0 || objective_rate == 0.0 {
         0.0
     } else {
-        (1.0 / (API_ACTIVITY_WEIGHT / activity_rate + API_OBJECTIVE_WEIGHT / objective_rate))
+        objective_rate.clamp(0.0, 1.0)
+    }
+}
+
+/// Normalize a completed team's native score against the best completed score
+/// in the same finalized wave. The fixed concave curve keeps close fields
+/// competitive without allowing roster size to dilute anyone's score.
+pub(crate) fn leaderboard_relative_performance(core_rate: f64, best_rate: f64) -> f64 {
+    if core_rate <= 0.0 || best_rate <= 0.0 {
+        0.0
+    } else {
+        (core_rate / best_rate)
             .clamp(0.0, 1.0)
+            .powf(API_RELATIVE_PERFORMANCE_EXPONENT)
     }
 }
 
@@ -26,13 +42,21 @@ pub(super) struct KothApiEvidence {
     pub(super) objective_earned: i64,
     pub(super) objective_possible: i64,
     pub(super) objective_count: i16,
+    pub(super) is_crown: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct KothApiWaveSnapshot {
+    pub(super) wave_id: String,
+    pub(super) ended_at_ms: i64,
+    pub(super) rows: Vec<KothApiEvidence>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct KothApiSnapshot {
     pub(super) hash: [u8; 32],
     pub(super) objective_schema_hash: [u8; 32],
-    pub(super) rows: Vec<KothApiEvidence>,
+    pub(super) waves: Vec<KothApiWaveSnapshot>,
 }
 
 pub(super) enum KothApiSnapshotRead {
@@ -53,12 +77,15 @@ impl KothApiSnapshotRead {
 struct SnapshotRow {
     snapshot_hash: Vec<u8>,
     objective_schema_hash: Vec<u8>,
+    wave_id: Option<String>,
+    ended_at_ms: Option<i64>,
     participation_id: Option<i32>,
     activity_earned: Option<i64>,
     activity_possible: Option<i64>,
     objective_earned: Option<i64>,
     objective_possible: Option<i64>,
     objective_count: Option<i16>,
+    is_crown: Option<bool>,
 }
 
 /// Read one atomically visible snapshot only when it belongs to the exact
@@ -76,13 +103,18 @@ pub(super) async fn read_koth_api_snapshot(
 ) -> KothApiSnapshotRead {
     let rows = sqlx::query_as::<_, SnapshotRow>(
         r#"SELECT snapshot.snapshot_hash, snapshot.objective_schema_hash,
+                  wave.wave_id,
+                  (EXTRACT(EPOCH FROM wave.ended_at) * 1000)::bigint AS ended_at_ms,
                   score.participation_id,
                   score.activity_earned, score.activity_possible,
                   score.objective_earned, score.objective_possible,
-                  score.objective_count
+                  score.objective_count, score.is_crown
              FROM "KothApiSnapshots" snapshot
+        LEFT JOIN "KothApiSnapshotWaves" wave
+               ON wave.target_id = snapshot.target_id
         LEFT JOIN "KothApiSnapshotScores" score
-               ON score.target_id = snapshot.target_id
+               ON score.target_id = wave.target_id
+              AND score.wave_id = wave.wave_id
             WHERE snapshot.target_id = $1
               AND snapshot.cycle_id = $2
               AND snapshot.reset_attempt = $3
@@ -90,7 +122,7 @@ pub(super) async fn read_koth_api_snapshot(
               AND snapshot.ad_round_id = $5
               AND snapshot.accepted_at >= $6
               AND snapshot.accepted_at < $7
-            ORDER BY score.participation_id"#,
+            ORDER BY wave.ended_at, wave.wave_id, score.participation_id"#,
     )
     .bind(target_id)
     .bind(cycle_id)
@@ -147,23 +179,38 @@ pub(super) async fn read_koth_api_snapshot(
             "Leaderboard objective schema changed during its read".to_string(),
         );
     }
-    let evidence = rows
-        .into_iter()
-        .filter_map(|row| {
-            Some(KothApiEvidence {
-                participation_id: row.participation_id?,
-                activity_earned: row.activity_earned?,
-                activity_possible: row.activity_possible?,
-                objective_earned: row.objective_earned?,
-                objective_possible: row.objective_possible?,
-                objective_count: row.objective_count?,
-            })
-        })
-        .collect();
+    let mut waves = Vec::<KothApiWaveSnapshot>::new();
+    for row in rows {
+        let (Some(wave_id), Some(ended_at_ms)) = (row.wave_id, row.ended_at_ms) else {
+            continue;
+        };
+        if waves.last().is_none_or(|wave| wave.wave_id != wave_id) {
+            waves.push(KothApiWaveSnapshot {
+                wave_id: wave_id.clone(),
+                ended_at_ms,
+                rows: Vec::new(),
+            });
+        }
+        if let Some(participation_id) = row.participation_id {
+            waves
+                .last_mut()
+                .expect("wave was inserted before its evidence")
+                .rows
+                .push(KothApiEvidence {
+                    participation_id,
+                    activity_earned: row.activity_earned.unwrap_or_default(),
+                    activity_possible: row.activity_possible.unwrap_or(1),
+                    objective_earned: row.objective_earned.unwrap_or_default(),
+                    objective_possible: row.objective_possible.unwrap_or(1),
+                    objective_count: row.objective_count.unwrap_or(1),
+                    is_crown: row.is_crown.unwrap_or(false),
+                });
+        }
+    }
     KothApiSnapshotRead::Observed(KothApiSnapshot {
         hash,
         objective_schema_hash,
-        rows: evidence,
+        waves,
     })
 }
 
@@ -204,13 +251,18 @@ mod tests {
         KothApiSnapshotRead::Observed(KothApiSnapshot {
             hash: [value as u8; 32],
             objective_schema_hash: [7; 32],
-            rows: vec![KothApiEvidence {
-                participation_id: 7,
-                activity_earned: value,
-                activity_possible: 10,
-                objective_earned: value,
-                objective_possible: 10,
-                objective_count: 1,
+            waves: vec![KothApiWaveSnapshot {
+                wave_id: "wave-1".to_string(),
+                ended_at_ms: 1,
+                rows: vec![KothApiEvidence {
+                    participation_id: 7,
+                    activity_earned: value,
+                    activity_possible: 10,
+                    objective_earned: value,
+                    objective_possible: 10,
+                    objective_count: 1,
+                    is_crown: true,
+                }],
             }],
         })
     }
@@ -238,7 +290,20 @@ mod tests {
     #[test]
     fn leaderboard_tick_requires_both_play_channels() {
         assert_eq!(leaderboard_tick_core(0.0, 1.0), 0.0);
+        assert_eq!(leaderboard_tick_core(0.5, 1.0), 0.0);
         assert_eq!(leaderboard_tick_core(1.0, 0.0), 0.0);
         assert_eq!(leaderboard_tick_core(1.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn leaderboard_relative_curve_is_roster_independent() {
+        assert_eq!(leaderboard_relative_performance(0.0, 1.0), 0.0);
+        assert_eq!(leaderboard_relative_performance(1.0, 1.0), 1.0);
+        let close = leaderboard_relative_performance(0.99, 1.0);
+        assert!((close - 0.99_f64.powf(0.75)).abs() < 1e-12);
+        assert_eq!(
+            leaderboard_relative_performance(20.0 / 150.0, 1.0),
+            (20.0_f64 / 150.0).powf(0.75)
+        );
     }
 }

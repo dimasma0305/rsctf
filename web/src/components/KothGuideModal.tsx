@@ -186,7 +186,7 @@ write_to_hill "/koth/king" "$TOKEN"`,
               >
                 {t(
                   'game.content.koth.guide.api_notice',
-                  'Every eligible team can score during the same tick. Follow the challenge’s player actions; the trusted referee never accepts points or your raw capability.'
+                  'Every eligible team can score in each finalized challenge wave. Complete a fresh run every wave; the trusted referee sends evidence and one tied-best Crown, never points or your raw capability.'
                 )}
               </Alert>
             )}
@@ -254,29 +254,29 @@ write_to_hill "/koth/king" "$TOKEN"`,
                         <List.Item>
                           {t(
                             'game.content.koth.guide.api.activity',
-                            'Activity rewards completing the required engagement budget; merely opening or polling the service is insufficient.'
+                            'Each wave requires a fresh completed run. Opening, polling, partial play, and an old result do not score the new wave.'
                           )}
                         </List.Item>
                         <List.Item>
                           {t(
                             'game.content.koth.guide.api.objectives',
-                            'Objective performance combines the challenge’s independent native metrics after RSCTF normalizes each one.'
+                            'RSCTF compares the challenge’s signed official result with the best completed result from the same wave, then applies a fixed three-quarter-power curve.'
                           )}
                         </List.Item>
                         <List.Item>
                           {t(
                             'game.content.koth.guide.api.integrity',
-                            'Sustained lead rewards consecutive first-place ticks. A tied first place splits that tick’s lead credit; at least two teams must post positive performance.'
+                            'The Crown is the first-place bonus: it adds five points in every wave. A tied incumbent keeps it only by completing that wave; otherwise the earliest server-confirmed tied result takes it.'
                           )}
                         </List.Item>
                       </List>
                       <Code block className={misc.ffmono} style={{ fontSize: '0.78rem' }}>
-                        {'Qₜ = 1 ÷ (0.35/Eₜ + 0.65/Pₜ) · zero if Eₜ = 0 or Pₜ = 0'}
+                        {'Wave = 100 × [0.95 × (score ÷ best)¾ + 0.05 × Crown]'}
                       </Code>
                       <Text size="xs" c="dimmed">
                         {t(
                           'game.content.koth.guide.api.fences',
-                          'Scores are calculated per tick before averaging. Missing-team evidence is an explicit zero; a missing, changing, late, or unhealthy field snapshot is void for everyone. Your capability lasts for the event and changes only when you explicitly rotate it after exposure.'
+                          'Scores are calculated per finalized wave before averaging. Missing-team evidence is an explicit zero; a missing, changing, late, or unhealthy field snapshot is void for everyone. Your capability lasts for the event and changes only when you explicitly rotate it after exposure.'
                         )}
                       </Text>
                     </Stack>
@@ -499,11 +499,11 @@ write_to_hill "/koth/king" "$TOKEN"`,
                         <Text size="sm">
                           {t(
                             'game.content.koth.guide.api.scoring',
-                            'Leaderboard hills use E for verified activity and P for equal-weight normalized objective performance. Their harmonic tick core requires both channels. L is tied first-place coverage and S is adjacent-tick lead continuity.'
+                            'Leaderboard hills use fresh completed results. RSCTF computes relative performance R = (score / best score)¾ inside each wave. K is one for that wave’s unique Crown and zero otherwise.'
                           )}
                         </Text>
                         <Code block className={misc.ffmono} style={{ fontSize: '0.78rem' }}>
-                          {'H = 100[Q + 0.5Q(1−Q)D], D = 0.25L + 0.55S + 0.20√(LS)'}
+                          {'H = 100 × (0.95R + 0.05K)'}
                         </Code>
                       </>
                     )}
