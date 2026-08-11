@@ -1,5 +1,5 @@
 use bollard::container::{RemoveContainerOptions, StartContainerOptions, StatsOptions};
-use bollard::models::{ContainerInspectResponse, ContainerStateStatusEnum};
+use bollard::models::{ContainerInspectResponse, ContainerStateStatusEnum, ImageInspect};
 use bollard::Docker;
 use futures::StreamExt;
 use rsctf_worker_protocol::GameKind;
@@ -12,6 +12,60 @@ use super::{
 use crate::utils::error::{AppError, AppResult};
 
 pub(super) const LAUNCH_SPEC_LABEL: &str = "rsctf.launch-spec";
+/// Organizer-controlled image opt-in for workloads that are known to work
+/// with an immutable root filesystem and no Linux capabilities. Keeping this
+/// explicit preserves pwn/KotH images whose intended gameplay needs setuid or
+/// a narrow capability while allowing ordinary services to use a restricted
+/// runtime profile.
+pub(super) const RESTRICTED_IMAGE_PROFILE_LABEL: &str = "org.rsctf.security-profile";
+pub(super) const RESTRICTED_IMAGE_PROFILE: &str = "restricted-v1";
+
+pub(super) fn image_requests_restricted_profile(image: &ImageInspect) -> bool {
+    image
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+        .and_then(|labels| labels.get(RESTRICTED_IMAGE_PROFILE_LABEL))
+        .is_some_and(|profile| profile == RESTRICTED_IMAGE_PROFILE)
+}
+
+pub(super) fn stamp_restricted_profile(
+    labels: &mut std::collections::HashMap<String, String>,
+    restricted: bool,
+) {
+    if restricted {
+        labels.insert(
+            RESTRICTED_IMAGE_PROFILE_LABEL.into(),
+            RESTRICTED_IMAGE_PROFILE.into(),
+        );
+    }
+}
+
+pub(super) fn restricted_profile_matches(
+    container: &ContainerInspectResponse,
+    expected: bool,
+) -> bool {
+    if !expected {
+        return true;
+    }
+    let Some(config) = container.host_config.as_ref() else {
+        return false;
+    };
+    config.readonly_rootfs == Some(true)
+        && config
+            .cap_drop
+            .as_ref()
+            .is_some_and(|caps| caps.iter().any(|capability| capability == "ALL"))
+        && config.security_opt.as_ref().is_some_and(|options| {
+            options
+                .iter()
+                .any(|option| option == "no-new-privileges:true")
+        })
+        && config
+            .tmpfs
+            .as_ref()
+            .is_some_and(|mounts| mounts.contains_key("/tmp"))
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

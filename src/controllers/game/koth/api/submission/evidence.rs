@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
 use crate::controllers::game::koth::api_contract::NormalizedWave;
+use crate::services::ad::engine::koth_api::leaderboard_crown_is_valid;
 use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 
@@ -45,32 +46,17 @@ struct CurrentCapabilityRow {
 
 pub(super) fn validate_resolved_crowns(waves: &[ResolvedWave]) -> AppResult<()> {
     for wave in waves {
-        let completed: Vec<_> = wave
-            .rows
-            .iter()
-            .filter(|row| row.activity_earned == row.activity_possible && row.objective_earned > 0)
-            .collect();
-        let crowns: Vec<_> = wave.rows.iter().filter(|row| row.is_crown).collect();
-        let Some(best) = completed.iter().copied().max_by(|left, right| {
-            (i128::from(left.objective_earned) * i128::from(right.objective_possible))
-                .cmp(&(i128::from(right.objective_earned) * i128::from(left.objective_possible)))
-        }) else {
-            if !crowns.is_empty() {
-                return Err(AppError::bad_request(format!(
-                    "Leaderboard wave {} cannot name a Crown without a completed positive result",
-                    wave.wave_id
-                )));
-            }
-            continue;
-        };
-        if crowns.len() != 1
-            || crowns[0].activity_earned != crowns[0].activity_possible
-            || crowns[0].objective_earned <= 0
-            || i128::from(crowns[0].objective_earned) * i128::from(best.objective_possible)
-                != i128::from(best.objective_earned) * i128::from(crowns[0].objective_possible)
-        {
+        if !leaderboard_crown_is_valid(wave.rows.iter().map(|row| {
+            (
+                row.activity_earned,
+                row.activity_possible,
+                row.objective_earned,
+                row.objective_possible,
+                row.is_crown,
+            )
+        })) {
             return Err(AppError::bad_request(format!(
-                "Leaderboard wave {} must name exactly one tied-best completed Crown",
+                "Leaderboard wave {} may name a Crown only for one unique completed leader",
                 wave.wave_id
             )));
         }

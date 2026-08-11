@@ -42,6 +42,7 @@ pub(super) struct ActiveObserverContext {
     pub(super) round_id: i32,
     pub(super) round_number: i32,
     pub(super) game_starts_at: DateTime<Utc>,
+    pub(super) cycle_ends_at: DateTime<Utc>,
     pub(super) round_starts_at: DateTime<Utc>,
     pub(super) round_ends_at: DateTime<Utc>,
     pub(super) objective_ids: Option<Vec<String>>,
@@ -93,6 +94,8 @@ pub struct KothObserverContextModel {
     reset_attempt: i32,
     round_number: i32,
     #[serde(with = "crate::utils::datetime::millis")]
+    cycle_ends_at: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis")]
     wave_window_starts_at: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
     wave_window_ends_at: DateTime<Utc>,
@@ -131,6 +134,12 @@ where
                   target.container_id AS container_id,
                   round.id AS round_id, round.number AS round_number,
                   game.start_time_utc AS game_starts_at,
+                  LEAST(
+                    game.end_time_utc,
+                    round.end_time_utc
+                      + GREATEST(cycle.planned_end_round - round.number, 0)
+                        * (round.end_time_utc - round.start_time_utc)
+                  ) AS cycle_ends_at,
                   round.start_time_utc AS round_starts_at,
                   round.end_time_utc AS round_ends_at,
                   scheme.objective_ids,
@@ -264,6 +273,7 @@ pub async fn observer_context(
         cycle_number: context.cycle_number,
         reset_attempt: context.reset_attempt,
         round_number: context.round_number,
+        cycle_ends_at: context.cycle_ends_at,
         wave_window_starts_at,
         wave_window_ends_at,
         eligible_token_hashes: eligible_tokens
@@ -476,6 +486,7 @@ mod tests {
             round_id: round_number,
             round_number,
             game_starts_at: at(100),
+            cycle_ends_at: at(310),
             round_starts_at: at(round_start),
             round_ends_at: at(round_end),
             objective_ids: None,

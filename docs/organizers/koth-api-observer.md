@@ -41,12 +41,12 @@ points in every wave. There is no separate winner award, shared-pool dilution,
 or growing streak multiplier. The epoch result is the mean of immutable wave
 results and remains in `[0, 100]`.
 
-The referee must assert exactly one Crown when a wave has a positive completed
-result. The asserted team must share the best normalized result. On an exact
-tie, retain the incumbent only if it completed the current wave; otherwise use
-the earliest server-confirmed tied result, then a stable identity only as the
-final deterministic fallback. RSCTF verifies that the signed Crown is uniquely
-best or tied-best but the arena is responsible for the server-time tie rule.
+The referee must assert exactly one Crown when a wave has one unique positive
+leader. The asserted team must have the best normalized result. On an exact
+top tie, assert no Crown: every tied team receives full relative-performance
+credit, but none receives the five-point premium. RSCTF rejects a Crown on a
+tied wave, so transport timing and stable identity cannot become score
+tie-breakers.
 
 Failed exploit attempts are not negative points. They may still be logged,
 rate-limited, or reviewed as security telemetry, but the challenge must make
@@ -192,6 +192,7 @@ Example response after the objective schema is frozen:
   "cycleNumber": 4,
   "resetAttempt": 0,
   "roundNumber": 17,
+  "cycleEndsAt": 1785123970000,
   "waveWindowStartsAt": 1785123370000,
   "waveWindowEndsAt": 1785123430000,
   "eligibleTokenHashes": [
@@ -208,7 +209,10 @@ Before the first accepted snapshot, `objectiveIds` is empty and
 first submission. Thereafter the context is bound to its hash. `context`
 changes with the scoring round, runtime/reset identity, objective schema, or
 eligible capability set. A player token rotation therefore requires a fresh
-context before the next submission.
+context before the next submission. `cycleEndsAt` is the exact end of the
+active pristine-runtime cycle. A challenge that runs multi-minute sessions
+must not start a new session unless it can finish and report before that
+timestamp; reconnects to an already-running session may continue.
 
 Submit the complete set of finalized waves whose end times fall inside the
 current context's settlement window:
@@ -260,9 +264,9 @@ last published window end is the event's Leaderboard scoring cutoff. The arena
 must not open a new scoreable wave that cannot finalize by that cutoff; the
 remaining 20 seconds are reserved for checking and durable settlement.
 
-Every completed positive wave must contain exactly one `isCrown: true` row,
-and that row must have the highest normalized completed result. A zero-result
-wave has no Crown. Token hashes are unique within a wave; the same team may and
+Every completed positive wave with one unique leader must contain exactly one
+`isCrown: true` row for that leader. A tied or zero-result wave has no Crown.
+Token hashes are unique within a wave; the same team may and
 normally will appear in several waves.
 
 Finalized waves are append-only within a context. Every later snapshot must
@@ -401,7 +405,7 @@ At a server-randomized checker time, RSCTF:
 6. writes dense immutable evidence for every eligible team in every submitted
    wave, including explicit zero rows for omitted teams;
 7. calculates the leader-relative three-quarter-power performance for each
-   wave and validates its unique tied-best Crown assertion; and
+   wave and validates its unique-leader or tied-no-Crown assertion; and
 8. averages relative performance and Crown share before applying the constant
    95/5 score when projecting or settling the epoch.
 

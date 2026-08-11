@@ -54,6 +54,14 @@ used as build input on a Docker-backed installation, but rsctf resolves and
 provisions its immutable digest. Changing the tag clears that pin and requires a
 new successful build/pull.
 
+Docker images that do not need setuid, Linux capabilities, or writes outside
+`/tmp` may opt into the restricted runtime profile with the image label
+`org.rsctf.security-profile=restricted-v1`. RSCTF then drops every capability,
+enables `no-new-privileges`, mounts the root filesystem read-only, and supplies
+a 256 MiB `noexec` tmpfs at `/tmp`. Test the image with this profile before an
+event; do not add the label to a pwn or boot2root image whose intended path
+depends on those kernel features.
+
 ::: warning Kubernetes limitations
 Regular Kubernetes challenges use NodePort services. Private registry credentials are not currently injected into generated challenge Pods. Bring Your Own Container (BYOC) and several build, terminal, and snapshot paths remain Docker-only or incomplete. Test your exact mode in the target cluster.
 :::
@@ -94,8 +102,9 @@ Choose one format before official scoring; RSCTF freezes it with the hill:
 - **Leaderboard KotH** is multi-team application or protocol KotH. Every
   eligible team can score in each challenge-native finalized wave. A trusted
   independent referee reports completed activity, ordered objective evidence,
-  and the tied-best Crown; RSCTF normalizes it and applies the constant 95%
-  relative-performance plus 5% Crown formula.
+  and a Crown only for one unique leader; RSCTF normalizes it and applies the
+  constant 95% relative-performance plus 5% Crown formula. An exact top tie has
+  no Crown.
 
 Leaderboard mode is not merely another marker transport. It has no single holder,
 provisional crown, or champion-cooldown score. It still uses pristine lifecycle

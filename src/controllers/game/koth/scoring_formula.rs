@@ -234,9 +234,9 @@ pub fn score_epoch_hill(
 ///
 /// Every team has its own fixed 100-point ceiling, so adding participants cannot
 /// dilute an existing score. A fresh completed run is required in every wave.
-/// Exact ties are resolved by the arena's signed Crown assertion; challengers
-/// must strictly beat a participating incumbent. The recurring five-point Crown
-/// credits first place in each wave without a separate or growing streak bonus.
+/// Exact ties receive equal performance credit and no Crown. The recurring
+/// five-point Crown credits a unique first place in each wave without a
+/// separate or growing streak bonus.
 /// These constants are not organizer-configurable.
 pub fn score_api_epoch_hill(
     evidence: &KothApiEpochHillEvidence,

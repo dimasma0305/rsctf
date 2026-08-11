@@ -22,7 +22,7 @@ RSCTF calculates:
 ```text
 N_i    = O_i when E_i is complete; otherwise 0
 P_i    = (N_i / max(N))^0.75             when max(N) > 0; otherwise 0
-C_i    = 1 for the signed unique tied-best Crown; otherwise 0
+C_i    = 1 for the signed unique positive leader; otherwise 0
 Wave_i = 100 * (0.95 * P_i + 0.05 * C_i)
 Epoch_i = arithmetic mean of Wave_i across finalized waves
 ```
@@ -36,11 +36,11 @@ Ninety-five percent of each wave therefore comes from actually playing the chall
 Crown creates a visible short-term target without allowing a one-time win or a
 streak to dominate the event.
 
-The Crown is the first-place distinction; there is no duplicate winner bonus.
-The independent referee resolves equal native scores by retaining a participating
-incumbent, then earliest server-confirmed completion, then stable identity. RSCTF
-requires the signed assertion to name exactly one tied-best team. Only one team
-receives `C_i = 1`. Every finalized wave has equal weight in the epoch, so
+The Crown is the unique-first-place distinction; there is no duplicate winner
+bonus. Equal best native scores receive full relative-performance credit and no
+Crown, so transport order and stable identity cannot change points. RSCTF
+requires the signed assertion to name exactly one uniquely best team or nobody
+on a top tie. Every finalized wave has equal weight in the epoch, so
 consistent participation beats one exceptional run followed by inactivity.
 Exploitation attempts, failed requests, subjective “clean play,” and anti-cheat telemetry never add or subtract
 official points.
@@ -57,9 +57,9 @@ contexts, old-cycle observer credentials, duplicate identities, unknown particip
 and evidence outside the 20-second ingestion allowance.
 
 The server, rather than the challenge, performs native normalization, omission
-zero-filling, tied-best Crown validation, relative scoring, and the epoch mean.
-The trusted referee selects the deterministic winner among an exact tie; HMAC proves
-which referee sent the evidence, not that the referee measured honestly. A snapshot is
+zero-filling, unique-leader Crown validation, relative scoring, and the epoch mean.
+HMAC proves which referee sent the evidence, not that the referee measured
+honestly. A snapshot is
 bounded to 2,000 rows and an epoch to 64 waves. Durable dense rows make omission
 and equivocation auditable without exposing suspicion or anti-cheat findings on a
 separate player scoreboard. Rotation invalidates a leaked player capability while

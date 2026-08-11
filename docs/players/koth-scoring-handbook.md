@@ -9,7 +9,7 @@ pageClass: koth-handbook
   <h1>RSCTF King of the Hill Handbook: Boot2Root and Leaderboard Formats</h1>
   <p class="journal-authors">Dimas Maulana</p>
   <p class="journal-affiliation">RSCTF Project · Competition Platform</p>
-  <p class="journal-correspondence">Unified edition · Version 6.0 · 8 August 2026</p>
+  <p class="journal-correspondence">Unified edition · Version 6.1 · 10 August 2026</p>
   <p class="journal-policy">Scoring policy: one constant formula per KotH format; no scoring versions</p>
 </div>
 
@@ -18,7 +18,7 @@ pageClass: koth-handbook
 ## Abstract
 
 <div class="journal-abstract">
-<p>RSCTF defines two King of the Hill (KotH) formats with different competitive meanings. <strong>Boot2Root KotH</strong> is an exclusive-control contest over one shared machine: teams acquire the hill, retain control, and accept responsibility for service health. <strong>Leaderboard KotH</strong> is a concurrent application or protocol contest: every eligible team may complete each challenge-native wave, and RSCTF compares every completed result with the best result from that same wave. Boot2Root uses the constant score 100R(0.25A + 0.55C + 0.20√AC). Leaderboard uses the constant wave score 100[0.95(S/S*)^(3/4) + 0.05K], where K is the unique Crown. The incumbent retains an exact top-score tie only by completing the current wave; otherwise the earliest server-confirmed tied result wins. Missing or incomplete teams receive zero for that wave. Points are not divided by field size, there is no separate winner or streak multiplier, and failed hacking attempts are not negative points. Authenticity, replay protection, exact runtime identity, independent checking, and challenge-level proof design determine whether evidence is admitted. Boot2Root capabilities rotate with pristine crown cycles; a Leaderboard capability is one opaque event token and changes only through explicit security rotation. Both formats use scoped capabilities, pristine crown-cycle replacement, bounded hill aggregation, and finalized epoch settlement. This paper is the canonical deployed scoring and operations contract.</p>
+<p>RSCTF defines two King of the Hill (KotH) formats with different competitive meanings. <strong>Boot2Root KotH</strong> is an exclusive-control contest over one shared machine: teams acquire the hill, retain control, and accept responsibility for service health. <strong>Leaderboard KotH</strong> is a concurrent application or protocol contest: every eligible team may complete each challenge-native wave, and RSCTF compares every completed result with the best result from that same wave. Boot2Root uses the constant score 100R(0.25A + 0.55C + 0.20√AC). Leaderboard uses the constant wave score 100[0.95(S/S*)^(3/4) + 0.05K], where K is the unique Crown. An exact top-score tie gives every tied team full relative-performance credit and gives no team the Crown premium. Missing or incomplete teams receive zero for that wave. Points are not divided by field size, there is no separate winner or streak multiplier, and failed hacking attempts are not negative points. Authenticity, replay protection, exact runtime identity, independent checking, and challenge-level proof design determine whether evidence is admitted. Boot2Root capabilities rotate with pristine crown cycles; a Leaderboard capability is one opaque event token and changes only through explicit security rotation. Both formats use scoped capabilities, pristine crown-cycle replacement, bounded hill aggregation, and finalized epoch settlement. This paper is the canonical deployed scoring and operations contract.</p>
 </div>
 
 <p class="journal-keywords"><strong>Keywords:</strong> King of the Hill; Boot2Root; Leaderboard KotH; relative scoring; Crown; anti-cheat; crown cycle; RSCTF</p>
@@ -184,7 +184,7 @@ zero or more finalized waves. Each wave contains:
 - a stable wave ID and server-confirmed end time;
 - one completed `activity` ratio and one to sixteen objective ratios per team;
 - an ordered `objectiveIds` list defining those positions; and
-- at most one best-scoring `isCrown` assertion.
+- one `isCrown` assertion for a unique positive leader, otherwise none.
 
 The signed body contains `tokenHash`, not the bearer token. It contains no team
 ID, floating-point platform score, integrity multiplier, or point value. RSCTF
@@ -219,9 +219,10 @@ must stop opening scoreable waves that cannot finish before it; the final
 20-second reserve exists for the functional check and durable settlement, not
 late gameplay.
 
-Leaderboard names one challenge-native Crown per positive finalized wave. It
-does not use the Boot2Root marker, provisional confirmation, or champion
-cooldown. Multiple teams can score in the same wave.
+Leaderboard names one challenge-native Crown when a positive finalized wave
+has one unique leader. An exact top tie has no Crown. Leaderboard does not use
+the Boot2Root marker, provisional confirmation, or champion cooldown. Multiple
+teams can score in the same wave.
 
 ### 2.3 Crown-cycle lifecycle
 
@@ -332,19 +333,18 @@ result to one, and keeps close competitors close. It does not divide a point
 pool by the number of teams. Adding a new participant therefore cannot reduce
 an existing team's points unless that participant posts a new best result.
 
-### 4.3 One Crown, including exact ties
+### 4.3 One Crown only for a unique leader
 
 `K_it` is one only for the wave's unique Crown and zero for every other team.
-The Crown must have the highest positive completed result. An exact top-score
-tie follows this deterministic rule:
+The Crown must have the highest positive completed result, and that result must
+belong to exactly one team. If two or more teams tie for the highest result,
+each receives full relative-performance credit and `K_it=0`; no timestamp,
+incumbent state, roster order, or stable identity breaks the scoring tie.
 
-1. the incumbent retains the Crown only if it completed the current wave;
-2. otherwise the earliest server-confirmed tied completion wins; and
-3. a stable identity is used only if those confirmation times are equal.
-
-The Crown and first place are the same award. A tied challenger receives full
-relative-performance credit but not a fractional Crown. An absent incumbent
-cannot retain it, so every Crown holder must keep playing.
+The Crown and unique first place are the same award. This prevents an arbitrary
+transport-order advantage while keeping the recurring five-point target for a
+team that strictly leads the wave. Every Crown holder must complete fresh play
+in that wave.
 
 ### 4.4 Constant wave score and epoch mean
 
@@ -378,8 +378,9 @@ equally rather than each transport submission equally.
 If several teams score near 150, each receives nearly 95 performance points;
 their scores do not collapse because the field is crowded. If only one team
 completes with a positive result—even a native result of `1`—it is best for
-that wave and receives 100. An exact tied challenger receives 95 while the
-eligible incumbent receives 100. Missing teams receive zero for the wave.
+that wave and receives 100. Teams tied at the best positive result each receive
+95 because the wave has no unique Crown. Missing teams receive zero for the
+wave.
 
 Failed hacking attempts are not subtracted. Invalid, forged, replayed, stale,
 or wrongly scoped evidence is rejected or excluded as telemetry. Section 7
@@ -511,7 +512,7 @@ Before official scoring:
   explicit rotation rejects the prior token and only that team's unsettled
   rows, and then freeze the final objective IDs/order and verify HMAC,
   submitted-wave and recognized/submitted equality, independent normalization,
-  exact-tie Crown retention, explicit zero, referee restart, stale hash, replay,
+  exact-tie no-Crown behavior, explicit zero, referee restart, stale hash, replay,
   clock skew, feed gap, and changing-snapshot behavior; and
 - run a complete accelerated epoch at expected peak capacity, including one
   deliberately overloaded team, while confirming that other teams and the
@@ -611,7 +612,7 @@ evidence. Only the lifecycle infrastructure is shared.
 
 ### A.2 Can the referee submit points or team IDs?
 
-No. It submits integer evidence ratios, one per-wave Crown assertion, and
+No. It submits integer evidence ratios, an optional per-wave Crown assertion, and
 current capability hashes. RSCTF resolves identity, normalizes relative
 performance, validates the Crown, and computes points.
 
@@ -723,7 +724,7 @@ Wire DTOs use camelCase and Unix-millisecond timestamps.
 The suite covers formula bounds and zero conditions, objective normalization,
 ordered schema identity, malformed evidence, HMAC scope, clock skew, replay,
 context rotation, current capability resolution, unknown hashes, dense zeros,
-snapshot bracketing, relative performance, exact-tie Crown assertions, marker confirmation,
+snapshot bracketing, relative performance, exact-tie no-Crown handling, marker confirmation,
 cooldown denominators, tied champions, partial epochs, rollups, and ordinal
 ranks. The bundled challenge exercises one-use proofs, invalid traffic,
 capability hashing, bounded pagination, persistent referee restart, feed-gap

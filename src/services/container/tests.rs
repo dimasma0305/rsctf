@@ -1,11 +1,15 @@
+use std::collections::HashMap;
+
 use bollard::models::{
-    ContainerConfig, ContainerInspectResponse, ContainerState, ContainerStateStatusEnum, Ipam,
-    IpamConfig, Network,
+    ContainerConfig, ContainerInspectResponse, ContainerState, ContainerStateStatusEnum,
+    HostConfig, ImageInspect, Ipam, IpamConfig, Network,
 };
 
 use super::docker::{
-    docker_liveness, docker_network_mode, failed_start_action, launch_spec_fingerprint,
-    launch_spec_matches, verify_container_scope, FailedStartAction, LAUNCH_SPEC_LABEL,
+    docker_liveness, docker_network_mode, failed_start_action, image_requests_restricted_profile,
+    launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
+    verify_container_scope, FailedStartAction, LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE,
+    RESTRICTED_IMAGE_PROFILE_LABEL,
 };
 use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
@@ -14,6 +18,50 @@ use super::{
     validate_docker_container_spec, ContainerLiveness, ContainerManager, ContainerSpec,
     DockerContainerManager,
 };
+
+#[test]
+fn restricted_runtime_profile_requires_the_exact_organizer_image_label() {
+    let image = |value: Option<&str>| ImageInspect {
+        config: Some(ContainerConfig {
+            labels: value.map(|value| {
+                HashMap::from([(
+                    RESTRICTED_IMAGE_PROFILE_LABEL.to_string(),
+                    value.to_string(),
+                )])
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    assert!(image_requests_restricted_profile(&image(Some(
+        RESTRICTED_IMAGE_PROFILE
+    ))));
+    assert!(!image_requests_restricted_profile(&image(Some(
+        "restricted"
+    ))));
+    assert!(!image_requests_restricted_profile(&image(None)));
+}
+
+#[test]
+fn restricted_retry_refuses_to_adopt_a_container_without_the_runtime_guards() {
+    let guarded = ContainerInspectResponse {
+        host_config: Some(HostConfig {
+            cap_drop: Some(vec!["ALL".to_string()]),
+            readonly_rootfs: Some(true),
+            security_opt: Some(vec!["no-new-privileges:true".to_string()]),
+            tmpfs: Some(HashMap::from([("/tmp".to_string(), "rw".to_string())])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(restricted_profile_matches(&guarded, true));
+    assert!(restricted_profile_matches(&guarded, false));
+    assert!(!restricted_profile_matches(
+        &ContainerInspectResponse::default(),
+        true
+    ));
+}
 
 fn inspected_network(subnets: &[&str], internal: bool) -> Network {
     Network {

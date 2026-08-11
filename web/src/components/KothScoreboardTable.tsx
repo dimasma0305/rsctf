@@ -560,7 +560,7 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
               <Text size="xs">
                 {t(
                   'game.content.scoreboard.koth.api.anti_cheat',
-                  'A fresh completed run is required in each wave; an omitted or incomplete team receives zero. The unique Crown earns the recurring five-point first-place bonus. On an exact top-score tie, a participating incumbent retains it; otherwise the earliest server-confirmed tied result wins. Roster size never divides anyone’s points.'
+                  'A fresh completed run is required in each wave; an omitted or incomplete team receives zero. The unique Crown earns the recurring five-point first-place bonus. On an exact top-score tie, every tied team receives full relative-performance credit and no team receives the Crown. Roster size never divides anyone’s points.'
                 )}
               </Text>
             </Stack>

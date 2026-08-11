@@ -8,8 +8,8 @@ use super::koth::LiveHill;
 use crate::models::data::ad_round;
 use crate::services::ad::engine::{
     koth_api::{
-        leaderboard_relative_performance, leaderboard_tick_core, KothApiSnapshot,
-        API_OBJECTIVE_NORMALIZATION_SCALE,
+        leaderboard_crown_is_valid, leaderboard_relative_performance, leaderboard_tick_core,
+        KothApiSnapshot, API_OBJECTIVE_NORMALIZATION_SCALE,
     },
     AdCheckStatus,
 };
@@ -203,6 +203,20 @@ async fn insert_dense_score_rows(
         .collect();
 
     for wave in &snapshot.waves {
+        if !leaderboard_crown_is_valid(wave.rows.iter().map(|row| {
+            (
+                row.activity_earned,
+                row.activity_possible,
+                row.objective_earned,
+                row.objective_possible,
+                row.is_crown,
+            )
+        })) {
+            return Err(AppError::internal(format!(
+                "Leaderboard wave {} may crown only one unique completed leader",
+                wave.wave_id
+            )));
+        }
         let submitted: HashMap<_, _> = wave
             .rows
             .iter()
@@ -233,20 +247,6 @@ async fn insert_dense_score_rows(
             ));
         }
         let highest_core = wave_rates.iter().map(|row| row.3).fold(0.0_f64, f64::max);
-        let crown_rows: Vec<_> = wave_rates.iter().filter(|row| row.4).collect();
-        if highest_core == 0.0 {
-            if !crown_rows.is_empty() {
-                return Err(AppError::internal(format!(
-                    "Leaderboard wave {} crowns a team without a completed positive score",
-                    wave.wave_id
-                )));
-            }
-        } else if crown_rows.len() != 1 || (crown_rows[0].3 - highest_core).abs() > f64::EPSILON {
-            return Err(AppError::internal(format!(
-                "Leaderboard wave {} must crown exactly one tied best completed score",
-                wave.wave_id
-            )));
-        }
 
         for (participation_id, completion_rate, objective_rate, core_rate, is_crown) in wave_rates {
             let row = rows
@@ -329,7 +329,7 @@ mod tests {
         assert!(source.contains("objective_possible: objective_scale * wave_count"));
         assert!(source.contains("leaderboard_tick_core"));
         assert!(source.contains("leaderboard_relative_performance"));
-        assert!(source.contains("must crown exactly one tied best"));
+        assert!(source.contains("may crown only one unique completed leader"));
     }
 
     #[test]
@@ -337,6 +337,30 @@ mod tests {
         let source = include_str!("koth_api.rs");
         assert!(source.contains("has_finalized_wave"));
         assert!(source.contains("no finalized Leaderboard wave ended"));
+    }
+
+    #[test]
+    fn materialized_crown_requires_a_unique_positive_leader() {
+        assert!(leaderboard_crown_is_valid([
+            (1, 1, 10, 10, true),
+            (1, 1, 8, 10, false),
+        ]));
+        assert!(leaderboard_crown_is_valid([
+            (1, 1, 1, 3, false),
+            (1, 1, 2, 6, false),
+        ]));
+        assert!(!leaderboard_crown_is_valid([
+            (1, 1, 1, 3, true),
+            (1, 1, 2, 6, false),
+        ]));
+        assert!(!leaderboard_crown_is_valid([
+            (1, 1, 10, 10, false),
+            (1, 1, 8, 10, false),
+        ]));
+        assert!(leaderboard_crown_is_valid([
+            (1, 1, 0, 1, false),
+            (0, 1, 1, 1, false),
+        ]));
     }
 
     #[tokio::test]

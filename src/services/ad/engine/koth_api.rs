@@ -34,6 +34,40 @@ pub(crate) fn leaderboard_relative_performance(core_rate: f64, best_rate: f64) -
     }
 }
 
+/// Validate the one optional Crown directly from normalized integer evidence.
+/// Cross multiplication keeps admission and materialization identical even
+/// when equal ratios use different numerators and denominators.
+pub(crate) fn leaderboard_crown_is_valid(
+    rows: impl IntoIterator<Item = (i64, i64, i64, i64, bool)>,
+) -> bool {
+    let rows: Vec<_> = rows.into_iter().collect();
+    let completed: Vec<_> = rows
+        .iter()
+        .filter(|row| row.1 > 0 && row.3 > 0 && row.0 == row.1 && row.2 > 0)
+        .collect();
+    let crowns: Vec<_> = rows.iter().filter(|row| row.4).collect();
+    let Some(best) = completed.iter().copied().max_by(|left, right| {
+        (i128::from(left.2) * i128::from(right.3)).cmp(&(i128::from(right.2) * i128::from(left.3)))
+    }) else {
+        return crowns.is_empty();
+    };
+    let leaders = completed
+        .iter()
+        .filter(|row| {
+            i128::from(row.2) * i128::from(best.3) == i128::from(best.2) * i128::from(row.3)
+        })
+        .count();
+    if leaders > 1 {
+        return crowns.is_empty();
+    }
+    crowns.len() == 1
+        && crowns[0].0 == crowns[0].1
+        && crowns[0].2 > 0
+        && crowns[0].3 > 0
+        && i128::from(crowns[0].2) * i128::from(best.3)
+            == i128::from(best.2) * i128::from(crowns[0].3)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct KothApiEvidence {
     pub(super) participation_id: i32,
@@ -305,5 +339,29 @@ mod tests {
             leaderboard_relative_performance(20.0 / 150.0, 1.0),
             (20.0_f64 / 150.0).powf(0.75)
         );
+    }
+
+    #[test]
+    fn leaderboard_crown_uses_exact_ratios_and_requires_a_unique_leader() {
+        assert!(leaderboard_crown_is_valid([
+            (1, 1, 3, 3, true),
+            (1, 1, 2, 3, false),
+        ]));
+        assert!(leaderboard_crown_is_valid([
+            (1, 1, 1, 3, false),
+            (1, 1, 2, 6, false),
+        ]));
+        assert!(!leaderboard_crown_is_valid([
+            (1, 1, 1, 3, true),
+            (1, 1, 2, 6, false),
+        ]));
+        assert!(!leaderboard_crown_is_valid([
+            (1, 1, 3, 3, false),
+            (1, 1, 2, 3, false),
+        ]));
+        assert!(leaderboard_crown_is_valid([
+            (0, 1, 0, 1, false),
+            (1, 1, 0, 1, false),
+        ]));
     }
 }

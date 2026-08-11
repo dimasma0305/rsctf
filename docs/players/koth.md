@@ -63,10 +63,10 @@ The three-quarter-power curve keeps nearby results competitive without sharing
 or dividing a fixed point pool. Ten teams with similar scores can all earn
 nearly 95 performance points. The Crown is the same thing as first place and
 adds five recurring points; there is no separate first-place or streak bonus.
-On an exact top-score tie, a participating incumbent keeps the Crown. If the
-incumbent did not complete the wave, the earliest server-confirmed tied result
-wins. Failed hacking attempts do not subtract points, but every new wave needs
-a fresh verified completion.
+On an exact top-score tie, every tied team receives full relative-performance
+credit and no team receives the Crown premium. Roster order, incumbent state,
+and submission timing never break a scoring tie. Failed hacking attempts do
+not subtract points, but every new wave needs a fresh verified completion.
 
 If your team produces no completed evidence in a finalized wave, that wave is
 an explicit zero. Earlier evidence is never carried forward. Leaderboard KotH

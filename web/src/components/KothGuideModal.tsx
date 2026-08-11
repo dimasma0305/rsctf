@@ -266,7 +266,7 @@ write_to_hill "/koth/king" "$TOKEN"`,
                         <List.Item>
                           {t(
                             'game.content.koth.guide.api.integrity',
-                            'The Crown is the first-place bonus: it adds five points in every wave. A tied incumbent keeps it only by completing that wave; otherwise the earliest server-confirmed tied result takes it.'
+                            'The Crown is the five-point first-place bonus for one unique leader. On an exact top-score tie, every tied team receives full relative-performance credit and no team receives the Crown.'
                           )}
                         </List.Item>
                       </List>

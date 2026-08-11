@@ -66,8 +66,9 @@ mod naming;
 #[cfg(test)]
 mod tests;
 use self::docker::{
-    docker_network_mode, is_conflict, is_not_found, launch_spec_fingerprint, launch_spec_matches,
-    LAUNCH_SPEC_LABEL,
+    docker_network_mode, image_requests_restricted_profile, is_conflict, is_not_found,
+    launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
+    stamp_restricted_profile, LAUNCH_SPEC_LABEL,
 };
 use logging::bounded_log_config;
 use naming::{container_name, map_status};
@@ -566,8 +567,8 @@ impl ContainerManager for DockerContainerManager {
         // vanished daemon-local ID must have been repaired from its trusted
         // archive before this boundary; surface a retryable infrastructure
         // response if a prune races the final create instead of leaking a 500.
-        match docker.inspect_image(&spec.image).await {
-            Ok(_) => {}
+        let inspected_image = match docker.inspect_image(&spec.image).await {
+            Ok(image) => image,
             Err(_) if crate::services::challenge_images::is_repository_digest(&spec.image) => {
                 let options = CreateImageOptions {
                     from_image: spec.image.clone(),
@@ -580,12 +581,12 @@ impl ContainerManager for DockerContainerManager {
                         break;
                     }
                 }
-                if let Err(error) = docker.inspect_image(&spec.image).await {
+                docker.inspect_image(&spec.image).await.map_err(|error| {
                     tracing::error!(image = %spec.image, %error, "immutable repository image remains unavailable after pull");
-                    return Err(AppError::unavailable(
+                    AppError::unavailable(
                         "The challenge image could not be pulled by the container host. Retry later or ask an administrator to rebuild it.",
-                    ));
-                }
+                    )
+                })?
             }
             Err(error) => {
                 tracing::error!(image = %spec.image, %error, "immutable challenge image is unavailable at container create");
@@ -593,7 +594,8 @@ impl ContainerManager for DockerContainerManager {
                     "The challenge image is unavailable on this container host. Retry later or ask an administrator to rebuild it.",
                 ));
             }
-        }
+        };
+        let restricted_profile = image_requests_restricted_profile(&inspected_image);
 
         // 2. Environment: caller-supplied vars plus the dynamic flag contract.
         let mut env: Vec<String> = spec.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -631,6 +633,15 @@ impl ContainerManager for DockerContainerManager {
             memory: Some(i64::from(spec.memory_limit) * 1024 * 1024),
             nano_cpus: Some(i64::from(spec.cpu_count) * 1_000_000_000),
             pids_limit: Some(512),
+            cap_drop: restricted_profile.then(|| vec!["ALL".to_string()]),
+            readonly_rootfs: restricted_profile.then_some(true),
+            security_opt: restricted_profile.then(|| vec!["no-new-privileges:true".to_string()]),
+            tmpfs: restricted_profile.then(|| {
+                HashMap::from([(
+                    "/tmp".to_string(),
+                    "rw,nosuid,nodev,noexec,size=268435456,mode=1777".to_string(),
+                )])
+            }),
             log_config: Some(bounded_log_config()),
             port_bindings,
             network_mode: docker_network_mode(&spec),
@@ -639,6 +650,7 @@ impl ContainerManager for DockerContainerManager {
 
         let mut labels = scoped_managed_labels(&self.scope);
         labels.insert(LAUNCH_SPEC_LABEL.to_string(), launch_fingerprint.clone());
+        stamp_restricted_profile(&mut labels, restricted_profile);
         if let Some(operation_id) = spec.operation_id.as_ref() {
             labels.insert(OPERATION_LABEL.to_string(), operation_id.clone());
         }
@@ -711,6 +723,7 @@ impl ContainerManager for DockerContainerManager {
                     || actual_operation != expected_operation
                     || actual_image != Some(spec.image.as_str())
                     || !launch_spec_matches(&existing, &launch_fingerprint)
+                    || !restricted_profile_matches(&existing, restricted_profile)
                 {
                     return Err(AppError::conflict(
                         "container operation identity is owned by a different workload",

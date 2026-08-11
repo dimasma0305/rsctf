@@ -493,13 +493,20 @@ mod tests {
     }
 
     #[test]
-    fn resolved_crown_must_be_one_tied_best_completed_team() {
-        let valid = wave("wave-1", vec![row(1, 8), row(2, 8)]);
+    fn resolved_crown_requires_one_unique_completed_leader() {
+        let valid = wave("wave-1", vec![row(1, 8), row(2, 7)]);
         assert!(validate_resolved_crowns(&[valid]).is_ok());
 
-        let mut missing = wave("wave-1", vec![row(1, 8), row(2, 8)]);
+        let mut missing = wave("wave-1", vec![row(1, 8), row(2, 7)]);
         missing.rows[0].is_crown = false;
         assert!(validate_resolved_crowns(&[missing]).is_err());
+
+        let mut tie = wave("wave-1", vec![row(1, 8), row(2, 8)]);
+        tie.rows[0].is_crown = false;
+        assert!(validate_resolved_crowns(&[tie]).is_ok());
+
+        let crowned_tie = wave("wave-1", vec![row(1, 8), row(2, 8)]);
+        assert!(validate_resolved_crowns(&[crowned_tie]).is_err());
 
         let mut weaker = wave("wave-1", vec![row(1, 7), row(2, 8)]);
         weaker.rows[0].is_crown = true;
@@ -688,15 +695,18 @@ mod tests {
         .await
         .unwrap();
 
-        let context = load_active_context(&pool, 7, 9)
-            .await
-            .unwrap()
-            .unwrap()
-            .opaque_context(
-                7,
-                9,
-                &["current-token-a".to_string(), "current-token-b".to_string()],
-            );
+        let active_context = load_active_context(&pool, 7, 9).await.unwrap().unwrap();
+        // Future rounds are created lazily. The observer context must still
+        // expose the cycle boundary using only the current authoritative tick.
+        assert_eq!(
+            active_context.cycle_ends_at - active_context.round_ends_at,
+            active_context.round_ends_at - active_context.round_starts_at
+        );
+        let context = active_context.opaque_context(
+            7,
+            9,
+            &["current-token-a".to_string(), "current-token-b".to_string()],
+        );
         let valid_hash = hex::encode(Sha256::digest(b"current-token-a"));
         let unknown_hash = hex::encode(Sha256::digest(b"stale-token"));
         let ended_at = Utc::now().timestamp_millis();
