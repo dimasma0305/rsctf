@@ -363,9 +363,7 @@ mod tests {
         ]));
     }
 
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn dense_tick_zeroes_omissions_and_incomplete_waves() {
+    async fn temporary_score_connection() -> sqlx::PgConnection {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
         let mut connection = sqlx::PgConnection::connect(&database_url).await.unwrap();
@@ -391,6 +389,13 @@ mod tests {
         .execute(&mut connection)
         .await
         .unwrap();
+        connection
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn dense_tick_zeroes_omissions_and_incomplete_waves() {
+        let mut connection = temporary_score_connection().await;
         let snapshot = KothApiSnapshot {
             hash: [7; 32],
             objective_schema_hash: [8; 32],
@@ -447,5 +452,51 @@ mod tests {
             (rows[1].3, rows[1].4, rows[1].5, rows[1].6),
             (0, 1, 0.0, 0.0)
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn dense_tick_gives_exact_ties_full_performance_without_a_crown() {
+        let mut connection = temporary_score_connection().await;
+        let snapshot = KothApiSnapshot {
+            hash: [9; 32],
+            objective_schema_hash: [10; 32],
+            waves: vec![KothApiWaveSnapshot {
+                wave_id: "tied-wave".to_string(),
+                ended_at_ms: 1,
+                rows: vec![
+                    KothApiEvidence {
+                        participation_id: 11,
+                        activity_earned: 1,
+                        activity_possible: 1,
+                        objective_earned: 1,
+                        objective_possible: 2,
+                        objective_count: 1,
+                        is_crown: false,
+                    },
+                    KothApiEvidence {
+                        participation_id: 12,
+                        activity_earned: 1,
+                        activity_possible: 1,
+                        objective_earned: 5_000,
+                        objective_possible: 10_000,
+                        objective_count: 1,
+                        is_crown: false,
+                    },
+                ],
+            }],
+        };
+        insert_dense_score_rows(&mut connection, 7, 9, 52, &[11, 12], &snapshot)
+            .await
+            .unwrap();
+        let rows = sqlx::query_as::<_, (i32, f64, f64)>(
+            r#"SELECT participation_id, performance_rate, lead_credit
+                 FROM "KothApiScoreResults"
+                ORDER BY participation_id"#,
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(rows, vec![(11, 1.0, 0.0), (12, 1.0, 0.0)]);
     }
 }

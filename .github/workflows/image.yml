@@ -387,32 +387,61 @@ jobs:
         env:
           AGENT_DIGEST: ${{ needs.build-agent.outputs.digest }}
           AGENT_IMAGE: ${{ needs.prepare.outputs.ghcr-agent }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
           SERVER_DIGEST: ${{ needs.build-server.outputs.digest }}
           SERVER_IMAGE: ${{ needs.prepare.outputs.ghcr }}
         run: |
           set -euo pipefail
-          promote() {
+          promote_once() {
             image=$1
             expected=$2
-            sha_actual="$(
+            if ! sha_actual="$(
               docker buildx imagetools inspect "${image}:sha-${GITHUB_SHA}" \
                 --format '{{ json .Manifest.Digest }}' | jq -er .
-            )"
+            )"; then
+              return 1
+            fi
             if [[ "$sha_actual" != "$expected" ]]; then
               echo "::error::Commit tag for ${image} has digest ${sha_actual}, expected ${expected}."
-              exit 1
+              return 2
             fi
-            docker buildx imagetools create \
+            if ! docker buildx imagetools create \
               --tag "${image}:main" \
-              "${image}@${expected}"
+              "${image}@${expected}"; then
+              return 1
+            fi
             main_actual="$(
               docker buildx imagetools inspect "${image}:main" \
                 --format '{{ json .Manifest.Digest }}' | jq -er .
-            )"
-            if [[ "$main_actual" != "$expected" ]]; then
-              echo "::error::Main tag for ${image} has digest ${main_actual}, expected ${expected}."
-              exit 1
-            fi
+            )" || return 1
+            [[ "$main_actual" == "$expected" ]]
+          }
+
+          promote() {
+            image=$1
+            expected=$2
+            for attempt in 1 2 3 4; do
+              if promote_once "$image" "$expected"; then
+                return
+              else
+                status=$?
+              fi
+              if [[ "$status" -eq 2 ]]; then
+                exit 1
+              fi
+              if [[ "$attempt" -eq 4 ]]; then
+                echo "::error::Could not promote ${image}@${expected} after four authenticated attempts. Verify that this repository has Actions write access to the linked GHCR package."
+                exit 1
+              fi
+              echo "::warning::GHCR promotion attempt ${attempt} failed for ${image}; refreshing registry authentication before retrying."
+              docker logout "$GHCR_REGISTRY" >/dev/null 2>&1 || true
+              if ! printf '%s' "$REGISTRY_TOKEN" | docker login "$GHCR_REGISTRY" \
+                --username "$REGISTRY_USER" --password-stdin; then
+                echo "::warning::GHCR authentication refresh failed; the next bounded retry will preserve the original failure."
+              fi
+              sleep $((attempt * 5))
+            done
           }
           promote "$AGENT_IMAGE" "$AGENT_DIGEST"
           promote "$SERVER_IMAGE" "$SERVER_DIGEST"

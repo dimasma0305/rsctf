@@ -500,6 +500,32 @@ mod tests {
     }
 
     #[test]
+    fn observer_context_wire_contract_includes_the_cycle_deadline_in_milliseconds() {
+        let at = |seconds| DateTime::from_timestamp(seconds, 123_000_000).unwrap();
+        let value = serde_json::to_value(KothObserverContextModel {
+            api_version: "v1",
+            context: "a".repeat(64),
+            cycle_number: 4,
+            reset_attempt: 2,
+            round_number: 9,
+            cycle_ends_at: at(310),
+            wave_window_starts_at: at(170),
+            wave_window_ends_at: at(230),
+            eligible_token_hashes: vec!["b".repeat(64)],
+            objective_ids: vec!["proof-strength".to_string()],
+            objective_schema_hash: Some("c".repeat(64)),
+            generated_at: at(171),
+        })
+        .unwrap();
+        assert_eq!(value["apiVersion"], "v1");
+        assert_eq!(value["cycleEndsAt"], 310_123_i64);
+        assert_eq!(value["waveWindowStartsAt"], 170_123_i64);
+        assert_eq!(value["waveWindowEndsAt"], 230_123_i64);
+        assert!(value.get("cycle_ends_at").is_none());
+        assert_eq!(value.as_object().unwrap().len(), 12);
+    }
+
+    #[test]
     fn timestamp_window_is_strict() {
         let now = 1_000_000_i64;
         let mut headers = HeaderMap::new();

@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
 import test from 'node:test';
 
-import { kothApiEvidence } from '../applib.mjs';
+import {
+  assignUniqueKothApiCrown,
+  kothApiEvidence,
+  validateKothApiContext,
+} from '../applib.mjs';
 import {
   kothObservationHeaders,
   kothObservationMessage,
@@ -68,4 +72,76 @@ test('Leaderboard load evidence uses hashes and equivalent native score scales',
     earned: 5_000,
     possible: 10_000,
   });
+});
+
+test('Leaderboard load fixture crowns only one unique normalized leader', () => {
+  const teams = [
+    kothApiEvidence('koth_team_lower', 0),
+    kothApiEvidence('koth_team_leader', 5),
+  ];
+  assignUniqueKothApiCrown(teams);
+  assert.deepEqual(teams.map((team) => team.isCrown), [false, true]);
+});
+
+test('Leaderboard load fixture emits no Crown for equal native ratios on different scales', () => {
+  const teams = [
+    kothApiEvidence('koth_team_small_scale', 0),
+    kothApiEvidence('koth_team_large_scale', 6),
+  ];
+  teams[0].isCrown = true;
+  assignUniqueKothApiCrown(teams);
+  assert.deepEqual(teams.map((team) => team.isCrown), [false, false]);
+});
+
+test('Leaderboard load fixture resolves ties after platform-equivalent integer normalization', () => {
+  const row = (earned, possible, isCrown) => ({
+    activity: { earned: 1, possible: 1 },
+    objectives: [{ earned, possible }],
+    isCrown,
+  });
+  const teams = [row(1, 3, true), row(333_333, 1_000_000, false)];
+  assignUniqueKothApiCrown(teams);
+  assert.deepEqual(teams.map((team) => team.isCrown), [false, false]);
+});
+
+test('Leaderboard load fixture never crowns zero or incomplete evidence', () => {
+  const teams = [
+    {
+      activity: { earned: 0, possible: 1 },
+      objectives: [{ earned: 1, possible: 1 }],
+      isCrown: true,
+    },
+    {
+      activity: { earned: 1, possible: 1 },
+      objectives: [{ earned: 0, possible: 1 }],
+      isCrown: true,
+    },
+  ];
+  assignUniqueKothApiCrown(teams);
+  assert.deepEqual(teams.map((team) => team.isCrown), [false, false]);
+});
+
+test('Leaderboard load fixture requires a complete fenced context window', () => {
+  const context = {
+    apiVersion: 'v1',
+    context: 'a'.repeat(64),
+    cycleNumber: 3,
+    resetAttempt: 1,
+    roundNumber: 7,
+    cycleEndsAt: 240_000,
+    waveWindowStartsAt: 120_000,
+    waveWindowEndsAt: 180_000,
+    generatedAt: 125_000,
+    eligibleTokenHashes: ['b'.repeat(64), 'c'.repeat(64)],
+  };
+  assert.equal(validateKothApiContext(context), context);
+  for (const malformed of [
+    { ...context, apiVersion: 'v2' },
+    { ...context, cycleEndsAt: undefined },
+    { ...context, cycleEndsAt: context.waveWindowEndsAt - 1 },
+    { ...context, waveWindowEndsAt: context.waveWindowStartsAt },
+    { ...context, eligibleTokenHashes: ['b'.repeat(64), 'b'.repeat(64)] },
+  ]) {
+    assert.throws(() => validateKothApiContext(malformed), /context response is malformed/);
+  }
 });

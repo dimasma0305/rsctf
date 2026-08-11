@@ -1497,6 +1497,87 @@ export function kothApiEvidence(token, index) {
   };
 }
 
+const KOTH_API_NORMALIZATION_SCALE = 1_000_000n;
+
+function normalizedKothApiObjectiveTotal(team) {
+  if (
+    !team ||
+    !team.activity ||
+    !Number.isSafeInteger(team.activity.earned) ||
+    !Number.isSafeInteger(team.activity.possible) ||
+    team.activity.possible <= 0 ||
+    team.activity.earned !== team.activity.possible ||
+    !Array.isArray(team.objectives) ||
+    team.objectives.length === 0
+  ) {
+    return null;
+  }
+  let total = 0n;
+  for (const objective of team.objectives) {
+    if (
+      !objective ||
+      !Number.isSafeInteger(objective.earned) ||
+      !Number.isSafeInteger(objective.possible) ||
+      objective.earned < 0 ||
+      objective.possible <= 0 ||
+      objective.earned > objective.possible
+    ) {
+      throw new TypeError('KotH API fixture objective must be a bounded integer ratio');
+    }
+    const earned = BigInt(objective.earned);
+    const possible = BigInt(objective.possible);
+    total += (earned * KOTH_API_NORMALIZATION_SCALE + possible / 2n) / possible;
+  }
+  return total > 0n ? total : null;
+}
+
+/** Apply the same unique-positive-normalized-leader Crown rule as RSCTF. */
+export function assignUniqueKothApiCrown(teams) {
+  if (!Array.isArray(teams)) throw new TypeError('KotH API teams must be an array');
+  let best = null;
+  let leaders = [];
+  teams.forEach((team, index) => {
+    team.isCrown = false;
+    const score = normalizedKothApiObjectiveTotal(team);
+    if (score == null) return;
+    if (best == null || score > best) {
+      best = score;
+      leaders = [index];
+    } else if (score === best) {
+      leaders.push(index);
+    }
+  });
+  if (leaders.length === 1) teams[leaders[0]].isCrown = true;
+  return teams;
+}
+
+export function validateKothApiContext(contextModel) {
+  const eligible = contextModel?.eligibleTokenHashes;
+  if (
+    contextModel?.apiVersion !== 'v1' ||
+    typeof contextModel?.context !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(contextModel.context) ||
+    !Number.isSafeInteger(contextModel?.cycleNumber) ||
+    contextModel.cycleNumber < 1 ||
+    !Number.isSafeInteger(contextModel?.resetAttempt) ||
+    contextModel.resetAttempt < 0 ||
+    !Number.isSafeInteger(contextModel?.roundNumber) ||
+    contextModel.roundNumber < 1 ||
+    !Number.isSafeInteger(contextModel?.waveWindowStartsAt) ||
+    !Number.isSafeInteger(contextModel?.waveWindowEndsAt) ||
+    contextModel.waveWindowEndsAt <= contextModel.waveWindowStartsAt ||
+    !Number.isSafeInteger(contextModel?.cycleEndsAt) ||
+    contextModel.cycleEndsAt < contextModel.waveWindowEndsAt ||
+    !Number.isSafeInteger(contextModel?.generatedAt) ||
+    !Array.isArray(eligible) ||
+    eligible.some((hash) => typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) ||
+    new Set(eligible).size !== eligible.length
+  ) {
+    throw new Error('KotH API context response is malformed');
+  }
+  return contextModel;
+}
+
 /**
  * Report a simultaneous normalized arena snapshot through the trusted referee
  * API. Bearer capabilities are hashed locally and never enter the signed body.
@@ -1520,18 +1601,8 @@ export async function kothApiObservation(
       `fetch KotH API context → ${contextResponse.status} ${contextResponse.text?.slice(0, 200)}`,
     );
   }
-  const contextModel = unwrap(contextResponse);
-  const context = contextModel?.context;
-  if (
-    typeof context !== 'string' ||
-    !/^[0-9a-f]{64}$/.test(context) ||
-    !Number.isSafeInteger(contextModel?.roundNumber) ||
-    !Number.isSafeInteger(contextModel?.waveWindowStartsAt) ||
-    !Number.isSafeInteger(contextModel?.waveWindowEndsAt) ||
-    !Array.isArray(contextModel?.eligibleTokenHashes)
-  ) {
-    throw new Error('KotH API context response is malformed');
-  }
+  const contextModel = validateKothApiContext(unwrap(contextResponse));
+  const context = contextModel.context;
   const tokens = Array.isArray(tokenOrTokens)
     ? tokenOrTokens
     : typeof tokenOrTokens === 'string'
@@ -1542,19 +1613,7 @@ export async function kothApiObservation(
   const teams = selectedTokens
     .map((token, index) => kothApiEvidence(token, index))
     .filter(Boolean);
-  let crownIndex = -1;
-  let crownScore = 0;
-  teams.forEach((team, index) => {
-    const score = team.objectives.reduce(
-      (total, objective) => total + objective.earned / objective.possible,
-      0,
-    );
-    if (score > crownScore) {
-      crownScore = score;
-      crownIndex = index;
-    }
-  });
-  if (crownIndex >= 0) teams[crownIndex].isCrown = true;
+  assignUniqueKothApiCrown(teams);
   const scope = `${gameId}:${challengeId}`;
   const previous = kothObservationLedgers.get(scope);
   const ledger = previous?.context === context

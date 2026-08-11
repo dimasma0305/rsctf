@@ -186,7 +186,7 @@ write_to_hill "/koth/king" "$TOKEN"`,
               >
                 {t(
                   'game.content.koth.guide.api_notice',
-                  'Every eligible team can score in each finalized challenge wave. Complete a fresh run every wave; the trusted referee sends evidence and one tied-best Crown, never points or your raw capability.'
+                  'Every eligible team can score in each finalized challenge wave. Complete a fresh run every wave; the trusted referee sends evidence and one unique-leader Crown when there is no exact tie, never points or your raw capability.'
                 )}
               </Alert>
             )}

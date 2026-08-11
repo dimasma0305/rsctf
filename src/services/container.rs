@@ -68,7 +68,7 @@ mod tests;
 use self::docker::{
     docker_network_mode, image_requests_restricted_profile, is_conflict, is_not_found,
     launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
-    stamp_restricted_profile, LAUNCH_SPEC_LABEL,
+    restricted_tmpfs_mounts, stamp_restricted_profile, LAUNCH_SPEC_LABEL,
 };
 use logging::bounded_log_config;
 use naming::{container_name, map_status};
@@ -636,12 +636,7 @@ impl ContainerManager for DockerContainerManager {
             cap_drop: restricted_profile.then(|| vec!["ALL".to_string()]),
             readonly_rootfs: restricted_profile.then_some(true),
             security_opt: restricted_profile.then(|| vec!["no-new-privileges:true".to_string()]),
-            tmpfs: restricted_profile.then(|| {
-                HashMap::from([(
-                    "/tmp".to_string(),
-                    "rw,nosuid,nodev,noexec,size=268435456,mode=1777".to_string(),
-                )])
-            }),
+            tmpfs: restricted_profile.then(restricted_tmpfs_mounts),
             log_config: Some(bounded_log_config()),
             port_bindings,
             network_mode: docker_network_mode(&spec),

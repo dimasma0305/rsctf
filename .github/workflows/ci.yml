@@ -591,6 +591,9 @@ jobs:
           grep -q 'source-ref refs/heads/main' "$workflow"
           grep -q 'type=sha,format=long,prefix=sha-' "$workflow"
           grep -q 'Promote attested images to main' "$workflow"
+          grep -q 'for attempt in 1 2 3 4' "$workflow"
+          grep -q 'docker logout "$GHCR_REGISTRY"' "$workflow"
+          grep -q 'after four authenticated attempts' "$workflow"
           grep -q 'Promote verified commit images' "$workflow"
 
       - name: Validate layer-backed Rust dependency caches

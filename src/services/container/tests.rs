@@ -8,8 +8,9 @@ use bollard::models::{
 use super::docker::{
     docker_liveness, docker_network_mode, failed_start_action, image_requests_restricted_profile,
     launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
-    verify_container_scope, FailedStartAction, LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE,
-    RESTRICTED_IMAGE_PROFILE_LABEL,
+    restricted_tmpfs_mounts, stamp_restricted_profile, verify_container_scope, FailedStartAction,
+    LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
+    RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
 };
 use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
@@ -41,6 +42,22 @@ fn restricted_runtime_profile_requires_the_exact_organizer_image_label() {
         "restricted"
     ))));
     assert!(!image_requests_restricted_profile(&image(None)));
+    assert!(!image_requests_restricted_profile(&ImageInspect::default()));
+}
+
+#[test]
+fn restricted_runtime_label_stamping_is_reversible() {
+    let mut labels = HashMap::from([("existing".to_string(), "kept".to_string())]);
+    stamp_restricted_profile(&mut labels, true);
+    assert_eq!(
+        labels
+            .get(RESTRICTED_IMAGE_PROFILE_LABEL)
+            .map(String::as_str),
+        Some(RESTRICTED_IMAGE_PROFILE)
+    );
+    stamp_restricted_profile(&mut labels, false);
+    assert!(!labels.contains_key(RESTRICTED_IMAGE_PROFILE_LABEL));
+    assert_eq!(labels.get("existing").map(String::as_str), Some("kept"));
 }
 
 #[test]
@@ -50,7 +67,7 @@ fn restricted_retry_refuses_to_adopt_a_container_without_the_runtime_guards() {
             cap_drop: Some(vec!["ALL".to_string()]),
             readonly_rootfs: Some(true),
             security_opt: Some(vec!["no-new-privileges:true".to_string()]),
-            tmpfs: Some(HashMap::from([("/tmp".to_string(), "rw".to_string())])),
+            tmpfs: Some(restricted_tmpfs_mounts()),
             ..Default::default()
         }),
         ..Default::default()
@@ -61,6 +78,41 @@ fn restricted_retry_refuses_to_adopt_a_container_without_the_runtime_guards() {
         &ContainerInspectResponse::default(),
         true
     ));
+
+    let mut weakened = guarded.clone();
+    weakened.host_config.as_mut().unwrap().readonly_rootfs = Some(false);
+    assert!(!restricted_profile_matches(&weakened, true));
+
+    let mut weakened = guarded.clone();
+    weakened.host_config.as_mut().unwrap().cap_drop = Some(vec!["NET_RAW".to_string()]);
+    assert!(!restricted_profile_matches(&weakened, true));
+
+    let mut weakened = guarded.clone();
+    weakened.host_config.as_mut().unwrap().security_opt = Some(vec!["seccomp=default".to_string()]);
+    assert!(!restricted_profile_matches(&weakened, true));
+
+    for options in [
+        "rw",
+        "rw,nosuid,nodev,noexec,size=268435456",
+        "rw,nosuid,nodev,noexec,size=536870912,mode=1777",
+    ] {
+        let mut weakened = guarded.clone();
+        weakened.host_config.as_mut().unwrap().tmpfs = Some(HashMap::from([(
+            RESTRICTED_TMPFS_PATH.to_string(),
+            options.to_string(),
+        )]));
+        assert!(!restricted_profile_matches(&weakened, true));
+    }
+
+    let mut weakened = guarded.clone();
+    weakened.host_config.as_mut().unwrap().tmpfs = Some(HashMap::from([
+        (
+            RESTRICTED_TMPFS_PATH.to_string(),
+            RESTRICTED_TMPFS_OPTIONS.to_string(),
+        ),
+        ("/run".to_string(), "rw".to_string()),
+    ]));
+    assert!(!restricted_profile_matches(&weakened, true));
 }
 
 fn inspected_network(subnets: &[&str], internal: bool) -> Network {

@@ -19,6 +19,8 @@ pub(super) const LAUNCH_SPEC_LABEL: &str = "rsctf.launch-spec";
 /// runtime profile.
 pub(super) const RESTRICTED_IMAGE_PROFILE_LABEL: &str = "org.rsctf.security-profile";
 pub(super) const RESTRICTED_IMAGE_PROFILE: &str = "restricted-v1";
+pub(super) const RESTRICTED_TMPFS_PATH: &str = "/tmp";
+pub(super) const RESTRICTED_TMPFS_OPTIONS: &str = "rw,nosuid,nodev,noexec,size=268435456,mode=1777";
 
 pub(super) fn image_requests_restricted_profile(image: &ImageInspect) -> bool {
     image
@@ -38,7 +40,16 @@ pub(super) fn stamp_restricted_profile(
             RESTRICTED_IMAGE_PROFILE_LABEL.into(),
             RESTRICTED_IMAGE_PROFILE.into(),
         );
+    } else {
+        labels.remove(RESTRICTED_IMAGE_PROFILE_LABEL);
     }
+}
+
+pub(super) fn restricted_tmpfs_mounts() -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::from([(
+        RESTRICTED_TMPFS_PATH.to_string(),
+        RESTRICTED_TMPFS_OPTIONS.to_string(),
+    )])
 }
 
 pub(super) fn restricted_profile_matches(
@@ -61,10 +72,12 @@ pub(super) fn restricted_profile_matches(
                 .iter()
                 .any(|option| option == "no-new-privileges:true")
         })
-        && config
-            .tmpfs
-            .as_ref()
-            .is_some_and(|mounts| mounts.contains_key("/tmp"))
+        && config.tmpfs.as_ref().is_some_and(|mounts| {
+            mounts.len() == 1
+                && mounts
+                    .get(RESTRICTED_TMPFS_PATH)
+                    .is_some_and(|options| options == RESTRICTED_TMPFS_OPTIONS)
+        })
 }
 
 #[derive(serde::Serialize)]

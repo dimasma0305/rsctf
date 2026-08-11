@@ -342,6 +342,24 @@ mod tests {
     }
 
     #[test]
+    fn leaderboard_relative_curve_is_bounded_and_monotonic_across_the_valid_domain() {
+        for best_step in 1..=100 {
+            let best = f64::from(best_step) / 100.0;
+            let mut previous = 0.0;
+            for core_step in 0..=best_step {
+                let core = f64::from(core_step) / 100.0;
+                let score = leaderboard_relative_performance(core, best);
+                assert!(score.is_finite());
+                assert!((0.0..=1.0).contains(&score));
+                assert!(score + f64::EPSILON >= previous);
+                previous = score;
+            }
+            assert_eq!(leaderboard_relative_performance(best, best), 1.0);
+            assert_eq!(leaderboard_relative_performance(best + 1.0, best), 1.0);
+        }
+    }
+
+    #[test]
     fn leaderboard_crown_uses_exact_ratios_and_requires_a_unique_leader() {
         assert!(leaderboard_crown_is_valid([
             (1, 1, 3, 3, true),
@@ -363,5 +381,56 @@ mod tests {
             (0, 1, 0, 1, false),
             (1, 1, 0, 1, false),
         ]));
+    }
+
+    #[test]
+    fn leaderboard_crown_rule_matches_the_reference_for_all_small_rosters() {
+        let states = [
+            (0, 1, 0, 1),
+            (1, 2, 1, 4),
+            (1, 1, 0, 1),
+            (1, 1, 1, 4),
+            (1, 1, 1, 2),
+            (1, 1, 2, 4),
+            (1, 1, 1, 1),
+            (i64::MAX, i64::MAX, i64::MAX - 1, i64::MAX),
+        ];
+        for team_count in 1..=3_usize {
+            let combinations = states.len().pow(team_count as u32);
+            for mut encoded in 0..combinations {
+                let mut roster = Vec::with_capacity(team_count);
+                for _ in 0..team_count {
+                    roster.push(states[encoded % states.len()]);
+                    encoded /= states.len();
+                }
+                let eligible: Vec<_> = roster
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| row.1 > 0 && row.3 > 0 && row.0 == row.1 && row.2 > 0)
+                    .collect();
+                let leaders: Vec<_> = eligible
+                    .iter()
+                    .copied()
+                    .filter(|(_, candidate)| {
+                        eligible.iter().all(|(_, other)| {
+                            i128::from(candidate.2) * i128::from(other.3)
+                                >= i128::from(other.2) * i128::from(candidate.3)
+                        })
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                let expected_mask = if leaders.len() == 1 {
+                    1_usize << leaders[0]
+                } else {
+                    0
+                };
+                for crown_mask in 0..(1_usize << team_count) {
+                    let actual = leaderboard_crown_is_valid(roster.iter().enumerate().map(
+                        |(index, row)| (row.0, row.1, row.2, row.3, crown_mask & (1 << index) != 0),
+                    ));
+                    assert_eq!(actual, crown_mask == expected_mask, "roster={roster:?}");
+                }
+            }
+        }
     }
 }
