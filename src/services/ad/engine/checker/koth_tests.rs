@@ -343,7 +343,8 @@ async fn missing_cycle_still_records_one_platform_void() {
     sqlx::raw_sql(
         r#"
         CREATE TEMP TABLE "KothOfficialConfigs" (
-          game_id INTEGER NOT NULL
+          game_id INTEGER NOT NULL,
+          hills_snapshot JSONB NOT NULL
         );
         CREATE TEMP TABLE "KothCrownCycles" (
           id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
@@ -394,10 +395,13 @@ async fn missing_cycle_still_records_one_platform_void() {
         (None, None, None, false, AdCheckStatus::InternalError as i16)
     );
 
-    sqlx::query(r#"INSERT INTO "KothOfficialConfigs" VALUES (7)"#)
-        .execute(&mut connection)
-        .await
-        .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "KothOfficialConfigs" (game_id, hills_snapshot)
+           VALUES (7, '[{"challengeId":9,"claimSource":"Marker"}]'::jsonb)"#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
     sqlx::query(
         r#"INSERT INTO "KothCrownCycles" VALUES
              (41,7,9,2,4,6,'replacement-41','old-41',3)"#,
