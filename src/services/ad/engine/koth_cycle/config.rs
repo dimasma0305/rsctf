@@ -43,7 +43,7 @@ pub(crate) fn valid_crown_shape(
     validate_crown_shape(epoch_ticks, cycle_ticks, cooldown_ticks, confirmation_ticks).is_ok()
 }
 
-/// Freeze crown-cycle configuration, roster, enabled hills, service weights,
+/// Freeze official KotH configuration, roster, enabled hills, service weights,
 /// images, and the official boundary in the transaction opening scoring.
 pub(crate) async fn snapshot_official_config(
     transaction: &mut Transaction<'static, Postgres>,

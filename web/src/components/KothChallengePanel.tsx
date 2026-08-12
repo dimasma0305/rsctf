@@ -62,7 +62,7 @@ interface KothChallengePanelProps {
  * <see cref="AdChallengePanel"/> but for the shared hill model:
  *   - the hill IP:port (one shared container per challenge — copy-button so the
  *     player can drop it straight into curl);
- *   - the team's exact capability for this hill and crown cycle;
+ *   - the team's exact cycle capability or event-stable arena capability;
  *   - marker-holder state, or the Leaderboard play model;
  *   - the latest functional verdict on the hill.
  *
@@ -205,7 +205,21 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
         </Alert>
       )}
 
-      {((stateData?.cycleNumber ?? 0) > 0 || stateData?.nextResetTicks != null || isResetting) && (
+      {isApiArena ? (
+        <Group gap={6} wrap="wrap">
+          <Badge size="xs" color="blue" variant="light">
+            {t('game.content.koth.api_persistent_arena', 'Persistent arena · health supervised')}
+          </Badge>
+          {isResetting && (
+            <Badge size="xs" color={resetPhase === 'Failed' ? 'red' : 'orange'} variant="filled">
+              {t('game.content.koth.api_recovery_phase', {
+                phase: resetPhase,
+                defaultValue: 'Health recovery: {{phase}}',
+              })}
+            </Badge>
+          )}
+        </Group>
+      ) : (stateData?.cycleNumber ?? 0) > 0 || stateData?.nextResetTicks != null || isResetting ? (
         <Group gap={6} wrap="wrap">
           {(stateData?.cycleNumber ?? 0) > 0 && (
             <Badge size="xs" color="violet" variant="light">
@@ -240,14 +254,16 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
             </Badge>
           ) : null}
         </Group>
-      )}
+      ) : null}
 
       {isResetting && (
         <Alert color={resetPhase === 'Failed' ? 'red' : 'orange'} variant="light" p="xs">
           <Text size="xs">
             {t(
               'game.content.koth.reset_pause',
-              'The hill is being rebuilt and checked. Reset/readiness time is excluded from scoring.'
+              isApiArena
+                ? 'The arena failed health supervision and is being rebuilt. Recovery time is excluded from scoring; your event token remains valid.'
+                : 'The hill is being rebuilt and checked. Reset/readiness time is excluded from scoring.'
             )}
           </Text>
         </Alert>
@@ -403,8 +419,8 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
         )}
       </Group>
 
-      {/* No hill rendered yet — operator hasn't ensured containers, or a crown-cycle
-          reset is rebuilding it. Surface a hint instead of silence. */}
+      {/* No hill rendered yet — the operator has not ensured containers, or a
+          lifecycle transition is rebuilding it. Surface a hint instead of silence. */}
       {!hill?.ip && targets && stateData && (
         <Alert icon={<Icon path={mdiAlertCircleOutline} size={0.9} />} color="orange" variant="light" p="xs">
           <Text size="xs">

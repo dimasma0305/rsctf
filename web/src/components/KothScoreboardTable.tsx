@@ -106,11 +106,30 @@ const KothLifecycleBadges: FC<{
   const { t } = useTranslation()
   const phase = hill.resetPhase
   const isTransition = hill.cycleNumber > 0 && isKothResetTransition(phase)
+  const isApiArena = hill.claimSource === 'Api'
   const cooldown = hill.cooldownParticipants
   const [confirmationCurrent, confirmationRequired] = kothConfirmationProgress(
     hill.provisionalConfirmationTicks,
     confirmationTicks
   )
+
+  if (isApiArena) {
+    return (
+      <Group gap={4} justify="center" wrap="wrap">
+        <Badge size="xs" color="blue" variant="light">
+          {t('game.content.scoreboard.koth.api.health_supervised', 'Persistent · health supervised')}
+        </Badge>
+        {isTransition && (
+          <Badge size="xs" color={phase === 'Failed' ? 'red' : 'orange'} variant="filled">
+            {t('game.content.scoreboard.koth.api.recovery_phase', {
+              phase,
+              defaultValue: 'Recovery: {{phase}}',
+            })}
+          </Badge>
+        )}
+      </Group>
+    )
+  }
 
   if (
     hill.cycleNumber <= 0 &&
@@ -434,6 +453,7 @@ interface ScoringInfoModalProps {
   championCooldownTicks: number
   claimConfirmationTicks: number
   hasApiArena: boolean
+  hasMarkerHill: boolean
 }
 
 const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
@@ -447,6 +467,7 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
   championCooldownTicks,
   claimConfirmationTicks,
   hasApiArena,
+  hasMarkerHill,
 }) => {
   const { t } = useTranslation()
   const currentEpochRange =
@@ -530,15 +551,17 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
           )}
         </Text>
 
-        <Text size="xs" c="dimmed">
-          {t('game.content.scoreboard.koth.score_info.cycles', {
-            cycleTicks,
-            confirmationTicks: claimConfirmationTicks,
-            cooldownTicks: championCooldownTicks,
-            defaultValue:
-              'Each crown cycle lasts {{cycleTicks}} ticks. A claim needs {{confirmationTicks}} consecutive healthy ticks; the previous cycle champion is excluded for {{cooldownTicks}} tick(s) after a healthy reset.',
-          })}
-        </Text>
+        {hasMarkerHill && (
+          <Text size="xs" c="dimmed">
+            {t('game.content.scoreboard.koth.score_info.cycles', {
+              cycleTicks,
+              confirmationTicks: claimConfirmationTicks,
+              cooldownTicks: championCooldownTicks,
+              defaultValue:
+                'Each Boot2Root crown cycle lasts {{cycleTicks}} ticks. A claim needs {{confirmationTicks}} consecutive healthy ticks; the previous cycle champion is excluded for {{cooldownTicks}} tick(s) after a healthy reset.',
+            })}
+          </Text>
+        )}
 
         <Divider />
 
@@ -552,6 +575,12 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
                 {t(
                   'game.content.scoreboard.koth.api.info_body',
                   'Every finalized Leaderboard wave scores independently. RSCTF normalizes each completed team’s signed native result against the best result in that same wave, then applies one fixed curve. The referee submits evidence and one Crown assertion, never platform points.'
+                )}
+              </Text>
+              <Text size="xs">
+                {t(
+                  'game.content.scoreboard.koth.api.lifecycle',
+                  'The arena stays online across scoring rounds and epochs. RSCTF checks it every round and recreates it only after a stopped runtime or repeated functional-check failures; recovery time is field-wide void.'
                 )}
               </Text>
               <Text size="xs" fw={700} className={cx(misc.ffmono, classes.scoringFormula)}>
@@ -825,7 +854,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
             <Text size="sm">
               {t(
                 'game.content.scoreboard.koth.epoch.not_started',
-                'Scoring is waiting for an active, healthy crown cycle and ready hills.'
+                'Scoring is waiting for active, healthy KotH runtimes and ready hills.'
               )}
             </Text>
           </Alert>
@@ -848,7 +877,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
               {t('game.content.scoreboard.koth.reset_pause', {
                 hills: transitioningHills.map((hill) => hill.title).join(', '),
                 defaultValue:
-                  '{{hills}} is resetting or proving readiness. This time is excluded from every scoring denominator.',
+                  '{{hills}} is recovering or proving readiness. This time is excluded from every scoring denominator.',
               })}
             </Text>
           </Alert>
@@ -1277,6 +1306,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
         championCooldownTicks={scoreboard.championCooldownTicks}
         claimConfirmationTicks={scoreboard.claimConfirmationTicks}
         hasApiArena={hasApiArena}
+        hasMarkerHill={!onlyApiArena}
       />
     </Paper>
   )

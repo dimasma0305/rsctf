@@ -73,25 +73,31 @@ an explicit zero. Earlier evidence is never carried forward. Leaderboard KotH
 has one challenge-native Crown per wave but no Boot2Root marker, provisional
 claim, or champion-cooldown score; several teams score at the same time.
 
-## Ticks, pristine resets, and epochs
+## Ticks, lifecycles, and epochs
 
 The checker samples each hill once per scorable tick at a server-randomized
-time. Do not rely on the round boundary as the check time. Several ticks form a
-crown cycle. At its boundary, RSCTF pauses the hill, finalizes evidence,
-destroys the old container, creates a pristine replacement from the official
-image snapshot, rotates Boot2Root capabilities, runs readiness, and resumes
-only after the replacement works. A Leaderboard capability remains valid
-across these resets so the same opaque token can re-enter the replacement.
+time. Do not rely on the round boundary as the check time.
 
-The reset invalidates Boot2Root capabilities plus transient challenge sessions,
-patches, and implants. It does not rotate a Leaderboard token. Reset/readiness
-time, incomplete capability issuance, and platform-attributed failures are void
-rather than charged to teams.
+For Boot2Root, several ticks form a crown cycle. At its boundary, RSCTF pauses
+the hill, finalizes evidence, destroys the old container, creates a pristine
+replacement from the official image snapshot, rotates cycle capabilities,
+runs readiness, and resumes only after the replacement works. The reset
+invalidates transient challenge sessions, patches, and implants.
 
-Several crown cycles form an epoch. Complete evidence-bearing epochs have
-equal weight. A shortened final epoch has proportional weight, and a wholly
-field-void hill is omitted from hill normalization. Bounded hill weights never
-raise the epoch ceiling above 100.
+A Leaderboard arena stays online across rounds and epochs; the challenge's
+per-wave Crown is a scoring result, not a reset clock. RSCTF still performs an
+independent functional check every round. A stopped runtime is recovered
+immediately, while three consecutive `Mumble` or `Offline` verdicts for the
+same runtime trigger replacement. Uncertain platform `InternalError` verdicts
+do not destroy the arena. Recovery preserves the event token but invalidates
+transient sessions and unsettled snapshots.
+
+Provisioning, recovery, readiness, incomplete capability issuance, and
+platform-attributed failures are void rather than charged to teams. Several
+ticks form an epoch. Complete evidence-bearing epochs have equal weight. A
+shortened final epoch has proportional weight, and a wholly field-void hill is
+omitted from hill normalization. Bounded hill weights never raise the epoch
+ceiling above 100.
 
 ## Get and protect your capability
 
@@ -99,7 +105,8 @@ raise the epoch ceiling above 100.
 2. Copy the current capability for the specific hill.
 3. Use only the challenge's published marker or application endpoint.
 4. For Boot2Root, fetch the replacement after every crown-cycle reset. For
-   Leaderboard, keep using the event token unless you deliberately rotate it.
+   Leaderboard, keep using the event token across ordinary play and health
+   recovery unless you deliberately rotate it.
 5. Keep every capability out of logs, screenshots, writeups, and public
    automation output.
 
@@ -148,6 +155,7 @@ For Leaderboard:
 
 - automate the documented challenge interaction, not the trusted referee;
 - complete a fresh verified run in every wave you want to score;
+- reconnect after a health-recovery notice with the same event token;
 - optimize the published official result relative to the current field;
 - solve server-issued tasks instead of guessing; and
 - monitor wave evidence because omitted or late work does not carry.

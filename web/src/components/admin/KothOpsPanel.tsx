@@ -341,7 +341,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
           <Table.Thead className={tableClasses.thead}>
             <Table.Tr>
               <Table.Th scope="col">{t('admin.content.ad_ops.koth.col_hill', 'Hill')}</Table.Th>
-              <Table.Th scope="col">{t('admin.content.ad_ops.koth.col_phase', 'Cycle / reset')}</Table.Th>
+              <Table.Th scope="col">{t('admin.content.ad_ops.koth.col_phase', 'Lifecycle / recovery')}</Table.Th>
               <Table.Th scope="col">{t('admin.content.ad_ops.koth.col_status', 'Health')}</Table.Th>
               <Table.Th scope="col">{t('admin.content.ad_ops.koth.col_king', 'Control')}</Table.Th>
               <Table.Th scope="col">{t('admin.content.ad_ops.koth.col_cooldown', 'Cooldown')}</Table.Th>
@@ -402,9 +402,18 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                           }
                           variant={!hasCycle || phase === 'Active' || phase === 'Ended' ? 'light' : 'filled'}
                         >
-                          {hasCycle ? phase : t('admin.content.ad_ops.koth.awaiting_cycle', 'Awaiting cycle')}
+                          {hasCycle
+                            ? isApiArena && phase === 'Active'
+                              ? t('admin.content.ad_ops.koth.api_health_supervised', 'Health supervised')
+                              : isApiArena
+                                ? t('admin.content.ad_ops.koth.api_recovery', {
+                                    phase,
+                                    defaultValue: 'Recovery: {{phase}}',
+                                  })
+                                : phase
+                            : t('admin.content.ad_ops.koth.awaiting_cycle', 'Awaiting lifecycle')}
                         </Badge>
-                        {hasCycle && (
+                        {hasCycle && !isApiArena && (
                           <Badge size="xs" color="violet" variant="light">
                             C{hill.cycleNumber}
                             {` · ${hill.cycleTick}/${koth.cycleTicks}`}
@@ -412,7 +421,9 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
                         )}
                       </Group>
                       <Text size="xs" c="dimmed" className={misc.ffmono}>
-                        durable: {hill.durablePhase}
+                        {isApiArena
+                          ? `lifecycle ${hill.cycleNumber} · runtime attempt ${hill.resetAttempt}`
+                          : `durable: ${hill.durablePhase}`}
                       </Text>
                       {phase === 'Active' && hill.nextResetTicks != null && (
                         <Text size="xs" c="dimmed">

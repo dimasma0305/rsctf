@@ -15,6 +15,61 @@ use crate::services::ad::engine::{
 };
 use crate::utils::error::{AppError, AppResult};
 
+const API_HEALTH_FAILURE_RESET_THRESHOLD: usize = 3;
+
+fn api_health_recovery_due(statuses: &[i16]) -> bool {
+    statuses.len() >= API_HEALTH_FAILURE_RESET_THRESHOLD
+        && statuses
+            .iter()
+            .take(API_HEALTH_FAILURE_RESET_THRESHOLD)
+            .all(|status| {
+                matches!(
+                    AdCheckStatus::from_i16(*status),
+                    AdCheckStatus::Mumble | AdCheckStatus::Offline
+                )
+            })
+}
+
+async fn api_health_recovery_reason(
+    connection: &mut sqlx::PgConnection,
+    hill: &LiveHill,
+    status: AdCheckStatus,
+    dead_container_id: Option<&str>,
+) -> AppResult<Option<String>> {
+    if dead_container_id.is_some() {
+        return Ok(Some(
+            "active Leaderboard container stopped; health recovery scheduled".to_string(),
+        ));
+    }
+    if !matches!(status, AdCheckStatus::Mumble | AdCheckStatus::Offline) {
+        return Ok(None);
+    }
+    let statuses: Vec<i16> = sqlx::query_scalar(
+        r#"SELECT result.status
+             FROM "KothControlResults" result
+            WHERE result.cycle_id = $1
+              AND result.challenge_id = $2
+              AND result.container_id = $3
+              AND result.token_window_attempt = $4
+            ORDER BY result.checked_at DESC, result.id DESC
+            LIMIT $5"#,
+    )
+    .bind(hill.cycle_id)
+    .bind(hill.challenge_id)
+    .bind(&hill.container_id)
+    .bind(hill.token_window_attempt)
+    .bind(i64::try_from(API_HEALTH_FAILURE_RESET_THRESHOLD).unwrap_or(i64::MAX))
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(api_health_recovery_due(&statuses).then(|| {
+        format!(
+            "Leaderboard functional checker failed {} consecutive rounds; health recovery scheduled",
+            API_HEALTH_FAILURE_RESET_THRESHOLD
+        )
+    }))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn persist_api_arena_result(
     connection: &mut sqlx::PgConnection,
@@ -106,7 +161,12 @@ pub(super) async fn persist_api_arena_result(
         )
         .await?;
     }
-    if inserted == 1 && dead_container_id.is_some() {
+    let recovery_reason = if inserted == 1 {
+        api_health_recovery_reason(connection, hill, status, dead_container_id).await?
+    } else {
+        None
+    };
+    if let Some(recovery_reason) = recovery_reason {
         sqlx::query(
             r#"UPDATE "KothCrownCycles"
                   SET phase = 'DestroyPending',
@@ -122,7 +182,7 @@ pub(super) async fn persist_api_arena_result(
         )
         .bind(hill.cycle_id)
         .bind(&hill.container_id)
-        .bind("active Leaderboard container stopped; recovery reset scheduled")
+        .bind(recovery_reason)
         .execute(&mut *connection)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -337,6 +397,20 @@ mod tests {
         let source = include_str!("koth_api.rs");
         assert!(source.contains("has_finalized_wave"));
         assert!(source.contains("no finalized Leaderboard wave ended"));
+    }
+
+    #[test]
+    fn persistent_arena_recovers_only_after_consecutive_target_failures() {
+        let ok = AdCheckStatus::Ok as i16;
+        let mumble = AdCheckStatus::Mumble as i16;
+        let offline = AdCheckStatus::Offline as i16;
+        let internal = AdCheckStatus::InternalError as i16;
+
+        assert!(!api_health_recovery_due(&[mumble, offline]));
+        assert!(!api_health_recovery_due(&[mumble, ok, offline]));
+        assert!(!api_health_recovery_due(&[offline, internal, mumble]));
+        assert!(api_health_recovery_due(&[mumble, offline, mumble]));
+        assert!(api_health_recovery_due(&[offline, offline, offline, ok]));
     }
 
     #[test]

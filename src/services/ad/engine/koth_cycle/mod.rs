@@ -1,4 +1,8 @@
-//! Durable KotH crown-cycle lifecycle and qualified capture state.
+//! Durable KotH runtime lifecycle and qualified capture state.
+//!
+//! Boot2Root/Marker hills rotate on scheduled crown cycles. Leaderboard/API
+//! hills keep a persistent runtime generation and enter the same durable state
+//! machine only for initial provisioning, health recovery, and event cleanup.
 
 mod claims;
 mod config;

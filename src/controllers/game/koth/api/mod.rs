@@ -42,6 +42,7 @@ pub(super) struct ActiveObserverContext {
     pub(super) round_id: i32,
     pub(super) round_number: i32,
     pub(super) game_starts_at: DateTime<Utc>,
+    /// Compatibility name on the wire; Leaderboard uses the event cutoff.
     pub(super) cycle_ends_at: DateTime<Utc>,
     pub(super) round_starts_at: DateTime<Utc>,
     pub(super) round_ends_at: DateTime<Utc>,
@@ -93,6 +94,7 @@ pub struct KothObserverContextModel {
     cycle_number: i32,
     reset_attempt: i32,
     round_number: i32,
+    /// Kept as `cycleEndsAt` for existing referees; this is the event cutoff.
     #[serde(with = "crate::utils::datetime::millis")]
     cycle_ends_at: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
@@ -134,12 +136,7 @@ where
                   target.container_id AS container_id,
                   round.id AS round_id, round.number AS round_number,
                   game.start_time_utc AS game_starts_at,
-                  LEAST(
-                    game.end_time_utc,
-                    round.end_time_utc
-                      + GREATEST(cycle.planned_end_round - round.number, 0)
-                        * (round.end_time_utc - round.start_time_utc)
-                  ) AS cycle_ends_at,
+                  game.end_time_utc AS cycle_ends_at,
                   round.start_time_utc AS round_starts_at,
                   round.end_time_utc AS round_ends_at,
                   scheme.objective_ids,
@@ -166,8 +163,7 @@ where
               AND scheme.challenge_id = target.challenge_id
              JOIN LATERAL (
                SELECT crown.id, crown.cycle_number, crown.reset_attempt,
-                      crown.replacement_container_id,
-                      crown.planned_start_round, crown.planned_end_round
+                      crown.replacement_container_id
                  FROM "KothCrownCycles" crown
                 WHERE crown.game_id = target.game_id
                   AND crown.challenge_id = target.challenge_id
@@ -184,8 +180,6 @@ where
                   AND scoring.finalized = FALSE
                   AND clock_timestamp() >= scoring.start_time_utc
                   AND clock_timestamp() < scoring.end_time_utc
-                  AND scoring.number BETWEEN cycle.planned_start_round
-                                         AND cycle.planned_end_round
                 ORDER BY scoring.number DESC
                 LIMIT 1
              ) round ON TRUE

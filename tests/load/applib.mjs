@@ -1737,7 +1737,7 @@ export function kothApiCapturable(gid, cid) {
     });
 }
 
-/** Durable crown-cycle state used by provision, the capture driver, and integrity checks. */
+/** Durable KotH lifecycle state used by provision, play drivers, and integrity checks. */
 export function crownReadiness(gid, cid) {
   const gameId = Number(gid);
   const challengeId = Number(cid);
@@ -1750,6 +1750,7 @@ export function crownReadiness(gid, cid) {
       `'epochTicks',config.epoch_ticks,` +
       `'cycleTicks',config.cycle_ticks,` +
       `'confirmationTicks',config.claim_confirmation_ticks,` +
+      `'latestRound',(SELECT COALESCE(max(number),0) FROM "AdRounds" round WHERE round.game_id=game.id),` +
       `'rosterCount',COALESCE(jsonb_array_length(config.roster_snapshot),0),` +
       `'cycleId',cycle.id,` +
       `'cycleNumber',cycle.cycle_number,` +
@@ -1775,7 +1776,7 @@ export function crownReadiness(gid, cid) {
       `ORDER BY crown.cycle_number DESC LIMIT 1) cycle ON TRUE ` +
       `WHERE game.id=${gameId}`
   );
-  if (!row) throw new Error(`KotH crown game ${gid} does not exist`);
+  if (!row) throw new Error(`KotH lifecycle game ${gid} does not exist`);
   return JSON.parse(row);
 }
 
@@ -1802,7 +1803,7 @@ export async function waitForCrownReady(
     if (waited < timeoutSeconds) await sleep(1000);
   }
   throw new Error(
-    `KotH crown cycle did not become ready within ${timeoutSeconds}s; ` +
+    `KotH runtime lifecycle did not become ready within ${timeoutSeconds}s; ` +
       `wanted ${wanted} scoped capabilities, observed ${JSON.stringify(snapshot)}`
   );
 }

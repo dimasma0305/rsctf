@@ -9,7 +9,7 @@ pageClass: koth-handbook
   <h1>RSCTF King of the Hill Handbook: Boot2Root and Leaderboard Formats</h1>
   <p class="journal-authors">Dimas Maulana</p>
   <p class="journal-affiliation">RSCTF Project · Competition Platform</p>
-  <p class="journal-correspondence">Unified edition · Version 6.1 · 10 August 2026</p>
+  <p class="journal-correspondence">Unified edition · Version 6.2 · 12 August 2026</p>
   <p class="journal-policy">Scoring policy: one constant formula per KotH format; no scoring versions</p>
 </div>
 
@@ -18,7 +18,7 @@ pageClass: koth-handbook
 ## Abstract
 
 <div class="journal-abstract">
-<p>RSCTF defines two King of the Hill (KotH) formats with different competitive meanings. <strong>Boot2Root KotH</strong> is an exclusive-control contest over one shared machine: teams acquire the hill, retain control, and accept responsibility for service health. <strong>Leaderboard KotH</strong> is a concurrent application or protocol contest: every eligible team may complete each challenge-native wave, and RSCTF compares every completed result with the best result from that same wave. Boot2Root uses the constant score 100R(0.25A + 0.55C + 0.20√AC). Leaderboard uses the constant wave score 100[0.95(S/S*)^(3/4) + 0.05K], where K is the unique Crown. An exact top-score tie gives every tied team full relative-performance credit and gives no team the Crown premium. Missing or incomplete teams receive zero for that wave. Points are not divided by field size, there is no separate winner or streak multiplier, and failed hacking attempts are not negative points. Authenticity, replay protection, exact runtime identity, independent checking, and challenge-level proof design determine whether evidence is admitted. Boot2Root capabilities rotate with pristine crown cycles; a Leaderboard capability is one opaque event token and changes only through explicit security rotation. Both formats use scoped capabilities, pristine crown-cycle replacement, bounded hill aggregation, and finalized epoch settlement. This paper is the canonical deployed scoring and operations contract.</p>
+<p>RSCTF defines two King of the Hill (KotH) formats with different competitive meanings. <strong>Boot2Root KotH</strong> is an exclusive-control contest over one shared machine: teams acquire the hill, retain control, and accept responsibility for service health. <strong>Leaderboard KotH</strong> is a concurrent application or protocol contest: every eligible team may complete each challenge-native wave, and RSCTF compares every completed result with the best result from that same wave. Boot2Root uses the constant score 100R(0.25A + 0.55C + 0.20√AC). Leaderboard uses the constant wave score 100[0.95(S/S*)^(3/4) + 0.05K], where K is the unique Crown. An exact top-score tie gives every tied team full relative-performance credit and gives no team the Crown premium. Missing or incomplete teams receive zero for that wave. Points are not divided by field size, there is no separate winner or streak multiplier, and failed hacking attempts are not negative points. Authenticity, replay protection, exact runtime identity, independent checking, and challenge-level proof design determine whether evidence is admitted. Boot2Root capabilities rotate with scheduled pristine crown cycles. A Leaderboard arena remains persistent across rounds and epochs; its event token changes only through explicit security rotation, while a stopped runtime or repeated functional failure invokes health recovery. Both formats use scoped capabilities, bounded hill aggregation, and finalized epoch settlement. This paper is the canonical deployed scoring and operations contract.</p>
 </div>
 
 <p class="journal-keywords"><strong>Keywords:</strong> King of the Hill; Boot2Root; Leaderboard KotH; relative scoring; Crown; anti-cheat; crown cycle; RSCTF</p>
@@ -69,13 +69,16 @@ and Crown indicator `K_t` for each finalized wave.
 
 ### What resets and what settles
 
-Several ticks form a **crown cycle**. RSCTF then pauses the hill, destroys the
-old container, and creates one pristine replacement from the frozen image.
-Boot2Root receives new cycle capabilities. Leaderboard retains each team's
-event capability, while transient challenge sessions, patches, implants, and
-referee snapshots stop working. Readiness must pass before scoring resumes.
+For **Boot2Root**, several ticks form a scheduled **crown cycle**. RSCTF then
+pauses the hill, destroys the old container, creates a pristine replacement,
+issues new cycle capabilities, proves readiness, and resumes scoring.
 
-Several cycles form an **epoch**. **Projected** includes unfinished evidence;
+A **Leaderboard** arena has no scheduled Crown reset. It stays online across
+rounds and epochs. RSCTF checks it every round and replaces it only when the
+runtime stops or three consecutive challenge-attributed checks are unhealthy.
+Recovery time is field-wide void, and each team's event capability survives.
+
+Several ticks form an **epoch**. **Projected** includes unfinished evidence;
 **Settled** includes finalized epochs and determines official rank.
 
 ## 1. Scope and design requirements {#introduction}
@@ -110,14 +113,16 @@ Both formats preserve these requirements:
 1. **Constant policy.** Each format has one formula and fixed coefficients.
 2. **Bounded result.** A hill-epoch and aggregate epoch remain in `[0,100]`.
 3. **Current identity.** Evidence belongs to the exact game, hill, round,
-   cycle, reset attempt, target, and container. Boot2Root additionally binds
-   the cycle capability; Leaderboard binds the current event-token generation.
+   lifecycle record, runtime attempt, target, and container. Boot2Root also
+   binds the scheduled cycle capability; Leaderboard binds the current
+   event-token generation.
 4. **Independent health.** A functional checker, not the scoring feed, decides
    whether the shared application works.
 5. **No stale carry.** A missing team in a valid Leaderboard snapshot becomes
    zero; a missing field snapshot is void. Neither repeats old evidence.
-6. **Infrastructure neutrality.** Reset, readiness, incomplete issuance, and
-   attributable platform failures do not penalize participants.
+6. **Infrastructure neutrality.** Provisioning, recovery, readiness,
+   incomplete issuance, and attributable platform failures do not penalize
+   participants.
 7. **Auditable settlement.** Immutable wave evidence precedes final rollups,
    and retries cannot create duplicate credit.
 8. **Frozen bounded state.** Rosters, hills, cadence, images, weights, objective
@@ -128,7 +133,7 @@ Both formats preserve these requirements:
 Bock, Hughey, and Levin describe an instructional KotH in which taking a
 shared machine also creates responsibility for critical services
 [[2]](#ref-2). Boot2Root follows that exclusive-control interpretation while
-adding periodic pristine replacement and fixed epoch settlement.
+adding scheduled pristine replacement and fixed epoch settlement.
 
 CTFd documents a KotH agent that reports a current identifier and awards a
 configured reward per check [[3]](#ref-3). RSCTF additionally records
@@ -194,7 +199,7 @@ unique submitted/recognized-team counts.
 Within one scoring context, every accepted finalized wave is append-only. A
 later snapshot may add a new wave but cannot alter or remove an earlier one.
 
-The capability survives pristine crown-cycle replacement. A player may
+The capability survives health recovery and runtime replacement. A player may
 explicitly rotate it after suspected exposure. Rotation immediately removes
 the old digest from the eligible set and clears only that team's current
 unsettled rows; every other team's evidence and already settled epoch evidence
@@ -224,32 +229,38 @@ has one unique leader. An exact top tie has no Crown. Leaderboard does not use
 the Boot2Root marker, provisional confirmation, or champion cooldown. Multiple
 teams can score in the same wave.
 
-### 2.3 Crown-cycle lifecycle
+### 2.3 Source-aware runtime lifecycle
 
-Both formats use the same durable sequence:
+Boot2Root runs the durable sequence at every scheduled Crown boundary:
 
 ```text
 finalize → pause → audit/snapshot → destroy
          → create → issue → readiness → resume
 ```
 
-RSCTF stores every transition phase, prevents a second replica from owning the
-same operation, launches one replacement from the official image, rotates the
-Boot2Root window, preserves Leaderboard event tokens, and resumes only after
-readiness succeeds. A retry continues the stored phase instead of starting a
-parallel replacement. Reset and readiness time create no scoring opportunity.
+Leaderboard uses that state machine for initial provisioning, event cleanup,
+and health recovery—not as a scoring clock. A stopped managed runtime starts
+recovery immediately. Otherwise recovery requires three consecutive committed
+`Mumble` or `Offline` functional verdicts for the same exact runtime and
+attempt. `InternalError` does not count because uncertain platform inspection
+must not destroy a healthy arena. Recovery recreates the frozen image, clears
+transient snapshot/session state, preserves event capabilities, proves
+readiness, and then resumes. A retry continues the stored phase instead of
+starting a parallel replacement. Provisioning and recovery create no scoring
+opportunity.
 
 <figure class="journal-figure">
-  <img src="/diagrams/koth-scoring-pipeline.svg" alt="KotH evidence pipeline from capability-scoped gameplay through checking, immutable evidence, epoch scoring, and settlement">
-  <figcaption><strong>Figure 2.</strong> The checker admits current evidence; only immutable results enter epoch scoring.</figcaption>
+  <img src="/diagrams/koth-scoring-pipeline.svg" alt="Boot2Root KotH evidence pipeline from cycle-scoped gameplay through checking, immutable evidence, epoch scoring, and settlement">
+  <figcaption><strong>Figure 2.</strong> The Boot2Root branch shown here admits only current evidence; Leaderboard follows the same immutable-evidence boundary with per-wave relative metrics.</figcaption>
 </figure>
 
 ### 2.4 Exact attribution and voids
 
 At most one immutable checker result exists per game, hill, and scoring round.
-Scorable evidence must match the frozen hill, active cycle, reset attempt,
-container, deadline, capability window, and—for Leaderboard—the objective
-schema.
+Scorable evidence must match the frozen hill, active lifecycle record, runtime
+attempt, container, deadline, capability window, and—for Leaderboard—the
+objective schema. For Boot2Root, that lifecycle record is the scheduled crown
+cycle.
 
 `InternalError`, incomplete capability issuance, and uncertain runtime
 inspection are platform voids. For Boot2Root, a responsible holder may receive
@@ -435,10 +446,10 @@ ordinal; the final ID provides deterministic ordering.
 | Missing or changing whole snapshot | not applicable to marker feed | field-wide void |
 | Functional checker fails globally | attributed only when responsibility is authoritative; otherwise void/recovery | field-wide void |
 | Invalid/revoked capability | no claim | row rejected or unrecognized |
-| Old cycle/reset/container | no claim | signed context rejected; event token remains usable after readiness |
+| Old lifecycle/runtime/container | no claim | signed context rejected; event token remains usable after recovery |
 | Replay, old timestamp, or future wave | not a marker operation | request rejected |
 | Objective IDs/order changed | not applicable | request rejected |
-| Reset/readiness/incomplete issuance | void | void |
+| Provisioning/recovery/readiness/incomplete issuance | void | void |
 | Failed player exploit attempt | no score by itself | no negative points; telemetry/rate limits still apply |
 
 A `200` response from the signed endpoint only stages a snapshot. It does not
@@ -485,10 +496,13 @@ only verified completed outcomes create positive scoring evidence.
 
 RSCTF resolves a submitted `tokenHash` only against the current event
 capability for the exact game, hill, and official participation. The signed
-context independently binds the round, target, cycle, reset attempt, container,
-and frozen objective-schema hash. Raw bearer tokens enter only the narrowly
-scoped authentication exchange and never enter the signed referee request.
-Unknown and rotated hashes cannot become arbitrary team identities.
+context independently binds the round, target, lifecycle record, runtime
+attempt, container, and frozen objective-schema hash. Compatibility fields
+remain named `cycleNumber`, `resetAttempt`, and `cycleEndsAt`; for Leaderboard,
+they fence runtime recovery and the event scoring cutoff rather than a
+scheduled Crown reset. Raw bearer tokens enter only the narrowly scoped
+authentication exchange and never enter the signed referee request. Unknown
+and rotated hashes cannot become arbitrary team identities.
 
 The wire path remains `/api/v1/...` for compatibility. `v1`, `Marker`, and
 `Api` are protocol or storage identifiers, not scoring-policy versions. The
@@ -508,9 +522,10 @@ Before official scoring:
 - verify the checker before and after evidence reads;
 - for Boot2Root, verify provisional confirmation, takeover, responsibility,
   and enforceable cooldown;
-- for Leaderboard, verify the same event token works after a pristine reset,
-  explicit rotation rejects the prior token and only that team's unsettled
-  rows, and then freeze the final objective IDs/order and verify HMAC,
+- for Leaderboard, verify the arena stays on the same runtime through an
+  ordinary Crown boundary, the same event token works after a forced health
+  recovery, explicit rotation rejects the prior token and only that team's
+  unsettled rows, and then freeze the final objective IDs/order and verify HMAC,
   submitted-wave and recognized/submitted equality, independent normalization,
   exact-tie no-Crown behavior, explicit zero, referee restart, stale hash, replay,
   clock skew, feed gap, and changing-snapshot behavior; and
@@ -525,10 +540,10 @@ boundary.
 
 ### 8.2 During play
 
-Monitor checker gaps, void reasons, reset phases, runtime identity, snapshot
-freshness, recognized-team counts, cursor lag, queue saturation, and referee
-errors. Pause scoring before rotating a referee secret, submit fresh evidence,
-verify it, then resume.
+Monitor checker gaps, void reasons, Boot2Root reset phases, Leaderboard health
+recovery, runtime identity, snapshot freshness, recognized-team counts, cursor
+lag, queue saturation, and referee errors. Pause scoring before rotating a
+referee secret, submit fresh evidence, verify it, then resume.
 
 At event end, reject late evidence, complete authoritative in-flight checks
 within the deadline fence, settle the proportional tail, and publish awards
@@ -578,8 +593,9 @@ organizer chose competitively valid objectives.
 
 Organizers should measure completion and objective distributions, Crown
 concentration, missing/void frequency, referee lag, feed-retention margin,
-marker confirmation failures, control changes, repeat winners, reset latency,
-and score sensitivity to targets and cadence.
+marker confirmation failures, control changes, repeat winners, Boot2Root reset
+latency, Leaderboard recovery frequency, and score sensitivity to targets and
+cadence.
 
 A randomized checker sample cannot prove continuous state between observations.
 Capability hashing cannot repair low-entropy tokens. HMAC cannot prove referee
@@ -597,10 +613,11 @@ same wave's field and adds one recurring five-point Crown premium.
 
 Both formulas are constant and platform-owned. Dense zero rows prevent stale
 team scores; field-wide voids prevent infrastructure failures becoming
-participant penalties. Exact identity fences, independent checking, pristine
-replacement, bounded hill normalization, and finalized epochs make results
-reproducible. Fairness still depends on published rules, checker coverage,
-objective design, referee isolation, network equality, and incident review.
+participant penalties. Exact identity fences, independent checking,
+source-aware runtime lifecycle, bounded hill normalization, and finalized
+epochs make results reproducible. Fairness still depends on published rules,
+checker coverage, objective design, referee isolation, network equality, and
+incident review.
 
 ## Appendix A. Frequently asked questions
 
@@ -640,11 +657,12 @@ The checker tick is field-wide void and enters no team's denominator.
 No. Only meaningful verified outcomes add evidence. Invalid traffic can be
 rate-limited and audited, but it is not an integrity score multiplier.
 
-### A.8 Does a reset erase settled evidence?
+### A.8 Does runtime replacement erase settled evidence?
 
-No. It removes transient containers, sessions, claims, and Boot2Root cycle
-capabilities. Leaderboard event tokens persist. Immutable results and finalized
-rollups remain.
+No. A scheduled Boot2Root reset removes transient containers, sessions,
+claims, and cycle capabilities. Leaderboard health recovery removes transient
+runtime and snapshot state but preserves event tokens. Immutable results and
+finalized rollups remain in both formats.
 
 ### A.9 Is there formula versioning?
 
@@ -656,24 +674,25 @@ each. Protocol path `v1` is unrelated to scoring policy.
 Yes, subject to event rules. RSCTF validates evidence and scope rather than
 guessing whether a participant is human or automated.
 
+<div class="journal-break-page"></div>
+
 ## Appendix B. Nomenclature
 
-<p class="journal-table-caption"><strong>Table 6.</strong> KotH nomenclature.</p>
-
-| Symbol or term | Definition |
-| --- | --- |
-| $A,C,R$ | Boot2Root acquisition, control, and reliability rates |
-| $S_{it},S^*_t$ | team and best completed native results in wave `t` |
-| $R_{it}$ | three-quarter-power relative performance in wave `t` |
-| $K_{it}$ | unique Crown indicator in wave `t` |
-| $H^M,H^L$ | local Boot2Root and Leaderboard scores in `[0,100]` |
-| $w_h$ | frozen hill weight in `[0.8,1.2]` |
-| $z_{he}$ | field-evidence switch for one hill and epoch |
-| $q_e$ | complete or proportional final-epoch weight |
-| **Settled** | official value using finalized epochs |
-| **Projected** | information that also includes open evidence |
-| **Field void** | sample excluded from every team's denominator |
-| **Explicit zero** | omitted or incomplete Leaderboard team in a valid wave |
+<div class="journal-table koth-keep-table koth-nomenclature-table">
+<table>
+<caption><strong>Table 6.</strong> KotH nomenclature.</caption>
+<colgroup><col class="koth-term"><col><col class="koth-term"><col></colgroup>
+<thead><tr><th>Symbol or term</th><th>Definition</th><th>Symbol or term</th><th>Definition</th></tr></thead>
+<tbody>
+<tr><td><i>A, C, R</i></td><td>Boot2Root acquisition, control, and reliability rates</td><td><i>z<sub>he</sub></i></td><td>field-evidence switch for one hill and epoch</td></tr>
+<tr><td><i>S<sub>it</sub>, S<sup>*</sup><sub>t</sub></i></td><td>team and best completed native results in wave <code>t</code></td><td><i>q<sub>e</sub></i></td><td>complete or proportional final-epoch weight</td></tr>
+<tr><td><i>R<sub>it</sub></i></td><td>three-quarter-power relative performance in wave <code>t</code></td><td><strong>Settled</strong></td><td>official value using finalized epochs</td></tr>
+<tr><td><i>K<sub>it</sub></i></td><td>unique Crown indicator in wave <code>t</code></td><td><strong>Projected</strong></td><td>information that also includes open evidence</td></tr>
+<tr><td><i>H<sup>M</sup>, H<sup>L</sup></i></td><td>local Boot2Root and Leaderboard scores in <code>[0,100]</code></td><td><strong>Field void</strong></td><td>sample excluded from every team's denominator</td></tr>
+<tr><td><i>w<sub>h</sub></i></td><td>frozen hill weight in <code>[0.8,1.2]</code></td><td><strong>Explicit zero</strong></td><td>omitted or incomplete Leaderboard team in a valid wave</td></tr>
+</tbody>
+</table>
+</div>
 
 ## Appendix C. Implementation traceability {#implementation-traceability}
 
@@ -684,7 +703,7 @@ Paths are relative to the repository revision containing this paper.
 | Responsibility | Source of truth |
 | --- | --- |
 | Official source, roster, hill, cadence, image, and weight snapshot | `src/services/ad/engine/koth_cycle/config.rs` |
-| Durable pristine replacement | `src/services/ad/engine/koth_cycle/lifecycle/` |
+| Source-aware scheduled reset and health-recovery lifecycle | `src/services/ad/engine/koth_cycle/lifecycle/` |
 | Boot2Root claim and acquisition | `src/services/ad/engine/koth_cycle/claims.rs` |
 | Exact marker read | `src/services/ad/engine/koth_marker.rs` |
 | Leaderboard event-token authentication and rotation | `src/services/ad/koth_api_capability.rs`, `src/controllers/game/koth/tokens.rs` |
@@ -714,7 +733,7 @@ Paths are relative to the repository revision containing this paper.
 | `GET /api/edit/games/{id}/ad/koth/state` | operator lifecycle and evidence view |
 | `POST /api/edit/games/{id}/ad/koth/{challengeId}/recover` | idempotent lifecycle recovery |
 | `GET/POST/DELETE /api/edit/games/{id}/ad/koth/{challengeId}/observer` | inspect, create/rotate once, or revoke credential |
-| `GET /api/v1/koth/games/{id}/challenges/{challengeId}/context` | exact runtime/schema fence and eligible hashes |
+| `GET /api/v1/koth/games/{id}/challenges/{challengeId}/context` | exact runtime/schema fence, event cutoff, and eligible hashes |
 | `POST /api/v1/koth/games/{id}/challenges/{challengeId}/observations` | signed bounded evidence; never points |
 
 Wire DTOs use camelCase and Unix-millisecond timestamps.
@@ -724,9 +743,11 @@ Wire DTOs use camelCase and Unix-millisecond timestamps.
 The suite covers formula bounds and zero conditions, objective normalization,
 ordered schema identity, malformed evidence, HMAC scope, clock skew, replay,
 context rotation, current capability resolution, unknown hashes, dense zeros,
-snapshot bracketing, relative performance, exact-tie no-Crown handling, marker confirmation,
-cooldown denominators, tied champions, partial epochs, rollups, and ordinal
-ranks. The bundled challenge exercises one-use proofs, invalid traffic,
+snapshot bracketing, relative performance, exact-tie no-Crown handling, marker
+confirmation, API persistence past a scheduled Crown boundary, three-failure
+health recovery, cooldown denominators, tied champions, partial epochs,
+rollups, and ordinal ranks. The bundled challenge exercises one-use proofs,
+invalid traffic,
 capability hashing, bounded pagination, persistent referee restart, feed-gap
 failure, and exact signed bodies. Lifecycle and fixed-load results are recorded
 in `tests/load/REPORT.md`; they do not establish competitive fairness.

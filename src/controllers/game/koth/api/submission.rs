@@ -667,7 +667,7 @@ mod tests {
                INSERT INTO "KothCrownCycles" VALUES
                  (41, 7, 9, 4, 2, 'runtime-a', 1, 3, 'Active');
                INSERT INTO "AdRounds" VALUES
-                 (51, 7, 2, clock_timestamp() - interval '10 seconds',
+                 (51, 7, 5, clock_timestamp() - interval '10 seconds',
                   clock_timestamp() + interval '1 minute', FALSE);
                INSERT INTO "KothApiObservers" VALUES
                  (9, 7, 'observer-secret', NULL);
@@ -696,11 +696,11 @@ mod tests {
         .unwrap();
 
         let active_context = load_active_context(&pool, 7, 9).await.unwrap().unwrap();
-        // Future rounds are created lazily. The observer context must still
-        // expose the cycle boundary using only the current authoritative tick.
-        assert_eq!(
-            active_context.cycle_ends_at - active_context.round_ends_at,
-            active_context.round_ends_at - active_context.round_starts_at
+        // Leaderboard arenas are persistent. The compatibility field carries
+        // the event cutoff, not the Boot2Root crown-cycle boundary.
+        assert!(
+            active_context.cycle_ends_at - active_context.round_ends_at
+                > chrono::Duration::minutes(50)
         );
         let context = active_context.opaque_context(
             7,

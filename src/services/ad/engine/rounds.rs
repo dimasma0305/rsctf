@@ -30,7 +30,7 @@ pub struct RoundPlan {
 /// Mirrors the decisions in `AdRoundService.AdvanceAsync`: next number is
 /// `prev + 1` and a fresh URL-safe flag per live team-service. It performs no
 /// I/O; the caller wraps it in a transaction, inserts the rows, then plants the
-/// flags. Crown-cycle capabilities are owned by the KotH lifecycle.
+/// flags. KotH capabilities are owned by the source-aware KotH lifecycle.
 ///
 /// `flag_gen` is injected so tests can supply a deterministic generator; the
 /// production path passes [`random_flag`].

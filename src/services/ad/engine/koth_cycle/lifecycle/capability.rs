@@ -173,7 +173,7 @@ pub(super) async fn rotate_capability_window(
 
         // Marker hills keep using the freshly minted cycle rows above. For a
         // Leaderboard/API hill, capture only its first token per participant;
-        // every later pristine reset leaves the event capability untouched.
+        // later health-recovery generations leave the event capability intact.
         crate::services::ad::koth_api_capability::ensure_for_cycle(
             connection,
             window.game_id,

@@ -11,6 +11,7 @@ import {
   assertTrustedForwardedIdentity,
   FORWARDED_IDENTITY_PROBE_IP,
   isStableApiCapabilityAcceptance,
+  nextScheduledCrownBoundaryRound,
   selectKothCapacityClaimant,
 } from "./lifecycle-load-model.js";
 import { readCheatResult, mergeCheatResult } from "./cheat-result.js";
@@ -1240,7 +1241,8 @@ async function main() {
         `${fleetEvidence.deliveredFlags}/${FLEET} delivered and ${fleetEvidence.verifiedFlags}/${FLEET} verified`,
     );
     console.log(
-      `  crown cycle ready: #${crown.cycleNumber} ${crown.phase}, ` +
+      `  KotH ${st.kothClaimSource === "Api" ? "persistent arena" : "crown cycle"} ready: ` +
+        `#${crown.cycleNumber} ${crown.phase}, ` +
         `${crown.tokenCount}/${crown.rosterCount} scoped tokens, container ${crown.containerId.slice(0, 12)}`,
     );
     console.log(
@@ -1538,10 +1540,11 @@ async function main() {
       kothCaptureRaces = 0;
     let staleWrites = 0,
       staleRejections = 0,
-      stableApiCapabilityChecks = 0;
+      persistentApiBoundaryChecks = 0;
     let capture = null,
       lastCycleCapture = null,
-      staleProbe = null;
+      staleProbe = null,
+      apiPersistenceBaseline = null;
     const crownCyclesSeen = new Set();
     const crownPhasesSeen = new Set();
     const staleCyclesProbed = new Set();
@@ -1801,6 +1804,7 @@ async function main() {
             }
           }
           if (
+            st.kothClaimSource === "Marker" &&
             !staleProbe &&
             lastCycleCapture &&
             lastCycleCapture.cycleId !== view.cycleId &&
@@ -1819,44 +1823,19 @@ async function main() {
                   `WHERE game_id=${st.mixGame} AND challenge_id=${st.kothChal}`,
               ) || 0,
             );
-            if (st.kothClaimSource === "Api") {
-              let response = null;
-              try {
-                response = await interruptible(
-                  A.kothApiObservation(
-                    st.mixGame,
-                    st.kothChal,
-                    st.kothObserverSecret,
-                    lastCycleCapture.token,
-                  ),
-                );
-              } catch {
-                kothCaptureRaces++;
-              }
-              if (isStableApiCapabilityAcceptance(response)) {
-                stableApiCapabilityChecks++;
-                staleCyclesProbed.add(view.cycleId);
-                capture = null;
-              } else if (response && response.status !== 409) {
-                throw new Error(
-                  `event-stable KotH API capability did not survive the pristine reset: ${response.status} ${response.text?.slice(0, 160)}`,
-                );
-              }
-            } else {
-              try {
-                A.kothCaptureWrite(view.containerId, lastCycleCapture.token);
-                staleWrites++;
-                staleCyclesProbed.add(view.cycleId);
-                staleProbe = {
-                  cycleId: view.cycleId,
-                  container: view.containerId,
-                  afterResultId,
-                  token: lastCycleCapture.token,
-                };
-                capture = null;
-              } catch {
-                kothCaptureRaces++;
-              }
+            try {
+              A.kothCaptureWrite(view.containerId, lastCycleCapture.token);
+              staleWrites++;
+              staleCyclesProbed.add(view.cycleId);
+              staleProbe = {
+                cycleId: view.cycleId,
+                container: view.containerId,
+                afterResultId,
+                token: lastCycleCapture.token,
+              };
+              capture = null;
+            } catch {
+              kothCaptureRaces++;
             }
           }
           if (
@@ -1923,6 +1902,66 @@ async function main() {
                   : null;
                 if (capture) lastCycleCapture = capture;
               }
+            }
+          }
+          if (st.kothClaimSource === "Api" && !apiPersistenceBaseline) {
+            const fleetSet = new Set(fleetPids);
+            const capability = A.kothApiCapturable(
+              st.mixGame,
+              st.kothChal,
+            ).find(({ pid }) => fleetSet.has(pid));
+            if (capability && view.latestRound >= view.scoringStartRound) {
+              apiPersistenceBaseline = {
+                cycleId: view.cycleId,
+                container: view.containerId,
+                resetAttempt: view.resetAttempt,
+                token: capability.token,
+                boundaryRound: nextScheduledCrownBoundaryRound(
+                  view.scoringStartRound,
+                  view.cycleTicks,
+                  view.latestRound,
+                ),
+              };
+            }
+          }
+          if (
+            st.kothClaimSource === "Api" &&
+            apiPersistenceBaseline &&
+            persistentApiBoundaryChecks === 0 &&
+            view.latestRound >= apiPersistenceBaseline.boundaryRound
+          ) {
+            if (
+              view.cycleId !== apiPersistenceBaseline.cycleId ||
+              view.containerId !== apiPersistenceBaseline.container ||
+              view.resetAttempt !== apiPersistenceBaseline.resetAttempt
+            ) {
+              throw new Error(
+                "healthy Leaderboard arena rotated at a scheduled Crown boundary: " +
+                  JSON.stringify({
+                    baseline: apiPersistenceBaseline,
+                    current: view,
+                  }),
+              );
+            }
+            let response = null;
+            try {
+              response = await interruptible(
+                A.kothApiObservation(
+                  st.mixGame,
+                  st.kothChal,
+                  st.kothObserverSecret,
+                  apiPersistenceBaseline.token,
+                ),
+              );
+            } catch {
+              kothCaptureRaces++;
+            }
+            if (isStableApiCapabilityAcceptance(response)) {
+              persistentApiBoundaryChecks++;
+            } else if (response && response.status !== 409) {
+              throw new Error(
+                `event-stable KotH API capability failed after a scheduled boundary: ${response.status} ${response.text?.slice(0, 160)}`,
+              );
             }
           }
           if (
@@ -2167,7 +2206,7 @@ async function main() {
     console.log(
       `  KotH captures written: ${kothCaps} · reset races ${kothCaptureRaces} · ` +
         (st.kothClaimSource === "Api"
-          ? `reset-stable API capabilities ${stableApiCapabilityChecks} · `
+          ? `persistent-boundary API capabilities ${persistentApiBoundaryChecks} · `
           : `stale-token rejections ${staleRejections}/${staleWrites} · `) +
         `cycles ${crownCyclesSeen.size} · phases ${[...crownPhasesSeen].sort().join(",")}`,
     );
@@ -2931,14 +2970,16 @@ async function main() {
       ) || 0,
     );
     const duration = runDuration;
-    // Crown-cycle acceptance is based on authoritative scoring rounds. Reset/readiness
-    // remains excluded from evidence, but round boundaries themselves must not drift.
+    // Boot2Root cycle acceptance and Leaderboard persistence are both based on
+    // authoritative scoring rounds. Lifecycle downtime remains excluded from
+    // evidence, but round boundaries themselves must not drift.
     const minAcquisitions = Number(
       process.env.CROWN_MIN_ACQUISITIONS ??
         (st.kothClaimSource === "Marker" && duration >= 120 ? 1 : 0),
     );
     const minCompleted = Number(
-      process.env.CROWN_MIN_COMPLETED ?? (duration >= 240 ? 1 : 0),
+      process.env.CROWN_MIN_COMPLETED ??
+        (st.kothClaimSource === "Marker" && duration >= 240 ? 1 : 0),
     );
     const minStaleRejections = Number(
       process.env.CROWN_MIN_STALE_REJECTIONS ??
@@ -2948,7 +2989,7 @@ async function main() {
           ? 1
           : 0),
     );
-    const minStableApiCapabilityChecks =
+    const minPersistentApiBoundaryChecks =
       st.kothClaimSource === "Api" && duration >= 120 ? 1 : 0;
     const defaultStableConfirmations =
       st.kothClaimSource === "Api"
@@ -2981,10 +3022,14 @@ async function main() {
       0,
       minStaleRejections - staleRejections,
     );
-    checks["missing reset-stable API capability"] = Math.max(
+    checks["missing persistent-boundary API capability"] = Math.max(
       0,
-      minStableApiCapabilityChecks - stableApiCapabilityChecks,
+      minPersistentApiBoundaryChecks - persistentApiBoundaryChecks,
     );
+    checks["scheduled Leaderboard lifecycle rotations"] =
+      st.kothClaimSource === "Api"
+        ? Math.max(0, crownCyclesSeen.size - 1)
+        : 0;
     checks["missing stable confirmations"] = Math.max(
       0,
       minStableConfirmations - stableConfirmations,
@@ -3065,7 +3110,9 @@ async function main() {
       );
     }
     console.log(
-      `    · crown cycles completed: ${completedCycles} · confirmed acquisitions: ${acquisitions}`,
+      st.kothClaimSource === "Api"
+        ? `    · persistent-boundary checks: ${persistentApiBoundaryChecks} · health-scored rounds: ${apiArenaEvidence?.scorableTicks ?? 0}`
+        : `    · crown cycles completed: ${completedCycles} · confirmed acquisitions: ${acquisitions}`,
     );
     if (!apiArenaEvidence) {
       console.log(

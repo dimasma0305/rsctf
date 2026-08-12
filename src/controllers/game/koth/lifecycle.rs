@@ -110,6 +110,7 @@ impl Default for KothLifecycleView {
 #[derive(Debug, FromRow)]
 struct LifecycleRow {
     challenge_id: i32,
+    claim_source: String,
     cycle_ticks: i32,
     claim_confirmation_ticks: i32,
     cycle_number: Option<i32>,
@@ -153,13 +154,14 @@ pub(super) fn wire_phase(phase: Option<&str>) -> String {
 
 fn effective_phase(
     snapshot: bool,
+    persistent_arena: bool,
     durable_phase: Option<&str>,
     latest_round: i32,
     planned_start_round: Option<i32>,
     planned_end_round: Option<i32>,
     actual_start_round: Option<i32>,
 ) -> Option<&str> {
-    if snapshot || durable_phase != Some("Active") {
+    if snapshot || persistent_arena || durable_phase != Some("Active") {
         return durable_phase;
     }
     let (Some(planned_start), Some(planned_end), Some(actual_start)) =
@@ -204,19 +206,20 @@ mod tests {
     #[test]
     fn live_active_phase_is_scorable_only_inside_its_planned_rounds() {
         assert_eq!(
-            effective_phase(false, Some("Active"), 6, Some(6), Some(8), Some(6)),
+            effective_phase(false, false, Some("Active"), 6, Some(6), Some(8), Some(6)),
             Some("Active")
         );
         assert_eq!(
-            effective_phase(false, Some("Active"), 8, Some(6), Some(8), Some(6)),
+            effective_phase(false, false, Some("Active"), 8, Some(6), Some(8), Some(6)),
             Some("Active")
         );
         assert_eq!(
-            effective_phase(false, Some("Active"), 9, Some(6), Some(8), Some(6)),
+            effective_phase(false, false, Some("Active"), 9, Some(6), Some(8), Some(6)),
             Some("FinalizePending")
         );
         assert_eq!(
             wire_phase(effective_phase(
+                false,
                 false,
                 Some("Active"),
                 9,
@@ -231,23 +234,23 @@ mod tests {
     #[test]
     fn live_prestart_or_incomplete_active_cycle_is_readiness_not_scorable() {
         assert_eq!(
-            effective_phase(false, Some("Active"), 5, Some(6), Some(8), Some(6)),
+            effective_phase(false, false, Some("Active"), 5, Some(6), Some(8), Some(6)),
             Some("ReadinessPending")
         );
         assert_eq!(
-            effective_phase(false, Some("Active"), 6, None, Some(8), Some(6)),
+            effective_phase(false, false, Some("Active"), 6, None, Some(8), Some(6)),
             Some("ReadinessPending")
         );
         assert_eq!(
-            effective_phase(false, Some("Active"), 6, Some(6), Some(8), None),
+            effective_phase(false, false, Some("Active"), 6, Some(6), Some(8), None),
             Some("ReadinessPending")
         );
         assert_eq!(
-            effective_phase(false, Some("Active"), 6, Some(6), Some(8), Some(7)),
+            effective_phase(false, false, Some("Active"), 6, Some(6), Some(8), Some(7)),
             Some("ReadinessPending")
         );
         assert_eq!(
-            effective_phase(false, Some("Active"), 7, Some(6), Some(8), Some(7)),
+            effective_phase(false, false, Some("Active"), 7, Some(6), Some(8), Some(7)),
             Some("Active")
         );
     }
@@ -255,7 +258,7 @@ mod tests {
     #[test]
     fn historical_phase_remains_bound_to_snapshot_evidence() {
         assert_eq!(
-            effective_phase(true, Some("Active"), 9, Some(6), Some(8), None),
+            effective_phase(true, false, Some("Active"), 9, Some(6), Some(8), None),
             Some("Active")
         );
     }
@@ -263,11 +266,19 @@ mod tests {
     #[test]
     fn projected_transition_does_not_enable_retry_for_durable_active_cycle() {
         assert_eq!(
-            effective_phase(false, Some("Active"), 9, Some(6), Some(8), Some(6)),
+            effective_phase(false, false, Some("Active"), 9, Some(6), Some(8), Some(6)),
             Some("FinalizePending")
         );
         assert!(!durable_phase_can_retry(Some("Active")));
         assert!(durable_phase_can_retry(Some("FinalizePending")));
+    }
+
+    #[test]
+    fn persistent_arena_has_no_scheduled_finalize_boundary() {
+        assert_eq!(
+            effective_phase(false, true, Some("Active"), 99, Some(6), Some(8), Some(6)),
+            Some("Active")
+        );
     }
 
     #[test]
@@ -389,6 +400,20 @@ async fn query_lifecycle_map(
     let snapshot = snapshot_cutoff.is_some();
     let rows = sqlx::query_as::<_, LifecycleRow>(
         r#"SELECT challenge.id AS challenge_id,
+                  COALESCE((
+                    SELECT COALESCE(
+                             NULLIF(frozen.item->>'claimSource', ''), 'Marker'
+                           )
+                      FROM "KothOfficialConfigs" config,
+                           LATERAL jsonb_array_elements(config.hills_snapshot) frozen(item)
+                     WHERE config.game_id = challenge.game_id
+                       AND (frozen.item->>'challengeId')::integer = challenge.id
+                     LIMIT 1
+                  ), CASE WHEN EXISTS (
+                    SELECT 1 FROM "KothApiObservers" observer
+                     WHERE observer.game_id = challenge.game_id
+                       AND observer.challenge_id = challenge.id
+                  ) THEN 'Api' ELSE 'Marker' END) AS claim_source,
                   game.koth_cycle_ticks AS cycle_ticks,
                   game.koth_claim_confirmation_ticks AS claim_confirmation_ticks,
                   cycle.cycle_number, cycle.planned_start_round,
@@ -531,8 +556,10 @@ async fn query_lifecycle_map(
     Ok(rows
         .into_iter()
         .map(|row| {
+            let persistent_arena = row.claim_source == "Api";
             let visible_phase = effective_phase(
                 snapshot,
+                persistent_arena,
                 row.phase.as_deref(),
                 latest_round,
                 row.planned_start_round,
@@ -545,7 +572,7 @@ async fn query_lifecycle_map(
             } else {
                 phase_is_active
             };
-            let cycle_tick = if phase_is_active {
+            let cycle_tick = if phase_is_active && !persistent_arena {
                 let start = if snapshot {
                     row.planned_start_round
                 } else {
@@ -557,7 +584,7 @@ async fn query_lifecycle_map(
             } else {
                 0
             };
-            let next_reset_ticks = if phase_is_active {
+            let next_reset_ticks = if phase_is_active && !persistent_arena {
                 row.planned_end_round
                     .map(|end| (end - latest_round + 1).max(0))
             } else {

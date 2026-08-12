@@ -12,8 +12,43 @@ pub(crate) struct OfficialConfig {
     pub(super) cycle_ticks: i32,
     pub(super) champion_cooldown_ticks: i32,
     pub(super) roster: Vec<i32>,
-    pub(super) challenge_ids: Vec<i32>,
+    pub(super) hills: Vec<OfficialHill>,
+    pub(super) start_time_utc: DateTime<Utc>,
     pub(super) end_time_utc: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HillLifecycle {
+    ScheduledCrown,
+    PersistentArena,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct OfficialHill {
+    pub(super) challenge_id: i32,
+    pub(super) lifecycle: HillLifecycle,
+}
+
+impl OfficialConfig {
+    /// A persistent arena needs a finite round fence for the existing evidence
+    /// foreign keys, but it must not inherit the Boot2Root reset cadence. The
+    /// shortest valid configured round is 30 seconds, so the complete event
+    /// duration is a conservative upper bound even when the scheduler
+    /// reanchors after downtime. Re-reading the live event deadline lets an
+    /// organizer extend an event without creating a scheduled arena reset.
+    pub(super) fn persistent_end_round(&self) -> i32 {
+        const MINIMUM_ROUND_SECONDS: i64 = 30;
+
+        let event_seconds = self
+            .end_time_utc
+            .signed_duration_since(self.start_time_utc)
+            .num_seconds()
+            .max(0);
+        let maximum_rounds =
+            event_seconds.saturating_add(MINIMUM_ROUND_SECONDS - 1) / MINIMUM_ROUND_SECONDS + 1;
+        self.scoring_start_round
+            .saturating_add(i32::try_from(maximum_rounds).unwrap_or(i32::MAX))
+    }
 }
 
 #[derive(Debug, FromRow)]
@@ -24,6 +59,7 @@ struct RawOfficialConfig {
     champion_cooldown_ticks: i32,
     roster_snapshot: serde_json::Value,
     hills_snapshot: serde_json::Value,
+    start_time_utc: DateTime<Utc>,
     end_time_utc: DateTime<Utc>,
 }
 
@@ -65,6 +101,40 @@ pub(super) fn snapshot_ids(snapshot: &serde_json::Value, object_key: &str) -> Ve
         .collect()
 }
 
+fn snapshot_hills(snapshot: &serde_json::Value) -> AppResult<Vec<OfficialHill>> {
+    snapshot
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| {
+            let challenge_id = value
+                .as_i64()
+                .or_else(|| value.get("challengeId")?.as_i64())
+                .and_then(|value| i32::try_from(value).ok())?;
+            let claim_source = value
+                .get("claimSource")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Marker");
+            Some((challenge_id, claim_source))
+        })
+        .map(|(challenge_id, claim_source)| {
+            let lifecycle = match claim_source {
+                "Marker" => HillLifecycle::ScheduledCrown,
+                "Api" => HillLifecycle::PersistentArena,
+                source => {
+                    return Err(AppError::internal(format!(
+                        "unsupported snapshotted KotH claim source {source:?}"
+                    )))
+                }
+            };
+            Ok(OfficialHill {
+                challenge_id,
+                lifecycle,
+            })
+        })
+        .collect()
+}
+
 pub(super) async fn load_config(
     st: &SharedState,
     game_id: i32,
@@ -73,7 +143,7 @@ pub(super) async fn load_config(
         r#"SELECT config.scoring_start_round, config.epoch_ticks, config.cycle_ticks,
                   config.champion_cooldown_ticks,
                   config.roster_snapshot, config.hills_snapshot,
-                  game.end_time_utc
+                  game.start_time_utc, game.end_time_utc
              FROM "KothOfficialConfigs" config
              JOIN "Games" game ON game.id = config.game_id
             WHERE config.game_id = $1"#,
@@ -91,9 +161,66 @@ pub(super) async fn load_config(
         cycle_ticks: raw.cycle_ticks,
         champion_cooldown_ticks: raw.champion_cooldown_ticks,
         roster: snapshot_ids(&raw.roster_snapshot, "participationId"),
-        challenge_ids: snapshot_ids(&raw.hills_snapshot, "challengeId"),
+        hills: snapshot_hills(&raw.hills_snapshot)?,
+        start_time_utc: raw.start_time_utc,
         end_time_utc: raw.end_time_utc,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Duration, TimeZone, Utc};
+    use serde_json::json;
+
+    use super::{snapshot_hills, HillLifecycle, OfficialConfig, OfficialHill};
+
+    #[test]
+    fn frozen_claim_source_selects_only_the_required_lifecycle() {
+        assert_eq!(
+            snapshot_hills(&json!([
+                {"challengeId": 9, "claimSource": "Api"},
+                {"challengeId": 10, "claimSource": "Marker"},
+                11
+            ]))
+            .unwrap(),
+            vec![
+                OfficialHill {
+                    challenge_id: 9,
+                    lifecycle: HillLifecycle::PersistentArena,
+                },
+                OfficialHill {
+                    challenge_id: 10,
+                    lifecycle: HillLifecycle::ScheduledCrown,
+                },
+                OfficialHill {
+                    challenge_id: 11,
+                    lifecycle: HillLifecycle::ScheduledCrown,
+                },
+            ]
+        );
+        assert!(snapshot_hills(&json!([{
+            "challengeId": 12,
+            "claimSource": "Unknown"
+        }]))
+        .is_err());
+    }
+
+    #[test]
+    fn persistent_arena_round_fence_spans_the_complete_event() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 12, 0, 0, 0).unwrap();
+        let config = OfficialConfig {
+            scoring_start_round: 7,
+            epoch_ticks: 24,
+            cycle_ticks: 12,
+            champion_cooldown_ticks: 1,
+            roster: vec![1, 2],
+            hills: Vec::new(),
+            start_time_utc: start,
+            end_time_utc: start + Duration::hours(6),
+        };
+
+        assert_eq!(config.persistent_end_round(), 728);
+    }
 }
 
 pub(super) async fn load_cycle(st: &SharedState, cycle_id: i64) -> AppResult<CycleRow> {
@@ -109,7 +236,7 @@ pub(super) async fn load_cycle(st: &SharedState, cycle_id: i64) -> AppResult<Cyc
     .fetch_optional(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("KotH crown cycle not found"))
+    .ok_or_else(|| AppError::not_found("KotH runtime lifecycle not found"))
 }
 
 pub(super) async fn load_hill_spec(st: &SharedState, cycle: &CycleRow) -> AppResult<HillSpec> {
@@ -142,7 +269,7 @@ pub(super) async fn load_hill_spec(st: &SharedState, cycle: &CycleRow) -> AppRes
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| {
         AppError::bad_request(
-            "Crown-cycle KotH requires a platform-hosted hill with a configured image",
+            "Managed KotH requires a platform-hosted hill with a configured image",
         )
     })
 }

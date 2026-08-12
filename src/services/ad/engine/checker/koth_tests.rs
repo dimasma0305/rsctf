@@ -162,6 +162,10 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
           reset_attempt INTEGER NOT NULL, participation_id INTEGER NOT NULL,
           revoked_at TIMESTAMPTZ
         );
+        CREATE TEMP TABLE "KothApiTeamTokens" (
+          game_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
+          participation_id INTEGER NOT NULL, token TEXT NOT NULL
+        );
         INSERT INTO "AspNetUsers" VALUES
           ('00000000-0000-0000-0000-000000000021', 1),
           ('00000000-0000-0000-0000-000000000022', 1),
@@ -189,6 +193,10 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
           (101, 41, 9, 3, 1, 11, NULL),
           (102, 41, 9, 3, 1, 12, NULL),
           (103, 41, 9, 3, 1, 13, NULL);
+        INSERT INTO "KothApiTeamTokens" VALUES
+          (7, 9, 11, 'koth_team_11'),
+          (7, 9, 12, 'koth_team_12'),
+          (7, 9, 13, 'koth_team_13');
         "#,
     )
     .execute(&mut connection)
@@ -227,6 +235,103 @@ async fn live_capability_field_excludes_a_banned_snapshot_team() {
     assert_eq!(live.eligible_roster, vec![11]);
     assert_eq!((live.token_count, live.roster_count), (1, 1));
     assert!(!live.has_complete_token_window());
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn persistent_api_arena_recovers_after_three_committed_functional_failures() {
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
+    let mut connection = PgConnection::connect(&database_url).await.unwrap();
+    sqlx::raw_sql(
+        r#"
+        CREATE TEMP TABLE "KothCrownCycles" (
+          id BIGINT PRIMARY KEY, phase TEXT NOT NULL,
+          old_container_id TEXT, replacement_container_id TEXT,
+          replacement_host TEXT, replacement_port INTEGER,
+          reset_attempt INTEGER NOT NULL, last_error TEXT,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TEMP TABLE "KothControlResults" (
+          id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+          challenge_id INTEGER NOT NULL, ad_round_id INTEGER NOT NULL,
+          controlling_participation_id INTEGER,
+          responsible_participation_id INTEGER,
+          marker_observed BOOLEAN NOT NULL, status SMALLINT NOT NULL,
+          error_message TEXT, checked_at TIMESTAMPTZ NOT NULL,
+          dead_container_id TEXT, cycle_id BIGINT,
+          container_id TEXT, confirmation_streak INTEGER,
+          is_scorable BOOLEAN NOT NULL, void_reason TEXT,
+          token_window_attempt INTEGER NOT NULL,
+          UNIQUE (game_id, challenge_id, ad_round_id)
+        );
+        INSERT INTO "KothCrownCycles"
+          (id, phase, replacement_container_id, reset_attempt)
+        VALUES (41, 'Active', 'runtime-1', 1);
+        "#,
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    let now = Utc::now();
+    let hill = LiveHill {
+        target_id: 3,
+        challenge_id: 9,
+        host: "127.0.0.1".to_string(),
+        port: 8080,
+        container_id: "runtime-1".to_string(),
+        cycle_id: 41,
+        token_window_attempt: 1,
+        phase: "Active".to_string(),
+        claim_source: "Api".to_string(),
+        claim_confirmation_ticks: 2,
+        token_count: 2,
+        roster_count: 2,
+        eligible_roster: vec![11, 12],
+        game_start: now - chrono::Duration::minutes(1),
+        game_end: now + chrono::Duration::hours(1),
+        round_start: now - chrono::Duration::seconds(10),
+        round_end: now + chrono::Duration::seconds(50),
+    };
+
+    for number in 1..=3 {
+        let round = ad_round::Model {
+            id: 100 + number,
+            game_id: 7,
+            number,
+            start_time_utc: now - chrono::Duration::seconds(10),
+            end_time_utc: now + chrono::Duration::seconds(50),
+            finalized: false,
+        };
+        persist_api_arena_result(
+            &mut connection,
+            &hill,
+            7,
+            &round,
+            AdCheckStatus::Mumble,
+            Some("semantic health check failed"),
+            now + chrono::Duration::seconds(i64::from(number)),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let state: (String, i32, Option<String>) = sqlx::query_as(
+            r#"SELECT phase, reset_attempt, replacement_container_id
+                 FROM "KothCrownCycles" WHERE id = 41"#,
+        )
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+        if number < 3 {
+            assert_eq!(
+                state,
+                ("Active".to_string(), 1, Some("runtime-1".to_string()))
+            );
+        } else {
+            assert_eq!(state, ("DestroyPending".to_string(), 2, None));
+        }
+    }
 }
 
 #[tokio::test]

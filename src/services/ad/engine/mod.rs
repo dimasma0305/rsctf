@@ -2,7 +2,7 @@
 //!
 //! The sole official A&D standings formula lives in `services::ad::scoring`.
 //! This module owns round rotation, flag/check persistence, checker execution,
-//! and the crown-cycle KotH engine; it intentionally exposes no legacy
+//! and the claim-source-aware KotH lifecycle; it intentionally exposes no legacy
 //! Attack+SLA-Defense or refresh-window implementation.
 
 use std::collections::HashSet;

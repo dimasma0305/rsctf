@@ -10,11 +10,21 @@ export function shouldValidateSemanticResponse(status) {
   return Number(status) !== 429;
 }
 
+export function nextScheduledCrownBoundaryRound(scoringStartRound, cycleTicks, currentRound) {
+  const start = positiveInteger(scoringStartRound, "scoring start round");
+  const ticks = positiveInteger(cycleTicks, "crown cycle ticks");
+  const current = positiveInteger(currentRound, "current round");
+  if (current < start) {
+    throw new Error("current round must be at or after scoring start");
+  }
+  return start + (Math.floor((current - start) / ticks) + 1) * ticks;
+}
+
 /**
- * Leaderboard player capabilities are event-scoped, so the capability used in
- * the previous pristine container must still resolve after a Crown reset. The
- * observer context and signature remain cycle-scoped; this helper validates
- * only the server's acknowledgement of that one stable player identity.
+ * Leaderboard player capabilities are event-scoped. The observer context and
+ * signature remain runtime-scoped; this helper validates the server's
+ * acknowledgement of one stable player identity after a scheduled Crown
+ * boundary or a health-recovery generation.
  */
 export function isStableApiCapabilityAcceptance(response) {
   const model = response?.json?.data ?? response?.json;

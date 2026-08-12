@@ -331,7 +331,7 @@ pub async fn audit_receipts(
     .fetch_optional(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("KotH crown-cycle audit trail not found"))?;
+    .ok_or_else(|| AppError::not_found("KotH lifecycle audit trail not found"))?;
     let receipts = sqlx::query_as::<_, AdminKothAuditReceipt>(
         r#"SELECT id, phase, attempt, receipt, filesystem_diff, created_at
              FROM "KothCycleAuditReceipts"

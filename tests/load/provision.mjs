@@ -536,8 +536,9 @@ async function main() {
       `${epoch.rosterServices} services, publication settled, ${planted.length} current flags`
   );
   console.log(
-    `  crown ready: cycle ${crown.cycleNumber} ${crown.phase}, ` +
-      `${crown.tokenCount}/${crown.rosterCount} scoped capabilities, container ${crown.containerId.slice(0, 12)}`
+    `  KotH ${KOTH_CLAIM_SOURCE === 'api' ? 'persistent arena' : 'crown cycle'} ready: ` +
+      `#${crown.cycleNumber} ${crown.phase}, ${crown.tokenCount}/${crown.rosterCount} ` +
+      `scoped capabilities, container ${crown.containerId.slice(0, 12)}`
   );
   console.log(`  official board rollups warmed in ${boardWarmMs} ms`);
   if (REALISTIC_COMPETITION) {

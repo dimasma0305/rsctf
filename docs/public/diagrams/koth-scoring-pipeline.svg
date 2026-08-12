@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="850" viewBox="0 0 1600 850" role="img" aria-labelledby="title desc">
-  <title id="title">KotH evidence-to-score pipeline</title>
-  <desc id="desc">The platform converts exact crown-cycle capabilities, qualified marker observations, and health evidence into acquisition A, control C, and reliability R. Sustained control has the largest direct coefficient, and reliability multiplies the complete score. Hills without scorable field evidence are excluded; normalized hill weights and equal evidence-bearing complete epochs aggregate bounded hill scores, while a partial final epoch is attenuated. Unfinished evidence is a projection; equal settled scores use ordinal evidence tie-breaks.</desc>
+  <title id="title">Boot2Root KotH evidence-to-score pipeline</title>
+  <desc id="desc">The platform converts exact Boot2Root crown-cycle capabilities, qualified marker observations, and health evidence into acquisition A, control C, and reliability R. Sustained control has the largest direct coefficient, and reliability multiplies the complete score. Hills without scorable field evidence are excluded; normalized hill weights and equal evidence-bearing complete epochs aggregate bounded hill scores, while a partial final epoch is attenuated. Unfinished evidence is a projection; equal settled scores use ordinal evidence tie-breaks.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#222222"/>
@@ -11,7 +11,7 @@
   </defs>
 
   <rect width="1600" height="850" fill="#ffffff"/>
-  <text x="68" y="66" fill="#111111" font-family="Georgia, 'DejaVu Serif', serif" font-size="44" font-weight="700">From observed outcomes to a bounded KotH score</text>
+  <text x="68" y="66" fill="#111111" font-family="Georgia, 'DejaVu Serif', serif" font-size="44" font-weight="700">From observed outcomes to a bounded Boot2Root score</text>
   <text x="68" y="105" fill="#444444" font-family="'DejaVu Sans', sans-serif" font-size="21">The scorer uses durable platform evidence; teams do not declare captures, patches, or intent</text>
 
   <g font-family="'DejaVu Sans', sans-serif">
@@ -84,5 +84,5 @@
 
   <rect x="68" y="720" width="1464" height="82" rx="10" fill="url(#void-hatch)" stroke="#555555" stroke-width="2"/>
   <text x="100" y="753" fill="#111111" font-family="'DejaVu Sans', sans-serif" font-size="18" font-weight="700">FIELD-COMMON VOID RULE</text>
-  <text x="100" y="782" fill="#333333" font-family="'DejaVu Sans', sans-serif" font-size="17">Reset, readiness, InternalError, and incomplete issuance are field voids; a champion cooldown is removed only from that team's personal denominator.</text>
+  <text x="100" y="782" fill="#333333" font-family="'DejaVu Sans', sans-serif" font-size="17">Reset/recovery, readiness, InternalError, and incomplete issuance are field voids; champion cooldown changes only one team's denominator.</text>
 </svg>

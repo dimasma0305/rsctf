@@ -10,6 +10,7 @@ import {
   lifecycleFleetSlot,
   lifecycleFleetSlots,
   isStableApiCapabilityAcceptance,
+  nextScheduledCrownBoundaryRound,
   responseCookieHeader,
   reserveLifecycleContainerUsers,
   retryAfterDelaySeconds,
@@ -58,7 +59,7 @@ test("semantic integrity samples exclude expected rate-limit responses", () => {
   assert.equal(shouldValidateSemanticResponse(429), false);
 });
 
-test("Leaderboard player capabilities remain recognized after a pristine reset", () => {
+test("Leaderboard player capabilities remain recognized across runtime boundaries", () => {
   const accepted = {
     status: 200,
     json: {
@@ -79,6 +80,16 @@ test("Leaderboard player capabilities remain recognized after a pristine reset",
   assert.equal(
     isStableApiCapabilityAcceptance({ ...accepted, status: 409 }),
     false,
+  );
+});
+
+test("Leaderboard persistence probe waits for the next scheduled Crown boundary", () => {
+  assert.equal(nextScheduledCrownBoundaryRound(7, 3, 7), 10);
+  assert.equal(nextScheduledCrownBoundaryRound(7, 3, 9), 10);
+  assert.equal(nextScheduledCrownBoundaryRound(7, 3, 10), 13);
+  assert.throws(
+    () => nextScheduledCrownBoundaryRound(7, 3, 6),
+    /at or after scoring start/,
   );
 });
 

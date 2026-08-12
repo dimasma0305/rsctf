@@ -361,9 +361,9 @@ fn checker_timeout_secs() -> u64 {
         .unwrap_or(30)
 }
 
-/// Functional readiness gate used by the crown-cycle state machine. It shares
+/// Functional readiness gate used by the KotH runtime state machine. It shares
 /// the production checker executor and timeout instead of treating container
-/// liveness or an open socket as proof that a pristine replacement is healthy.
+/// liveness or an open socket as proof that a replacement is healthy.
 pub(crate) async fn validate_koth_functional_readiness(
     checker_dir: Option<&str>,
     host: &str,

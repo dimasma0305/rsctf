@@ -98,10 +98,38 @@
     page-break-inside: avoid !important;
   }
 
+  .koth-handbook .koth-nomenclature-table table {
+    font-size: 7pt;
+    line-height: 1.05;
+  }
+
+  .koth-handbook .koth-nomenclature-table th,
+  .koth-handbook .koth-nomenclature-table td {
+    padding: 0.7mm 1mm;
+  }
+
+  .koth-handbook .koth-nomenclature-table col.koth-term {
+    width: 14%;
+  }
+
   .koth-handbook .journal-table.koth-traceability-table table code {
     overflow-wrap: break-word;
     word-break: normal;
     font-size: 6.7pt;
+  }
+
+  .koth-handbook .journal-table-caption.koth-traceability-table + table {
+    font-size: 7pt;
+    line-height: 1.05;
+  }
+
+  .koth-handbook .journal-table-caption.koth-traceability-table + table th,
+  .koth-handbook .journal-table-caption.koth-traceability-table + table td {
+    padding: 0.75mm 1.1mm;
+  }
+
+  .koth-handbook .journal-table-caption.koth-traceability-table + table code {
+    font-size: 6.2pt;
   }
 
   .koth-handbook .journal-table th,
@@ -216,8 +244,10 @@
   }
 
   .koth-handbook .vp-doc #references + ol {
-    font-size: 7.6pt;
-    line-height: 1.08;
+    margin-top: 0.35mm;
+    margin-bottom: 0;
+    font-size: 6.7pt;
+    line-height: 0.96;
   }
 
   .koth-handbook .vp-doc #references + ol > li {

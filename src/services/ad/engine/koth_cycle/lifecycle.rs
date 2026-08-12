@@ -12,6 +12,7 @@ mod audit;
 mod capability;
 mod data;
 mod deadline;
+mod persistent;
 mod readiness;
 
 use super::state::CrownCyclePosition;
@@ -19,7 +20,7 @@ use capability::mint_capabilities;
 #[cfg(test)]
 use capability::{rotate_capability_window, CapabilityWindow};
 pub(super) use data::OfficialConfig;
-use data::{load_config, load_cycle, load_hill_spec, CycleRow};
+use data::{load_config, load_cycle, load_hill_spec, CycleRow, HillLifecycle, OfficialHill};
 
 async fn set_phase(
     connection: &mut sqlx::PgConnection,
@@ -119,9 +120,7 @@ async fn create_or_load_cycle(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| {
-        AppError::bad_request(
-            "Crown-cycle KotH requires exactly one platform-hosted target per hill",
-        )
+        AppError::bad_request("Managed KotH requires exactly one platform-hosted target per hill")
     })?;
     Ok(id)
 }
@@ -368,7 +367,7 @@ async fn create_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()>
     let spec = load_hill_spec(st, cycle).await?;
     if spec.image != cycle.expected_image {
         return Err(AppError::conflict(
-            "KotH challenge image changed after the cycle reset was declared",
+            "KotH challenge image changed after the runtime transition was declared",
         ));
     }
     let image = crate::services::challenge_images::validate_runtime_reference(
@@ -584,7 +583,7 @@ pub(super) async fn drive_one_cycle(
     for transition in 0..12 {
         let cycle = load_cycle(st, cycle_id).await?;
         let phase = CrownPhase::parse(&cycle.phase)
-            .ok_or_else(|| AppError::internal("unknown KotH crown-cycle phase"))?;
+            .ok_or_else(|| AppError::internal("unknown KotH runtime lifecycle phase"))?;
         if transition == 0 {
             super::rollover::backfill_missing_receipts(st, cycle.id, phase.as_str()).await?;
         }
@@ -631,27 +630,28 @@ pub(super) async fn drive_one_cycle(
             | CrownPhase::Ended => return Ok(()),
             CrownPhase::Failed => {
                 return Err(AppError::conflict(
-                    "KotH crown-cycle recovery requires an administrator retry",
+                    "KotH runtime recovery requires an administrator retry",
                 ))
             }
         }
     }
     Err(AppError::internal(
-        "KotH crown-cycle exceeded its transition bound",
+        "KotH runtime lifecycle exceeded its transition bound",
     ))
 }
 
 /// Drive every snapshotted hill even when an earlier hill fails, then return
 /// the first error so the round pipeline retains its existing failure signal.
 /// Each hill's driver remains responsible for persisting its own error state.
-async fn drive_hills_fail_isolated<F, Fut, E>(challenge_ids: &[i32], mut drive: F) -> Result<(), E>
+async fn drive_hills_fail_isolated<T, F, Fut, E>(items: &[T], mut drive: F) -> Result<(), E>
 where
-    F: FnMut(i32) -> Fut,
+    T: Copy,
+    F: FnMut(T) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
     let mut first_error = None;
-    for &challenge_id in challenge_ids {
-        if let Err(error) = drive(challenge_id).await {
+    for &item in items {
+        if let Err(error) = drive(item).await {
             if first_error.is_none() {
                 first_error = Some(error);
             }
@@ -748,24 +748,42 @@ pub(crate) async fn drive_cycle_transitions(
     ) else {
         return Err(AppError::internal("invalid snapshotted KotH cycle shape"));
     };
-    drive_hills_fail_isolated(&config.challenge_ids, |challenge_id| {
+    drive_hills_fail_isolated(&config.hills, |hill: OfficialHill| {
         let config = &config;
         async move {
-            let result = drive_hill_cycle_transition(
-                st,
-                config,
-                game_id,
-                challenge_id,
-                ad_round_id,
-                round_number,
-                position,
-            )
-            .await;
+            let challenge_id = hill.challenge_id;
+            let result = match hill.lifecycle {
+                HillLifecycle::ScheduledCrown => {
+                    drive_hill_cycle_transition(
+                        st,
+                        config,
+                        game_id,
+                        challenge_id,
+                        ad_round_id,
+                        round_number,
+                        position,
+                    )
+                    .await
+                }
+                HillLifecycle::PersistentArena => {
+                    persistent::drive_hill_transition(
+                        st,
+                        config,
+                        game_id,
+                        challenge_id,
+                        ad_round_id,
+                        round_number,
+                        position.epoch,
+                    )
+                    .await
+                }
+            };
             if let Err(error) = &result {
                 tracing::warn!(
                     game = game_id,
                     challenge = challenge_id,
                     %error,
+                    lifecycle = ?hill.lifecycle,
                     "KotH hill lifecycle transition failed"
                 );
             }
@@ -775,7 +793,7 @@ pub(crate) async fn drive_cycle_transitions(
     .await
 }
 
-/// Resume crown-cycle teardown after an event deadline, independently of the
+/// Resume KotH runtime teardown after an event deadline, independently of the
 /// round pipeline. The final round may already be sealed when a replica dies in
 /// destroy/create/readiness, so cron must keep driving those durable states
 /// until every affected hill is terminal.
@@ -861,7 +879,7 @@ pub(crate) async fn recover_ended_cycle_transitions(st: &SharedState) -> AppResu
                 challenge = challenge_id,
                 cycle = cycle_id,
                 %error,
-                "cron: ended KotH crown-cycle recovery remains pending"
+                "cron: ended KotH runtime recovery remains pending"
             );
         } else {
             let terminal = sqlx::query_scalar::<_, bool>(
@@ -906,7 +924,7 @@ pub(crate) async fn recover_cycle(
     .fetch_optional(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("KotH crown cycle not found"))
+    .ok_or_else(|| AppError::not_found("KotH runtime lifecycle not found"))
 }
 
 #[cfg(test)]

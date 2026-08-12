@@ -93,8 +93,9 @@ The arena should exchange a submitted KotH capability with RSCTF immediately,
 then retain only the returned lowercase SHA-256 pseudonym. The referee submits
 that value as `tokenHash`. RSCTF resolves it against the current event
 capability for the exact game, hill, and official participation. The signed
-context separately binds the cycle, reset attempt, target, container, round,
-and objective schema. Raw capabilities never enter the signed body.
+context separately binds the lifecycle record, runtime attempt, target,
+container, round, and objective schema. Raw capabilities never enter the
+signed body.
 
 The context response contains the current eligible hashes. Filter the
 untrusted arena feed against this set before constructing the snapshot. These
@@ -125,8 +126,9 @@ A fair Leaderboard challenge must satisfy all of the following:
 9. Keep the RSCTF functional checker independent of the referee and arena
    scoring database.
 10. Rehearse at least one complete epoch at expected peak capacity, including
-    valid play, invalid traffic, referee restart, arena reset, stale
-    capabilities, replay, feed gaps, and one deliberately overloaded team.
+    valid play, invalid traffic, referee restart, forced arena health recovery,
+    stale capabilities, replay, feed gaps, and one deliberately overloaded
+    team.
 
 The bundled
 [`api-observed-hill`](https://github.com/dimasma0305/rsctf-challenges/tree/main/Koth/Web/api-observed-hill)
@@ -139,7 +141,7 @@ and two differently scaled objective channels.
 1. Open the game's **A&D / KotH operations** page and select **KotH**.
 2. In the hill's **Claim input** column, choose **Enable Leaderboard**.
 3. Copy the one-time referee secret. RSCTF never returns its plaintext again.
-4. Keep scoring paused and start the official KotH lifecycle.
+4. Keep scoring paused and provision the official persistent arena lifecycle.
 5. Configure the referee with the game ID, challenge ID, RSCTF origin, stable
    arena URL, secret, and persistent state path.
 6. Fetch context and submit a preflight snapshot using the final ordered
@@ -174,8 +176,9 @@ Content-Type: application/json
 
 RSCTF returns `{"teamId":"<sha256-token>","teamName":"<official name>"}`.
 The arena must discard the raw token after issuing its narrow local session.
-The token remains valid across crown-cycle resets; an explicit player rotation
-invalidates the old value immediately and requires a new arena session.
+The token remains valid across rounds, epochs, and health recovery; an explicit
+player rotation invalidates the old value immediately and requires a new arena
+session.
 
 The organizer-controlled referee then fetches the current scoring fence:
 
@@ -207,12 +210,13 @@ Example response after the objective schema is frozen:
 Before the first accepted snapshot, `objectiveIds` is empty and
 `objectiveSchemaHash` is `null`. The referee supplies the final schema in that
 first submission. Thereafter the context is bound to its hash. `context`
-changes with the scoring round, runtime/reset identity, objective schema, or
+changes with the scoring round, runtime/recovery identity, objective schema, or
 eligible capability set. A player token rotation therefore requires a fresh
-context before the next submission. `cycleEndsAt` is the exact end of the
-active pristine-runtime cycle. A challenge that runs multi-minute sessions
-must not start a new session unless it can finish and report before that
-timestamp; reconnects to an already-running session may continue.
+context before the next submission. The compatibility field `cycleEndsAt` is
+the event's Leaderboard scoring cutoff, not a scheduled reset boundary. A
+challenge that runs multi-minute sessions must not start a new scoreable
+session unless it can finish and report before that timestamp; reconnects to
+an already-running session may continue.
 
 Submit the complete set of finalized waves whose end times fall inside the
 current context's settlement window:
@@ -409,10 +413,15 @@ At a server-randomized checker time, RSCTF:
 8. averages relative performance and Crown share before applying the constant
    95/5 score when projecting or settling the epoch.
 
-The arena receives a pristine replacement at every crown-cycle boundary,
-clearing transient sessions while preserving event capabilities. Leaderboard
-mode has a challenge-native per-wave Crown but does not use the Boot2Root
-marker, provisional capture confirmation, or champion cooldown. A snapshot
-must match the exact current round, cycle, reset attempt, target, container,
-and objective schema; after the arrival window, absence remains a field-wide
-void.
+The arena remains persistent across ordinary round, Crown, and epoch
+boundaries. A stopped managed runtime triggers immediate recovery; otherwise
+three consecutive committed `Mumble` or `Offline` functional verdicts for the
+same runtime trigger replacement. `InternalError` breaks that streak because
+uncertain platform inspection must not destroy a healthy arena. Recovery
+clears transient sessions and unsettled snapshots, preserves event
+capabilities, and proves readiness before scoring resumes. Leaderboard mode
+has a challenge-native per-wave Crown but does not use the Boot2Root marker,
+provisional capture confirmation, scheduled Crown reset, or champion cooldown.
+A snapshot must match the exact current round, lifecycle record, runtime
+attempt, target, container, and objective schema; after the arrival window,
+absence remains a field-wide void.

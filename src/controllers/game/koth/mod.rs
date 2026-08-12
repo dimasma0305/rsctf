@@ -1,4 +1,4 @@
-//! King-of-the-Hill (KotH) crown-cycle endpoints.
+//! King-of-the-Hill (KotH) gameplay, scoring, and lifecycle endpoints.
 //!
 //! Three read endpoints back the React KotH board + operator console (paths and
 //! shapes match `web/src/hooks/useGame.ts` verbatim):

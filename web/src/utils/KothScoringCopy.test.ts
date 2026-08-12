@@ -4,6 +4,8 @@ import test from 'node:test'
 
 const guide = readFileSync('src/components/KothGuideModal.tsx', 'utf8')
 const scoreboard = readFileSync('src/components/KothScoreboardTable.tsx', 'utf8')
+const challenge = readFileSync('src/components/KothChallengePanel.tsx', 'utf8')
+const operations = readFileSync('src/components/admin/KothOpsPanel.tsx', 'utf8')
 
 test('KotH player guidance states the unique-leader Crown and exact-tie rule', () => {
   for (const source of [guide, scoreboard]) {
@@ -18,4 +20,11 @@ test('KotH player guidance cannot regress to a hidden tie breaker', () => {
   assert.doesNotMatch(copy, /participating incumbent/i)
   assert.doesNotMatch(copy, /earliest (?:server-confirmed )?tied/i)
   assert.doesNotMatch(copy, /tied-best Crown/i)
+})
+
+test('Leaderboard lifecycle copy distinguishes persistent health recovery from Crown resets', () => {
+  assert.match(scoreboard, /Persistent · health supervised/)
+  assert.match(scoreboard, /stays online across scoring rounds and epochs/)
+  assert.match(challenge, /your event token remains valid/)
+  assert.match(operations, /runtime attempt/)
 })

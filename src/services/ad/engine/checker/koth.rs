@@ -1,4 +1,7 @@
-//! Authoritative crown-cycle KotH checker and immutable evidence writer.
+//! Authoritative KotH checker and immutable evidence writer.
+//!
+//! Marker hills use scheduled crown-cycle identities. Leaderboard/API hills
+//! retain one runtime generation until health supervision requires recovery.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -208,13 +211,20 @@ async fn load_live_hill(
                   COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker')
                     AS claim_source,
                   config.claim_confirmation_ticks,
-                  (SELECT COUNT(*) FROM "KothTokens" token
-                    WHERE token.cycle_id = cycle.id
-                      AND token.challenge_id = target.challenge_id
-                      AND token.target_id = target.id
-                      AND token.reset_attempt = cycle.reset_attempt
-                      AND token.participation_id = ANY(eligible.participation_ids)
-                      AND token.revoked_at IS NULL) AS token_count,
+                  CASE
+                    WHEN COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker') = 'Api'
+                    THEN (SELECT COUNT(*) FROM "KothApiTeamTokens" token
+                           WHERE token.game_id = target.game_id
+                             AND token.challenge_id = target.challenge_id
+                             AND token.participation_id = ANY(eligible.participation_ids))
+                    ELSE (SELECT COUNT(*) FROM "KothTokens" token
+                           WHERE token.cycle_id = cycle.id
+                             AND token.challenge_id = target.challenge_id
+                             AND token.target_id = target.id
+                             AND token.reset_attempt = cycle.reset_attempt
+                             AND token.participation_id = ANY(eligible.participation_ids)
+                             AND token.revoked_at IS NULL)
+                  END AS token_count,
                   cardinality(eligible.participation_ids)::bigint AS roster_count,
                   eligible.participation_ids AS eligible_roster,
                   game.start_time_utc AS game_start,
@@ -268,8 +278,11 @@ async fn load_live_hill(
                SELECT crown.* FROM "KothCrownCycles" crown
                 WHERE crown.game_id = target.game_id
                   AND crown.challenge_id = target.challenge_id
-                  AND scoring_round.number BETWEEN crown.planned_start_round
-                                               AND crown.planned_end_round
+                  AND (
+                    COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker') = 'Api'
+                    OR scoring_round.number BETWEEN crown.planned_start_round
+                                                AND crown.planned_end_round
+                  )
                   AND crown.replacement_container_id = target.container_id
                 ORDER BY crown.cycle_number DESC LIMIT 1
              ) cycle ON TRUE
@@ -316,6 +329,11 @@ async fn reconcile_ineligible_incumbents(
                    FROM "KothClaimStates" claim
                    JOIN "KothTokens" token ON token.id = claim.token_id
                   WHERE claim.target_id = $1 AND claim.cycle_id = $2
+                 UNION ALL
+                 SELECT token.participation_id
+                   FROM "KothApiTeamTokens" token
+                  WHERE token.game_id = $4
+                    AND token.challenge_id = $5
              ) incumbent
             WHERE incumbent.participation_id IS NOT NULL
               AND NOT (incumbent.participation_id = ANY($3))"#,
@@ -323,6 +341,8 @@ async fn reconcile_ineligible_incumbents(
     .bind(hill.target_id)
     .bind(hill.cycle_id)
     .bind(&hill.eligible_roster)
+    .bind(game_id)
+    .bind(hill.challenge_id)
     .fetch_all(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -355,10 +375,15 @@ async fn insert_missing_cycle_void(
                  FROM "KothCrownCycles" crown
                  JOIN "KothOfficialConfigs" config
                    ON config.game_id = crown.game_id
+                 JOIN LATERAL jsonb_array_elements(config.hills_snapshot) frozen(item)
+                   ON (frozen.item->>'challengeId')::integer = crown.challenge_id
                 WHERE crown.game_id = scope.game_id
                   AND crown.challenge_id = scope.challenge_id
-                  AND $6 BETWEEN crown.planned_start_round
-                                     AND crown.planned_end_round
+                  AND (
+                    COALESCE(NULLIF(frozen.item->>'claimSource', ''), 'Marker') = 'Api'
+                    OR $6 BETWEEN crown.planned_start_round
+                                      AND crown.planned_end_round
+                  )
                 ORDER BY crown.cycle_number DESC
                 LIMIT 1
              ) cycle ON TRUE
@@ -368,7 +393,7 @@ async fn insert_missing_cycle_void(
     .bind(challenge_id)
     .bind(round.id)
     .bind(AdCheckStatus::InternalError as i16)
-    .bind("crown-cycle backend is unpublished; reset/readiness sample void")
+    .bind("KotH backend is unpublished; lifecycle/readiness sample void")
     .bind(round.number)
     .execute(connection)
     .await
@@ -421,7 +446,7 @@ async fn check_one_hill(
     effective_deadline: tokio::time::Instant,
     lease: &RoundFinishLease,
 ) -> AppResult<()> {
-    // Runtime reset and checker ownership use the exact same hill lock. The
+    // Runtime lifecycle and checker ownership use the exact same hill lock. The
     // game-control lock is taken only for short SQL sections and always after
     // this lock, matching the lifecycle path's lock order.
     let key = format!("shared-container:{challenge_id}");
@@ -466,11 +491,11 @@ async fn check_one_hill(
     if hill.phase != "Active" || !complete_tokens {
         let reason = if hill.phase != "Active" {
             std::borrow::Cow::Owned(format!(
-                "crown cycle is {}; reset/readiness sample void",
+                "KotH lifecycle is {}; reset/readiness sample void",
                 hill.phase
             ))
         } else {
-            std::borrow::Cow::Borrowed("crown-cycle token issuance is incomplete; sample void")
+            std::borrow::Cow::Borrowed("eligible KotH capability field is incomplete; sample void")
         };
         insert_void(
             &mut *control.transaction_mut(),
@@ -650,7 +675,7 @@ async fn check_one_hill(
     if current.phase != "Active" || !current.has_complete_token_window() {
         let reason = if current.phase != "Active" {
             format!(
-                "crown cycle changed to {}; post-probe sample void",
+                "KotH lifecycle changed to {}; post-probe sample void",
                 current.phase
             )
         } else {

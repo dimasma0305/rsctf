@@ -1225,11 +1225,13 @@ state, anonymous browsing, an admin monitor feed, and a concurrent same-flag ded
   observation. In API mode, the referee instead submits simultaneous evidence for the
   whole active fleet. It deliberately omits one eligible team to prove that RSCTF writes
   a dense zero, alternates equivalent 5/10 and 5,000/10,000 native objective scales to
-  verify application-side normalization, and proves an old capability hash is accepted
-  as the same player after a pristine reset while the observer fetches a fresh,
-  cycle-bound context and signature. API acceptance also requires multiple positive teams
-  and zero holder, acquisition, or cooldown state. The harness never calls the disabled
-  manual round endpoint.
+  verify application-side normalization, and proves the same arena runtime and event
+  capability remain current after crossing a configured Crown boundary while the observer
+  fetches a fresh round-bound context and signature. A scheduled Leaderboard lifecycle
+  rotation is an integrity failure; health-recovery transitions are covered by database
+  regressions. API acceptance also requires multiple positive teams and zero holder,
+  acquisition, or cooldown state. The harness never calls the disabled manual round
+  endpoint.
 
 ```sh
 npm run provision                         # 300 + 300 teams by default
