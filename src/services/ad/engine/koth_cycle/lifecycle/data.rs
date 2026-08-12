@@ -167,6 +167,57 @@ pub(super) async fn load_config(
     }))
 }
 
+pub(super) async fn load_cycle(st: &SharedState, cycle_id: i64) -> AppResult<CycleRow> {
+    sqlx::query_as::<_, CycleRow>(
+        r#"SELECT id, game_id, challenge_id, cycle_number, phase,
+                  planned_start_round, old_container_id,
+                  replacement_container_id, replacement_host,
+                  replacement_port, expected_image, reset_attempt,
+                  readiness_attempt
+             FROM "KothCrownCycles" WHERE id = $1"#,
+    )
+    .bind(cycle_id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("KotH runtime lifecycle not found"))
+}
+
+pub(super) async fn load_hill_spec(st: &SharedState, cycle: &CycleRow) -> AppResult<HillSpec> {
+    sqlx::query_as::<_, HillSpec>(
+        r#"SELECT target.id AS target_id,
+                  challenge.build_image_digest AS image,
+                  COALESCE(challenge.memory_limit, 64) AS memory_limit,
+                  COALESCE(challenge.cpu_count, 1) AS cpu_count,
+                  COALESCE(challenge.expose_port, 80) AS expose_port,
+                  challenge.ad_allow_egress AS allow_egress,
+                  NULLIF(BTRIM(challenge.ad_checker_image), '') AS checker_dir
+             FROM "GameChallenges" challenge
+             JOIN "KothTargets" target
+               ON target.game_id = challenge.game_id
+              AND target.challenge_id = challenge.id
+            WHERE challenge.game_id = $1 AND challenge.id = $2
+              AND challenge.is_enabled = TRUE
+              AND challenge.review_status = $3
+              AND challenge."Type" = $4
+              AND challenge.build_status = $5
+              AND NULLIF(BTRIM(challenge.build_image_digest), '') IS NOT NULL"#,
+    )
+    .bind(cycle.game_id)
+    .bind(cycle.challenge_id)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::KingOfTheHill as i16)
+    .bind(ChallengeBuildStatus::Success as i16)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| {
+        AppError::bad_request(
+            "Managed KotH requires a platform-hosted hill with a configured image",
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, TimeZone, Utc};
@@ -221,55 +272,4 @@ mod tests {
 
         assert_eq!(config.persistent_end_round(), 728);
     }
-}
-
-pub(super) async fn load_cycle(st: &SharedState, cycle_id: i64) -> AppResult<CycleRow> {
-    sqlx::query_as::<_, CycleRow>(
-        r#"SELECT id, game_id, challenge_id, cycle_number, phase,
-                  planned_start_round, old_container_id,
-                  replacement_container_id, replacement_host,
-                  replacement_port, expected_image, reset_attempt,
-                  readiness_attempt
-             FROM "KothCrownCycles" WHERE id = $1"#,
-    )
-    .bind(cycle_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("KotH runtime lifecycle not found"))
-}
-
-pub(super) async fn load_hill_spec(st: &SharedState, cycle: &CycleRow) -> AppResult<HillSpec> {
-    sqlx::query_as::<_, HillSpec>(
-        r#"SELECT target.id AS target_id,
-                  challenge.build_image_digest AS image,
-                  COALESCE(challenge.memory_limit, 64) AS memory_limit,
-                  COALESCE(challenge.cpu_count, 1) AS cpu_count,
-                  COALESCE(challenge.expose_port, 80) AS expose_port,
-                  challenge.ad_allow_egress AS allow_egress,
-                  NULLIF(BTRIM(challenge.ad_checker_image), '') AS checker_dir
-             FROM "GameChallenges" challenge
-             JOIN "KothTargets" target
-               ON target.game_id = challenge.game_id
-              AND target.challenge_id = challenge.id
-            WHERE challenge.game_id = $1 AND challenge.id = $2
-              AND challenge.is_enabled = TRUE
-              AND challenge.review_status = $3
-              AND challenge."Type" = $4
-              AND challenge.build_status = $5
-              AND NULLIF(BTRIM(challenge.build_image_digest), '') IS NOT NULL"#,
-    )
-    .bind(cycle.game_id)
-    .bind(cycle.challenge_id)
-    .bind(ChallengeReviewStatus::Active as i16)
-    .bind(ChallengeType::KingOfTheHill as i16)
-    .bind(ChallengeBuildStatus::Success as i16)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| {
-        AppError::bad_request(
-            "Managed KotH requires a platform-hosted hill with a configured image",
-        )
-    })
 }
