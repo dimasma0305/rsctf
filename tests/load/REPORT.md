@@ -5,6 +5,164 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## Persistent Leaderboard arena lifecycle — 12 August 2026
+
+API-native **Leaderboard** and container-marker **Boot2Root** KotH now use
+different runtime lifecycles while retaining the same constant scoring rules.
+Boot2Root still receives pristine scheduled Crown-cycle replacements, rotating
+cycle capabilities, confirmation, and champion cooldown. A Leaderboard hill is
+instead one event-long arena: the scheduler checks it on every A&D round but
+does not destroy a healthy runtime at a configured Crown boundary. A stopped
+managed runtime recovers immediately; three consecutive committed
+`Mumble`/`Offline` checks for the exact runtime generation also trigger a
+pristine recovery. `InternalError` does not count toward that functional-health
+streak. Recovery retains each player's event-scoped API capability, clears
+transient arena evidence, and passes the normal readiness fence before scoring
+resumes.
+
+No scoring formula, protocol revision, serialized field, migration, or organizer
+version selector changed. Existing `cycleNumber`, `resetAttempt`, and
+`cycleEndsAt` fields remain wire-compatible runtime/evidence fences; for
+Leaderboard, the last field describes the event scoring cutoff rather than a
+scheduled container reset. Player and admin UI now label this mode
+`Persistent · health supervised` and hide Boot2Root-only reset countdowns.
+
+### Reproduced before failure
+
+The before gate used production commit
+`8a78f11b02a7a39108b4189e7d7c4a3c19450d89` and immutable digest
+`sha256:0c64228a8f9b8205b17b11c88a1e9e8e475cd1ff1db079a49be71a50836e6ee7`.
+Disposable games 228/229 contained 20 Jeopardy teams, 20 mixed teams, one
+API-observed hill, A&D, BYOC, attachment, and container paths. At round 8 the
+healthy hill was cycle 3, container `bb14574f…`, with its next configured
+boundary at round 10. At round 10 the old scheduler replaced it with cycle 4,
+container `207cf5bb…`. The lifecycle harness stopped at its new correctness
+fence with “healthy Leaderboard arena rotated at a scheduled Crown boundary.”
+
+That before run intentionally did not continue to a latency summary. It is
+therefore valid evidence of the lifecycle defect, but not a numerical performance
+baseline.
+
+### Production after acceptance
+
+The after gate ran the deployed commit
+`55164a092b3db839574d75da55a1d648895e45d1` from immutable multi-platform
+digest
+`sha256:638f9a7efa98c79ce2d0c9571c7c23cbf8edf278b16f8a2d8e51ba8b835a8487`.
+Disposable games 230/231 used the same 20+20-team shape, 40 VUs, four real BYOC
+tunnels, one Jeopardy container cohort, signed Leaderboard observations, and a
+120-second closed-loop load window. The run crossed the former 90-second reset
+boundary while retaining cycle 1, container `02e15a39…`, reset generation, and
+the event-stable player capability. The stable-capability post-boundary check
+succeeded, exactly one cycle was seen, and scheduled Leaderboard rotations were
+zero.
+
+The run issued 384,450 HTTP requests at an observed 2,885.063 requests/s. This is
+a closed-loop observation, not a capacity limit. Server 5xx and non-2xx rates
+were both 0%. All 206 liveness and 206 readiness probes succeeded. Six real
+Jeopardy container operations, attachment transfer, four accepted A&D attacks,
+and 60 signed Leaderboard writes completed. Four of six observed Leaderboard
+checker rounds were scorable; they produced 80 dense rows for the 20-team
+official field, three simultaneously positive teams, 68 omission-zero rows, and
+two field-wide void ticks. A&D and KotH both settled, deadline cleanup completed,
+and every duplicate, stale-evidence, cross-cycle, cooldown, late-evidence,
+cadence, publication, liveness, readiness, panic, and score-bound integrity
+counter was zero.
+
+All latency values below are milliseconds.
+
+| Operation | avg | p50 | p90 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 13.872 | 8.040 | 21.247 | 32.709 | 132.869 | 1,572.585 |
+| Board poll aggregate | 27.636 | 8.872 | 23.982 | 177.335 | 382.640 | 546.992 |
+| Combined board | 18.979 | 9.454 | 23.152 | 107.278 | 169.573 | 201.797 |
+| KotH hills | 12.105 | 7.014 | 17.608 | 22.957 | 113.047 | 164.014 |
+| A&D epoch board | 22.980 | 9.322 | 24.353 | 67.392 | 356.762 | 357.049 |
+| A&D State | 39.772 | 26.804 | 64.627 | 86.383 | 220.511 | 226.825 |
+| A&D Targets | 28.314 | 20.882 | 50.455 | 87.132 | 132.004 | 166.710 |
+| Jeopardy details | 20.005 | 10.905 | 47.208 | 67.045 | 115.619 | 206.363 |
+| A&D submit | 134.139 | 114.063 | 236.739 | 284.778 | 382.321 | 411.291 |
+| Jeopardy submit | 107.728 | 86.639 | 201.799 | 224.940 | 402.440 | 508.732 |
+| Attachment operation | 55.234 | 31.337 | 127.205 | 208.532 | 328.091 | 906.555 |
+| Container operation | 1,051.012 | 1,135.887 | 1,450.480 | 1,511.532 | 1,560.375 | 1,572.585 |
+| Onboarding | 847.450 | 816.500 | 1,312.600 | 1,438.050 | 2,131.870 | 2,527.000 |
+
+The 32 resource samples span staging, load, and settlement. CPU is percent of one
+core and memory is resident usage. PostgreSQL was the shared production database,
+so its buffer growth and CPU include concurrent live-platform work.
+
+| Container | CPU avg | CPU p95 | CPU max | RAM avg | RAM max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Digest-pinned loopback web | 88.047% | 205.580% | 238.710% | 96.246 MiB | 162.800 MiB |
+| Production control | 9.124% | 51.030% | 56.030% | 56.653 MiB | 66.540 MiB |
+| PostgreSQL | 124.293% | 258.120% | 261.410% | 791.562 MiB | 936.700 MiB |
+| Redis | 17.409% | 32.640% | 32.940% | 5.976 MiB | 7.051 MiB |
+
+<details>
+<summary>Full CPU/RAM time series (UTC, 32 samples)</summary>
+
+| Time | Web CPU % | Web MiB | Control CPU % | Control MiB | PostgreSQL CPU % | PostgreSQL MiB | Redis CPU % | Redis MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10:17:02 | 0.44 | 20.21 | 1.75 | 55.62 | 13.06 | 529.6 | 1.06 | 5.625 |
+| 10:17:08 | 0.05 | 20.21 | 0.79 | 55.63 | 2.57 | 531.2 | 0.53 | 5.625 |
+| 10:17:15 | 0.25 | 20.24 | 0.22 | 55.51 | 20.66 | 534.1 | 0.65 | 5.625 |
+| 10:17:21 | 0.06 | 20.25 | 21.88 | 55.93 | 20.74 | 536.5 | 0.63 | 5.625 |
+| 10:17:28 | 0.04 | 20.24 | 9.32 | 55.85 | 115.70 | 543.9 | 0.53 | 5.625 |
+| 10:17:34 | 0.50 | 20.24 | 1.92 | 55.79 | 8.37 | 538.4 | 0.96 | 5.625 |
+| 10:17:41 | 0.10 | 20.24 | 1.48 | 55.79 | 2.57 | 538.9 | 0.47 | 5.625 |
+| 10:17:47 | 0.72 | 20.24 | 4.13 | 55.75 | 124.47 | 572.1 | 0.51 | 5.625 |
+| 10:17:54 | 134.56 | 125.8 | 1.62 | 55.72 | 261.41 | 774.4 | 22.73 | 5.805 |
+| 10:18:01 | 197.32 | 128.1 | 4.24 | 57.84 | 164.53 | 798.4 | 31.86 | 5.770 |
+| 10:18:08 | 238.71 | 135.4 | 2.87 | 57.82 | 182.15 | 806.5 | 24.92 | 5.918 |
+| 10:18:15 | 205.58 | 139.8 | 56.03 | 66.54 | 165.24 | 810.6 | 28.33 | 5.809 |
+| 10:18:21 | 193.51 | 138.1 | 16.85 | 55.77 | 162.98 | 828.8 | 30.69 | 5.980 |
+| 10:18:28 | 122.57 | 162.8 | 10.57 | 55.97 | 229.67 | 836.2 | 24.75 | 6.227 |
+| 10:18:35 | 155.29 | 108.6 | 1.92 | 55.85 | 171.05 | 833.6 | 31.02 | 6.160 |
+| 10:18:42 | 121.62 | 108.3 | 1.17 | 55.79 | 159.61 | 836.4 | 31.72 | 6.223 |
+| 10:18:48 | 107.34 | 108.4 | 51.03 | 64.41 | 191.09 | 844.2 | 28.24 | 5.980 |
+| 10:18:55 | 140.90 | 112.4 | 1.44 | 55.73 | 159.31 | 869.8 | 30.74 | 7.051 |
+| 10:19:02 | 164.26 | 110.1 | 2.68 | 56.31 | 191.93 | 870.2 | 32.94 | 5.992 |
+| 10:19:09 | 155.03 | 110.2 | 1.28 | 56.05 | 189.99 | 872.4 | 31.23 | 6.000 |
+| 10:19:16 | 149.65 | 112.7 | 2.33 | 55.96 | 258.12 | 876.0 | 32.64 | 6.254 |
+| 10:19:22 | 170.97 | 112.2 | 15.24 | 56.05 | 157.72 | 880.9 | 28.40 | 6.004 |
+| 10:19:29 | 119.58 | 112.3 | 21.98 | 56.13 | 206.96 | 908.4 | 27.26 | 6.031 |
+| 10:19:37 | 172.17 | 112.3 | 2.52 | 56.37 | 200.65 | 905.9 | 27.21 | 5.980 |
+| 10:19:44 | 146.22 | 116.4 | 5.17 | 56.07 | 236.30 | 908.7 | 32.64 | 6.184 |
+| 10:19:50 | 114.09 | 117.0 | 1.22 | 56.07 | 182.87 | 936.7 | 28.78 | 6.191 |
+| 10:19:57 | 0.44 | 123.0 | 1.77 | 55.94 | 5.86 | 933.6 | 0.97 | 6.211 |
+| 10:20:03 | 4.73 | 123.0 | 9.25 | 56.15 | 50.63 | 934.3 | 2.23 | 6.012 |
+| 10:20:09 | 0.05 | 125.6 | 1.88 | 56.15 | 15.01 | 934.5 | 8.94 | 6.223 |
+| 10:20:16 | 0.42 | 125.6 | 3.31 | 56.06 | 4.44 | 934.1 | 8.41 | 6.215 |
+| 10:20:23 | 0.28 | 125.0 | 14.33 | 56.03 | 21.13 | 934.6 | 0.83 | 6.004 |
+| 10:20:29 | 0.06 | 124.9 | 19.79 | 56.25 | 100.59 | 936.1 | 4.26 | 6.008 |
+
+</details>
+
+### Verification and release notes
+
+Local verification completed strict formatting and Clippy with
+`-D warnings`, all-target Rust tests, the PostgreSQL missing-cycle and
+three-failure recovery regressions, 101 React checks, 10 visual contracts, 307
+load-harness tests, release compilation, documentation generation, and
+page-by-page QA of the 10-page tagged A4 KotH handbook. GitHub CI run
+`31585115297` and container run `31585115757` both passed, including Linux
+and Windows workers, dependency audit, coverage/database regressions, and native
+amd64/arm64 publication.
+
+Before rollout, a 7,806,429-byte PostgreSQL custom-format backup was created and
+its archive catalog verified. The one-shot migration role reported no pending
+migrations. Both web replicas and the singleton control now use the same
+immutable digest and source revision, report one shared runtime fingerprint,
+are healthy with zero restarts/OOM kills, and return exact `ok` from
+`/healthz` and `/livez`. Recent logs contain no panic, fatal error,
+migration failure, restart loop, or unexpected 5xx. The disposable games,
+state manifest, BYOC fleet, hill, and temporary loopback replica were removed.
+
+No optimization-ledger row is added. The before run correctly aborted before
+measurement, and the after workload was a correctness/no-regression acceptance
+run rather than a same-harness fixed-rate performance A/B.
+
+
 ## Finalized-wave Leaderboard scoring and 100-team acceptance — 8 August 2026
 
 RSCTF's API-native KotH format now scores challenge-native, finalized waves
