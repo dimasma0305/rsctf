@@ -52,6 +52,17 @@ fn api_snapshot_arrival_wait_preserves_probe_and_commit_runway() {
 }
 
 #[test]
+fn api_snapshot_arrival_wait_does_not_settle_an_early_empty_heartbeat() {
+    let now = tokio::time::Instant::now();
+    let wait_until = now + Duration::from_secs(6);
+    assert!(api_snapshot_arrival_is_pending(false, now, wait_until));
+    assert!(!api_snapshot_arrival_is_pending(true, now, wait_until));
+    assert!(!api_snapshot_arrival_is_pending(
+        false, wait_until, wait_until
+    ));
+}
+
+#[test]
 fn api_checker_starts_at_the_lagged_wave_cutoff() {
     let wall_now = Utc::now();
     let monotonic_now = tokio::time::Instant::now();

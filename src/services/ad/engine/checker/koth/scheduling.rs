@@ -46,3 +46,11 @@ pub(super) fn api_snapshot_arrival_deadline(
         latest_safe_probe_start,
     )
 }
+
+pub(super) fn api_snapshot_arrival_is_pending(
+    has_finalized_wave: bool,
+    now: tokio::time::Instant,
+    wait_until: tokio::time::Instant,
+) -> bool {
+    !has_finalized_wave && now < wait_until
+}

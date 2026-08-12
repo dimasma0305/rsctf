@@ -35,8 +35,8 @@ use crate::utils::error::{AppError, AppResult};
 mod scheduling;
 
 use scheduling::{
-    api_settlement_start_instant, api_snapshot_arrival_deadline, API_MAX_PROBE_BUDGET,
-    API_SNAPSHOT_POLL_INTERVAL, KOTH_COMPLETION_MARGIN,
+    api_settlement_start_instant, api_snapshot_arrival_deadline, api_snapshot_arrival_is_pending,
+    API_MAX_PROBE_BUDGET, API_SNAPSHOT_POLL_INTERVAL, KOTH_COMPLETION_MARGIN,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -149,13 +149,19 @@ async fn read_initial_claim_input(
     );
     loop {
         let input = read_claim_input(db, containers, hill, round_id).await;
-        if hill.claim_source != "Api"
-            || matches!(input, ClaimInputRead::Api(KothApiSnapshotRead::Observed(_)))
-        {
-            return input;
-        }
         let now = tokio::time::Instant::now();
-        if now >= wait_until {
+        // An early empty heartbeat is not a settled Leaderboard result. The
+        // referee may still append a wave that ended at the cutoff; accepting
+        // the empty snapshot immediately can race that append and silently
+        // void an otherwise valid scoring round.
+        let has_finalized_wave = matches!(
+            &input,
+            ClaimInputRead::Api(KothApiSnapshotRead::Observed(snapshot))
+                if !snapshot.waves.is_empty()
+        );
+        if hill.claim_source != "Api"
+            || !api_snapshot_arrival_is_pending(has_finalized_wave, now, wait_until)
+        {
             return input;
         }
         tokio::time::sleep(std::cmp::min(
