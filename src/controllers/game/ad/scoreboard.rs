@@ -179,18 +179,6 @@ async fn hard_invalidate_ad_scoreboard_cache(
     );
 }
 
-async fn visible_game_revision(st: &SharedState, game_id: i32) -> AppResult<Option<String>> {
-    sqlx::query_scalar::<_, String>(
-        r#"SELECT game.xmin::text
-             FROM "Games" AS game
-            WHERE game.id = $1 AND game.hidden = FALSE"#,
-    )
-    .bind(game_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))
-}
-
 fn revision_disposition(expected: &str, observed: Option<&str>) -> RevisionDisposition {
     match observed {
         None => RevisionDisposition::Missing,
@@ -230,19 +218,20 @@ async fn build_scoreboard_bundle_attempt(
     current_key: &str,
     stale_key: &str,
 ) -> ScoreboardBuildAttempt {
-    let before = match visible_game_revision(st, id).await {
-        Ok(Some(revision)) => revision,
-        Ok(None) => {
-            hard_invalidate_ad_scoreboard_cache(st.cache.as_ref(), id).await;
-            return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::NotFound(
-                "Game not found".to_owned(),
-            ));
-        }
-        Err(error) => {
-            tracing::warn!(game = id, %error, "A&D scoreboard revision preflight failed");
-            return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::Failed);
-        }
-    };
+    let before =
+        match crate::services::ad::scoring::ad_scoreboard_revision(st.pg(), id, is_monitor).await {
+            Ok(Some(revision)) => revision,
+            Ok(None) => {
+                hard_invalidate_ad_scoreboard_cache(st.cache.as_ref(), id).await;
+                return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::NotFound(
+                    "Game not found".to_owned(),
+                ));
+            }
+            Err(error) => {
+                tracing::warn!(game = id, %error, "A&D scoreboard revision preflight failed");
+                return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::Failed);
+            }
+        };
     let model = match crate::services::ad::scoring::build_ad_scoreboard(
         st.pg(),
         id,
@@ -276,13 +265,14 @@ async fn build_scoreboard_bundle_attempt(
         }
     };
 
-    let after_build = match visible_game_revision(st, id).await {
-        Ok(revision) => revision,
-        Err(error) => {
-            tracing::warn!(game = id, %error, "A&D scoreboard revision validation failed");
-            return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::Failed);
-        }
-    };
+    let after_build =
+        match crate::services::ad::scoring::ad_scoreboard_revision(st.pg(), id, is_monitor).await {
+            Ok(revision) => revision,
+            Err(error) => {
+                tracing::warn!(game = id, %error, "A&D scoreboard revision validation failed");
+                return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::Failed);
+            }
+        };
     match revision_disposition(&before, after_build.as_deref()) {
         RevisionDisposition::Current => {}
         RevisionDisposition::Changed => {
@@ -309,14 +299,17 @@ async fn build_scoreboard_bundle_attempt(
         // hard-invalidated between validation and either SET, discard both
         // representations. If it commits after this query, its post-commit hard
         // invalidation owns the ordering and removes what was just published.
-        let after_publish = match visible_game_revision(st, id).await {
-            Ok(revision) => revision,
-            Err(error) => {
-                tracing::warn!(game = id, %error, "A&D scoreboard publication fence failed");
-                hard_invalidate_ad_scoreboard_cache(st.cache.as_ref(), id).await;
-                return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::Failed);
-            }
-        };
+        let after_publish =
+            match crate::services::ad::scoring::ad_scoreboard_revision(st.pg(), id, is_monitor)
+                .await
+            {
+                Ok(revision) => revision,
+                Err(error) => {
+                    tracing::warn!(game = id, %error, "A&D scoreboard publication fence failed");
+                    hard_invalidate_ad_scoreboard_cache(st.cache.as_ref(), id).await;
+                    return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::Failed);
+                }
+            };
         match revision_disposition(&before, after_publish.as_deref()) {
             RevisionDisposition::Current => {}
             RevisionDisposition::Changed => {

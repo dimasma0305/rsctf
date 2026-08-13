@@ -294,5 +294,32 @@ async fn database_board_is_finite_bounded_and_serializable() {
         service_count,
         payload_budget
     );
+
+    sqlx::query(r#"UPDATE "Games" SET hidden = TRUE WHERE id = $1"#)
+        .bind(fixture.game_id)
+        .execute(&fixture.pool)
+        .await
+        .expect("make A&D fixture private");
+    assert!(
+        ad_scoreboard_revision(&fixture.pool, fixture.game_id, false)
+            .await
+            .expect("read public revision")
+            .is_none(),
+        "a public caller discovered a private A&D game"
+    );
+    assert!(
+        ad_scoreboard_revision(&fixture.pool, fixture.game_id, true)
+            .await
+            .expect("read monitor revision")
+            .is_some(),
+        "a monitor could not fence a private A&D board build"
+    );
+    assert!(matches!(
+        build_ad_scoreboard(&fixture.pool, fixture.game_id, false, Utc::now()).await,
+        Err(AppError::NotFound(_))
+    ));
+    build_ad_scoreboard(&fixture.pool, fixture.game_id, true, Utc::now())
+        .await
+        .expect("monitor builds a private A&D board");
     fixture.cleanup().await;
 }

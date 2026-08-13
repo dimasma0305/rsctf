@@ -337,6 +337,26 @@ fn merge_service_detail(
     }
 }
 
+/// Revision fence for a board the caller is authorized to observe. Public
+/// callers cannot distinguish a private game from an absent one; monitors can
+/// build and cache the private board in their separate cache namespace.
+pub(crate) async fn ad_scoreboard_revision(
+    pool: &PgPool,
+    game_id: i32,
+    is_monitor: bool,
+) -> AppResult<Option<String>> {
+    sqlx::query_scalar::<_, String>(
+        r#"SELECT game.xmin::text
+             FROM "Games" AS game
+            WHERE game.id = $1 AND (game.hidden = FALSE OR $2)"#,
+    )
+    .bind(game_id)
+    .bind(is_monitor)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
 /// Build the official epoch-settled board from SQL-aggregated evidence.
 ///
 /// The ranked roster and service set are frozen by flags minted in
@@ -350,13 +370,17 @@ pub async fn build_ad_scoreboard(
     is_monitor: bool,
     now: DateTime<Utc>,
 ) -> AppResult<AdScoreboard> {
-    // Reject absent/hidden games before entering the potentially writing rollup
-    // transaction. Hidden responses are never cached, so without this preflight
-    // anonymous misses could repeatedly contend on the per-game rollup lock.
+    // Reject absent/unauthorized hidden games before entering the potentially
+    // writing rollup transaction. Public hidden misses are never cached, so
+    // without this preflight they could repeatedly contend on the per-game
+    // rollup lock. Monitors use a separate cache namespace.
     let visible_end = sqlx::query_scalar::<_, DateTime<Utc>>(
-        r#"SELECT end_time_utc FROM "Games" WHERE id = $1 AND hidden = FALSE"#,
+        r#"SELECT end_time_utc
+             FROM "Games"
+            WHERE id = $1 AND (hidden = FALSE OR $2)"#,
     )
     .bind(game_id)
+    .bind(is_monitor)
     .fetch_optional(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -389,7 +413,7 @@ pub async fn build_ad_scoreboard(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?;
-    if game.hidden {
+    if game.hidden && !is_monitor {
         return Err(AppError::not_found("Game not found"));
     }
 
