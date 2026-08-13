@@ -453,6 +453,8 @@ interface AdLikePinnedRowCellsProps {
   tableRank: number
   /** 4th pinned cell value — engine-specific (captures / ticks held). */
   countValue: ReactNode
+  /** Optional explanation for how this engine derived its total. */
+  totalTooltip?: ReactNode
   /** When set, the team avatar+name becomes a button that opens team detail. */
   onOpenDetail?: () => void
 }
@@ -466,6 +468,7 @@ export const AdLikePinnedRowCells: FC<AdLikePinnedRowCellsProps> = ({
   allRank,
   tableRank,
   countValue,
+  totalTooltip,
   onOpenDetail,
 }) => {
   const theme = useMantineTheme()
@@ -522,7 +525,13 @@ export const AdLikePinnedRowCells: FC<AdLikePinnedRowCellsProps> = ({
         {countValue}
       </Table.Td>
       <Table.Td className={cx(classes.mono, classes.left)} style={{ left: adLikeLefts[4] }}>
-        {total.toFixed(1)}
+        {totalTooltip ? (
+          <Tooltip label={totalTooltip} multiline maw={360} withinPortal>
+            <span>{total.toFixed(1)}</span>
+          </Tooltip>
+        ) : (
+          total.toFixed(1)
+        )}
       </Table.Td>
     </>
   )

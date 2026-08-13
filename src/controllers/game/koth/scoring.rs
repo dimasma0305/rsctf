@@ -10,8 +10,8 @@ use rollup::load_rollup_snapshot;
 pub(crate) use rollup::{invalidate_rollups_for_end_change, lock_epoch_rollups};
 
 use super::scoring_formula::{
-    aggregate_epoch_hills, average_weighted_epochs, evidence_fraction, score_api_epoch_hill,
-    score_epoch_hill, KothApiEpochHillEvidence, KothEpochHillEvidence, WeightedHillScore,
+    aggregate_epoch_hills, evidence_fraction, score_api_epoch_hill, score_epoch_hill,
+    weighted_epoch_average, KothApiEpochHillEvidence, KothEpochHillEvidence, WeightedHillScore,
 };
 use crate::utils::database::begin_read_only_repeatable_read;
 use crate::utils::error::{AppError, AppResult};
@@ -81,6 +81,10 @@ pub(super) struct KothEpochAggregate {
 pub(super) struct KothTeamAggregate {
     pub(super) settled_total: f64,
     pub(super) projected_total: f64,
+    pub(super) settled_epoch_points: f64,
+    pub(super) settled_epoch_weight: f64,
+    pub(super) projected_epoch_points: f64,
+    pub(super) projected_epoch_weight: f64,
     pub(super) acquisition_rate: f64,
     pub(super) control_rate: f64,
     pub(super) reliability_rate: f64,
@@ -300,7 +304,7 @@ fn score_evidence_rows(
     }
 
     for team in teams.values_mut() {
-        team.projected_total = average_weighted_epochs(
+        let projected = weighted_epoch_average(
             &team
                 .epochs
                 .iter()
@@ -308,7 +312,11 @@ fn score_evidence_rows(
                 .collect::<Vec<_>>(),
         )
         .map_err(|error| AppError::internal(error.to_string()))?;
-        team.settled_total = average_weighted_epochs(
+        team.projected_total = projected.average;
+        team.projected_epoch_points = projected.points_numerator;
+        team.projected_epoch_weight = projected.epoch_weight;
+
+        let settled = weighted_epoch_average(
             &team
                 .epochs
                 .iter()
@@ -317,6 +325,9 @@ fn score_evidence_rows(
                 .collect::<Vec<_>>(),
         )
         .map_err(|error| AppError::internal(error.to_string()))?;
+        team.settled_total = settled.average;
+        team.settled_epoch_points = settled.points_numerator;
+        team.settled_epoch_weight = settled.epoch_weight;
 
         let mut team_rate_weight = 0.0;
         for aggregate in team.cells.values_mut() {
@@ -495,6 +506,10 @@ fn merge_rollup_prefix(
 
         aggregate.projected_total = ratio(points_numerator, projected_epoch_weight);
         aggregate.settled_total = ratio(settled_points_numerator, settled_epoch_weight);
+        aggregate.projected_epoch_points = points_numerator;
+        aggregate.projected_epoch_weight = projected_epoch_weight;
+        aggregate.settled_epoch_points = settled_points_numerator;
+        aggregate.settled_epoch_weight = settled_epoch_weight;
         aggregate.acquisition_rate = ratio(acquisition_numerator, rate_weight);
         aggregate.control_rate = ratio(control_numerator, rate_weight);
         aggregate.reliability_rate = ratio(reliability_numerator, rate_weight);

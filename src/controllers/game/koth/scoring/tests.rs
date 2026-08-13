@@ -23,6 +23,10 @@ fn recent_rollup_epochs_keep_the_true_timeline_prefix() {
     let tail = KothTeamAggregate {
         settled_total: 0.0,
         projected_total: 80.0,
+        settled_epoch_points: 0.0,
+        settled_epoch_weight: 0.0,
+        projected_epoch_points: 40.0,
+        projected_epoch_weight: 0.5,
         acquisition_rate: 0.0,
         control_rate: 0.0,
         reliability_rate: 0.0,
@@ -62,6 +66,10 @@ fn recent_rollup_epochs_keep_the_true_timeline_prefix() {
     let team = &merged.teams[&7];
     assert!((team.projected_total - 40.0).abs() < 1e-12);
     assert!((team.settled_total - 20.0).abs() < 1e-12);
+    assert!((team.projected_epoch_points - 60.0).abs() < 1e-12);
+    assert!((team.projected_epoch_weight - 1.5).abs() < 1e-12);
+    assert!((team.settled_epoch_points - 20.0).abs() < 1e-12);
+    assert!((team.settled_epoch_weight - 1.0).abs() < 1e-12);
     assert_eq!(team.epochs.len(), 2);
     assert_eq!(team.epochs[0].cumulative_points_numerator, 20.0);
     assert_eq!(team.epochs[0].cumulative_epoch_weight, 1.0);

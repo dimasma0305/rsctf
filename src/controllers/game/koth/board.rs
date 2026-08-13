@@ -425,6 +425,14 @@ pub(super) fn build_team_rows(board: &KothBoard, hills: &[&KothHillInfo]) -> Vec
                 division: m.division.clone(),
                 settled_total: aggregate.map_or(0.0, |aggregate| aggregate.settled_total),
                 projected_total: aggregate.map_or(0.0, |aggregate| aggregate.projected_total),
+                settled_epoch_points: aggregate
+                    .map_or(0.0, |aggregate| aggregate.settled_epoch_points),
+                settled_epoch_weight: aggregate
+                    .map_or(0.0, |aggregate| aggregate.settled_epoch_weight),
+                projected_epoch_points: aggregate
+                    .map_or(0.0, |aggregate| aggregate.projected_epoch_points),
+                projected_epoch_weight: aggregate
+                    .map_or(0.0, |aggregate| aggregate.projected_epoch_weight),
                 acquisition_rate: aggregate.map_or(0.0, |aggregate| aggregate.acquisition_rate),
                 control_rate: aggregate.map_or(0.0, |aggregate| aggregate.control_rate),
                 reliability_rate: aggregate.map_or(0.0, |aggregate| aggregate.reliability_rate),
@@ -549,6 +557,10 @@ mod tests {
             division: None,
             settled_total: settled,
             projected_total: projected,
+            settled_epoch_points: settled,
+            settled_epoch_weight: 1.0,
+            projected_epoch_points: projected,
+            projected_epoch_weight: 1.0,
             acquisition_rate: 0.0,
             control_rate: control,
             reliability_rate: reliability,
@@ -589,6 +601,22 @@ mod tests {
             rows.iter().map(|row| row.rank).collect::<Vec<_>>(),
             [1, 2, 3]
         );
+    }
+
+    #[test]
+    fn team_score_wire_exposes_the_event_average_basis() {
+        let mut row = team_row(7, 0.9259259259259259, 0.9237875288683602, 0.5, 0.5, 5);
+        row.settled_epoch_points = 25.0;
+        row.settled_epoch_weight = 27.0;
+        row.projected_epoch_points = 25.0;
+        row.projected_epoch_weight = 27.0625;
+
+        let value = serde_json::to_value(row).unwrap();
+        assert_eq!(value["settledEpochPoints"], 25.0);
+        assert_eq!(value["settledEpochWeight"], 27.0);
+        assert_eq!(value["projectedEpochPoints"], 25.0);
+        assert_eq!(value["projectedEpochWeight"], 27.0625);
+        assert!(value.get("settled_epoch_points").is_none());
     }
 
     #[test]

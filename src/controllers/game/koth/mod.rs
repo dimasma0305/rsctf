@@ -166,6 +166,14 @@ pub struct KothTeamScoreRow {
     pub division: Option<String>,
     pub settled_total: f64,
     pub projected_total: f64,
+    /// Weighted point numerator behind `settled_total`.
+    pub settled_epoch_points: f64,
+    /// Finalized epoch weight behind `settled_total`.
+    pub settled_epoch_weight: f64,
+    /// Weighted point numerator behind `projected_total`.
+    pub projected_epoch_points: f64,
+    /// Finalized plus live epoch weight behind `projected_total`.
+    pub projected_epoch_weight: f64,
     pub acquisition_rate: f64,
     pub control_rate: f64,
     pub reliability_rate: f64,

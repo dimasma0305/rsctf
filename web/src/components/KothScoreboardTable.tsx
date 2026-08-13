@@ -68,6 +68,9 @@ const GROUP_W = SUBCOL.score + SUBCOL.acquisition + SUBCOL.control + SUBCOL.sla
 
 const clampRate = (rate: number) => Math.max(0, Math.min(1, rate))
 const formatPercent = (rate: number) => `${(clampRate(rate) * 100).toFixed(1)}%`
+const formatFormulaNumber = (value: number) => (Number.isFinite(value) ? value.toFixed(2).replace(/0$/, '') : '—')
+const hasEpochBasis = (points: number, weight: number) =>
+  Number.isFinite(points) && Number.isFinite(weight) && weight > 0
 const hasProjection = (settled: number, projected: number) => Math.abs(settled - projected) > 0.05
 const readableMetricColor = (color: string, dark: boolean) => `${color}.${dark ? 4 : 9}`
 const acquisitionWindowCount = (team: KothTeamScoreRow) =>
@@ -262,7 +265,7 @@ const HillCard: FC<HillCardProps> = ({ hill, score, cycleTicks, confirmationTick
           <>
             <SimpleGrid cols={{ base: 2, xs: 4 }} spacing="xs">
               <CompactMetric
-                label={t('game.content.scoreboard.koth.epoch.column.score', 'Hill score')}
+                label={t('game.content.scoreboard.koth.epoch.column.performance', 'Hill performance')}
                 value={fmtPts(score.settledPoints)}
                 color="cyan"
               />
@@ -371,12 +374,12 @@ const KothScoreDetailModal: FC<KothScoreDetailModalProps> = ({
         <Stack gap="md">
           <SimpleGrid cols={{ base: 2, sm: 5 }} spacing="sm">
             <CompactMetric
-              label={t('game.content.scoreboard.koth.epoch.column.settled', 'Settled')}
+              label={t('game.content.scoreboard.koth.epoch.column.event_score', 'Event score')}
               value={fmtPts(team.settledTotal)}
               color="cyan"
             />
             <CompactMetric
-              label={t('game.content.scoreboard.koth.epoch.column.live', 'Live')}
+              label={t('game.content.scoreboard.koth.epoch.column.live_event_score', 'Live event score')}
               value={fmtPts(team.projectedTotal)}
               color="orange"
             />
@@ -384,6 +387,52 @@ const KothScoreDetailModal: FC<KothScoreDetailModalProps> = ({
             <CompactMetric label={secondMetric} value={formatPercent(team.controlRate)} color="blue" />
             <CompactMetric label={thirdMetric} value={formatPercent(team.reliabilityRate)} color="orange" />
           </SimpleGrid>
+
+          <Alert color="cyan" variant="light" icon={<Icon path={mdiInformationOutline} size={0.85} />}>
+            <Stack gap={4}>
+              <Text size="sm" fw={700}>
+                {t('game.content.scoreboard.koth.epoch.detail.event_formula_title', {
+                  defaultValue: 'How the event score {{score}} is calculated',
+                  score: fmtPts(team.settledTotal),
+                })}
+              </Text>
+              {hasEpochBasis(team.settledEpochPoints, team.settledEpochWeight) ? (
+                <Text size="sm" className={cx(misc.ffmono, classes.scoringFormula)}>
+                  {t('game.content.scoreboard.koth.epoch.detail.event_formula', {
+                    defaultValue:
+                      '{{points}} weighted epoch-points ÷ {{weight}} finalized epoch weight = {{score}} event score',
+                    points: formatFormulaNumber(team.settledEpochPoints),
+                    weight: formatFormulaNumber(team.settledEpochWeight),
+                    score: fmtPts(team.settledTotal),
+                  })}
+                </Text>
+              ) : (
+                <Text size="sm">
+                  {t(
+                    'game.content.scoreboard.koth.epoch.detail.no_finalized_basis',
+                    'No finalized epoch evidence is available yet.'
+                  )}
+                </Text>
+              )}
+              <Text size="xs">
+                {t(
+                  'game.content.scoreboard.koth.epoch.detail.scope_explanation',
+                  'Hill performance is a local average over that hill’s scorable evidence. It is not added directly to the event score: hills first form each epoch score, then the event score averages every finalized epoch.'
+                )}
+              </Text>
+              {hasProjection(team.settledTotal, team.projectedTotal) &&
+                hasEpochBasis(team.projectedEpochPoints, team.projectedEpochWeight) && (
+                  <Text size="xs" c="orange" className={cx(misc.ffmono, classes.scoringFormula)}>
+                    {t('game.content.scoreboard.koth.epoch.detail.live_event_formula', {
+                      defaultValue: 'Live: {{points}} ÷ {{weight}} = {{score}}',
+                      points: formatFormulaNumber(team.projectedEpochPoints),
+                      weight: formatFormulaNumber(team.projectedEpochWeight),
+                      score: fmtPts(team.projectedTotal),
+                    })}
+                  </Text>
+                )}
+            </Stack>
+          </Alert>
 
           {latestEpoch && !latestEpoch.finalized && (
             <Alert color="orange" variant="light" icon={<Icon path={mdiAlertCircleOutline} size={0.85} />}>
@@ -398,7 +447,7 @@ const KothScoreDetailModal: FC<KothScoreDetailModalProps> = ({
 
           <Stack gap="xs">
             <Text size="sm" fw={700}>
-              {t('game.content.scoreboard.koth.epoch.hill_breakdown', 'Per-hill score')}
+              {t('game.content.scoreboard.koth.epoch.hill_breakdown', 'Per-hill performance')}
             </Text>
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
               {hills.map((hill) => (
@@ -550,6 +599,23 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
             'Evidence-bearing complete epochs have equal weight. A wholly unavailable hill is excluded field-wide; only a shortened final epoch receives proportional weight.'
           )}
         </Text>
+
+        <Paper withBorder p="xs" radius="sm">
+          <Stack gap={4}>
+            <Text size="xs" fw={700} className={cx(misc.ffmono, classes.scoringFormula)}>
+              {t(
+                'game.content.scoreboard.koth.score_info.event_formula',
+                'Event score = Σ(epoch score × epoch weight) ÷ Σ(epoch weight)'
+              )}
+            </Text>
+            <Text size="xs" c="dimmed">
+              {t(
+                'game.content.scoreboard.koth.score_info.scope',
+                'Each hill column is a hill-local performance average. Hills combine into an epoch score first; the official event score then averages every finalized epoch, so one strong wave does not become the whole event score.'
+              )}
+            </Text>
+          </Stack>
+        </Paper>
 
         {hasMarkerHill && (
           <Text size="xs" c="dimmed">
@@ -804,11 +870,11 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                 {hasApiArena
                   ? t(
                       'game.content.scoreboard.koth.api.compact_description',
-                      'Settled epochs determine rank. Leaderboard hills average fresh relative performance and one first-place Crown per finalized wave; marker hills score exclusive control.'
+                      'Event score averages every finalized epoch and determines rank. Hill columns show local performance, not points added directly to the event score.'
                     )
                   : t(
                       'game.content.scoreboard.koth.epoch.compact_description',
-                      'Settled is the primary rank value; exact ties use control, reliability, confirmed acquisitions, then participation ID.'
+                      'Event score averages every finalized epoch and determines rank. Hill columns show local performance, not points added directly to the event score.'
                     )}
               </Text>
             </Stack>
@@ -959,7 +1025,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                             ? t('game.content.scoreboard.koth.api.evidence', 'Evidence')
                             : t('game.content.scoreboard.koth.epoch.column.windows', 'Windows')
                       }
-                      totalLabel={t('game.content.scoreboard.koth.epoch.column.settled', 'Settled')}
+                      totalLabel={t('game.content.scoreboard.koth.epoch.column.event_average', 'Event avg')}
                     />
                     {scoreboard.hills.flatMap((hill) => {
                       const isApiArena = hill.claimSource === 'Api'
@@ -977,12 +1043,12 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                           key={`${hill.challengeId}-score`}
                           className={cx(classes.mono, classes.groupStart)}
                           style={{ width: SUBCOL.score }}
-                          aria-label={t('game.content.scoreboard.koth.epoch.column.score', 'Hill score')}
+                          aria-label={t('game.content.scoreboard.koth.epoch.column.performance', 'Hill performance')}
                         >
                           <Tooltip
                             label={t(
                               'game.content.scoreboard.koth.epoch.detail.settled_hint',
-                              'Finalized hill contribution; orange text is the live projection.'
+                              'Hill-local performance over scorable evidence; this is not the event score. Orange text is the live projection.'
                             )}
                             withinPortal
                           >
@@ -1046,6 +1112,20 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                         allRank={allRank}
                         tableRank={divisionRanks.get(team.participationId) ?? team.rank}
                         countValue={acquisitionWindowCount(team)}
+                        totalTooltip={
+                          hasEpochBasis(team.settledEpochPoints, team.settledEpochWeight)
+                            ? t('game.content.scoreboard.koth.epoch.detail.event_formula', {
+                                defaultValue:
+                                  '{{points}} weighted epoch-points ÷ {{weight}} finalized epoch weight = {{score}} event score',
+                                points: formatFormulaNumber(team.settledEpochPoints),
+                                weight: formatFormulaNumber(team.settledEpochWeight),
+                                score: fmtPts(team.settledTotal),
+                              })
+                            : t(
+                                'game.content.scoreboard.koth.epoch.detail.no_finalized_basis',
+                                'No finalized epoch evidence is available yet.'
+                              )
+                        }
                         onOpenDetail={() => openDetail(team)}
                       />
 
@@ -1086,7 +1166,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                             key={`${hill.challengeId}-score`}
                             className={cx(classes.mono, classes.groupStart)}
                             style={{ backgroundColor: cellBg, boxShadow: holderAccent }}
-                            aria-label={`${hill.title} settled score ${fmtPts(score.settledPoints)}${hasProjection(score.settledPoints, score.projectedPoints) ? `, live projection ${fmtPts(score.projectedPoints)}` : ''}, ${status}${score.isCurrentHolder ? ', current holder' : ''}`}
+                            aria-label={`${hill.title} hill performance ${fmtPts(score.settledPoints)}${hasProjection(score.settledPoints, score.projectedPoints) ? `, live projection ${fmtPts(score.projectedPoints)}` : ''}, ${status}${score.isCurrentHolder ? ', current holder' : ''}`}
                           >
                             <Stack gap={0} align="center">
                               <Group gap={3} wrap="nowrap">
@@ -1164,7 +1244,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
                   </Table.Th>
                   <Table.Th scope="col">{t('game.content.scoreboard.koth.column.team', 'Team')}</Table.Th>
                   <Table.Th scope="col" ta="right" w={82}>
-                    {t('game.content.scoreboard.koth.epoch.column.settled', 'Settled')}
+                    {t('game.content.scoreboard.koth.epoch.column.event_score', 'Event score')}
                   </Table.Th>
                 </Table.Tr>
               </Table.Thead>
@@ -1224,7 +1304,10 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
               </Table.Tbody>
             </Table>
             <Text mt={6} size="xs" c="dimmed">
-              {t('game.content.scoreboard.koth.epoch.mobile_hint', 'Select a team to see every hill score.')}
+              {t(
+                'game.content.scoreboard.koth.epoch.mobile_hint',
+                'Select a team to see the event-score formula and every hill’s performance.'
+              )}
             </Text>
           </Box>
         )}
@@ -1243,7 +1326,7 @@ export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => 
               <Group gap={4}>
                 <Icon path={mdiTrophyOutline} size={0.65} color={theme.colors.cyan[6]} />
                 <Text size="xs" c={readableMetricColor('cyan', dark)}>
-                  {t('game.content.scoreboard.koth.epoch.column.settled', 'Settled score')}
+                  {t('game.content.scoreboard.koth.epoch.column.performance', 'Hill performance')}
                 </Text>
               </Group>
               <Group gap={4}>

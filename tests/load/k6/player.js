@@ -23,6 +23,7 @@ import http from 'k6/http';
 import { sleep } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
 import { validCombinedBoard } from '../combined-scoreboard.js';
+import { validKothEventScoreBasis } from '../koth-score-basis.js';
 
 const TARGET = __ENV.TARGET || 'http://127.0.0.1:8080';
 const GAME = __ENV.GAME || '10';
@@ -47,6 +48,7 @@ if (
 const errors = new Rate('errors'); //         non-2xx on a board poll (should be ~0)
 const server5xx = new Rate('server_5xx'); //  any 5xx anywhere (the real failure signal)
 const epochBoardInvalid = new Rate('ad_epoch_board_invalid');
+const kothBoardInvalid = new Rate('koth_board_invalid');
 const combinedBoardInvalid = new Rate('combined_board_invalid');
 const board = new Trend('board_poll_ms', true);
 const mainBoard = new Trend('main_board_ms', true);
@@ -76,6 +78,7 @@ export const options = {
     server_5xx: ['rate<0.01'], //     <1% 5xx — a real defect if breached
     errors: ['rate<0.01'],
     ad_epoch_board_invalid: ['rate==0'],
+    koth_board_invalid: ['rate==0'],
     combined_board_invalid: ['rate==0'],
     board_poll_ms: ['p(95)<800'], //  boards stay responsive under load
     ad_epoch_board_ms: ['p(95)<800'], // SQL-aggregated official board stays bounded
@@ -165,6 +168,17 @@ export default function () {
     validServiceBreakdown(officialBoard);
   epochBoardInvalid.add(!validOfficialBoard);
   if (validOfficialBoard) epochBoard.add(b[1].timings.duration);
+  let kothModel = null;
+  try {
+    kothModel = b[2].json();
+  } catch (_) {
+    // Invalid JSON is reported by the semantic metric below.
+  }
+  kothBoardInvalid.add(
+    b[2].status !== 200 ||
+      !Array.isArray(kothModel?.teams) ||
+      !kothModel.teams.every(validKothEventScoreBasis),
+  );
   let combinedModel = null;
   try {
     combinedModel = b[3].json();

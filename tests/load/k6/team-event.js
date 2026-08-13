@@ -4,6 +4,7 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
+import { validKothEventScoreBasis } from '../koth-score-basis.js';
 import {
   attackPlan,
   boundedPlatformRetryDelay,
@@ -785,6 +786,7 @@ function validKothScoreboard(model) {
       team.settledTotal >= 0 &&
       Number.isFinite(team.projectedTotal) &&
       team.projectedTotal >= 0 &&
+      validKothEventScoreBasis(team) &&
       boundedRate(team.acquisitionRate) &&
       boundedRate(team.controlRate) &&
       boundedRate(team.reliabilityRate) &&

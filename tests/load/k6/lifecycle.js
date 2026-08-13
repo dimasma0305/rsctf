@@ -11,6 +11,7 @@ import { Trend, Rate, Counter } from 'k6/metrics';
 import { SharedArray } from 'k6/data';
 import { lifecycleStateOpenPath } from '../lifecycle-state-file.js';
 import { validCombinedBoard } from '../combined-scoreboard.js';
+import { validKothEventScoreBasis } from '../koth-score-basis.js';
 import {
   buildLifecycleFleet,
   fixedRateExecutorCapacity,
@@ -248,6 +249,7 @@ function validKothScores(model) {
       Number.isFinite(team.projectedTotal) &&
       team.projectedTotal >= 0 &&
       team.projectedTotal <= 100 &&
+      validKothEventScoreBasis(team) &&
       ratesAreBounded(team.acquisitionRate) &&
       ratesAreBounded(team.controlRate) &&
       ratesAreBounded(team.reliabilityRate) &&

@@ -101,6 +101,10 @@ test(
         new URL("../team-evidence.js", import.meta.url),
         join(loadDirectory, "team-evidence.js"),
       );
+      copyFileSync(
+        new URL("../koth-score-basis.js", import.meta.url),
+        join(loadDirectory, "koth-score-basis.js"),
+      );
 
       const sourcePath = new URL("../k6/team-event.js", import.meta.url);
       const originalSource = readFileSync(sourcePath, "utf8");

@@ -227,6 +227,14 @@ export interface KothTeamScoreRow {
   division?: string | null
   settledTotal: number
   projectedTotal: number
+  /** Weighted point numerator behind the finalized event average. */
+  settledEpochPoints: number
+  /** Finalized epoch weight behind the finalized event average. */
+  settledEpochWeight: number
+  /** Weighted point numerator including the open epoch projection. */
+  projectedEpochPoints: number
+  /** Finalized plus open epoch weight behind the projection. */
+  projectedEpochWeight: number
   acquisitionRate: number
   controlRate: number
   reliabilityRate: number

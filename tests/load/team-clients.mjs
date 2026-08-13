@@ -692,6 +692,7 @@ export async function startVpnTeamClients({
   if (!existsSync(k6Binary)) throw new Error(`k6 binary does not exist at ${k6Binary}`);
   const script = new URL('./k6/team-event.js', import.meta.url).pathname;
   const playerModel = new URL('./player-model.js', import.meta.url).pathname;
+  const kothScoreBasis = new URL('./koth-score-basis.js', import.meta.url).pathname;
   const teamEvidence = new URL('./team-evidence.js', import.meta.url).pathname;
   const configs = [];
   const bots = [];
@@ -853,6 +854,8 @@ export async function startVpnTeamClients({
           `${script}:/team.js:ro`,
           '-v',
           `${playerModel}:/player-model.js:ro`,
+          '-v',
+          `${kothScoreBasis}:/koth-score-basis.js:ro`,
           '-v',
           `${teamEvidence}:/team-evidence.js:ro`,
           '-v',

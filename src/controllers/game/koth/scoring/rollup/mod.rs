@@ -769,6 +769,10 @@ mod tests {
                 KothTeamAggregate {
                     settled_total: 50.0,
                     projected_total: 50.0,
+                    settled_epoch_points: 50.0,
+                    settled_epoch_weight: 1.0,
+                    projected_epoch_points: 50.0,
+                    projected_epoch_weight: 1.0,
                     acquisition_rate: 0.5,
                     control_rate: 0.5,
                     reliability_rate: 1.0,
