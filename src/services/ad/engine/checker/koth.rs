@@ -12,32 +12,26 @@ use futures::StreamExt;
 use sea_orm::DatabaseConnection;
 
 use super::{
-    bounded_diagnostic, bounded_optional_diagnostic, checker_concurrency, checker_probe_can_start,
+    bounded_optional_diagnostic, checker_concurrency, checker_probe_can_start,
     deadline_limited_probe_budget, koth_api::persist_api_arena_result,
     probe_budget_is_platform_limited, run_check,
 };
 use crate::models::data::ad_round;
 use crate::services::ad::engine::{
-    koth_api::{
-        read_koth_api_snapshot, stable_koth_api_snapshot, KothApiSnapshot, KothApiSnapshotRead,
-    },
     koth_auth,
     koth_cycle::{self, ClaimObservation, ObservedToken},
-    koth_marker::{
-        observation_precedes_deadline, read_koth_marker, stable_koth_marker, KothMarkerRead,
-    },
+    koth_marker::observation_precedes_deadline,
     AdCheckStatus, RoundFinishLease,
 };
 use crate::services::container::{ContainerLiveness, ContainerManager};
 use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 
+mod claims;
 mod scheduling;
 
-use scheduling::{
-    api_settlement_start_instant, api_snapshot_arrival_deadline, api_snapshot_arrival_is_pending,
-    API_MAX_PROBE_BUDGET, API_SNAPSHOT_POLL_INTERVAL, KOTH_COMPLETION_MARGIN,
-};
+use claims::{read_claim_input, read_initial_claim_input, stable_claim_outcome};
+use scheduling::{api_settlement_start_instant, API_MAX_PROBE_BUDGET, KOTH_COMPLETION_MARGIN};
 
 #[derive(Debug, PartialEq, Eq)]
 enum ManagedHillLiveness {
@@ -97,106 +91,6 @@ pub(super) struct LiveHill {
 impl LiveHill {
     fn has_complete_token_window(&self) -> bool {
         self.roster_count >= 2 && self.token_count == self.roster_count
-    }
-}
-
-enum ClaimInputRead {
-    Marker(KothMarkerRead),
-    Api(KothApiSnapshotRead),
-}
-
-async fn read_claim_input(
-    db: &DatabaseConnection,
-    containers: &dyn ContainerManager,
-    hill: &LiveHill,
-    round_id: i32,
-) -> ClaimInputRead {
-    match hill.claim_source.as_str() {
-        "Marker" => {
-            ClaimInputRead::Marker(read_koth_marker(containers, Some(&hill.container_id)).await)
-        }
-        "Api" => ClaimInputRead::Api(
-            read_koth_api_snapshot(
-                db.get_postgres_connection_pool(),
-                hill.target_id,
-                hill.cycle_id,
-                hill.token_window_attempt,
-                &hill.container_id,
-                round_id,
-                hill.round_start,
-                hill.round_end,
-            )
-            .await,
-        ),
-        source => ClaimInputRead::Marker(KothMarkerRead::Unavailable(format!(
-            "unsupported snapshotted KotH claim source {source:?}"
-        ))),
-    }
-}
-
-async fn read_initial_claim_input(
-    db: &DatabaseConnection,
-    containers: &dyn ContainerManager,
-    hill: &LiveHill,
-    round_id: i32,
-    planned_timeout: Duration,
-    effective_deadline: tokio::time::Instant,
-) -> ClaimInputRead {
-    let wait_until = api_snapshot_arrival_deadline(
-        effective_deadline,
-        planned_timeout,
-        tokio::time::Instant::now(),
-    );
-    loop {
-        let input = read_claim_input(db, containers, hill, round_id).await;
-        let now = tokio::time::Instant::now();
-        // An early empty heartbeat is not a settled Leaderboard result. The
-        // referee may still append a wave that ended at the cutoff; accepting
-        // the empty snapshot immediately can race that append and silently
-        // void an otherwise valid scoring round.
-        let has_finalized_wave = matches!(
-            &input,
-            ClaimInputRead::Api(KothApiSnapshotRead::Observed(snapshot))
-                if !snapshot.waves.is_empty()
-        );
-        if hill.claim_source != "Api"
-            || !api_snapshot_arrival_is_pending(has_finalized_wave, now, wait_until)
-        {
-            return input;
-        }
-        tokio::time::sleep(std::cmp::min(
-            API_SNAPSHOT_POLL_INTERVAL,
-            wait_until.saturating_duration_since(now),
-        ))
-        .await;
-    }
-}
-
-fn stable_claim_input(
-    before: ClaimInputRead,
-    after: ClaimInputRead,
-) -> (
-    Option<String>,
-    bool,
-    Option<KothApiSnapshot>,
-    Option<String>,
-) {
-    match (before, after) {
-        (ClaimInputRead::Marker(before), ClaimInputRead::Marker(after)) => {
-            let (marker, observed, error) = stable_koth_marker(before, after);
-            (marker, observed, None, error)
-        }
-        (ClaimInputRead::Api(before), ClaimInputRead::Api(after)) => {
-            let (snapshot, error) = stable_koth_api_snapshot(before, after);
-            let observed = snapshot.is_some();
-            (None, observed, snapshot, error)
-        }
-        _ => (
-            None,
-            false,
-            None,
-            Some("KotH claim source changed during the functional probe".to_string()),
-        ),
     }
 }
 
@@ -562,34 +456,21 @@ async fn check_one_hill(
                 )
             } else {
                 let timeout = planned_timeout.expect("checked above");
-                let before = read_initial_claim_input(
-                    db,
-                    containers,
-                    &hill,
-                    round.id,
-                    timeout,
-                    effective_deadline,
-                )
-                .await;
-                if !checker_probe_can_start(
-                    effective_deadline,
-                    timeout,
-                    KOTH_COMPLETION_MARGIN,
-                    tokio::time::Instant::now(),
-                ) {
-                    (
-                        None,
-                        false,
-                        None,
-                        AdCheckStatus::InternalError,
-                        Some(
-                            "KotH evidence read consumed the safe checker execution runway"
-                                .to_string(),
-                        ),
-                        None,
-                    )
-                } else {
-                    let (status, message) = run_check(
+                if hill.claim_source == "Api" {
+                    // The signed Leaderboard snapshot may arrive for one
+                    // bounded grace window after its fixed wave cutoff. Run
+                    // the side-effect-free functional probe in parallel with
+                    // that wait: serial execution can consume the entire
+                    // round even when both operations independently fit.
+                    let evidence = read_initial_claim_input(
+                        db,
+                        containers,
+                        &hill,
+                        round.id,
+                        timeout,
+                        effective_deadline,
+                    );
+                    let probe = run_check(
                         checker_dir,
                         &hill.host,
                         hill.port,
@@ -599,20 +480,76 @@ async fn check_one_hill(
                         None,
                         timeout,
                         probe_budget_is_platform_limited(timeout, configured_timeout),
+                    );
+                    let (before, (status, message)) = tokio::join!(evidence, probe);
+                    if !checker_probe_can_start(
+                        effective_deadline,
+                        Duration::ZERO,
+                        KOTH_COMPLETION_MARGIN,
+                        tokio::time::Instant::now(),
+                    ) {
+                        (
+                            None,
+                            false,
+                            None,
+                            AdCheckStatus::InternalError,
+                            Some(
+                                "KotH probe and evidence read consumed the persistence runway"
+                                    .to_string(),
+                            ),
+                            None,
+                        )
+                    } else {
+                        let after = read_claim_input(db, containers, &hill, round.id).await;
+                        let (marker, observed, snapshot, message) =
+                            stable_claim_outcome(before, after, message);
+                        (marker, observed, snapshot, status, message, None)
+                    }
+                } else {
+                    let before = read_initial_claim_input(
+                        db,
+                        containers,
+                        &hill,
+                        round.id,
+                        timeout,
+                        effective_deadline,
                     )
                     .await;
-                    let after = read_claim_input(db, containers, &hill, round.id).await;
-                    let (marker, observed, snapshot, evidence_error) =
-                        stable_claim_input(before, after);
-                    let message = match (message, evidence_error) {
-                        (Some(checker), Some(evidence)) => {
-                            Some(format!("{checker}; {}", bounded_diagnostic(evidence)))
-                        }
-                        (Some(checker), None) => Some(checker),
-                        (None, Some(evidence)) => Some(bounded_diagnostic(evidence)),
-                        (None, None) => None,
-                    };
-                    (marker, observed, snapshot, status, message, None)
+                    if !checker_probe_can_start(
+                        effective_deadline,
+                        timeout,
+                        KOTH_COMPLETION_MARGIN,
+                        tokio::time::Instant::now(),
+                    ) {
+                        (
+                            None,
+                            false,
+                            None,
+                            AdCheckStatus::InternalError,
+                            Some(
+                                "KotH evidence read consumed the safe checker execution runway"
+                                    .to_string(),
+                            ),
+                            None,
+                        )
+                    } else {
+                        let (status, message) = run_check(
+                            checker_dir,
+                            &hill.host,
+                            hill.port,
+                            round.number,
+                            0,
+                            challenge_id,
+                            None,
+                            timeout,
+                            probe_budget_is_platform_limited(timeout, configured_timeout),
+                        )
+                        .await;
+                        let after = read_claim_input(db, containers, &hill, round.id).await;
+                        let (marker, observed, snapshot, message) =
+                            stable_claim_outcome(before, after, message);
+                        (marker, observed, snapshot, status, message, None)
+                    }
                 }
             }
         }

@@ -1,4 +1,6 @@
-use super::scheduling::API_SNAPSHOT_ARRIVAL_GRACE;
+use super::scheduling::{
+    api_snapshot_arrival_deadline, api_snapshot_arrival_is_pending, API_SNAPSHOT_ARRIVAL_GRACE,
+};
 use super::*;
 use sqlx::{Connection, PgConnection};
 
@@ -48,6 +50,34 @@ fn api_snapshot_arrival_wait_preserves_probe_and_commit_runway() {
         timeout,
         KOTH_COMPLETION_MARGIN,
         api_snapshot_arrival_deadline(tight_deadline, timeout, now),
+    ));
+}
+
+#[test]
+fn api_snapshot_wait_and_functional_probe_share_the_same_runway() {
+    let now = tokio::time::Instant::now();
+    let deadline = now + Duration::from_secs(20);
+    let timeout = Duration::from_secs(10);
+    let snapshot_wait = api_snapshot_arrival_deadline(deadline, timeout, now);
+
+    // Serial execution has no scheduling slack at the latest safe start; a
+    // normal late wake can therefore void every healthy API hill.
+    assert!(!checker_probe_can_start(
+        deadline,
+        timeout,
+        KOTH_COMPLETION_MARGIN,
+        snapshot_wait + Duration::from_millis(1),
+    ));
+
+    // In production the probe starts at `now` while the signed snapshot wait
+    // proceeds independently. Even a full-budget probe retains the complete
+    // persistence margin after both futures finish.
+    let parallel_finish = std::cmp::max(snapshot_wait, now + timeout);
+    assert!(checker_probe_can_start(
+        deadline,
+        Duration::ZERO,
+        KOTH_COMPLETION_MARGIN,
+        parallel_finish,
     ));
 }
 
