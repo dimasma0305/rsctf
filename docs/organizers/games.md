@@ -40,7 +40,7 @@ schedule/practice/blood settings, and format cadence at the competition
 boundary. Configure and rehearse them before start; there is no formula-version
 selector or live scoring-policy override.
 
-When at least two challenge formats are active, the public scoreboard opens on an **Overall** tab. RSCTF normalizes each format to 0-100 and uses a constant equal share for every active format. Jeopardy is divided by the attainable score allowed by the team's division, including blood-bonus headroom; A&D and KotH use their official settled epoch totals. The formula is absolute rather than leader-relative, so the field composition cannot rescale a team's result. See the [Overall scoreboard guide](../players/overall-scoreboard).
+When at least two challenge formats are active, the public scoreboard opens on an **Overall** tab. RSCTF normalizes each format to 0-100 and gives it one fixed budget unit per enabled, approved challenge. Jeopardy is divided by the attainable score allowed by the team's division, including blood-bonus headroom; A&D and KotH use their official settled epoch totals. Dynamic Jeopardy values stay inside the Jeopardy component and never alter its outer challenge count. Challenge eligibility and counts lock at the competition boundary, and the formula is absolute rather than leader-relative, so field composition cannot rescale a team's result. See the [Overall scoreboard guide](../players/overall-scoreboard).
 
 ## Writeups
 

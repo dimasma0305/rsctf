@@ -5,6 +5,108 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+## Locked challenge-budget Overall scoring — 13 August 2026
+
+Overall scoring now gives every enabled, approved challenge one fixed budget
+unit. Each native format is still normalized independently to 0–100; the outer
+combination is:
+
+```text
+Overall = (Cj × Jeopardy + Ca × A&D + Ck × KotH) / (Cj + Ca + Ck)
+```
+
+`Cj`, `Ca`, and `Ck` are the event's challenge counts. RSCTF already prevents
+challenge scoring eligibility from changing after the competition boundary, so
+the budget is locked without a new setting, migration, scoring version, or
+operator-defined credit. Dynamic Jeopardy point values remain inside the
+Jeopardy normalization and never change `Cj`. The API exposes each count as
+`modes.<format>.challengeCount` next to its derived weight.
+
+The exact motivating shape, one A&D service and two KotH hills, therefore gives
+A&D one-third and KotH two-thirds of Overall. The fixed-point regression uses an
+80.0000 A&D component and a 70.0000 KotH component and obtains 73.3333. Another
+regression mutates a Jeopardy challenge from 1,000 to 250 native points and
+proves all outer counts and weights remain unchanged.
+
+### Mixed-format semantic acceptance
+
+The restored disposable game 191 contained 20 teams, six Jeopardy challenges,
+one A&D service, and one KotH hill. Its live candidate response reported weights
+75%, 12.5%, and 12.5%, respectively. The allocation-free load validator checked
+every active count, derived weight, component bound, and settled/projected team
+total on every sampled Overall response.
+
+The release candidate then completed the established six-endpoint polled-read
+mix at a constant 200 requests/s for 60 seconds: 12,001 requests, zero dropped
+arrivals, zero non-200/5xx/429/authentication responses, zero invalid Overall
+models, and zero uncompressed Overall bodies.
+
+| Endpoint | avg | p50 | p90 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All HTTP | 19.735 ms | 9.001 ms | 34.734 ms | 63.496 ms | 263.238 ms | 563.105 ms |
+| Game catalog | 21.272 ms | 11.055 ms | 35.743 ms | 62.469 ms | 260.015 ms | 526.150 ms |
+| Jeopardy board | 17.968 ms | 8.798 ms | 34.507 ms | 59.489 ms | 186.443 ms | 563.105 ms |
+| A&D board | 17.713 ms | 8.429 ms | 32.349 ms | 50.209 ms | 244.169 ms | 448.671 ms |
+| KotH board | 20.942 ms | 8.523 ms | 39.069 ms | 74.191 ms | 274.638 ms | 486.519 ms |
+| Overall board | 19.610 ms | 9.074 ms | 31.362 ms | 62.046 ms | 272.335 ms | 539.850 ms |
+| KotH timeline | 20.914 ms | 8.552 ms | 37.075 ms | 73.795 ms | 292.439 ms | 519.900 ms |
+
+### Same-runtime fixed-rate before and after
+
+The performance A/B isolated the changed Overall endpoint on the same restored
+database and Redis containers. Both optimized server binaries were pinned to
+CPU 6, k6 to CPU 7, warmed for 15 seconds, and then measured at exactly 100
+requests/s for 60 seconds with 1,000 rotating authenticated identities. The
+before binary was built from `ed263d01c9400b4a8576019d8f5654d9710a5e0e`;
+the after binary was built from this change. CPU is percent of one logical core.
+
+| Metric | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Requests / observed rate | 6,001 / 100.010 s⁻¹ | 6,001 / 99.994 s⁻¹ | held rate |
+| Failures / dropped arrivals | 0 / 0 | 0 / 0 | clean |
+| Latency avg | 13.485 ms | 11.103 ms | −17.7% |
+| Latency p50 | 6.329 ms | 5.451 ms | −13.9% |
+| Latency p90 | 20.293 ms | 15.690 ms | −22.7% |
+| Latency p95 | 41.145 ms | 32.786 ms | −20.3% |
+| Latency p99 | 169.369 ms | 139.229 ms | −17.8% |
+| Latency max | 389.292 ms | 312.264 ms | −19.8% |
+| Server CPU average | 18.880% | 16.600% | −12.1% |
+| Server RSS average | 60.899 MiB | 65.535 MiB | +4.636 MiB |
+| Server RSS maximum | 61.613 MiB | 66.199 MiB | +4.586 MiB |
+
+The small RSS difference remained bounded throughout the run. These latency and
+CPU changes are observations on a noisy shared host, not a claimed capacity
+increase; the acceptance conclusion is that challenge weighting did not add a
+hot-path CPU regression. One candidate sample was excluded from the numerical
+A/B because it overlapped a logged Redis rate-limiter timeout at 08:46:02 while
+the before sample had no matching outage. That diagnostic sample still returned
+all 6,001 responses with no failure or drop, confirming fallback behavior.
+
+<details>
+<summary>Fixed-rate server CPU/RSS time series (12 active five-second samples)</summary>
+
+| Sample | Before CPU | Before MiB | After CPU | After MiB |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 17.00% | 60.480 | 15.00% | 65.395 |
+| 2 | 17.40% | 60.504 | 20.60% | 63.324 |
+| 3 | 18.76% | 60.953 | 17.00% | 65.234 |
+| 4 | 15.60% | 60.641 | 14.60% | 65.355 |
+| 5 | 24.40% | 60.805 | 16.20% | 65.520 |
+| 6 | 19.60% | 60.887 | 16.80% | 65.844 |
+| 7 | 19.40% | 61.000 | 18.20% | 65.922 |
+| 8 | 20.40% | 61.070 | 16.00% | 65.879 |
+| 9 | 20.20% | 60.730 | 15.80% | 66.074 |
+| 10 | 18.00% | 60.797 | 16.20% | 66.086 |
+| 11 | 17.80% | 61.309 | 14.80% | 66.199 |
+| 12 | 18.00% | 61.613 | 18.00% | 65.586 |
+
+</details>
+
+This is the optimization-ledger row for the formula change: the implementation
+adds only three constant count fields and fixed-point weighted arithmetic; the
+semantic validator was rewritten to avoid per-team arrays after the load probe
+showed that test-side allocation could distort a large-board measurement.
+
 ## Persistent Leaderboard arena lifecycle — 12 August 2026
 
 API-native **Leaderboard** and container-marker **Boot2Root** KotH now use
@@ -768,6 +870,10 @@ returned exactly to their pre-run values: 260 API score rows, 31 epoch rollups,
 and 2,597 team and hill rollups.
 
 ## Equal-weight Overall scoreboard acceptance — 1 August 2026
+
+> Superseded on 13 August 2026 by locked challenge-count weighting. This
+> section retains the original acceptance and performance evidence for the
+> before side of that formula change; it is no longer the live contract.
 
 Mixed-format events now have one official **Overall** board without changing
 any format's native rules. RSCTF maps every active format to the fixed interval

@@ -4,26 +4,32 @@ Games that mix Jeopardy, Attack & Defense, and King of the Hill have an
 **Overall** scoreboard. It combines the formats without changing how any
 individual format awards points.
 
-## Constant normalization
+## Locked challenge-count normalization
 
-Every active format is mapped to `[0, 100]`. If `m` formats are active, each
-has the constant weight `1/m`:
+Every active format is mapped to `[0, 100]`. Let `C_J`, `C_A`, and `C_K` be the
+numbers of enabled, approved Jeopardy, Attack & Defense, and KotH challenges.
+RSCTF gives a format one fixed Overall budget unit per challenge:
 
 ```text
-Overall = sum(active normalized format scores) / m
+Overall = (C_J × J + C_A × A + C_K × K) / (C_J + C_A + C_K)
 ```
 
-- One format: `100%`
-- Two formats: `50%` each
-- Three formats: `33.333…%` each
+For example, one A&D service and two KotH hills produce these format shares:
 
-The set of active formats comes from the event's enabled active challenges and
-is locked once competition scoring begins. There is no version selector,
-leader-relative scaling, or organizer-defined weight. A leader joining,
-leaving, or improving therefore cannot rescale another team's result.
+```text
+A&D  = 1 / 3
+KotH = 2 / 3
+```
 
-RSCTF calculates in fixed units of `0.0001` point. Ratios and the equal mean are
-rounded to the nearest unit, keeping replicas deterministic.
+Challenge eligibility, review state, and enabled state are locked once
+competition scoring begins. The counts therefore remain constant for the
+event. A challenge added later is disabled and cannot enter the score. There is
+no version selector, separate Overall-weight setting, leader-relative scaling,
+or dependence on live solve counts. A leader joining, leaving, or improving
+cannot rescale another team's outer format budget.
+
+RSCTF calculates in fixed units of `0.0001` point. Ratios and the weighted mean
+are rounded to the nearest unit, keeping replicas deterministic.
 
 ## Jeopardy component
 
@@ -58,6 +64,11 @@ the ceiling. A zero ceiling produces `J_i = 0`. This prevents blood bonuses
 from overflowing 100 while keeping divisions with different eligibility
 comparable.
 
+Dynamic values continue to determine how much progress each Jeopardy solve
+earns inside `J_i`. They do not alter `C_J`: five Jeopardy challenges always
+supply five outer budget units, regardless of their current values or solve
+counts.
+
 Jeopardy rank sorts by points descending, then the earlier last
 score-eligible solve, then stable team ID. Ranks are ordinal. A solve that is
 not score-eligible cannot alter that tie-break.
@@ -85,14 +96,19 @@ activity-positive-tick count, then stable participation ID; ranks are ordinal.
 For all three formats:
 
 ```text
-Official Overall_i  = (J_i + A_i(settled)   + K_i(settled))   / 3
-Projected Overall_i = (J_i + A_i(projected) + K_i(projected)) / 3
+Official Overall_i =
+  (C_J J_i + C_A A_i(settled) + C_K K_i(settled))
+  / (C_J + C_A + C_K)
+
+Projected Overall_i =
+  (C_J J_i + C_A A_i(projected) + C_K K_i(projected))
+  / (C_J + C_A + C_K)
 ```
 
-With only two active formats, divide their sum by two. Official Overall rank
-uses only the official value. Exact fixed-unit ties share competition rank
-(`1, 1, 3`); stable team ID affects display order only. The projected value
-does not break an official tie.
+Formats with zero challenges contribute neither numerator nor denominator.
+Official Overall rank uses only the official value. Exact fixed-unit ties share
+competition rank (`1, 1, 3`); stable team ID affects display order only. The
+projected value does not break an official tie.
 
 ## Freeze and finalization
 

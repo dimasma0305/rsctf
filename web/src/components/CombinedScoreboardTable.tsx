@@ -114,7 +114,7 @@ const CombinedInfoModal: FC<{
         <Alert color="blue" icon={<Icon path={mdiScaleBalance} size={0.85} />}>
           {t(
             'game.content.scoreboard.combined.info_summary',
-            'Every active format is normalized to 0-100 and receives exactly the same constant weight. The formula never compares a team with the current leader.'
+            'Every enabled challenge supplies one fixed Overall budget unit. Each format is normalized to 0-100, then weighted by its locked challenge count. Dynamic Jeopardy values never change this outer budget.'
           )}
         </Alert>
         <SimpleGrid cols={{ base: 1, xs: modes.length }} spacing="xs">
@@ -129,6 +129,13 @@ const CombinedInfoModal: FC<{
                   {percent(scoreboard.modes[mode.key].weight)}
                 </Badge>
               </Group>
+              <Text size="xs" c="dimmed" mt={4}>
+                {t('game.content.scoreboard.combined.challenge_count', {
+                  defaultValue: '{{count}} challenge',
+                  defaultValue_other: '{{count}} challenges',
+                  count: scoreboard.modes[mode.key].challengeCount,
+                })}
+              </Text>
             </Paper>
           ))}
         </SimpleGrid>
@@ -147,9 +154,8 @@ const CombinedInfoModal: FC<{
         <Paper withBorder p="sm" radius="md">
           <Text size="sm" fw={800} ta="center" className={misc.ffmono}>
             {t('game.content.scoreboard.combined.formula', {
-              defaultValue: 'Overall = ({{modes}} normalized format scores) ÷ {{count}}',
-              modes: modes.map((mode) => mode.shortLabel).join(' + '),
-              count: modes.length,
+              defaultValue: 'Overall = Σ(format score × challenge count) ÷ {{count}} challenges',
+              count: modes.reduce((sum, mode) => sum + scoreboard.modes[mode.key].challengeCount, 0),
             })}
           </Text>
         </Paper>
@@ -332,7 +338,7 @@ export const CombinedScoreboardTable: FC<{ numId: number }> = ({ numId }) => {
               <Text size="xs" c="dimmed">
                 {t(
                   'game.content.scoreboard.combined.description',
-                  'Equal-weight, normalized 0-100 scores across every active format.'
+                  'Normalized 0-100 format scores, weighted by each format’s locked challenge count.'
                 )}
               </Text>
             </Stack>
@@ -345,7 +351,12 @@ export const CombinedScoreboardTable: FC<{ numId: number }> = ({ numId }) => {
                 variant="light"
                 leftSection={<Icon path={mode.icon} size={0.5} />}
               >
-                {mode.shortLabel} · {percent(scoreboard.modes[mode.key].weight)}
+                {mode.shortLabel} · {percent(scoreboard.modes[mode.key].weight)} ·{' '}
+                {t('game.content.scoreboard.combined.challenge_count_short', {
+                  defaultValue: '{{count}} challenge',
+                  defaultValue_other: '{{count}} challenges',
+                  count: scoreboard.modes[mode.key].challengeCount,
+                })}
               </Badge>
             ))}
             {!scoreboard.fullySettled && (

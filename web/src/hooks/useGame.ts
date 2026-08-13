@@ -278,7 +278,9 @@ export const useKothScoreboard = (numId: number, doFetch: boolean = true) => {
 
 export interface CombinedMode {
   active: boolean
-  /** Constant share in [0, 1]. */
+  /** Locked number of enabled, approved challenges in this format. */
+  challengeCount: number
+  /** Constant challenge-count share in [0, 1]. */
   weight: number
 }
 
@@ -323,7 +325,7 @@ export interface CombinedScoreboardModel {
   items: CombinedScoreboardItem[]
 }
 
-/** Fixed, equal-weight 0-100 board across every active competition format. */
+/** Fixed, challenge-count-weighted 0-100 board across every active competition format. */
 export const useCombinedScoreboard = (numId: number, doFetch: boolean = true) => {
   const { game } = useGame(numId)
   const { status } = getGameStatus(game)

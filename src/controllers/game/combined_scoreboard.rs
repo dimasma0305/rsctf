@@ -1,8 +1,9 @@
 //! Normalized standings across Jeopardy, Attack & Defense, and King of the Hill.
 //!
 //! Each format keeps its own official scoring contract. This projection maps
-//! every active format onto the same fixed 0-100 interval, then takes an equal
-//! arithmetic mean. No field-relative or leader-relative scaling is used.
+//! every active format onto the same fixed 0-100 interval, then weights that
+//! result by the format's locked challenge count. No field-relative or
+//! leader-relative scaling is used.
 
 use super::*;
 use axum::http::HeaderMap;
@@ -17,27 +18,27 @@ static COMBINED_SCOREBOARD_SF: std::sync::LazyLock<
 > = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct ModePresence {
-    jeopardy: bool,
-    attack_defense: bool,
-    koth: bool,
+struct ModeChallengeCounts {
+    jeopardy: i64,
+    attack_defense: i64,
+    koth: i64,
 }
 
-impl ModePresence {
-    fn count(self) -> i64 {
-        i64::from(self.jeopardy) + i64::from(self.attack_defense) + i64::from(self.koth)
+impl ModeChallengeCounts {
+    fn total(self) -> i64 {
+        self.jeopardy + self.attack_defense + self.koth
     }
 
     fn from_board(board: &ScoreboardModel) -> Self {
-        let mut modes = Self::default();
+        let mut counts = Self::default();
         for challenge in board.challenges.values().flatten() {
             match challenge.challenge_type {
-                ChallengeType::AttackDefense => modes.attack_defense = true,
-                ChallengeType::KingOfTheHill => modes.koth = true,
-                _ => modes.jeopardy = true,
+                ChallengeType::AttackDefense => counts.attack_defense += 1,
+                ChallengeType::KingOfTheHill => counts.koth += 1,
+                _ => counts.jeopardy += 1,
             }
         }
-        modes
+        counts
     }
 }
 
@@ -45,7 +46,9 @@ impl ModePresence {
 #[serde(rename_all = "camelCase")]
 pub struct CombinedMode {
     pub active: bool,
-    /// Constant share of the combined score, in `[0,1]`.
+    /// Locked number of enabled, approved challenges in this format.
+    pub challenge_count: i64,
+    /// Constant challenge-count share of the combined score, in `[0,1]`.
     pub weight: f64,
 }
 
@@ -58,22 +61,21 @@ pub struct CombinedModes {
 }
 
 impl CombinedModes {
-    fn new(presence: ModePresence) -> Self {
-        let count = presence.count();
-        let weight = if count == 0 { 0.0 } else { 1.0 / count as f64 };
+    fn new(counts: ModeChallengeCounts) -> Self {
+        let total = counts.total();
+        let mode = |challenge_count| CombinedMode {
+            active: challenge_count > 0,
+            challenge_count,
+            weight: if total == 0 {
+                0.0
+            } else {
+                challenge_count as f64 / total as f64
+            },
+        };
         Self {
-            jeopardy: CombinedMode {
-                active: presence.jeopardy,
-                weight: if presence.jeopardy { weight } else { 0.0 },
-            },
-            attack_defense: CombinedMode {
-                active: presence.attack_defense,
-                weight: if presence.attack_defense { weight } else { 0.0 },
-            },
-            koth: CombinedMode {
-                active: presence.koth,
-                weight: if presence.koth { weight } else { 0.0 },
-            },
+            jeopardy: mode(counts.jeopardy),
+            attack_defense: mode(counts.attack_defense),
+            koth: mode(counts.koth),
         }
     }
 }
@@ -112,9 +114,9 @@ pub struct CombinedScoreboardItem {
     pub division: Option<String>,
     pub rank: i32,
     pub division_rank: Option<i32>,
-    /// Equal-weight mean of official component scores.
+    /// Challenge-count-weighted mean of official component scores.
     pub score: f64,
-    /// Equal-weight mean including open A&D/KotH epochs.
+    /// Challenge-count-weighted mean including open A&D/KotH epochs.
     pub projected_score: f64,
     pub components: CombinedScoreComponents,
 }
@@ -167,9 +169,9 @@ struct RankableItem {
 
 fn combined_cache_key(game_id: i32, is_monitor: bool) -> String {
     if is_monitor {
-        format!("_CombinedScoreBoard_{game_id}")
+        format!("_CombinedScoreBoardByChallenge_{game_id}")
     } else {
-        format!("_CombinedScoreBoardFrozen_{game_id}")
+        format!("_CombinedScoreBoardByChallengeFrozen_{game_id}")
     }
 }
 
@@ -213,12 +215,18 @@ fn score_from_units(units: i64) -> f64 {
     units as f64 / SCORE_UNITS_PER_POINT as f64
 }
 
-fn equal_weight_mean_units(values: impl Iterator<Item = i64>, active_count: i64) -> i64 {
-    if active_count <= 0 {
+fn challenge_weighted_mean_units(
+    values: impl Iterator<Item = (i64, i64)>,
+    total_challenges: i64,
+) -> i64 {
+    if total_challenges <= 0 {
         return 0;
     }
-    let sum: i64 = values.sum();
-    (sum + active_count / 2) / active_count
+    let weighted_sum: i128 = values
+        .map(|(score, challenge_count)| i128::from(score) * i128::from(challenge_count))
+        .sum();
+    let denominator = i128::from(total_challenges);
+    ((weighted_sum + denominator / 2) / denominator) as i64
 }
 
 fn permission_for(
@@ -351,9 +359,9 @@ fn combine_scoreboards(
     ad: Option<crate::services::ad::scoring::AdScoreboard>,
     koth: Option<koth::KothScoreboardModel>,
     divisions: HashMap<i32, DivisionAccess>,
-    presence: ModePresence,
+    counts: ModeChallengeCounts,
 ) -> CombinedScoreboardModel {
-    let active_count = presence.count();
+    let total_challenges = counts.total();
     // The combined model represents the oldest source snapshot, not the time
     // this inexpensive projection happened to serialize it.
     let generated_at = std::iter::once(jeopardy.update_time_utc)
@@ -386,51 +394,55 @@ fn combine_scoreboards(
         .items
         .iter()
         .map(|item| {
-            let attainable = if presence.jeopardy {
+            let attainable = if counts.jeopardy > 0 {
                 jeopardy_attainable_points(item, &jeopardy, &divisions)
             } else {
                 0
             };
-            let jeopardy_units = if presence.jeopardy {
+            let jeopardy_units = if counts.jeopardy > 0 {
                 normalized_ratio_units(item.score, attainable)
             } else {
                 0
             };
             let ad_team = ad_by_team.get(&item.id).copied();
-            let ad_units = if presence.attack_defense {
+            let ad_units = if counts.attack_defense > 0 {
                 normalized_value_units(ad_team.map_or(0.0, |team| team.settled_total))
             } else {
                 0
             };
-            let ad_projected_units = if presence.attack_defense {
+            let ad_projected_units = if counts.attack_defense > 0 {
                 normalized_value_units(ad_team.map_or(0.0, |team| team.projected_total))
             } else {
                 0
             };
             let koth_team = koth_by_team.get(&item.id).copied();
-            let koth_units = if presence.koth {
+            let koth_units = if counts.koth > 0 {
                 normalized_value_units(koth_team.map_or(0.0, |team| team.settled_total))
             } else {
                 0
             };
-            let koth_projected_units = if presence.koth {
+            let koth_projected_units = if counts.koth > 0 {
                 normalized_value_units(koth_team.map_or(0.0, |team| team.projected_total))
             } else {
                 0
             };
-            let score_units = equal_weight_mean_units(
-                [jeopardy_units, ad_units, koth_units]
-                    .into_iter()
-                    .zip([presence.jeopardy, presence.attack_defense, presence.koth])
-                    .filter_map(|(score, active)| active.then_some(score)),
-                active_count,
+            let score_units = challenge_weighted_mean_units(
+                [
+                    (jeopardy_units, counts.jeopardy),
+                    (ad_units, counts.attack_defense),
+                    (koth_units, counts.koth),
+                ]
+                .into_iter(),
+                total_challenges,
             );
-            let projected_units = equal_weight_mean_units(
-                [jeopardy_units, ad_projected_units, koth_projected_units]
-                    .into_iter()
-                    .zip([presence.jeopardy, presence.attack_defense, presence.koth])
-                    .filter_map(|(score, active)| active.then_some(score)),
-                active_count,
+            let projected_units = challenge_weighted_mean_units(
+                [
+                    (jeopardy_units, counts.jeopardy),
+                    (ad_projected_units, counts.attack_defense),
+                    (koth_projected_units, counts.koth),
+                ]
+                .into_iter(),
+                total_challenges,
             );
             let division = item
                 .division_id
@@ -449,21 +461,21 @@ fn combine_scoreboards(
                     projected_score: score_from_units(projected_units),
                     components: CombinedScoreComponents {
                         jeopardy: CombinedScoreComponent {
-                            active: presence.jeopardy,
+                            active: counts.jeopardy > 0,
                             score: score_from_units(jeopardy_units),
                             projected_score: score_from_units(jeopardy_units),
-                            earned_points: presence.jeopardy.then_some(item.score.max(0)),
-                            attainable_points: presence.jeopardy.then_some(attainable),
+                            earned_points: (counts.jeopardy > 0).then_some(item.score.max(0)),
+                            attainable_points: (counts.jeopardy > 0).then_some(attainable),
                         },
                         attack_defense: CombinedScoreComponent {
-                            active: presence.attack_defense,
+                            active: counts.attack_defense > 0,
                             score: score_from_units(ad_units),
                             projected_score: score_from_units(ad_projected_units),
                             earned_points: None,
                             attainable_points: None,
                         },
                         koth: CombinedScoreComponent {
-                            active: presence.koth,
+                            active: counts.koth > 0,
                             score: score_from_units(koth_units),
                             projected_score: score_from_units(koth_projected_units),
                             earned_points: None,
@@ -499,7 +511,7 @@ fn combine_scoreboards(
         freeze: game.freeze_time_utc,
         is_frozen_view,
         fully_settled,
-        modes: CombinedModes::new(presence),
+        modes: CombinedModes::new(counts),
         divisions: division_models,
         items: items.into_iter().map(|item| item.model).collect(),
     }
@@ -511,9 +523,13 @@ async fn build_combined_scoreboard(
     is_monitor: bool,
 ) -> AppResult<CombinedScoreboardModel> {
     let jeopardy = build_scoreboard_cached(st, game, is_monitor).await?;
-    let presence = ModePresence::from_board(&jeopardy);
+    // The scoreboard contains only enabled, approved challenges. Their scoring
+    // eligibility is immutable after the competition boundary, so these counts
+    // are the event's durable, precommitted Overall budget without a separate
+    // operator-controlled weight or scoring-version selector.
+    let counts = ModeChallengeCounts::from_board(&jeopardy);
     let ad_future = async {
-        if presence.attack_defense {
+        if counts.attack_defense > 0 {
             ad::build_ad_scoreboard_cached(st, game.id, is_monitor)
                 .await
                 .map(Some)
@@ -522,7 +538,7 @@ async fn build_combined_scoreboard(
         }
     };
     let koth_future = async {
-        if presence.koth {
+        if counts.koth > 0 {
             koth::build_koth_scoreboard_cached(st, game, is_monitor)
                 .await
                 .map(Some)
@@ -533,7 +549,7 @@ async fn build_combined_scoreboard(
     let (ad, koth, divisions) =
         tokio::try_join!(ad_future, koth_future, load_division_access(st, game.id))?;
     Ok(combine_scoreboards(
-        game, jeopardy, ad, koth, divisions, presence,
+        game, jeopardy, ad, koth, divisions, counts,
     ))
 }
 
@@ -588,7 +604,7 @@ async fn build_combined_scoreboard_bundle(
     result.ok_or_else(|| AppError::internal("combined scoreboard cache fill failed"))
 }
 
-/// `GET /api/game/{id}/scoreboard/combined` — equal-weight normalized standings
+/// `GET /api/game/{id}/scoreboard/combined` — challenge-weighted normalized standings
 /// across every active competition format in the game.
 pub async fn combined_scoreboard(
     State(st): State<SharedState>,
@@ -647,37 +663,91 @@ mod tests {
     }
 
     #[test]
-    fn every_active_mode_has_the_same_constant_weight() {
-        let three = CombinedModes::new(ModePresence {
-            jeopardy: true,
-            attack_defense: true,
-            koth: true,
-        });
-        assert!((three.jeopardy.weight - 1.0 / 3.0).abs() < f64::EPSILON);
-        assert_eq!(three.jeopardy.weight, three.attack_defense.weight);
-        assert_eq!(three.attack_defense.weight, three.koth.weight);
-
-        let two = CombinedModes::new(ModePresence {
-            jeopardy: true,
-            attack_defense: false,
-            koth: true,
-        });
-        assert_eq!(two.jeopardy.weight, 0.5);
-        assert_eq!(two.attack_defense.weight, 0.0);
-        assert_eq!(two.koth.weight, 0.5);
+    fn challenge_budget_does_not_reuse_equal_weight_cache_entries() {
+        assert_eq!(
+            combined_cache_key(17, true),
+            "_CombinedScoreBoardByChallenge_17"
+        );
+        assert_eq!(
+            combined_cache_key(17, false),
+            "_CombinedScoreBoardByChallengeFrozen_17"
+        );
     }
 
     #[test]
-    fn combined_score_is_the_equal_mean_of_active_modes() {
-        let score = equal_weight_mean_units(
-            [100 * SCORE_UNITS_PER_POINT, 50 * SCORE_UNITS_PER_POINT, 0].into_iter(),
+    fn format_weight_is_its_locked_share_of_challenges() {
+        let uneven = CombinedModes::new(ModeChallengeCounts {
+            jeopardy: 0,
+            attack_defense: 1,
+            koth: 2,
+        });
+        assert!(!uneven.jeopardy.active);
+        assert_eq!(uneven.jeopardy.challenge_count, 0);
+        assert_eq!(uneven.jeopardy.weight, 0.0);
+        assert_eq!(uneven.attack_defense.challenge_count, 1);
+        assert!((uneven.attack_defense.weight - 1.0 / 3.0).abs() < f64::EPSILON);
+        assert_eq!(uneven.koth.challenge_count, 2);
+        assert!((uneven.koth.weight - 2.0 / 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn one_ad_service_and_two_koth_hills_have_equal_challenge_budgets() {
+        let score = challenge_weighted_mean_units(
+            [
+                (80 * SCORE_UNITS_PER_POINT, 1),
+                (70 * SCORE_UNITS_PER_POINT, 2),
+            ]
+            .into_iter(),
             3,
         );
-        assert_eq!(score_from_units(score), 50.0);
+        assert!((score_from_units(score) - 73.3333).abs() < 0.0001);
         assert_eq!(
-            equal_weight_mean_units([73 * SCORE_UNITS_PER_POINT].into_iter(), 1),
+            challenge_weighted_mean_units([(73 * SCORE_UNITS_PER_POINT, 1)].into_iter(), 1),
             73 * SCORE_UNITS_PER_POINT
         );
+    }
+
+    #[test]
+    fn mode_counts_ignore_dynamic_jeopardy_values() {
+        let challenge = |id, challenge_type, score| ChallengeInfo {
+            id,
+            title: id.to_string(),
+            category: ChallengeCategory::Misc,
+            challenge_type,
+            score,
+            solved: 0,
+            deadline: None,
+            bloods: Vec::new(),
+            disable_blood_bonus: false,
+        };
+        let mut board = ScoreboardModel {
+            update_time_utc: Utc::now(),
+            blood_bonus: 0,
+            timelines: Vec::new(),
+            items: Vec::new(),
+            divisions: Vec::new(),
+            challenges: BTreeMap::from([(
+                "Misc".to_owned(),
+                vec![
+                    challenge(1, ChallengeType::StaticAttachment, 1_000),
+                    challenge(2, ChallengeType::AttackDefense, 0),
+                    challenge(3, ChallengeType::KingOfTheHill, 0),
+                    challenge(4, ChallengeType::KingOfTheHill, 0),
+                ],
+            )]),
+            challenge_count: 4,
+            freeze: None,
+            is_frozen_view: false,
+        };
+
+        let before = ModeChallengeCounts::from_board(&board);
+        board.challenges.get_mut("Misc").unwrap()[0].score = 250;
+        let after = ModeChallengeCounts::from_board(&board);
+
+        assert_eq!(before, after);
+        assert_eq!(before.jeopardy, 1);
+        assert_eq!(before.attack_defense, 1);
+        assert_eq!(before.koth, 2);
     }
 
     #[test]
@@ -832,10 +902,10 @@ mod tests {
             freeze: None,
             is_frozen_view: false,
             fully_settled: true,
-            modes: CombinedModes::new(ModePresence {
-                jeopardy: true,
-                attack_defense: true,
-                koth: true,
+            modes: CombinedModes::new(ModeChallengeCounts {
+                jeopardy: 1,
+                attack_defense: 1,
+                koth: 1,
             }),
             divisions: vec![CombinedDivision {
                 id: 1,

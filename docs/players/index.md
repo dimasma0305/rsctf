@@ -21,7 +21,7 @@ This guide explains the normal competition flow from registration to the final s
 | King of the Hill | Take control of a shared service and keep your token in the marker | [King of the Hill](./koth) |
 
 A game can contain more than one kind of challenge. Always follow the instructions on the individual challenge.
-For a mixed-format event, the [Overall scoreboard](./overall-scoreboard) normalizes every active format to 0-100 and gives each one the same constant weight.
+For a mixed-format event, the [Overall scoreboard](./overall-scoreboard) normalizes every active format to 0-100 and gives it a constant share based on its locked number of enabled challenges.
 
 ## Need help during an event?
 

@@ -83,7 +83,7 @@ tests/load/
 The player scenario records separate trends for the main, A&D epoch, KotH, and Overall
 boards, plus A&D State, A&D Targets, KotH timeline, token, and State. The
 lifecycle scenario also keeps every official `/Ad/Scoreboard` poll in the
-separate `ad_epoch_board_ms` trend and validates the equal-weight Overall formula.
+separate `ad_epoch_board_ms` trend and validates the challenge-count-weighted Overall formula.
 This prevents one blended distribution from
 hiding which endpoint changed. The standalone player scenario uses a constant
 arrival rate (`RATE`, default `VUS/2` iterations/s). Board trends accept valid
@@ -1022,6 +1022,10 @@ A&D harness documented in
 [`REPORT.md`](REPORT.md#attack-defense-max-batch-hardening-and-fixed-rate-optimization--19-july-2026);
 the 1 August row uses the production polled-read harness documented in
 [`REPORT.md`](REPORT.md#equal-weight-overall-scoreboard-acceptance--1-august-2026).
+The 13 August row uses the pinned-core Overall-only harness documented in
+[`REPORT.md`](REPORT.md#locked-challenge-budget-overall-scoring--13-august-2026);
+both optimized binaries used the same restored database, cache warm-up, 1,000
+identities, 100 requests/s, and 60-second measurement window.
 The A&D publication row uses the same five-minute production lifecycle shape
 on both adjacent release images; its directly affected metric is the durable
 flag-publication lag rather than aggregate closed-loop request throughput.
@@ -1052,6 +1056,7 @@ metric regresses, so the ledger does not hide the cost of an optimization.
 | 2026-08-02 | Bound Jeopardy evidence reads to canonical `FirstSolves` | 5.067 → 5.067 tx/s target | Rows/query 40,000 → 2,000 (-95.0%) | — | — | Query 116.35 → 27.35 ms (-76.5%) | PostgreSQL CPU 24.72% → 7.88% (-68.1%); 0 failures |
 | 2026-08-02 | Start A&D publication concurrently with the independent KotH transition | Same 400-VU/4-tunnel/300-s shape; 3,796.390 → 3,840.847 req/s observed | Unpublished/late rounds 1 → 0 | — | — | Publication 9.638 → 5.662 s (-41.3%) | Maximum 10.453 → 5.703 s; 0 5xx/integrity failures after |
 | 2026-08-04 | Event-stable Leaderboard capabilities with a primary-key token read | 10 → 10 iterations/s target; 301 → 301 completed | API token fill: crown/target join → PK lookup; 20/20 values preserved | 7.435 → 8.133 (+9.4%) | 31.299 → 21.454 (-31.5%) | KotH token 179.49 → 46.28 ms (-74.2%) | App CPU regression disclosed; DB -45.7%, Redis -40.5%; 0 errors/5xx/invalid boards |
+| 2026-08-13 | Weight Overall by locked challenge counts; allocation-free semantic validation | 100.010 → 99.994 req/s | Server query count unchanged; validator per-team arrays 4 → 0 | 11.328 → 9.960 | — | Overall 41.145 → 32.786 ms | 0 failures/drops; RSS +4.636 MiB disclosed; shared-host observation |
 
 At the same one-batch/s load, the 100-distinct-known case also improved: p95
 790.76 → 367.97 ms and stack CPU 21.644 → 10.811 CPU-seconds. The
