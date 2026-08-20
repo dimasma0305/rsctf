@@ -906,6 +906,7 @@ async fn locked_roster_revocation_reuses_the_existing_game_fence() {
             id: user_id,
             role: Role::User,
             name: "member".to_string(),
+            security_stamp: "stamp".to_string(),
         },
         axum::extract::Path(team.id),
     )

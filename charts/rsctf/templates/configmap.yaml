@@ -50,6 +50,8 @@ data:
   RSCTF_CHECKER_PROCESS_BUDGET: {{ .Values.config.checkerProcessBudget | quote }}
   RSCTF_DISTRIBUTED_RATELIMIT: {{ ternary "false" "true" (eq .Values.runtimeRole "all") | quote }}
   RSCTF_AD_SUBMIT_BURST_FLAGS: {{ .Values.config.adSubmitBurstFlags | quote }}
+  RSCTF_SUSPICION_RECONCILE_SECONDS: {{ .Values.config.suspicionReconcileSeconds | quote }}
+  RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS: {{ .Values.config.suspicionFinalizeGraceSeconds | quote }}
   RSCTF_CONTAINER_MAX_MEMORY_MB: {{ .Values.config.containerMaxMemoryMb | quote }}
   RSCTF_CONTAINER_MAX_CPU_COUNT: {{ .Values.config.containerMaxCpuCount | quote }}
   RSCTF_CONTAINER_BACKEND: {{ .Values.containerBackend | quote }}
@@ -70,6 +72,7 @@ data:
   RSCTF_K8S_CHALLENGE_UID: {{ .Values.kubernetes.challengeUid | quote }}
   RSCTF_K8S_CONTROL_NAMESPACE: {{ .Release.Namespace | quote }}
   RSCTF_K8S_CONTROL_POD_LABEL: {{ printf "app.kubernetes.io/name=%s" (include "rsctf.name" .) | quote }}
+  RSCTF_K8S_NETWORK_POLICY_ENFORCED: {{ .Values.kubernetes.networkPolicyEnforced | quote }}
   RSCTF_K8S_ISOLATED_POD_NETNS: {{ .Values.kubernetes.isolatedPodNetns | quote }}
   {{- with .Values.kubernetes.publicEntry }}
   RSCTF_K8S_PUBLIC_ENTRY: {{ . | quote }}

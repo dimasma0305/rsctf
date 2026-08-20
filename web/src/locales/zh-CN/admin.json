@@ -131,7 +131,8 @@
       "resume": "恢复轮询"
     },
     "anti_cheat": {
-      "clear": "清除此记录"
+      "allow": "允许此匹配 7 天",
+      "retry": "重试"
     },
     "builds": {
       "view_log": "查看完整日志",
@@ -581,6 +582,8 @@
         "browser_fingerprint": {
           "label": "浏览器指纹",
           "description": "在登录/注册时收集浏览器指纹用于风险分析。",
+          "policies_ineffective": "已配置浏览器指纹唯一性策略，但浏览器指纹收集处于关闭状态，因此策略不会生效。请启用指纹收集后再使用这些策略。",
+          "policy_inactive": "浏览器指纹收集关闭时，此策略不会生效。",
           "warning": "启用此功能将收集额外的用户设备信息。请确保符合当地隐私法规，并相应更新隐私政策。"
         },
         "unique_ip_per_team_user": {
@@ -591,14 +594,25 @@
           "label": "队员浏览器指纹唯一性",
           "description": "当另一名队员在 24 小时内已使用相同浏览器指纹登录时，阻止登录。需先启用浏览器指纹。"
         },
+        "unique_ip_global": {
+          "label": "全局登录 IP 唯一性",
+          "description": "当任意其他用户在 24 小时内已从相同 IP 登录时阻止登录。共享 NAT 或校园网络中的无关用户也可能因此无法登录。"
+        },
+        "unique_fingerprint_global": {
+          "label": "全局浏览器指纹唯一性",
+          "description": "当任意其他用户在 24 小时内已使用相同浏览器指纹时阻止登录。需先启用浏览器指纹收集。"
+        },
         "unique_per_team_user": {
-          "warning": "这些策略会拦截来自共享 NAT（宿舍/办公室）、共享实验室设备或 CGNAT 出口 IP 的合法登录。仅在确认每位队员都使用独立的设备和网络登录时启用。"
+          "warning": "唯一性策略可能拦截来自共享 NAT（宿舍/办公室）、共享实验室设备或 CGNAT 出口 IP 的合法登录。仅在确认受影响用户都使用独立设备和网络时启用。"
         },
         "title": "账户策略",
         "use_captcha": {
           "description": "是否在登录、注册和找回时进行校验",
           "label": "启用验证码"
         }
+      },
+      "oauth": {
+        "fingerprint_disabled": "启用浏览器指纹收集后，OAuth 跳转无法返回经过验证的指纹，因此第三方登录不可用。密码登录仍可使用。"
       },
       "container": {
         "auto_destroy": {
@@ -985,16 +999,38 @@
       }
     },
     "anti_cheat": {
-      "title": "反作弊拦截",
-      "subtitle": "按「每队员独立 IP / 指纹」策略被拦截的登录请求。若属误判（如队友共享 NAT 公网 IP），可清除该记录。",
-      "empty_title": "暂无拦截记录",
-      "empty": "策略触发时会显示在这里。请在「设置 → 账号策略」中配置。",
+      "title": "反作弊冲突记录",
+      "subtitle": "审核按队伍 IP 和浏览器指纹策略产生的登录冲突。授予豁免后，原事件仍会保留用于审计。",
+      "limit_note": "显示最近 200 条冲突事件。审核后记录仍会作为审计历史保留。",
+      "probabilistic_note": "IP 和浏览器指纹匹配只是概率性信号，不能证明账号共享。共享设备、浏览器隐私设置、代理和 NAT 都可能造成正常重合。",
+      "empty_title": "暂无冲突事件",
+      "empty": "启用的策略阻止登录后，冲突事件会显示在这里。可在「设置 → 账号策略」中配置收集和拦截策略。",
+      "table_caption": "反作弊冲突与豁免历史",
+      "scroll_region": "反作弊冲突历史",
+      "masked_hint": "已脱敏的关联提示",
+      "allow_confirm": "允许此账号与身份标识的精确匹配 7 天？冲突事件仍会保留在审计历史中。",
+      "load_failed_title": "无法加载反作弊冲突",
+      "load_failed": "无法加载反作弊冲突历史。",
+      "refresh_failed_title": "刷新失败——正在显示上次的冲突历史",
+      "kind": {
+        "ip": "IP 匹配",
+        "fingerprint": "浏览器指纹匹配"
+      },
       "column": {
         "when": "时间",
         "user": "被拦截用户",
         "kind": "类型",
         "conflict_with": "冲突来自",
-        "value": "值"
+        "value": "脱敏提示",
+        "exemption": "审核 / 豁免"
+      },
+      "exemption": {
+        "active": "豁免有效",
+        "expired": "豁免已过期",
+        "unreviewed": "尚未裁定",
+        "until": "有效至 {{time}}",
+        "ended": "结束于 {{time}}",
+        "already_active": "此精确匹配已有一项 7 天豁免正在生效。"
       }
     }
   },
@@ -1151,7 +1187,7 @@
       "deleted": "{{name}} 已删除"
     },
     "anti_cheat": {
-      "cleared": "已清除"
+      "exemption_granted": "已授予豁免"
     },
     "repo_binding": {
       "scanned": "扫描完成",

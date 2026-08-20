@@ -1,11 +1,19 @@
-//! Cheat/suspicion reports + anti-cheat block listing/clearing.
+//! Immutable stolen-flag evidence and anti-cheat policy adjudication.
 
 use super::*;
 
-// ─── Cheat reports ─────────────────────────────────────────────────────────────
+const MAX_PAGE_SIZE: u64 = 500;
+const MAX_PAGE_OFFSET: u64 = 1_000_000;
 
-/// RSCTF `ParticipationModel` — team-participation reference embedded in a cheat
-/// report.
+fn bounded_page(count: u64, skip: u64) -> (i64, i64) {
+    (
+        count.clamp(1, MAX_PAGE_SIZE) as i64,
+        skip.min(MAX_PAGE_OFFSET) as i64,
+    )
+}
+
+// ─── Cheat reports ─────────────────────────────────────────────────────────
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParticipationModel {
@@ -16,9 +24,8 @@ pub struct ParticipationModel {
     pub division_id: Option<i32>,
 }
 
-/// RSCTF `CheatInfoModel` — one recorded cheat/suspicion event. Wire shape matches
-/// Api.ts `CheatInfoModel`: `ownedTeam` (flag owner), `submitTeam` (offender), and
-/// the full offending `submission` (answer/status/time/user/team/challenge).
+/// One canonical stolen-flag incident. Behavioral `SuspicionEvents` are
+/// intentionally reported only by the per-game suspicion roster.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheatInfoModel {
@@ -27,257 +34,232 @@ pub struct CheatInfoModel {
     pub submission: Option<crate::controllers::game::SubmissionModel>,
 }
 
-/// Materialise a `ParticipationModel` (team + division) for a participation id.
-async fn cheat_participation(
-    st: &SharedState,
-    participation_id: i32,
-) -> AppResult<Option<ParticipationModel>> {
-    let Some(p) = participation::Entity::find_by_id(participation_id)
-        .one(&st.db)
-        .await?
-    else {
-        return Ok(None);
-    };
-
-    let team = team::Entity::find_by_id(p.team_id)
-        .one(&st.db)
-        .await?
-        .map(|t| TeamModel {
-            id: t.id,
-            name: t.name.clone(),
-            avatar: t.avatar_url(),
-        });
-
-    let division = match p.division_id {
-        Some(did) => division::Entity::find_by_id(did)
-            .one(&st.db)
-            .await?
-            .map(|d| d.name),
-        None => None,
-    };
-
-    Ok(Some(ParticipationModel {
-        id: p.id,
-        team,
-        status: p.status,
+fn participation_model(
+    id: i32,
+    team_id: i32,
+    team_name: String,
+    avatar_hash: Option<String>,
+    status: i16,
+    division_id: Option<i32>,
+    division: Option<String>,
+) -> AppResult<ParticipationModel> {
+    Ok(ParticipationModel {
+        id,
+        team: Some(TeamModel {
+            id: team_id,
+            name: team_name,
+            avatar: crate::controllers::game::cheat::cheat_avatar_url(&avatar_hash),
+        }),
+        status: crate::controllers::game::cheat::cheat_participation_status(status)?,
         division,
-        division_id: p.division_id,
-    }))
+        division_id,
+    })
 }
 
-/// `GET /api/admin/cheat-reports` — recent cheat/suspicion events (raw array),
-/// newest first, mapped into RSCTF's `CheatInfoModel` shape from the
-/// `SuspicionEvents` table.
+fn cheat_info_model(
+    row: crate::controllers::game::cheat::CheatIncidentRow,
+) -> AppResult<CheatInfoModel> {
+    let owned_team = participation_model(
+        row.source_participation_id,
+        row.source_team_id,
+        row.source_team_name,
+        row.source_avatar_hash,
+        row.source_status,
+        row.source_division_id,
+        row.source_division_name,
+    )?;
+    let submit_team_name = row.submit_team_name.clone();
+    let submit_team = participation_model(
+        row.submit_participation_id,
+        row.submit_team_id,
+        row.submit_team_name,
+        row.submit_avatar_hash,
+        row.submit_status,
+        row.submit_division_id,
+        row.submit_division_name,
+    )?;
+    let submission = crate::controllers::game::SubmissionModel {
+        answer: row.answer,
+        status: crate::controllers::game::cheat::cheat_answer_result(row.answer_status)?,
+        time: row.submit_time_utc,
+        user: row.user_name,
+        team: Some(submit_team_name),
+        challenge: Some(row.challenge_title),
+    };
+    Ok(CheatInfoModel {
+        owned_team: Some(owned_team),
+        submit_team: Some(submit_team),
+        submission: Some(submission),
+    })
+}
+
+/// `GET /api/admin/cheat-reports` — immutable stolen-flag incidents only,
+/// newest first with stable id tie-breaking.
 pub async fn cheat_reports(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Query(q): Query<ListQuery>,
 ) -> AppResult<RequestResponse<Vec<CheatInfoModel>>> {
-    let count = q.count.clamp(1, 1000);
-    let events = suspicion_event::Entity::find()
-        .order_by_desc(suspicion_event::Column::CreatedAt)
-        .offset(q.skip)
-        .limit(count)
-        .all(&st.db)
-        .await?;
-
-    let mut data = Vec::with_capacity(events.len());
-    for e in events {
-        // The flagged (offending) participation is `submitTeam`; the team whose
-        // per-team flag was shared is `ownedTeam`, reconstructed alongside the full
-        // offending submission from the event's challenge — the same flag-sharing
-        // join `game::cheat` performs, keyed off the persisted event.
-        let submit_team = cheat_participation(&st, e.participation_id).await?;
-        let (owned_team, submission) = resolve_offender(&st, &e).await?;
-        data.push(CheatInfoModel {
-            owned_team,
-            submit_team,
-            submission,
-        });
-    }
-
+    let (count, skip) = bounded_page(q.count, q.skip);
+    let data =
+        crate::controllers::game::cheat::load_cheat_incident_rows(st.pg(), None, Some(count), skip)
+            .await?
+            .into_iter()
+            .map(cheat_info_model)
+            .collect::<AppResult<Vec<_>>>()?;
     Ok(RequestResponse::ok(data))
 }
 
-/// Reconstruct the flag-owner participation (`ownedTeam`) and the full offending
-/// `Submission` for a suspicion event, mirroring the flag-sharing detection in
-/// `game::cheat`. Returns `(None, None)` for a non-submission event (e.g. a
-/// fingerprint correlation with no `challenge_id`, or a challenge with no matching
-/// submission on record).
-async fn resolve_offender(
-    st: &SharedState,
-    e: &suspicion_event::Model,
-) -> AppResult<(
-    Option<ParticipationModel>,
-    Option<crate::controllers::game::SubmissionModel>,
-)> {
-    let Some(cid) = e.challenge_id else {
-        return Ok((None, None));
-    };
+// ─── Anti-cheat blocks ─────────────────────────────────────────────────────
 
-    // This participation's submissions on the flagged challenge, newest first.
-    let subs = submission::Entity::find()
-        .filter(submission::Column::GameId.eq(e.game_id))
-        .filter(submission::Column::ParticipationId.eq(e.participation_id))
-        .filter(submission::Column::ChallengeId.eq(cid))
-        .order_by_desc(submission::Column::SubmitTimeUtc)
-        .all(&st.db)
-        .await?;
-    if subs.is_empty() {
-        return Ok((None, None));
-    }
-
-    // (flag string) -> owning participation, from OTHER teams' live instances of
-    // this challenge — the owner map `game::cheat` builds to spot a shared flag.
-    let instances = game_instance::Entity::find()
-        .filter(game_instance::Column::ChallengeId.eq(cid))
-        .filter(game_instance::Column::ParticipationId.ne(e.participation_id))
-        .all(&st.db)
-        .await?;
-    let flag_ids: Vec<i32> = instances.iter().filter_map(|i| i.flag_id).collect();
-    let flag_of: std::collections::HashMap<i32, String> = if flag_ids.is_empty() {
-        std::collections::HashMap::new()
-    } else {
-        flag_context::Entity::find()
-            .filter(flag_context::Column::Id.is_in(flag_ids))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .map(|f| (f.id, f.flag))
-            .collect()
-    };
-    let mut owner_by_flag: std::collections::HashMap<String, i32> =
-        std::collections::HashMap::new();
-    for inst in &instances {
-        if let Some(fid) = inst.flag_id {
-            if let Some(flag) = flag_of.get(&fid) {
-                owner_by_flag
-                    .entry(flag.clone())
-                    .or_insert(inst.participation_id);
-            }
-        }
-    }
-
-    // Submission-backed evidence points to the exact immutable attempt. Legacy
-    // and aggregate rows retain the established best-match fallback.
-    let evidence_submission_id = e
-        .evidence_key
-        .strip_prefix("submission:")
-        .and_then(|id| id.parse::<i32>().ok());
-    let (chosen, owner_pid) = evidence_submission_id
-        .and_then(|id| subs.iter().find(|submission| submission.id == id))
-        .map(|submission| (submission, owner_by_flag.get(&submission.answer).copied()))
-        .or_else(|| {
-            subs.iter().find_map(|submission| {
-                owner_by_flag
-                    .get(&submission.answer)
-                    .map(|&owner| (submission, Some(owner)))
-            })
-        })
-        .unwrap_or((&subs[0], None));
-
-    let owned_team = match owner_pid {
-        Some(pid) => cheat_participation(st, pid).await?,
-        None => None,
-    };
-
-    // Full Submission model (answer/status/time/user/team/challenge).
-    let user_name = match chosen.user_id {
-        Some(uid) => user::Entity::find_by_id(uid)
-            .one(&st.db)
-            .await?
-            .and_then(|u| u.user_name),
-        None => None,
-    };
-    let team_name = team::Entity::find_by_id(chosen.team_id)
-        .one(&st.db)
-        .await?
-        .map(|t| t.name);
-    let challenge = game_challenge::Entity::find_by_id(cid)
-        .one(&st.db)
-        .await?
-        .map(|c| c.title);
-
-    let submission = crate::controllers::game::SubmissionModel {
-        answer: chosen.answer.clone(),
-        status: chosen.status,
-        time: chosen.submit_time_utc,
-        user: user_name,
-        team: team_name,
-        challenge,
-    };
-
-    Ok((owned_team, Some(submission)))
-}
-
-// ─── Anti-cheat blocks ─────────────────────────────────────────────────────────
-
-/// `AntiCheatBlockModel` — one recorded anti-cheat conflict (RSCTF wire model).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AntiCheatBlockModel {
     pub id: i32,
-    /// Blocked user's id (Uuid string).
     pub user_id: String,
     pub user_name: Option<String>,
-    /// The account that owns the conflicting value (Uuid string), if known.
     pub conflict_user_id: Option<String>,
     pub conflict_user_name: Option<String>,
-    /// `"Ip"` | `"Fingerprint"`.
     pub kind: String,
     pub conflicting_value: Option<String>,
     #[serde(with = "crate::utils::datetime::millis")]
     pub occurred_at_utc: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub adjudicated_at_utc: Option<DateTime<Utc>>,
+    pub adjudicated_by_user_id: Option<String>,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub exemption_expires_at_utc: Option<DateTime<Utc>>,
 }
 
-/// Anti-cheat block listing query (`?count=`).
+#[derive(Debug, sqlx::FromRow)]
+struct AntiCheatBlockRow {
+    id: i32,
+    user_id: Uuid,
+    user_name: Option<String>,
+    conflict_user_id: Option<Uuid>,
+    conflict_user_name: Option<String>,
+    kind: String,
+    conflicting_value: Option<String>,
+    occurred_at_utc: DateTime<Utc>,
+    adjudicated_at_utc: Option<DateTime<Utc>>,
+    adjudicated_by_user_id: Option<Uuid>,
+    exemption_expires_at_utc: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AntiCheatBlocksQuery {
     #[serde(default = "default_count")]
     pub count: u64,
+    #[serde(default)]
+    pub skip: u64,
 }
 
-impl From<anti_cheat_block::Model> for AntiCheatBlockModel {
-    fn from(m: anti_cheat_block::Model) -> Self {
-        AntiCheatBlockModel {
-            id: m.id,
-            user_id: m.user_id.to_string(),
-            user_name: m.user_name,
-            conflict_user_id: m.conflict_user_id.map(|u| u.to_string()),
-            conflict_user_name: m.conflict_user_name,
-            kind: m.kind,
-            conflicting_value: m.conflicting_value,
-            occurred_at_utc: m.occurred_at_utc,
+impl From<AntiCheatBlockRow> for AntiCheatBlockModel {
+    fn from(row: AntiCheatBlockRow) -> Self {
+        let conflicting_value = row
+            .conflicting_value
+            .as_deref()
+            .map(|value| crate::services::anti_cheat::redacted_identity_hint(&row.kind, value));
+        Self {
+            id: row.id,
+            user_id: row.user_id.to_string(),
+            user_name: row.user_name,
+            conflict_user_id: row.conflict_user_id.map(|user| user.to_string()),
+            conflict_user_name: row.conflict_user_name,
+            kind: row.kind,
+            conflicting_value,
+            occurred_at_utc: row.occurred_at_utc,
+            adjudicated_at_utc: row.adjudicated_at_utc,
+            adjudicated_by_user_id: row.adjudicated_by_user_id.map(|user| user.to_string()),
+            exemption_expires_at_utc: row.exemption_expires_at_utc,
         }
     }
 }
 
-/// `GET /api/admin/anticheatblocks?count=` — recorded conflicts, newest-first.
+/// `GET /api/admin/anticheatblocks?count=&skip=` — retained conflict history.
 pub async fn list_anti_cheat_blocks(
     State(st): State<SharedState>,
     _admin: AdminUser,
     Query(q): Query<AntiCheatBlocksQuery>,
 ) -> AppResult<RequestResponse<Vec<AntiCheatBlockModel>>> {
-    let rows = anti_cheat_block::Entity::find()
-        .order_by_desc(anti_cheat_block::Column::OccurredAtUtc)
-        .order_by_desc(anti_cheat_block::Column::Id)
-        .limit(q.count)
-        .all(&st.db)
-        .await?;
+    let (count, skip) = bounded_page(q.count, q.skip);
+    let rows = sqlx::query_as::<_, AntiCheatBlockRow>(
+        r#"SELECT id, user_id, user_name, conflict_user_id, conflict_user_name,
+                  kind, conflicting_value, occurred_at_utc, adjudicated_at_utc,
+                  adjudicated_by_user_id, exemption_expires_at_utc
+             FROM "AntiCheatBlocks"
+            ORDER BY occurred_at_utc DESC, id DESC
+            LIMIT $1 OFFSET $2"#,
+    )
+    .bind(count)
+    .bind(skip)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(RequestResponse::ok(
         rows.into_iter().map(Into::into).collect(),
     ))
 }
 
-/// `DELETE /api/admin/anticheatblocks/{id}` — clear a recorded conflict.
+/// `DELETE /api/admin/anticheatblocks/{id}` — retain the audit row and grant a
+/// seven-day exemption scoped to its exact account pair, kind and value hash.
 pub async fn delete_anti_cheat_block(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
     Path(id): Path<i32>,
 ) -> AppResult<MessageResponse> {
-    anti_cheat_block::Entity::delete_by_id(id)
-        .exec(&st.db)
-        .await?;
-    Ok(MessageResponse::ok(""))
+    let grant =
+        crate::services::anti_cheat::exempt_block(st.pg(), st.config.as_ref(), id, admin.id)
+            .await?;
+    Ok(MessageResponse::ok(format!(
+        "Exemption granted until {}.",
+        grant.expires_at_utc.to_rfc3339()
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pagination_is_bounded_before_reaching_postgres() {
+        assert_eq!(bounded_page(0, 0), (1, 0));
+        assert_eq!(bounded_page(u64::MAX, u64::MAX), (500, 1_000_000));
+    }
+
+    #[test]
+    fn retained_block_wire_shape_uses_millis_and_redacts_identity_values() {
+        let occurred_at_utc = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let adjudicated_at_utc = "2026-01-02T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let exemption_expires_at_utc = "2026-01-09T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let adjudicator = Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap();
+        let model = AntiCheatBlockModel::from(AntiCheatBlockRow {
+            id: 7,
+            user_id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+            user_name: Some("blocked".to_string()),
+            conflict_user_id: Some(
+                Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
+            ),
+            conflict_user_name: Some("conflict".to_string()),
+            kind: "Ip".to_string(),
+            conflicting_value: Some("198.51.100.42".to_string()),
+            occurred_at_utc,
+            adjudicated_at_utc: Some(adjudicated_at_utc),
+            adjudicated_by_user_id: Some(adjudicator),
+            exemption_expires_at_utc: Some(exemption_expires_at_utc),
+        });
+        let value = serde_json::to_value(model).unwrap();
+        assert_eq!(value["conflictingValue"], "198.51.100.x");
+        assert_eq!(value["occurredAtUtc"], occurred_at_utc.timestamp_millis());
+        assert_eq!(
+            value["adjudicatedAtUtc"],
+            adjudicated_at_utc.timestamp_millis()
+        );
+        assert_eq!(value["adjudicatedByUserId"], adjudicator.to_string());
+        assert_eq!(
+            value["exemptionExpiresAtUtc"],
+            exemption_expires_at_utc.timestamp_millis()
+        );
+    }
 }

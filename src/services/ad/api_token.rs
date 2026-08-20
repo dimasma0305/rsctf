@@ -163,6 +163,7 @@ where
                     team_id,
                     division_id,
                     suspicion_score,
+                    competitive_admitted_at_utc: None,
                 },
                 partition_key: format!("ad:{token_hash}"),
             }

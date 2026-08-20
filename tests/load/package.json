@@ -4,7 +4,7 @@
   "type": "module",
   "description": "rsctf load / stress tests — k6 HTTP scenarios (k6/) driven by Node orchestrators (*.mjs)",
   "scripts": {
-    "test": "node --check asset-download.mjs && node --check multi-domain-acceptance.mjs && node --check scoreboard-evidence.mjs && node --import ./test/fixtures/test-env.mjs --test test/*.test.mjs",
+    "test": "node --check asset-download.mjs && node --check multi-domain-acceptance.mjs && node --check scoreboard-evidence.mjs && node --check cheat-acceptance.mjs && node --check cheat-event.mjs && node --check cheat-contract.js && node --check k6/cheat-event.js && node --import ./test/fixtures/test-env.mjs --test test/*.test.mjs",
     "admin-lifecycle": "node admin-lifecycle.mjs",
     "edit-lifecycle": "node edit-lifecycle.mjs",
     "multi-domain": "node multi-domain-acceptance.mjs",
@@ -22,6 +22,7 @@
     "worker": "node worker-plane.mjs",
     "worker-local": "node worker-plane-local.mjs",
     "provision": "node provision.mjs",
+    "cheat-acceptance": "node cheat-acceptance.mjs",
     "cheat": "node cheat-event.mjs",
     "lifecycle": "node lifecycle.mjs",
     "observe": "node observe.mjs",

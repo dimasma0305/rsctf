@@ -35,9 +35,9 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::AdminUser;
 use crate::models::data::{
-    anti_cheat_block, api_token, build_record, challenge_review, config, container, division,
-    flag_context, game, game_challenge, game_instance, game_manager, local_file, log_entry,
-    participation, repo_binding, repo_binding_scan, submission, suspicion_event, team, user,
+    api_token, build_record, challenge_review, config, container, division, game, game_challenge,
+    game_manager, local_file, log_entry, participation, repo_binding, repo_binding_scan,
+    submission, team, user,
 };
 use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::{

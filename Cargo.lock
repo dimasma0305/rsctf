@@ -4175,7 +4175,7 @@ dependencies = [
 
 [[package]]
 name = "rsctf"
-version = "0.1.44"
+version = "0.1.45"
 dependencies = [
  "anyhow",
  "argon2 0.5.3",

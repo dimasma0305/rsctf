@@ -7,6 +7,10 @@
     "login": "准备好登录？",
     "recovery": "忘记密码？"
   },
+  "oauth": {
+    "fingerprint_disabled_title": "第三方登录暂不可用",
+    "fingerprint_disabled_detail": "浏览器指纹收集已启用，但第三方登录跳转无法返回经过验证的指纹。请使用用户名或邮箱和密码登录。"
+  },
   "button": {
     "change_password": "更改密码",
     "confirm_email": "确认邮箱",

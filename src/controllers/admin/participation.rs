@@ -119,12 +119,43 @@ async fn persist_participation_status(
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    // A review can make several already-linked users competition-visible at
+    // once. Lock their identity scopes in UUID order before the Game fence so
+    // a concurrent login either records the accepted context itself or commits
+    // its global observation first for the snapshot below.
+    let linked_user_ids = if requested_status == ParticipationStatus::Accepted {
+        sqlx::query_scalar::<_, uuid::Uuid>(
+            r#"SELECT DISTINCT membership.user_id
+                 FROM "UserParticipations" membership
+                WHERE membership.participation_id = $1
+                  AND membership.game_id = $2
+                  AND membership.team_id = $3
+                ORDER BY membership.user_id"#,
+        )
+        .bind(identity.id)
+        .bind(identity.game_id)
+        .bind(identity.team_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+    } else {
+        Vec::new()
+    };
+    for user_id in &linked_user_ids {
+        crate::services::anti_cheat::lock_identity_user_scope(&mut transaction, *user_id).await?;
+    }
     crate::utils::single_flight::acquire_transaction_advisory_lock(
         &mut transaction,
         &crate::services::ad_engine::game_lock_key(identity.game_id),
     )
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(r#"SELECT id FROM "Games" WHERE id = $1 FOR SHARE"#)
+        .bind(identity.game_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::not_found("Game not found"))?;
     // Submissions lock Games before Participations. Retain that global order so
     // a division/status edit cannot deadlock an in-flight first solve.
     let competition_scoring_started = crate::controllers::edit::competition_scoring_started_locked(
@@ -223,6 +254,16 @@ async fn persist_participation_status(
             .execute(&mut *transaction)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
+        for user_id in linked_user_ids {
+            crate::services::anti_cheat::snapshot_recent_global_observations_for_game(
+                &mut transaction,
+                user_id,
+                identity.game_id,
+                identity.team_id,
+                identity.id,
+            )
+            .await?;
+        }
     }
     transaction
         .commit()

@@ -46,6 +46,10 @@ impl Harness {
               ad_scoring_start_round INTEGER,
               koth_scoring_start_round INTEGER
             );
+            CREATE TABLE "SuspicionReconciliationState" (
+              game_id INTEGER PRIMARY KEY,
+              evidence_closed_at_utc TIMESTAMPTZ
+            );
             CREATE TABLE "GameChallenges" (
               id INTEGER PRIMARY KEY,
               game_id INTEGER NOT NULL,

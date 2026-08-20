@@ -174,7 +174,10 @@ pub struct AdBatchSubmitResultModel {
 }
 
 enum AdSubmitCaller {
-    Session(uuid::Uuid),
+    Session {
+        user_id: uuid::Uuid,
+        security_stamp: String,
+    },
     TeamToken(String),
 }
 
@@ -193,16 +196,15 @@ async fn submit_caller_is_live(
     caller: &AdSubmitCaller,
     part: &participation::Model,
 ) -> AppResult<bool> {
-    if !crate::services::ad::roster::lock_team_shared_credentials_on(connection, part.team_id)
-        .await?
-    {
-        return Ok(false);
-    }
     match caller {
-        AdSubmitCaller::Session(user_id) => {
+        AdSubmitCaller::Session {
+            user_id,
+            security_stamp,
+        } => {
             crate::services::ad::roster::user_allows_shared_credentials_on(
                 connection,
                 *user_id,
+                security_stamp,
                 part.game_id,
                 part.team_id,
                 part.id,
@@ -210,6 +212,14 @@ async fn submit_caller_is_live(
             .await
         }
         AdSubmitCaller::TeamToken(token) => {
+            if !crate::services::ad::roster::lock_team_shared_credentials_on(
+                connection,
+                part.team_id,
+            )
+            .await?
+            {
+                return Ok(false);
+            }
             let verified =
                 crate::services::ad::api_token::authenticate_on(connection, token).await?;
             Ok(verified.is_some_and(|credential| {
@@ -245,6 +255,10 @@ pub async fn submit(
     }
 
     let session_user_id = maybe_user.0.as_ref().map(|user| user.id);
+    let session_security_stamp = maybe_user
+        .0
+        .as_ref()
+        .map(|user| user.security_stamp.clone());
     let presented_team_token = crate::services::ad::api_token::bearer_token(&headers)
         .filter(|token| crate::services::ad::api_token::is_well_formed(token))
         .map(str::to_owned);
@@ -264,7 +278,10 @@ pub async fn submit(
     let caller = if token_auth_selected {
         AdSubmitCaller::TeamToken(presented_team_token.ok_or(AppError::Unauthorized)?)
     } else {
-        AdSubmitCaller::Session(session_user_id.ok_or(AppError::Unauthorized)?)
+        AdSubmitCaller::Session {
+            user_id: session_user_id.ok_or(AppError::Unauthorized)?,
+            security_stamp: session_security_stamp.ok_or(AppError::Unauthorized)?,
+        }
     };
 
     // Charge the canonical participation for the database work the batch can
@@ -296,7 +313,7 @@ pub async fn submit(
     if !submit_caller_is_live(roster.transaction_mut(), &caller, &attacker).await? {
         roster.release().await?;
         return Err(match caller {
-            AdSubmitCaller::Session(_) => AppError::Forbidden,
+            AdSubmitCaller::Session { .. } => AppError::Forbidden,
             AdSubmitCaller::TeamToken(_) => AppError::Unauthorized,
         });
     }

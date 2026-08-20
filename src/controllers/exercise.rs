@@ -383,16 +383,25 @@ pub async fn create_container(
         e.flag_template.as_deref(),
         &crate::utils::codec::sha256_str(&format!("EX@{id}@{}", user.id)),
     );
+    let game_kind = crate::services::container::game_kind_for_challenge(e.challenge_type);
+    let platform_proxy =
+        crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
+    let is_proxy = crate::services::container::should_use_platform_proxy(
+        game_kind,
+        st.containers.requires_proxy(),
+        platform_proxy,
+    );
     let cuuid = uuid::Uuid::new_v4();
     let info = st
         .containers
         .create(ContainerSpec {
-            game_kind: crate::services::container::game_kind_for_challenge(e.challenge_type),
+            game_kind,
             image: image.clone(),
             memory_limit: e.memory_limit.unwrap_or(64),
             cpu_count: e.cpu_count.unwrap_or(1),
             expose_port: e.expose_port.unwrap_or(80),
             publish_port: true,
+            proxy_only: is_proxy,
             env: vec![],
             flag: Some(flag.clone()),
             ad_network: None,
@@ -426,7 +435,7 @@ pub async fn create_container(
             status: Set(ContainerStatus::Running),
             started_at: Set(now),
             expect_stop_at: Set(now + chrono::Duration::hours(2)),
-            is_proxy: Set(st.containers.requires_proxy()),
+            is_proxy: Set(is_proxy),
             ip: Set(info.ip),
             port: Set(info.port),
             public_ip: Set(None),

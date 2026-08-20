@@ -95,8 +95,17 @@ mod m0085_constant_leaderboard_scoring;
 mod m0086_koth_api_event_tokens;
 mod m0087_asset_download_indexes;
 mod m0088_koth_api_wave_scoring;
+mod m0089_cheat_evidence_ledger;
+mod m0090_identity_observations;
+mod m0091_suspicion_score_integrity;
 
 pub struct Migrator;
+
+const EXCLUSIVE_CUTOVER_MIGRATIONS: [&str; 3] = [
+    "m0089_cheat_evidence_ledger",
+    "m0090_identity_observations",
+    "m0091_suspicion_score_integrity",
+];
 
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -190,8 +199,76 @@ impl MigratorTrait for Migrator {
             Box::new(m0086_koth_api_event_tokens::Migration),
             Box::new(m0087_asset_download_indexes::Migration),
             Box::new(m0088_koth_api_wave_scoring::Migration),
+            Box::new(m0089_cheat_evidence_ledger::Migration),
+            Box::new(m0090_identity_observations::Migration),
+            Box::new(m0091_suspicion_score_integrity::Migration),
         ]
     }
+}
+
+async fn exclusive_cutover_is_pending(db: &DatabaseConnection) -> anyhow::Result<bool> {
+    let pool = db.get_postgres_connection_pool();
+    let ledger_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('seaql_migrations') IS NOT NULL")
+            .fetch_one(pool)
+            .await?;
+    if !ledger_exists {
+        return Ok(true);
+    }
+    let applied = sqlx::query_scalar::<_, String>("SELECT version FROM seaql_migrations")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    Ok(EXCLUSIVE_CUTOVER_MIGRATIONS
+        .iter()
+        .any(|migration| !applied.contains(*migration)))
+}
+
+async fn ensure_no_other_database_clients(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    let mut connection = pool.acquire().await?;
+    let application_name: String = sqlx::query_scalar("SELECT current_setting('application_name')")
+        .fetch_one(&mut *connection)
+        .await?;
+    if !application_name.starts_with("rsctf:") {
+        anyhow::bail!(
+            "exclusive migration cutover requires rsctf's process-unique PostgreSQL application_name"
+        );
+    }
+    let other_clients: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)::bigint
+             FROM pg_stat_activity other
+            WHERE other.datid = (
+                    SELECT oid FROM pg_database
+                     WHERE datname = current_database()
+                  )
+              AND other.pid <> pg_backend_pid()
+              AND other.usesysid IS NOT NULL
+              AND other.application_name IS DISTINCT FROM $1"#,
+    )
+    .bind(&application_name)
+    .fetch_one(&mut *connection)
+    .await?;
+    if other_clients != 0 {
+        anyhow::bail!(
+            "exclusive schema cutover refused: found {other_clients} other PostgreSQL client session(s) in this database; scale every rsctf runtime role to zero and drain PgBouncer, monitors, and administrative sessions before retrying the migration job"
+        );
+    }
+    Ok(())
+}
+
+/// Enforce the stop-the-world boundary required by m0089..m0091 before the
+/// migrator issues any DDL. Migration-job retries force the check even after
+/// the ledger committed because keyed post-migration bootstrap still belongs
+/// to the same cutover. Deployment prevents reconnects after this point.
+pub async fn ensure_exclusive_cutover_ready(
+    db: &DatabaseConnection,
+    force: bool,
+) -> anyhow::Result<()> {
+    if force || exclusive_cutover_is_pending(db).await? {
+        ensure_no_other_database_clients(db.get_postgres_connection_pool()).await?;
+    }
+    Ok(())
 }
 
 /// Verify that the database migration ledger exactly matches this binary.
@@ -255,7 +332,12 @@ fn migration_ledger_diff(expected: &[String], applied: &[String]) -> (Vec<String
 
 #[cfg(test)]
 mod tests {
-    use super::migration_ledger_diff;
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    use sqlx::{ConnectOptions as _, Connection as _};
+
+    use super::{ensure_no_other_database_clients, migration_ledger_diff};
 
     #[test]
     fn migration_ledger_requires_an_exact_version_set() {
@@ -271,5 +353,102 @@ mod tests {
             migration_ledger_diff(&expected, &applied),
             (vec!["m0002".to_owned()], vec!["m9999".to_owned()])
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL administrator via RSCTF_TEST_DATABASE_URL"]
+    async fn exclusive_cutover_allows_own_pool_but_rejects_an_old_client() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let role_name = format!("rsctf_cutover_{suffix}");
+        let database_name = role_name.clone();
+        let password = uuid::Uuid::new_v4().simple().to_string();
+        assert!(role_name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'));
+
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        sqlx::query(&format!(
+            r#"CREATE ROLE "{role_name}" LOGIN PASSWORD '{password}' NOSUPERUSER"#
+        ))
+        .execute(&admin)
+        .await
+        .unwrap();
+        sqlx::query(&format!(
+            r#"CREATE DATABASE "{database_name}" OWNER "{role_name}""#
+        ))
+        .execute(&admin)
+        .await
+        .unwrap();
+
+        let process_application_name = format!("rsctf:migrate:test:{suffix}");
+        let process_options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .database(&database_name)
+            .username(&role_name)
+            .password(&password)
+            .application_name(&process_application_name)
+            .disable_statement_logging();
+        let process_pool = PgPoolOptions::new()
+            .min_connections(2)
+            .max_connections(2)
+            .connect_with(process_options)
+            .await
+            .unwrap();
+        let is_superuser: bool =
+            sqlx::query_scalar("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+                .fetch_one(&process_pool)
+                .await
+                .unwrap();
+        assert!(!is_superuser);
+        ensure_no_other_database_clients(&process_pool)
+            .await
+            .expect("both own baseline connections share one process identity");
+
+        let own_sessions: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)::bigint FROM pg_stat_activity
+                WHERE datname = current_database() AND application_name = $1"#,
+        )
+        .bind(&process_application_name)
+        .fetch_one(&process_pool)
+        .await
+        .unwrap();
+        assert_eq!(own_sessions, 2);
+
+        let old_options = PgConnectOptions::from_str(&database_url)
+            .unwrap()
+            .database(&database_name)
+            .username(&role_name)
+            .password(&password)
+            .application_name("legacy-rsctf-web")
+            .disable_statement_logging();
+        let old_connection = sqlx::PgConnection::connect_with(&old_options)
+            .await
+            .unwrap();
+        let blocked = ensure_no_other_database_clients(&process_pool)
+            .await
+            .expect_err("a different application name in the same database must block");
+        assert!(blocked
+            .to_string()
+            .contains("found 1 other PostgreSQL client"));
+        old_connection.close().await.unwrap();
+        ensure_no_other_database_clients(&process_pool)
+            .await
+            .expect("disconnecting the old client clears the cutover fence");
+
+        process_pool.close().await;
+        sqlx::query(&format!(r#"DROP DATABASE "{database_name}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        sqlx::query(&format!(r#"DROP ROLE "{role_name}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }

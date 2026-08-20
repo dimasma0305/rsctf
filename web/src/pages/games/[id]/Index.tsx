@@ -34,10 +34,12 @@ import { GameProgress } from '@Components/GameProgress'
 import { Markdown } from '@Components/MarkdownRenderer'
 import { WithNavBar } from '@Components/WithNavbar'
 import { useLanguage } from '@Utils/I18n'
+import { encryptApiData } from '@Utils/Crypto'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { getGameStatus, useGame } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
+import { useConfig } from '@Hooks/useConfig'
 import { useTeams, useUser } from '@Hooks/useUser'
 import api, { GameJoinModel, ParticipationStatus } from '@Api'
 import classes from '@Styles/GameDetail.module.css'
@@ -100,6 +102,7 @@ const GameDetail: FC = () => {
   const { startTime, endTime, finished, started, progress, status: gameStatus } = getGameStatus(game)
 
   const { locale } = useLanguage()
+  const { config } = useConfig()
 
   const { user } = useUser()
   const { teams } = useTeams()
@@ -132,7 +135,25 @@ const GameDetail: FC = () => {
     try {
       if (!numId) return
 
-      await api.game.gameJoinGame(numId, info)
+      const identity = config.enableBrowserFingerprint
+        ? await (async () => {
+            const challengeResponse = await api.account.accountFingerprintChallenge()
+            const challenge = challengeResponse.data.data
+            if (!challenge?.nonce || !challenge.requiredSignals) {
+              throw new Error('Invalid fingerprint challenge')
+            }
+            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
+            const payload = await getFingerprintPayload({
+              nonce: challenge.nonce,
+              requiredSignals: challenge.requiredSignals,
+            })
+            return {
+              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
+              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
+            }
+          })()
+        : {}
+      await api.game.gameJoinGame(numId, { ...info, ...identity })
       showNotification({
         color: 'teal',
         message: t('game.notification.joined'),

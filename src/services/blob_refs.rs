@@ -17,6 +17,8 @@ mod challenges;
 #[cfg(test)]
 mod poster_tests;
 mod seaorm;
+#[cfg(test)]
+mod test_support;
 mod writeups;
 pub use ad_snapshots::{
     available_service_snapshots, load_service_snapshot, purge_expired_service_snapshots,
@@ -383,83 +385,12 @@ pub async fn purge_pending(pool: &PgPool, storage: &dyn BlobStorage, limit: i64)
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::{CoordinatedStorage, FailingDeleteStorage};
     use super::*;
     use crate::utils::enums::{ParticipationStatus, Role};
-    use async_trait::async_trait;
     use sqlx::postgres::PgPoolOptions;
-    use std::collections::HashSet;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::Notify;
-
-    #[derive(Default)]
-    struct CoordinatedStorage {
-        blobs: Mutex<HashSet<String>>,
-        stores: AtomicUsize,
-        delete_started: Notify,
-        allow_delete: Notify,
-    }
-
-    struct FailingDeleteStorage;
-
-    #[async_trait]
-    impl BlobStorage for FailingDeleteStorage {
-        async fn store(&self, _name: &str, _bytes: &[u8]) -> AppResult<StoredBlob> {
-            Err(AppError::internal("not used"))
-        }
-
-        async fn load(&self, _hash: &str) -> AppResult<Vec<u8>> {
-            Err(AppError::not_found("blob not found"))
-        }
-
-        async fn delete(&self, _hash: &str) -> AppResult<()> {
-            Err(AppError::internal("simulated storage delete failure"))
-        }
-
-        async fn exists(&self, _hash: &str) -> bool {
-            true
-        }
-    }
-
-    impl CoordinatedStorage {
-        fn seed(&self, hash: String) {
-            self.blobs.lock().unwrap().insert(hash);
-        }
-    }
-
-    #[async_trait]
-    impl BlobStorage for CoordinatedStorage {
-        async fn store(&self, name: &str, bytes: &[u8]) -> AppResult<StoredBlob> {
-            let hash = sha256_hex(bytes);
-            self.stores.fetch_add(1, Ordering::SeqCst);
-            self.blobs.lock().unwrap().insert(hash.clone());
-            Ok(StoredBlob {
-                hash,
-                size: bytes.len() as i64,
-                name: name.to_string(),
-            })
-        }
-
-        async fn load(&self, hash: &str) -> AppResult<Vec<u8>> {
-            self.blobs
-                .lock()
-                .unwrap()
-                .contains(hash)
-                .then(Vec::new)
-                .ok_or_else(|| AppError::not_found("blob not found"))
-        }
-
-        async fn delete(&self, hash: &str) -> AppResult<()> {
-            self.delete_started.notify_one();
-            self.allow_delete.notified().await;
-            self.blobs.lock().unwrap().remove(hash);
-            Ok(())
-        }
-
-        async fn exists(&self, hash: &str) -> bool {
-            self.blobs.lock().unwrap().contains(hash)
-        }
-    }
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
 
     #[test]
     fn acquisition_is_an_atomic_conflict_increment() {
@@ -504,9 +435,17 @@ mod tests {
               writeup_deadline TIMESTAMPTZ NOT NULL
             );
             CREATE TABLE "Teams" (
-              id INTEGER PRIMARY KEY, deletion_pending BOOLEAN NOT NULL
+              id INTEGER PRIMARY KEY, captain_id UUID NOT NULL,
+              deletion_pending BOOLEAN NOT NULL
             );
-            CREATE TABLE "AspNetUsers" (id UUID PRIMARY KEY, role SMALLINT NOT NULL);
+            CREATE TABLE "TeamMembers" (
+              team_id INTEGER NOT NULL, user_id UUID NOT NULL,
+              PRIMARY KEY (team_id, user_id)
+            );
+            CREATE TABLE "AspNetUsers" (
+              id UUID PRIMARY KEY, role SMALLINT NOT NULL,
+              email_confirmed BOOLEAN NOT NULL, security_stamp TEXT
+            );
             CREATE TABLE "Files" (
               id SERIAL PRIMARY KEY, hash TEXT NOT NULL UNIQUE,
               upload_time_utc TIMESTAMPTZ NOT NULL, file_size BIGINT NOT NULL,
@@ -522,7 +461,12 @@ mod tests {
             );
             CREATE TABLE "UserParticipations" (
               user_id UUID NOT NULL, game_id INTEGER NOT NULL,
-              participation_id INTEGER NOT NULL
+              team_id INTEGER NOT NULL, participation_id INTEGER NOT NULL
+            );
+            CREATE TABLE "IdentityObservations" (
+              user_id UUID NOT NULL, game_id INTEGER,
+              team_id INTEGER, participation_id INTEGER,
+              observed_at_utc TIMESTAMPTZ NOT NULL
             );
             "#,
         )
@@ -538,11 +482,12 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query(r#"INSERT INTO "Teams" VALUES (2, FALSE)"#)
+        sqlx::query(r#"INSERT INTO "Teams" VALUES (2, $1, FALSE)"#)
+            .bind(user_id)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query(r#"INSERT INTO "AspNetUsers" VALUES ($1, $2)"#)
+        sqlx::query(r#"INSERT INTO "AspNetUsers" VALUES ($1, $2, TRUE, 'stamp')"#)
             .bind(user_id)
             .bind(Role::User as i16)
             .execute(&pool)
@@ -553,18 +498,74 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query(r#"INSERT INTO "UserParticipations" VALUES ($1, 1, 3)"#)
+        sqlx::query(r#"INSERT INTO "UserParticipations" VALUES ($1, 1, 2, 3)"#)
             .bind(user_id)
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "IdentityObservations"
+                 (user_id, game_id, team_id, participation_id, observed_at_utc)
+               VALUES ($1, 1, 2, 3, clock_timestamp())"#,
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let storage = Arc::new(CoordinatedStorage::default());
+        sqlx::query(r#"UPDATE "AspNetUsers" SET security_stamp = 'rotated' WHERE id = $1"#)
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(store_and_replace_writeup(
+            &pool,
+            storage.as_ref(),
+            1,
+            3,
+            2,
+            user_id,
+            "stamp",
+            "writeup.pdf",
+            b"%PDF-1.7",
+        )
+        .await
+        .is_err());
+        sqlx::query(
+            r#"UPDATE "AspNetUsers"
+                  SET security_stamp = 'stamp', email_confirmed = FALSE
+                WHERE id = $1"#,
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(store_and_replace_writeup(
+            &pool,
+            storage.as_ref(),
+            1,
+            3,
+            2,
+            user_id,
+            "stamp",
+            "writeup.pdf",
+            b"%PDF-1.7",
+        )
+        .await
+        .is_err());
+        sqlx::query(r#"UPDATE "AspNetUsers" SET email_confirmed = TRUE WHERE id = $1"#)
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(storage.stores.load(Ordering::SeqCst), 0);
 
         let mut deletion = pool.begin().await.unwrap();
         sqlx::query(r#"UPDATE "Games" SET deletion_pending = TRUE WHERE id = 1"#)
             .execute(&mut *deletion)
             .await
             .unwrap();
-        let storage = Arc::new(CoordinatedStorage::default());
         let mut upload = tokio::spawn({
             let pool = pool.clone();
             let storage = Arc::clone(&storage);
@@ -574,7 +575,9 @@ mod tests {
                     storage.as_ref(),
                     1,
                     3,
+                    2,
                     user_id,
+                    "stamp",
                     "writeup.pdf",
                     b"%PDF-1.7",
                 )

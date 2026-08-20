@@ -5,6 +5,121 @@
 > database state at the time of each run; those games are no longer visible in
 > the live platform.
 
+> Anti-cheat contract status (15 August 2026): historical drill sections below
+> predate the raw-only honeypot attribution policy. `HoneypotHit`,
+> `HoneypotProtocolHit`, and `HoneypotChain` are now telemetry-only Context/0
+> kinds. Current schema-v4 drills retain three authenticated raw rows with null
+> game/participation attribution and require zero honeypot outbox jobs,
+> suspicion events, or report score. Their current cohort is five
+> offenders plus 95 clean controls; older six/94 and honeypot-score figures are
+> historical results, not acceptance expectations.
+
+## Immutable anti-cheat ledger fixed-rate acceptance — 20 August 2026
+
+The anti-cheat integrity release was measured against the deployed v0.1.44
+binary and the optimized release candidate on two independent PostgreSQL 18
+clones of the same read-only production snapshot. The before clone remained at
+migration 88; the after clone applied migrations 89–91 through the migration
+role. Both clones then received the same benchmark-only projection: 1,000
+disposable authenticated identities, 100 additional teams, one Jeopardy and
+one KotH challenge, and the snapshot's real 8,716-round KotH history. A&D
+scoring was explicitly unstarted because the source snapshot contained no
+completed A&D rollup. No request or fixture write reached production.
+
+The deployed binary SHA-256 was
+`36971232dac5bcc9c8734f4b7bbf70f7fcc8204ffc0e5d05aece84a22a705cf7`;
+the candidate binary SHA-256 was
+`8b8de171cbb5a6ec166925e4fb7dfa4a2b2e0fa5cec5890648cf7d8edcfb3ffc`.
+Each optimized web process was pinned to CPU 6, while Node/k6 was pinned to CPU
+7 and the disposable PostgreSQL/Redis containers to CPUs 0–5. After an
+identical 15-second warmup, the existing six-endpoint polled-read harness held
+300 requests/s for 60 seconds with 1,000 rotating sessions. Both processes
+returned exact `ok` liveness before and after their run.
+
+Both sides completed 18,001 requests with zero dropped arrivals, non-200s,
+5xx, rate limits, authentication failures, invalid combined boards, or
+uncompressed combined responses. All values below are milliseconds.
+
+| Aggregate | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| Observed request rate | 299.968/s | 299.971/s | held rate |
+| Latency average | 10.596 | 8.147 | −23.1% |
+| Latency p50 | 6.076 | 4.110 | −32.4% |
+| Latency p90 | 19.761 | 13.951 | −29.4% |
+| Latency p95 | 29.601 | 22.858 | −22.8% |
+| Latency p99 | 106.053 | 98.435 | −7.2% |
+| Latency maximum | 272.950 | 234.324 | −14.2% |
+| Server CPU average | 32.471% | 29.477% | −9.2% |
+| Server RSS average | 64.535 MiB | 69.171 MiB | +4.636 MiB |
+| Server RSS maximum | 67.074 MiB | 71.473 MiB | +4.399 MiB |
+
+### Before endpoint distribution
+
+| Endpoint | avg | p50 | p90 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Game catalog | 8.298 | 5.539 | 16.488 | 22.672 | 43.550 | 150.619 |
+| Jeopardy board | 8.742 | 5.681 | 17.956 | 23.922 | 49.551 | 157.396 |
+| A&D board | 8.448 | 5.870 | 16.814 | 21.757 | 50.498 | 232.954 |
+| KotH board | 13.862 | 6.423 | 24.683 | 47.373 | 141.678 | 272.950 |
+| Combined board | 11.517 | 7.109 | 23.082 | 34.362 | 86.077 | 243.251 |
+| KotH timeline | 12.718 | 6.276 | 23.702 | 43.095 | 129.632 | 245.591 |
+
+### After endpoint distribution
+
+| Endpoint | avg | p50 | p90 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Game catalog | 7.235 | 4.006 | 12.116 | 18.825 | 85.997 | 208.760 |
+| Jeopardy board | 6.948 | 4.022 | 13.531 | 21.044 | 50.388 | 130.496 |
+| A&D board | 7.274 | 3.817 | 13.088 | 17.839 | 101.160 | 173.508 |
+| KotH board | 9.476 | 4.284 | 15.916 | 30.725 | 112.344 | 230.299 |
+| Combined board | 9.007 | 4.298 | 15.809 | 26.368 | 101.328 | 234.324 |
+| KotH timeline | 8.945 | 4.305 | 13.915 | 27.911 | 108.841 | 203.777 |
+
+<details>
+<summary>Fixed-rate server CPU/RSS time series (30 two-second samples)</summary>
+
+| Sample | Before CPU | Before MiB | After CPU | After MiB |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 14.50% | 64.590 | 18.00% | 68.660 |
+| 2 | 30.50% | 62.996 | 33.00% | 67.902 |
+| 3 | 38.00% | 63.484 | 30.00% | 68.527 |
+| 4 | 37.81% | 63.512 | 28.50% | 68.633 |
+| 5 | 34.00% | 63.355 | 25.00% | 68.320 |
+| 6 | 28.00% | 63.941 | 28.00% | 69.172 |
+| 7 | 36.00% | 64.051 | 28.50% | 68.762 |
+| 8 | 28.00% | 63.980 | 32.00% | 69.426 |
+| 9 | 35.00% | 64.156 | 27.50% | 71.473 |
+| 10 | 34.50% | 62.367 | 28.00% | 68.676 |
+| 11 | 33.50% | 64.859 | 26.00% | 69.301 |
+| 12 | 32.50% | 64.410 | 26.50% | 69.277 |
+| 13 | 26.00% | 64.348 | 28.50% | 68.711 |
+| 14 | 34.50% | 64.973 | 27.00% | 69.379 |
+| 15 | 31.00% | 64.438 | 27.00% | 68.410 |
+| 16 | 28.50% | 64.938 | 28.00% | 68.410 |
+| 17 | 34.50% | 65.062 | 29.00% | 69.160 |
+| 18 | 33.50% | 65.062 | 25.50% | 68.984 |
+| 19 | 28.00% | 65.020 | 26.00% | 69.484 |
+| 20 | 30.50% | 64.543 | 31.50% | 69.668 |
+| 21 | 31.00% | 63.992 | 34.50% | 69.438 |
+| 22 | 32.50% | 64.750 | 40.80% | 69.551 |
+| 23 | 34.50% | 64.672 | 33.00% | 69.492 |
+| 24 | 33.50% | 66.133 | 28.00% | 70.242 |
+| 25 | 35.32% | 67.074 | 35.00% | 70.305 |
+| 26 | 34.50% | 65.340 | 30.00% | 68.934 |
+| 27 | 36.00% | 65.215 | 31.00% | 69.105 |
+| 28 | 37.50% | 64.633 | 34.00% | 69.125 |
+| 29 | 35.50% | 64.828 | 34.00% | 68.949 |
+| 30 | 35.00% | 65.328 | 30.50% | 69.668 |
+
+</details>
+
+This is a correctness and security acceptance comparison, not a causal
+optimization claim: migrations, authorization fences, immutable ledgers, and
+reporting behavior changed together. It therefore adds no optimization-ledger
+row. The same-rate observation establishes that the release does not regress
+the dominant polling workload; the lower CPU/latency sample is retained as
+measured data, while the bounded 4.6 MiB RSS increase is explicitly recorded.
+
 ## Locked challenge-budget Overall scoring — 13 August 2026
 
 Overall scoring now gives every enabled, approved challenge one fixed budget
@@ -4048,8 +4163,8 @@ nonterminal cycles.
 
 ### Integrated anti-cheat drill
 
-The drill ran during normal play at 45 percent progress. Its run-bound schema-v3 artifact
-contains exactly six intended offenders and 94 clean controls, with all 14 semantic
+The drill ran during normal play at 45 percent progress. Its run-bound schema-v4 artifact
+contains exactly six intended offenders and 94 clean controls, with all 16 semantic
 integrity checks true. It exercised four stolen-flag actors, 40 distinct brute-force wrong
 answers, and three honeypot baits. The checkpoint contained six suspicion rows and no
 clean-control context finding. At capture time, the post-run database contained 12

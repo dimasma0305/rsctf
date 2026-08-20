@@ -84,6 +84,100 @@ impl MembershipMutationLocks {
     }
 }
 
+/// Authoritatively remove a pending/rejected game registration while the
+/// caller retains the ordered user + roster mutation transaction.
+///
+/// `UserParticipations` doubles as durable actor attribution for competition
+/// evidence. It may therefore be removed only for a current, live roster
+/// member whose exact authenticated account is still valid and whose
+/// participation has never accumulated evidence.
+pub(super) async fn leave_game_membership_locked(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    expected_security_stamp: &str,
+    game_id: i32,
+    expected_team_id: i32,
+    expected_participation_id: i32,
+) -> AppResult<()> {
+    crate::services::anti_cheat::lock_live_request_account(
+        transaction,
+        user_id,
+        expected_security_stamp,
+    )
+    .await?;
+
+    let live: Option<(i32, i32, i16)> = sqlx::query_as(
+        r#"SELECT participation.id, participation.team_id, participation.status
+              FROM "UserParticipations" membership
+              JOIN "Participations" participation
+                ON participation.id = membership.participation_id
+             WHERE membership.user_id = $1 AND membership.game_id = $2
+             FOR UPDATE OF membership, participation"#,
+    )
+    .bind(user_id)
+    .bind(game_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((participation_id, team_id, status)) = live else {
+        return Err(AppError::bad_request(
+            "Cannot leave a game you have not joined",
+        ));
+    };
+    if participation_id != expected_participation_id || team_id != expected_team_id {
+        return Err(AppError::conflict(
+            "Participation changed; retry the request",
+        ));
+    }
+
+    if !crate::services::live_roster::participation_caller_is_live_on(
+        &mut **transaction,
+        user_id,
+        expected_security_stamp,
+        game_id,
+        team_id,
+        participation_id,
+        false,
+    )
+    .await?
+    {
+        return Err(AppError::Forbidden);
+    }
+    if status != ParticipationStatus::Pending as i16
+        && status != ParticipationStatus::Rejected as i16
+    {
+        return Err(AppError::bad_request("Cannot leave after approval"));
+    }
+    if crate::services::participation_evidence::has_competition_evidence(
+        &mut **transaction,
+        participation_id,
+    )
+    .await?
+    {
+        return Err(AppError::bad_request(
+            "Cannot leave after competition evidence has been recorded",
+        ));
+    }
+
+    sqlx::query(
+        r#"DELETE FROM "UserParticipations"
+            WHERE user_id = $1 AND game_id = $2 AND participation_id = $3"#,
+    )
+    .bind(user_id)
+    .bind(game_id)
+    .bind(participation_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+
+    crate::services::participation_evidence::delete_unlinked_pending_or_rejected_without_evidence(
+        &mut **transaction,
+        participation_id,
+    )
+    .await?;
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct ExistingTeamParticipation {
     pub(super) status: i16,
@@ -201,7 +295,9 @@ pub(super) async fn resolve_join_policy_locked(
              FROM "Games" game
              LEFT JOIN "Divisions" division
                ON division.game_id = game.id AND division.id = $2
-            WHERE game.id = $1"#,
+            WHERE game.id = $1
+              AND game.deletion_pending = FALSE
+              FOR SHARE OF game"#,
     )
     .bind(game_id)
     .bind(requested_division_id)
@@ -330,18 +426,10 @@ pub(super) async fn persist_game_join_locked(
         ));
     }
 
-    // Also repair a legacy dangling link. A valid non-rejected link was rejected
-    // above; a valid rejected one is deliberately replaced below.
-    sqlx::query(
-        r#"DELETE FROM "UserParticipations"
-            WHERE user_id = $1 AND game_id = $2"#,
-    )
-    .bind(mutation.user_id)
-    .bind(mutation.game_id)
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-
+    // Resolve and lock the destination before deciding whether the historical
+    // rejected link can be replaced. An evidence-bearing link is durable actor
+    // attribution: it may be reused by the same participation, but it can never
+    // be detached so the account can register through a different team.
     let existing = sqlx::query_as::<_, (i32, i16, Option<i32>)>(
         r#"SELECT id, status, division_id
               FROM "Participations"
@@ -355,6 +443,22 @@ pub(super) async fn persist_game_join_locked(
     .fetch_optional(&mut **transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+
+    let reuses_historical_link = rejected_participation_id
+        .zip(existing.as_ref().map(|(id, _, _)| *id))
+        .is_some_and(|(historical_id, target_id)| historical_id == target_id);
+    if let Some(historical_id) = rejected_participation_id.filter(|_| !reuses_historical_link) {
+        if crate::services::participation_evidence::has_competition_evidence(
+            &mut **transaction,
+            historical_id,
+        )
+        .await?
+        {
+            return Err(AppError::bad_request(
+                "Cannot join another team after competition evidence has been recorded",
+            ));
+        }
+    }
 
     let (part_id, persisted_status) = match existing {
         Some((id, status, current_division_id))
@@ -406,6 +510,26 @@ pub(super) async fn persist_game_join_locked(
             (id, mutation.target_status)
         }
     };
+
+    if reuses_historical_link {
+        return Ok(PersistedGameJoin {
+            participation_id: part_id,
+            status: persisted_status,
+        });
+    }
+
+    // Also repair a legacy dangling rejected link, but only after the exact
+    // destination and the absence of durable evidence were established above.
+    // The transaction rolls this removal back if the replacement insert fails.
+    sqlx::query(
+        r#"DELETE FROM "UserParticipations"
+            WHERE user_id = $1 AND game_id = $2"#,
+    )
+    .bind(mutation.user_id)
+    .bind(mutation.game_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
 
     if mutation.member_limit > 0 {
         let member_count: i64 = sqlx::query_scalar(
@@ -462,3 +586,7 @@ pub(super) async fn persist_game_join_locked(
 #[cfg(test)]
 #[path = "membership_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "membership_leave_tests.rs"]
+mod leave_tests;

@@ -14,6 +14,17 @@ fn unban_requires_prior_shared_revocation(current: Role, requested: Option<Role>
     current == Role::Banned && requested.is_some_and(|role| role != Role::Banned)
 }
 
+fn email_change_requires_stamp_rotation(
+    current_normalized_email: Option<&str>,
+    requested_email: Option<&str>,
+) -> bool {
+    requested_email
+        .map(str::trim)
+        .filter(|email| !email.is_empty())
+        .map(|email| email.to_uppercase())
+        .is_some_and(|email| current_normalized_email != Some(email.as_str()))
+}
+
 fn account_lifecycle_key(user_id: Uuid) -> String {
     format!("account-lifecycle:{user_id}")
 }
@@ -204,8 +215,13 @@ pub async fn update_user(
     // Repeating an already-banned update is the retry path when an earlier
     // external VPN/BYOC teardown failed after the role change committed.
     let revoke_shared = role_request_requires_shared_revocation(model.role);
-    let rotate_stamp = role_change_requires_stamp_rotation(target.role, model.role);
     let original_normalized_email = target.normalized_email.clone();
+    let rotate_stamp = role_change_requires_stamp_rotation(target.role, model.role)
+        || (target.email_confirmed && model.email_confirmed == Some(false))
+        || email_change_requires_stamp_rotation(
+            original_normalized_email.as_deref(),
+            model.email.as_deref(),
+        );
     let mut credential_email_to_invalidate = None;
 
     let mut am: user::ActiveModel = target.into();
@@ -409,6 +425,22 @@ mod tests {
         assert!(role_request_requires_shared_revocation(Some(Role::Banned)));
         assert!(!role_request_requires_shared_revocation(Some(Role::User)));
         assert!(!role_request_requires_shared_revocation(None));
+    }
+
+    #[test]
+    fn effective_email_reassignment_rotates_the_session_stamp() {
+        assert!(email_change_requires_stamp_rotation(
+            Some("OLD@EXAMPLE.TEST"),
+            Some("new@example.test")
+        ));
+        assert!(!email_change_requires_stamp_rotation(
+            Some("SAME@EXAMPLE.TEST"),
+            Some(" same@example.test ")
+        ));
+        assert!(!email_change_requires_stamp_rotation(
+            Some("OLD@EXAMPLE.TEST"),
+            Some("  ")
+        ));
     }
 
     #[test]

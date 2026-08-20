@@ -12,6 +12,7 @@ metadata:
   name: {{ include "rsctf.fullname" . }}
   labels:
     {{- include "rsctf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.runtimeRole | quote }}
 spec:
   replicas: {{ .Values.replicaCount }}
   strategy:
@@ -52,7 +53,7 @@ spec:
       {{- end }}
       containers:
         - name: rsctf
-          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          image: {{ include "rsctf.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -99,6 +100,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "rsctf.secretName" . }}
                   key: {{ .Values.existingSecret.jwtSecretKey }}
+            - name: RSCTF_IDENTITY_HASH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.identityHashKey }}
             - name: RSCTF_BOOTSTRAP_TOKEN
               valueFrom:
                 secretKeyRef:

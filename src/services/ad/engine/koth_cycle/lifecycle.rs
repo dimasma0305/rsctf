@@ -385,6 +385,7 @@ async fn create_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()>
             cpu_count: spec.cpu_count,
             expose_port: spec.expose_port,
             publish_port: true,
+            proxy_only: false,
             env: Vec::new(),
             flag: None,
             ad_network: Some(crate::services::ad_vpn::services_network()),

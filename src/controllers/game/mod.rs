@@ -6,11 +6,12 @@
 //! participations, scoreboard, join, the challenge view, flag SUBMISSION (judged
 //! synchronously here — rsctf has no background channel worker, so the logic of
 //! `GameInstanceRepository.VerifyAnswer` runs inline in `submit`), submission
-//! status, and container lifecycle. Cheat / traffic-capture / writeup routes are
-//! registered and return well-typed empty payloads — those belong to the
-//! cheat-detection and traffic subsystems, not yet ported.
+//! status, container lifecycle, immutable cheat evidence/reporting, traffic
+//! capture, and writeups.
 
 pub mod ad;
+mod cheat_capabilities;
+mod cheat_identity;
 pub mod koth;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -37,7 +38,7 @@ use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser, Monit
 use crate::models::data::{
     attachment, challenge_review, container, division, division_challenge_config, flag_context,
     game, game_challenge, game_event, game_instance, game_manager, game_notice, local_file,
-    participation, submission, suspicion_event, team, team_member, user, user_participation,
+    participation, submission, team, team_member, user, user_participation,
 };
 use crate::services::container::ContainerSpec;
 use crate::utils::crypto_utils::ct_eq;
@@ -417,17 +418,31 @@ pub struct BasicWriteupInfoModel {
     pub note: String,
 }
 
-/// RSCTF `CheatReport` (cheat-detection subsystem — empty until ported).
+/// Monitor-facing cheat report assembled from immutable evidence and persisted
+/// detector results.
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CheatReport {
     #[serde(with = "crate::utils::datetime::millis")]
     pub generated_at: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub evidence_closed_at: Option<DateTime<Utc>>,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub last_reconciled_at: Option<DateTime<Utc>>,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub sealed_at: Option<DateTime<Utc>>,
+    pub pending_jobs: i64,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub oldest_pending_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
     pub ip_analysis: Vec<Json>,
     pub abnormal_solves: Vec<Json>,
     pub collusion_groups: Vec<Json>,
     pub suspicion_list: Vec<Json>,
     pub identity_overlaps: Vec<Json>,
+    /// Backward-compatible inventory of which stable rule codes have active,
+    /// background, telemetry-only, or no production implementation.
+    pub detector_capabilities: Vec<Json>,
 }
 
 /// RSCTF `CollusionCompareResult`.
@@ -495,6 +510,10 @@ pub struct GameJoinModel {
     pub division_id: Option<i32>,
     #[serde(default)]
     pub invite_code: Option<String>,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub fingerprint_proof: Option<String>,
 }
 
 /// RSCTF `FlagSubmitModel`.
@@ -633,7 +652,7 @@ async fn context_info(
 ) -> AppResult<ContextInfo> {
     let game = load_game_cached(st, game_id).await?;
 
-    let part = find_participation(st, user.id, game_id)
+    let part = find_participation(st, user, game_id)
         .await?
         .ok_or_else(|| AppError::bad_request("Not participating in this game"))?;
 
@@ -911,38 +930,10 @@ pub(crate) async fn load_game_cached(st: &SharedState, id: i32) -> AppResult<gam
 /// submit; participation mutations explicitly invalidate its five-second TTL.
 async fn find_participation(
     st: &SharedState,
-    user_id: Uuid,
+    user: &CurrentUser,
     game_id: i32,
 ) -> AppResult<Option<participation::Model>> {
-    let key = crate::controllers::game::ad::participation_cache_key(user_id, game_id);
-    if let Some(bytes) = st.cache.get(&key).await {
-        if let Ok(p) = serde_json::from_slice::<participation::Model>(&bytes) {
-            if p.status == ParticipationStatus::Accepted {
-                return Ok(Some(p));
-            }
-        }
-    }
-    let Some(link) = user_participation::Entity::find_by_id((user_id, game_id))
-        .one(&st.db)
-        .await?
-    else {
-        return Ok(None);
-    };
-    let part = participation::Entity::find_by_id(link.participation_id)
-        .one(&st.db)
-        .await?;
-    // Only cache an accepted participation (matches `resolve_participation`), so the cache
-    // can never weaken a status gate — a pending/removed one is always read fresh.
-    if let Some(ref p) = part {
-        if p.status == ParticipationStatus::Accepted {
-            if let Ok(j) = serde_json::to_vec(p) {
-                st.cache
-                    .set(&key, &j, Some(std::time::Duration::from_secs(5)))
-                    .await;
-            }
-        }
-    }
-    Ok(part)
+    crate::controllers::game::ad::find_live_participation(st, user, game_id).await
 }
 
 /// Per-team scoreboard token: `{teamId}:Ed25519(privateKey, "RSCTF_TEAM_{teamId}")`.
@@ -952,7 +943,7 @@ fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
     Ok(format!("{team_id}:{signature}"))
 }
 
-mod cheat;
+pub(crate) mod cheat;
 mod combined_scoreboard;
 mod containers;
 mod lookups;

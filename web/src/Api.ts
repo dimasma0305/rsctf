@@ -1159,13 +1159,33 @@ export interface CollusionCompareResult {
 
 export interface CheatReport {
   /** @format uint64 */
-  generatedAt?: number;
-  ipAnalysis?: IpAnalysisResult[];
-  abnormalSolves?: AbnormalSolveResult[];
+  generatedAt: number;
+  /** Persisted time of the last successful detector reconciliation. */
+  lastReconciledAt?: number | null;
+  /** Time competitive evidence intake was durably closed. */
+  evidenceClosedAt?: number | null;
+  /** Time the immutable final detector snapshot completed. */
+  sealedAt?: number | null;
+  /** In-window evaluation jobs that can still change this report. */
+  pendingJobs?: number;
+  /** @format uint64 */
+  oldestPendingAt?: number | null;
+  /** Last detector reconciliation failure, when present. */
+  lastError?: string | null;
+  ipAnalysis: IpAnalysisResult[];
+  abnormalSolves: AbnormalSolveResult[];
+  collusionGroups: CollusionGroupResult[];
+  suspicionList: SuspicionRecordResult[];
+  identityOverlaps: IdentityOverlapResult[];
+  /** Detector inventory is optional for rolling compatibility. */
+  detectorCapabilities?: DetectorCapability[];
+}
 
-  collusionGroups?: CollusionGroupResult[];
-  suspicionList?: SuspicionRecordResult[];
-  identityOverlaps?: IdentityOverlapResult[];
+export interface DetectorCapability {
+  code: string;
+  status: "active" | "background" | "telemetryOnly" | "unimplemented";
+  scope: "allGames" | "jeopardy" | "jeopardyContainers" | "platform";
+  detail?: string;
 }
 
 export interface SuspicionRecordResult {
@@ -1191,9 +1211,13 @@ export interface SuspicionRecordResult {
 }
 
 export interface SuspicionEventResult {
+  /** Stable persisted event identifier, when supplied by the server. */
+  eventId?: number | null;
   type?: string;
   /** @format int32 */
   scoreDelta?: number;
+  /** Actual contribution after incident and tier caps. @format int32 */
+  appliedDelta?: number;
   details?: string;
   /** @format uint64 */
   time?: number;
@@ -1241,10 +1265,10 @@ export interface AbnormalSolveResult {
 
 export interface SequenceSuspectDetail {
   challengeName?: string | null;
-  /** @format date-time */
-  timeA?: string;
-  /** @format date-time */
-  timeB?: string;
+  /** Unix milliseconds. @format uint64 */
+  timeA?: number;
+  /** Unix milliseconds. @format uint64 */
+  timeB?: number;
   /** @format double */
   timeDiff?: number;
 }
@@ -2674,6 +2698,10 @@ export interface GameJoinModel {
   divisionId?: number | null;
   /** Invitation code for participation */
   inviteCode?: string | null;
+  /** Encrypted browser fingerprint when collection is enabled. */
+  fingerprint?: string | null;
+  /** Encrypted one-time proof bound to the fingerprint challenge. */
+  fingerprintProof?: string | null;
 }
 
 /** Scoreboard */
@@ -2946,11 +2974,11 @@ export interface Submission {
 /** Cheat behavior information */
 export interface CheatInfoModel {
   /** Team owning the flag */
-  ownedTeam?: ParticipationModel;
+  ownedTeam: ParticipationModel;
   /** Team submitting the flag */
-  submitTeam?: ParticipationModel;
+  submitTeam: ParticipationModel;
   /** Submission corresponding to this cheating behavior */
-  submission?: Submission;
+  submission: Submission & { answer: string; status: AnswerResult; time: number };
 }
 
 /** Team participation information */
@@ -2959,11 +2987,11 @@ export interface ParticipationModel {
    * Participation ID
    * @format int32
    */
-  id?: number;
+  id: number;
   /** Team information */
-  team?: TeamModel;
+  team: TeamModel;
   /** Team participation status */
-  status?: ParticipationStatus;
+  status: ParticipationStatus;
   /** Team division */
   division?: string | null;
   /**
@@ -3221,7 +3249,13 @@ export interface AntiCheatBlockModel {
   conflictUserName?: string | null
   kind: AntiCheatBlockKind
   conflictingValue?: string | null
-  occurredAtUtc: string
+  /** Unix milliseconds. */
+  occurredAtUtc: number
+  /** Unix milliseconds; present after an operator adjudicates the match. */
+  adjudicatedAtUtc?: number | null
+  adjudicatedByUserId?: string | null
+  /** Unix milliseconds; the scoped exemption is active until this instant. */
+  exemptionExpiresAtUtc?: number | null
 }
 
 
@@ -4027,7 +4061,7 @@ export class Api<
       query?: { count?: number; skip?: number },
       params: RequestParams = {},
     ) =>
-      this.request<ChallengeReview[], RequestResponse>({
+      this.request<ChallengeReviewDetailModel[], RequestResponse>({
         path: `/api/admin/reviews`,
         method: "GET",
         query: query,
@@ -4047,7 +4081,7 @@ export class Api<
       query?: { count?: number; skip?: number },
       params: RequestParams = {},
     ) =>
-      this.request<CheatInfo[], RequestResponse>({
+      this.request<CheatInfoModel[], RequestResponse>({
         path: `/api/admin/cheat-reports`,
         method: "GET",
         query: query,
@@ -9160,7 +9194,16 @@ export class Api<
      * @summary Accept invitation
      * @request POST:/api/team/accept
      */
-    teamAccept: (data: string, params: RequestParams = {}) =>
+    teamAccept: (
+      data:
+        | string
+        | {
+            code: string;
+            fingerprint?: string | null;
+            fingerprintProof?: string | null;
+          },
+      params: RequestParams = {},
+    ) =>
       this.request<void, RequestResponse>({
         path: `/api/team/accept`,
         method: "POST",

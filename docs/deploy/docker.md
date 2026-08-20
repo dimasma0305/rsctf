@@ -40,6 +40,9 @@ docker compose up -d
 docker compose ps
 ```
 
+That sequence is for the first start of a new installation only. It is not an
+upgrade procedure for a database already served by rsctf.
+
 Check the local listener:
 
 ```bash
@@ -63,7 +66,42 @@ compromise of the public application can become a host compromise. Run it on a
 dedicated VM/server and keep the host free of unrelated sensitive workloads.
 :::
 
-Normal dynamic challenges publish daemon-selected TCP ports on the host. Allow the intended port range through the firewall or place a purpose-built challenge proxy in front of them. `RSCTF_DOCKER_PUBLIC_ENTRY` must be the hostname or address players can actually reach.
+Normal dynamic challenges in `Default` port-mapping mode publish daemon-selected
+TCP ports on the host. Allow the intended port range through the firewall and set
+`RSCTF_DOCKER_PUBLIC_ENTRY` to the hostname or address players can actually reach.
+In `PlatformProxy` mode, the maintained Compose files instead bind each port to
+the gateway of a dedicated private `challenge-proxy` bridge. The authenticated
+proxy stores this private address as its target. Docker routes host-bound ports
+between bridges by default, so bridge membership alone is not the security
+boundary: the Docker overlay also starts `rsctf-proxy-firewall`. That guard uses
+the host network namespace and only `NET_ADMIN` to install a bind-scoped rule in
+both `INPUT` and `DOCKER-USER`; only packets entering the named proxy bridge from
+its configured subnet are admitted. Docker-backed rsctf roles wait for the guard
+to become healthy before starting, and it periodically repairs removed rules.
+
+Keep `RSCTF_DOCKER_PROXY_BIND`, `RSCTF_CHALLENGE_PROXY_SUBNET`, and the
+15-character-or-shorter `RSCTF_CHALLENGE_PROXY_BRIDGE` aligned. An absent,
+public, wildcard, mismatched, or unguarded value fails startup or launch instead
+of falling back to `0.0.0.0`. This sidecar intentionally has authority over the
+host firewall, but it has no Docker socket, devices, writable filesystem, or
+capability other than `NET_ADMIN`. Inspect local firewall-policy compatibility
+before enabling the Docker backend.
+
+Check the guard without changing rules:
+
+```bash
+docker compose exec -T rsctf-proxy-firewall \
+  /usr/local/sbin/rsctf-proxy-firewall check
+```
+
+`docker compose down` stops application dependents before the guard and removes
+its rules. A force-kill or host crash may deliberately leave the restrictive
+bind-derived chain behind. After all Docker-backed rsctf roles and challenge
+containers are stopped, remove only that managed chain with:
+
+```bash
+docker compose run --rm --no-deps rsctf-proxy-firewall remove
+```
 
 Docker challenge containers carry a hashed installation scope. All replicas in
 one installation must use the same `RSCTF_DOCKER_SCOPE`; independent
@@ -143,9 +181,13 @@ Run these from the installed `rsctf/deploy/` directory:
 docker compose ps
 docker compose logs -f rsctf
 docker compose restart rsctf
-docker compose pull
-docker compose up -d --remove-orphans
 docker compose down
 ```
 
 `docker compose down` preserves named volumes. Never add `--volumes` unless you intend to permanently delete the managed database and files.
+
+For an upgrade, take the database and file backup, pin one immutable image
+digest, and run the packaged `../scripts/compose-maintenance-cutover.sh`. Do not
+substitute `docker compose pull && docker compose up`: schema-incompatible
+releases require every old runtime to be stopped before migration. The exact
+command and fail-closed retry contract are in [Operations](./operations.md#update-docker-compose).

@@ -10,8 +10,6 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
 
 use bytes::Bytes;
@@ -22,15 +20,12 @@ use std::time::Duration;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser, MaybeUser};
-use crate::models::data::{
-    attachment, flag_context, game_challenge, game_event, local_file, user_participation,
-};
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::MessageResponse;
 
 mod authorization;
 
-use authorization::{authorize_asset_download, AssetCachePolicy};
+use authorization::{authorize_asset_download, finalize_asset_download, AssetCachePolicy};
 
 /// Response row for an uploaded blob (mirrors RSCTF `LocalFile`).
 #[derive(Debug, Serialize)]
@@ -279,23 +274,6 @@ fn signed_download_response(location: &str) -> AppResult<Response> {
     Ok(response)
 }
 
-fn spawn_attachment_download_log(
-    st: &SharedState,
-    hash: &str,
-    user: &Option<CurrentUser>,
-    token: Option<&str>,
-) {
-    let st = st.clone();
-    let hash = hash.to_string();
-    let user = user.clone();
-    let token = token.map(str::to_string);
-    tokio::spawn(async move {
-        if let Err(error) = log_attachment_download(&st, &hash, &user, token.as_deref()).await {
-            tracing::warn!(%error, hash = %hash, "attachment download audit failed");
-        }
-    });
-}
-
 fn permitted_stream_body(
     stream: crate::storage::BlobByteStream,
     permit: crate::services::asset_admission::AssetDownloadPermit,
@@ -368,6 +346,7 @@ async fn serve_asset(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag))
     {
+        finalize_asset_download(st.pg(), &authorization, token, false).await?;
         return Ok((
             StatusCode::NOT_MODIFIED,
             [
@@ -423,7 +402,10 @@ async fn serve_asset(
                 .and_then(|value| parse_byte_range(value, size))
             {
                 Ok(range) => Some(range),
-                Err(()) => return Ok(range_not_satisfiable(size, &etag, cache_policy)),
+                Err(()) => {
+                    finalize_asset_download(st.pg(), &authorization, token, false).await?;
+                    return Ok(range_not_satisfiable(size, &etag, cache_policy));
+                }
             },
             None => None,
         }
@@ -446,7 +428,7 @@ async fn serve_asset(
             {
                 Ok(Some(location)) => match signed_download_response(&location) {
                     Ok(response) => {
-                        spawn_attachment_download_log(st, hash, user, token);
+                        finalize_asset_download(st.pg(), &authorization, token, true).await?;
                         return Ok(response);
                     }
                     Err(error) => tracing::warn!(
@@ -503,12 +485,10 @@ async fn serve_asset(
         StatusCode::OK
     };
 
-    // Mirror RSCTF `AssetsController`: a successful challenge-attachment download by a
-    // participant emits an `EventType::Download` GameEvent so the abnormal-solve checks
-    // (`NoDownload` / `FastSolve-Download`) have input. This is anti-cheat input, NOT part
-    // of the response — spawn it so the download isn't billed the event write + dedup scan
-    // on the request path (best-effort; a logging failure never breaks the download).
-    spawn_attachment_download_log(st, hash, user, token);
+    // Storage preparation can be slow. Revalidate the exact roster, stamp,
+    // challenge, and division now; commit the precisely timed Download event
+    // under that fence, then release it before Axum begins streaming the body.
+    finalize_asset_download(st.pg(), &authorization, token, true).await?;
 
     asset_response(
         body,
@@ -550,116 +530,6 @@ fn content_type_for(filename: &str) -> &'static str {
         "bin" | "exe" | "elf" | "so" => INERT,
         _ => INERT,
     }
-}
-
-/// Emit an `EventType::Download` GameEvent for a participant who downloaded a
-/// challenge attachment (static or dynamic), mirroring RSCTF's
-/// `AssetsController` download logging so the abnormal-solve checks
-/// (`NoDownload` / `FastSolve-Download`) have event input.
-///
-/// Deduped once per `(team, challenge)` on the event's `values[0]` (the
-/// challenge-id string) exactly like the `ChallengeOpened` handler, which keeps
-/// the earliest download time — precisely what `FastSolve-Download` (min) and
-/// `NoDownload` (existence) read — and avoids event-table bloat. `Values` are
-/// `[challengeId, challengeTitle, token]`, matching the RSCTF ordering that puts
-/// the parseable challenge id first.
-async fn log_attachment_download(
-    st: &SharedState,
-    hash: &str,
-    user: &Option<CurrentUser>,
-    token: Option<&str>,
-) -> AppResult<()> {
-    // Only participants generate download events (RSCTF logs the acting player).
-    let Some(u) = user else { return Ok(()) };
-
-    let Some(lf) = local_file::Entity::find()
-        .filter(local_file::Column::Hash.eq(hash))
-        .filter(local_file::Column::ReferenceCount.gt(0))
-        .one(&st.db)
-        .await?
-    else {
-        return Ok(());
-    };
-
-    let att_ids: Vec<i32> = attachment::Entity::find()
-        .filter(attachment::Column::LocalFileId.eq(lf.id))
-        .all(&st.db)
-        .await?
-        .into_iter()
-        .map(|a| a.id)
-        .collect();
-    if att_ids.is_empty() {
-        return Ok(()); // not a challenge attachment (avatar/poster/writeup/orphan)
-    }
-
-    // Resolve every challenge this blob is an attachment for — both the static
-    // path (`game_challenge.attachment_id`) and the dynamic per-instance path
-    // (`flag_context.attachment_id` → its `challenge_id`).
-    let mut challenge_ids: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
-    for c in game_challenge::Entity::find()
-        .filter(game_challenge::Column::AttachmentId.is_in(att_ids.clone()))
-        .all(&st.db)
-        .await?
-    {
-        challenge_ids.insert(c.id);
-    }
-    for fc in flag_context::Entity::find()
-        .filter(flag_context::Column::AttachmentId.is_in(att_ids))
-        .all(&st.db)
-        .await?
-    {
-        if let Some(cid) = fc.challenge_id {
-            challenge_ids.insert(cid);
-        }
-    }
-    if challenge_ids.is_empty() {
-        return Ok(());
-    }
-
-    for cid in challenge_ids {
-        let Some(chal) = game_challenge::Entity::find_by_id(cid).one(&st.db).await? else {
-            continue;
-        };
-        // The downloader must be a participant of the challenge's game; use their
-        // team for the event (the event's team is carried on `team_id`).
-        let Some(link) = user_participation::Entity::find_by_id((u.id, chal.game_id))
-            .one(&st.db)
-            .await?
-        else {
-            continue;
-        };
-
-        // Dedup once per (team, challenge) — keep the earliest download.
-        let cid_str = cid.to_string();
-        let already = game_event::Entity::find()
-            .filter(game_event::Column::GameId.eq(chal.game_id))
-            .filter(game_event::Column::TeamId.eq(link.team_id))
-            .filter(game_event::Column::EventType.eq(crate::utils::enums::EventType::Download))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .any(|e| e.values.get(0).and_then(|v| v.as_str()) == Some(cid_str.as_str()));
-        if already {
-            continue;
-        }
-
-        let ev = game_event::ActiveModel {
-            game_id: Set(chal.game_id),
-            event_type: Set(crate::utils::enums::EventType::Download),
-            values: Set(serde_json::json!([
-                cid_str,
-                chal.title,
-                token.unwrap_or("")
-            ])),
-            publish_time_utc: Set(Utc::now()),
-            user_id: Set(Some(u.id)),
-            team_id: Set(link.team_id),
-            ..Default::default()
-        };
-        ev.insert(&st.db).await?;
-    }
-
-    Ok(())
 }
 
 /// `DELETE /api/assets/{hash}` (admin) — delete a blob and its row.

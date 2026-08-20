@@ -216,10 +216,9 @@ fn missing_participation_column(column: &str) -> AppError {
     ))
 }
 
-fn map_resolved_participation(
-    row: Option<ResolvedParticipationRow>,
+fn hydrate_resolved_participation(
+    row: ResolvedParticipationRow,
 ) -> AppResult<participation::Model> {
-    let row = row.ok_or_else(|| AppError::bad_request("Not participating in this game"))?;
     let id = row
         .participation_id
         .ok_or_else(|| AppError::not_found("Participation not found"))?;
@@ -245,13 +244,40 @@ fn map_resolved_participation(
         suspicion_score: row
             .participation_suspicion_score
             .ok_or_else(|| missing_participation_column("suspicion_score"))?,
+        competitive_admitted_at_utc: None,
     };
+    Ok(part)
+}
+
+#[cfg(test)]
+fn map_resolved_participation(
+    row: Option<ResolvedParticipationRow>,
+) -> AppResult<participation::Model> {
+    let row = row.ok_or_else(|| AppError::bad_request("Not participating in this game"))?;
+    let part = hydrate_resolved_participation(row)?;
     if part.status != ParticipationStatus::Accepted {
         return Err(AppError::bad_request("Participation not accepted"));
     }
     Ok(part)
 }
 
+async fn load_resolved_participation_row<'e, E>(
+    executor: E,
+    user_id: uuid::Uuid,
+    game_id: i32,
+) -> AppResult<Option<ResolvedParticipationRow>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query_as::<_, ResolvedParticipationRow>(RESOLVE_PARTICIPATION_SQL)
+        .bind(user_id)
+        .bind(game_id)
+        .fetch_optional(executor)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
+#[cfg(test)]
 async fn load_resolved_participation<'e, E>(
     executor: E,
     user_id: uuid::Uuid,
@@ -260,13 +286,85 @@ async fn load_resolved_participation<'e, E>(
 where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,
 {
-    let row = sqlx::query_as::<_, ResolvedParticipationRow>(RESOLVE_PARTICIPATION_SQL)
-        .bind(user_id)
-        .bind(game_id)
-        .fetch_optional(executor)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    map_resolved_participation(row)
+    map_resolved_participation(load_resolved_participation_row(executor, user_id, game_id).await?)
+}
+
+enum LiveParticipationLookup {
+    Missing,
+    Orphan,
+    Found(participation::Model),
+}
+
+async fn participation_is_live(
+    st: &SharedState,
+    user: &CurrentUser,
+    part: &participation::Model,
+) -> AppResult<bool> {
+    crate::services::live_roster::participation_caller_is_live_on(
+        st.pg(),
+        user.id,
+        &user.security_stamp,
+        part.game_id,
+        part.team_id,
+        part.id,
+        part.status == ParticipationStatus::Accepted,
+    )
+    .await
+}
+
+/// Shared historical-link resolver for every interactive game surface. The
+/// retained evidence link is hydrated once, but only a current captain or
+/// `TeamMembers` row is returned as a live participation.
+async fn find_live_participation_state(
+    st: &SharedState,
+    user: &CurrentUser,
+    game_id: i32,
+) -> AppResult<LiveParticipationLookup> {
+    let key = participation_cache_key(user.id, game_id);
+    if let Some(part) = cached_accepted_participation(st, &key).await {
+        if participation_is_live(st, user, &part).await? {
+            return Ok(LiveParticipationLookup::Found(part));
+        }
+        st.cache.remove(&key).await;
+    }
+
+    let _flight = crate::utils::single_flight::coalesce(&key).await;
+    if let Some(part) = cached_accepted_participation(st, &key).await {
+        if participation_is_live(st, user, &part).await? {
+            return Ok(LiveParticipationLookup::Found(part));
+        }
+        st.cache.remove(&key).await;
+    }
+
+    let Some(row) = load_resolved_participation_row(st.pg(), user.id, game_id).await? else {
+        return Ok(LiveParticipationLookup::Missing);
+    };
+    if row.participation_id.is_none() {
+        return Ok(LiveParticipationLookup::Orphan);
+    }
+    let part = hydrate_resolved_participation(row)?;
+    if !participation_is_live(st, user, &part).await? {
+        return Ok(LiveParticipationLookup::Missing);
+    }
+    if part.status == ParticipationStatus::Accepted {
+        if let Ok(j) = serde_json::to_vec(&part) {
+            st.cache
+                .set(&key, &j, Some(std::time::Duration::from_secs(5)))
+                .await;
+        }
+    }
+    Ok(LiveParticipationLookup::Found(part))
+}
+
+pub(crate) async fn find_live_participation(
+    st: &SharedState,
+    user: &CurrentUser,
+    game_id: i32,
+) -> AppResult<Option<participation::Model>> {
+    match find_live_participation_state(st, user, game_id).await? {
+        LiveParticipationLookup::Found(part) => Ok(Some(part)),
+        LiveParticipationLookup::Missing | LiveParticipationLookup::Orphan => Ok(None),
+    }
 }
 
 /// Resolve (and gate on `Accepted`) the caller's participation. This ran two DB queries
@@ -284,19 +382,17 @@ pub(crate) async fn resolve_participation(
     user: &CurrentUser,
     game_id: i32,
 ) -> AppResult<participation::Model> {
-    let key = participation_cache_key(user.id, game_id);
-    if let Some(p) = cached_accepted_participation(st, &key).await {
-        return Ok(p);
-    }
-    let _flight = crate::utils::single_flight::coalesce(&key).await;
-    if let Some(p) = cached_accepted_participation(st, &key).await {
-        return Ok(p);
-    }
-    let part = load_resolved_participation(st.pg(), user.id, game_id).await?;
-    if let Ok(j) = serde_json::to_vec(&part) {
-        st.cache
-            .set(&key, &j, Some(std::time::Duration::from_secs(5)))
-            .await;
+    let part = match find_live_participation_state(st, user, game_id).await? {
+        LiveParticipationLookup::Missing => {
+            return Err(AppError::bad_request("Not participating in this game"));
+        }
+        LiveParticipationLookup::Orphan => {
+            return Err(AppError::not_found("Participation not found"));
+        }
+        LiveParticipationLookup::Found(part) => part,
+    };
+    if part.status != ParticipationStatus::Accepted {
+        return Err(AppError::bad_request("Participation not accepted"));
     }
     Ok(part)
 }
@@ -397,10 +493,12 @@ fn fill_random(buf: &mut [u8]) {
 mod byoc;
 mod byoc_authorization;
 mod scoreboard;
+mod snapshot_download;
 mod ssh;
 mod state_tail;
 mod submit;
 mod targets;
+mod targets_authorization;
 mod token;
 mod vpn;
 
@@ -409,6 +507,7 @@ pub use scoreboard::*;
 pub use ssh::*;
 pub use submit::*;
 pub use targets::*;
+pub(crate) use targets_authorization::LiveTargetCaller;
 pub use token::*;
 pub use vpn::*;
 
@@ -470,6 +569,7 @@ mod tests {
                 team_id: 71,
                 division_id: Some(81),
                 suspicion_score: 91,
+                competitive_admitted_at_utc: None,
             }
         );
     }
@@ -597,6 +697,7 @@ mod tests {
                 team_id: 21,
                 division_id: Some(201),
                 suspicion_score: 301,
+                competitive_admitted_at_utc: None,
             }
         );
 

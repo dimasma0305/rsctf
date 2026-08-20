@@ -1,5 +1,8 @@
 import {
+  Alert,
   Badge,
+  Button,
+  Combobox,
   Group,
   Paper,
   ScrollArea,
@@ -25,9 +28,12 @@ import {
   Popover,
   Pagination,
   VisuallyHidden,
+  useCombobox,
 } from '@mantine/core'
+import type { StyleProp } from '@mantine/core'
 import { useClipboard, useDebouncedValue, useReducedMotion } from '@mantine/hooks'
 import { useDisclosure } from '@mantine/hooks'
+import { modals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import {
   mdiCheckCircle,
@@ -58,19 +64,25 @@ import {
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
+import type { TFunction } from 'i18next'
 import * as React from 'react'
 import { FC, useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { ScrollingText } from '@Components/ScrollingText'
+import { evidenceContribution } from '@Utils/AntiCheat'
 import { useLanguage } from '@Utils/I18n'
-import { useParticipationStatusMap, showErrorMsg } from '@Utils/Shared'
+import { showErrorMsg, tryGetErrorMsg, useParticipationStatusMap } from '@Utils/Shared'
 import type {
+  AbnormalSolveResult,
   CheatReport,
+  CollusionCompareResult,
   SequenceSuspectDetail,
   SuspicionRecordResult,
   CollusionGroupResult,
   CollusionTeamInfo,
+  IdentityOverlapResult,
+  IpAnalysisResult,
 } from '@Api'
 import api, { ParticipationStatus } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
@@ -80,7 +92,8 @@ dayjs.extend(relativeTime)
 
 interface CheatInfoProps {
   report: CheatReport | null
-  mutate?: () => void
+  mutate?: () => Promise<CheatReport | undefined>
+  canManageParticipations?: boolean
 }
 
 interface SortConfig<T> {
@@ -89,7 +102,6 @@ interface SortConfig<T> {
 }
 
 function sortData<T>(data: T[], { key, direction }: SortConfig<T>) {
-  // ... existing sortData ...
   if (!key) return data
 
   return [...data].sort((a, b) => {
@@ -97,8 +109,11 @@ function sortData<T>(data: T[], { key, direction }: SortConfig<T>) {
     const valueB = b[key]
 
     if (valueA === valueB) return 0
-
-    const compare = valueA < valueB ? -1 : 1
+    let compare: number
+    if (valueA == null) compare = 1
+    else if (valueB == null) compare = -1
+    else if (typeof valueA === 'number' && typeof valueB === 'number') compare = valueA - valueB
+    else compare = String(valueA).localeCompare(String(valueB))
     return direction === 'asc' ? compare : -compare
   })
 }
@@ -137,6 +152,39 @@ const AccessibleTableCaption: FC<{ children: React.ReactNode }> = ({ children })
   </Table.Caption>
 )
 
+const AnalysisEmptyState: FC<{
+  filtered: boolean
+  description: string
+  onClearFilters: () => void
+}> = ({ filtered, description, onClearFilters }) => {
+  const { t } = useTranslation()
+
+  return (
+    <Center className={classes.emptyState} py="xl" role="status" aria-live="polite">
+      <Stack align="center" gap="xs">
+        <ThemeIcon size={48} radius="xl" color="gray" variant="light">
+          <Icon path={filtered ? mdiMagnify : mdiInformation} size={1.4} aria-hidden />
+        </ThemeIcon>
+        <Text fw={600} size="md">
+          {filtered
+            ? t('game.cheat_analysis.no_filter_matches', 'No results match these filters')
+            : t('game.cheat_analysis.no_signals_snapshot', 'No signals in this report')}
+        </Text>
+        <Text size="sm" c="dimmed" ta="center">
+          {filtered
+            ? t('game.cheat_analysis.try_different_filters', 'Try a different search or clear the filters.')
+            : description}
+        </Text>
+        {filtered && (
+          <Button size="xs" variant="outline" color="gray" onClick={onClearFilters}>
+            {t('game.cheat_analysis.clear_filters', 'Clear filters')}
+          </Button>
+        )}
+      </Stack>
+    </Center>
+  )
+}
+
 interface DetailLine {
   label?: string
   value: string
@@ -154,7 +202,7 @@ const BAND_META: Record<string, { label: string; color: string; desc: string }> 
   investigate: { label: 'Investigate', color: 'orange', desc: 'Strong automation / scanner evidence' },
   watch: { label: 'Watch', color: 'yellow', desc: 'Low-confidence behavioral heuristics' },
   context: { label: 'Context', color: 'gray', desc: 'Network / identity correlation only — not suspicion' },
-  clean: { label: 'Clean', color: 'gray', desc: 'No signals' },
+  clean: { label: 'No scored signals', color: 'gray', desc: 'No scored signals in this report snapshot' },
 }
 const bandMeta = (band?: string) => BAND_META[band ?? 'clean'] ?? BAND_META.clean
 
@@ -275,11 +323,11 @@ const SummaryCard: FC<{
 )
 
 const IP_TYPE_META: Record<string, { label: string; color: string; icon: string }> = {
-  SharedIP: { label: 'Shared IP', color: 'orange', icon: mdiIpNetwork },
+  SharedIP: { label: 'Shared IP', color: 'blue', icon: mdiIpNetwork },
   SharedFingerprint: { label: 'Shared Fingerprint', color: 'violet', icon: mdiFingerprint },
   FingerprintChurn: { label: 'FP Churn', color: 'yellow', icon: mdiRefresh },
   IpChurn: { label: 'IP Churn', color: 'yellow', icon: mdiRefresh },
-  CrossTeamIP: { label: 'Cross-Team IP', color: 'alert', icon: mdiSwapHorizontal },
+  CrossTeamIP: { label: 'Cross-Team IP', color: 'blue', icon: mdiSwapHorizontal },
   TokenAbuse: { label: 'Token Abuse', color: 'alert', icon: mdiLockAlert },
 }
 
@@ -595,12 +643,14 @@ const SmartSearch: FC<{
   onChange: (v: string) => void
   placeholder?: string
   filterDefs: FilterDef[]
-  w?: any
+  w?: StyleProp<React.CSSProperties['width']>
 }> = ({ value, onChange, placeholder, filterDefs, w = 300 }) => {
   const { t } = useTranslation()
   const inputRef = useRef<HTMLInputElement>(null)
-  const [dropdownOpen, setDropdownOpen] = useState(false)
   const [atQuery, setAtQuery] = useState('')
+  const combobox = useCombobox({
+    onDropdownClose: () => combobox.resetSelectedOption(),
+  })
 
   const matchingDefs = useMemo(
     () => filterDefs.filter((f) => atQuery === '' || f.field.startsWith(atQuery.toLowerCase())),
@@ -614,8 +664,10 @@ const SmartSearch: FC<{
     const atMatch = v.slice(0, cursor).match(/@(\w*)$/)
     if (atMatch) {
       setAtQuery(atMatch[1])
-      setDropdownOpen(true)
-    } else setDropdownOpen(false)
+      combobox.openDropdown()
+    } else {
+      combobox.closeDropdown()
+    }
   }
 
   const selectFilter = (field: string) => {
@@ -623,9 +675,10 @@ const SmartSearch: FC<{
     const before = value.slice(0, cursor)
     const after = value.slice(cursor)
     const atIdx = before.lastIndexOf('@')
+    if (atIdx < 0) return
     const newVal = before.slice(0, atIdx) + `@${field}:"` + after
     onChange(newVal)
-    setDropdownOpen(false)
+    combobox.closeDropdown()
     setTimeout(() => {
       if (inputRef.current) {
         const pos = atIdx + field.length + 3
@@ -653,15 +706,8 @@ const SmartSearch: FC<{
 
   return (
     <Stack gap={4} w={w}>
-      <Popover
-        withRoles={false}
-        opened={dropdownOpen && matchingDefs.length > 0}
-        position="bottom-start"
-        shadow="md"
-        withinPortal
-        styles={{ dropdown: { padding: 6, minWidth: 300 } }}
-      >
-        <Popover.Target>
+      <Combobox store={combobox} onOptionSubmit={selectFilter} position="bottom-start" shadow="md" withinPortal>
+        <Combobox.Target>
           <TextInput
             ref={inputRef}
             type="search"
@@ -679,7 +725,7 @@ const SmartSearch: FC<{
                   color="gray"
                   onClick={() => {
                     onChange('')
-                    setDropdownOpen(false)
+                    combobox.closeDropdown()
                   }}
                   aria-label={t('game.cheat_analysis.clear_search', 'Clear search')}
                 >
@@ -687,18 +733,18 @@ const SmartSearch: FC<{
                 </ActionIcon>
               ) : undefined
             }
+            rightSectionPointerEvents="all"
             onKeyDown={(e) => {
               if (e.key === 'Escape') {
-                onChange('')
-                setDropdownOpen(false)
+                combobox.closeDropdown()
               }
             }}
-            onBlur={() => setTimeout(() => setDropdownOpen(false), 150)}
+            onBlur={() => combobox.closeDropdown()}
             style={{ width: '100%' }}
           />
-        </Popover.Target>
-        <Popover.Dropdown>
-          <Stack gap={2}>
+        </Combobox.Target>
+        <Combobox.Dropdown hidden={matchingDefs.length === 0}>
+          <Combobox.Options>
             <Text
               size="xs"
               c="dimmed"
@@ -714,13 +760,13 @@ const SmartSearch: FC<{
               {t('game.cheat_analysis.filter_hint_after', 'to filter')}
             </Text>
             {matchingDefs.map((f) => (
-              <UnstyledButton key={f.field} onClick={() => selectFilter(f.field)} className={classes.filterOption}>
+              <Combobox.Option key={f.field} value={f.field} className={classes.filterOption}>
                 <Group gap={8} px={4} py={3}>
                   <Badge
                     size="xs"
                     color={f.color}
                     variant="light"
-                    leftSection={<Icon path={f.icon} size={0.4} />}
+                    leftSection={<Icon path={f.icon} size={0.4} aria-hidden />}
                     style={{ minWidth: 90, textAlign: 'center' }}
                   >
                     @{f.field}
@@ -732,18 +778,18 @@ const SmartSearch: FC<{
                     {f.example}
                   </Text>
                 </Group>
-              </UnstyledButton>
+              </Combobox.Option>
             ))}
-          </Stack>
-        </Popover.Dropdown>
-      </Popover>
+          </Combobox.Options>
+        </Combobox.Dropdown>
+      </Combobox>
       {parsed.filters.length > 0 && (
         <Group gap={4} wrap="wrap" px={2}>
           {parsed.filters.map((f, i) => {
             const def = filterDefs.find((d) => d.field === f.field)
             return (
               <Badge
-                key={i}
+                key={`${f.field}:${f.value}:${i}`}
                 size="xs"
                 color={def?.color ?? 'gray'}
                 variant="filled"
@@ -765,11 +811,11 @@ const SmartSearch: FC<{
               </Badge>
             )
           })}
-          <UnstyledButton onClick={() => onChange('')}>
+          <Button variant="subtle" size="compact-xs" color="gray" onClick={() => onChange('')}>
             <Text size="xs" c="dimmed">
               {t('game.cheat_analysis.clear_all', 'Clear all')}
             </Text>
-          </UnstyledButton>
+          </Button>
         </Group>
       )}
     </Stack>
@@ -781,12 +827,14 @@ const SmartSearch: FC<{
 // \u2500\u2500 Memoized Row Components \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 const SuspicionRow = React.memo<{
-  item: any
+  item: SuspicionRecordResult
   index: number
-  statusMap: Map<ParticipationStatus, any>
-  onStatusChange: (participationId: number, status: ParticipationStatus) => Promise<void>
-  onView: (item: any) => void
-}>(({ item, index, statusMap, onStatusChange, onView }) => {
+  statusMap: ReturnType<typeof useParticipationStatusMap>
+  canManageParticipations: boolean
+  isChanging: boolean
+  onStatusChange: (participationId: number, status: ParticipationStatus) => void
+  onView: (item: SuspicionRecordResult) => void
+}>(({ item, index, statusMap, canManageParticipations, isChanging, onStatusChange, onView }) => {
   const { t } = useTranslation()
   const score = item.score ?? 0
   const currentStatus = item.status ?? ParticipationStatus.Pending
@@ -860,40 +908,58 @@ const SuspicionRow = React.memo<{
         </Tooltip>
       </Table.Td>
       <Table.Td miw="11rem" onClick={(e) => e.stopPropagation()}>
-        <Menu shadow="md" width={200}>
-          <Menu.Target>
-            <UnstyledButton
-              style={{ cursor: 'pointer' }}
-              aria-label={t('game.cheat_analysis.change_team_status', 'Change status for {{team}}', { team: teamName })}
-            >
-              <Badge
-                size="sm"
-                color={statusMeta?.color || 'gray'}
-                variant="light"
-                rightSection={<Icon path={mdiChevronDown} size={0.55} />}
+        {canManageParticipations && item.participationId !== undefined ? (
+          <Menu shadow="md" width={200}>
+            <Menu.Target>
+              <UnstyledButton
+                style={{ cursor: isChanging ? 'wait' : 'pointer' }}
+                aria-label={t('game.cheat_analysis.change_team_status', 'Change status for {{team}}', {
+                  team: teamName,
+                })}
+                disabled={isChanging}
               >
-                {statusMeta?.title || t('common.label.unknown', 'Unknown')}
-              </Badge>
-            </UnstyledButton>
-          </Menu.Target>
-          <Menu.Dropdown>
-            <Menu.Label>{t('admin.label.participation_status', 'Status')}</Menu.Label>
-            {Array.from(statusMap.entries())
-              .filter(([status]) => status === ParticipationStatus.Accepted || status === ParticipationStatus.Suspended)
-              .map(([status, meta]) => (
-                <Menu.Item
-                  key={status}
-                  leftSection={
-                    <Icon path={meta.iconPath} size={0.8} color={meta.color === 'alert' ? 'red' : meta.color} />
+                <Badge
+                  size="sm"
+                  color={statusMeta?.color || 'gray'}
+                  variant="light"
+                  rightSection={
+                    isChanging ? <Loader size={10} /> : <Icon path={mdiChevronDown} size={0.55} aria-hidden />
                   }
-                  onClick={() => onStatusChange(item.participationId!, status)}
-                  disabled={currentStatus === status}
                 >
-                  {meta.title}
-                </Menu.Item>
-              ))}
-          </Menu.Dropdown>
-        </Menu>
+                  {statusMeta?.title || t('common.label.unknown', 'Unknown')}
+                </Badge>
+              </UnstyledButton>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Label>{t('admin.label.participation_status', 'Status')}</Menu.Label>
+              {Array.from(statusMap.entries())
+                .filter(
+                  ([status]) => status === ParticipationStatus.Accepted || status === ParticipationStatus.Suspended
+                )
+                .map(([status, meta]) => (
+                  <Menu.Item
+                    key={status}
+                    leftSection={
+                      <Icon
+                        path={meta.iconPath}
+                        size={0.8}
+                        color={meta.color === 'alert' ? 'red' : meta.color}
+                        aria-hidden
+                      />
+                    }
+                    onClick={() => onStatusChange(item.participationId!, status)}
+                    disabled={currentStatus === status || isChanging}
+                  >
+                    {meta.title}
+                  </Menu.Item>
+                ))}
+            </Menu.Dropdown>
+          </Menu>
+        ) : (
+          <Badge size="sm" color={statusMeta?.color || 'gray'} variant="light">
+            {statusMeta?.title || t('common.label.unknown', 'Unknown')}
+          </Badge>
+        )}
       </Table.Td>
       <Table.Td style={{ textAlign: 'center' }}>
         <Tooltip label={t('game.cheat_analysis.view_suspicion', 'View suspicion details')} withArrow>
@@ -918,11 +984,15 @@ const SuspicionRow = React.memo<{
 })
 
 const IpAnalysisRow = React.memo<{
-  item: any
+  item: IpAnalysisResult
   locale: string | null
 }>(({ item, locale }) => {
   const { t } = useTranslation()
-  const meta = IP_TYPE_META[item.type] ?? { label: t('common.label.unknown', 'Unknown'), color: 'gray' }
+  const meta = (item.type ? IP_TYPE_META[item.type] : undefined) ?? {
+    label: t('common.label.unknown', 'Unknown'),
+    color: 'gray',
+    icon: mdiInformation,
+  }
   const absTime = useMemo(() => fmtAbsTime(item.time, locale), [item.time, locale])
   const relTime = useMemo(() => fmtRelTime(item.time), [item.time])
 
@@ -991,9 +1061,9 @@ const IpAnalysisRow = React.memo<{
 })
 
 const AbnormalSolveRow = React.memo<{
-  item: any
+  item: AbnormalSolveResult
   locale: string | null
-  t: any
+  t: TFunction
 }>(({ item, locale, t }) => {
   const typeColor =
     item.type === 'Hoarding'
@@ -1069,8 +1139,8 @@ const AbnormalSolveRow = React.memo<{
 })
 
 const CollusionGroupRow = React.memo<{
-  item: any
-  onView: (item: any) => void
+  item: CollusionGroupResult
+  onView: (item: CollusionGroupResult) => void
 }>(({ item, onView }) => {
   const { t } = useTranslation()
   const rsi = item.averageRsi ?? 0
@@ -1083,7 +1153,7 @@ const CollusionGroupRow = React.memo<{
       <Table.Td miw="16rem" style={{ maxWidth: '20rem', overflow: 'hidden' }}>
         <Stack gap={3}>
           {item.teams?.map((team: CollusionTeamInfo, idx: number) => (
-            <Group key={idx} gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+            <Group key={team.participationId ?? team.id} gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
               <Badge size="xs" variant="dot" color={idx === 0 ? 'brand' : 'violet'} />
               <Tooltip label={team.name} withArrow disabled={(team.name || '').length <= 24} multiline maw={280}>
                 <Text
@@ -1107,10 +1177,10 @@ const CollusionGroupRow = React.memo<{
             </Text>
             <Badge size="xs" color={rsiColor} variant="light">
               {rsi > 0.9
-                ? t('game.cheat_analysis.severity.critical', 'Critical')
+                ? t('game.cheat_analysis.overlap.very_high', 'Very high overlap')
                 : rsi > 0.8
-                  ? t('game.cheat_analysis.severity.high', 'High')
-                  : t('game.cheat_analysis.severity.medium', 'Medium')}
+                  ? t('game.cheat_analysis.overlap.high', 'High overlap')
+                  : t('game.cheat_analysis.overlap.moderate', 'Moderate overlap')}
             </Badge>
           </Group>
           <Progress
@@ -1172,13 +1242,13 @@ const CollusionGroupRow = React.memo<{
         <MemoizedReadableDetails details={item.details} maxRows={3} />
       </Table.Td>
       <Table.Td style={{ textAlign: 'center' }}>
-        <Tooltip label={t('game.cheat_analysis.view_collusion', 'View collusion details')} withArrow>
+        <Tooltip label={t('game.cheat_analysis.view_collusion', 'View similarity details')} withArrow>
           <ActionIcon
             variant="subtle"
             color="violet"
             size="sm"
             onClick={() => onView(item)}
-            aria-label={t('game.cheat_analysis.view_collusion', 'View collusion details')}
+            aria-label={t('game.cheat_analysis.view_collusion', 'View similarity details')}
           >
             <Icon path={mdiOpenInNew} size={0.7} aria-hidden />
           </ActionIcon>
@@ -1188,7 +1258,7 @@ const CollusionGroupRow = React.memo<{
   )
 })
 
-export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
+export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManageParticipations = false }) => {
   const { t } = useTranslation()
   const { locale } = useLanguage()
   const statusMap = useParticipationStatusMap()
@@ -1196,15 +1266,15 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
   const gameId = parseInt(params.id || '0')
 
   // 1. IP Analysis Sort State
-  const [ipSort, setIpSort] = useState<SortConfig<any>>({ key: null, direction: 'asc' })
+  const [ipSort, setIpSort] = useState<SortConfig<IpAnalysisResult>>({ key: null, direction: 'asc' })
 
   // 2. Abnormal Solves Sort State
-  const [solveSort, setSolveSort] = useState<SortConfig<any>>({ key: null, direction: 'asc' })
+  const [solveSort, setSolveSort] = useState<SortConfig<AbnormalSolveResult>>({ key: null, direction: 'asc' })
 
   // 3. Suspicion Sort State
   // Default to the server's band-first order (hard evidence on top); clicking the
   // Score header switches to an explicit raw-total sort.
-  const [suspSort, setSuspSort] = useState<SortConfig<any>>({ key: 'band', direction: 'desc' })
+  const [suspSort, setSuspSort] = useState<SortConfig<SuspicionRecordResult>>({ key: 'band', direction: 'desc' })
 
   const [opened, { open, close }] = useDisclosure(false)
   const [selectedGroup, setSelectedGroup] = useState<CollusionGroupResult | null>(null)
@@ -1212,6 +1282,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
   // Suspicion Modal
   const [susOpened, { open: openSus, close: closeSus }] = useDisclosure(false)
   const [selectedSuspicion, setSelectedSuspicion] = useState<SuspicionRecordResult | null>(null)
+  const [changingParticipationId, setChangingParticipationId] = useState<number | null>(null)
 
   // Search states
   const [globalSearch, setGlobalSearch] = useState('')
@@ -1251,8 +1322,28 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
     scroller.scrollTo({ left: Math.max(0, target), behavior: reducedMotion ? 'auto' : 'smooth' })
   }, [activeTab, reducedMotion])
 
+  useEffect(() => {
+    if (!susOpened || !selectedSuspicion) return
+
+    const refreshed = report?.suspicionList?.find(
+      (item) =>
+        (selectedSuspicion.participationId !== undefined &&
+          item.participationId === selectedSuspicion.participationId) ||
+        (selectedSuspicion.teamId !== undefined && item.teamId === selectedSuspicion.teamId)
+    )
+    if (refreshed) {
+      setSelectedSuspicion(refreshed)
+    } else {
+      setSelectedSuspicion(null)
+      closeSus()
+    }
+  }, [closeSus, report?.suspicionList, susOpened])
+
   // 5. Collusion Group Sort State
-  const [collusionSort, setCollusionSort] = useState<SortConfig<any>>({ key: 'averageRsi', direction: 'desc' })
+  const [collusionSort, setCollusionSort] = useState<SortConfig<CollusionGroupResult>>({
+    key: 'averageRsi',
+    direction: 'desc',
+  })
 
   // Reset pagination on search or sort change
   useEffect(() => {
@@ -1275,18 +1366,54 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
     setSuspPage(1)
   }, [debouncedSuspSearch, suspSort])
 
-  const { data: drilledSolves, isLoading: isDrilling } = api.cheatReport.useCheatReportCompare(gameId, teamAId, teamBId)
+  const {
+    data: drilledSolves,
+    error: drillError,
+    isLoading: isDrilling,
+    isValidating: isDrillRefreshing,
+    mutate: retryDrill,
+  } = api.cheatReport.useCheatReportCompare(gameId, teamAId, teamBId, {
+    keepPreviousData: false,
+    shouldRetryOnError: false,
+  })
+
+  const defaultTeamAId = selectedGroup?.teams?.[0]?.participationId
+  const defaultTeamBId = selectedGroup?.teams?.[1]?.participationId
+  const embeddedComparison = useMemo<CollusionCompareResult | undefined>(() => {
+    if (
+      !selectedGroup?.detailedSolves ||
+      teamAId === null ||
+      teamBId === null ||
+      teamAId !== defaultTeamAId ||
+      teamBId !== defaultTeamBId
+    ) {
+      return undefined
+    }
+
+    return {
+      rsi: selectedGroup.averageRsi ?? 0,
+      details: selectedGroup.detailedSolves,
+    }
+  }, [defaultTeamAId, defaultTeamBId, selectedGroup, teamAId, teamBId])
+  const activeComparison = drilledSolves ?? embeddedComparison
 
   const handleViewDetails = (item: CollusionGroupResult) => {
     setSelectedGroup(item)
     if (item.teams && item.teams.length >= 2) {
-      setTeamAId(item.teams[0].participationId ?? 0)
-      setTeamBId(item.teams[1].participationId ?? 0)
+      setTeamAId(item.teams[0].participationId ?? null)
+      setTeamBId(item.teams[1].participationId ?? null)
     } else {
       setTeamAId(null)
       setTeamBId(null)
     }
     open()
+  }
+
+  const closeCollusionDetails = () => {
+    close()
+    setSelectedGroup(null)
+    setTeamAId(null)
+    setTeamBId(null)
   }
 
   const handleViewSuspicion = useCallback(
@@ -1297,25 +1424,60 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
     [openSus]
   )
 
-  const handleStatusChange = useCallback(
+  const updateParticipationStatus = useCallback(
     async (participationId: number, status: ParticipationStatus) => {
+      setChangingParticipationId(participationId)
       try {
         await api.admin.adminParticipation(participationId, { status })
+        await mutate?.()
         showNotification({ title: t('common.notify.success'), message: t('common.notify.updated'), color: 'green' })
-        mutate?.()
-      } catch (e: any) {
+      } catch (e) {
         showErrorMsg(e, t)
+      } finally {
+        setChangingParticipationId(null)
       }
     },
     [t, mutate]
   )
 
+  const handleStatusChange = useCallback(
+    (participationId: number, status: ParticipationStatus) => {
+      if (!canManageParticipations) return
+      const suspending = status === ParticipationStatus.Suspended
+      modals.openConfirmModal({
+        title: suspending
+          ? t('game.cheat_analysis.confirm_suspend_title', 'Suspend this participation?')
+          : t('game.cheat_analysis.confirm_accept_title', 'Accept this participation?'),
+        children: (
+          <Text size="sm">
+            {suspending
+              ? t(
+                  'game.cheat_analysis.confirm_suspend_body',
+                  'This affects the team’s ability to participate. Review the evidence before continuing.'
+                )
+              : t(
+                  'game.cheat_analysis.confirm_accept_body',
+                  'This restores the participation status. Existing evidence remains available for audit.'
+                )}
+          </Text>
+        ),
+        labels: {
+          confirm: suspending ? t('game.cheat_analysis.suspend', 'Suspend') : t('game.cheat_analysis.accept', 'Accept'),
+          cancel: t('common.button.cancel', 'Cancel'),
+        },
+        confirmProps: { color: suspending ? 'red' : 'green' },
+        onConfirm: () => void updateParticipationStatus(participationId, status),
+      })
+    },
+    [canManageParticipations, t, updateParticipationStatus]
+  )
+
   const summaryStats = useMemo(() => {
     const totalTeams = report?.suspicionList?.length ?? 0
     // "High risk" now means hard evidence (EVIDENCED band), not a raw number.
-    const highRiskTeams = report?.suspicionList?.filter((x: any) => x.band === 'evidenced').length ?? 0
+    const highRiskTeams = report?.suspicionList?.filter((x) => x.band === 'evidenced').length ?? 0
     const highRiskPct = totalTeams ? (highRiskTeams / totalTeams) * 100 : 0
-    const automationFlagged = report?.suspicionList?.filter((x: any) => x.band === 'investigate').length ?? 0
+    const automationFlagged = report?.suspicionList?.filter((x) => x.band === 'investigate').length ?? 0
 
     const ipAnomalies = report?.ipAnalysis?.length ?? 0
     const abnormalSolves = report?.abnormalSolves?.length ?? 0
@@ -1348,14 +1510,14 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
     const combinedFilters = [...globalParsed.filters, ...localParsed.filters]
 
     if (globalParsed.freeText || localParsed.freeText || combinedFilters.length > 0) {
-      data = data.filter((item: any) => {
+      data = data.filter((item) => {
         for (const f of combinedFilters) {
           switch (f.field) {
             case 'team':
               if (!item.teamName?.toLowerCase().includes(f.value)) return false
               break
             case 'type': {
-              const label = (IP_TYPE_META[item.type]?.label ?? '').toLowerCase()
+              const label = ((item.type ? IP_TYPE_META[item.type]?.label : '') ?? '').toLowerCase()
               if (!item.type?.toLowerCase().includes(f.value) && !label.includes(f.value)) return false
               break
             }
@@ -1411,7 +1573,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
     const combinedFilters = [...globalParsed.filters, ...localParsed.filters]
 
     if (globalParsed.freeText || localParsed.freeText || combinedFilters.length > 0) {
-      data = data.filter((item: any) => {
+      data = data.filter((item) => {
         for (const f of combinedFilters) {
           switch (f.field) {
             case 'team':
@@ -1465,7 +1627,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
     const combinedFilters = [...globalParsed.filters, ...localParsed.filters]
 
     if (globalParsed.freeText || localParsed.freeText || combinedFilters.length > 0) {
-      data = data.filter((item: any) => {
+      data = data.filter((item) => {
         for (const f of combinedFilters) {
           switch (f.field) {
             case 'team':
@@ -1509,7 +1671,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
     const combinedFilters = [...globalParsed.filters, ...localParsed.filters]
 
     if (globalParsed.freeText || localParsed.freeText || combinedFilters.length > 0) {
-      data = data.filter((item: any) => {
+      data = data.filter((item) => {
         for (const f of combinedFilters) {
           switch (f.field) {
             case 'team':
@@ -1539,7 +1701,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
     }
     const asc = suspSort.direction === 'asc'
     if (suspSort.key === 'teamName') {
-      return [...data].sort((a: any, b: any) => {
+      return [...data].sort((a, b) => {
         const cmp = (a.teamName || '').localeCompare(b.teamName || '')
         return asc ? cmp : -cmp
       })
@@ -1548,9 +1710,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
       // Explicit user intent: sort by RAW total across bands, so an admin can
       // pull a high-scoring automation (Investigate) case above a marginal
       // hard one if they choose. (The default keeps band-first ordering.)
-      return [...data].sort((a: any, b: any) =>
-        asc ? (a.score ?? 0) - (b.score ?? 0) : (b.score ?? 0) - (a.score ?? 0)
-      )
+      return [...data].sort((a, b) => (asc ? (a.score ?? 0) - (b.score ?? 0) : (b.score ?? 0) - (a.score ?? 0)))
     }
     // Default: trust the server's band-first, deterministically tie-broken order
     // (hard evidence always on top); reverse for ascending.
@@ -1562,7 +1722,59 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
     return sortedSuspicionList.slice(start, start + ITEMS_PER_PAGE)
   }, [sortedSuspicionList, suspPage])
 
-  const handleSort = (setSort: any, currentSort: any, key: string) => {
+  useEffect(() => {
+    setIpPage((page) => Math.min(page, Math.max(1, Math.ceil(sortedIpAnalysis.length / ITEMS_PER_PAGE))))
+  }, [sortedIpAnalysis.length])
+  useEffect(() => {
+    setSolvePage((page) => Math.min(page, Math.max(1, Math.ceil(sortedAbnormalSolves.length / ITEMS_PER_PAGE))))
+  }, [sortedAbnormalSolves.length])
+  useEffect(() => {
+    setCollusionPage((page) => Math.min(page, Math.max(1, Math.ceil(sortedCollusionGroups.length / ITEMS_PER_PAGE))))
+  }, [sortedCollusionGroups.length])
+  useEffect(() => {
+    setSuspPage((page) => Math.min(page, Math.max(1, Math.ceil(sortedSuspicionList.length / ITEMS_PER_PAGE))))
+  }, [sortedSuspicionList.length])
+
+  const filteredIdentityOverlaps = useMemo(() => {
+    const data = report?.identityOverlaps ?? []
+    if (!globalParsed.freeText && globalParsed.filters.length === 0) return data
+
+    return data.filter((item: IdentityOverlapResult) => {
+      for (const filter of globalParsed.filters) {
+        switch (filter.field) {
+          case 'team':
+            if (!item.teamNames?.some((name) => name.toLowerCase().includes(filter.value))) return false
+            break
+          case 'user':
+            if (!item.userNames?.some((name) => name.toLowerCase().includes(filter.value))) return false
+            break
+          case 'ip':
+            if (item.kind !== 'ip' || !item.value?.toLowerCase().includes(filter.value)) return false
+            break
+          case 'type':
+            if (!item.kind?.toLowerCase().includes(filter.value)) return false
+            break
+          default:
+            return false
+        }
+      }
+
+      if (!globalParsed.freeText) return true
+      const query = globalParsed.freeText.toLowerCase()
+      return Boolean(
+        item.kind?.toLowerCase().includes(query) ||
+        item.value?.toLowerCase().includes(query) ||
+        item.teamNames?.some((name) => name.toLowerCase().includes(query)) ||
+        item.userNames?.some((name) => name.toLowerCase().includes(query))
+      )
+    })
+  }, [globalParsed, report?.identityOverlaps])
+
+  const handleSort = <T,>(
+    setSort: React.Dispatch<React.SetStateAction<SortConfig<T>>>,
+    currentSort: SortConfig<T>,
+    key: keyof T
+  ) => {
     const direction = currentSort.key === key && currentSort.direction === 'asc' ? 'desc' : 'asc'
     setSort({ key, direction })
   }
@@ -1574,13 +1786,13 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
     <>
       <Modal
         opened={opened}
-        onClose={close}
+        onClose={closeCollusionDetails}
         title={
           <Group gap="xs">
             <ThemeIcon size="sm" color="violet" variant="light" radius="sm">
               <Icon path={mdiAccountGroup} size={0.7} />
             </ThemeIcon>
-            <Text fw={700}>{t('game.cheat_analysis.collusion_details', 'Collusion Details')}</Text>
+            <Text fw={700}>{t('game.cheat_analysis.collusion_details', 'Solve Similarity Details')}</Text>
           </Group>
         }
         size="xl"
@@ -1600,16 +1812,19 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
               />
               <Center h={60}>
                 <Stack align="center" gap={0}>
-                  <Text
-                    size="xl"
-                    fw={900}
-                    c={(drilledSolves?.rsi ?? selectedGroup.averageRsi ?? 0) > 0.9 ? 'alert' : 'yellow'}
-                  >
-                    {((drilledSolves?.rsi ?? selectedGroup.averageRsi ?? 0) * 100).toFixed(1)}%
+                  <Text size="xl" fw={900} c={(activeComparison?.rsi ?? 0) > 0.9 ? 'alert' : 'yellow'}>
+                    {activeComparison
+                      ? `${(activeComparison.rsi * 100).toFixed(1)}%`
+                      : t('game.cheat_analysis.not_available_short', '—')}
                   </Text>
                   <Text size="xs" c="dimmed">
                     {t('game.cheat_analysis.similarity', 'Similarity')}
                   </Text>
+                  {isDrillRefreshing && activeComparison && (
+                    <Text size="xs" c="dimmed" role="status" aria-live="polite">
+                      {t('game.cheat_analysis.updating_comparison', 'Updating…')}
+                    </Text>
+                  )}
                 </Stack>
               </Center>
               <Select
@@ -1623,12 +1838,49 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
               />
             </Group>
 
-            {isDrilling ? (
+            {drillError && (
+              <Alert
+                color="red"
+                role="alert"
+                icon={<Icon path={mdiAlertCircle} size={0.9} aria-hidden />}
+                title={t('game.cheat_analysis.comparison_failed', 'Could not load this pair comparison')}
+              >
+                <Stack gap="xs" align="flex-start">
+                  <Text size="sm">{tryGetErrorMsg(drillError, t)}</Text>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    color="red"
+                    leftSection={<Icon path={mdiRefresh} size={0.65} aria-hidden />}
+                    onClick={() => void retryDrill()}
+                    loading={isDrillRefreshing}
+                  >
+                    {t('common.button.retry', 'Retry')}
+                  </Button>
+                </Stack>
+              </Alert>
+            )}
+
+            {teamAId === null || teamBId === null ? (
+              <Alert color="yellow" icon={<Icon path={mdiInformation} size={0.9} aria-hidden />}>
+                {t(
+                  'game.cheat_analysis.comparison_unavailable',
+                  'Choose two teams with valid participation records to compare solve timing.'
+                )}
+              </Alert>
+            ) : isDrilling && !activeComparison ? (
               <Center h={400}>
-                <Loader />
+                <Loader aria-label={t('game.cheat_analysis.loading_comparison', 'Loading pair comparison')} />
               </Center>
-            ) : drilledSolves?.details && drilledSolves.details.length > 0 ? (
-              <ScrollArea h={400}>
+            ) : !drillError && activeComparison?.details && activeComparison.details.length > 0 ? (
+              <ScrollArea
+                h={400}
+                viewportProps={{
+                  role: 'region',
+                  tabIndex: 0,
+                  'aria-label': t('game.cheat_analysis.comparison_scroll_region', 'Pair comparison results'),
+                }}
+              >
                 <Table striped highlightOnHover miw="46rem">
                   <AccessibleTableCaption>
                     {t('game.cheat_analysis.pair_comparison_caption', 'Solve timing comparison between two teams')}
@@ -1650,8 +1902,10 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
-                    {drilledSolves.details.map((solve: SequenceSuspectDetail, idx: number) => (
-                      <Table.Tr key={idx}>
+                    {activeComparison.details.map((solve: SequenceSuspectDetail, idx: number) => (
+                      <Table.Tr
+                        key={`${solve.challengeName ?? 'challenge'}:${solve.timeA ?? 'a'}:${solve.timeB ?? 'b'}:${idx}`}
+                      >
                         <Table.Td fw={500} miw="14rem">
                           <ScrollingText
                             text={solve.challengeName || t('common.label.unknown', 'Unknown')}
@@ -1679,14 +1933,14 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                   </Table.Tbody>
                 </Table>
               </ScrollArea>
-            ) : (
+            ) : !drillError ? (
               <Card withBorder padding="sm">
                 <ReadableDetails details={selectedGroup.details} />
                 <Text size="xs" c="dimmed" mt="xs">
                   {t('game.cheat_analysis.common_solves', 'Common Solves')}: {selectedGroup.commonSolves?.join(', ')}
                 </Text>
               </Card>
-            )}
+            ) : null}
           </Stack>
         )}
       </Modal>
@@ -1736,25 +1990,24 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
             </Group>
             <Box>
               <RiskCompositionBar
-                hard={(selectedSuspicion as any).hard}
-                corroboration={(selectedSuspicion as any).corroboration}
-                strong={(selectedSuspicion as any).strong}
-                behavioral={(selectedSuspicion as any).behavioral}
+                hard={selectedSuspicion.hard}
+                corroboration={selectedSuspicion.corroboration}
+                strong={selectedSuspicion.strong}
+                behavioral={selectedSuspicion.behavioral}
               />
               <Group gap="md" mt={6}>
                 <Text size="xs" c="dimmed">
-                  {t('game.cheat_analysis.tier.hard', 'Hard')}: <b>{(selectedSuspicion as any).hard ?? 0}</b>
+                  {t('game.cheat_analysis.tier.hard', 'Hard')}: <b>{selectedSuspicion.hard ?? 0}</b>
                 </Text>
                 <Text size="xs" c="dimmed">
                   {t('game.cheat_analysis.corroboration', 'Corroboration')}:{' '}
-                  <b>{(selectedSuspicion as any).corroboration ?? 0}</b>
+                  <b>{selectedSuspicion.corroboration ?? 0}</b>
                 </Text>
                 <Text size="xs" c="dimmed">
-                  {t('game.cheat_analysis.tier.strong', 'Strong')}: <b>{(selectedSuspicion as any).strong ?? 0}</b>
+                  {t('game.cheat_analysis.tier.strong', 'Strong')}: <b>{selectedSuspicion.strong ?? 0}</b>
                 </Text>
                 <Text size="xs" c="dimmed">
-                  {t('game.cheat_analysis.tier.behavioral', 'Behavioral')}:{' '}
-                  <b>{(selectedSuspicion as any).behavioral ?? 0}</b>
+                  {t('game.cheat_analysis.tier.behavioral', 'Behavioral')}: <b>{selectedSuspicion.behavioral ?? 0}</b>
                 </Text>
               </Group>
               <Text size="xs" c="dimmed" mt={4}>
@@ -1765,18 +2018,31 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
               </Text>
             </Box>
             <Divider />
-            <ScrollArea h={380}>
-              <Table striped miw="54rem">
+            <ScrollArea
+              h={380}
+              viewportProps={{
+                role: 'region',
+                tabIndex: 0,
+                'aria-label': t('game.cheat_analysis.evidence_scroll_region', 'Evidence events'),
+              }}
+            >
+              <Table striped miw="68rem">
                 <AccessibleTableCaption>
                   {t('game.cheat_analysis.evidence_events_caption', 'Evidence events for the selected team')}
                 </AccessibleTableCaption>
                 <Table.Thead>
                   <Table.Tr>
+                    <Table.Th scope="col" w="6rem" miw="6rem">
+                      {t('game.cheat_analysis.event_id', 'Event ID')}
+                    </Table.Th>
                     <Table.Th scope="col" w="10rem" miw="10rem">
                       {t('game.cheat_analysis.type', 'Type')}
                     </Table.Th>
                     <Table.Th scope="col" w="9rem" miw="9rem">
                       {t('game.cheat_analysis.tier_label', 'Tier')}
+                    </Table.Th>
+                    <Table.Th scope="col" w="10rem" miw="10rem">
+                      {t('game.cheat_analysis.score_contribution', 'Score contribution')}
                     </Table.Th>
                     <Table.Th scope="col" w="11rem" miw="11rem">
                       {t('common.label.time', 'Time')}
@@ -1788,28 +2054,66 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 </Table.Thead>
                 <Table.Tbody>
                   {selectedSuspicion.events?.map((evt, idx) => {
-                    const tm = tierMeta((evt as any).tier)
-                    const counted = (evt as any).counted
+                    const tm = tierMeta(evt.tier)
+                    const contribution = evidenceContribution(evt)
+                    const counted = evt.counted ?? contribution !== 0
+                    const rawDelta = evt.scoreDelta ?? 0
                     return (
-                      <Table.Tr key={idx} style={{ opacity: counted ? 1 : 0.55 }}>
+                      <Table.Tr
+                        key={evt.eventId ?? `${evt.type ?? 'event'}:${evt.time ?? 'time'}:${idx}`}
+                        style={{ opacity: counted ? 1 : 0.65 }}
+                      >
+                        <Table.Td miw="6rem">
+                          <Text size="xs" ff="monospace" c="dimmed">
+                            {evt.eventId == null ? '—' : `#${evt.eventId}`}
+                          </Text>
+                        </Table.Td>
                         <Table.Td miw="10rem">
                           <Text size="sm" fw={600}>
-                            {evt.type}
+                            {evt.type ?? t('common.label.unknown', 'Unknown')}
                           </Text>
                         </Table.Td>
                         <Table.Td miw="9rem">
                           <Group gap={4} wrap="nowrap">
                             <Badge color={tm.color} size="sm" variant={counted ? 'filled' : 'outline'}>
-                              {t(`game.cheat_analysis.tier.${(evt as any).tier ?? 'behavioral'}`, tm.label)}
+                              {t(`game.cheat_analysis.tier.${evt.tier ?? 'behavioral'}`, tm.label)}
                             </Badge>
                             {!counted && (
                               <Text size="xs" c="dimmed">
-                                {(evt as any).tier === 'context'
+                                {evt.tier === 'context'
                                   ? t('game.cheat_analysis.not_scored', 'context')
                                   : t('game.cheat_analysis.capped', 'capped')}
                               </Text>
                             )}
                           </Group>
+                        </Table.Td>
+                        <Table.Td miw="10rem">
+                          <Tooltip
+                            withArrow
+                            label={
+                              counted
+                                ? t(
+                                    'game.cheat_analysis.score_applied_detail',
+                                    'Raw rule weight: {{raw}}. Applied after caps: {{applied}}.',
+                                    { raw: rawDelta, applied: contribution }
+                                  )
+                                : t(
+                                    'game.cheat_analysis.score_not_applied_detail',
+                                    'Raw rule weight: {{raw}}. This event did not add points.',
+                                    { raw: rawDelta }
+                                  )
+                            }
+                          >
+                            <Badge
+                              size="sm"
+                              variant={counted ? 'light' : 'outline'}
+                              color={contribution > 0 ? 'orange' : contribution < 0 ? 'teal' : 'gray'}
+                            >
+                              {counted
+                                ? `${contribution > 0 ? '+' : ''}${contribution}`
+                                : t('game.cheat_analysis.not_counted_score', '0 (not counted)')}
+                            </Badge>
+                          </Tooltip>
                         </Table.Td>
                         <Table.Td fz="xs" ff="monospace" miw="11rem">
                           {fmtAbsTime(evt.time, locale, 'MM-DD HH:mm:ss')}
@@ -1820,6 +2124,15 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                       </Table.Tr>
                     )
                   })}
+                  {!selectedSuspicion.events?.length && (
+                    <Table.Tr>
+                      <Table.Td colSpan={6}>
+                        <Text size="sm" c="dimmed" ta="center" py="md">
+                          {t('game.cheat_analysis.no_evidence_events', 'No event details are available.')}
+                        </Text>
+                      </Table.Td>
+                    </Table.Tr>
+                  )}
                 </Table.Tbody>
               </Table>
             </ScrollArea>
@@ -1855,9 +2168,9 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
           onClick={() => setActiveTab('suspicion')}
         />
         <SummaryCard
-          label={t('game.cheat_analysis.card.ip_anomalies', 'IP Anomalies')}
+          label={t('game.cheat_analysis.card.ip_anomalies', 'Network / Device Signals')}
           value={summaryStats.ipAnomalies}
-          sub={t('game.cheat_analysis.card.ip_anomalies_sub', 'Suspicious IP activities')}
+          sub={t('game.cheat_analysis.card.ip_anomalies_sub', 'Probabilistic review context')}
           icon={mdiIpNetwork}
           color="cyan"
           active={activeTab === 'ip'}
@@ -1866,16 +2179,16 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
         <SummaryCard
           label={t('game.cheat_analysis.card.abnormal_solves', 'Abnormal Solves')}
           value={summaryStats.abnormalSolves}
-          sub={t('game.cheat_analysis.card.abnormal_solves_sub', 'Solves without prerequisites')}
+          sub={t('game.cheat_analysis.card.abnormal_solves_sub', 'Solve-prerequisite signals')}
           icon={mdiGhost}
           color="orange"
           active={activeTab === 'solve'}
           onClick={() => setActiveTab('solve')}
         />
         <SummaryCard
-          label={t('game.cheat_analysis.card.collusion_groups', 'Collusion Groups')}
+          label={t('game.cheat_analysis.card.collusion_groups', 'Similarity Groups')}
           value={summaryStats.collusionGroups}
-          sub={t('game.cheat_analysis.card.collusion_groups_sub', 'High confidence rings')}
+          sub={t('game.cheat_analysis.card.collusion_groups_sub', 'Solve-timing similarity for review')}
           icon={mdiAccountGroup}
           color="violet"
           active={activeTab === 'collusion'}
@@ -1884,7 +2197,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
         <SummaryCard
           label={t('game.cheat_analysis.tab.identity', 'Identity Overlap')}
           value={summaryStats.identityOverlaps}
-          sub={t('game.cheat_analysis.card.identity_sub', 'Cross-team IP / fingerprint')}
+          sub={t('game.cheat_analysis.card.identity_sub', 'Probabilistic correlation only')}
           icon={mdiFingerprint}
           color="gray"
           active={activeTab === 'identity'}
@@ -1911,8 +2224,8 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                   size="xs"
                   variant="filled"
                   color={
-                    (report?.suspicionList?.filter((x: any) => x.band === 'evidenced' || x.band === 'investigate')
-                      .length ?? 0) > 0
+                    (report?.suspicionList?.filter((x) => x.band === 'evidenced' || x.band === 'investigate').length ??
+                      0) > 0
                       ? 'alert'
                       : 'gray'
                   }
@@ -1937,7 +2250,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 </Badge>
               }
             >
-              {t('game.cheat_analysis.tab.ip_analysis', 'IP Analysis')}
+              {t('game.cheat_analysis.tab.ip_analysis', 'Network / Device')}
             </Tabs.Tab>
             <Tabs.Tab
               value="solve"
@@ -1967,7 +2280,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 </Badge>
               }
             >
-              {t('game.cheat_analysis.tab.collusion', 'Collusion')}
+              {t('game.cheat_analysis.tab.collusion', 'Similarity')}
             </Tabs.Tab>
             <Tabs.Tab
               value="identity"
@@ -1990,11 +2303,12 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
             <Group justify="space-between" mb="md">
               <Group gap="xs">
                 <Title order={3}>{t('game.cheat_analysis.suspicion_rankings', 'Suspicion Rankings')}</Title>
-                <Badge variant="light" color="alert">
+                <Badge variant="light" color="alert" role="status" aria-live="polite">
                   {sortedSuspicionList.length}
-                  {suspSearch && report?.suspicionList?.length !== sortedSuspicionList.length && (
-                    <> / {report?.suspicionList?.length ?? 0}</>
-                  )}
+                  {(globalSearch.trim() || suspSearch.trim()) &&
+                    report?.suspicionList?.length !== sortedSuspicionList.length && (
+                      <> / {report?.suspicionList?.length ?? 0}</>
+                    )}
                 </Badge>
               </Group>
               <SmartSearch
@@ -2005,9 +2319,17 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 w={320}
               />
             </Group>
-            {report?.suspicionList && report.suspicionList.length > 0 ? (
+            {sortedSuspicionList.length > 0 ? (
               <>
-                <ScrollArea offsetScrollbars h={compactHeight}>
+                <ScrollArea
+                  offsetScrollbars
+                  h={compactHeight}
+                  viewportProps={{
+                    role: 'region',
+                    tabIndex: 0,
+                    'aria-label': t('game.cheat_analysis.suspicion_scroll_region', 'Suspicion rankings'),
+                  }}
+                >
                   <Table
                     className={tableClasses.table}
                     horizontalSpacing="md"
@@ -2051,12 +2373,14 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                       </Table.Tr>
                     </Table.Thead>
                     <Table.Tbody>
-                      {paginatedSuspicionList.map((item: any, index: number) => (
+                      {paginatedSuspicionList.map((item, index) => (
                         <SuspicionRow
-                          key={item.participationId || index}
+                          key={item.participationId ?? `${item.teamId ?? 'team'}:${item.teamName ?? index}`}
                           item={item}
                           index={(suspPage - 1) * ITEMS_PER_PAGE + index}
                           statusMap={statusMap}
+                          canManageParticipations={canManageParticipations}
+                          isChanging={changingParticipationId === item.participationId}
                           onStatusChange={handleStatusChange}
                           onView={handleViewSuspicion}
                         />
@@ -2077,28 +2401,28 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 )}
               </>
             ) : (
-              <Center className={classes.emptyState} py="xl">
-                <Stack align="center" gap="xs">
-                  <ThemeIcon size={48} radius="xl" color="brand" variant="light">
-                    <Icon path={mdiCheckCircle} size={1.4} />
-                  </ThemeIcon>
-                  <Text fw={600} size="md">
-                    {t('game.cheat_analysis.all_clear', 'All Clear')}
-                  </Text>
-                  <Text size="sm" c="dimmed">
-                    {t('game.cheat_analysis.no_suspicion', 'No suspicion scores recorded')}
-                  </Text>
-                </Stack>
-              </Center>
+              <AnalysisEmptyState
+                filtered={Boolean(globalSearch.trim() || suspSearch.trim())}
+                description={t(
+                  'game.cheat_analysis.no_suspicion',
+                  'No suspicion signals were recorded in this report snapshot.'
+                )}
+                onClearFilters={() => {
+                  setGlobalSearch('')
+                  setSuspSearch('')
+                }}
+              />
             )}
           </Tabs.Panel>
 
           <Tabs.Panel value="ip" pt="md">
             <Group justify="space-between" mb="md">
               <Group gap="xs">
-                <Title order={3}>{t('game.cheat_analysis.tab.ip_analysis', 'IP Analysis')}</Title>
-                <Badge variant="light" color="cyan">
-                  {report?.ipAnalysis?.length ?? 0}
+                <Title order={3}>{t('game.cheat_analysis.tab.ip_analysis', 'Network / Device Signals')}</Title>
+                <Badge variant="light" color="cyan" role="status" aria-live="polite">
+                  {sortedIpAnalysis.length}
+                  {(globalSearch.trim() || ipSearch.trim()) &&
+                    sortedIpAnalysis.length !== report?.ipAnalysis?.length && <> / {report?.ipAnalysis?.length ?? 0}</>}
                 </Badge>
               </Group>
               <SmartSearch
@@ -2109,9 +2433,17 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 w={320}
               />
             </Group>
-            {report?.ipAnalysis && report.ipAnalysis.length > 0 ? (
+            {sortedIpAnalysis.length > 0 ? (
               <>
-                <ScrollArea offsetScrollbars h={roomyHeight}>
+                <ScrollArea
+                  offsetScrollbars
+                  h={roomyHeight}
+                  viewportProps={{
+                    role: 'region',
+                    tabIndex: 0,
+                    'aria-label': t('game.cheat_analysis.ip_scroll_region', 'Network and device signals'),
+                  }}
+                >
                   <Table
                     className={tableClasses.table}
                     horizontalSpacing="md"
@@ -2166,8 +2498,12 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                       </Table.Tr>
                     </Table.Thead>
                     <Table.Tbody>
-                      {paginatedIpAnalysis.map((item: any, index: number) => (
-                        <IpAnalysisRow key={index} item={item} locale={locale} />
+                      {paginatedIpAnalysis.map((item, index) => (
+                        <IpAnalysisRow
+                          key={`${item.teamId ?? 'team'}:${item.type ?? 'type'}:${item.time ?? 'time'}:${item.ip ?? index}`}
+                          item={item}
+                          locale={locale}
+                        />
                       ))}
                     </Table.Tbody>
                   </Table>
@@ -2185,19 +2521,17 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 )}
               </>
             ) : (
-              <Center className={classes.emptyState} py="xl">
-                <Stack align="center" gap="xs">
-                  <ThemeIcon size={48} radius="xl" color="brand" variant="light">
-                    <Icon path={mdiCheckCircle} size={1.4} />
-                  </ThemeIcon>
-                  <Text fw={600} size="md">
-                    {t('game.cheat_analysis.all_clear', 'All Clear')}
-                  </Text>
-                  <Text size="sm" c="dimmed">
-                    {t('game.content.no_cheat.title', 'No IP anomalies detected')}
-                  </Text>
-                </Stack>
-              </Center>
+              <AnalysisEmptyState
+                filtered={Boolean(globalSearch.trim() || ipSearch.trim())}
+                description={t(
+                  'game.content.no_cheat.title',
+                  'No network or device correlation signals were recorded in this report snapshot.'
+                )}
+                onClearFilters={() => {
+                  setGlobalSearch('')
+                  setIpSearch('')
+                }}
+              />
             )}
           </Tabs.Panel>
 
@@ -2205,8 +2539,12 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
             <Group justify="space-between" mb="md">
               <Group gap="xs">
                 <Title order={3}>{t('game.cheat_analysis.tab.abnormal_solves', 'Abnormal Solves')}</Title>
-                <Badge variant="light" color="orange">
-                  {report?.abnormalSolves?.length ?? 0}
+                <Badge variant="light" color="orange" role="status" aria-live="polite">
+                  {sortedAbnormalSolves.length}
+                  {(globalSearch.trim() || solveSearch.trim()) &&
+                    sortedAbnormalSolves.length !== report?.abnormalSolves?.length && (
+                      <> / {report?.abnormalSolves?.length ?? 0}</>
+                    )}
                 </Badge>
               </Group>
               <SmartSearch
@@ -2217,9 +2555,17 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 w={320}
               />
             </Group>
-            {report?.abnormalSolves && report.abnormalSolves.length > 0 ? (
+            {sortedAbnormalSolves.length > 0 ? (
               <>
-                <ScrollArea offsetScrollbars h={roomyHeight}>
+                <ScrollArea
+                  offsetScrollbars
+                  h={roomyHeight}
+                  viewportProps={{
+                    role: 'region',
+                    tabIndex: 0,
+                    'aria-label': t('game.cheat_analysis.solve_scroll_region', 'Abnormal solve signals'),
+                  }}
+                >
                   <Table
                     className={tableClasses.table}
                     horizontalSpacing="md"
@@ -2271,8 +2617,13 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                       </Table.Tr>
                     </Table.Thead>
                     <Table.Tbody>
-                      {paginatedAbnormalSolves.map((item: any, index: number) => (
-                        <AbnormalSolveRow key={index} item={item} locale={locale} t={t} />
+                      {paginatedAbnormalSolves.map((item, index) => (
+                        <AbnormalSolveRow
+                          key={`${item.teamId ?? 'team'}:${item.challengeId ?? 'challenge'}:${item.type ?? 'type'}:${item.solveTime ?? index}`}
+                          item={item}
+                          locale={locale}
+                          t={t}
+                        />
                       ))}
                     </Table.Tbody>
                   </Table>
@@ -2290,28 +2641,30 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 )}
               </>
             ) : (
-              <Center className={classes.emptyState} py="xl">
-                <Stack align="center" gap="xs">
-                  <ThemeIcon size={48} radius="xl" color="brand" variant="light">
-                    <Icon path={mdiCheckCircle} size={1.4} />
-                  </ThemeIcon>
-                  <Text fw={600} size="md">
-                    {t('game.cheat_analysis.all_clear', 'All Clear')}
-                  </Text>
-                  <Text size="sm" c="dimmed">
-                    {t('game.content.no_cheat.comment', 'No abnormal solves detected')}
-                  </Text>
-                </Stack>
-              </Center>
+              <AnalysisEmptyState
+                filtered={Boolean(globalSearch.trim() || solveSearch.trim())}
+                description={t(
+                  'game.content.no_cheat.comment',
+                  'No abnormal-solve signals were recorded in this report snapshot.'
+                )}
+                onClearFilters={() => {
+                  setGlobalSearch('')
+                  setSolveSearch('')
+                }}
+              />
             )}
           </Tabs.Panel>
 
           <Tabs.Panel value="collusion" pt="md">
             <Group justify="space-between" mb="md">
               <Group gap="xs">
-                <Title order={3}>{t('game.cheat_analysis.card.collusion_groups', 'Collusion Groups')}</Title>
-                <Badge variant="light" color="violet">
-                  {report?.collusionGroups?.length ?? 0}
+                <Title order={3}>{t('game.cheat_analysis.card.collusion_groups', 'Similarity Groups')}</Title>
+                <Badge variant="light" color="violet" role="status" aria-live="polite">
+                  {sortedCollusionGroups.length}
+                  {(globalSearch.trim() || collusionSearch.trim()) &&
+                    sortedCollusionGroups.length !== report?.collusionGroups?.length && (
+                      <> / {report?.collusionGroups?.length ?? 0}</>
+                    )}
                 </Badge>
               </Group>
               <SmartSearch
@@ -2322,9 +2675,17 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 w={320}
               />
             </Group>
-            {report?.collusionGroups && report.collusionGroups.length > 0 ? (
+            {sortedCollusionGroups.length > 0 ? (
               <>
-                <ScrollArea offsetScrollbars h={roomyHeight}>
+                <ScrollArea
+                  offsetScrollbars
+                  h={roomyHeight}
+                  viewportProps={{
+                    role: 'region',
+                    tabIndex: 0,
+                    'aria-label': t('game.cheat_analysis.collusion_scroll_region', 'Collusion similarity groups'),
+                  }}
+                >
                   <Table
                     className={tableClasses.table}
                     horizontalSpacing="md"
@@ -2336,7 +2697,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                     miw="72rem"
                   >
                     <AccessibleTableCaption>
-                      {t('game.cheat_analysis.collusion_table_caption', 'Potential team collusion groups')}
+                      {t('game.cheat_analysis.collusion_table_caption', 'Team solve-timing similarity groups')}
                     </AccessibleTableCaption>
                     <Table.Thead>
                       <Table.Tr>
@@ -2361,8 +2722,12 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                       </Table.Tr>
                     </Table.Thead>
                     <Table.Tbody>
-                      {paginatedCollusionGroups.map((item: any, index: number) => (
-                        <CollusionGroupRow key={index} item={item} onView={handleViewDetails} />
+                      {paginatedCollusionGroups.map((item, index) => (
+                        <CollusionGroupRow
+                          key={`${item.teams?.map((team) => team.participationId ?? team.id).join(':') ?? 'group'}:${item.commonSolves?.join(':') ?? item.averageRsi ?? index}`}
+                          item={item}
+                          onView={handleViewDetails}
+                        />
                       ))}
                     </Table.Tbody>
                   </Table>
@@ -2380,19 +2745,17 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 )}
               </>
             ) : (
-              <Center className={classes.emptyState} py="xl">
-                <Stack align="center" gap="xs">
-                  <ThemeIcon size={48} radius="xl" color="brand" variant="light">
-                    <Icon path={mdiCheckCircle} size={1.4} />
-                  </ThemeIcon>
-                  <Text fw={600} size="md">
-                    {t('game.cheat_analysis.all_clear', 'All Clear')}
-                  </Text>
-                  <Text size="sm" c="dimmed">
-                    {t('game.cheat_analysis.no_collusion', 'No collusion groups detected')}
-                  </Text>
-                </Stack>
-              </Center>
+              <AnalysisEmptyState
+                filtered={Boolean(globalSearch.trim() || collusionSearch.trim())}
+                description={t(
+                  'game.cheat_analysis.no_collusion',
+                  'No solve-timing similarity groups were recorded in this report snapshot.'
+                )}
+                onClearFilters={() => {
+                  setGlobalSearch('')
+                  setCollusionSearch('')
+                }}
+              />
             )}
           </Tabs.Panel>
 
@@ -2400,19 +2763,30 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
             <Group justify="space-between" mb="xs">
               <Group gap="xs">
                 <Title order={3}>{t('game.cheat_analysis.tab.identity', 'Identity Overlap')}</Title>
-                <Badge variant="light" color="violet">
-                  {report?.identityOverlaps?.length ?? 0}
+                <Badge variant="light" color="violet" role="status" aria-live="polite">
+                  {filteredIdentityOverlaps.length}
+                  {globalSearch.trim() && filteredIdentityOverlaps.length !== report?.identityOverlaps?.length && (
+                    <> / {report?.identityOverlaps?.length ?? 0}</>
+                  )}
                 </Badge>
               </Group>
             </Group>
             <Text size="xs" c="dimmed" mb="md">
               {t(
                 'game.cheat_analysis.identity_note',
-                'Same browser fingerprint or IP used by multiple teams. Non-scoring — surfaced for human review (e.g. account sharing or sockpuppet teams). A shared campus/NAT IP across many teams is usually benign; a shared high-entropy fingerprint across teams is not.'
+                'A masked fingerprint or IP correlated with multiple teams. These non-scoring signals are probabilistic: shared devices, browser privacy settings, proxies, campus networks, and carrier NAT can all create overlap. Review alongside other evidence.'
               )}
             </Text>
-            {report?.identityOverlaps && report.identityOverlaps.length > 0 ? (
-              <ScrollArea offsetScrollbars h={roomyHeight}>
+            {filteredIdentityOverlaps.length > 0 ? (
+              <ScrollArea
+                offsetScrollbars
+                h={roomyHeight}
+                viewportProps={{
+                  role: 'region',
+                  tabIndex: 0,
+                  'aria-label': t('game.cheat_analysis.identity_scroll_region', 'Identity overlap signals'),
+                }}
+              >
                 <Table
                   className={tableClasses.table}
                   horizontalSpacing="md"
@@ -2432,7 +2806,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                         {t('game.cheat_analysis.identity_kind', 'Kind')}
                       </Table.Th>
                       <Table.Th scope="col" w="14rem" miw="14rem">
-                        {t('game.cheat_analysis.identity_value', 'Fingerprint / IP')}
+                        {t('game.cheat_analysis.identity_value', 'Masked value')}
                       </Table.Th>
                       <Table.Th scope="col" w="5rem" miw="5rem" style={{ textAlign: 'center' }}>
                         {t('game.cheat_analysis.identity_teams', 'Teams')}
@@ -2446,8 +2820,8 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
-                    {report.identityOverlaps.map((ov: any, idx: number) => (
-                      <Table.Tr key={idx}>
+                    {filteredIdentityOverlaps.map((ov: IdentityOverlapResult, idx: number) => (
+                      <Table.Tr key={`${ov.kind ?? 'kind'}:${ov.value ?? 'value'}:${ov.teamNames?.join(':') ?? idx}`}>
                         <Table.Td>
                           <Badge
                             size="sm"
@@ -2473,13 +2847,10 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                             variant="filled"
                             color={
                               ov.kind === 'fingerprint'
-                                ? // One browser across teams is conclusive — alarm color.
-                                  'alert'
-                                : // Shared IP: the more teams, the likelier it's just a
-                                  // campus/CGNAT egress — desaturate toward gray.
-                                  ov.teamCount <= 2
+                                ? 'violet'
+                                : (ov.teamCount ?? 0) <= 2
                                   ? 'orange'
-                                  : ov.teamCount <= 4
+                                  : (ov.teamCount ?? 0) <= 4
                                     ? 'yellow'
                                     : 'gray'
                             }
@@ -2501,19 +2872,14 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate }) => {
                 </Table>
               </ScrollArea>
             ) : (
-              <Center className={classes.emptyState} py="xl">
-                <Stack align="center" gap="xs">
-                  <ThemeIcon size={48} radius="xl" color="brand" variant="light">
-                    <Icon path={mdiCheckCircle} size={1.4} />
-                  </ThemeIcon>
-                  <Text fw={600} size="md">
-                    {t('game.cheat_analysis.all_clear', 'All Clear')}
-                  </Text>
-                  <Text size="sm" c="dimmed">
-                    {t('game.cheat_analysis.no_identity_overlap', 'No cross-team identity overlap detected')}
-                  </Text>
-                </Stack>
-              </Center>
+              <AnalysisEmptyState
+                filtered={Boolean(globalSearch.trim())}
+                description={t(
+                  'game.cheat_analysis.no_identity_overlap',
+                  'No cross-team identity overlap signals were recorded in this report snapshot.'
+                )}
+                onClearFilters={() => setGlobalSearch('')}
+              />
             )}
           </Tabs.Panel>
         </Tabs>

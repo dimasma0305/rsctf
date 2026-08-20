@@ -17,6 +17,9 @@ pub struct RegisterModel {
     /// `AccountPolicy:EnableBrowserFingerprint` is on.
     #[serde(default)]
     pub fingerprint: Option<String>,
+    /// One-time server-bound proof returned by the browser fingerprint collector.
+    #[serde(default)]
+    pub fingerprint_proof: Option<String>,
     /// One-time deployment secret required only while the authoritative user
     /// table is empty. It is ignored after the bootstrap administrator exists.
     #[serde(default)]
@@ -31,7 +34,14 @@ impl fmt::Debug for RegisterModel {
             .field("password", &"<redacted>")
             .field("email", &self.email)
             .field("challenge", &self.challenge.as_ref().map(|_| "<redacted>"))
-            .field("fingerprint", &self.fingerprint)
+            .field(
+                "fingerprint",
+                &self.fingerprint.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "fingerprint_proof",
+                &self.fingerprint_proof.as_ref().map(|_| "<redacted>"),
+            )
             .field(
                 "bootstrap_token",
                 &self.bootstrap_token.as_ref().map(|_| "<redacted>"),
@@ -68,6 +78,8 @@ mod tests {
                 "userName":"player",
                 "password":"Password1",
                 "email":"player@example.test",
+                "fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "fingerprintProof":"proof-secret",
                 "bootstrapToken":"top-secret"
             }"#,
         )
@@ -77,6 +89,8 @@ mod tests {
         let debug = format!("{model:?}");
         assert!(!debug.contains("top-secret"));
         assert!(!debug.contains("Password1"));
+        assert!(!debug.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(!debug.contains("proof-secret"));
     }
 
     #[test]

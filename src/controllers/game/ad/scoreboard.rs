@@ -559,6 +559,17 @@ pub async fn state(
     // The round and this team's services/checks/flags are read fresh below.
     let ctx = state_ctx_cached(&st, id).await?;
     let reset_cooldown_secs = ctx.reset_cooldown_secs;
+    let mut roster = crate::services::live_roster::try_acquire_participation_fence(
+        st.pg(),
+        user.id,
+        &user.security_stamp,
+        id,
+        part.team_id,
+        part.id,
+        true,
+    )
+    .await?
+    .ok_or(AppError::Forbidden)?;
 
     // Post-game snapshot policy. `snapshot_available` per service must be the EXACT
     // success condition of the `Snapshot` download route below (or the client's download
@@ -578,7 +589,7 @@ pub async fn state(
         scoring_paused,
         scoring_paused_at,
         services,
-    } = super::state_tail::load(st.pg(), id, part.id).await?;
+    } = super::state_tail::load(&mut **roster.transaction_mut(), id, part.id).await?;
 
     let items = services
         .into_iter()
@@ -620,7 +631,7 @@ pub async fn state(
         })
         .collect();
 
-    Ok(RequestResponse::ok(AdStateModel {
+    let response = RequestResponse::ok(AdStateModel {
         current_round,
         epoch_ticks: ctx.epoch_ticks,
         start_round: ctx.start_round,
@@ -631,7 +642,9 @@ pub async fn state(
         scoring_paused,
         scoring_paused_at,
         services: items,
-    }))
+    });
+    roster.release().await?;
+    Ok(response)
 }
 
 /// `POST /api/Game/{id}/Ad/Services/{adTeamServiceId}/Reset` — the caller
@@ -656,9 +669,28 @@ pub async fn reset_service(
         initial.participation_id, initial.challenge_id
     );
     let _local = crate::utils::single_flight::coalesce(&lock_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &lock_key)
-            .await?;
+    let roster_key = crate::services::live_roster::lock_key(part.team_id);
+    let mut distributed =
+        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
+            st.pg(),
+            &[roster_key],
+            &lock_key,
+        )
+        .await?;
+    if !crate::services::live_roster::participation_caller_is_live_on(
+        &mut **distributed.transaction_mut(),
+        user.id,
+        &user.security_stamp,
+        id,
+        part.team_id,
+        part.id,
+        true,
+    )
+    .await?
+    {
+        distributed.release().await?;
+        return Err(AppError::Forbidden);
+    }
     let svc = ad_team_service::Entity::find_by_id(ad_team_service_id)
         .one(&st.db)
         .await?
@@ -842,7 +874,6 @@ pub async fn download_snapshot(
     Path((id, ad_team_service_id)): Path<(i32, i32)>,
 ) -> AppResult<Response> {
     let part = resolve_participation(&st, &user, id).await?;
-
     let svc = ad_team_service::Entity::find_by_id(ad_team_service_id)
         .one(&st.db)
         .await?
@@ -895,24 +926,22 @@ pub async fn download_snapshot(
             crate::services::ad::snapshots::MAX_STORED_SNAPSHOT_BYTES,
         )
         .await?;
-    let filename = snapshot.name;
-    Ok((
-        [
-            (
-                header::CONTENT_TYPE,
-                crate::services::ad::snapshots::SNAPSHOT_CONTENT_TYPE.to_string(),
-            ),
-            (header::CONTENT_LENGTH, archive.len().to_string()),
-            (header::CACHE_CONTROL, "private, no-store".to_string()),
-            (header::PRAGMA, "no-cache".to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-        ],
+    super::snapshot_download::finish_snapshot_response(
+        st.pg(),
+        user.id,
+        &user.security_stamp,
+        id,
+        part.team_id,
+        part.id,
+        super::snapshot_download::SnapshotResponseGrant {
+            team_service_id: svc.id,
+            snapshot_id: snapshot.id,
+            hash: snapshot.hash,
+            filename: snapshot.name,
+        },
         archive,
     )
-        .into_response())
+    .await
 }
 
 #[cfg(test)]

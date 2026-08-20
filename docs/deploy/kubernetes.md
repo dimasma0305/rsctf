@@ -4,7 +4,11 @@ The published rsctf Helm chart deploys the platform, its HTTP Service,
 persistent storage, and optional starter PostgreSQL/Redis services. It can also
 grant rsctf narrowly scoped permission to create challenge Pods, Services, and
 per-instance NetworkPolicies. Every runtime role uses the same image;
-`runtimeRole: all` remains the default. You do not need a source checkout.
+`runtimeRole: all` remains the default. A fresh installation does not need a
+source checkout. Before upgrading an existing installation across an
+incompatible schema release, obtain `scripts/kubernetes-maintenance-cutover.sh`
+from the exact reviewed source release that produced the chart and image; do
+not run an unversioned copy from another branch.
 
 ## Before installing
 
@@ -50,6 +54,7 @@ image:
 
 secrets:
   jwtSecret: "replace-with-at-least-32-random-bytes"
+  identityHashKey: "replace-with-a-different-32-byte-random-value"
 
 config:
   publicUrl: "https://ctf.example.org"
@@ -65,7 +70,10 @@ ingress:
           pathType: Prefix
 ```
 
-Generate secrets with `openssl rand -hex 32` and protect the file with `chmod 600 rsctf-values.yaml`.
+Generate each secret independently with `openssl rand -hex 32` and protect the
+file with `chmod 600 rsctf-values.yaml`. Keep `identityHashKey` stable across
+replicas, restarts, and JWT rotations; changing it breaks continuity for
+privacy-preserving anti-cheat identity correlation.
 
 If an ingress controller sets forwarded client-address headers, also set `config.trustedProxyCidrs` to the controller's actual source CIDR. Leave it empty until you know that range; trusting a broad cluster or private network lets other workloads spoof player IPs. See [Reverse proxy and HTTPS](./reverse-proxy).
 
@@ -74,9 +82,14 @@ token are generated on first install and retained on upgrades. The Helm notes
 print a command that reads the token without placing it in a URL. For
 production, use `existingSecret.name` with an external secret manager and an
 external PostgreSQL service instead of keeping sensitive values in Helm release
-data; include the configured `bootstrap-token` key.
+data; include the configured `identity-hash-key` and `bootstrap-token` keys.
 
 ## Install
+
+The command below is only for a fresh installation with no old rsctf runtime
+Pod. Do not use a plain `helm upgrade` for an existing release: migrations
+0089–0091 require the enforced [maintenance cutover](./operations.md#update-helm)
+so every old runtime is stopped before the new schema is applied.
 
 ```bash
 helm upgrade --install rsctf oci://ghcr.io/dimasma0305/charts/rsctf \
@@ -84,7 +97,7 @@ helm upgrade --install rsctf oci://ghcr.io/dimasma0305/charts/rsctf \
   --namespace rsctf-system \
   --create-namespace \
   --values rsctf-values.yaml \
-  --wait
+  --wait --wait-for-jobs
 ```
 
 Then inspect the rollout:
@@ -102,7 +115,10 @@ The exact resource name includes the Helm release and chart naming rules; use `k
 Set the chart's container backend to Kubernetes only after you understand the exposure model:
 
 - rsctf creates challenge Pods and Services in a dedicated challenge namespace.
-- Normal challenge Services use random NodePorts.
+- Direct-mode challenge Services use random NodePorts.
+- PlatformProxy Services use ClusterIP plus a per-instance ingress
+  NetworkPolicy that admits only the configured rsctf control namespace, pod
+  label, TCP port, and selected challenge Pod.
 - `RSCTF_K8S_PUBLIC_ENTRY` must lead players to nodes where those ports are reachable.
 - A&D services use ClusterIP and per-instance NetworkPolicies.
 - KotH marker reads use the narrowly scoped `pods/exec` subresource.
@@ -113,6 +129,27 @@ Set the chart's container backend to Kubernetes only after you understand the ex
   Kubernetes nodes.
 
 The chart creates a ServiceAccount and a namespaced Role for only the resources the current backend uses.
+
+The Kubernetes API accepting a NetworkPolicy object does not prove that the CNI
+enforces it. Before enabling this backend, run a real cross-Pod probe in the
+challenge namespace: the labeled rsctf control Pod must reach the challenge
+port, while an otherwise ordinary Pod must time out. Then set:
+
+```yaml
+containerBackend: kubernetes
+trafficCapture:
+  enabled: false
+kubernetes:
+  adServiceCidr: 10.96.0.0/12
+  networkPolicyEnforced: true
+```
+
+Both Helm validation and binary startup fail closed until that acknowledgement
+is present. The challenge-namespace Role must retain `get`, `list`, `create`,
+and `delete` on `networkpolicies.networking.k8s.io`; policy creation happens
+before Pod creation. Rollback removes a policy created by the failing attempt
+only when its new Pod is also removed; an idempotent retry never removes the
+policy protecting an adopted Pod.
 
 ## Current Kubernetes limitations
 
@@ -149,6 +186,8 @@ off. Web provisioning consumes it when creating A&D/KotH policy, while checker
 owners use it to reject targets outside the service network. Checker-owning
 nodes must also expose Landlock ABI v3 as an active LSM and seccomp filter
 support; each Pod proves the real child confinement path before readiness.
+Every such release must also set `kubernetes.networkPolicyEnforced: true` only
+after the enforcement probe above succeeds.
 
 Managed clusters with restricted Pod Security may reject this mode. A NetworkPolicy-capable CNI is necessary but not sufficient; verify routing and isolation with two real test teams.
 
@@ -161,10 +200,15 @@ external bridge cannot provide equivalent per-workload isolation.
 
 ## Scale with runtime roles
 
-Use one Helm release per role so each can scale and roll back independently.
+Use one Helm release per role so each can scale independently.
 The supported topologies are one `all` release, `web` plus one `control`, or
 `web` plus `engine` workers and one `network` owner. Run a `migrate` release
-before upgrading the long-running roles.
+before starting a fresh split installation. For upgrades, never run that Job
+under old serving Pods: use the enforced
+[maintenance cutover](./operations.md#update-helm), which scales every named
+runtime release to zero, waits for Pod termination and Job success, and restores
+only the new immutable digest. Schema rollback requires restoring the matching
+database backup; do not roll a runtime back to an old image after migration.
 
 All split releases must disable the bundled PostgreSQL and Redis, use their one
 external/shared database and Redis URL through a pre-created Secret, pin the

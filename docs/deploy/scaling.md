@@ -156,16 +156,22 @@ image snapshot is intentionally immutable for the event.
 
 ## Migration ownership
 
-The `all` role performs the normal startup migration. Split roles never migrate.
-The first move from a pre-role rsctf release is a maintenance-window upgrade:
+The `all` role can migrate an empty or already-quiesced installation at startup;
+that is not authorization for an overlapping upgrade. Split roles never
+migrate. Migrations 0089–0091 require a stop-the-world maintenance cutover:
 drain and stop the old application, take the database and file backup, run one
-`migrate` process from the pinned new image, and require it to succeed before
+`migrate` process from the pinned new digest, and require it to succeed before
 starting any new long-running role. Do not run these migrations underneath the
-old binary. Immutable-image constraints and the exact migration-ledger check do
-not promise restart-safe overlap with a pre-role release.
+old binary. The migrator also checks PostgreSQL activity, but that point-in-time
+check cannot prevent an old supervisor from reconnecting, so the deployment
+drain is mandatory.
 
 Use the same rule for a later release that changes migrations or the role
 protocol unless that release explicitly documents mixed-build compatibility.
+Drain interactive database sessions, PgBouncer, monitoring, and other logged-in
+clients too: the migration preflight intentionally refuses any other session in
+the same database. Never restore an old image after migration succeeds; restore
+the pre-cutover database and files together if a rollback is unavoidable.
 The heartbeat fingerprint deliberately keeps incompatible required roles out of
 readiness. Once every role is already on one schema, protocol, and pinned build,
 ordinary scale up/down of `web` and `engine` replicas remains online.
@@ -175,8 +181,8 @@ ordinary scale up/down of `web` and `engine` replicas remains online.
 The optional `compose.roles.yml` changes the base `rsctf` service into `web` and
 adds one `rsctf-control`. It uses Compose's `!reset` tag to remove the base
 service's fixed host port, so it requires Docker Compose v2.24 or newer and a
-Caddy/other load balancer on the Compose network. Start dependencies, migrate,
-and then scale the web service:
+Caddy/other load balancer on the Compose network. On a fresh database with no
+old runtime, start dependencies, migrate, and then scale the web service:
 
 ```bash
 cd deploy
@@ -188,9 +194,27 @@ docker compose run --rm --no-deps \
 docker compose up -d --scale rsctf=2
 ```
 
-That two-web default budgets `2×26 + 20 = 72` application connections against
+For every upgrade, set `RSCTF_IMAGE` to the new immutable digest in `.env` and
+use the cutover command instead of the three manual commands above:
+
+```bash
+export RSCTF_IMAGE=ghcr.io/dimasma0305/rsctf@sha256:<verified-release-digest>
+../scripts/compose-maintenance-cutover.sh \
+  --project-name "${COMPOSE_PROJECT_NAME:-rsctf}" \
+  --project-directory "$PWD" \
+  --env-file .env \
+  --image "$RSCTF_IMAGE"
+```
+
+It records the current two-web/one-control counts in a protected local state
+file, stops regular and stray project runtimes, verifies none are running,
+migrates, removes every stopped old runtime, and force-recreates only the new
+digest. Migration failure leaves the stopped containers and state file in place
+for a safe retry of the same command; it never runs `up` on failure.
+
+That two-web default budgets `2×26 + 21 = 73` application connections against
 the bundled PostgreSQL limit of 100, preserving migration, administration, and
-rolling-update headroom. Do not add a third default web pool: `3×26 + 20 = 98`
+rolling-update headroom. Do not add a third default web pool: `3×26 + 21 = 99`
 already exceeds PostgreSQL's ordinary non-reserved capacity. Put PgBouncer in
 front of PostgreSQL or provide a separately reviewed connection budget first.
 
@@ -292,8 +316,10 @@ rollbacks independent without building another image. A production split uses
 external/shared PostgreSQL and Redis, a pre-created Secret, an externally owned
 challenge namespace when using Kubernetes, and one explicitly named existing
 RWX claim, even when blobs use S3. The shared Secret must contain the configured
-`database-url`, `redis-url`, `jwt-secret`, and `bootstrap-token` keys. The
-bootstrap token is consulted only while the shared user table is empty. The
+`database-url`, `redis-url`, `jwt-secret`, `identity-hash-key`, and
+`bootstrap-token` keys. Generate the identity key independently and keep it
+stable across replicas, restarts, and JWT rotations. The bootstrap token is
+consulted only while the shared user table is empty. The
 chart rejects bundled PostgreSQL or Redis,
 `image.tag=latest`, or generated Secrets for every long-running split role; a
 Kubernetes split also rejects a release-owned challenge namespace. The normal `runtimeRole=all` development
@@ -305,10 +331,11 @@ a one-replica `RollingUpdate`, the replacement cannot become ready while the
 old Pod holds the lease, and the old Pod is then never removed. Scalable `web`
 and `engine` releases may use `RollingUpdate` when storage supports overlap.
 
-Run the migration hook first:
+For a fresh installation with no old runtime Pod, run the explicit migration
+Job first and wait for ordinary Jobs as well as other resources:
 
 ```bash
-export RSCTF_VERSION=1.2.3
+export RSCTF_IMAGE_DIGEST=sha256:<verified-manifest-digest>
 kubectl create namespace rsctf-challenges --dry-run=client -o yaml | kubectl apply -f -
 helm upgrade --install rsctf-migrate ./charts/rsctf \
   --namespace rsctf-system --create-namespace \
@@ -317,9 +344,17 @@ helm upgrade --install rsctf-migrate ./charts/rsctf \
   --set postgresql.enabled=false \
   --set redis.enabled=false \
   --set existingSecret.name=rsctf-shared \
-  --set-string image.tag="$RSCTF_VERSION" \
-  --wait
+  --set-string image.digest="$RSCTF_IMAGE_DIGEST" \
+  --wait --wait-for-jobs
 ```
+
+Do not run that Helm command directly during an upgrade. Use
+`scripts/kubernetes-maintenance-cutover.sh` with every runtime release named;
+it proves their desired/current replicas are zero and their Pods are gone
+before the Job, then requires one successful Job at the exact digest before it
+restores any replica. A failed migration remains at zero and is retryable from
+Helm's stored replica values. Pause GitOps and disable HPAs before invoking it;
+the script rejects both unlisted runtime releases and HPA-managed Deployments.
 
 Install and wait for the singleton `control` release (or the `network` release
 plus at least one `engine`) before exposing web traffic. The challenge namespace
@@ -367,6 +402,8 @@ trafficCapture:
 kubernetes:
   challengeNamespace: rsctf-challenges
   createChallengeNamespace: false
+  adServiceCidr: 10.96.0.0/12
+  networkPolicyEnforced: true
 
 strategy:
   type: RollingUpdate
@@ -377,9 +414,9 @@ Install one `control` release for the simple topology, or install `engine` and
 Secret, PVC, challenge namespace, image tag, and backend configuration. Set
 `kubernetes.createChallengeNamespace: false` on every role; no role release owns
 the namespace resource. At the default concurrency settings, use
-`config.dbMaxConnections: 26` for each web replica and `14` for each engine;
-the example value `20` keeps headroom above the control/network minimum of 16
-without VPN or 19 with it.
+`config.dbMaxConnections: 26` for each web replica and `16` for each engine;
+the control example uses `21`, its exact VPN floor; a network-only owner needs
+16 without VPN or 19 with it.
 
 When the deployment uses the A&D VPN, set `vpn.enabled: true` on every role so
 web/engine mutations participate in the durable network-policy acknowledgement.
@@ -493,8 +530,8 @@ helm upgrade rsctf-engine ./charts/rsctf --reuse-values --set replicaCount=4
 total application ceiling = sum(role replicas x role pool limit)
 ```
 
-For example, four web replicas at 26 connections, two engines at 14, and one
-network owner at 20 can open 152 connections. Leave capacity for migration,
+For example, four web replicas at 26 connections, two engines at 16, and one
+network owner at 20 can open 156 connections. Leave capacity for migration,
 administration, PostgreSQL workers, and failure overlap during rolling updates.
 Include every temporary `maxSurge` web/engine Pod in that rollout ceiling, not
 only the steady-state replica count.
@@ -503,18 +540,18 @@ limit blindly.
 
 Pool validation accounts for connections retained across nested operations. Let
 `R=RSCTF_REPO_SCAN_CONCURRENCY` and
-`P=RSCTF_PROVISIONING_CONCURRENCY`: use at least `5R+2P+1` for `engine`;
+`P=RSCTF_PROVISIONING_CONCURRENCY`: use at least `5R+2P+3` for `engine`;
 one checker-bearing scan can briefly retain four guards plus its model-write
 checkout. Web needs `5R+2P+13`, reserving eight connections for the bounded
-roster/account-lifecycle paths and four for runtime transitions. A non-VPN
-`control`/`network` process needs `5R+2P+3` because network/BYOC and
-traffic-capture ownership each retain one session and another checkout must
-remain available for progress; with VPN enabled it needs `5R+2P+6`. The
-monolithic `all` role serves both surfaces and therefore needs `5R+2P+15`
-without VPN or `5R+2P+18` with it. The one-shot migration role needs two
-connections. At the defaults (`R=1`, `P=4`), those floors are 14 for engine, 26
-for web, 16/19 for control or network, and 28/31 for `all`; the Compose control
-example uses 20 for headroom.
+roster/account-lifecycle paths and four for runtime transitions. The singleton
+all/control/engine suspicion reconciler reserves two connections for its
+retained fence plus nested detector work. A non-VPN `control` therefore needs
+`5R+2P+5`, or `+8` with VPN; `network`, which does not reconcile suspicion,
+remains `5R+2P+3` / `+6`. The monolithic `all` role needs `5R+2P+17` without
+VPN or `5R+2P+20` with it. The one-shot migration role needs two connections.
+At the defaults (`R=1`, `P=4`), those floors are 16 for engine, 26 for web,
+18/21 for control, 16/19 for network, and 30/33 for `all`; the Compose control
+example uses 21.
 
 ## Graceful scale-down
 

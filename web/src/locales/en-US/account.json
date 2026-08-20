@@ -7,6 +7,10 @@
     "login": "Already have account?",
     "recovery": "Forgot password?"
   },
+  "oauth": {
+    "fingerprint_disabled_title": "External sign-in unavailable",
+    "fingerprint_disabled_detail": "Browser Fingerprinting is enabled, but an external-provider redirect cannot return a validated fingerprint. Use your username or email and password."
+  },
   "button": {
     "accept_tos": "Accept & Continue",
     "change_password": "Change Password",

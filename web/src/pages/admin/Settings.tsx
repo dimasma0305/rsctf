@@ -75,6 +75,7 @@ import api, {
 } from '@Api'
 import misc from '@Styles/Misc.module.css'
 import classes from '@Styles/Settings.module.css'
+import { getAccountUniquenessState, setBrowserFingerprintCollection } from './settingsAccountPolicy'
 
 const Configs: FC = () => {
   const { data: configs, mutate } = api.admin.useAdminGetConfigs(OnceSWRConfig)
@@ -121,6 +122,7 @@ const Configs: FC = () => {
 
   const [saved, setSaved] = useState(true)
   const theme = useMantineTheme()
+  const accountUniqueness = useMemo(() => getAccountUniquenessState(accountPolicy), [accountPolicy])
 
   useEffect(() => {
     if (configs) {
@@ -185,15 +187,16 @@ const Configs: FC = () => {
       captcha?.provider === 'CloudflareTurnstile'
         ? !!(captcha?.siteKey && captcha?.hasSecretKey)
         : captcha?.provider === 'HashPow'
+    const oauthConfigured = Boolean(
+      (oauth?.googleClientId && oauth?.hasGoogleClientSecret) ||
+      (oauth?.discordClientId && oauth?.hasDiscordClientSecret)
+    )
     return {
       // Platform always has defaults; never "off"
       platform: 'configured',
-      // Account is just toggles; surface "attention" when neither
-      // anti-cheat rule is on, to nudge operators
-      account:
-        accountPolicy?.requireUniqueIpPerTeamUser || accountPolicy?.requireUniqueFingerprintPerTeamUser
-          ? 'configured'
-          : 'attention',
+      // An enabled fingerprint policy is ineffective unless fingerprint
+      // collection is also enabled, so surface that mismatch for operators.
+      account: accountUniqueness.status,
       container: 'configured',
       build_registry: buildRegistry?.isConfigured ? 'configured' : 'inactive',
       email: email?.isConfigured ? 'configured' : 'inactive',
@@ -203,15 +206,15 @@ const Configs: FC = () => {
           : captchaConfigured
             ? 'configured'
             : 'attention',
-      oauth:
-        (oauth?.googleClientId && oauth?.hasGoogleClientSecret) ||
-        (oauth?.discordClientId && oauth?.hasDiscordClientSecret)
-          ? 'configured'
-          : 'inactive',
+      oauth: oauthConfigured
+        ? accountUniqueness.fingerprintCollectionEnabled
+          ? 'attention'
+          : 'configured'
+        : 'inactive',
       registry_pull: registry?.isConfigured ? 'configured' : 'inactive',
       diagnostics: 'configured',
     }
-  }, [accountPolicy, buildRegistry, email, captcha, oauth, registry])
+  }, [accountUniqueness, buildRegistry, email, captcha, oauth, registry])
 
   const navItems: { key: SectionKey; icon: string }[] = [
     { key: 'platform', icon: mdiViewDashboardOutline },
@@ -592,10 +595,7 @@ const Configs: FC = () => {
                     t('admin.content.settings.account.browser_fingerprint.description')
                   )}
                   onChange={(e) =>
-                    setAccountPolicy({
-                      ...accountPolicy,
-                      enableBrowserFingerprint: e.currentTarget.checked,
-                    })
+                    setAccountPolicy(setBrowserFingerprintCollection(accountPolicy, e.currentTarget.checked))
                   }
                 />
                 <Switch
@@ -614,10 +614,13 @@ const Configs: FC = () => {
                 />
                 <Switch
                   checked={accountPolicy?.requireUniqueFingerprintPerTeamUser ?? false}
-                  disabled={disabled}
+                  disabled={disabled || !accountUniqueness.fingerprintCollectionEnabled}
                   label={SwitchLabel(
                     t('admin.content.settings.account.unique_fingerprint_per_team_user.label'),
-                    t('admin.content.settings.account.unique_fingerprint_per_team_user.description')
+                    t('admin.content.settings.account.unique_fingerprint_per_team_user.description'),
+                    accountUniqueness.fingerprintCollectionEnabled
+                      ? null
+                      : t('admin.content.settings.account.browser_fingerprint.policy_inactive')
                   )}
                   onChange={(e) =>
                     setAccountPolicy({
@@ -630,11 +633,8 @@ const Configs: FC = () => {
                   checked={accountPolicy?.requireUniqueIpGlobal ?? false}
                   disabled={disabled}
                   label={SwitchLabel(
-                    t('admin.content.settings.account.unique_ip_global.label', 'Globally unique login IP'),
-                    t(
-                      'admin.content.settings.account.unique_ip_global.description',
-                      'Block login if ANY other user (not just a teammate) logged in from the same IP in the last 24h. Warning: locks out unrelated users behind a shared NAT/campus IP.'
-                    )
+                    t('admin.content.settings.account.unique_ip_global.label'),
+                    t('admin.content.settings.account.unique_ip_global.description')
                   )}
                   onChange={(e) =>
                     setAccountPolicy({
@@ -645,13 +645,13 @@ const Configs: FC = () => {
                 />
                 <Switch
                   checked={accountPolicy?.requireUniqueFingerprintGlobal ?? false}
-                  disabled={disabled}
+                  disabled={disabled || !accountUniqueness.fingerprintCollectionEnabled}
                   label={SwitchLabel(
-                    t('admin.content.settings.account.unique_fingerprint_global.label', 'Globally unique fingerprint'),
-                    t(
-                      'admin.content.settings.account.unique_fingerprint_global.description',
-                      'Block login if ANY other user (not just a teammate) used the same browser fingerprint in the last 24h. Requires browser fingerprinting to be enabled.'
-                    )
+                    t('admin.content.settings.account.unique_fingerprint_global.label'),
+                    t('admin.content.settings.account.unique_fingerprint_global.description'),
+                    accountUniqueness.fingerprintCollectionEnabled
+                      ? null
+                      : t('admin.content.settings.account.browser_fingerprint.policy_inactive')
                   )}
                   onChange={(e) =>
                     setAccountPolicy({
@@ -666,7 +666,12 @@ const Configs: FC = () => {
                   {t('admin.content.settings.account.browser_fingerprint.warning')}
                 </Alert>
               )}
-              {(accountPolicy?.requireUniqueIpPerTeamUser || accountPolicy?.requireUniqueFingerprintPerTeamUser) && (
+              {accountUniqueness.hasIneffectiveFingerprintPolicy && (
+                <Alert color="orange" icon={<Icon path={mdiAlert} size={1} />}>
+                  {t('admin.content.settings.account.browser_fingerprint.policies_ineffective')}
+                </Alert>
+              )}
+              {accountUniqueness.hasEffectiveUniquenessPolicy && (
                 <Alert color="yellow" icon={<Icon path={mdiAlert} size={1} />}>
                   {t('admin.content.settings.account.unique_per_team_user.warning')}
                 </Alert>
@@ -1040,6 +1045,14 @@ const Configs: FC = () => {
                   )}
                 />
               </Group>
+              {accountPolicy?.enableBrowserFingerprint && (
+                <Alert color="orange" icon={<Icon path={mdiAlert} size={1} aria-hidden />}>
+                  {t(
+                    'admin.content.settings.oauth.fingerprint_disabled',
+                    'External sign-in is unavailable while Browser Fingerprinting is enabled because OAuth redirects cannot return a validated fingerprint. Password login remains available.'
+                  )}
+                </Alert>
+              )}
               <Text size="sm" c="dimmed">
                 {t(
                   'admin.content.settings.oauth.redirect_hint',

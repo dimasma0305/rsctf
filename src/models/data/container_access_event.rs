@@ -33,6 +33,15 @@ pub struct Model {
     pub accessing_participation_id: Option<i32>,
     #[sea_orm(column_type = "Text")]
     pub remote_ip: String,
+    /// Deployment-keyed HMAC of the normalized client IP for private equality
+    /// correlation with a submission from the same request identity.
+    #[serde(skip)]
+    pub remote_ip_hash: Option<Vec<u8>>,
+    /// Immutable authorization context for the proxy open. Legacy rows are
+    /// `None` and cannot independently prove a cross-team rule; new writers
+    /// always persist `Some(false)` or `Some(true)`.
+    #[serde(skip)]
+    pub is_monitor: Option<bool>,
     #[sea_orm(column_type = "Text", nullable)]
     pub user_agent: Option<String>,
     /// RSCTF `ConnectedAtUtc` — the proxy-open (container access) time.

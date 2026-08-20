@@ -25,7 +25,10 @@ pub struct KothTokenModel {
 }
 
 enum KothTokenCaller {
-    Session(uuid::Uuid),
+    Session {
+        user_id: uuid::Uuid,
+        security_stamp: String,
+    },
     TeamToken(String),
 }
 
@@ -57,10 +60,14 @@ async fn koth_token_caller_is_live(
     part: &crate::models::data::participation::Model,
 ) -> AppResult<bool> {
     match caller {
-        KothTokenCaller::Session(user_id) => {
+        KothTokenCaller::Session {
+            user_id,
+            security_stamp,
+        } => {
             crate::services::ad::roster::user_allows_shared_credentials_on(
                 connection,
                 *user_id,
+                security_stamp,
                 part.game_id,
                 part.team_id,
                 part.id,
@@ -68,6 +75,14 @@ async fn koth_token_caller_is_live(
             .await
         }
         KothTokenCaller::TeamToken(token) => {
+            if !crate::services::ad::roster::lock_team_shared_credentials_on(
+                connection,
+                part.team_id,
+            )
+            .await?
+            {
+                return Ok(false);
+            }
             let verified =
                 crate::services::ad::api_token::authenticate_on(connection, token).await?;
             Ok(verified.is_some_and(|credential| {
@@ -155,7 +170,10 @@ pub async fn koth_hill_token(
         Some(bytes) => serde_json::from_slice::<KothTokenModel>(&bytes).ok(),
         None => None,
     };
-    let caller = KothTokenCaller::Session(user.id);
+    let caller = KothTokenCaller::Session {
+        user_id: user.id,
+        security_stamp: user.security_stamp.clone(),
+    };
     let mut roster = acquire_koth_token_read_fence(&st, part.team_id).await?;
     if !koth_token_caller_is_live(roster.transaction_mut(), &caller, &part).await? {
         roster.release().await?;
@@ -253,6 +271,10 @@ pub async fn koth_token_all(
     rejected: Option<axum::Extension<crate::services::ad::api_token::RejectedTeamToken>>,
 ) -> AppResult<Response> {
     let session_user_id = maybe_user.0.as_ref().map(|user| user.id);
+    let session_security_stamp = maybe_user
+        .0
+        .as_ref()
+        .map(|user| user.security_stamp.clone());
     let presented_team_token = crate::services::ad::api_token::bearer_token(&headers)
         .filter(|token| crate::services::ad::api_token::is_well_formed(token))
         .map(str::to_owned);
@@ -275,7 +297,10 @@ pub async fn koth_token_all(
     let caller = if token_auth_selected {
         KothTokenCaller::TeamToken(presented_team_token.ok_or(AppError::Unauthorized)?)
     } else {
-        KothTokenCaller::Session(session_user_id.ok_or(AppError::Unauthorized)?)
+        KothTokenCaller::Session {
+            user_id: session_user_id.ok_or(AppError::Unauthorized)?,
+            security_stamp: session_security_stamp.ok_or(AppError::Unauthorized)?,
+        }
     };
     let cache_key = format!("kothtokensall:{id}:{}:{latest_round}", part.id);
     let cached_model = match st.cache.get(&cache_key).await {

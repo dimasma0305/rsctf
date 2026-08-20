@@ -11,13 +11,16 @@ Restart rsctf after changing a startup value. Settings changed in **Admin → Se
 | `RSCTF_ROLE` | `all` | `all`, `web`, `control`, `engine`, `network`, or one-shot `migrate`; see the [scaling guide](../deploy/scaling) |
 | `RSCTF_BIND` | `0.0.0.0:8080` | HTTP listen address inside the process/container |
 | `RSCTF_DATABASE_URL` | Local development URL | PostgreSQL connection URL; required in deployment |
-| `RSCTF_DB_MAX_CONNECTIONS` | `32` | Per-process database connection cap; computed minimum described below |
+| `RSCTF_DB_MAX_CONNECTIONS` | `33` | Per-process database connection cap; computed minimum described below |
 | `RSCTF_REDIS_URL` | Unset | Redis cache URL; when configured, Redis is required for readiness and reconnects after an outage |
 | `RSCTF_DISTRIBUTED_RATELIMIT` | `false` | Share rate limits through Redis for multiple replicas |
 | `RSCTF_AD_SUBMIT_BURST_FLAGS` | `400` | Immediate per-participation A&D flag-work budget before the fixed 10 flags/s refill (`100..3200`) |
+| `RSCTF_SUSPICION_RECONCILE_SECONDS` | `30` | All/control/engine full-history anti-cheat sweep interval (`1..3600` seconds); durable outbox jobs still poll once per second |
+| `RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS` | `360` | Pause after configured game end before the barrier-backed final anti-cheat pass (`1..3600` seconds) |
 | `RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE` | `120000` | High shared-source ceiling after credential validation (`12000..1000000`) |
 | `RSCTF_CREDENTIAL_IP_ADMISSION_PER_MINUTE` | `30000` | Cheap shared-source ceiling before bearer verification/token lookup (`3000..1000000`) |
 | `RSCTF_JWT_SECRET` | Insecure development placeholder | Session signing secret; deployment validation requires at least 32 bytes and rejects known defaults |
+| `RSCTF_IDENTITY_HASH_KEY` | Required | Dedicated 32+ byte HMAC key for pseudonymous identity evidence; keep stable across replicas, restarts, and JWT rotations |
 | `RSCTF_JWT_TTL_SECS` | `604800` | Session lifetime in seconds; must be positive |
 | `RSCTF_PUBLIC_URL` | Derived from request | Canonical browser-facing `http://` or `https://` origin |
 | `RSCTF_COOKIE_SECURE` | `true` | Send session cookies only over HTTPS; set `false` only for local HTTP |
@@ -101,7 +104,12 @@ validation and must retain the same short authorization window.
 | `RSCTF_CONTAINER_MAX_MEMORY_MB` | `4096` | Global upper bound for one challenge container |
 | `RSCTF_CONTAINER_MAX_CPU_COUNT` | `8` | Global CPU-count upper bound for one challenge container |
 | `RSCTF_DOCKER_PUBLIC_ENTRY` | Unset | Hostname/IP advertised for Docker-published challenge ports |
+| `RSCTF_DOCKER_PROXY_BIND` | Unset outside Compose | Private IPv4 host interface used for PlatformProxy-only Docker ports; required when that mode launches a local Docker challenge |
+| `RSCTF_CHALLENGE_PROXY_SUBNET` | Compose-managed private `/24` | Dedicated bridge CIDR admitted by the PlatformProxy host-firewall guard; must contain the proxy bind |
+| `RSCTF_CHALLENGE_PROXY_BRIDGE` | `rsctf-proxy0` in deployment Compose | Linux bridge interface admitted by the PlatformProxy host-firewall guard; letters/digits/dot/underscore/dash, at most 15 characters |
+| `RSCTF_PROXY_FIREWALL_RECONCILE_SECONDS` | `2` | Interval at which the Docker firewall sidecar validates and restores its bind-scoped `INPUT` and `DOCKER-USER` rules |
 | `RSCTF_DOCKER_SCOPE` | Hash of `RSCTF_JWT_SECRET` | Stable installation identity for Docker workload labels and recovery names; use one value across replicas and a different value for every installation sharing a daemon |
+| `RSCTF_K8S_NETWORK_POLICY_ENFORCED` | Required `true` for Kubernetes backend | Operator acknowledgement that a cross-Pod probe proved the cluster CNI enforces `networking.k8s.io/v1` NetworkPolicy; startup fails without it |
 | `RSCTF_PROVISIONING_CONCURRENCY` | `4` | Concurrent provisioning operations |
 | `RSCTF_REPO_SCAN_CONCURRENCY` | `1` | Concurrent long-lived shared checkout scans per process (`1..4`) |
 | `RSCTF_TRAFFIC_CAPTURE_ENABLED` | `false` | Allow the singleton `all`/`control`/`network` worker to collect packet captures for challenges that enable it; Compose deployments must also select the matching capture overlay that grants `NET_RAW` |
@@ -212,12 +220,14 @@ challenge-definition guards while its model write needs a fifth connection. Let 
 | Process mode | Minimum `RSCTF_DB_MAX_CONNECTIONS` |
 | --- | ---: |
 | One-shot `migrate` | `2` |
-| `engine` | `5R + 2P + 1` |
+| `engine` | `5R + 2P + 3` |
 | `web` | `5R + 2P + 13` |
-| Non-VPN `control` or `network` | `5R + 2P + 3` |
-| Active VPN-owning `control` or `network` | `5R + 2P + 6` |
-| Non-VPN `all` | `5R + 2P + 15` |
-| Active VPN-owning `all` | `5R + 2P + 18` |
+| Non-VPN `control` | `5R + 2P + 5` |
+| Active VPN-owning `control` | `5R + 2P + 8` |
+| Non-VPN `network` | `5R + 2P + 3` |
+| Active VPN-owning `network` | `5R + 2P + 6` |
+| Non-VPN `all` | `5R + 2P + 17` |
+| Active VPN-owning `all` | `5R + 2P + 20` |
 
 The migration role uses only the pool's two baseline connections. A network
 owner retains both the network/BYOC lease and the traffic-capture lease even
@@ -225,11 +235,12 @@ without VPN, plus one progress connection. The VPN allowance additionally
 covers its `LISTEN` connection and nested kernel/allocation reconciliation.
 Monolithic and web roles reserve eight connections for bounded roster and
 account lifecycle operations, plus four for the independently bounded runtime
-transition path; each can retain a lock while issuing nested work. At the
-defaults (`R=1`, `P=4`), engine needs 14 connections, web needs 26,
-control/network needs 16 without VPN or 19 with it, and `all` needs 28 without
-VPN or 31 with it. Keep additional headroom for ordinary request bursts where
-practical.
+transition path; each can retain a lock while issuing nested work. The
+all/control/engine suspicion reconciler reserves one fence plus one nested
+checkout. At the defaults (`R=1`, `P=4`), engine needs 16 connections, web
+needs 26, control needs 18 without VPN or 21 with it, network needs 16 or 19,
+and `all` needs 30 or 33. Keep additional headroom for ordinary request bursts
+where practical.
 
 Checker and flag work is bounded by the persisted round deadline. Evidence that
 finishes at or after that deadline is excluded, and unresolved samples become

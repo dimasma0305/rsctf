@@ -16,16 +16,16 @@
 //! client-facing endpoints (`GET /api/captcha`, `/api/captcha/powchallenge`)
 //! share, so provider/difficulty/site-key can never drift between them.
 
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use sea_orm::{DatabaseConnection, EntityTrait};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::services::cache::Cache;
 
-use crate::models::data::config;
 use crate::utils::error::{AppError, AppResult};
 
 /// Cloudflare Turnstile siteverify endpoint.
@@ -247,7 +247,7 @@ fn leading_zero_bits(bytes: &[u8]) -> u32 {
 /// The live captcha policy resolved from the `Configs` table. A single loader so
 /// the verify path and the client-facing captcha endpoints read the SAME source
 /// (RSCTF resolves both through one `IOptionsSnapshot<CaptchaConfig>`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CaptchaSettings {
     /// `AccountPolicy:UseCaptcha` — whether verification is enforced at all.
     pub use_captcha: bool,
@@ -263,41 +263,83 @@ pub struct CaptchaSettings {
     secret_key: Option<String>,
 }
 
+/// Opaque digest of every setting that determines whether a locally supplied
+/// captcha token is valid. It is request-local and never crosses the wire.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CaptchaRevision([u8; 32]);
+
+/// Provenance of the captcha decision carried into canonical account
+/// admission. OAuth is explicit because the provider-authenticated redirect
+/// flow has no local captcha field and is intentionally exempt from the local
+/// login/registration captcha policy.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CaptchaAdmission {
+    Local(Option<CaptchaRevision>),
+    OAuthProvider,
+}
+
 impl CaptchaSettings {
     /// Resolve the live captcha policy from the `Configs` key/value table (the
     /// `CaptchaConfig:*` keys `/admin/settings` writes) plus the enforcement
     /// toggle `AccountPolicy:UseCaptcha`. When the provider key was never
     /// persisted, fall back to the process-env provider ([`CaptchaService::from_env`])
-    /// so an env-only deployment keeps working. Best-effort: a config read error
-    /// leaves everything at "captcha off" rather than failing the request.
-    pub async fn load(db: &DatabaseConnection) -> Self {
-        let mut use_captcha = false;
-        let mut provider: Option<String> = None;
-        let mut site_key: Option<String> = None;
-        let mut secret_key: Option<String> = None;
-        let mut difficulty: Option<u32> = None;
+    /// so an env-only deployment keeps working. Database/configuration errors
+    /// fail closed instead of silently turning captcha off.
+    pub async fn load(pool: &PgPool, fallback_use_captcha: bool) -> AppResult<Self> {
+        let rows = sqlx::query_as::<_, (String, Option<String>)>(
+            r#"SELECT config_key, value
+                 FROM "Configs"
+                WHERE config_key = ANY($1)"#,
+        )
+        .bind(captcha_config_keys())
+        .fetch_all(pool)
+        .await
+        .map_err(database_error)?;
+        Self::from_values(&rows.into_iter().collect(), fallback_use_captcha)
+    }
 
-        if let Ok(rows) = config::Entity::find().all(db).await {
-            for row in rows {
-                let Some(value) = row.value else { continue };
-                match row.config_key.as_str() {
-                    // Persisted as lowercase `bool::to_string()` (admin settings).
-                    "AccountPolicy:UseCaptcha" => use_captcha = value == "true",
-                    "CaptchaConfig:Provider" if !value.is_empty() => provider = Some(value),
-                    "CaptchaConfig:SiteKey" if !value.is_empty() => site_key = Some(value),
-                    "CaptchaConfig:SecretKey" if !value.is_empty() => secret_key = Some(value),
-                    "CaptchaConfig:HashPow:Difficulty" => {
-                        difficulty = value.trim().parse::<u32>().ok();
-                    }
-                    _ => {}
-                }
-            }
-        }
+    pub(crate) async fn load_in_transaction(
+        transaction: &mut Transaction<'_, Postgres>,
+        fallback_use_captcha: bool,
+    ) -> AppResult<Self> {
+        let rows = sqlx::query_as::<_, (String, Option<String>)>(
+            r#"SELECT config_key, value
+                 FROM "Configs"
+                WHERE config_key = ANY($1)"#,
+        )
+        .bind(captcha_config_keys())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        Self::from_values(&rows.into_iter().collect(), fallback_use_captcha)
+    }
+
+    pub(crate) fn from_values(
+        values: &BTreeMap<String, Option<String>>,
+        fallback_use_captcha: bool,
+    ) -> AppResult<Self> {
+        let use_captcha = values
+            .get("AccountPolicy:UseCaptcha")
+            .and_then(|value| value.as_deref())
+            .map(|value| value == "true")
+            .unwrap_or(fallback_use_captcha);
+        let stored_provider = nonempty_value(&values, "CaptchaConfig:Provider");
+        let stored_site_key = nonempty_value(&values, "CaptchaConfig:SiteKey");
+        let stored_secret = nonempty_value(&values, "CaptchaConfig:SecretKey");
+        let stored_difficulty = values
+            .get("CaptchaConfig:HashPow:Difficulty")
+            .and_then(|value| value.as_deref())
+            .map(|value| {
+                value.trim().parse::<u32>().map_err(|_| {
+                    AppError::bad_request("HashPow difficulty must be an integer from 8 to 48")
+                })
+            })
+            .transpose()?;
 
         // Provider never persisted -> honor the env-configured provider, mapping
         // it onto the canonical `CaptchaProvider` wire names.
-        let (provider, env_difficulty, env_secret) = match provider {
-            Some(p) => (p, None, None),
+        let (provider, env_difficulty, env_secret) = match stored_provider {
+            Some(provider) => (provider, None, None),
             None => match CaptchaService::from_env() {
                 CaptchaService::HashPow { difficulty } => {
                     ("HashPow".to_string(), Some(difficulty), None)
@@ -308,16 +350,99 @@ impl CaptchaSettings {
                 CaptchaService::None => ("None".to_string(), None, None),
             },
         };
-
-        Self {
+        let settings = Self {
             use_captcha,
             provider,
-            site_key,
-            difficulty: difficulty
+            site_key: stored_site_key,
+            difficulty: stored_difficulty
                 .or(env_difficulty)
-                .unwrap_or(DEFAULT_HASHPOW_DIFFICULTY)
-                .clamp(HASHPOW_DIFFICULTY_MIN, HASHPOW_DIFFICULTY_MAX),
-            secret_key: secret_key.or(env_secret),
+                .unwrap_or(DEFAULT_HASHPOW_DIFFICULTY),
+            secret_key: stored_secret.or(env_secret),
+        };
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    /// Verify a token under this exact local policy and bind the successful
+    /// result to its opaque revision for the later transaction recheck.
+    pub async fn verify_local(
+        &self,
+        token: &str,
+        cache: &dyn Cache,
+    ) -> AppResult<CaptchaAdmission> {
+        if !self.use_captcha {
+            return Ok(CaptchaAdmission::Local(None));
+        }
+        if !self.service().verify(token, cache).await? {
+            return Err(AppError::bad_request("Captcha failed"));
+        }
+        Ok(CaptchaAdmission::Local(Some(self.revision())))
+    }
+
+    /// Recheck a preflight decision against the transaction-locked policy.
+    /// Weakening to captcha-off is safe; enabling or changing an enabled
+    /// provider requires a new token. OAuth remains an explicit provider-auth
+    /// exemption rather than an accidental `true` boolean bypass.
+    pub fn authorize(&self, admission: CaptchaAdmission) -> AppResult<()> {
+        if !self.use_captcha || admission == CaptchaAdmission::OAuthProvider {
+            return Ok(());
+        }
+        if admission == CaptchaAdmission::Local(Some(self.revision())) {
+            return Ok(());
+        }
+        Err(AppError::bad_request(
+            "Captcha policy changed; retry with a fresh challenge",
+        ))
+    }
+
+    pub fn revision(&self) -> CaptchaRevision {
+        let mut digest = Sha256::new();
+        digest.update(b"rsctf-captcha-policy-v1\0");
+        update_revision_field(&mut digest, self.use_captcha.to_string().as_bytes());
+        update_revision_field(&mut digest, self.provider.as_bytes());
+        update_revision_field(
+            &mut digest,
+            self.site_key.as_deref().unwrap_or_default().as_bytes(),
+        );
+        update_revision_field(&mut digest, self.difficulty.to_string().as_bytes());
+        update_revision_field(
+            &mut digest,
+            self.secret_key.as_deref().unwrap_or_default().as_bytes(),
+        );
+        CaptchaRevision(digest.finalize().into())
+    }
+
+    fn validate(&self) -> AppResult<()> {
+        match self.provider.as_str() {
+            "None" if self.use_captcha => Err(AppError::bad_request(
+                "Captcha cannot be enabled with provider None",
+            )),
+            "HashPow"
+                if !(HASHPOW_DIFFICULTY_MIN..=HASHPOW_DIFFICULTY_MAX)
+                    .contains(&self.difficulty) =>
+            {
+                Err(AppError::bad_request(
+                    "HashPow difficulty must be an integer from 8 to 48",
+                ))
+            }
+            "CloudflareTurnstile"
+                if self.use_captcha
+                    && (self
+                        .site_key
+                        .as_deref()
+                        .is_none_or(|site_key| site_key.trim().is_empty())
+                        || self
+                            .secret_key
+                            .as_deref()
+                            .is_none_or(|secret| secret.trim().is_empty())) =>
+            {
+                Err(AppError::bad_request(
+                    "Cloudflare Turnstile requires non-empty site and secret keys",
+                ))
+            }
+            "None" | "HashPow" | "CloudflareTurnstile" => Ok(()),
+            _ if self.use_captcha => Err(AppError::bad_request("Unknown captcha provider")),
+            _ => Ok(()),
         }
     }
 
@@ -335,6 +460,32 @@ impl CaptchaSettings {
             _ => CaptchaService::None,
         }
     }
+}
+
+fn captcha_config_keys() -> &'static [&'static str] {
+    &[
+        "AccountPolicy:UseCaptcha",
+        "CaptchaConfig:Provider",
+        "CaptchaConfig:SiteKey",
+        "CaptchaConfig:SecretKey",
+        "CaptchaConfig:HashPow:Difficulty",
+    ]
+}
+
+fn nonempty_value(values: &BTreeMap<String, Option<String>>, key: &str) -> Option<String> {
+    values
+        .get(key)
+        .and_then(Clone::clone)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn update_revision_field(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_be_bytes());
+    digest.update(value);
+}
+
+fn database_error(error: sqlx::Error) -> AppError {
+    AppError::internal(error.to_string())
 }
 
 #[cfg(test)]
@@ -356,6 +507,44 @@ mod tests {
         assert_eq!(hex_bytes("abc"), None); // odd length
         assert_eq!(hex_bytes("zz"), None); // non-hex
         assert_eq!(hex_bytes("aéa"), None); // never slice malformed UTF-8 boundaries
+    }
+
+    #[test]
+    fn enabled_policy_rejects_non_verifying_providers_and_binds_revision() {
+        let settings = |provider: &str, difficulty: &str, secret: Option<&str>| {
+            let mut values = BTreeMap::from([
+                (
+                    "AccountPolicy:UseCaptcha".to_string(),
+                    Some("true".to_string()),
+                ),
+                (
+                    "CaptchaConfig:Provider".to_string(),
+                    Some(provider.to_string()),
+                ),
+                (
+                    "CaptchaConfig:HashPow:Difficulty".to_string(),
+                    Some(difficulty.to_string()),
+                ),
+            ]);
+            if let Some(secret) = secret {
+                values.insert(
+                    "CaptchaConfig:SecretKey".to_string(),
+                    Some(secret.to_string()),
+                );
+            }
+            CaptchaSettings::from_values(&values, false)
+        };
+
+        assert!(settings("None", "18", None).is_err());
+        assert!(settings("Unknown", "18", None).is_err());
+        assert!(settings("CloudflareTurnstile", "18", None).is_err());
+
+        let old = settings("HashPow", "18", None).unwrap();
+        let changed = settings("HashPow", "19", None).unwrap();
+        let proof = CaptchaAdmission::Local(Some(old.revision()));
+        assert!(old.authorize(proof).is_ok());
+        assert!(changed.authorize(proof).is_err());
+        assert!(changed.authorize(CaptchaAdmission::OAuthProvider).is_ok());
     }
 
     #[tokio::test]

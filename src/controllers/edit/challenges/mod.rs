@@ -126,13 +126,13 @@ pub async fn add_challenge(
         ..Default::default()
     };
     let created = am.insert(&st.db).await?;
+    seed_division_configs(control.transaction_mut(), id, created.id).await?;
     if let Some(control) = engine_control {
         control
             .release()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
     }
-    seed_division_configs(&st, id, created.id).await?;
     flush_game_scoreboards(&st, id).await;
     Ok(RequestResponse::ok(
         ChallengeEditDetailModel::from_challenge(&st, &created, Vec::new()).await?,
@@ -571,6 +571,15 @@ pub async fn update_challenge(
     }
 
     let updated = am.update(&st.db).await?;
+    seed_division_configs(
+        engine_control
+            .as_mut()
+            .expect("challenge update holds the game control lock")
+            .transaction_mut(),
+        id,
+        c_id,
+    )
+    .await?;
     workload::release_update_lock(workload_lock.take()).await?;
     if ch_type == ChallengeType::KingOfTheHill && !updated.is_enabled {
         crate::services::ad_engine::clear_challenge_control(&st.db, id, c_id).await?;
@@ -588,9 +597,6 @@ pub async fn update_challenge(
         st.byoc.disconnect_challenge(&st.db, c_id).await?;
     }
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
-    // Keep the per-division challenge config table seeded (insert-if-missing so
-    // divisions added after the challenge was created still get a default row).
-    seed_division_configs(&st, id, c_id).await?;
     flush_game_scoreboards(&st, id).await;
 
     // Tear down containers stranded by this edit (RSCTF `UpdateGameChallenge`):

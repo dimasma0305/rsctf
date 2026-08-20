@@ -1,528 +1,814 @@
-//! services/suspicion/correlation.rs — IP / fingerprint correlation detectors.
+//! Game-scoped identity-correlation detectors.
 //!
-//! Ported from RSCTF `Controllers/CheatReportController.cs` (the IP-analysis
-//! block, checks 2 / 2c / 2d / F / G / I). RSCTF builds these as transient
-//! `report.IpAnalysis` rows returned to the admin; rsctf instead persists them as
-//! `suspicion_event` rows keyed by participation (the same adaptation
-//! [`super::detectors::correlate_fingerprints`] already makes for
-//! `SharedFingerprint`), reusing the exact dedup + insert + score-bump path in
-//! [`super::detectors::record_with_dedup`]. Each aggregate rule uses a stable
-//! global evidence key, so concurrent and repeated sweeps are idempotent.
-//!
-//! ## Data source
-//! RSCTF reads `Logs` rows where `Logger.Contains("AccountController")`, carrying
-//! `RemoteIP` + `BrowserFingerprint` + `UserName`. rsctf's login path writes
-//! exactly that row via [`crate::services::audit::info_with_fingerprint`]
-//! (`logger = "AccountController"`, `remote_ip = client_ip`, `browser_fingerprint`,
-//! `user_name`), so the port is faithful. The separate `logger = "fingerprint"`
-//! row is deliberately ignored (it duplicates the fingerprint into `message` and
-//! would double-count).
-//!
-//! ## Coverage vs RSCTF
-//! Implemented (login-log-tractable): FingerprintChurn (2c), IpChurn (2d),
-//! CrossTeamIP (2 — the login-IP-shared-across-teams variant, matching this
-//! subsystem's definition), SubnetOverlap (G, /28), ClusteredRegistration (F),
-//! SessionConcurrency (I).
-//!
-//! **Gap — UnknownIP (not emitted).** RSCTF's UnknownIP compares a *Download
-//! `GameEvent` IP* against the team's login-IP baseline. rsctf persists no
-//! download/container game-event IP stream, and `submission` rows carry no IP
-//! column, so from the login logs alone every observed IP is by definition
-//! already "seen" — there is no second stream to diff against. Rather than invent
-//! a heuristic that fires on nothing meaningful, this detector is intentionally
-//! left unimplemented until a per-request IP capture (download/container events)
-//! lands. See the note at [`unknown_ip_gap`].
+//! Identity evidence comes exclusively from append-only `IdentityObservations`
+//! keyed by immutable user ids and durable `UserParticipations`. Mutable account
+//! fields, current team membership, user names, and all-time anti-cheat blocks
+//! are deliberately excluded: changing any of those after a game must not
+//! rewrite that game's evidence.
 
-use super::*;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use chrono::{DateTime, Duration, Utc};
+use sea_orm::DatabaseConnection;
 use uuid::Uuid;
 
-// ── Thresholds (verbatim RSCTF constants) ────────────────────────────────────
-/// `FingerprintChurnThreshold` — distinct fingerprints for one user before
-/// [`SuspicionType::FingerprintChurn`] fires.
-const FINGERPRINT_CHURN_THRESHOLD: usize = 4;
-/// `IpChurnThreshold` — distinct (non-`Any`) IPs for one user before
-/// [`SuspicionType::IpChurn`] fires.
-const IP_CHURN_THRESHOLD: usize = 4;
-/// `SessionWindowMinutes` — pairwise login window for SessionConcurrency.
-const SESSION_WINDOW_MINUTES: i64 = 10;
-/// `SessionConcurrencyMinOccurrences` — qualifying pairs required to fire.
-const SESSION_CONCURRENCY_MIN_OCCURRENCES: usize = 3;
-/// Registration-clustering window (`TimeSpan.FromHours(48)`).
-const CLUSTERED_REGISTRATION_MAX_HOURS: i64 = 48;
-/// Shared-network suppression: a shared IP/subnet touching more than this many
-/// distinct teams is treated as benign campus/CGNAT (RSCTF `distinctTeams <= 4`).
-const SHARED_NETWORK_MAX_TEAMS: usize = 4;
+use super::{AppError, AppResult, SuspicionType};
 
-/// A shared address is useful review context only while it identifies a small
-/// group. Larger groups are normal for event NAT, campus networks, and load-test
-/// gateways; persisting one event per team would create noise without adding
-/// attribution value.
-fn reviewable_shared_network(team_count: usize) -> bool {
-    (2..=SHARED_NETWORK_MAX_TEAMS).contains(&team_count)
+const FINGERPRINT_CHURN_THRESHOLD: usize = 4;
+const IP_CHURN_THRESHOLD: usize = 4;
+const SESSION_WINDOW_MINUTES: i64 = 10;
+const SESSION_CONCURRENCY_MIN_OCCURRENCES: usize = 3;
+const SHARED_IDENTITY_MAX_TEAMS: usize = 4;
+
+const LOAD_OBSERVATIONS_SQL: &str = r#"
+    SELECT observation.id, observation.user_id,
+           roster.team_id, roster.participation_id,
+           observation.kind, observation.value_hash,
+           observation.subnet_group_hash, observation.broad_network_hash,
+           observation.observed_at_utc
+      FROM "IdentityObservations" observation
+      JOIN "UserParticipations" roster
+        ON roster.user_id = observation.user_id
+       AND roster.game_id = $1
+       AND roster.team_id = observation.team_id
+       AND roster.participation_id = observation.participation_id
+      JOIN "Participations" participation
+        ON participation.id = roster.participation_id
+       AND participation.game_id = roster.game_id
+     WHERE observation.game_id = $1
+       AND observation.observed_at_utc >= $2
+       AND observation.observed_at_utc < $3
+       AND participation.competitive_admitted_at_utc IS NOT NULL
+       AND participation.competitive_admitted_at_utc < $3
+     ORDER BY observation.observed_at_utc, observation.id
+"#;
+
+const LOAD_SUBMISSION_IDENTITIES_SQL: &str = r#"
+    SELECT submission.id, submission.participation_id,
+           submission.submit_remote_ip_hash, submission.submit_time_utc
+      FROM "Submissions" submission
+      JOIN "Participations" participation
+        ON participation.id = submission.participation_id
+       AND participation.game_id = submission.game_id
+     WHERE submission.game_id = $1
+       AND submission.submit_time_utc >= $2
+       AND submission.submit_time_utc < $3
+       AND submission.submit_remote_ip_hash IS NOT NULL
+       AND participation.competitive_admitted_at_utc IS NOT NULL
+       AND participation.competitive_admitted_at_utc < $3
+     ORDER BY submission.submit_time_utc, submission.id
+"#;
+
+const LOAD_IDENTITY_EXEMPTIONS_SQL: &str = r#"
+    SELECT exemption.user_a, exemption.user_b,
+           exemption.kind, exemption.value_hash,
+           exemption.created_at_utc, exemption.expires_at_utc,
+           exemption.revoked_at_utc
+      FROM "AntiCheatExemptions" exemption
+     WHERE exemption.created_at_utc < $3
+       AND exemption.expires_at_utc > $2
+       AND (exemption.revoked_at_utc IS NULL
+            OR exemption.revoked_at_utc > $2)
+       AND EXISTS (
+            SELECT 1
+              FROM "IdentityObservations" observation
+              JOIN "UserParticipations" roster
+                ON roster.user_id = observation.user_id
+               AND roster.game_id = $1
+               AND roster.team_id = observation.team_id
+               AND roster.participation_id = observation.participation_id
+              JOIN "Participations" participation
+                ON participation.id = roster.participation_id
+               AND participation.game_id = roster.game_id
+             WHERE observation.game_id = $1
+               AND observation.observed_at_utc >= $2
+               AND observation.observed_at_utc < $3
+               AND participation.competitive_admitted_at_utc IS NOT NULL
+               AND participation.competitive_admitted_at_utc < $3
+               AND observation.kind = exemption.kind
+               AND observation.value_hash = exemption.value_hash
+               AND observation.user_id IN (exemption.user_a, exemption.user_b)
+       )
+     ORDER BY exemption.user_a, exemption.user_b,
+              exemption.kind, exemption.value_hash,
+              exemption.created_at_utc, exemption.expires_at_utc
+"#;
+
+#[derive(Clone, Debug, sqlx::FromRow)]
+struct Observation {
+    #[allow(dead_code)]
+    id: i64,
+    user_id: Uuid,
+    team_id: i32,
+    participation_id: i32,
+    kind: String,
+    value_hash: Vec<u8>,
+    subnet_group_hash: Option<Vec<u8>>,
+    broad_network_hash: Option<Vec<u8>>,
+    observed_at_utc: DateTime<Utc>,
 }
 
-/// Run the login-log IP/fingerprint correlation detectors for one game and
-/// persist a `suspicion_event` per fired signal (deduped per participation).
-///
-/// See the module docs for the RSCTF mapping and the UnknownIP gap.
-pub async fn run_correlation_checks(db: &DatabaseConnection, game_id: i32) -> AppResult<()> {
-    use crate::models::data::{game, log_entry, team_member, user};
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-    use std::collections::{BTreeMap, BTreeSet, HashMap};
+#[derive(Debug, sqlx::FromRow)]
+struct SubmissionIdentity {
+    id: i32,
+    participation_id: i32,
+    submit_remote_ip_hash: Option<Vec<u8>>,
+    submit_time_utc: DateTime<Utc>,
+}
 
-    // 1. Analysis window: [start, end]. Practice games have no fixed end, so use
-    //    "now" (RSCTF `game.PracticeMode ? UtcNow : EndTimeUtc`).
-    let Some(g) = game::Entity::find_by_id(game_id).one(db).await? else {
-        return Ok(());
-    };
-    let start = g.start_time_utc;
-    let end = if g.practice_mode {
-        chrono::Utc::now()
+#[derive(Clone, Debug, sqlx::FromRow)]
+struct IdentityExemption {
+    user_a: Uuid,
+    user_b: Uuid,
+    kind: String,
+    value_hash: Vec<u8>,
+    created_at_utc: DateTime<Utc>,
+    expires_at_utc: DateTime<Utc>,
+    revoked_at_utc: Option<DateTime<Utc>>,
+}
+
+type Candidates = BTreeMap<(i32, i16, String), DateTime<Utc>>;
+type IdentityExemptions = BTreeMap<(Uuid, Uuid), Vec<IdentityExemption>>;
+
+#[derive(Default)]
+struct IdentityGroup {
+    members: BTreeMap<Uuid, IdentityMember>,
+}
+
+struct IdentityMember {
+    team_id: i32,
+    participation_id: i32,
+    observations_by_value: BTreeMap<Vec<u8>, Vec<DateTime<Utc>>>,
+}
+
+impl IdentityGroup {
+    fn observe(&mut self, observation: &Observation) {
+        let member = self
+            .members
+            .entry(observation.user_id)
+            .or_insert_with(|| IdentityMember {
+                team_id: observation.team_id,
+                participation_id: observation.participation_id,
+                observations_by_value: BTreeMap::new(),
+            });
+        debug_assert_eq!(member.team_id, observation.team_id);
+        debug_assert_eq!(member.participation_id, observation.participation_id);
+        member
+            .observations_by_value
+            .entry(observation.value_hash.clone())
+            .or_default()
+            .push(observation.observed_at_utc);
+    }
+
+    fn team_count(&self) -> usize {
+        self.members
+            .values()
+            .map(|member| member.team_id)
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+}
+
+fn canonical_user_pair(left: Uuid, right: Uuid) -> (Uuid, Uuid) {
+    if left.as_bytes() < right.as_bytes() {
+        (left, right)
     } else {
-        g.end_time_utc
-    };
-
-    // 2. Participations in this game → team_id ⇒ participation_id. A team plays a
-    //    game through exactly one participation; correlation events for a team are
-    //    recorded on that participation.
-    let parts = participation::Entity::find()
-        .filter(participation::Column::GameId.eq(game_id))
-        .all(db)
-        .await?;
-    if parts.is_empty() {
-        return Ok(());
+        (right, left)
     }
-    let mut part_of_team: HashMap<i32, i32> = HashMap::new();
-    for p in &parts {
-        part_of_team.entry(p.team_id).or_insert(p.id);
-    }
-    let game_team_ids: Vec<i32> = part_of_team.keys().copied().collect();
+}
 
-    // 3. Game-scoped roster: user → team. Only members of a team participating in
-    //    this game are considered (RSCTF's `userTeamMap` is game-only); a user
-    //    with no in-game participation is dropped. First team wins on the rare
-    //    multi-team membership (RSCTF `.First()`).
-    let members = team_member::Entity::find()
-        .filter(team_member::Column::TeamId.is_in(game_team_ids.clone()))
-        .all(db)
-        .await?;
-    let mut team_of_uid: HashMap<Uuid, i32> = HashMap::new();
-    for m in &members {
-        team_of_uid.entry(m.user_id).or_insert(m.team_id);
-    }
-    let roster_uids: Vec<Uuid> = team_of_uid.keys().copied().collect();
-    let roster_users = if roster_uids.is_empty() {
-        Vec::new()
-    } else {
-        user::Entity::find()
-            .filter(user::Column::Id.is_in(roster_uids))
-            .all(db)
-            .await?
-    };
-    // user_name → team_id, plus the per-user last-login IP + registration time.
-    let mut team_of_name: HashMap<String, i32> = HashMap::new();
-    let mut reg_time_of_name: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
-    let mut user_ip_of_name: HashMap<String, String> = HashMap::new();
-    for u in &roster_users {
-        let Some(name) = u.user_name.clone() else {
-            continue;
-        };
-        if name.is_empty() {
-            continue;
-        }
-        let Some(&tid) = team_of_uid.get(&u.id) else {
-            continue;
-        };
-        team_of_name.insert(name.clone(), tid);
-        reg_time_of_name.insert(name.clone(), u.register_time_utc);
-        // `user.ip` = RSCTF `UserInfo.IP` (last-login IP), unioned into teamIps.
-        let ip = norm_ip(&u.ip);
-        if !ip.is_empty() && !is_any_ip(&ip) {
-            user_ip_of_name.insert(name, ip);
-        }
-    }
-
-    // 4. AccountController login logs in the window (the only row written on every
-    //    login; carries remote_ip + browser_fingerprint). Restricted to rostered
-    //    users so off-roster / admin logins never implicate a team.
-    let logs = log_entry::Entity::find()
-        .filter(log_entry::Column::Logger.contains("AccountController"))
-        .filter(log_entry::Column::TimeUtc.gte(start))
-        .filter(log_entry::Column::TimeUtc.lte(end))
-        .all(db)
-        .await?;
-
-    // Per-user aggregates (game-scoped).
-    let mut fps_of_user: HashMap<String, BTreeSet<String>> = HashMap::new();
-    let mut ips_of_user: HashMap<String, BTreeSet<String>> = HashMap::new();
-    // Time-ordered (time, ip) sessions per user, for SessionConcurrency.
-    let mut sessions_of_user: HashMap<String, Vec<(chrono::DateTime<chrono::Utc>, String)>> =
-        HashMap::new();
-    // Team → set of IPs (login IPs; user.ip is folded in below).
-    let mut ips_of_team: HashMap<i32, BTreeSet<String>> = HashMap::new();
-
-    for l in &logs {
-        let Some(name) = l.user_name.clone() else {
-            continue;
-        };
-        let Some(&tid) = team_of_name.get(&name) else {
-            continue;
-        };
-
-        if let Some(fp) = l.browser_fingerprint.as_deref() {
-            if !fp.is_empty() {
-                fps_of_user
-                    .entry(name.clone())
-                    .or_default()
-                    .insert(fp.to_string());
-            }
-        }
-
-        if let Some(raw_ip) = l.remote_ip.as_deref() {
-            let ip = norm_ip(raw_ip);
-            if !ip.is_empty() && !is_any_ip(&ip) {
-                ips_of_user
-                    .entry(name.clone())
-                    .or_default()
-                    .insert(ip.clone());
-                ips_of_team.entry(tid).or_default().insert(ip.clone());
-                sessions_of_user
-                    .entry(name.clone())
-                    .or_default()
-                    .push((l.time_utc, ip));
-            }
-        }
-    }
-
-    // Registration-clustering IP baseline: each rostered user's *first-ever*
-    // AccountController login IP (RSCTF's unwindowed `allTimeUserLogs` →
-    // `firstLogIpPerUser`, deliberately NOT limited to the game window — users
-    // typically register before the game starts). One earliest (time, ip) per user.
-    let all_time_logs = log_entry::Entity::find()
-        .filter(log_entry::Column::Logger.contains("AccountController"))
-        .filter(log_entry::Column::RemoteIp.is_not_null())
-        .filter(log_entry::Column::UserName.is_not_null())
-        .all(db)
-        .await?;
-    let mut first_login: HashMap<String, (chrono::DateTime<chrono::Utc>, String)> = HashMap::new();
-    for l in &all_time_logs {
-        let Some(name) = l.user_name.clone() else {
-            continue;
-        };
-        if !team_of_name.contains_key(&name) {
-            continue;
-        }
-        let Some(raw_ip) = l.remote_ip.as_deref() else {
-            continue;
-        };
-        let ip = norm_ip(raw_ip);
-        if ip.is_empty() {
-            continue;
-        }
-        first_login
-            .entry(name)
-            .and_modify(|(t, existing)| {
-                if l.time_utc < *t {
-                    *t = l.time_utc;
-                    *existing = ip.clone();
-                }
+fn identity_edge_is_exempt(
+    exemptions: &IdentityExemptions,
+    left: Uuid,
+    right: Uuid,
+    kind: &str,
+    value_hash: &[u8],
+    observed_at: DateTime<Utc>,
+) -> bool {
+    exemptions
+        .get(&canonical_user_pair(left, right))
+        .is_some_and(|grants| {
+            grants.iter().any(|grant| {
+                grant.kind == kind
+                    && grant.value_hash == value_hash
+                    && grant.created_at_utc <= observed_at
+                    && observed_at < grant.expires_at_utc
+                    && grant
+                        .revoked_at_utc
+                        .is_none_or(|revoked_at| observed_at < revoked_at)
             })
-            .or_insert((l.time_utc, ip));
-    }
+        })
+}
 
-    // Fold each rostered user's last-login IP (`user.ip`) into its team's IP set —
-    // RSCTF unions `member.IP` into `teamIps` (checks 2 / F / G).
-    for (name, ip) in &user_ip_of_name {
-        if let Some(&tid) = team_of_name.get(name) {
-            ips_of_team.entry(tid).or_default().insert(ip.clone());
-        }
-    }
-
-    // Scratch code vec; discarded (correlation events aren't returned as codes).
-    let mut codes: Vec<i16> = Vec::new();
-
-    // ── (2c) FingerprintChurn — one user, ≥4 distinct browser fingerprints. ──
-    for (name, fps) in &fps_of_user {
-        if fps.len() < FINGERPRINT_CHURN_THRESHOLD {
+fn earliest_unexempt_edge(
+    exemptions: &IdentityExemptions,
+    left_user: Uuid,
+    left: &IdentityMember,
+    right_user: Uuid,
+    right: &IdentityMember,
+    kind: &str,
+) -> Option<DateTime<Utc>> {
+    let mut earliest = None;
+    for (left_hash, left_times) in &left.observations_by_value {
+        let Some(left_first) = left_times.iter().min().copied() else {
             continue;
-        }
-        if let Some(&tid) = team_of_name.get(name) {
-            if let Some(&pid) = part_of_team.get(&tid) {
-                super::detectors::record_with_dedup(
-                    db,
-                    game_id,
-                    pid,
-                    None,
-                    SuspicionType::FingerprintChurn,
-                    GLOBAL_EVIDENCE_KEY,
-                    &mut codes,
-                )
-                .await?;
-            }
-        }
-    }
-
-    // ── (2d) IpChurn — one user, ≥4 distinct (non-Any) IPs. ──
-    for (name, ips) in &ips_of_user {
-        if ips.len() < IP_CHURN_THRESHOLD {
-            continue;
-        }
-        if let Some(&tid) = team_of_name.get(name) {
-            if let Some(&pid) = part_of_team.get(&tid) {
-                super::detectors::record_with_dedup(
-                    db,
-                    game_id,
-                    pid,
-                    None,
-                    SuspicionType::IpChurn,
-                    GLOBAL_EVIDENCE_KEY,
-                    &mut codes,
-                )
-                .await?;
-            }
-        }
-    }
-
-    // ── (2) CrossTeamIP — one IP observed for ≥2 distinct teams. ──
-    // Reverse the team→IP map into IP→teams; any IP spanning multiple teams
-    // implicates every team on it (RSCTF `ipToTeams` with distinctTeams > 1).
-    {
-        let mut teams_of_ip: BTreeMap<String, BTreeSet<i32>> = BTreeMap::new();
-        for (tid, ips) in &ips_of_team {
-            for ip in ips {
-                teams_of_ip.entry(ip.clone()).or_default().insert(*tid);
-            }
-        }
-        for teams in teams_of_ip.values() {
-            if !reviewable_shared_network(teams.len()) {
-                continue;
-            }
-            for tid in teams {
-                if let Some(&pid) = part_of_team.get(tid) {
-                    super::detectors::record_with_dedup(
-                        db,
-                        game_id,
-                        pid,
-                        None,
-                        SuspicionType::CrossTeamIp,
-                        GLOBAL_EVIDENCE_KEY,
-                        &mut codes,
-                    )
-                    .await?;
-                }
-            }
-        }
-    }
-
-    // ── (G) SubnetOverlap — teams sharing a /28, suppressing large shared NAT. ──
-    {
-        let mut teams_of_subnet: BTreeMap<String, BTreeSet<i32>> = BTreeMap::new();
-        for (tid, ips) in &ips_of_team {
-            let mut subnets: BTreeSet<String> = BTreeSet::new();
-            for ip in ips {
-                if let Some(s) = subnet28(ip) {
-                    subnets.insert(s);
-                }
-            }
-            for s in subnets {
-                teams_of_subnet.entry(s).or_default().insert(*tid);
-            }
-        }
-        for teams in teams_of_subnet.values() {
-            if !reviewable_shared_network(teams.len()) {
-                continue;
-            }
-            for tid in teams {
-                if let Some(&pid) = part_of_team.get(tid) {
-                    super::detectors::record_with_dedup(
-                        db,
-                        game_id,
-                        pid,
-                        None,
-                        SuspicionType::SubnetOverlap,
-                        GLOBAL_EVIDENCE_KEY,
-                        &mut codes,
-                    )
-                    .await?;
-                }
-            }
-        }
-    }
-
-    // ── (F) ClusteredRegistration — accounts from 2..=4 teams sharing a first-
-    //    login IP, all registered within 48h. ──
-    {
-        // Group rostered users by their earliest-login IP.
-        let mut users_on_ip: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (name, (_t, ip)) in &first_login {
-            users_on_ip
-                .entry(ip.clone())
-                .or_default()
-                .push(name.clone());
-        }
-        for names in users_on_ip.values() {
-            // Distinct teams on this IP.
-            let teams: BTreeSet<i32> = names
-                .iter()
-                .filter_map(|n| team_of_name.get(n).copied())
-                .collect();
-            if !reviewable_shared_network(teams.len()) {
-                continue;
-            }
-            // Registration span across all members on this IP must be ≤ 48h.
-            let reg_times: Vec<chrono::DateTime<chrono::Utc>> = names
-                .iter()
-                .filter_map(|n| reg_time_of_name.get(n).copied())
-                .collect();
-            let (Some(min), Some(max)) = (reg_times.iter().min(), reg_times.iter().max()) else {
+        };
+        for (right_hash, right_times) in &right.observations_by_value {
+            let Some(right_first) = right_times.iter().min().copied() else {
                 continue;
             };
-            if (*max - *min) > chrono::Duration::hours(CLUSTERED_REGISTRATION_MAX_HOURS) {
-                continue;
+            let activation = left_first.max(right_first);
+            let candidate = if left_hash == right_hash {
+                left_times
+                    .iter()
+                    .chain(right_times)
+                    .copied()
+                    .filter(|observed_at| *observed_at >= activation)
+                    .filter(|observed_at| {
+                        !identity_edge_is_exempt(
+                            exemptions,
+                            left_user,
+                            right_user,
+                            kind,
+                            left_hash,
+                            *observed_at,
+                        )
+                    })
+                    .min()
+            } else {
+                Some(activation)
+            };
+            if let Some(candidate) = candidate {
+                earliest = Some(
+                    earliest.map_or(candidate, |existing: DateTime<Utc>| existing.min(candidate)),
+                );
             }
-            for tid in &teams {
-                if let Some(&pid) = part_of_team.get(tid) {
-                    super::detectors::record_with_dedup(
-                        db,
-                        game_id,
-                        pid,
-                        None,
-                        SuspicionType::ClusteredRegistration,
-                        GLOBAL_EVIDENCE_KEY,
-                        &mut codes,
-                    )
-                    .await?;
+        }
+    }
+    earliest
+}
+
+fn reviewable_shared_identity(team_count: usize) -> bool {
+    (2..=SHARED_IDENTITY_MAX_TEAMS).contains(&team_count)
+}
+
+fn identity_evidence_key(prefix: &str, hash: &[u8]) -> String {
+    format!("{prefix}:{}", hex::encode(hash))
+}
+
+fn user_evidence_key(prefix: &str, user_id: Uuid) -> String {
+    format!("{prefix}:user:{user_id}")
+}
+
+fn push_candidate(
+    candidates: &mut Candidates,
+    participation_id: i32,
+    ty: SuspicionType,
+    evidence_key: String,
+    observed_at: DateTime<Utc>,
+) {
+    candidates
+        .entry((participation_id, ty.kind(), evidence_key))
+        .and_modify(|existing| *existing = (*existing).min(observed_at))
+        .or_insert(observed_at);
+}
+
+fn session_concurrency_at(observations: &[&Observation]) -> Option<DateTime<Utc>> {
+    let mut sessions = observations
+        .iter()
+        .filter_map(|observation| {
+            observation
+                .broad_network_hash
+                .as_ref()
+                .map(|network| (observation.observed_at_utc, network))
+        })
+        .collect::<Vec<_>>();
+    sessions.sort_by_key(|session| session.0);
+
+    let window = Duration::minutes(SESSION_WINDOW_MINUTES);
+    let mut pair_times = Vec::new();
+    for left in 0..sessions.len() {
+        for right in (left + 1)..sessions.len() {
+            if sessions[right].0 - sessions[left].0 > window {
+                break;
+            }
+            if sessions[left].1 != sessions[right].1 {
+                pair_times.push(sessions[right].0);
+            }
+        }
+    }
+    pair_times.sort_unstable();
+    pair_times
+        .get(SESSION_CONCURRENCY_MIN_OCCURRENCES - 1)
+        .copied()
+}
+
+fn submission_ip_is_unknown(
+    submit_hash: &[u8],
+    submitted_at: DateTime<Utc>,
+    observations: &[&Observation],
+) -> bool {
+    let mut has_baseline = false;
+    for observation in observations {
+        if observation.kind != "Ip" || observation.observed_at_utc > submitted_at {
+            continue;
+        }
+        has_baseline = true;
+        if observation.value_hash == submit_hash {
+            return false;
+        }
+    }
+    has_baseline
+}
+
+fn add_group_candidates(
+    candidates: &mut Candidates,
+    groups: &BTreeMap<Vec<u8>, IdentityGroup>,
+    exemptions: &IdentityExemptions,
+    identity_kind: &str,
+    ty: SuspicionType,
+    evidence_prefix: &str,
+    suppress_large_groups: bool,
+) {
+    for (hash, group) in groups {
+        let shared = if suppress_large_groups {
+            reviewable_shared_identity(group.team_count())
+        } else {
+            group.team_count() >= 2
+        };
+        if !shared || group.members.len() < 2 {
+            continue;
+        }
+        let key = identity_evidence_key(evidence_prefix, hash);
+        let members = group.members.iter().collect::<Vec<_>>();
+        for left in 0..members.len() {
+            for right in (left + 1)..members.len() {
+                let (left_user, left_member) = members[left];
+                let (right_user, right_member) = members[right];
+                if left_member.team_id == right_member.team_id {
+                    continue;
                 }
+                let Some(observed_at) = earliest_unexempt_edge(
+                    exemptions,
+                    *left_user,
+                    left_member,
+                    *right_user,
+                    right_member,
+                    identity_kind,
+                ) else {
+                    continue;
+                };
+                push_candidate(
+                    candidates,
+                    left_member.participation_id,
+                    ty,
+                    key.clone(),
+                    observed_at,
+                );
+                push_candidate(
+                    candidates,
+                    right_member.participation_id,
+                    ty,
+                    key.clone(),
+                    observed_at,
+                );
+            }
+        }
+    }
+}
+
+fn add_same_team_group_candidates(
+    candidates: &mut Candidates,
+    groups: &BTreeMap<(i32, Vec<u8>), IdentityGroup>,
+    exemptions: &IdentityExemptions,
+) {
+    for ((_, hash), group) in groups {
+        if group.members.len() < 2 {
+            continue;
+        }
+        let key = identity_evidence_key("shared-ip", hash);
+        let members = group.members.iter().collect::<Vec<_>>();
+        for left in 0..members.len() {
+            for right in (left + 1)..members.len() {
+                let (left_user, left_member) = members[left];
+                let (right_user, right_member) = members[right];
+                let Some(observed_at) = earliest_unexempt_edge(
+                    exemptions,
+                    *left_user,
+                    left_member,
+                    *right_user,
+                    right_member,
+                    "Ip",
+                ) else {
+                    continue;
+                };
+                push_candidate(
+                    candidates,
+                    left_member.participation_id,
+                    SuspicionType::SharedIp,
+                    key.clone(),
+                    observed_at,
+                );
+                push_candidate(
+                    candidates,
+                    right_member.participation_id,
+                    SuspicionType::SharedIp,
+                    key.clone(),
+                    observed_at,
+                );
+            }
+        }
+    }
+}
+
+fn add_final_bounded_group_candidates(
+    candidates: &mut Candidates,
+    groups: &BTreeMap<Vec<u8>, IdentityGroup>,
+    exemptions: &IdentityExemptions,
+    identity_kind: &str,
+    ty: SuspicionType,
+    evidence_prefix: &str,
+    final_identity_snapshot: bool,
+) {
+    if final_identity_snapshot {
+        add_group_candidates(
+            candidates,
+            groups,
+            exemptions,
+            identity_kind,
+            ty,
+            evidence_prefix,
+            true,
+        );
+    }
+}
+
+/// Reconcile correlation evidence for a game. The operation is idempotent: each
+/// concrete identity/user/submission becomes a stable evidence key and the
+/// canonical event writer enforces uniqueness.
+pub async fn run_correlation_checks(db: &DatabaseConnection, game_id: i32) -> AppResult<()> {
+    run_correlation_checks_for_snapshot(db, game_id, super::detectors::ReconciliationSnapshot::Live)
+        .await
+}
+
+pub(super) async fn run_correlation_checks_for_snapshot(
+    db: &DatabaseConnection,
+    game_id: i32,
+    snapshot: super::detectors::ReconciliationSnapshot,
+) -> AppResult<()> {
+    let pool = db.get_postgres_connection_pool();
+    let Some(window) = super::detectors::load_competitive_game_window(pool, game_id).await? else {
+        return Ok(());
+    };
+    let (start, end) = (window.start, window.end);
+    if end <= start {
+        return Ok(());
+    }
+    let final_identity_snapshot = super::detectors::final_snapshot_ready(snapshot);
+
+    let observations = sqlx::query_as::<_, Observation>(LOAD_OBSERVATIONS_SQL)
+        .bind(game_id)
+        .bind(start)
+        .bind(end)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let submissions = sqlx::query_as::<_, SubmissionIdentity>(LOAD_SUBMISSION_IDENTITIES_SQL)
+        .bind(game_id)
+        .bind(start)
+        .bind(end)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let exemption_rows = sqlx::query_as::<_, IdentityExemption>(LOAD_IDENTITY_EXEMPTIONS_SQL)
+        .bind(game_id)
+        .bind(start)
+        .bind(end)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut exemptions = IdentityExemptions::new();
+    for exemption in exemption_rows {
+        exemptions
+            .entry(canonical_user_pair(exemption.user_a, exemption.user_b))
+            .or_default()
+            .push(exemption);
+    }
+
+    let mut candidates = Candidates::new();
+    let mut observations_by_user: HashMap<Uuid, Vec<&Observation>> = HashMap::new();
+    let mut observations_by_participation: HashMap<i32, Vec<&Observation>> = HashMap::new();
+    let mut exact_ips: BTreeMap<Vec<u8>, IdentityGroup> = BTreeMap::new();
+    let mut fingerprints: BTreeMap<Vec<u8>, IdentityGroup> = BTreeMap::new();
+    let mut subnets: BTreeMap<Vec<u8>, IdentityGroup> = BTreeMap::new();
+    let mut team_ip_users: BTreeMap<(i32, Vec<u8>), IdentityGroup> = BTreeMap::new();
+
+    for observation in &observations {
+        observations_by_user
+            .entry(observation.user_id)
+            .or_default()
+            .push(observation);
+        observations_by_participation
+            .entry(observation.participation_id)
+            .or_default()
+            .push(observation);
+
+        let group = if observation.kind == "Ip" {
+            exact_ips.entry(observation.value_hash.clone()).or_default()
+        } else if observation.kind == "Fingerprint" {
+            fingerprints
+                .entry(observation.value_hash.clone())
+                .or_default()
+        } else {
+            continue;
+        };
+        group.observe(observation);
+
+        if observation.kind == "Ip" {
+            let same_team = team_ip_users
+                .entry((observation.team_id, observation.value_hash.clone()))
+                .or_default();
+            same_team.observe(observation);
+            if let Some(subnet_hash) = &observation.subnet_group_hash {
+                let subnet = subnets.entry(subnet_hash.clone()).or_default();
+                subnet.observe(observation);
             }
         }
     }
 
-    // ── (I) SessionConcurrency — one user seen from IPs in different /20 subnets
-    //    within a 10-minute window, ≥3 qualifying pairs. ──
-    {
-        let window = chrono::Duration::minutes(SESSION_WINDOW_MINUTES);
-        for (name, sessions) in &sessions_of_user {
-            if sessions.len() < 2 {
-                continue;
-            }
-            // Sessions are appended in log order; sort by time to honor RSCTF's
-            // `OrderBy(Time)` (the `break` below relies on ascending time).
-            let mut sess = sessions.clone();
-            sess.sort_by_key(|session| session.0);
+    // Same-team sharing is contextual; one event is enough for each exact
+    // non-exempt user pair and concrete address.
+    add_same_team_group_candidates(&mut candidates, &team_ip_users, &exemptions);
+    add_final_bounded_group_candidates(
+        &mut candidates,
+        &exact_ips,
+        &exemptions,
+        "Ip",
+        SuspicionType::CrossTeamIp,
+        "cross-team-ip",
+        final_identity_snapshot,
+    );
+    add_group_candidates(
+        &mut candidates,
+        &fingerprints,
+        &exemptions,
+        "Fingerprint",
+        SuspicionType::SharedFingerprint,
+        "shared-fingerprint",
+        false,
+    );
+    add_final_bounded_group_candidates(
+        &mut candidates,
+        &subnets,
+        &exemptions,
+        "Ip",
+        SuspicionType::SubnetOverlap,
+        "subnet-overlap",
+        final_identity_snapshot,
+    );
 
-            let mut occurrences = 0usize;
-            for si in 0..sess.len() {
-                for sj in (si + 1)..sess.len() {
-                    if (sess[sj].0 - sess[si].0) > window {
-                        break; // sorted: no later sj is within the window either
-                    }
-                    let (ip1, ip2) = (&sess[si].1, &sess[sj].1);
-                    if ip1 == ip2 {
-                        continue;
-                    }
-                    // Same /20 = likely one ISP pool (mobile/DHCP churn): suppress.
-                    if same_subnet20(ip1, ip2) {
-                        continue;
-                    }
-                    occurrences += 1;
-                }
+    for (user_id, user_observations) in &observations_by_user {
+        let Some(first) = user_observations.first() else {
+            continue;
+        };
+        let mut fingerprints = BTreeSet::new();
+        let fingerprint_churn_at = user_observations.iter().find_map(|observation| {
+            if observation.kind != "Fingerprint" {
+                return None;
             }
+            fingerprints.insert(&observation.value_hash);
+            (fingerprints.len() == FINGERPRINT_CHURN_THRESHOLD)
+                .then_some(observation.observed_at_utc)
+        });
+        if let Some(observed_at) = fingerprint_churn_at {
+            push_candidate(
+                &mut candidates,
+                first.participation_id,
+                SuspicionType::FingerprintChurn,
+                user_evidence_key("fingerprint-churn", *user_id),
+                observed_at,
+            );
+        }
 
-            if occurrences < SESSION_CONCURRENCY_MIN_OCCURRENCES {
-                continue;
-            }
-            if let Some(&tid) = team_of_name.get(name) {
-                if let Some(&pid) = part_of_team.get(&tid) {
-                    super::detectors::record_with_dedup(
-                        db,
-                        game_id,
-                        pid,
-                        None,
-                        SuspicionType::SessionConcurrency,
-                        GLOBAL_EVIDENCE_KEY,
-                        &mut codes,
-                    )
-                    .await?;
-                }
-            }
+        let ip_observations = user_observations
+            .iter()
+            .copied()
+            .filter(|observation| observation.kind == "Ip")
+            .collect::<Vec<_>>();
+        let mut ips = BTreeSet::new();
+        let ip_churn_at = ip_observations.iter().find_map(|observation| {
+            ips.insert(&observation.value_hash);
+            (ips.len() == IP_CHURN_THRESHOLD).then_some(observation.observed_at_utc)
+        });
+        if let Some(observed_at) = ip_churn_at {
+            push_candidate(
+                &mut candidates,
+                first.participation_id,
+                SuspicionType::IpChurn,
+                user_evidence_key("ip-churn", *user_id),
+                observed_at,
+            );
+        }
+        if let Some(observed_at) = session_concurrency_at(&ip_observations) {
+            push_candidate(
+                &mut candidates,
+                first.participation_id,
+                SuspicionType::SessionConcurrency,
+                user_evidence_key("session-concurrency", *user_id),
+                observed_at,
+            );
         }
     }
 
-    // ── UnknownIP — not emitted; see [`unknown_ip_gap`] and the module docs. ──
-    unknown_ip_gap();
+    // ClusteredRegistration intentionally does not emit. The per-user
+    // registration/member linkage has no immutable competitive observation
+    // time, so a post-end roster change could otherwise rewrite final evidence.
 
+    // A submission address is "unknown" only when the participant already has
+    // at least one immutable IP observation before that submission. Legacy rows
+    // without a submit-time hash and sessions without a baseline are skipped.
+    if final_identity_snapshot {
+        for submission in submissions {
+            let Some(submit_hash) = submission.submit_remote_ip_hash.as_ref() else {
+                continue;
+            };
+            let baselines = observations_by_participation
+                .get(&submission.participation_id)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if !submission_ip_is_unknown(submit_hash, submission.submit_time_utc, baselines) {
+                continue;
+            }
+            push_candidate(
+                &mut candidates,
+                submission.participation_id,
+                SuspicionType::UnknownIp,
+                format!("submission:{}", submission.id),
+                submission.submit_time_utc,
+            );
+        }
+    }
+
+    let mut codes = Vec::new();
+    for ((participation_id, kind, evidence_key), observed_at) in candidates {
+        let Some(ty) = SuspicionType::from_kind(kind) else {
+            return Err(AppError::internal("invalid correlation suspicion kind"));
+        };
+        super::detectors::record_with_dedup_at(
+            db,
+            game_id,
+            participation_id,
+            None,
+            ty,
+            &evidence_key,
+            observed_at,
+            &mut codes,
+        )
+        .await?;
+    }
     Ok(())
-}
-
-/// Documentation anchor for the unimplemented **UnknownIP** detector.
-///
-/// RSCTF fires UnknownIP when a **Download `GameEvent`** originates from an IP
-/// outside the team's login-IP history. rsctf persists no download/container
-/// game-event IP stream and `submission` rows carry no IP column, so there is no
-/// event stream to diff against the login baseline — from the login logs alone
-/// every IP is already "seen." Emitting nothing here is deliberate (the task
-/// requires flagging genuine data gaps over inventing a signal). Wiring this up
-/// requires capturing a per-download/-container request IP first.
-#[inline]
-fn unknown_ip_gap() {}
-
-// ── IP helpers (ports of CheatReportController.NormIp / GetSubnet28 / SameSubnet20) ──
-
-/// Canonicalize an IP for cross-source comparison: collapse an IPv4-mapped IPv6
-/// address (`::ffff:1.2.3.4`) to its IPv4 form so a dual-stack login and a plain
-/// IPv4 login compare equal (RSCTF `NormIp`). Trims surrounding whitespace.
-fn norm_ip(ip: &str) -> String {
-    let t = ip.trim();
-    let lower = t.to_ascii_lowercase();
-    if let Some(rest) = lower.strip_prefix("::ffff:") {
-        // The mapped suffix is a dotted-quad IPv4 (no letters), so the lowercased
-        // form is identical to the original.
-        return rest.to_string();
-    }
-    t.to_string()
-}
-
-/// The all-zeros wildcard addresses RSCTF excludes (`IPAddress.Any` / `IPv6Any`).
-fn is_any_ip(ip: &str) -> bool {
-    matches!(ip, "0.0.0.0" | "::" | "::0")
-}
-
-/// `/28` subnet key for an IPv4 address (`GetSubnet28`): zero the low 4 bits of
-/// the final octet. IPv4-only — returns `None` for anything that isn't a dotted
-/// quad.
-fn subnet28(ip: &str) -> Option<String> {
-    let addr: std::net::Ipv4Addr = ip.parse().ok()?;
-    let o = addr.octets();
-    Some(format!("{}.{}.{}.{}/28", o[0], o[1], o[2], o[3] & 0xF0))
-}
-
-/// True when two IPv4 addresses share a `/20` (`SameSubnet20`): first 20 bits
-/// equal (`b0`, `b1`, and the high nibble of `b2`). Non-IPv4 inputs are never
-/// "same subnet".
-fn same_subnet20(a: &str, b: &str) -> bool {
-    match (
-        a.parse::<std::net::Ipv4Addr>(),
-        b.parse::<std::net::Ipv4Addr>(),
-    ) {
-        (Ok(x), Ok(y)) => {
-            let (p, q) = (x.octets(), y.octets());
-            p[0] == q[0] && p[1] == q[1] && (p[2] & 0xF0) == (q[2] & 0xF0)
-        }
-        _ => false,
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::reviewable_shared_network;
+    use super::*;
 
     #[test]
-    fn shared_network_context_suppresses_singletons_and_large_nat_groups() {
-        assert!(!reviewable_shared_network(0));
-        assert!(!reviewable_shared_network(1));
-        assert!(reviewable_shared_network(2));
-        assert!(reviewable_shared_network(4));
-        assert!(!reviewable_shared_network(5));
-        assert!(!reviewable_shared_network(100));
+    fn shared_identity_suppresses_singletons_and_large_nat_groups() {
+        assert!(!reviewable_shared_identity(0));
+        assert!(!reviewable_shared_identity(1));
+        assert!(reviewable_shared_identity(2));
+        assert!(reviewable_shared_identity(4));
+        assert!(!reviewable_shared_identity(5));
+        assert!(!reviewable_shared_identity(100));
+    }
+
+    #[test]
+    fn bounded_ip_groups_emit_only_from_the_final_population() {
+        fn group(team_count: usize, hash: &[u8]) -> IdentityGroup {
+            let start = Utc::now();
+            let mut group = IdentityGroup::default();
+            for index in 0..team_count {
+                let team_id = i32::try_from(index + 1).unwrap();
+                let user_id = Uuid::from_u128(u128::try_from(index + 1).unwrap());
+                group.observe(&Observation {
+                    id: i64::try_from(index + 1).unwrap(),
+                    user_id,
+                    team_id,
+                    participation_id: 100 + team_id,
+                    kind: "Ip".to_string(),
+                    value_hash: hash.to_vec(),
+                    subnet_group_hash: None,
+                    broad_network_hash: None,
+                    observed_at_utc: start + Duration::seconds(i64::try_from(index).unwrap()),
+                });
+            }
+            group
+        }
+
+        let hash = vec![0x42; 32];
+        let exemptions = IdentityExemptions::new();
+        let mut two_team_groups = BTreeMap::new();
+        two_team_groups.insert(hash.clone(), group(2, &hash));
+
+        let mut live_candidates = Candidates::new();
+        add_final_bounded_group_candidates(
+            &mut live_candidates,
+            &two_team_groups,
+            &exemptions,
+            "Ip",
+            SuspicionType::CrossTeamIp,
+            "cross-team-ip",
+            false,
+        );
+        assert!(live_candidates.is_empty());
+
+        let mut final_two_team_candidates = Candidates::new();
+        add_final_bounded_group_candidates(
+            &mut final_two_team_candidates,
+            &two_team_groups,
+            &exemptions,
+            "Ip",
+            SuspicionType::CrossTeamIp,
+            "cross-team-ip",
+            true,
+        );
+        assert_eq!(final_two_team_candidates.len(), 2);
+
+        let mut five_team_groups = BTreeMap::new();
+        five_team_groups.insert(hash.clone(), group(5, &hash));
+        let mut final_five_team_candidates = Candidates::new();
+        add_final_bounded_group_candidates(
+            &mut final_five_team_candidates,
+            &five_team_groups,
+            &exemptions,
+            "Ip",
+            SuspicionType::CrossTeamIp,
+            "cross-team-ip",
+            true,
+        );
+        assert!(final_five_team_candidates.is_empty());
+    }
+
+    #[test]
+    fn immutable_query_uses_ids_and_historical_roster() {
+        assert!(LOAD_OBSERVATIONS_SQL.contains("\"IdentityObservations\""));
+        assert!(LOAD_OBSERVATIONS_SQL.contains("\"UserParticipations\""));
+        assert!(LOAD_OBSERVATIONS_SQL.contains("observation.user_id"));
+        assert!(LOAD_OBSERVATIONS_SQL.contains("competitive_admitted_at_utc < $3"));
+        assert!(LOAD_SUBMISSION_IDENTITIES_SQL.contains("competitive_admitted_at_utc < $3"));
+        assert!(!LOAD_OBSERVATIONS_SQL.contains("TeamMembers"));
+        assert!(!LOAD_OBSERVATIONS_SQL.contains("user_name"));
+    }
+
+    #[test]
+    fn identity_keys_do_not_expose_raw_values() {
+        let key = identity_evidence_key("ip", &[0xab; 32]);
+        assert_eq!(key, format!("ip:{}", "ab".repeat(32)));
+        assert!(key.len() <= 128);
+    }
+
+    #[test]
+    fn clustered_registration_has_no_actionable_emitter() {
+        let source = include_str!("correlation.rs");
+        let needle = ["SuspicionType::Clustered", "Registration"].concat();
+        assert!(!source.contains(&needle));
+    }
+
+    #[test]
+    fn unknown_ip_waits_for_the_final_baseline_population() {
+        let submitted_at = Utc::now();
+        let user_id = Uuid::from_u128(1);
+        let mismatch = Observation {
+            id: 1,
+            user_id,
+            team_id: 10,
+            participation_id: 20,
+            kind: "Ip".to_string(),
+            value_hash: vec![0x11; 32],
+            subnet_group_hash: None,
+            broad_network_hash: None,
+            observed_at_utc: submitted_at - Duration::minutes(2),
+        };
+        let late_matching_baseline = Observation {
+            id: 2,
+            value_hash: vec![0x22; 32],
+            observed_at_utc: submitted_at - Duration::minutes(1),
+            ..mismatch.clone()
+        };
+        assert!(submission_ip_is_unknown(
+            &[0x22; 32],
+            submitted_at,
+            &[&mismatch]
+        ));
+        assert!(!submission_ip_is_unknown(
+            &[0x22; 32],
+            submitted_at,
+            &[&mismatch, &late_matching_baseline]
+        ));
     }
 }
+
+#[cfg(test)]
+#[path = "correlation_tests.rs"]
+mod temporal_tests;

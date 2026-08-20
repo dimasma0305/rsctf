@@ -151,6 +151,10 @@ pub struct AppConfig {
     pub database_url: String,
     pub redis_url: Option<String>,
     pub jwt_secret: String,
+    /// Stable deployment secret used only for domain-separated identity HMACs.
+    /// It must not rotate with the JWT signing key or historical observations
+    /// would become silently incomparable.
+    pub identity_hash_key: String,
     pub jwt_ttl_secs: i64,
     jwt_ttl_error: Option<String>,
     /// Emit the session cookie with `Secure`. Disable only for explicit local
@@ -246,6 +250,7 @@ impl AppConfig {
             ),
             redis_url: env::var("RSCTF_REDIS_URL").ok(),
             jwt_secret: env_or("RSCTF_JWT_SECRET", "insecure-dev-secret-change-me"),
+            identity_hash_key: env_or("RSCTF_IDENTITY_HASH_KEY", ""),
             jwt_ttl_secs,
             jwt_ttl_error,
             cookie_secure: env_bool("RSCTF_COOKIE_SECURE", true),
@@ -272,6 +277,7 @@ impl AppConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         self.validate_runtime_role()?;
         validate_jwt_secret(&self.jwt_secret)?;
+        self.validate_identity_hash_key()?;
         if let Some(error) = self.jwt_ttl_error.as_deref() {
             anyhow::bail!(error.to_string());
         }
@@ -285,6 +291,12 @@ impl AppConfig {
             validate_public_url(public_url)?;
         }
         Ok(())
+    }
+
+    /// The migration role needs only this security secret to complete the
+    /// keyed legacy identity bootstrap after applying m0090.
+    pub fn validate_identity_hash_key(&self) -> anyhow::Result<()> {
+        validate_identity_hash_key(&self.identity_hash_key, &self.jwt_secret)
     }
 
     /// Role validation is separate so the migration-only process can reject a
@@ -350,7 +362,28 @@ fn validate_jwt_secret(secret: &str) -> anyhow::Result<()> {
         anyhow::bail!("RSCTF_JWT_SECRET is set to a repository-known insecure default");
     }
     if secret.len() < 32 {
-        anyhow::bail!("RSCTF_JWT_SECRET must contain at least 32 bytes of entropy");
+        anyhow::bail!("RSCTF_JWT_SECRET must contain at least 32 bytes");
+    }
+    Ok(())
+}
+
+fn validate_identity_hash_key(secret: &str, jwt_secret: &str) -> anyhow::Result<()> {
+    const KNOWN_INSECURE: &[&str] = &[
+        "insecure-dev-secret-change-me",
+        "change-me-in-production",
+        "insecure-dev-identity-key-change-me",
+    ];
+    if KNOWN_INSECURE.contains(&secret) {
+        anyhow::bail!("RSCTF_IDENTITY_HASH_KEY is set to a repository-known insecure default");
+    }
+    if secret.chars().any(char::is_whitespace) {
+        anyhow::bail!("RSCTF_IDENTITY_HASH_KEY must not contain whitespace");
+    }
+    if secret.as_bytes().len() < 32 {
+        anyhow::bail!("RSCTF_IDENTITY_HASH_KEY must contain at least 32 bytes");
+    }
+    if secret == jwt_secret {
+        anyhow::bail!("RSCTF_IDENTITY_HASH_KEY must differ from RSCTF_JWT_SECRET");
     }
     Ok(())
 }
@@ -364,8 +397,8 @@ impl Default for AppConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_asset_signed_url_ttl, parse_jwt_ttl, validate_jwt_secret, validate_public_url,
-        RuntimeRole,
+        parse_asset_signed_url_ttl, parse_jwt_ttl, validate_identity_hash_key, validate_jwt_secret,
+        validate_public_url, RuntimeRole,
     };
 
     #[test]
@@ -378,6 +411,17 @@ mod tests {
     #[test]
     fn accepts_long_random_jwt_secret() {
         assert!(validate_jwt_secret("0123456789abcdef0123456789abcdef").is_ok());
+    }
+
+    #[test]
+    fn identity_hash_key_is_dedicated_and_at_least_32_bytes() {
+        let jwt = "abcdef0123456789abcdef0123456789";
+        assert!(validate_identity_hash_key("", jwt).is_err());
+        assert!(validate_identity_hash_key("short", jwt).is_err());
+        assert!(validate_identity_hash_key("change-me-in-production", jwt).is_err());
+        assert!(validate_identity_hash_key("0123456789abcdef 0123456789abcdef", jwt).is_err());
+        assert!(validate_identity_hash_key(jwt, jwt).is_err());
+        assert!(validate_identity_hash_key("0123456789abcdef0123456789abcdef", jwt).is_ok());
     }
 
     #[test]

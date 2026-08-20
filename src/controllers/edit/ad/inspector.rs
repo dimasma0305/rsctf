@@ -246,6 +246,7 @@ pub async fn ad_spawn_inspector(
                 cpu_count: definition.cpu_count.unwrap_or(1),
                 expose_port: definition.expose_port.unwrap_or(80),
                 publish_port: false,
+                proxy_only: false,
                 env: Vec::new(),
                 flag: None,
                 ad_network: None,

@@ -91,20 +91,26 @@ pub async fn create_test_container(
         selected_static_flag.clone()
     };
 
+    let game_kind = crate::services::container::game_kind_for_challenge(challenge.challenge_type);
+    let platform_proxy =
+        crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
+    let is_proxy = crate::services::container::should_use_platform_proxy(
+        game_kind,
+        st.containers.requires_proxy(),
+        platform_proxy,
+    );
     let container_uuid = Uuid::new_v4();
     let operation_id = Some(format!("container:{container_uuid}"));
     let info = match workload {
         Some(spec) => {
             st.containers
-                .create_workload(spec, operation_id, flag.clone())
+                .create_workload(spec, operation_id, flag.clone(), is_proxy)
                 .await?
         }
         None => {
             st.containers
                 .create(ContainerSpec {
-                    game_kind: crate::services::container::game_kind_for_challenge(
-                        challenge.challenge_type,
-                    ),
+                    game_kind,
                     image: legacy_image
                         .clone()
                         .expect("a legacy definition has an immutable launch image"),
@@ -112,6 +118,7 @@ pub async fn create_test_container(
                     cpu_count: challenge.cpu_count.unwrap_or(1),
                     expose_port: challenge.expose_port.unwrap_or(80),
                     publish_port: true,
+                    proxy_only: is_proxy,
                     env: Vec::new(),
                     flag: flag.clone(),
                     ad_network: None,
@@ -157,9 +164,6 @@ pub async fn create_test_container(
     };
     let now = Utc::now();
     let stop_at = now + chrono::Duration::hours(2);
-    // PlatformProxy returns the wsrx proxy guid; Default returns host:port.
-    let is_proxy = st.containers.requires_proxy()
-        || crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
     let persisted: AppResult<container::Model> = async {
         let txn = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
         let c = container::ActiveModel {

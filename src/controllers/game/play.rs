@@ -2,6 +2,9 @@
 use super::membership::*;
 use super::*;
 
+#[path = "play_final_policy.rs"]
+mod final_policy;
+
 // ---------------------------------------------------------------------------
 // Game listing
 // ---------------------------------------------------------------------------
@@ -105,7 +108,7 @@ pub async fn game_details(
 
     // Caller's participation (if logged in).
     let part = match &maybe {
-        Some(u) => find_participation(&st, u.id, id).await?,
+        Some(u) => find_participation(&st, u, id).await?,
         None => None,
     };
     let (status, division, team_name) = match &part {
@@ -198,7 +201,7 @@ pub async fn game_details_with_challenges(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path(id): Path<i32>,
-) -> AppResult<RequestResponse<GameDetailModel>> {
+) -> AppResult<Response> {
     // Accepted participants keep a read-only challenge archive after closeout.
     // Mutation endpoints still call `context_info(..., true)` and remain closed.
     let ctx = context_info(&st, &user, id, false).await?;
@@ -255,7 +258,25 @@ pub async fn game_details_with_challenges(
         writeup_required: ctx.game.writeup_required,
         writeup_deadline: ctx.game.writeup_deadline,
     };
-    Ok(RequestResponse::ok(model))
+    let visible_challenge_ids = model
+        .challenges
+        .values()
+        .flatten()
+        .map(|challenge| challenge.id)
+        .collect();
+    // Everything above is safe to prepare before retaining a pool connection.
+    // The finalizer re-proves every returned challenge and its current division
+    // permission on the roster transaction, then serializes under those locks.
+    final_policy::finish_details_response(
+        st.pg(),
+        &user,
+        id,
+        ctx.participation.team_id,
+        ctx.participation.id,
+        visible_challenge_ids,
+        model,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +338,8 @@ pub async fn join_check(
 /// `POST /api/game/{id}` — join a game.
 pub async fn join_game(
     State(st): State<SharedState>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     user: CurrentUser,
     Path(id): Path<i32>,
     axum::Json(model): axum::Json<GameJoinModel>,
@@ -327,6 +350,16 @@ pub async fn join_game(
         // RSCTF JoinGame returns the coded `ErrorCodes.GameEnded` (10002) here.
         return Err(AppError::game_ended());
     }
+
+    let preflight_policy = crate::services::anti_cheat::load_policy_flags(st.pg()).await?;
+    let fingerprint = crate::services::anti_cheat::validate_fingerprint_submission(
+        &st,
+        preflight_policy,
+        model.fingerprint.as_deref(),
+        model.fingerprint_proof.as_deref(),
+    )
+    .await?;
+    let current_ip = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()));
 
     // Lock ordering is global and consistent across join + leave: local
     // `(user, game)` -> team gates first, followed by PostgreSQL user -> team ->
@@ -340,12 +373,33 @@ pub async fn join_game(
     // Every mutable join rule is re-read only after the shared game-control
     // lock is held. This closes stale invite/review/division/window requests and
     // keeps the global DB order user -> team -> game -> rows.
+    let mut identity_scope = crate::services::anti_cheat::lock_game_join_identity_scope(
+        membership_locks.transaction_mut(),
+        st.config.as_ref(),
+        user.id,
+        current_ip.as_deref(),
+        fingerprint.as_deref(),
+    )
+    .await?;
     membership_locks.acquire_game_advisory().await?;
+    crate::services::anti_cheat::lock_game_join_observation_games(
+        membership_locks.transaction_mut(),
+        user.id,
+        id,
+        &mut identity_scope,
+    )
+    .await?;
     let policy = resolve_join_policy_locked(
         membership_locks.transaction_mut(),
         id,
         model.division_id,
         model.invite_code.as_deref(),
+    )
+    .await?;
+    crate::services::anti_cheat::lock_live_request_account(
+        membership_locks.transaction_mut(),
+        user.id,
+        &user.security_stamp,
     )
     .await?;
     let target_status = policy.target_status;
@@ -378,6 +432,28 @@ pub async fn join_game(
     }
 
     let token = participation_token(&g, model.team_id)?;
+    let identity_decision = crate::services::anti_cheat::evaluate_game_join_identity(
+        membership_locks.transaction_mut(),
+        user.id,
+        &identity_scope,
+    )
+    .await?;
+    if identity_decision.outcome() == crate::services::anti_cheat::AdmissionOutcome::Blocked {
+        crate::services::anti_cheat::record_game_join_identity_decision(
+            membership_locks.transaction_mut(),
+            user.id,
+            Some(&user.name),
+            &identity_scope,
+            &identity_decision,
+        )
+        .await?;
+        membership_locks.release().await?;
+        return Err(AppError::Coded {
+            http: StatusCode::FORBIDDEN,
+            code: 403,
+            title: crate::services::anti_cheat::block_message().to_string(),
+        });
+    }
     let persisted = persist_game_join_locked(
         membership_locks.transaction_mut(),
         JoinMutation {
@@ -392,7 +468,25 @@ pub async fn join_game(
         },
     )
     .await?;
+    crate::services::anti_cheat::record_game_join_identity_decision(
+        membership_locks.transaction_mut(),
+        user.id,
+        Some(&user.name),
+        &identity_scope,
+        &identity_decision,
+    )
+    .await?;
     let part_id = persisted.participation_id;
+    if persisted.is_accepted() {
+        crate::services::anti_cheat::snapshot_recent_global_observations_for_game(
+            membership_locks.transaction_mut(),
+            user.id,
+            id,
+            model.team_id,
+            part_id,
+        )
+        .await?;
+    }
     let prepare_accepted_resources =
         target_status == ParticipationStatus::Accepted && persisted.is_accepted();
 
@@ -478,52 +572,12 @@ pub async fn leave_game(
 
     let mut membership_locks =
         MembershipMutationLocks::acquire(st.pg(), user.id, id, team_id, false).await?;
-
-    let live: Option<(i32, i32, i16)> = sqlx::query_as(
-        r#"SELECT participation.id, participation.team_id, participation.status
-              FROM "UserParticipations" membership
-              JOIN "Participations" participation
-                ON participation.id = membership.participation_id
-             WHERE membership.user_id = $1 AND membership.game_id = $2
-             FOR UPDATE OF membership, participation"#,
-    )
-    .bind(user.id)
-    .bind(id)
-    .fetch_optional(&mut **membership_locks.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((live_part_id, live_team_id, live_status)) = live else {
-        return Err(AppError::bad_request(
-            "Cannot leave a game you have not joined",
-        ));
-    };
-    if live_part_id != part_id || live_team_id != team_id {
-        return Err(AppError::conflict(
-            "Participation changed; retry the request",
-        ));
-    }
-    if live_status != ParticipationStatus::Pending as i16
-        && live_status != ParticipationStatus::Rejected as i16
-    {
-        return Err(AppError::bad_request("Cannot leave after approval"));
-    }
-
-    sqlx::query(
-        r#"DELETE FROM "UserParticipations"
-            WHERE user_id = $1 AND game_id = $2 AND participation_id = $3"#,
-    )
-    .bind(user.id)
-    .bind(id)
-    .bind(part_id)
-    .execute(&mut **membership_locks.transaction_mut())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-
-    // The parent row remains locked from the authoritative read above. Delete
-    // only if this was its final member and it owns no competition evidence;
-    // legacy rejected solvers must retain their cascade-owned history.
-    crate::services::participation_evidence::delete_unlinked_pending_or_rejected_without_evidence(
+    leave_game_membership_locked(
         membership_locks.transaction_mut(),
+        user.id,
+        &user.security_stamp,
+        id,
+        team_id,
         part_id,
     )
     .await?;
@@ -566,12 +620,13 @@ pub async fn get_challenge(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, challenge_id)): Path<(i32, i32)>,
-) -> AppResult<RequestResponse<ChallengeDetailModel>> {
+) -> AppResult<Response> {
     // Challenge content, hints, static attachments, final score, and solvers
     // remain readable after closeout. Operational context is stripped below.
     let ctx = context_info(&st, &user, id, false).await?;
 
     let challenge = load_playable_challenge(&st, id, challenge_id).await?;
+    let mut response_grant = final_policy::PreparedChallengeGrant::new(&challenge);
 
     // Division may restrict viewing this challenge (RSCTF GetChallenge gate):
     // lacking ViewChallenge hides it as a 404, mirroring the submit gate.
@@ -597,6 +652,7 @@ pub async fn get_challenge(
             {
                 context.instance_entry = Some(cont.entry());
                 context.close_time = Some(cont.expect_stop_at);
+                response_grant.bind_per_team_runtime(instance, cont);
             }
         }
     }
@@ -610,25 +666,36 @@ pub async fn get_challenge(
     // flag context, which this port never populates, so only the challenge-owned
     // attachment is resolved here.
     if context.instance_entry.is_none() {
-        if let Some(att_id) = challenge.attachment_id {
-            if let Some(att) = attachment::Entity::find_by_id(att_id).one(&st.db).await? {
-                match att.file_type {
-                    FileType::Remote => context.url = att.remote_url.clone(),
-                    FileType::Local => {
-                        if let Some(lf_id) = att.local_file_id {
-                            if let Some(lf) =
-                                local_file::Entity::find_by_id(lf_id).one(&st.db).await?
-                            {
-                                context.url = Some(format!("/assets/{}/{}", lf.hash, lf.name));
-                                context.file_size = Some(lf.file_size);
-                                context.sha256 = Some(lf.hash);
-                            }
-                        }
+        let prepared_attachment = if let Some(att_id) = challenge.attachment_id {
+            attachment::Entity::find_by_id(att_id).one(&st.db).await?
+        } else {
+            None
+        };
+        let prepared_file = if let Some(att) = prepared_attachment.as_ref() {
+            if let Some(local_file_id) = att.local_file_id {
+                local_file::Entity::find_by_id(local_file_id)
+                    .one(&st.db)
+                    .await?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(att) = prepared_attachment.as_ref() {
+            match att.file_type {
+                FileType::Remote => context.url = att.remote_url.clone(),
+                FileType::Local => {
+                    if let Some(lf) = prepared_file.as_ref() {
+                        context.url = Some(format!("/assets/{}/{}", lf.hash, lf.name));
+                        context.file_size = Some(lf.file_size);
+                        context.sha256 = Some(lf.hash.clone());
                     }
-                    FileType::None => {}
                 }
+                FileType::None => {}
             }
         }
+        response_grant.bind_attachment(prepared_attachment, prepared_file);
     }
 
     // Shared container: the challenge serves ONE container to every team, so the
@@ -642,6 +709,7 @@ pub async fn get_challenge(
             if let Some(shared) = container::Entity::find_by_id(sid).one(&st.db).await? {
                 context.instance_entry = Some(shared.entry());
                 context.close_time = Some(shared.expect_stop_at);
+                response_grant.bind_shared_runtime(shared);
             }
         }
     }
@@ -664,43 +732,6 @@ pub async fn get_challenge(
         Some(r) => (r.rating, r.comment),
         None => (ReviewRating::None, None),
     };
-
-    // Log the first time this team opens the challenge (RSCTF `GetChallenge` emits an
-    // `EventType.ChallengeOpened` GameEvent once per team+challenge, deduped on the
-    // event's `values[0]` — the challenge id string). Mirrors
-    // `GameEventRepository.IsChallengeOpened(gameId, teamId, challengeId)`.
-    if !ctx.archived {
-        let cid_str = challenge_id.to_string();
-        // Has this team already opened this challenge? Push the challenge-id match into
-        // SQL as an EXISTS (served by ix_gameevents_game_team_type + the `values[0]`
-        // filter) instead of loading EVERY ChallengeOpened event for the team and
-        // scanning them in memory on every challenge view.
-        let already_opened: bool = sqlx::query_scalar(
-            r#"SELECT EXISTS(
-                 SELECT 1 FROM "GameEvents"
-                 WHERE game_id = $1 AND team_id = $2 AND "Type" = $3 AND "values"->>0 = $4
-               )"#,
-        )
-        .bind(id)
-        .bind(ctx.participation.team_id)
-        .bind(crate::utils::enums::EventType::ChallengeOpened as i16)
-        .bind(&cid_str)
-        .fetch_one(st.pg())
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
-        if !already_opened {
-            let ev = game_event::ActiveModel {
-                game_id: Set(id),
-                event_type: Set(crate::utils::enums::EventType::ChallengeOpened),
-                values: Set(serde_json::json!([cid_str, challenge.title.clone()])),
-                publish_time_utc: Set(Utc::now()),
-                user_id: Set(Some(user.id)),
-                team_id: Set(ctx.participation.team_id),
-                ..Default::default()
-            };
-            ev.insert(&st.db).await?;
-        }
-    }
 
     // Project the score from the same board snapshot used by `/details` and the
     // solver list. In particular, a public viewer during the freeze must not learn
@@ -732,5 +763,20 @@ pub async fn get_challenge(
         user_rating,
         user_comment,
     };
-    Ok(RequestResponse::ok(model))
+
+    // Final authority, current game/challenge/division policy, the response,
+    // and the positive-interaction event share one transaction. Reads and
+    // storage preparation stay above this boundary, so no nested pool checkout
+    // is possible while the roster connection is retained.
+    final_policy::finish_challenge_response(
+        st.pg(),
+        &user,
+        id,
+        ctx.participation.team_id,
+        ctx.participation.id,
+        challenge_id,
+        response_grant,
+        model,
+    )
+    .await
 }

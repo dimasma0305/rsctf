@@ -1,24 +1,15 @@
-//! Suspicion detectors (behavioral rules + fingerprint/IP correlation).
+//! Submission-derived behavioral detectors and suspicion-event persistence.
 use super::*;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Behavioral-rule thresholds (mirrors the constants in RSCTF
-// `CheatReportController` Checks 6/8/A/B/H, adapted to the per-participation model)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /// Burst: this many distinct challenges solved …
 const BURST_MIN_SOLVES: usize = 3;
 /// … within this window (seconds) trips [`SuspicionType::Burst`].
 const BURST_WINDOW_SECS: i64 = 60;
-/// HighWrongRate needs at least this many wrong answers before it can fire
-/// (absolute floor, so a handful of typos never trips a Strong-tier rule).
-const HIGH_WRONG_MIN: usize = 40;
-/// … and the wrong:accepted ratio must be at least this (brute-force shape).
-const HIGH_WRONG_RATIO: i64 = 10;
-/// ZeroWrongAttempts is suppressed unless the challenge has at least this many
-/// distinct solvers (mirrors RSCTF's `challengeSolveCount >= 5` gate — a
-/// perfect first try only implicates on a challenge others struggled with).
-const ZERO_WRONG_MIN_SOLVERS: usize = 5;
+/// HighWrongRate needs this many wrong answers for one challenge inside the
+/// rolling 60-second window encoded in [`HIGH_WRONG_RATE_HITS_SQL`].
+const HIGH_WRONG_MIN: i64 = 40;
+const COMMON_SOLVE_RATE: f64 = 0.40;
+const EASY_ZERO_ATTEMPT_RATE: f64 = 0.30;
 /// Hoarding: solved this long (seconds) after the instance's last container
 /// operation (a destroy, in the fire case) — RSCTF uses 60 minutes.
 const HOARDING_MIN_GAP_SECS: i64 = 60 * 60;
@@ -27,14 +18,355 @@ const MAX_EVIDENCE_KEY_BYTES: usize = 128;
 // negative first key for the participant-wide detector/submit lock namespace.
 const SUSPICION_SCORE_LOCK_NAMESPACE: i32 = -1_389_606_228;
 
-fn valid_evidence_key(evidence_key: &str) -> bool {
+/// Competitive interval; submissions at or after `end` are practice evidence.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CompetitiveGameWindow {
+    pub start: chrono::DateTime<chrono::Utc>,
+    pub end: chrono::DateTime<chrono::Utc>,
+}
+
+/// Reconciliation authority supplied by the durable game-seal path. A wall
+/// clock past `Games.end_time_utc` is not enough to authorize non-monotonic
+/// detectors: the final variant is issued only after the configured grace and
+/// the scheduler's game-row barrier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ReconciliationSnapshot {
+    Live,
+    BarrierBackedFinal,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct CanonicalSolve {
+    pub participation_id: i32,
+    pub team_id: i32,
+    pub challenge_id: i32,
+    pub submit_time_utc: chrono::DateTime<chrono::Utc>,
+    pub container_id: Option<uuid::Uuid>,
+    pub container_last_operation_at_submit: Option<chrono::DateTime<chrono::Utc>>,
+    pub container_was_loaded_at_submit: Option<bool>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct CompetitiveWrongAttempt {
+    pub participation_id: i32,
+    pub team_id: i32,
+    pub challenge_id: i32,
+    pub submit_time_utc: chrono::DateTime<chrono::Utc>,
+}
+
+pub(super) fn is_common_ordering_challenge(solve_count: usize, participant_count: usize) -> bool {
+    participant_count > 0 && solve_count as f64 / participant_count as f64 > COMMON_SOLVE_RATE
+}
+
+pub(super) fn is_easy_challenge(
+    solve_count: usize,
+    participant_count: usize,
+    zero_attempt_rate: f64,
+) -> bool {
+    is_common_ordering_challenge(solve_count, participant_count)
+        || zero_attempt_rate > EASY_ZERO_ATTEMPT_RATE
+}
+
+#[inline]
+pub(super) fn in_competitive_window(
+    at: chrono::DateTime<chrono::Utc>,
+    window: CompetitiveGameWindow,
+) -> bool {
+    at >= window.start && at < window.end
+}
+
+#[inline]
+pub(super) fn final_snapshot_ready(snapshot: ReconciliationSnapshot) -> bool {
+    snapshot == ReconciliationSnapshot::BarrierBackedFinal
+}
+
+pub(super) fn is_hoarded_submission(
+    submitted_at: chrono::DateTime<chrono::Utc>,
+    has_container: bool,
+    last_operation: Option<chrono::DateTime<chrono::Utc>>,
+    was_loaded: Option<bool>,
+) -> bool {
+    matches!(
+        (last_operation, was_loaded),
+        (Some(last_operation), Some(false))
+            if !has_container
+                && submitted_at - last_operation
+                    > chrono::Duration::seconds(HOARDING_MIN_GAP_SECS)
+    )
+}
+
+/// Earliest canonical solve that completes a qualifying burst, independent of
+/// which durable submission job happens to replay first.
+fn earliest_burst_completion(
+    mut solve_times: Vec<chrono::DateTime<chrono::Utc>>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    if solve_times.len() < BURST_MIN_SOLVES {
+        return None;
+    }
+    solve_times.sort_unstable();
+    for end in (BURST_MIN_SOLVES - 1)..solve_times.len() {
+        let start = end + 1 - BURST_MIN_SOLVES;
+        if solve_times[end] - solve_times[start] <= chrono::Duration::seconds(BURST_WINDOW_SECS) {
+            return Some(solve_times[end]);
+        }
+    }
+    None
+}
+
+pub(super) async fn load_competitive_game_window(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+) -> AppResult<Option<CompetitiveGameWindow>> {
+    let row: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> =
+        sqlx::query_as(
+            r#"SELECT start_time_utc, end_time_utc
+                 FROM "Games"
+                WHERE id = $1"#,
+        )
+        .bind(game_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(row.map(|(start, end)| CompetitiveGameWindow { start, end }))
+}
+
+/// One scoreboard-authoritative solve per `(participation, challenge)`.
+pub(super) async fn load_canonical_solves(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    window: CompetitiveGameWindow,
+) -> AppResult<Vec<CanonicalSolve>> {
+    load_canonical_solves_scoped(pool, game_id, window, None).await
+}
+
+async fn load_canonical_solves_scoped(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    window: CompetitiveGameWindow,
+    participation_id: Option<i32>,
+) -> AppResult<Vec<CanonicalSolve>> {
+    let rows: Vec<(
+        i32,
+        i32,
+        i32,
+        chrono::DateTime<chrono::Utc>,
+        Option<uuid::Uuid>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<bool>,
+    )> = sqlx::query_as(
+        r#"SELECT submission.participation_id,
+                  submission.team_id,
+                  submission.challenge_id,
+                  submission.submit_time_utc,
+                  submission.container_id,
+                  submission.container_last_operation_at_submit,
+                  submission.container_was_loaded_at_submit
+             FROM "FirstSolves" first_solve
+             JOIN "Submissions" submission
+               ON submission.id = first_solve.submission_id
+              AND submission.participation_id = first_solve.participation_id
+              AND submission.challenge_id = first_solve.challenge_id
+             JOIN "Participations" participation
+               ON participation.id = submission.participation_id
+              AND participation.game_id = submission.game_id
+            WHERE submission.game_id = $1
+              AND submission.status = $2
+              AND submission.submit_time_utc >= $3
+              AND submission.submit_time_utc < $4
+              AND participation.competitive_admitted_at_utc IS NOT NULL
+              AND participation.competitive_admitted_at_utc < $4
+              AND ($5::integer IS NULL OR submission.participation_id = $5)
+            ORDER BY submission.submit_time_utc, submission.id"#,
+    )
+    .bind(game_id)
+    .bind(crate::utils::enums::AnswerResult::Accepted as i16)
+    .bind(window.start)
+    .bind(window.end)
+    .bind(participation_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                participation_id,
+                team_id,
+                challenge_id,
+                submit_time_utc,
+                container_id,
+                container_last_operation_at_submit,
+                container_was_loaded_at_submit,
+            )| CanonicalSolve {
+                participation_id,
+                team_id,
+                challenge_id,
+                submit_time_utc,
+                container_id,
+                container_last_operation_at_submit,
+                container_was_loaded_at_submit,
+            },
+        )
+        .collect())
+}
+
+pub(super) async fn load_competitive_wrong_attempts(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    window: CompetitiveGameWindow,
+) -> AppResult<Vec<CompetitiveWrongAttempt>> {
+    let rows: Vec<(i32, i32, i32, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        r#"SELECT submission.participation_id,
+                  submission.team_id,
+                  submission.challenge_id,
+                  submission.submit_time_utc
+             FROM "Submissions" submission
+             JOIN "Participations" participation
+               ON participation.id = submission.participation_id
+              AND participation.game_id = submission.game_id
+            WHERE submission.game_id = $1
+              AND submission.status = $2
+              AND submission.submit_time_utc >= $3
+              AND submission.submit_time_utc < $4
+              AND participation.competitive_admitted_at_utc IS NOT NULL
+              AND participation.competitive_admitted_at_utc < $4
+            ORDER BY submission.submit_time_utc, submission.id"#,
+    )
+    .bind(game_id)
+    .bind(crate::utils::enums::AnswerResult::WrongAnswer as i16)
+    .bind(window.start)
+    .bind(window.end)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(participation_id, team_id, challenge_id, submit_time_utc)| CompetitiveWrongAttempt {
+                participation_id,
+                team_id,
+                challenge_id,
+                submit_time_utc,
+            },
+        )
+        .collect())
+}
+
+/// The single HighWrongRate definition used by both live evaluation and the
+/// report sweep: at least 40 wrong attempts on one challenge in a rolling 60s
+/// window, unless that challenge's canonical solve followed the window anchor
+/// within five minutes. `participation_id = None` evaluates the whole game.
+const HIGH_WRONG_RATE_HITS_SQL: &str = r#"
+    WITH wrong_windows AS MATERIALIZED (
+        SELECT submission.participation_id,
+               submission.challenge_id,
+               submission.submit_time_utc AS anchor_time,
+               COUNT(*) OVER (
+                   PARTITION BY submission.participation_id, submission.challenge_id
+                   ORDER BY submission.submit_time_utc
+                   RANGE BETWEEN CURRENT ROW
+                         AND '60 seconds'::interval FOLLOWING
+               ) AS wrong_count,
+               NTH_VALUE(
+                   submission.submit_time_utc,
+                   ($7::bigint)::integer
+               ) OVER (
+                   PARTITION BY submission.participation_id, submission.challenge_id
+                   ORDER BY submission.submit_time_utc
+                   RANGE BETWEEN CURRENT ROW
+                         AND '60 seconds'::interval FOLLOWING
+               ) AS threshold_time
+          FROM "Submissions" submission
+          JOIN "Participations" participation
+            ON participation.id = submission.participation_id
+           AND participation.game_id = submission.game_id
+         WHERE submission.game_id = $1
+           AND submission.status = $2
+           AND submission.submit_time_utc >= $3
+           AND submission.submit_time_utc < $4
+           AND ($5::integer IS NULL OR submission.participation_id = $5)
+           AND participation.competitive_admitted_at_utc IS NOT NULL
+           AND participation.competitive_admitted_at_utc < $4
+    ), canonical_solves AS MATERIALIZED (
+        SELECT submission.participation_id,
+               submission.challenge_id,
+               submission.submit_time_utc
+          FROM "FirstSolves" first_solve
+          JOIN "Submissions" submission
+            ON submission.id = first_solve.submission_id
+           AND submission.participation_id = first_solve.participation_id
+           AND submission.challenge_id = first_solve.challenge_id
+          JOIN "Participations" participation
+            ON participation.id = submission.participation_id
+           AND participation.game_id = submission.game_id
+         WHERE submission.game_id = $1
+           AND submission.status = $6
+           AND submission.submit_time_utc >= $3
+           AND submission.submit_time_utc < $4
+           AND participation.competitive_admitted_at_utc IS NOT NULL
+           AND participation.competitive_admitted_at_utc < $4
+    )
+    SELECT wrong_window.participation_id,
+           wrong_window.challenge_id,
+           MIN(wrong_window.threshold_time) AS observed_at
+      FROM wrong_windows wrong_window
+     WHERE wrong_window.wrong_count >= $7
+       AND LEAST(
+               wrong_window.anchor_time + '5 minutes'::interval,
+               $4::timestamptz
+           ) <= CURRENT_TIMESTAMP
+       AND NOT EXISTS (
+           SELECT 1
+             FROM canonical_solves solve
+            WHERE solve.participation_id = wrong_window.participation_id
+              AND solve.challenge_id = wrong_window.challenge_id
+              AND solve.submit_time_utc >= wrong_window.anchor_time
+              AND solve.submit_time_utc
+                    <= wrong_window.anchor_time + '5 minutes'::interval
+       )
+     GROUP BY wrong_window.participation_id, wrong_window.challenge_id
+     ORDER BY wrong_window.participation_id, wrong_window.challenge_id
+"#;
+
+pub(super) async fn high_wrong_rate_hits(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    window: CompetitiveGameWindow,
+    participation_id: Option<i32>,
+) -> AppResult<Vec<(i32, i32, chrono::DateTime<chrono::Utc>)>> {
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    high_wrong_rate_hits_connection(&mut connection, game_id, window, participation_id).await
+}
+
+async fn high_wrong_rate_hits_connection(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+    window: CompetitiveGameWindow,
+    participation_id: Option<i32>,
+) -> AppResult<Vec<(i32, i32, chrono::DateTime<chrono::Utc>)>> {
+    sqlx::query_as(HIGH_WRONG_RATE_HITS_SQL)
+        .bind(game_id)
+        .bind(crate::utils::enums::AnswerResult::WrongAnswer as i16)
+        .bind(window.start)
+        .bind(window.end)
+        .bind(participation_id)
+        .bind(crate::utils::enums::AnswerResult::Accepted as i16)
+        .bind(HIGH_WRONG_MIN)
+        .fetch_all(connection)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
+pub(super) fn valid_evidence_key(evidence_key: &str) -> bool {
     !evidence_key.trim().is_empty() && evidence_key.len() <= MAX_EVIDENCE_KEY_BYTES
 }
 
-/// Serialize one participation's submissions with detector score writes before
-/// either path takes game, challenge, or participation row locks. Different
-/// teams remain independent, while cross-challenge alternating deadlocks for
-/// the same team become impossible.
+/// Serialize detector and submit writes for one participation.
 pub(crate) async fn lock_participation_suspicion_writes(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     participation_id: i32,
@@ -61,24 +393,13 @@ const INSERT_SUSPICION_EVENT_SQL: &str = r#"
           FROM participant
         ON CONFLICT (game_id, participation_id, kind, evidence_key) DO NOTHING
         RETURNING id
-    ), updated AS (
-        UPDATE "Participations" participation
-           SET suspicion_score = participation.suspicion_score + $6
-         WHERE participation.id = $2
-           AND participation.game_id = $1
-           AND EXISTS (SELECT 1 FROM inserted)
-        RETURNING participation.suspicion_score
     )
     SELECT EXISTS (SELECT 1 FROM participant),
-           EXISTS (SELECT 1 FROM inserted),
-           (SELECT suspicion_score FROM updated)
+           EXISTS (SELECT 1 FROM inserted)
 "#;
 
-/// Persist one rule observation and its score delta as one PostgreSQL statement.
-/// The unique index installed by migration m0052 is the concurrency gate: only
-/// the statement that inserts the evidence row may increment the running score.
 #[allow(clippy::too_many_arguments)]
-async fn persist_suspicion_event_with_weight(
+async fn persist_suspicion_event_with_weight_guarded(
     pool: &sqlx::PgPool,
     game_id: i32,
     participation_id: i32,
@@ -87,6 +408,8 @@ async fn persist_suspicion_event_with_weight(
     evidence_key: &str,
     weight: i32,
     description: &str,
+    mut observed_at: chrono::DateTime<chrono::Utc>,
+    high_wrong_window: Option<CompetitiveGameWindow>,
 ) -> AppResult<bool> {
     if !valid_evidence_key(evidence_key) {
         return Err(AppError::internal("invalid suspicion evidence key"));
@@ -95,16 +418,12 @@ async fn persist_suspicion_event_with_weight(
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    // Suspicion evidence also updates the participation's running score. If
-    // duplicate writers all retain the shared audit fence before competing on
-    // the unique evidence row, the winner cannot upgrade its participation
-    // lock while the losers wait on that winner's speculative insert. Serialize
-    // this narrow score mutation first so the normal audit/deletion fence keeps
-    // its read-sharing behavior for every other evidence writer.
+    // Take the participation score scope before the shared audit/deletion fence
+    // to preserve the submit path's lock order across duplicate writers.
     lock_participation_suspicion_writes(&mut transaction, participation_id)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    if !crate::services::participation_evidence::lock_audit_insert_scope(
+    if !crate::services::participation_evidence::lock_historical_audit_insert_scope(
         &mut transaction,
         game_id,
         challenge_id,
@@ -114,26 +433,45 @@ async fn persist_suspicion_event_with_weight(
     {
         return Err(AppError::not_found("participation not found"));
     }
-    let (participant_exists, inserted, new_score): (bool, bool, Option<i32>) =
-        sqlx::query_as(INSERT_SUSPICION_EVENT_SQL)
-            .bind(game_id)
-            .bind(participation_id)
-            .bind(challenge_id)
-            .bind(ty.kind())
-            .bind(evidence_key)
-            .bind(weight)
-            .bind(chrono::Utc::now())
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(window) = high_wrong_window {
+        let hit_challenge_id = challenge_id.ok_or_else(|| {
+            AppError::internal("HighWrongRate evidence requires a challenge identity")
+        })?;
+        let rechecked = high_wrong_rate_hits_connection(
+            &mut *transaction,
+            game_id,
+            window,
+            Some(participation_id),
+        )
+        .await?
+        .into_iter()
+        .find(|(hit_participation_id, hit_challenge_id_, _)| {
+            *hit_participation_id == participation_id && *hit_challenge_id_ == hit_challenge_id
+        });
+        let Some((_, _, rechecked_observed_at)) = rechecked else {
+            return Ok(false);
+        };
+        observed_at = rechecked_observed_at;
+    }
+    let (participant_exists, inserted): (bool, bool) = sqlx::query_as(INSERT_SUSPICION_EVENT_SQL)
+        .bind(game_id)
+        .bind(participation_id)
+        .bind(challenge_id)
+        .bind(ty.kind())
+        .bind(evidence_key)
+        .bind(weight)
+        .bind(observed_at)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
 
     if !participant_exists {
         return Err(AppError::not_found("participation not found"));
     }
     if inserted {
-        let new_score = new_score.ok_or_else(|| {
-            AppError::internal("suspicion evidence was inserted without updating its score")
-        })?;
+        let new_score =
+            super::recompute_participation_suspicion_score(&mut *transaction, participation_id)
+                .await?;
         tracing::info!(
             participation_id,
             delta = weight,
@@ -149,24 +487,20 @@ async fn persist_suspicion_event_with_weight(
     Ok(inserted)
 }
 
-/// Persist one suspicion event for `ty` unless a row already exists for its
-/// `(game_id, participation_id, kind, evidence_key)`, then bump the
-/// participation's running score in the same SQL statement. This is the write path used by
-/// [`correlate_fingerprints`] and the behavioral rules in
-/// [`evaluate_submission`]. On a fresh insert the rule's `kind` is appended to
-/// `codes`.
-pub(super) async fn record_with_dedup(
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn record_with_dedup_at(
     db: &DatabaseConnection,
     game_id: i32,
     participation_id: i32,
     challenge_id: Option<i32>,
     ty: SuspicionType,
     evidence_key: &str,
+    observed_at: chrono::DateTime<chrono::Utc>,
     codes: &mut Vec<i16>,
 ) -> AppResult<()> {
     let kind = ty.kind();
     let (weight, description) = resolve_entry(db, ty).await?;
-    let inserted = persist_suspicion_event_with_weight(
+    let inserted = persist_suspicion_event_with_weight_guarded(
         db.get_postgres_connection_pool(),
         game_id,
         participation_id,
@@ -175,6 +509,8 @@ pub(super) async fn record_with_dedup(
         evidence_key,
         weight,
         description,
+        observed_at,
+        None,
     )
     .await?;
 
@@ -184,123 +520,148 @@ pub(super) async fn record_with_dedup(
     Ok(())
 }
 
+/// Persist a mature HighWrongRate incident after rechecking the shared
+/// challenge/window predicate under the same participation lock used by submit.
+/// This closes the query→insert race where a suppressing solve could otherwise
+/// commit while the detector waited for the lock.
+pub(super) async fn record_high_wrong_rate_with_dedup(
+    db: &DatabaseConnection,
+    game_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+    window: CompetitiveGameWindow,
+    observed_at: chrono::DateTime<chrono::Utc>,
+    codes: &mut Vec<i16>,
+) -> AppResult<()> {
+    let ty = SuspicionType::HighWrongRate;
+    let kind = ty.kind();
+    let (weight, description) = resolve_entry(db, ty).await?;
+    let evidence_key = challenge_evidence_key(challenge_id);
+    let inserted = persist_suspicion_event_with_weight_guarded(
+        db.get_postgres_connection_pool(),
+        game_id,
+        participation_id,
+        Some(challenge_id),
+        ty,
+        &evidence_key,
+        weight,
+        description,
+        observed_at,
+        Some(window),
+    )
+    .await?;
+    if inserted && !codes.contains(&kind) {
+        codes.push(kind);
+    }
+    Ok(())
+}
+
 /// Run the DB-tractable cheat-suspicion rule checks for a single flag
 /// submission, persist a [`suspicion_event`] row per distinct rule that fires,
-/// bump the participation's running score, and return the rule codes
+/// rebuild the participation's score projection, and return the rule codes
 /// (`SuspicionEvents.kind`) that hit.
 ///
-/// Ported from RSCTF `GameInstanceRepository.CheckCheat` (the live flag-sharing
-/// detector gated behind `FlagChecker`). Only dynamic challenges hand out
-/// per-team flags, so an identical answer across teams is meaningless for a
-/// static challenge — the whole check is gated on [`ChallengeType::is_dynamic`].
-///
 /// Rules evaluated here:
-/// * **StolenFlag** — the submitted answer equals the per-team dynamic flag of a
-///   *different* participation's live instance of this challenge (direct
-///   `CheckCheat` port), OR — for the same phenomenon after the source instance
-///   / flag context has been recycled — the identical answer was already
-///   `Accepted` for this challenge by a different participation.
-/// * **ZeroWrongAttempts** — a dynamic challenge solved with no prior
-///   `WrongAnswer` submissions on it, suppressed on low-solver challenges
-///   (RSCTF Check A).
-/// * **HighWrongRate** — a brute-force-shaped wrong:accepted ratio for the
-///   participation across the game (RSCTF Check H).
+/// * **StolenFlag** — immutable grading-time `CheatInfo` proves that this
+///   submission used another participation's dynamic flag.
+/// * **HighWrongRate** — 40+ wrong submissions on one challenge inside 60s,
+///   unless its canonical solve follows within five minutes (RSCTF Check H).
 /// * **Burst** — `BURST_MIN_SOLVES`+ distinct challenges solved within
 ///   `BURST_WINDOW_SECS` (RSCTF Check 8).
-/// * **WrongFlagLeakage** — a `WrongAnswer` from this participation equals
-///   another participation's valid dynamic flag for this challenge (RSCTF Check
-///   B).
 /// * **Hoarding** — a container challenge solved `HOARDING_MIN_GAP_SECS` after
 ///   its instance's last container operation (RSCTF Check 6).
 ///
-/// Submission-backed stolen flags retain one row per committed submission.
-/// Aggregate behavioral rules deduplicate per challenge.
-///
-/// Non-DB heuristics (browser-fingerprint correlation, IP correlation) require a
-/// `Log` / request-context join that rsctf does not model here — see the TODO.
+/// Identity observations are evaluated separately by `run_correlation_checks`.
 pub async fn evaluate_submission(
     db: &DatabaseConnection,
     game_id: i32,
     participation_id: i32,
     submission_id: i32,
     challenge: &crate::models::data::game_challenge::Model,
-    answer: &str,
+    _answer: &str,
 ) -> AppResult<Vec<i16>> {
-    use crate::models::data::{flag_context, game_instance, submission};
-    use crate::utils::enums::AnswerResult;
-    use sea_orm::{ColumnTrait, QueryFilter};
+    evaluate_submission_inner(
+        db,
+        game_id,
+        participation_id,
+        submission_id,
+        challenge.id,
+        challenge.challenge_type,
+    )
+    .await
+}
 
-    let challenge_id = challenge.id;
+async fn evaluate_submission_inner(
+    db: &DatabaseConnection,
+    game_id: i32,
+    participation_id: i32,
+    submission_id: i32,
+    challenge_id: i32,
+    challenge_type: crate::utils::enums::ChallengeType,
+) -> AppResult<Vec<i16>> {
     let mut fired: Vec<SuspicionType> = Vec::new();
-
-    // Per-team dynamic flags only exist for dynamic challenges; static
-    // challenges share a single flag across all teams so an identical answer
-    // proves nothing (matches the `FlagChecker` gate on `CheckCheat`). The
-    // challenge is passed in (already loaded by the submit handler) rather than
-    // re-fetched here — one fewer query on every submit.
-    let is_dynamic = challenge.challenge_type.is_dynamic();
-
-    if is_dynamic {
-        // ── Rule: StolenFlag (live flag-context match) ───────────────────────
-        // Direct port of GameInstanceRepository.CheckCheat: find a game instance
-        // of this challenge belonging to a *different* participation whose
-        // assigned flag equals the submitted answer. The scoping to this
-        // challenge is enforced on the instance (`challenge_id`), and `flag_id
-        // IN (…)` implies the flag context is non-null — mirroring the C# join
-        // on `FlagContext.Flag == answer` with no `FlagContext.ChallengeId`
-        // predicate.
-        let matching_flag_ids: Vec<i32> = flag_context::Entity::find()
-            .filter(flag_context::Column::Flag.eq(answer))
-            .all(db)
-            .await?
-            .into_iter()
-            .map(|f| f.id)
-            .collect();
-
-        let mut stolen = false;
-        if !matching_flag_ids.is_empty() {
-            let cross = game_instance::Entity::find()
-                .filter(game_instance::Column::ChallengeId.eq(challenge_id))
-                .filter(game_instance::Column::ParticipationId.ne(participation_id))
-                .filter(game_instance::Column::FlagId.is_in(matching_flag_ids))
-                .one(db)
-                .await?;
-            stolen = cross.is_some();
-        }
-
-        // ── Rule: StolenFlag (accepted-submission history) ───────────────────
-        // Same phenomenon, resilient to a recycled instance / flag context: the
-        // identical answer was already `Accepted` for this dynamic challenge by
-        // a different participation. Every team should have a unique flag, so a
-        // shared accepted string is flag sharing.
-        if !stolen {
-            let prior = submission::Entity::find()
-                .filter(submission::Column::GameId.eq(game_id))
-                .filter(submission::Column::ChallengeId.eq(challenge_id))
-                .filter(submission::Column::ParticipationId.ne(participation_id))
-                .filter(submission::Column::Answer.eq(answer))
-                .filter(submission::Column::Status.eq(AnswerResult::Accepted))
-                .one(db)
-                .await?;
-            stolen = prior.is_some();
-        }
-
-        if stolen {
-            fired.push(SuspicionType::StolenFlag);
-        }
+    let pool = db.get_postgres_connection_pool();
+    let window = load_competitive_game_window(pool, game_id)
+        .await?
+        .ok_or_else(|| AppError::not_found("game not found"))?;
+    let current: Option<(
+        chrono::DateTime<chrono::Utc>,
+        Option<uuid::Uuid>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<bool>,
+    )> = sqlx::query_as(
+        r#"SELECT submit_time_utc,
+                  container_id,
+                  container_last_operation_at_submit,
+                  container_was_loaded_at_submit
+             FROM "Submissions"
+            WHERE id = $1
+              AND game_id = $2
+              AND participation_id = $3
+              AND challenge_id = $4"#,
+    )
+    .bind(submission_id)
+    .bind(game_id)
+    .bind(participation_id)
+    .bind(challenge_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((submission_time, container_id, container_last_operation, container_was_loaded)) =
+        current
+    else {
+        return Err(AppError::not_found("submission not found"));
+    };
+    if !in_competitive_window(submission_time, window) {
+        return Ok(Vec::new());
     }
 
-    // Fingerprint correlation (SharedFingerprint) is handled out-of-band by
-    // [`correlate_fingerprints`], which groups the login fingerprints captured in
-    // `log_entry`. IP-based heuristics (SharedIP / CrossTeamIP / IpChurn /
-    // SessionConcurrency) would need per-request IP capture and belong to the
-    // ingest-time detectors, not this per-submission evaluation.
+    let stolen: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS (
+                   SELECT 1
+                     FROM "CheatInfo"
+                    WHERE submission_id = $1
+                      AND game_id = $2
+                      AND submit_participation_id = $3
+                      AND challenge_id = $4
+                      AND source_participation_id <> $3
+               )"#,
+    )
+    .bind(submission_id)
+    .bind(game_id)
+    .bind(participation_id)
+    .bind(challenge_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if stolen {
+        fired.push(SuspicionType::StolenFlag);
+    }
 
-    // Persist one SuspicionEvent per distinct rule that fired, bump the running
-    // score, and return the detected `kind` codes. A repeated stolen-flag
+    // Persist one SuspicionEvent per distinct rule, rebuild the projection, and
+    // return the detected `kind` codes. A repeated stolen-flag
     // submission receives its own durable incident key and remains in `codes`
-    // for this observation; that prevents the same answer from being
-    // reclassified as WrongFlagLeakage below.
+    // for this observation.
     let mut codes: Vec<i16> = Vec::new();
     for ty in fired {
         let kind = ty.kind();
@@ -309,13 +670,14 @@ pub async fn evaluate_submission(
         }
         let evidence_key = submission_evidence_key(submission_id);
 
-        record_with_dedup(
+        record_with_dedup_at(
             db,
             game_id,
             participation_id,
             Some(challenge_id),
             ty,
             &evidence_key,
+            submission_time,
             &mut codes,
         )
         .await?;
@@ -325,94 +687,34 @@ pub async fn evaluate_submission(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Behavioral / brute-force rules over this participation's submission
-    // history (all DB-computable from `submission` + `game_instance`). Each
+    // Behavioral / brute-force rules over canonical competitive evidence. Each
     // persists at most one event per stable aggregate evidence key, deduped
-    // against the audit table by [`record_with_dedup`].
+    // against the audit table by [`record_with_dedup_at`]. Community-relative
+    // ZeroWrongAttempts is deliberately sweep-only so the easy-challenge
+    // suppression is evaluated from one complete snapshot for every team.
     // ─────────────────────────────────────────────────────────────────────────
-    let subs = submission::Entity::find()
-        .filter(submission::Column::GameId.eq(game_id))
-        .filter(submission::Column::ParticipationId.eq(participation_id))
-        .all(db)
-        .await?;
-
-    // Participation-wide accept/wrong tallies across the whole game.
-    let total_accepted = subs
+    let canonical_solves =
+        load_canonical_solves_scoped(pool, game_id, window, Some(participation_id)).await?;
+    let participant_solves: Vec<&CanonicalSolve> = canonical_solves.iter().collect();
+    let earliest_accept_here = participant_solves
         .iter()
-        .filter(|s| s.status == AnswerResult::Accepted)
-        .count();
-    let total_wrong = subs
-        .iter()
-        .filter(|s| s.status == AnswerResult::WrongAnswer)
-        .count();
-
-    // This challenge's accept picture for this participation.
-    let earliest_accept_here = subs
-        .iter()
-        .filter(|s| s.challenge_id == challenge_id && s.status == AnswerResult::Accepted)
-        .map(|s| s.submit_time_utc)
-        .min();
-
-    // ── Rule: ZeroWrongAttempts ──────────────────────────────────────────────
-    // A dynamic challenge solved with zero wrong submissions prior to the solve.
-    // Suppressed unless the challenge has a real solver base (>= MIN_SOLVERS),
-    // mirroring RSCTF's `challengeSolveCount >= 5` gate. The community-easy ratio
-    // suppression needs game-wide per-challenge stats and is intentionally left
-    // out here.
-    if is_dynamic {
-        if let Some(accept_time) = earliest_accept_here {
-            // Distinct solvers of this challenge across the game.
-            let solver_base = submission::Entity::find()
-                .filter(submission::Column::GameId.eq(game_id))
-                .filter(submission::Column::ChallengeId.eq(challenge_id))
-                .filter(submission::Column::Status.eq(AnswerResult::Accepted))
-                .all(db)
-                .await?
-                .iter()
-                .map(|s| s.participation_id)
-                .collect::<std::collections::BTreeSet<_>>()
-                .len();
-
-            if solver_base >= ZERO_WRONG_MIN_SOLVERS {
-                let wrongs_before = subs
-                    .iter()
-                    .filter(|s| {
-                        s.challenge_id == challenge_id
-                            && s.status == AnswerResult::WrongAnswer
-                            && s.submit_time_utc < accept_time
-                    })
-                    .count();
-                if wrongs_before == 0 {
-                    let evidence_key = challenge_evidence_key(challenge_id);
-                    record_with_dedup(
-                        db,
-                        game_id,
-                        participation_id,
-                        Some(challenge_id),
-                        SuspicionType::ZeroWrongAttempts,
-                        &evidence_key,
-                        &mut codes,
-                    )
-                    .await?;
-                }
-            }
-        }
-    }
+        .find(|solve| solve.challenge_id == challenge_id)
+        .map(|solve| solve.submit_time_utc);
 
     // ── Rule: HighWrongRate ──────────────────────────────────────────────────
-    // Participation-wide brute forcing: a large absolute number of wrong answers
-    // that dwarfs the number of solves.
-    if total_wrong >= HIGH_WRONG_MIN
-        && (total_wrong as i64) >= HIGH_WRONG_RATIO * (total_accepted.max(1) as i64)
+    // Use the exact same challenge-local rolling-window query as the report
+    // sweep. It may backfill another challenge for this participant when a prior
+    // detector attempt failed; evidence identity remains that challenge.
+    for (_, hit_challenge_id, hit_observed_at) in
+        high_wrong_rate_hits(pool, game_id, window, Some(participation_id)).await?
     {
-        let evidence_key = challenge_evidence_key(challenge_id);
-        record_with_dedup(
+        record_high_wrong_rate_with_dedup(
             db,
             game_id,
             participation_id,
-            Some(challenge_id),
-            SuspicionType::HighWrongRate,
-            &evidence_key,
+            hit_challenge_id,
+            window,
+            hit_observed_at,
             &mut codes,
         )
         .await?;
@@ -421,533 +723,98 @@ pub async fn evaluate_submission(
     // ── Rule: Burst ──────────────────────────────────────────────────────────
     // >= BURST_MIN_SOLVES distinct challenges solved within BURST_WINDOW_SECS —
     // automated submission or shared flags entered in one go (RSCTF Check 8).
-    {
-        // First-accept time per distinct challenge for this participation.
-        let mut first_accept: std::collections::BTreeMap<i32, chrono::DateTime<chrono::Utc>> =
-            std::collections::BTreeMap::new();
-        for s in subs.iter().filter(|s| s.status == AnswerResult::Accepted) {
-            first_accept
-                .entry(s.challenge_id)
-                .and_modify(|t| {
-                    if s.submit_time_utc < *t {
-                        *t = s.submit_time_utc;
-                    }
-                })
-                .or_insert(s.submit_time_utc);
-        }
-        let mut times: Vec<chrono::DateTime<chrono::Utc>> = first_accept.into_values().collect();
-        times.sort();
+    if let Some(burst_observed_at) = earliest_burst_completion(
+        participant_solves
+            .iter()
+            .map(|solve| solve.submit_time_utc)
+            .collect(),
+    ) {
+        record_with_dedup_at(
+            db,
+            game_id,
+            participation_id,
+            None,
+            SuspicionType::Burst,
+            GLOBAL_EVIDENCE_KEY,
+            burst_observed_at,
+            &mut codes,
+        )
+        .await?;
+    }
 
-        let mut burst = false;
-        for i in 0..times.len() {
-            let mut count = 1usize;
-            for j in (i + 1)..times.len() {
-                if (times[j] - times[i]).num_seconds() <= BURST_WINDOW_SECS {
-                    count += 1;
-                } else {
-                    break;
-                }
-            }
-            if count >= BURST_MIN_SOLVES {
-                burst = true;
-                break;
-            }
-        }
-        if burst {
-            record_with_dedup(
+    // WrongFlagLeakage is intentionally not reconstructed from mutable live
+    // flags. Confirmed foreign flags are graded into immutable CheatInfo and
+    // replayed above as StolenFlag; legacy wrong answers remain telemetry.
+    // ── Rule: Hoarding ───────────────────────────────────────────────────────
+    // A canonical solve long after the submit-time instance's last operation,
+    // when the immutable snapshot proves it was unloaded with no container.
+    // Legacy NULL snapshots emit nothing; replay never reads mutable instances.
+    if challenge_type.is_container() && earliest_accept_here == Some(submission_time) {
+        if is_hoarded_submission(
+            submission_time,
+            container_id.is_some(),
+            container_last_operation,
+            container_was_loaded,
+        ) {
+            let evidence_key = challenge_evidence_key(challenge_id);
+            record_with_dedup_at(
                 db,
                 game_id,
                 participation_id,
                 Some(challenge_id),
-                SuspicionType::Burst,
-                GLOBAL_EVIDENCE_KEY,
+                SuspicionType::Hoarding,
+                &evidence_key,
+                submission_time,
                 &mut codes,
             )
             .await?;
         }
     }
-
-    // ── Rule: WrongFlagLeakage ───────────────────────────────────────────────
-    // A wrong answer from this participation equals another participation's valid
-    // dynamic flag for THIS challenge — they held the flag but it was not theirs
-    // (leakage; distinct from an accepted steal). This shares its flag-context /
-    // instance join with StolenFlag branch 1, so the same answer would otherwise
-    // trip BOTH rules and double-count one steal (StolenFlag 100 + WrongFlagLeakage
-    // 80). RSCTF's two checks are mutually exclusive: a submission classified as a
-    // stolen flag is marked `CheatDetected` and is never re-examined by the
-    // WrongFlagLeakage (Check B) branch. rsctf's judge doesn't stamp
-    // `CheatDetected`, so we reproduce that exclusion here by skipping this branch
-    // whenever StolenFlag already fired for this submission — one steal ⇒ exactly
-    // one StolenFlag(100).
-    if is_dynamic && !codes.contains(&SuspicionType::StolenFlag.kind()) {
-        let submitted_wrong_here = subs.iter().any(|s| {
-            s.challenge_id == challenge_id
-                && s.answer.as_str() == answer
-                && s.status == AnswerResult::WrongAnswer
-        });
-        if submitted_wrong_here {
-            let matching_flag_ids: Vec<i32> = flag_context::Entity::find()
-                .filter(flag_context::Column::Flag.eq(answer))
-                .all(db)
-                .await?
-                .into_iter()
-                .map(|f| f.id)
-                .collect();
-            if !matching_flag_ids.is_empty() {
-                let cross = game_instance::Entity::find()
-                    .filter(game_instance::Column::ChallengeId.eq(challenge_id))
-                    .filter(game_instance::Column::ParticipationId.ne(participation_id))
-                    .filter(game_instance::Column::FlagId.is_in(matching_flag_ids))
-                    .one(db)
-                    .await?;
-                if cross.is_some() {
-                    let evidence_key = challenge_evidence_key(challenge_id);
-                    record_with_dedup(
-                        db,
-                        game_id,
-                        participation_id,
-                        Some(challenge_id),
-                        SuspicionType::WrongFlagLeakage,
-                        &evidence_key,
-                        &mut codes,
-                    )
-                    .await?;
-                }
-            }
-        }
-    }
-
-    // ── Rule: Hoarding ───────────────────────────────────────────────────────
-    // A container challenge solved well after its instance's last container
-    // operation. In the fire case the instance has no live container, so that
-    // last operation is a destroy (or a never-started creation): the team held
-    // the flag and submitted it long after the environment went away (RSCTF Check
-    // 6). rsctf does not log attachment downloads, so the download-requirement
-    // variant (RSCTF NoDownload / FastSolve-Download) stays a TODO.
-    let requires_container = challenge.challenge_type.is_container();
-    if requires_container {
-        if let Some(accept_time) = earliest_accept_here {
-            let inst = game_instance::Entity::find()
-                .filter(game_instance::Column::ChallengeId.eq(challenge_id))
-                .filter(game_instance::Column::ParticipationId.eq(participation_id))
-                .one(db)
-                .await?;
-            if let Some(inst) = inst {
-                let hoarded = inst.container_id.is_none()
-                    && !inst.is_loaded
-                    && (accept_time - inst.last_container_operation).num_seconds()
-                        > HOARDING_MIN_GAP_SECS;
-                if hoarded {
-                    let evidence_key = challenge_evidence_key(challenge_id);
-                    record_with_dedup(
-                        db,
-                        game_id,
-                        participation_id,
-                        Some(challenge_id),
-                        SuspicionType::Hoarding,
-                        &evidence_key,
-                        &mut codes,
-                    )
-                    .await?;
-                }
-            }
-        }
-    }
-
-    // IP / session / honeypot / traffic-dependent rules (SharedIP, CrossTeamIP,
-    // IpChurn, SessionConcurrency, Honeypot*, FlagEgress, …) need request-context
-    // capture rsctf does not model here — see the note above; they stay // TODO.
 
     Ok(codes)
 }
 
-/// Correlate browser fingerprints captured at login to surface account sharing.
-///
-/// The login flow persists one [`log_entry`](crate::models::data::log_entry) row
-/// per sign-in with `logger = "fingerprint"`, `message = <fingerprint>`, and
-/// `user_name = <name>`. This groups those rows by fingerprint and returns every
-/// fingerprint observed for **2+ distinct user names** — the account-sharing
-/// signal behind [`SuspicionType::SharedFingerprint`]. The returned vec is sorted
-/// by fingerprint, and each user-name list is distinct and sorted, for
-/// deterministic output.
-///
-/// As a side effect, when such a shared fingerprint maps to users whose
-/// participations in `game_id` span **two or more distinct teams** (cross-team
-/// multi-accounting — as opposed to two members of one team sharing a machine, a
-/// benign case), a `SharedFingerprint` [`suspicion_event`] is persisted for each
-/// involved participation and its running score bumped, reusing the exact insert
-/// path from [`evaluate_submission`]. Participations that already carry a
-/// `SharedFingerprint` event are not double-recorded.
-///
-/// IP / session heuristics would need per-request IP capture and are out of
-/// scope here (see the note in [`evaluate_submission`]).
-pub async fn correlate_fingerprints(
+/// Replay submission-derived suspicion evaluation from durable database
+/// identity. The outbox uses this narrow loader after a restart; callers do not
+/// need to retain request-local challenge or answer objects.
+pub async fn evaluate_submission_by_id(
     db: &DatabaseConnection,
-    game_id: i32,
-) -> AppResult<Vec<(String, Vec<String>)>> {
-    use crate::models::data::{log_entry, team_member, user};
-    use sea_orm::{ColumnTrait, QueryFilter};
-    use std::collections::{BTreeMap, BTreeSet};
-
-    // 1. Pull every login-fingerprint log row and group by fingerprint, keeping
-    //    the set of DISTINCT user names seen for each.
-    let rows = log_entry::Entity::find()
-        .filter(log_entry::Column::Logger.eq("fingerprint"))
-        .all(db)
-        .await?;
-
-    let mut by_fp: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for row in rows {
-        if let Some(name) = row.user_name {
-            if name.is_empty() || row.message.is_empty() {
-                continue;
-            }
-            by_fp.entry(row.message).or_default().insert(name);
-        }
-    }
-
-    // 2. Keep only fingerprints shared by 2+ distinct users.
-    let shared: Vec<(String, Vec<String>)> = by_fp
-        .into_iter()
-        .filter(|(_, users)| users.len() >= 2)
-        .map(|(fp, users)| (fp, users.into_iter().collect()))
-        .collect();
-
-    // 3. Side effect: escalate the cross-team subset through the same atomic
-    // evidence + score path as every other detector.
-    let mut codes = Vec::new();
-    for (_, user_names) in &shared {
-        // Resolve each shared user name to its game-`game_id` participations,
-        // grouped by team. A fingerprint shared only within a single team is the
-        // expected shared-machine case; only cross-team sharing is escalated.
-        let mut parts_by_team: BTreeMap<i32, BTreeSet<i32>> = BTreeMap::new();
-        for name in user_names {
-            let account = user::Entity::find()
-                .filter(user::Column::UserName.eq(name.clone()))
-                .one(db)
-                .await?;
-            let Some(account) = account else { continue };
-
-            let team_ids: Vec<i32> = team_member::Entity::find()
-                .filter(team_member::Column::UserId.eq(account.id))
-                .all(db)
-                .await?
-                .into_iter()
-                .map(|m| m.team_id)
-                .collect();
-            if team_ids.is_empty() {
-                continue;
-            }
-
-            let parts = participation::Entity::find()
-                .filter(participation::Column::GameId.eq(game_id))
-                .filter(participation::Column::TeamId.is_in(team_ids))
-                .all(db)
-                .await?;
-            for p in parts {
-                parts_by_team.entry(p.team_id).or_default().insert(p.id);
-            }
-        }
-
-        // Cross-team only: users span 2+ distinct participating teams.
-        if parts_by_team.len() < 2 {
-            continue;
-        }
-
-        let participation_ids: BTreeSet<i32> = parts_by_team.values().flatten().copied().collect();
-
-        for pid in participation_ids {
-            record_with_dedup(
-                db,
-                game_id,
-                pid,
-                None,
-                SuspicionType::SharedFingerprint,
-                GLOBAL_EVIDENCE_KEY,
-                &mut codes,
-            )
-            .await?;
-        }
-    }
-
-    Ok(shared)
+    submission_id: i32,
+) -> AppResult<Vec<i16>> {
+    let row: Option<(i32, i32, i32, i16)> = sqlx::query_as(
+        r#"SELECT submission.game_id,
+                  submission.participation_id,
+                  submission.challenge_id,
+                  challenge."Type"
+             FROM "Submissions" submission
+             JOIN "GameChallenges" challenge
+               ON challenge.id = submission.challenge_id
+              AND challenge.game_id = submission.game_id
+            WHERE submission.id = $1"#,
+    )
+    .bind(submission_id)
+    .fetch_optional(db.get_postgres_connection_pool())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((game_id, participation_id, challenge_id, challenge_type)) = row else {
+        return Err(AppError::not_found("submission not found"));
+    };
+    let challenge_type =
+        <crate::utils::enums::ChallengeType as sea_orm::ActiveEnum>::try_from_value(
+            &challenge_type,
+        )
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    evaluate_submission_inner(
+        db,
+        game_id,
+        participation_id,
+        submission_id,
+        challenge_id,
+        challenge_type,
+    )
+    .await
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        persist_suspicion_event_with_weight, valid_evidence_key, SuspicionType,
-        INSERT_SUSPICION_EVENT_SQL, MAX_EVIDENCE_KEY_BYTES,
-    };
-    use sqlx::postgres::PgPoolOptions;
-
-    #[test]
-    fn suspicion_write_is_conflict_gated_and_score_coupled() {
-        assert!(INSERT_SUSPICION_EVENT_SQL
-            .contains("ON CONFLICT (game_id, participation_id, kind, evidence_key) DO NOTHING"));
-        assert!(INSERT_SUSPICION_EVENT_SQL.contains("WITH participant AS MATERIALIZED"));
-        assert!(INSERT_SUSPICION_EVENT_SQL.contains("FOR UPDATE"));
-        assert!(INSERT_SUSPICION_EVENT_SQL.contains("AND EXISTS (SELECT 1 FROM inserted)"));
-        assert!(INSERT_SUSPICION_EVENT_SQL
-            .contains("suspicion_score = participation.suspicion_score + $6"));
-    }
-
-    #[test]
-    fn evidence_keys_are_nonempty_and_bounded() {
-        assert!(!valid_evidence_key(""));
-        assert!(!valid_evidence_key("   "));
-        assert!(valid_evidence_key("submission:500"));
-        assert!(valid_evidence_key(&"x".repeat(MAX_EVIDENCE_KEY_BYTES)));
-        assert!(!valid_evidence_key(&"x".repeat(MAX_EVIDENCE_KEY_BYTES + 1)));
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn concurrent_rule_retries_insert_and_score_exactly_once() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to PostgreSQL");
-        let admin = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .expect("connect test database");
-        let schema = format!("suspicion_write_{}", uuid::Uuid::new_v4().simple());
-        let setup = format!(
-            r#"
-            CREATE SCHEMA "{schema}";
-            CREATE TABLE "{schema}"."Games" (
-                id INTEGER PRIMARY KEY,
-                deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
-            );
-            CREATE TABLE "{schema}"."GameChallenges" (
-                id INTEGER PRIMARY KEY,
-                game_id INTEGER NOT NULL,
-                is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-                deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
-            );
-            CREATE TABLE "{schema}"."Teams" (
-                id INTEGER PRIMARY KEY,
-                deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
-            );
-            CREATE TABLE "{schema}"."Participations" (
-                id INTEGER PRIMARY KEY,
-                game_id INTEGER NOT NULL,
-                team_id INTEGER NOT NULL,
-                status SMALLINT NOT NULL,
-                suspicion_score INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE "{schema}"."SuspicionEvents" (
-                id BIGSERIAL PRIMARY KEY,
-                game_id INTEGER NOT NULL,
-                participation_id INTEGER NOT NULL,
-                challenge_id INTEGER,
-                kind SMALLINT NOT NULL,
-                evidence_key TEXT NOT NULL,
-                score_delta INTEGER,
-                created_at TIMESTAMPTZ NOT NULL
-            );
-            CREATE UNIQUE INDEX ux_suspicionevents_incident
-              ON "{schema}"."SuspicionEvents"
-                 (game_id, participation_id, kind, evidence_key);
-            "#
-        );
-        sqlx::raw_sql(&setup)
-            .execute(&admin)
-            .await
-            .expect("create isolated suspicion schema");
-
-        let search_path_schema = schema.clone();
-        let application_name = format!("rsctf_suspicion_{}", uuid::Uuid::new_v4().simple());
-        let connect_application_name = application_name.clone();
-        let pool = PgPoolOptions::new()
-            .max_connections(16)
-            .after_connect(move |connection, _metadata| {
-                let application_statement =
-                    format!(r#"SET application_name TO '{connect_application_name}'"#);
-                let search_path_statement = format!(r#"SET search_path TO "{search_path_schema}""#);
-                Box::pin(async move {
-                    sqlx::query(&application_statement)
-                        .execute(&mut *connection)
-                        .await?;
-                    sqlx::query(&search_path_statement)
-                        .execute(&mut *connection)
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect(&database_url)
-            .await
-            .expect("connect isolated suspicion pool");
-        sqlx::query(r#"INSERT INTO "Games" (id) VALUES (1)"#)
-            .execute(&pool)
-            .await
-            .expect("insert game");
-        sqlx::query(r#"INSERT INTO "GameChallenges" (id, game_id) VALUES (20, 1), (21, 1)"#)
-            .execute(&pool)
-            .await
-            .expect("insert challenges");
-        sqlx::query(r#"INSERT INTO "Teams" (id) VALUES (30)"#)
-            .execute(&pool)
-            .await
-            .expect("insert team");
-        sqlx::query(
-            r#"INSERT INTO "Participations"
-                 (id, game_id, team_id, status, suspicion_score)
-               VALUES (10, 1, 30, 1, 0)"#,
-        )
-        .execute(&pool)
-        .await
-        .expect("insert participation");
-
-        let tasks = (0..64)
-            .map(|_| {
-                let pool = pool.clone();
-                tokio::spawn(async move {
-                    persist_suspicion_event_with_weight(
-                        &pool,
-                        1,
-                        10,
-                        Some(20),
-                        SuspicionType::StolenFlag,
-                        "submission:500",
-                        100,
-                        "concurrent test",
-                    )
-                    .await
-                    .expect("persist concurrent suspicion event")
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let mut inserted = 0usize;
-        for task in tasks {
-            inserted += usize::from(task.await.expect("join suspicion writer"));
-        }
-        assert_eq!(inserted, 1);
-
-        let second_incident = persist_suspicion_event_with_weight(
-            &pool,
-            1,
-            10,
-            Some(20),
-            SuspicionType::StolenFlag,
-            "submission:501",
-            100,
-            "distinct incident",
-        )
-        .await
-        .expect("persist distinct suspicion event");
-        assert!(second_incident);
-
-        let event_count: i64 = sqlx::query_scalar(r#"SELECT COUNT(*) FROM "SuspicionEvents""#)
-            .fetch_one(&pool)
-            .await
-            .expect("count suspicion events");
-        let score: i32 =
-            sqlx::query_scalar(r#"SELECT suspicion_score FROM "Participations" WHERE id = 10"#)
-                .fetch_one(&pool)
-                .await
-                .expect("read suspicion score");
-        let deltas: Vec<i32> = sqlx::query_scalar(
-            r#"SELECT score_delta FROM "SuspicionEvents" ORDER BY evidence_key"#,
-        )
-        .fetch_all(&pool)
-        .await
-        .expect("read persisted score deltas");
-        assert_eq!(event_count, 2);
-        assert_eq!(deltas, vec![100, 100]);
-        assert_eq!(score, 200);
-
-        // Reproduce the production lock stack: a submit for challenge 20 owns
-        // the participation score scope and shared participation row before
-        // its late counter update. A detector for a *different* challenge must
-        // wait on the score scope without retaining any audit row lock. Its
-        // distinct pair key cannot accidentally make this test pass.
-        let mut submit = pool.begin().await.expect("begin simulated submit");
-        super::lock_participation_suspicion_writes(&mut submit, 10)
-            .await
-            .expect("lock simulated suspicion score scope");
-        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
-            .bind(10_i32)
-            .bind(20_i32)
-            .execute(&mut *submit)
-            .await
-            .expect("lock simulated submission pair");
-        sqlx::query(r#"SELECT id FROM "Games" WHERE id = 1 FOR SHARE"#)
-            .execute(&mut *submit)
-            .await
-            .expect("lock simulated submission game");
-        sqlx::query(r#"SELECT id FROM "Participations" WHERE id = 10 FOR SHARE"#)
-            .execute(&mut *submit)
-            .await
-            .expect("lock simulated submission participation");
-
-        let detector_pool = pool.clone();
-        let detector = tokio::spawn(async move {
-            persist_suspicion_event_with_weight(
-                &detector_pool,
-                1,
-                10,
-                Some(21),
-                SuspicionType::StolenFlag,
-                "submission:502",
-                100,
-                "submit lock-order test",
-            )
-            .await
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let waiting: bool = sqlx::query_scalar(
-                    r#"SELECT EXISTS(
-                         SELECT 1
-                           FROM pg_locks lock
-                          JOIN pg_stat_activity activity ON activity.pid = lock.pid
-                          WHERE lock.locktype = 'advisory'
-                            AND lock.granted = FALSE AND lock.objsubid = 2
-                            AND lock.objid::bigint = 10
-                            AND activity.application_name = $1
-                       )"#,
-                )
-                .bind(&application_name)
-                .fetch_one(&pool)
-                .await
-                .expect("inspect detector advisory wait");
-                if waiting {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("detector did not wait outside the submit row-lock stack");
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            sqlx::query(r#"UPDATE "GameChallenges" SET is_enabled = is_enabled WHERE id = 20"#)
-                .execute(&mut *submit),
-        )
-        .await
-        .expect("challenge counter update deadlocked")
-        .expect("update simulated challenge counter");
-        submit.commit().await.expect("commit simulated submit");
-        assert!(detector
-            .await
-            .expect("join post-submit detector")
-            .expect("persist post-submit suspicion event"));
-
-        let final_score: i32 =
-            sqlx::query_scalar(r#"SELECT suspicion_score FROM "Participations" WHERE id = 10"#)
-                .fetch_one(&pool)
-                .await
-                .expect("read final suspicion score");
-        assert_eq!(final_score, 300);
-
-        pool.close().await;
-        let teardown = format!(r#"DROP SCHEMA "{schema}" CASCADE"#);
-        sqlx::query(&teardown)
-            .execute(&admin)
-            .await
-            .expect("drop isolated suspicion schema");
-    }
-}
+#[path = "detectors_tests.rs"]
+mod tests;

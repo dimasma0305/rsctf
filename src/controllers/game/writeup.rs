@@ -104,7 +104,9 @@ pub async fn submit_writeup(
         st.storage.as_ref(),
         ctx.game.id,
         ctx.participation.id,
+        ctx.participation.team_id,
         user.id,
+        &user.security_stamp,
         &name,
         &bytes,
     )

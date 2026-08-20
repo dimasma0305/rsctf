@@ -359,6 +359,9 @@ jobs:
       - name: Validate Compose capability ownership
         run: ./scripts/validate-compose-security.sh
 
+      - name: Verify PlatformProxy host-firewall isolation
+        run: sudo ./scripts/test-docker-proxy-firewall.sh
+
   web:
     name: React client
     runs-on: ubuntu-latest
@@ -455,6 +458,120 @@ jobs:
           # not a deployment secret and cannot authenticate to any installation.
           RSCTF_JWT_SECRET: rsctf-load-harness-ci-only-secret
         run: npm test
+
+  cheat-acceptance:
+    name: Isolated anti-cheat acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rsctf_cheat_acceptance_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rsctf_cheat_acceptance_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      RSCTF_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_cheat_acceptance_test
+      RSCTF_LOAD_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rsctf_cheat_acceptance_test
+      RSCTF_REDIS_URL: redis://127.0.0.1:6379
+      # Public, disposable fixture keys shared only by the loopback server and
+      # its in-job harness; these are not deployment credentials or Actions secrets.
+      RSCTF_JWT_SECRET: 7431daebc77ea0746e3211435476c7036185885298ed086551414338291857ab
+      RSCTF_IDENTITY_HASH_KEY: b146b510c54c2079dc76f30ecb99e3ab493bda92f380f5b69026ed9c9d9e612c
+      RSCTF_BIND: 127.0.0.1:8080
+      RSCTF_PUBLIC_URL: http://127.0.0.1:8080
+      RSCTF_COOKIE_SECURE: "false"
+      RSCTF_TRUSTED_PROXY_CIDRS: 127.0.0.1/32
+      RSCTF_CONTAINER_BACKEND: none
+      RSCTF_AD_VPN_ENABLED: "false"
+      RSCTF_SUSPICION_RECONCILE_SECONDS: "1"
+      RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS: "1"
+      TARGET: http://127.0.0.1:8080
+      ORIGIN: http://127.0.0.1:8080
+      CHEAT_ACCEPTANCE_ISOLATED: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install native and PostgreSQL client dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends iptables libpcap-dev postgresql-client
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Restore anti-cheat acceptance build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: cheat-acceptance
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+
+      - name: Build and migrate the isolated application
+        run: |
+          cargo build --locked
+          RSCTF_ROLE=migrate ./target/debug/rsctf
+
+      - name: Run compact anti-cheat acceptance
+        shell: bash
+        run: |
+          storage_root="$RUNNER_TEMP/rsctf-cheat-acceptance-storage"
+          server_log="$RUNNER_TEMP/rsctf-cheat-acceptance.log"
+          mkdir -p "$storage_root"
+          # The supported all-in-one role owns the reconciler and round engine.
+          # Its checker sandbox preflight requires root privilege and iptables;
+          # the application itself drops checker children into its UID pool.
+          sudo --preserve-env env RSCTF_ROLE=all RSCTF_MIGRATE=0 \
+            RSCTF_STORAGE_ROOT="$storage_root" \
+            ./target/debug/rsctf >"$server_log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            sudo kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..60}; do
+            if [[ "$(curl --silent --output /tmp/rsctf-health-body --write-out '%{http_code}' \
+                http://127.0.0.1:8080/healthz || true)" == "200" ]] && \
+                [[ "$(cat /tmp/rsctf-health-body)" == "ok" ]]; then
+              break
+            fi
+            if ! sudo kill -0 "$server_pid" 2>/dev/null; then
+              cat "$server_log"
+              exit 1
+            fi
+            if [[ "$attempt" == "60" ]]; then
+              cat "$server_log"
+              exit 1
+            fi
+            sleep 1
+          done
+          acceptance_status=0
+          npm --prefix tests/load run cheat-acceptance || acceptance_status=$?
+          if [[ "$acceptance_status" != "0" ]]; then
+            cat "$server_log"
+            exit "$acceptance_status"
+          fi
 
   docs:
     name: Documentation
@@ -569,7 +686,9 @@ jobs:
       - name: Validate deployment installer bootstrap
         shell: bash
         run: |
-          bash -n scripts/install.sh scripts/test-install.sh scripts/test-install-shim.sh
+          bash -n scripts/install.sh scripts/test-install.sh scripts/test-install-shim.sh \
+            scripts/docker-proxy-firewall.sh scripts/test-docker-proxy-firewall.sh
+          dash -n scripts/docker-proxy-firewall.sh
           scripts/install.sh --help >/dev/null
           scripts/test-install.sh
 
@@ -595,6 +714,8 @@ jobs:
           grep -q 'docker logout "$GHCR_REGISTRY"' "$workflow"
           grep -q 'after four authenticated attempts' "$workflow"
           grep -q 'Promote verified commit images' "$workflow"
+          test "$(grep -Fc -- '- "build.rs"' "$workflow")" -eq 2
+          test "$(grep -Fc -- '- "scripts/docker-proxy-firewall.sh"' "$workflow")" -eq 2
 
       - name: Validate layer-backed Rust dependency caches
         shell: bash

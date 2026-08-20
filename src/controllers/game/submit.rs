@@ -1,10 +1,19 @@
 //! Player flag submission, challenge review, and submission status —
 //! split from play.rs to keep each file under the 1000-line rule.
 use super::*;
-use sea_orm::ActiveEnum;
+
+#[path = "submit_observations.rs"]
+mod observations;
+use observations::{
+    load_first_positive_interactions, lock_game_timing_at_grade, lock_submit_caller_at_grade,
+};
+#[path = "submit_review.rs"]
+mod review;
+pub use review::{review_challenge, status};
 
 const LOAD_GRADING_POLICY_SQL: &str = r#"
-    SELECT submission_limit, deadline_utc, disable_blood_bonus, "Type"
+    SELECT submission_limit, deadline_utc, disable_blood_bonus, "Type",
+           shared_container_id
       FROM "GameChallenges"
      WHERE id = $1 AND game_id = $2 AND is_enabled AND review_status = $3
 "#;
@@ -21,6 +30,7 @@ const FINALIZE_SUBMISSION_SQL: &str = r#"
        AND deadline_utc IS NOT DISTINCT FROM $6
        AND disable_blood_bonus = $7
        AND "Type" = $8
+       AND shared_container_id IS NOT DISTINCT FROM $9
 "#;
 
 fn normal_flag_submit_type_allowed(
@@ -99,34 +109,44 @@ async fn count_blood_eligible_solves(
     .await
 }
 
-/// Cache-only prefetch for the best-effort stolen-flag scan. This runs before the
-/// submission transaction is opened, so a Redis/cache lookup never lengthens a DB
-/// transaction or attempts to lease a second PostgreSQL connection.
-async fn cached_challenge_flag_map(
-    st: &SharedState,
+/// Claim the one canonical solve row for a participation/challenge. The return
+/// value, not the accepted submission status by itself, drives accepted_count.
+/// The unique key makes a repeated accepted flag an idempotent no-op.
+async fn claim_first_solve(
+    connection: &mut sqlx::PgConnection,
+    participation_id: i32,
     challenge_id: i32,
-) -> Option<std::collections::HashMap<i32, String>> {
-    let key = format!("_ChalFlagMap_{challenge_id}");
-    if let Some(bytes) = st.cache.get(&key).await {
-        if let Ok(m) = serde_json::from_slice::<std::collections::HashMap<i32, String>>(&bytes) {
-            return Some(m);
-        }
-    }
-    None
+    submission_id: i32,
+) -> AppResult<bool> {
+    sqlx::query_scalar::<_, i32>(
+        r#"INSERT INTO "FirstSolves" (participation_id, challenge_id, submission_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (participation_id, challenge_id) DO NOTHING
+           RETURNING submission_id"#,
+    )
+    .bind(participation_id)
+    .bind(challenge_id)
+    .bind(submission_id)
+    .fetch_optional(connection)
+    .await
+    .map(|claimed| claimed.is_some())
+    .map_err(|error| AppError::internal(error.to_string()))
 }
 
-/// Cache-miss loader that deliberately uses the caller's existing transaction
-/// connection. Leasing `st.db` here while every pool connection is already held
-/// by a concurrent submit would deadlock the pool.
+/// Authoritative all-team flag snapshot, read on the grading transaction while
+/// the challenge flag fence is held. Ordered participation ids make provenance
+/// deterministic even if malformed legacy data reused a dynamic flag.
 async fn load_challenge_flag_map(
     connection: &mut sqlx::PgConnection,
     challenge_id: i32,
-) -> AppResult<std::collections::HashMap<i32, String>> {
+) -> AppResult<BTreeMap<i32, String>> {
     let rows: Vec<(i32, String)> = sqlx::query_as(
         r#"SELECT instance.participation_id, flag.flag
              FROM "GameInstances" instance
              JOIN "FlagContexts" flag ON flag.id = instance.flag_id
-            WHERE instance.challenge_id = $1"#,
+            WHERE instance.challenge_id = $1
+            ORDER BY instance.participation_id
+            FOR SHARE OF instance, flag"#,
     )
     .bind(challenge_id)
     .fetch_all(connection)
@@ -135,17 +155,49 @@ async fn load_challenge_flag_map(
     Ok(rows.into_iter().collect())
 }
 
-async fn cache_challenge_flag_map(
-    st: &SharedState,
+/// Grade a per-team flag and, on a wrong/missing own flag, classify a matching
+/// foreign flag from the same locked snapshot. Missing an own instance is not a
+/// reason to return early: possession of another team's flag is still evidence.
+async fn grade_dynamic_answer(
+    connection: &mut sqlx::PgConnection,
+    participation_id: i32,
     challenge_id: i32,
-    map: &std::collections::HashMap<i32, String>,
-) {
-    if let Ok(json) = serde_json::to_vec(&map) {
-        let key = format!("_ChalFlagMap_{challenge_id}");
-        st.cache
-            .set(&key, &json, Some(std::time::Duration::from_secs(5)))
-            .await;
+    answer: &str,
+    detect_stolen: bool,
+) -> AppResult<(AnswerResult, Option<i32>)> {
+    let own_flag: Option<String> = sqlx::query_scalar(
+        r#"SELECT flag.flag
+             FROM "GameInstances" instance
+             JOIN "FlagContexts" flag ON flag.id = instance.flag_id
+            WHERE instance.participation_id = $1
+              AND instance.challenge_id = $2
+            FOR SHARE OF instance, flag"#,
+    )
+    .bind(participation_id)
+    .bind(challenge_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if own_flag.as_ref().is_some_and(|flag| ct_eq(flag, answer)) {
+        return Ok((AnswerResult::Accepted, None));
     }
+    if !detect_stolen {
+        return Ok((AnswerResult::WrongAnswer, None));
+    }
+
+    let flag_map = load_challenge_flag_map(connection, challenge_id).await?;
+    let source = flag_map
+        .iter()
+        .find(|(source_participation_id, flag)| {
+            **source_participation_id != participation_id && ct_eq(flag, answer)
+        })
+        .map(|(source_participation_id, _)| *source_participation_id);
+    let result = if source.is_some() {
+        AnswerResult::CheatDetected
+    } else {
+        AnswerResult::WrongAnswer
+    };
+    Ok((result, source))
 }
 
 /// `POST /api/game/{id}/challenges/{challengeId}` — submit a flag.
@@ -160,9 +212,10 @@ pub async fn submit(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, challenge_id)): Path<(i32, i32)>,
+    headers: axum::http::HeaderMap,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     axum::Json(model): axum::Json<FlagSubmitModel>,
 ) -> AppResult<RequestResponse<i32>> {
-    let submit_time = Utc::now();
     let answer = model.flag.trim().to_string();
     if answer.is_empty() {
         return Err(AppError::bad_request("A flag is required"));
@@ -170,6 +223,11 @@ pub async fn submit(
     if answer.len() > MAX_FLAG_LENGTH {
         return Err(AppError::bad_request("Flag is too long"));
     }
+    let submit_remote_ip_hash = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()))
+        .and_then(|ip| {
+            crate::services::anti_cheat::hash_ip_identity(st.config.as_ref(), &ip)
+                .map(|identity| identity.exact)
+        });
 
     let ctx = context_info(&st, &user, id, true).await?;
 
@@ -189,8 +247,6 @@ pub async fn submit(
         .await?
         .map(|t| t.name)
         .unwrap_or_default();
-    let mut cheat_flag_map = cached_challenge_flag_map(&st, challenge_id).await;
-    let mut cache_loaded_cheat_flags = false;
 
     // ------ Persist the grade, counters, first solve, and blood notice atomically ------
     // The pair advisory lock serializes one team's attempts at one challenge. The
@@ -199,6 +255,19 @@ pub async fn submit(
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+
+    if !lock_submit_caller_at_grade(
+        &mut transaction,
+        user.id,
+        &user.security_stamp,
+        id,
+        ctx.participation.team_id,
+        ctx.participation.id,
+    )
+    .await?
+    {
+        return Err(AppError::Forbidden);
+    }
 
     // Submissions share the engine/configuration fence for this game. Readers
     // remain fully concurrent, while an edit, repository import, or scoring
@@ -234,7 +303,7 @@ pub async fn submit(
     // do not lock the challenge row here: the late conditional counter UPDATE is
     // the policy fence, so unrelated teams can judge concurrently and hold the hot
     // row only for the final few statements of a successful transaction.
-    let current: Option<(i32, Option<DateTime<Utc>>, bool, i16)> =
+    let current: Option<(i32, Option<DateTime<Utc>>, bool, i16, Option<Uuid>)> =
         sqlx::query_as(LOAD_GRADING_POLICY_SQL)
             .bind(challenge_id)
             .bind(id)
@@ -242,23 +311,22 @@ pub async fn submit(
             .fetch_optional(&mut *transaction)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((submission_limit, current_deadline, disable_blood_bonus, challenge_type)) = current
+    let Some((
+        submission_limit,
+        current_deadline,
+        disable_blood_bonus,
+        challenge_type,
+        shared_container_id,
+    )) = current
     else {
         return Err(AppError::not_found("Challenge not found"));
     };
 
     // The cached play context is only an early gate. Hold a shared row lock on the
     // live game timing so practice/deadline/limit decisions cannot mix policies.
-    let timing: Option<(DateTime<Utc>, DateTime<Utc>, bool, Option<DateTime<Utc>>)> =
-        sqlx::query_as(
-            r#"SELECT start_time_utc, end_time_utc, practice_mode, freeze_time_utc
-             FROM "Games" WHERE id = $1 FOR SHARE"#,
-        )
-        .bind(id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((game_start, game_end, practice_mode, freeze_time)) = timing else {
+    let Some((game_start, game_end, practice_mode, freeze_time, submit_time)) =
+        lock_game_timing_at_grade(&mut transaction, id).await?
+    else {
         return Err(AppError::not_found("Game not found"));
     };
     if submit_time < game_start {
@@ -353,6 +421,38 @@ pub async fn submit(
     crate::utils::scoring::lock_jeopardy_flags_shared(&mut transaction, challenge_id).await?;
     let is_static = challenge_type == ChallengeType::StaticAttachment as i16
         || challenge_type == ChallengeType::StaticContainer as i16;
+    let own_instance: Option<(Option<Uuid>, bool, DateTime<Utc>)> = sqlx::query_as(
+        r#"SELECT container_id, is_loaded, last_container_operation
+             FROM "GameInstances"
+            WHERE participation_id = $1 AND challenge_id = $2
+            FOR SHARE"#,
+    )
+    .bind(ctx.participation.id)
+    .bind(challenge_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let (submit_container_id, container_was_loaded_at_submit, container_last_operation_at_submit) =
+        match own_instance {
+            Some((container_id, was_loaded, last_operation)) => (
+                container_id.or(shared_container_id),
+                Some(was_loaded),
+                Some(last_operation),
+            ),
+            None => (shared_container_id, None, None),
+        };
+    let (first_open_at_submit, first_download_at_submit, first_container_start_at_submit) =
+        load_first_positive_interactions(
+            &mut transaction,
+            id,
+            ctx.participation.team_id,
+            challenge_id,
+            game_start,
+            game_end,
+            submit_time,
+        )
+        .await?;
+    let mut cheat_source_participation_id = None;
     let mut result = if is_static {
         let flags: Vec<String> = sqlx::query_scalar(
             r#"SELECT flag
@@ -370,63 +470,58 @@ pub async fn submit(
             AnswerResult::WrongAnswer
         }
     } else {
-        let flag: Option<String> = sqlx::query_scalar(
-            r#"SELECT flag.flag
-                 FROM "GameInstances" instance
-                 JOIN "FlagContexts" flag ON flag.id = instance.flag_id
-                WHERE instance.participation_id = $1
-                  AND instance.challenge_id = $2
-                FOR SHARE OF instance, flag"#,
+        let (grade, source_participation_id) = grade_dynamic_answer(
+            &mut transaction,
+            ctx.participation.id,
+            challenge_id,
+            &answer,
+            submit_time < game_end,
         )
-        .bind(ctx.participation.id)
-        .bind(challenge_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        let flag = flag.ok_or_else(|| AppError::not_found("Challenge not found"))?;
-        if ct_eq(&flag, &answer) {
-            AnswerResult::Accepted
-        } else {
-            AnswerResult::WrongAnswer
-        }
+        .await?;
+        cheat_source_participation_id = source_participation_id;
+        grade
     };
 
     // ------ Stolen-flag (cheat) detection ------
-    // This classification is best-effort and may use the short-lived all-team
-    // cache, but it can no longer influence whether an answer is accepted: the
-    // canonical grade above came from transactionally locked rows.
-    let mut cheat_source_team: Option<String> = None;
-    if result == AnswerResult::WrongAnswer && submit_time < game_end {
-        if cheat_flag_map.is_none() {
-            cheat_flag_map = Some(load_challenge_flag_map(&mut transaction, challenge_id).await?);
-            cache_loaded_cheat_flags = true;
-        }
-        let flag_map = cheat_flag_map
-            .as_ref()
-            .expect("cache miss was loaded on the transaction connection");
-        for (&pid, flag) in flag_map.iter() {
-            if pid != ctx.participation.id && ct_eq(flag, &answer) {
-                result = AnswerResult::CheatDetected;
-                cheat_source_team = sqlx::query_scalar(
-                    r#"SELECT team.name
-                         FROM "Participations" participation
-                         JOIN "Teams" team ON team.id = participation.team_id
-                        WHERE participation.id = $1"#,
-                )
-                .bind(pid)
-                .fetch_optional(&mut *transaction)
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-                break;
+    // Always scan the transactionally locked, authoritative map. In particular,
+    // a team without its own instance can still present another team's valid
+    // flag; returning early here would erase the strongest evidence we have.
+    let cheat_source = if let Some(source_participation_id) = cheat_source_participation_id {
+        let source: Option<(i32, String)> = sqlx::query_as(
+            r#"SELECT participation.team_id, team.name
+                 FROM "Participations" participation
+                 JOIN "Teams" team ON team.id = participation.team_id
+                WHERE participation.id = $1 AND participation.game_id = $2
+                FOR SHARE OF participation, team"#,
+        )
+        .bind(source_participation_id)
+        .bind(id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        match source {
+            Some((source_team_id, source_team_name)) => {
+                Some((source_participation_id, source_team_id, source_team_name))
+            }
+            None => {
+                result = AnswerResult::WrongAnswer;
+                None
             }
         }
-    }
+    } else {
+        None
+    };
 
     let sub_id: i32 = sqlx::query_scalar(
         r#"INSERT INTO "Submissions"
              (answer, status, submit_time_utc, user_id, team_id,
-              participation_id, game_id, challenge_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              participation_id, game_id, challenge_id,
+              submit_remote_ip_hash, container_id,
+              container_last_operation_at_submit,
+              container_was_loaded_at_submit, first_open_at_submit,
+              first_download_at_submit, first_container_start_at_submit)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                   $13, $14, $15)
            RETURNING id"#,
     )
     .bind(&answer)
@@ -437,17 +532,48 @@ pub async fn submit(
     .bind(ctx.participation.id)
     .bind(id)
     .bind(challenge_id)
+    .bind(submit_remote_ip_hash.as_deref())
+    .bind(submit_container_id)
+    .bind(container_last_operation_at_submit)
+    .bind(container_was_loaded_at_submit)
+    .bind(first_open_at_submit)
+    .bind(first_download_at_submit)
+    .bind(first_container_start_at_submit)
     .fetch_one(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
 
-    // Persist the audit event in the same transaction as the triggering submission.
-    if result == AnswerResult::CheatDetected {
-        let values = serde_json::json!([
-            challenge.title,
-            team_name,
-            cheat_source_team.clone().unwrap_or_default(),
-        ]);
+    // Canonical stolen-flag provenance is committed with the grade. Unlike the
+    // presentation event, this row preserves both participation identities and
+    // stable display snapshots, and cannot be updated or deleted afterward.
+    if let Some((source_participation_id, source_team_id, source_team_name)) = cheat_source.as_ref()
+    {
+        let evidence_key = format!("submission:{sub_id}");
+        // The database trigger discards this placeholder and builds the v1
+        // display snapshot from rows locked in this grading transaction.
+        let evidence_payload = serde_json::json!({});
+        sqlx::query(
+            r#"INSERT INTO "CheatInfo"
+                 (game_id, submit_team_id, source_team_id, submission_id,
+                  submit_participation_id, source_participation_id, challenge_id,
+                  evidence_key, observed_at_utc, evidence_payload, evidence_version)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1)"#,
+        )
+        .bind(id)
+        .bind(ctx.participation.team_id)
+        .bind(*source_team_id)
+        .bind(sub_id)
+        .bind(ctx.participation.id)
+        .bind(*source_participation_id)
+        .bind(challenge_id)
+        .bind(evidence_key)
+        .bind(submit_time)
+        .bind(sqlx::types::Json(&evidence_payload))
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+        let values = serde_json::json!([challenge.title, team_name, source_team_name,]);
         sqlx::query(
             r#"INSERT INTO "GameEvents"
                  (game_id, "Type", "values", publish_time_utc, user_id, team_id)
@@ -456,7 +582,7 @@ pub async fn submit(
         .bind(id)
         .bind(crate::utils::enums::EventType::CheatDetected as i16)
         .bind(sqlx::types::Json(&values))
-        .bind(Utc::now())
+        .bind(submit_time)
         .bind(user.id)
         .bind(ctx.participation.team_id)
         .execute(&mut *transaction)
@@ -464,7 +590,25 @@ pub async fn submit(
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
 
+    // The submission and its replay intent are one commit. Control may crash at
+    // any point afterward; the leased reconciler will resume this exact source.
+    let evaluation_is_durable = crate::services::suspicion::enqueue_submission_evaluation(
+        &mut transaction,
+        sub_id,
+        id,
+        ctx.participation.id,
+        challenge_id,
+        submit_time,
+    )
+    .await?;
+    if !evaluation_is_durable {
+        return Err(AppError::internal(
+            "submission evaluation provenance is inconsistent",
+        ));
+    }
+
     let mut notice_to_broadcast: Option<(NoticeType, i32, Json, DateTime<Utc>)> = None;
+    let mut claimed_first_solve = false;
     if result == AnswerResult::Accepted {
         let already_solved: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(
@@ -523,21 +667,11 @@ pub async fn submit(
                 3
             };
 
-            let claimed = sqlx::query_scalar::<_, i32>(
-                r#"INSERT INTO "FirstSolves" (participation_id, challenge_id, submission_id)
-               VALUES ($1, $2, $3)
-               ON CONFLICT (participation_id, challenge_id) DO NOTHING
-               RETURNING submission_id"#,
-            )
-            .bind(ctx.participation.id)
-            .bind(challenge_id)
-            .bind(sub_id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?
-            .is_some();
+            claimed_first_solve =
+                claim_first_solve(&mut transaction, ctx.participation.id, challenge_id, sub_id)
+                    .await?;
 
-            let notice_type = if claimed && blood_eligible {
+            let notice_type = if claimed_first_solve && blood_eligible {
                 match prior {
                     0 => Some(NoticeType::FirstBlood),
                     1 => Some(NoticeType::SecondBlood),
@@ -574,7 +708,7 @@ pub async fn submit(
     // the whole submission (including a tentative FirstSolve/notice) rolls back.
     // This is intentionally the first write lock on GameChallenges and is placed
     // immediately before commit to avoid serializing the longer grading path.
-    let accepted_inc = i32::from(result == AnswerResult::Accepted);
+    let accepted_inc = i32::from(claimed_first_solve);
     let counter_update = sqlx::query(FINALIZE_SUBMISSION_SQL)
         .bind(challenge_id)
         .bind(accepted_inc)
@@ -584,6 +718,7 @@ pub async fn submit(
         .bind(current_deadline)
         .bind(disable_blood_bonus)
         .bind(challenge_type)
+        .bind(shared_container_id)
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -597,33 +732,6 @@ pub async fn submit(
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-
-    if cache_loaded_cheat_flags {
-        if let Some(map) = cheat_flag_map.as_ref() {
-            cache_challenge_flag_map(&st, challenge_id, map).await;
-        }
-    }
-
-    // Best-effort suspicion detection runs only after the canonical submission is
-    // committed. It is intentionally not allowed to roll back a player's answer.
-    if let Err(error) = crate::services::suspicion::evaluate_submission(
-        &st.db,
-        id,
-        ctx.participation.id,
-        sub_id,
-        &challenge,
-        &answer,
-    )
-    .await
-    {
-        tracing::warn!(
-            game = id,
-            participation = ctx.participation.id,
-            submission = sub_id,
-            %error,
-            "post-submit suspicion evaluation failed"
-        );
-    }
 
     st.publish_event(
         "ReceivedSubmissions",
@@ -661,108 +769,12 @@ pub async fn submit(
     Ok(RequestResponse::ok(sub_id))
 }
 
-/// `POST /api/game/{id}/challenges/{challengeId}/review` — rate a solved challenge.
-///
-/// Mirrors RSCTF `ReviewChallenge` + `ChallengeReviewRepository.AddOrUpdateReviewAsync`:
-/// the caller must be an accepted participant who has solved the challenge, then a
-/// `ChallengeReviews` row (keyed on user+challenge) is inserted or updated in place.
-const UPSERT_CHALLENGE_REVIEW_SQL: &str = r#"
-INSERT INTO "ChallengeReviews"
-            (challenge_id, user_id, game_id, rating, comment, submit_time_utc)
-     VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (user_id, challenge_id)
-DO UPDATE SET game_id = EXCLUDED.game_id,
-              rating = EXCLUDED.rating,
-              comment = EXCLUDED.comment,
-              submit_time_utc = EXCLUDED.submit_time_utc
-"#;
-
-fn review_rating_from_wire(value: Option<i32>) -> ReviewRating {
-    value
-        .and_then(|value| i16::try_from(value).ok())
-        .and_then(|value| ReviewRating::try_from_value(&value).ok())
-        .unwrap_or(ReviewRating::None)
-}
-
-pub async fn review_challenge(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path((id, challenge_id)): Path<(i32, i32)>,
-    axum::Json(model): axum::Json<ChallengeReviewModel>,
-) -> AppResult<MessageResponse> {
-    let ctx = context_info(&st, &user, id, false).await?;
-
-    // The challenge must belong to this game.
-    let _challenge = load_scoped_challenge(&st, id, challenge_id).await?;
-
-    // RSCTF requires the caller's team to have solved the challenge first.
-    let solved = submission::Entity::find()
-        .filter(submission::Column::ParticipationId.eq(ctx.participation.id))
-        .filter(submission::Column::ChallengeId.eq(challenge_id))
-        .filter(submission::Column::Status.eq(AnswerResult::Accepted))
-        .one(&st.db)
-        .await?
-        .is_some();
-    if !solved {
-        return Err(AppError::bad_request("You must solve the challenge first."));
-    }
-
-    // Map the wire rating (numeric ReviewRating) onto the stored enum.
-    let rating = review_rating_from_wire(model.rating);
-    if model
-        .comment
-        .as_ref()
-        .is_some_and(|comment| comment.chars().count() > 1_000)
-    {
-        return Err(AppError::bad_request(
-            "Review comment cannot exceed 1000 characters",
-        ));
-    }
-    let comment = model.comment.filter(|comment| !comment.is_empty());
-
-    // The unique index installed by m0080 makes concurrent double-submits one
-    // atomic upsert instead of two rows from a read-then-insert race.
-    sqlx::query(UPSERT_CHALLENGE_REVIEW_SQL)
-        .bind(challenge_id)
-        .bind(user.id)
-        .bind(id)
-        .bind(rating.into_value())
-        .bind(comment)
-        .bind(Utc::now())
-        .execute(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-
-    Ok(MessageResponse::ok(""))
-}
-
-/// `GET /api/game/{id}/challenges/{challengeId}/status/{submitId}`
-pub async fn status(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-    Path((id, challenge_id, submit_id)): Path<(i32, i32, i32)>,
-) -> AppResult<RequestResponse<AnswerResult>> {
-    let sub = submission::Entity::find_by_id(submit_id)
-        .one(&st.db)
-        .await?
-        .filter(|s| s.game_id == id && s.challenge_id == challenge_id && s.user_id == Some(user.id))
-        .ok_or_else(|| AppError::not_found("Submission not found"))?;
-
-    // Never reveal cheat detection to the player.
-    let visible = match sub.status {
-        AnswerResult::CheatDetected => AnswerResult::WrongAnswer,
-        other => other,
-    };
-    Ok(RequestResponse::ok(visible))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        normal_flag_submit_type_allowed, review_rating_from_wire, ChallengeType,
-        FINALIZE_SUBMISSION_SQL, LOAD_GRADING_POLICY_SQL, UPSERT_CHALLENGE_REVIEW_SQL,
+        normal_flag_submit_type_allowed, ChallengeType, FINALIZE_SUBMISSION_SQL,
+        LOAD_GRADING_POLICY_SQL,
     };
-    use crate::utils::enums::ReviewRating;
     use chrono::{Duration, Utc};
 
     #[test]
@@ -789,19 +801,6 @@ mod tests {
                 "missing optimistic grading fence predicate: {predicate}"
             );
         }
-    }
-
-    #[test]
-    fn challenge_review_write_is_an_atomic_upsert() {
-        assert!(UPSERT_CHALLENGE_REVIEW_SQL.contains("ON CONFLICT (user_id, challenge_id)"));
-        assert!(UPSERT_CHALLENGE_REVIEW_SQL.contains("submit_time_utc = EXCLUDED.submit_time_utc"));
-    }
-
-    #[test]
-    fn challenge_review_rating_cannot_wrap_into_a_valid_value() {
-        assert_eq!(review_rating_from_wire(Some(3)), ReviewRating::Good);
-        assert_eq!(review_rating_from_wire(Some(65_537)), ReviewRating::None);
-        assert_eq!(review_rating_from_wire(Some(-65_535)), ReviewRating::None);
     }
 
     #[test]
@@ -863,3 +862,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "submit_evidence_tests.rs"]
+mod evidence_tests;

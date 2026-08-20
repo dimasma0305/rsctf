@@ -74,6 +74,13 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
           division_id INTEGER,
           writeup_id INTEGER
         );
+        CREATE TABLE "UserParticipations" (
+          user_id UUID NOT NULL,
+          game_id INTEGER NOT NULL,
+          team_id INTEGER NOT NULL,
+          participation_id INTEGER NOT NULL,
+          PRIMARY KEY (user_id, game_id)
+        );
         "#,
     )
     .execute(&pool)
@@ -312,6 +319,13 @@ async fn opposing_reviews_serialize_status_and_external_effects() {
           status SMALLINT NOT NULL,
           division_id INTEGER,
           writeup_id INTEGER
+        );
+        CREATE TABLE "UserParticipations" (
+          user_id UUID NOT NULL,
+          game_id INTEGER NOT NULL,
+          team_id INTEGER NOT NULL,
+          participation_id INTEGER NOT NULL,
+          PRIMARY KEY (user_id, game_id)
         );
         "#,
     )

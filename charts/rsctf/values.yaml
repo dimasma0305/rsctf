@@ -20,6 +20,9 @@ image:
   repository: ghcr.io/dimasma0305/rsctf
   pullPolicy: IfNotPresent
   tag: latest
+  # Production cutovers should pin the verified manifest digest. When set,
+  # this takes precedence over tag and must use sha256:<64 lowercase hex>.
+  digest: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -32,6 +35,7 @@ existingSecret:
   name: ""
   databaseUrlKey: database-url
   jwtSecretKey: jwt-secret
+  identityHashKey: identity-hash-key
   bootstrapTokenKey: bootstrap-token
   redisUrlKey: redis-url
   postgresqlPasswordKey: postgresql-password
@@ -41,6 +45,9 @@ secrets:
   # Required when existingSecret.name is empty. Generate at least 32 random
   # bytes, for example: openssl rand -hex 32
   jwtSecret: ""
+  # Required when existingSecret.name is empty. This must be independent from
+  # jwtSecret and remain stable across restarts, replicas, and JWT rotations.
+  identityHashKey: ""
   # Optional. When empty, Helm generates and retains a 48-character first-admin
   # setup token in the release Secret.
   bootstrapToken: ""
@@ -253,12 +260,12 @@ config:
   useCaptcha: false
   migrate: true
   logLevel: info
-  # Pool floor: 2 for migrate; 5R+2P+1 for engine; 5R+2P+13 for web;
-  # 5R+2P+3 for a non-VPN control/network owner; 5R+2P+6 for a VPN owner;
-  # or 5R+2P+15 / +18 for the corresponding all-in-one role.
+  # Pool floor: 2 for migrate; 5R+2P+3 for engine; 5R+2P+13 for web;
+  # 5R+2P+5 / +8 for non-VPN/VPN control; 5R+2P+3 / +6 for network;
+  # or 5R+2P+17 / +20 for the corresponding all-in-one role.
   provisioningConcurrency: 4
   repoScanConcurrency: 1
-  dbMaxConnections: 32
+  dbMaxConnections: 33
   # Reserve this otherwise-unused numeric UID range for simultaneous process
   # checkers. The budget is also the per-rsctf-process custom-checker cap.
   checkerUidBase: 60000
@@ -266,6 +273,10 @@ config:
   # Four maximum-size A&D submit batches per participation, then 10 flags/s.
   # Increase only for a controlled, isolated load campaign.
   adSubmitBurstFlags: 400
+  # All/control/engine full-history anti-cheat sweep interval (1..3600 seconds).
+  suspicionReconcileSeconds: 30
+  # Pause ended-game sweeps before the barrier-backed final pass.
+  suspicionFinalizeGraceSeconds: 360
   containerMaxMemoryMb: 4096
   containerMaxCpuCount: 8
 
@@ -320,6 +331,9 @@ kubernetes:
   # is the cluster Service CIDR used by provisioning and checker isolation,
   # not a CIDR selected by this chart.
   adServiceCidr: ""
+  # Explicit operator acknowledgement. Set true only after a cross-Pod probe
+  # proves the cluster CNI enforces networking.k8s.io/v1 NetworkPolicy.
+  networkPolicyEnforced: false
   isolatedPodNetns: true
 
 docker:

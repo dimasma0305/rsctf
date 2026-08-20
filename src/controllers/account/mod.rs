@@ -26,7 +26,7 @@ use crate::middlewares::privilege_authentication::{
     clear_session_cookie, set_session_cookie, CurrentUser, MaybeUser,
 };
 use crate::models::data::{
-    config, first_solve, game, game_challenge, game_manager, log_entry, submission, user,
+    config, first_solve, game, game_challenge, game_manager, submission, user,
 };
 use crate::models::request::account::*;
 use crate::services::anti_cheat;
@@ -45,10 +45,28 @@ pub(super) const MAX_ENCODED_EMAIL_BYTES: usize = 1_024;
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$YBSHJA9ANNWFII7EsOe1rw$O5h6h9EwR/6Pyoe9wCcjK91HivbrgJZwb44fhsiqonw";
 pub(crate) const REGISTRATION_LOCK_ID: i64 = 0x5253_4354_4652_4547; // "RSCTFREG"
 
+fn registration_disposition(
+    is_first: bool,
+    active_on_register: bool,
+    email_confirmation_required: bool,
+) -> (bool, RegisterStatus) {
+    let session_eligible = is_first || (active_on_register && !email_confirmation_required);
+    let status = if session_eligible {
+        RegisterStatus::LoggedIn
+    } else if email_confirmation_required {
+        RegisterStatus::EmailConfirmationRequired
+    } else {
+        RegisterStatus::AdminConfirmationRequired
+    };
+    (session_eligible, status)
+}
+
 mod avatar;
 mod bootstrap;
+mod email_confirmation;
 mod recovery;
 pub use avatar::avatar;
+pub use email_confirmation::verify;
 pub use recovery::*;
 
 pub fn router() -> Router<SharedState> {
@@ -66,7 +84,7 @@ pub fn router() -> Router<SharedState> {
         .route("/api/account/changepassword", put(change_password))
         .route(
             "/api/account/fingerprintchallenge",
-            get(fingerprint_challenge),
+            limited(Policy::Register, get(fingerprint_challenge)),
         )
         .route("/api/account/login", limited(Policy::Login, post(login)))
         .route("/api/account/logout", post(logout))
@@ -97,7 +115,7 @@ pub fn router() -> Router<SharedState> {
 /// collects (see `Api.ts`). The shared request DTO omits `fingerprint`, so we
 /// deserialize into this tolerant local copy to capture it at login. Shadows
 /// the glob-imported `models::request::account::LoginModel` within this module.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginModel {
     #[serde(default)]
@@ -106,6 +124,8 @@ pub struct LoginModel {
     pub password: String,
     #[serde(default)]
     pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub fingerprint_proof: Option<String>,
     /// Captcha token (`ModelWithCaptcha.challenge`); verified only when the live
     /// `AccountPolicy:UseCaptcha` is on. Absent/`null` on captcha-off deployments.
     #[serde(default)]
@@ -213,17 +233,18 @@ impl ProfileUserInfoModel {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// Serialize account provisioning across every replica. The lock is scoped to
-/// the transaction, so it is released on commit, rollback, or connection loss.
+/// Compatibility transaction helper for account/admin identity mutations that
+/// still use SeaORM. New identity-admission writes use the underlying sqlx pool.
 pub(crate) async fn locked_registration_transaction(
     st: &SharedState,
 ) -> AppResult<DatabaseTransaction> {
-    let txn = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
-    txn.execute_unprepared(&format!(
-        "SELECT pg_advisory_xact_lock({REGISTRATION_LOCK_ID})"
-    ))
-    .await?;
-    Ok(txn)
+    let transaction = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
+    transaction
+        .execute_unprepared(&format!(
+            "SELECT pg_advisory_xact_lock({REGISTRATION_LOCK_ID})"
+        ))
+        .await?;
+    Ok(transaction)
 }
 
 /// `POST /api/account/register` -> `RequestResponseOfRegisterStatus`.
@@ -232,54 +253,39 @@ pub(crate) async fn locked_registration_transaction(
 /// user straight in by issuing a session cookie.
 pub async fn register(
     State(st): State<SharedState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(model): Json<RegisterModel>,
 ) -> AppResult<Response> {
     // Fail fast before policy loading, captcha verification, and Argon2.
-    let may_be_first = bootstrap::preflight(&st, model.bootstrap_token.as_deref()).await?;
+    bootstrap::preflight(&st, model.bootstrap_token.as_deref()).await?;
     // Load the live AccountPolicy from the `Configs` key/value table so the
     // /admin/config toggles take effect per-request (RSCTF reads AccountPolicy
     // from an IOptionsSnapshot backed by the DB). Each key falls back to the
     // startup env-loaded `st.config.account` when it was never persisted —
     // mirrors InfoController reading GlobalConfig from `config::Entity`.
-    let mut allow_register = st.config.account.allow_register;
-    let mut email_confirmation_required = st.config.account.email_confirmation_required;
-    let mut active_on_register = st.config.account.active_on_register;
     // Comma-separated domain allowlist; empty = allow all (RSCTF EmailDomainList).
     let mut email_domain_list = String::new();
     for row in config::Entity::find().all(&st.db).await? {
         let Some(value) = row.value else { continue };
-        match row.config_key.as_str() {
-            // Persisted as lowercase `bool::to_string()` (matching admin config).
-            "AccountPolicy:AllowRegister" => allow_register = value == "true",
-            "AccountPolicy:EmailConfirmationRequired" => {
-                email_confirmation_required = value == "true";
-            }
-            "AccountPolicy:ActiveOnRegister" => active_on_register = value == "true",
-            "AccountPolicy:EmailDomainList" => email_domain_list = value,
-            _ => {}
+        if row.config_key == "AccountPolicy:EmailDomainList" {
+            email_domain_list = value;
         }
     }
 
-    // The very first account always bootstraps the platform admin — even when
-    // public registration is disabled — so a fresh or locked-down instance can
-    // always be set up. Everyone after the first obeys the allow_register gate.
-    if !may_be_first && !allow_register {
-        return Err(AppError::bad_request("Registration is disabled"));
-    }
+    // The canonical transaction below applies the new-account registration
+    // gate. Deferring the fast rejection lets an already-created, unconfirmed
+    // account authenticate a resend even if public registration was disabled
+    // after its original request.
 
     // Captcha gate (RSCTF `AccountController.Register`: `if (UseCaptcha &&
     // !VerifyAsync) return BadRequest`), placed right after the AllowRegister gate
     // and BEFORE creating the account. Only enforced when the live
     // `AccountPolicy:UseCaptcha` is on, so captcha-off registration is unaffected.
-    let captcha = CaptchaSettings::load(&st.db).await;
-    if captcha.use_captcha
-        && !captcha
-            .service()
-            .verify(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
-            .await?
-    {
-        return Err(AppError::bad_request("Captcha failed"));
-    }
+    let captcha = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
+    let captcha_admission = captcha
+        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .await?;
 
     let user_name = model.user_name.trim().to_string();
     if user_name.len() < 3 {
@@ -297,9 +303,10 @@ pub async fn register(
     }
     validate_password(&model.password)?;
     let email = model.email.trim().to_lowercase();
-    if email.len() > MAX_EMAIL_BYTES || !email.contains('@') {
+    if email.len() > MAX_EMAIL_BYTES {
         return Err(AppError::bad_request("Invalid email address"));
     }
+    crate::services::mail::validate_recipient(&email)?;
     // Enforce the EmailDomainList allowlist (RSCTF VerifyEmailDomain): a non-empty
     // list rejects addresses whose domain is not in it. Same 400 RSCTF returns.
     if !verify_email_domain(&email, &email_domain_list) {
@@ -309,34 +316,76 @@ pub async fn register(
     let norm_name = user_name.to_uppercase();
     let norm_email = email.to_uppercase();
 
-    if user::Entity::find()
-        .filter(user::Column::NormalizedUserName.eq(norm_name.clone()))
-        .one(&st.db)
-        .await?
-        .is_some()
-    {
-        return Err(AppError::conflict("Username already taken"));
-    }
-    if user::Entity::find()
-        .filter(user::Column::NormalizedEmail.eq(norm_email.clone()))
-        .one(&st.db)
-        .await?
-        .is_some()
-    {
+    type PendingRow = (
+        Uuid,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+        i16,
+        Option<String>,
+        Option<String>,
+    );
+    let collisions: Vec<PendingRow> = sqlx::query_as(
+        r#"SELECT id, user_name, normalized_user_name, email, normalized_email,
+                  email_confirmed, role, password_hash, security_stamp
+             FROM "AspNetUsers"
+            WHERE normalized_user_name = $1 OR normalized_email = $2
+            ORDER BY id"#,
+    )
+    .bind(&norm_name)
+    .bind(&norm_email)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !collisions.is_empty() {
+        if let [pending] = collisions.as_slice() {
+            let exact_identity = pending.2.as_deref() == Some(norm_name.as_str())
+                && pending.4.as_deref() == Some(norm_email.as_str());
+            let pending_user = !pending.5 && pending.6 == Role::User as i16;
+            if exact_identity && pending_user {
+                if let (Some(password_hash), Some(security_stamp)) = (&pending.7, &pending.8) {
+                    if verify_password_async(model.password.clone(), password_hash.clone()).await {
+                        email_confirmation::resend_pending_confirmation(
+                            &st,
+                            email_confirmation::PendingConfirmation {
+                                user_id: pending.0,
+                                user_name: pending.1.as_deref().unwrap_or(&user_name),
+                                normalized_user_name: pending.2.as_deref().unwrap_or(&norm_name),
+                                email: pending.3.as_deref().unwrap_or(&email),
+                                normalized_email: pending.4.as_deref().unwrap_or(&norm_email),
+                                password_hash,
+                                security_stamp,
+                            },
+                            captcha_admission,
+                        )
+                        .await?;
+                        return Ok(
+                            Wrapped::ok(RegisterStatus::EmailConfirmationRequired).into_response()
+                        );
+                    }
+                }
+            }
+        }
+        if collisions
+            .iter()
+            .any(|collision| collision.2.as_deref() == Some(norm_name.as_str()))
+        {
+            return Err(AppError::conflict("Username already taken"));
+        }
         return Err(AppError::conflict("Email already registered"));
     }
 
-    // RSCTF `EnableBrowserFingerprint`: when on, registration must carry a
-    // well-formed browser fingerprint (`^[a-f0-9]{64}$`), else 400.
-    enforce_browser_fingerprint(
+    let identity_policy = anti_cheat::load_policy_flags(st.pg()).await?;
+    let fingerprint = anti_cheat::validate_fingerprint_submission(
         &st,
-        model
-            .fingerprint
-            .as_deref()
-            .map(str::trim)
-            .filter(|f| !f.is_empty()),
+        identity_policy,
+        model.fingerprint.as_deref(),
+        model.fingerprint_proof.as_deref(),
     )
     .await?;
+    let current_ip = anti_cheat::client_ip(&headers, Some(peer.ip()));
 
     let now = Utc::now();
     let id = Uuid::now_v7();
@@ -346,79 +395,164 @@ pub async fn register(
     // The initial count above is only a cheap disabled-registration fast path.
     // Re-evaluate while holding a transaction-scoped advisory lock so exactly one
     // concurrent request can observe an empty user table and become bootstrap admin.
-    let txn = locked_registration_transaction(&st).await?;
-    let is_first = user::Entity::find().count(&txn).await? == 0;
-    let txn = bootstrap::recheck(txn, is_first, model.bootstrap_token.as_deref()).await?;
-    if !is_first && !allow_register {
-        txn.rollback().await?;
+    let mut txn = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(REGISTRATION_LOCK_ID)
+        .execute(&mut *txn)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let is_first: bool = sqlx::query_scalar(r#"SELECT NOT EXISTS (SELECT 1 FROM "AspNetUsers")"#)
+        .fetch_one(&mut *txn)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let account_policy =
+        anti_cheat::lock_and_load_account_policy(&mut txn, st.config.as_ref()).await?;
+    bootstrap::require(is_first, model.bootstrap_token.as_deref())?;
+    if !is_first && !account_policy.allow_register {
+        txn.rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         return Err(AppError::bad_request("Registration is disabled"));
     }
-    if user::Entity::find()
-        .filter(user::Column::NormalizedUserName.eq(norm_name.clone()))
-        .one(&txn)
-        .await?
-        .is_some()
-    {
-        txn.rollback().await?;
+    account_policy.authorize_captcha(captcha_admission)?;
+    if !verify_email_domain(&email, &account_policy.email_domain_list) {
+        return Err(AppError::bad_request("Email domain is not allowed"));
+    }
+    let duplicate: Option<(bool, bool)> = sqlx::query_as(
+        r#"SELECT normalized_user_name = $1, normalized_email = $2
+             FROM "AspNetUsers"
+            WHERE normalized_user_name = $1 OR normalized_email = $2
+            LIMIT 1"#,
+    )
+    .bind(&norm_name)
+    .bind(&norm_email)
+    .fetch_optional(&mut *txn)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if duplicate.is_some_and(|row| row.0) {
+        txn.rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         return Err(AppError::conflict("Username already taken"));
     }
-    if user::Entity::find()
-        .filter(user::Column::NormalizedEmail.eq(norm_email.clone()))
-        .one(&txn)
-        .await?
-        .is_some()
-    {
-        txn.rollback().await?;
+    if duplicate.is_some_and(|row| row.1) {
+        txn.rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         return Err(AppError::conflict("Email already registered"));
     }
     let role = if is_first { Role::Admin } else { Role::User };
-
-    let am = user::ActiveModel {
-        id: Set(id),
-        user_name: Set(Some(user_name.clone())),
-        normalized_user_name: Set(Some(norm_name)),
-        email: Set(Some(email)),
-        normalized_email: Set(Some(norm_email)),
-        // The first user (the bootstrap admin) is always active; everyone else
-        // is auto-confirmed only under active-on-register (RSCTF sets
-        // EmailConfirmed=true solely inside the ActiveOnRegister branch — the
-        // admin-approval / email-verification paths leave it false until granted).
-        email_confirmed: Set(is_first || active_on_register),
-        password_hash: Set(Some(password_hash)),
-        security_stamp: Set(Some(security_stamp.clone())),
-        concurrency_stamp: Set(Some(Uuid::new_v4().to_string())),
-        phone_number: Set(None),
-        phone_number_confirmed: Set(false),
-        two_factor_enabled: Set(false),
-        lockout_end: Set(None),
-        lockout_enabled: Set(false),
-        access_failed_count: Set(0),
-        role: Set(role),
-        ip: Set("0.0.0.0".to_string()),
-        browser_fingerprint: Set(None),
-        last_signed_in_utc: Set(now),
-        last_visited_utc: Set(now),
-        register_time_utc: Set(now),
-        bio: Set(String::new()),
-        real_name: Set(String::new()),
-        std_number: Set(String::new()),
-        exercise_visible: Set(true),
-        avatar_hash: Set(None),
-    };
-    am.insert(&txn).await?;
-    txn.commit().await?;
-
-    // RSCTF register precedence (AccountController lines 194-246): active-on-
-    // register wins and logs straight in; otherwise the admin-approval path
-    // unless email confirmation is required. The first account (bootstrap admin)
-    // always logs straight in regardless of policy.
-    let status = if is_first || active_on_register {
-        RegisterStatus::LoggedIn
-    } else if !email_confirmation_required {
-        RegisterStatus::AdminConfirmationRequired
+    let (session_eligible, status) = registration_disposition(
+        is_first,
+        account_policy.active_on_register,
+        account_policy.email_confirmation_required,
+    );
+    if status == RegisterStatus::EmailConfirmationRequired {
+        email_confirmation::require_delivery_origin(st.config.as_ref())?;
+    }
+    let admission = if session_eligible {
+        Some(
+            anti_cheat::admit_new_user_in_transaction(
+                &mut txn,
+                st.config.as_ref(),
+                id,
+                Some(&user_name),
+                current_ip.as_deref(),
+                fingerprint.as_deref(),
+                anti_cheat::IdentitySource::Registration,
+            )
+            .await?,
+        )
     } else {
-        RegisterStatus::EmailConfirmationRequired
+        // Pending accounts have authenticated nobody yet. Do not let an
+        // unauthenticated registration reserve an IP/device identity.
+        anti_cheat::mark_identity_neutral_insert(&mut txn).await?;
+        None
     };
+    let accepted_ip = if admission == Some(anti_cheat::AdmissionOutcome::Accepted) {
+        current_ip.as_deref().unwrap_or("0.0.0.0")
+    } else {
+        "0.0.0.0"
+    };
+
+    let insert = sqlx::query(
+        r#"INSERT INTO "AspNetUsers"
+             (id, user_name, normalized_user_name, email, normalized_email,
+              email_confirmed, password_hash, security_stamp, concurrency_stamp,
+              phone_number, phone_number_confirmed, two_factor_enabled, lockout_end,
+              lockout_enabled, access_failed_count, role, ip, browser_fingerprint,
+              last_signed_in_utc, last_visited_utc, register_time_utc, bio,
+              real_name, std_number, exercise_visible, avatar_hash)
+           VALUES
+             ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+              NULL, FALSE, FALSE, NULL, FALSE, 0, $10, $11, NULL,
+              $12, $12, $12, '', '', '', TRUE, NULL)"#,
+    )
+    .bind(id)
+    .bind(&user_name)
+    .bind(&norm_name)
+    .bind(&email)
+    .bind(&norm_email)
+    .bind(session_eligible)
+    .bind(&password_hash)
+    .bind(&security_stamp)
+    .bind(Uuid::new_v4().to_string())
+    .bind(role as i16)
+    .bind(accepted_ip)
+    .bind(now)
+    .execute(&mut *txn)
+    .await;
+    if let Err(error) = insert {
+        return Err(
+            if matches!(&error, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"))
+            {
+                AppError::conflict("Username or email already registered")
+            } else {
+                AppError::internal(error.to_string())
+            },
+        );
+    }
+    let confirmation_token = if status == RegisterStatus::EmailConfirmationRequired {
+        let database_now: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *txn)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        Some(email_confirmation::token_for_registration(
+            st.config.as_ref(),
+            id,
+            &norm_email,
+            &security_stamp,
+            database_now,
+        ))
+    } else {
+        None
+    };
+    txn.commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    if admission == Some(anti_cheat::AdmissionOutcome::Blocked) {
+        // The stable account id is intentionally retained so an administrator's
+        // pair-scoped exemption applies to this same account on its next login.
+        // No session and no successful identity observation are created.
+        return Ok(MessageResponse::new(anti_cheat::block_message(), 403).into_response());
+    }
+
+    if let Some(token) = confirmation_token {
+        // The pending account and signed token state are already durable. SMTP
+        // runs without a database connection or global registration lock; a
+        // delivery failure is recoverable by repeating this authenticated
+        // registration request, which mints a fresh token.
+        email_confirmation::deliver_confirmation(&st, &email, &token).await?;
+    }
+
+    // The bootstrap admin is the sole exception. For every later account,
+    // required email confirmation takes precedence over active-on-register so
+    // enabling it can never silently issue a confirmed session.
 
     // RSCTF `AccountController` audit events: `Account_UserRegisteredLog` on the
     // straight-to-login path, otherwise `Account_UserRegisteredWaitingApprovalLog`
@@ -451,50 +585,6 @@ pub async fn register(
 /// 401 Unauthorized with RSCTF's `Account_IncorrectUserNameOrPassword` message —
 /// returned for both an unknown username and a wrong password so the two cases are
 /// indistinguishable to the client (RSCTF `Unauthorized(…)`, status 401).
-/// RSCTF `BrowserFingerprintRegex` — the decrypted fingerprint must be a 64-char
-/// lowercase-hex SHA-256 digest.
-fn valid_browser_fingerprint(fp: &str) -> bool {
-    fp.len() == 64
-        && fp
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
-
-/// Live `AccountPolicy:EnableBrowserFingerprint` toggle (falls back to the
-/// startup config when the key is absent), mirroring how register reads the other
-/// AccountPolicy keys.
-pub(super) async fn enable_browser_fingerprint(st: &SharedState) -> bool {
-    config::Entity::find_by_id("AccountPolicy:EnableBrowserFingerprint".to_string())
-        .one(&st.db)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|c| c.value)
-        .map(|v| v == "true")
-        // RSCTF `AccountPolicy.EnableBrowserFingerprint` default is false.
-        .unwrap_or(false)
-}
-
-/// Enforce the browser-fingerprint gate RSCTF applies on login/register when
-/// `EnableBrowserFingerprint` is on: reject a request whose fingerprint is missing
-/// or malformed (`Parameter_FingerprintRequired`/`FingerprintInvalid`). NOTE: the
-/// full proof validation (`ValidateBrowserFingerprint` — RSA `DecryptApiData` +
-/// `BrowserFingerprintProofValidator.IsTrusted`) needs the apiPublicKey API-data
-/// encryption subsystem, which rsctf does not port (`api_public_key: None`), so
-/// the client sends the fingerprint in plaintext and only the presence/format is
-/// enforced here.
-pub(super) async fn enforce_browser_fingerprint(
-    st: &SharedState,
-    fingerprint: Option<&str>,
-) -> AppResult<()> {
-    if enable_browser_fingerprint(st).await && !fingerprint.is_some_and(valid_browser_fingerprint) {
-        return Err(AppError::bad_request(
-            "A valid browser fingerprint is required.",
-        ));
-    }
-    Ok(())
-}
-
 pub(super) fn unauthorized_credentials() -> AppError {
     AppError::Coded {
         http: axum::http::StatusCode::UNAUTHORIZED,
@@ -514,15 +604,10 @@ pub async fn login(
     // !VerifyAsync) return BadRequest`), verified FIRST — before the user lookup,
     // so response ordering/timing can't leak account existence. Only enforced when
     // the live `AccountPolicy:UseCaptcha` is on, so captcha-off login is unaffected.
-    let captcha = CaptchaSettings::load(&st.db).await;
-    if captcha.use_captcha
-        && !captcha
-            .service()
-            .verify(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
-            .await?
-    {
-        return Err(AppError::bad_request("Captcha failed"));
-    }
+    let captcha = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
+    let captcha_admission = captcha
+        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .await?;
 
     let credentials_within_bounds =
         model.user_name.len() <= MAX_EMAIL_BYTES && model.password.len() <= MAX_PASSWORD_BYTES;
@@ -575,15 +660,12 @@ pub async fn login(
         return Err(unauthorized_credentials());
     }
 
-    // RSCTF `EnableBrowserFingerprint`: when on, a login must carry a well-formed
-    // browser fingerprint (`^[a-f0-9]{64}$`), else 400.
-    enforce_browser_fingerprint(
+    let policy = anti_cheat::load_policy_flags(st.pg()).await?;
+    let fingerprint = anti_cheat::validate_fingerprint_submission(
         &st,
-        model
-            .fingerprint
-            .as_deref()
-            .map(str::trim)
-            .filter(|f| !f.is_empty()),
+        policy,
+        model.fingerprint.as_deref(),
+        model.fingerprint_proof.as_deref(),
     )
     .await?;
 
@@ -595,87 +677,35 @@ pub async fn login(
         .clone()
         .filter(|stamp| !stamp.is_empty())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let needs_security_stamp = found.security_stamp.as_deref().is_none_or(str::is_empty);
 
     // Capture the client IP and the submitted browser fingerprint. `current_ip`
     // is normalized so it compares equal to a stored `user.ip`; both are used to
     // stamp the user row *and* feed the anti-cheat gate below.
     let current_ip = anti_cheat::client_ip(&headers, Some(peer.ip()));
-    let fingerprint = model
-        .fingerprint
-        .as_ref()
-        .map(|f| f.trim())
-        .filter(|f| !f.is_empty());
-
-    // The pre-update Model — the anti-cheat gate needs the user's id + name (for
-    // self-exclusion, the teammate lookup, and the recorded block row).
-    let user_model = found.clone();
-
-    let mut am: user::ActiveModel = found.into();
-    am.last_signed_in_utc = Set(Utc::now());
-    if needs_security_stamp {
-        am.security_stamp = Set(Some(security_stamp.clone()));
-    }
-    // Persist the login IP / fingerprint (RSCTF `UpdateByHttpContext` +
-    // fingerprint claim). Only overwrite when captured, so a login without a
-    // fingerprint never wipes a previously stored one.
-    if let Some(ip) = current_ip.as_deref() {
-        am.ip = Set(ip.to_string());
-    }
-    if let Some(fp) = fingerprint {
-        am.browser_fingerprint = Set(Some(fp.to_string()));
-    }
-    am.update(&st.db).await?;
-
-    // Anti-cheat login gate (RSCTF `CheckAntiCheatConflictAsync`): deny — and do
-    // NOT issue the session — when the IP/fingerprint collides with a teammate or,
-    // under a global policy, any other recently-active account.
-    let policy = anti_cheat::load_policy_flags(&st.db).await?;
-    if let Some(block) = anti_cheat::check_login_conflict(
-        &st.db,
-        &policy,
-        &user_model,
+    let admission = anti_cheat::admit_existing_user(
+        st.pg(),
+        st.config.as_ref(),
+        id,
+        Some(&user_name),
         current_ip.as_deref(),
-        fingerprint,
+        fingerprint.as_deref(),
+        anti_cheat::IdentitySource::Password,
+        &security_stamp,
+        None,
+        captcha_admission,
     )
-    .await?
-    {
-        return Ok(MessageResponse::new(anti_cheat::block_message(&block), 403).into_response());
+    .await?;
+    if admission == anti_cheat::AdmissionOutcome::Blocked {
+        return Ok(MessageResponse::new(anti_cheat::block_message(), 403).into_response());
     }
 
-    // RSCTF's browser-fingerprint capture point: when the client submits a
-    // non-empty fingerprint, record it in the audit log for the anti-cheat /
-    // suspicion correlation. Best-effort — never blocks the login.
-    if let Some(fp) = model
-        .fingerprint
-        .as_ref()
-        .map(|f| f.trim())
-        .filter(|f| !f.is_empty())
-    {
-        let entry = log_entry::ActiveModel {
-            time_utc: Set(Utc::now()),
-            level: Set("Information".to_string()),
-            logger: Set("fingerprint".to_string()),
-            remote_ip: Set(current_ip.clone()),
-            user_name: Set(Some(user_name.clone())),
-            message: Set(fp.to_string()),
-            status: Set(Some("login".to_string())),
-            ..Default::default()
-        };
-        entry.insert(&st.db).await?;
-    }
-
-    // RSCTF `AccountController` audit event (`Account_UserLogined`): the
-    // human-readable login row shown on `/admin/logs`, emitted on the guaranteed
-    // success path (after the anti-cheat gate, regardless of fingerprint). RSCTF
-    // attaches the submitted fingerprint to this row (`logger.Log(..., fingerprint:
-    // fingerprint)`); it surfaces in the admin Logs table's `fingerprint` column.
-    crate::services::audit::info_with_fingerprint(
+    // Fingerprints are durable only as keyed hashes in IdentityObservations;
+    // never copy their raw value into application logs.
+    crate::services::audit::info(
         &st,
         "AccountController",
         Some(user_name.clone()),
         current_ip.clone(),
-        fingerprint.map(str::to_string),
         format!("User {user_name} logged in"),
     )
     .await;
@@ -890,13 +920,16 @@ pub async fn update(
 
 /// `GET /api/account/fingerprintchallenge` -> `RequestResponseOfBrowserFingerprintChallengeModel`.
 ///
-/// Issues a benign challenge; the register flow accepts any proof.
-pub async fn fingerprint_challenge() -> Wrapped<BrowserFingerprintChallengeModel> {
-    Wrapped::ok(BrowserFingerprintChallengeModel {
-        nonce: Uuid::new_v4().to_string(),
-        required_signals: Vec::new(),
-        expires_in_seconds: 120,
-    })
+/// Issues a short-lived, signed and server-stored one-time challenge.
+pub async fn fingerprint_challenge(
+    State(st): State<SharedState>,
+) -> AppResult<Wrapped<BrowserFingerprintChallengeModel>> {
+    let challenge = anti_cheat::issue_fingerprint_challenge(&st).await?;
+    Ok(Wrapped::ok(BrowserFingerprintChallengeModel {
+        nonce: challenge.nonce,
+        required_signals: challenge.required_signals,
+        expires_in_seconds: challenge.expires_in_seconds,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -954,3 +987,7 @@ pub(super) async fn load_user(st: &SharedState, id: Uuid) -> AppResult<user::Mod
         .await?
         .ok_or_else(|| AppError::not_found("User not found"))
 }
+
+#[cfg(test)]
+#[path = "registration_policy_tests.rs"]
+mod registration_policy_tests;

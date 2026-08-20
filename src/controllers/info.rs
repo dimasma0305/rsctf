@@ -254,8 +254,10 @@ pub async fn get_post(
 /// matches the provider the server verifies against; the `provider`/`siteKey`
 /// come straight from the admin config (independent of the `UseCaptcha`
 /// enforcement toggle, mirroring RSCTF's `ClientInfo(Config)`).
-pub async fn get_captcha(State(st): State<SharedState>) -> RequestResponse<ClientCaptchaInfoModel> {
-    let settings = CaptchaSettings::load(&st.db).await;
+pub async fn get_captcha(
+    State(st): State<SharedState>,
+) -> AppResult<RequestResponse<ClientCaptchaInfoModel>> {
+    let settings = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
     // RSCTF `InfoController` (line 148): advertise the captcha provider to the
     // client ONLY when AccountPolicy.UseCaptcha is enabled. Otherwise the
     // login/register captcha widget still renders — and for HashPow it grinds a
@@ -265,7 +267,10 @@ pub async fn get_captcha(State(st): State<SharedState>) -> RequestResponse<Clien
     } else {
         ("None".to_string(), None)
     };
-    RequestResponse::ok(ClientCaptchaInfoModel { type_, site_key })
+    Ok(RequestResponse::ok(ClientCaptchaInfoModel {
+        type_,
+        site_key,
+    }))
 }
 
 /// `GET /api/captcha/powchallenge` — proof-of-work challenge.
@@ -284,7 +289,7 @@ pub async fn get_pow_challenge(
     // The provider + difficulty come from the LIVE captcha config (the same
     // source the verify step reads), so the client solves the PoW at exactly the
     // difficulty the server later checks against.
-    let settings = CaptchaSettings::load(&st.db).await;
+    let settings = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
     let difficulty = if settings.provider == "HashPow" {
         settings.difficulty
     } else {

@@ -48,6 +48,11 @@ pub struct CurrentUser {
     pub id: Uuid,
     pub role: Role,
     pub name: String,
+    /// Security stamp carried by the verified JWT. It is request-local
+    /// authorization state and must never be serialized into responses or the
+    /// shared live-authorization cache.
+    #[serde(skip)]
+    pub(crate) security_stamp: String,
 }
 
 /// Bounded-cache representation of the four-column authorization projection.
@@ -142,6 +147,7 @@ async fn load_cached_authorization(
                             id,
                             role,
                             name: name.unwrap_or_default(),
+                            security_stamp: String::new(),
                         },
                         security_stamp,
                     }
@@ -173,7 +179,7 @@ fn authorize_cached_entry(
     expected_stamp: &str,
 ) -> Result<CurrentUser, AppError> {
     let CachedAuthorization::Found {
-        user,
+        mut user,
         security_stamp,
     } = entry
     else {
@@ -185,6 +191,7 @@ fn authorize_cached_entry(
     if user.role == Role::Banned {
         return Err(AppError::Forbidden);
     }
+    user.security_stamp = expected_stamp.to_owned();
     Ok(user)
 }
 
@@ -395,12 +402,14 @@ mod tests {
                 id,
                 role: Role::Monitor,
                 name: "live-name".to_string(),
+                security_stamp: String::new(),
             },
             security_stamp: Some("live-stamp".to_string()),
         };
         let user = authorize_cached_entry(entry, id, "live-stamp").unwrap();
         assert_eq!(user.role, Role::Monitor);
         assert_eq!(user.name, "live-name");
+        assert_eq!(user.security_stamp, "live-stamp");
     }
 
     #[test]
@@ -411,6 +420,7 @@ mod tests {
                 id,
                 role,
                 name: "player".to_string(),
+                security_stamp: String::new(),
             },
             security_stamp: Some("new-stamp".to_string()),
         };

@@ -50,6 +50,7 @@ tests/load/
   combined-scoreboard.js pure Overall-board normalization contract validator
   team-clients.mjs  one WireGuard+k6 container per team, plus verified teardown
   observe.mjs       read-only health/resource/evidence sampler for long event runs
+  cheat-acceptance.mjs isolated small anti-cheat acceptance for a fresh CI database
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
   polled-read.mjs   read-only broad-token fixed-rate polling smoke
   asset-download.mjs fixed-rate range/resume delivery benchmark
@@ -1422,9 +1423,9 @@ TARGET=https://tcp.1pc.tf FLEET=100 DURATION=1h KEEP=1 RETAIN_EVENT=1 \
 
 With `INTEGRATED_CHEAT_SIMULATION=1`, the anti-cheat drill starts at the chosen
 event-progress fraction (default `0.45`) while ordinary team clients continue playing.
-Its schema-v3 result is bound to the same run, event, challenge, child-process window,
-six simulated offenders, and clean-control cohort. The exact stolen-flag,
-wrong-submission, honeypot, risk-band, duplicate-evidence, and clean-control checks must
+Its schema-v4 result is bound to the same run, event, challenge, child-process window,
+five simulated offenders, and clean-control cohort. The exact stolen-flag,
+wrong-submission, raw-honeypot, risk-band, duplicate-evidence, and clean-control checks must
 all pass before the result is merged into lifecycle evidence. Use a value strictly
 between `0.1` and `0.9`; the drill requires at least 100 mixed-event teams.
 
@@ -1444,6 +1445,65 @@ attachment upload, and other platform-wide operations that are not player decisi
 
 ### Retained anti-cheat drill
 
+Regular CI runs `npm run cheat-acceptance` against a freshly migrated loopback-only
+PostgreSQL/Redis/application stack. That compact fixture pins the canonical 38-rule
+default profile, triggers real stolen-flag, 40-wrong-attempt, and authenticated honeypot
+paths, and requires the actionable submission/outbox evidence plus exact raw honeypot
+telemetry before finalization and the first report read. It
+then waits for the one-second CI background reconciliation interval and finalization grace,
+and checks exact events, tier
+ceilings, scores, bands, player verdict redaction, the complete detector-capability
+inventory (including each rule's exact status and scope), exact collusion projection,
+an empty abnormal-solve projection for telemetry-only fast timing, and that
+`GET /cheatreport` leaves the evidence ledger unchanged. Benign
+controls cover an owner submitting its own dynamic flag, 39 wrong attempts with cadence
+breaks, a solved 40-attempt window, matched download/container solves on both sides of the
+strict two-minute fast-solve boundary, and a correct post-game practice submission. The
+fast-timing pairs must retain their matching immutable grading-time interaction snapshots,
+but kinds 12–14 are telemetry-only and must create no suspicion event, report row, or score.
+DirectedSolving, ClusteredRegistration, HoneypotHit, HoneypotProtocolHit, and HoneypotChain
+are likewise pinned to telemetry-only Context/0 and must not appear in the suspicion
+ledger. Shared-network
+coverage uses password-login admission observations: a four-team address must produce
+redacted, zero-score context while a five-team NAT group must be absent from both evidence
+and report identity sections. Four NAT observations use the public login path. The fifth is
+admitted through the public login endpoint before the configured end under the production
+`Games FOR SHARE` fence; an isolated, user-scoped database latency trigger keeps that real
+transaction uncommitted through the one-second grace, then releases it so the final snapshot
+sees all five. A separate two-team game with no held writer proves that neither sealing nor
+final-only network evidence occurs during grace. Its deadline is phase-aligned to a higher-ID
+active sentinel; the sentinel's next recorded attempt proves the worker considered the ended
+game during the grace window, so timer jitter cannot create a false pass. A real login initiated after the deadline
+must create only global identity history. Together these controls prevent a
+transient two-to-four-team prefix while a legitimate NAT population is still committing.
+An `X-Real-IP`-only login is also required to resolve to the trusted loopback peer; shared
+identity journeys provide explicit `X-Forwarded-For` instead.
+
+Fixture account and helper-membership inserts in both drills use the same transaction-local
+identity-neutral provisioning marker as trusted imports, while an otherwise identical
+unmarked account insert must fail. A public
+`/api/team/accept` journey obtains and consumes a fresh browser-fingerprint proof and commits
+its admission observation with the membership transition.
+
+The compact brute fixture seeds one mature 40-attempt/60-second window, then sends one
+real public wrong-answer request to exercise the durable submission/outbox path without
+waiting five minutes in CI. A separate fresh 39-attempt window must remain clean. Another
+40-attempt window and its canonical suppressing solve are inserted once with immutable
+historical source times; it must remain clean after a real public reconciliation kick. The
+three authenticated honeypot requests use a run-unique
+User-Agent and must retain exactly three raw `HoneypotHits` rows covering the exact baits.
+Every row must preserve the authenticated `user_id` while keeping `game_id` and
+`participation_id` null. The rows must create no evaluation job, suspicion event, report
+entry, or score. TCP honeypot hits remain anonymous raw telemetry; their listener metadata
+and persistence are covered by backend tests because compact CI does not start a TCP
+honeypot listener.
+
+The compact command is deliberately hard-gated by `CHEAT_ACCEPTANCE_ISOLATED=1`,
+`RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS=1`, a
+loopback `TARGET`, a loopback `RSCTF_LOAD_DATABASE_URL` whose database name contains
+`test` or `acceptance`, and an empty game table. It is destructive only to that disposable
+database and is not a substitute for the full retained event drill below.
+
 The anti-cheat scenario runs only against the fresh lifecycle namespace. It requires at
 least 100 mixed-event teams and two explicit safety switches: `CHEAT_SIMULATION=1`
 authorizes the controlled bad behaviour, while `KEEP=1` guarantees the event remains
@@ -1451,30 +1511,48 @@ available for review.
 
 ```sh
 TEAMS_JEO=20 TEAMS_AD=100 EVENT_DURATION_SECONDS=86400 npm run provision
+# Start while at least six minutes remain for the immutable H1 maturity window.
 CHEAT_SIMULATION=1 KEEP=1 TARGET=https://tcp.1pc.tf npm run cheat
 ```
 
-The drill freezes the roster and evidence baseline before it mutates the event. It selects
-six participants with no prior actionable evidence, submits four
+The full command remains the manual/pre-release and scheduled-lab drill. CI does not run
+it on `tcp.1pc.tf`: a safe scheduled run must first provision its own disposable 100-team
+stack and retained evidence namespace, and this repository workflow has no such isolated
+host or credentials. The drill freezes the roster and evidence baseline before it mutates
+the event. It selects
+five participants with no prior actionable evidence, submits four
 other-team dynamic flags, coordinates 40 rapid wrong submissions from one team across
-five authenticated accounts, and visits three same-origin honeypot routes from another
-team. Every other frozen roster member is a clean control, including a team with
-actionable evidence from ordinary play before the baseline. It runs the monitor sweep
-three times concurrently, then
-requires `StolenFlag`, `HighWrongRate`, `AutomatedPattern`, `HoneypotHit`, and
-`HoneypotChain` evidence, the expected risk bands, no actionable clean-team false
-positive, no duplicate evidence, and no unexpected HTTP response. Context-only network
+five authenticated accounts, and visits three same-origin honeypot routes from a separate
+zero-score clean team. Honeypot provenance uses `ORIGIN`, then the lifecycle-wide
+`BROWSER_ORIGIN`, then `TARGET`, so a direct local listener can still declare its canonical
+browser origin. Every
+other frozen roster member is a clean control, including a team with
+actionable evidence from ordinary play before the baseline. It waits for the durable
+evaluator and background reconciler, then exercises concurrent read-only report requests.
+It requires `StolenFlag`, `HighWrongRate`, and `AutomatedPattern` evidence, exact risk
+scoring under the installation's configured rule weights, and three tagged raw honeypot
+rows with authenticated user attribution but null competitive attribution. Honeypot hits
+must create zero outbox jobs, suspicion events, or report score. The drill also
+requires no actionable clean-team false
+positive, no duplicate evidence, and no unexpected HTTP response. Direct request/outbox
+signals must exist before any report read; background-only signals are awaited separately,
+and the final report must reconcile to the independently scored ledger without mutating it.
+HighWrongRate is intentionally pending during that immediate phase: after the raw/outbox
+checks, the disposable orchestrator waits for the immutable 40-submission window to mature
+and lets the normal reconciler emit H1. The runner fails rather than changing the game clock,
+rewriting evidence timestamps, or weakening the detector's solve-suppression grace period.
+Context-only network
 correlations remain non-accusatory; shared addresses spanning more than four teams are
 suppressed as event-NAT/campus noise.
 
-For a 100-team integrated run, the result must name exactly six offenders and all 94
+For a 100-team integrated run, the result must name exactly five offenders and all 95
 controls; a standalone run covers the exact non-offender complement of its frozen roster.
 Each run baselines submissions, honeypot rows, and suspicion events before it creates any
 drill fixture or starts k6. It
 then requires exactly four actor-and-answer-matched stolen submissions, 40 distinct
-actor-and-answer-matched wrong submissions, three total rows covering the three expected
-baits, and new detector evidence bound to those submissions, actors, challenge, and
-evidence keys. The five fixture-only bot accounts move to the selected brute-force team
+actor-and-answer-matched wrong submissions, three tagged raw rows covering the three
+expected baits, and new detector evidence bound only to the actionable submissions,
+actors, challenge, and evidence keys. The five fixture-only bot accounts move to the selected brute-force team
 and receive fresh security stamps, which creates fresh authenticated limiter partitions
 without weakening the production rate policy. The fresh-actor selection and exact
 post-baseline evidence checks prevent retained findings from making a broken rerun pass.

@@ -64,9 +64,15 @@ async fn async_main() -> anyhow::Result<()> {
     if role != RuntimeRole::Migrate {
         config.validate()?;
         rsctf::services::anti_cheat::validate_trusted_proxy_config()?;
+        rsctf::services::suspicion::validate_evaluation_reconciler_config()?;
         if capabilities.round_engine {
             rsctf::services::ad_engine::validate_flag_delivery_configuration()?;
         }
+    } else {
+        // m0090's legacy observation bootstrap is keyed and runs as part of the
+        // migration job, so this role must receive the same stable secret as
+        // every serving replica.
+        config.validate_identity_hash_key()?;
     }
     tracing::info!(
         bind = %config.bind_addr,
@@ -77,25 +83,46 @@ async fn async_main() -> anyhow::Result<()> {
 
     // --- database ---
     let db = extensions::database::connect(&config.database_url).await?;
-    let run_migrations = role == RuntimeRole::Migrate
-        || (role == RuntimeRole::All && std::env::var("RSCTF_MIGRATE").as_deref() != Ok("0"));
+    let run_migrations =
+        should_run_migrations(role, std::env::var("RSCTF_MIGRATE").as_deref() == Ok("0"));
     if run_migrations {
         tracing::info!("applying migrations");
+        rsctf::migrations::ensure_exclusive_cutover_ready(&db, role == RuntimeRole::Migrate)
+            .await?;
         Migrator::up(&db, None).await?;
-    } else if role != RuntimeRole::All {
-        // Split roles are never migration owners. Refuse to start against a
-        // stale or newer ledger so they cannot become ready with code/schema
-        // skew while an operator has skipped (or is still running) migrate.
+    } else {
+        // Every process that skips migrations, including the combined role
+        // when RSCTF_MIGRATE=0, must refuse a stale or newer schema.
         rsctf::migrations::ensure_schema_current(&db).await?;
     }
-    // Bootstrap repairs are owned by one combined/control process or the
-    // migration job. Active-active engine replicas must not race legacy
+    let bootstrapped_identities = if run_migrations {
+        rsctf::services::anti_cheat::bootstrap_legacy_identity_observations(
+            db.get_postgres_connection_pool(),
+            config.as_ref(),
+        )
+        .await?
+    } else {
+        rsctf::services::anti_cheat::ensure_identity_bootstrap_complete(
+            db.get_postgres_connection_pool(),
+            config.as_ref(),
+        )
+        .await?;
+        0
+    };
+    if bootstrapped_identities > 0 {
+        tracing::info!(
+            observations = bootstrapped_identities,
+            "bootstrapped keyed legacy identity observations"
+        );
+    }
+    // Default-rule/build repairs are owned by one combined/control process or
+    // the migration job. Active-active engine replicas must not race legacy
     // read-then-insert backfills during simultaneous startup.
     if matches!(
         role,
         RuntimeRole::All | RuntimeRole::Control | RuntimeRole::Migrate
     ) {
-        let _ = rsctf::services::suspicion::seed_default_rules(&db).await;
+        rsctf::services::suspicion::seed_default_rules(&db).await?;
         let _ = rsctf::controllers::edit::backfill_build_records(&db).await;
     }
     if role == RuntimeRole::Migrate {
@@ -533,6 +560,15 @@ fn start_background_services(
     use rsctf::services::cron::{self, RoundSchedulerScope};
 
     let mut required = Vec::new();
+    if owns_suspicion_reconciliation(role) {
+        required.push(RequiredTask::Unit(
+            "suspicion evaluation reconciler",
+            rsctf::services::suspicion::start_evaluation_reconciler(
+                state.clone(),
+                shutdown.clone(),
+            ),
+        ));
+    }
     if let Some(worker_plane) = worker_plane {
         let service = worker_plane.service.clone();
         required.push(RequiredTask::Fallible(
@@ -657,6 +693,17 @@ fn start_background_services(
     supervise_background_tasks(required, optional, shutdown)
 }
 
+fn owns_suspicion_reconciliation(role: RuntimeRole) -> bool {
+    matches!(
+        role,
+        RuntimeRole::All | RuntimeRole::Control | RuntimeRole::Engine
+    )
+}
+
+fn should_run_migrations(role: RuntimeRole, combined_migrations_disabled: bool) -> bool {
+    role == RuntimeRole::Migrate || (role == RuntimeRole::All && !combined_migrations_disabled)
+}
+
 fn supervise_background_tasks(
     required: Vec<RequiredTask>,
     optional: Vec<tokio::task::JoinHandle<()>>,
@@ -775,5 +822,23 @@ mod startup_tests {
     fn installs_an_explicit_tls_crypto_provider() {
         install_tls_crypto_provider().unwrap();
         assert!(tokio_rustls::rustls::crypto::CryptoProvider::get_default().is_some());
+    }
+
+    #[test]
+    fn every_supported_control_topology_owns_suspicion_reconciliation() {
+        assert!(owns_suspicion_reconciliation(RuntimeRole::All));
+        assert!(owns_suspicion_reconciliation(RuntimeRole::Control));
+        assert!(owns_suspicion_reconciliation(RuntimeRole::Engine));
+        assert!(!owns_suspicion_reconciliation(RuntimeRole::Web));
+        assert!(!owns_suspicion_reconciliation(RuntimeRole::Network));
+        assert!(!owns_suspicion_reconciliation(RuntimeRole::Migrate));
+    }
+
+    #[test]
+    fn combined_role_with_migrations_disabled_takes_schema_verification_path() {
+        assert!(!should_run_migrations(RuntimeRole::All, true));
+        assert!(should_run_migrations(RuntimeRole::All, false));
+        assert!(should_run_migrations(RuntimeRole::Migrate, true));
+        assert!(!should_run_migrations(RuntimeRole::Web, false));
     }
 }

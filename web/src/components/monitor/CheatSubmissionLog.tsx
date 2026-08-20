@@ -1,11 +1,14 @@
 import {
   Accordion,
+  Alert,
   Avatar,
   Badge,
   Box,
+  Button,
   Center,
   Group,
   Input,
+  Loader,
   Paper,
   ScrollArea,
   Stack,
@@ -13,30 +16,30 @@ import {
   Table,
   Text,
   Title,
-  Loader,
   useMantineTheme,
   VisuallyHidden,
 } from '@mantine/core'
 import { useLocalStorage } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
-import { mdiCheck, mdiKeyAlert, mdiTarget } from '@mdi/js'
+import { mdiAlertCircle, mdiCheck, mdiKeyAlert, mdiRefresh, mdiTarget } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useState } from 'react'
+import { FC, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ScrollingText } from '@Components/ScrollingText'
 import { RequireRole } from '@Components/WithRole'
 import { ParticipationStatusControl } from '@Components/admin/ParticipationStatusControl'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { useLanguage } from '@Utils/I18n'
-import { showErrorMsg } from '@Utils/Shared'
+import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { useParticipationStatusMap } from '@Utils/Shared'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
-import { OnceSWRConfig } from '@Hooks/useConfig'
 import { useUserRole } from '@Hooks/useUser'
 import api, { CheatInfoModel, ParticipationEditModel, ParticipationStatus, Role } from '@Api'
 import classes from '@Styles/Accordion.module.css'
 import misc from '@Styles/Misc.module.css'
+
+const CHEAT_INFO_REFRESH_INTERVAL_MS = 10_000
 
 enum CheatType {
   Submit = 'Submit',
@@ -61,6 +64,7 @@ const CheatTypeMap = new Map([
 ])
 
 interface CheatSubmissionInfo {
+  key: string
   time?: dayjs.Dayjs
   answer?: string
   user?: string
@@ -81,13 +85,44 @@ interface CheatTeamInfo {
   submissionInfo: Set<CheatSubmissionInfo>
 }
 
+interface KeyedCheatInfo {
+  info: CheatInfoModel
+  key: string
+}
+
+/**
+ * The API does not expose a submission ID, so build a deterministic identity from
+ * every wire field that identifies an incident. The occurrence suffix keeps exact
+ * duplicate records collision-free without tying unrelated rows to their sort index.
+ */
+const ToKeyedCheatInfo = (cheatInfo: CheatInfoModel[]): KeyedCheatInfo[] => {
+  const occurrences = new Map<string, number>()
+
+  return cheatInfo.map((info) => {
+    const signature = JSON.stringify([
+      info.submission?.time ?? null,
+      info.submission?.answer ?? null,
+      info.submission?.status ?? null,
+      info.submission?.user ?? null,
+      info.submission?.team ?? null,
+      info.submission?.challenge ?? null,
+      info.ownedTeam?.id ?? null,
+      info.submitTeam?.id ?? null,
+    ])
+    const occurrence = occurrences.get(signature) ?? 0
+    occurrences.set(signature, occurrence + 1)
+
+    return { info, key: JSON.stringify([signature, occurrence]) }
+  })
+}
+
 const ToCheatTeamInfo = (cheatInfo: CheatInfoModel[]) => {
   const cheatTeamInfo = new Map<number, CheatTeamInfo>()
-  for (const info of cheatInfo) {
+  for (const { info, key } of ToKeyedCheatInfo(cheatInfo)) {
     const { ownedTeam, submitTeam, submission } = info
     if (!ownedTeam || !submitTeam || !submission) continue
 
-    const time = dayjs(submission.time)
+    const time = submission.time === undefined ? undefined : dayjs(submission.time)
 
     for (const part of [ownedTeam, submitTeam]) {
       if (!cheatTeamInfo.has(part.id ?? -1)) {
@@ -115,6 +150,7 @@ const ToCheatTeamInfo = (cheatInfo: CheatInfoModel[]) => {
     }
 
     const cheatSubmissionInfo: CheatSubmissionInfo = {
+      key: JSON.stringify([key, CheatType.Owned]),
       time: time,
       answer: submission.answer,
       user: submission.user,
@@ -131,6 +167,7 @@ const ToCheatTeamInfo = (cheatInfo: CheatInfoModel[]) => {
 
     const cheatSubmissionSourceInfo: CheatSubmissionInfo = {
       ...cheatSubmissionInfo,
+      key: JSON.stringify([key, CheatType.Submit]),
       cheatType: CheatType.Submit,
       relatedTeam: ownedTeam.team?.name,
     }
@@ -168,7 +205,7 @@ const CheatSubmissionInfo: FC<CheatSubmissionInfoProps> = (props) => {
             <Icon path={type.iconPath} size={1} color={theme.colors[type.color][6]} aria-hidden />
           </Box>
           <Badge size="sm" color="indigo">
-            {dayjs(submissionInfo.time).locale(locale).format('SL HH:mm:ss')}
+            {submissionInfo.time ? submissionInfo.time.locale(locale).format('SL HH:mm:ss') : '—'}
           </Badge>
           <ScrollingText text={submissionInfo.relatedTeam ?? ''} fw="bold" maw={150} />
         </Group>
@@ -233,7 +270,7 @@ const CheatInfoItem: FC<CheatInfoItemProps> = (props) => {
                   )}
                 </Group>
                 <Text size="sm" lineClamp={1}>
-                  {dayjs(cheatTeamInfo.lastSubmitTime).locale(locale).format('SL LTS')}
+                  {cheatTeamInfo.lastSubmitTime ? cheatTeamInfo.lastSubmitTime.locale(locale).format('SL LTS') : '—'}
                 </Text>
               </Stack>
             </Group>
@@ -261,13 +298,37 @@ const CheatInfoItem: FC<CheatInfoItemProps> = (props) => {
       <Accordion.Panel>
         <Stack gap="sm">
           {[...cheatTeamInfo.submissionInfo]
-            .sort((a, b) => (b.time?.unix() ?? 0) - (a.time?.unix() ?? 0))
+            .sort((a, b) => (b.time?.valueOf() ?? 0) - (a.time?.valueOf() ?? 0))
             .map((submissionInfo) => (
-              <CheatSubmissionInfo key={submissionInfo.time?.unix()} submissionInfo={submissionInfo} />
+              <CheatSubmissionInfo key={submissionInfo.key} submissionInfo={submissionInfo} />
             ))}
         </Stack>
       </Accordion.Panel>
     </Accordion.Item>
+  )
+}
+
+interface CheatSubmissionEmptyStateProps {
+  height: string
+}
+
+const CheatSubmissionEmptyState: FC<CheatSubmissionEmptyStateProps> = ({ height }) => {
+  const { t } = useTranslation()
+
+  return (
+    <Center h={height}>
+      <Stack gap={0} align="center" role="status" aria-live="polite">
+        <Title order={3} ta="center">
+          {t('game.content.cheat.submissions_empty_title', 'No suspicious flag submissions yet')}
+        </Title>
+        <Text c="dimmed" ta="center">
+          {t(
+            'game.content.cheat.submissions_empty_description',
+            'New flag-sharing incidents will appear here automatically.'
+          )}
+        </Text>
+      </Stack>
+    </Center>
   )
 }
 
@@ -284,15 +345,18 @@ const CheatInfoTeamView: FC<CheatInfoTeamViewProps> = (props) => {
   const { t } = useTranslation()
 
   return (
-    <ScrollArea offsetScrollbars h="calc(100vh - 180px)">
+    <ScrollArea
+      offsetScrollbars
+      h="calc(100vh - 180px)"
+      viewportProps={{
+        role: 'region',
+        tabIndex: 0,
+        'aria-label': t('game.label.cheat_info.team_view_region', 'Suspicious submissions grouped by team'),
+      }}
+    >
       <Stack gap="xs" w="100%">
-        {!cheatTeamInfo || cheatTeamInfo?.size === 0 ? (
-          <Center h="calc(100vh - 200px)">
-            <Stack gap={0}>
-              <Title order={2}>{t('game.content.no_cheat.title')}</Title>
-              <Text>{t('game.content.no_cheat.comment')}</Text>
-            </Stack>
-          </Center>
+        {cheatTeamInfo.size === 0 ? (
+          <CheatSubmissionEmptyState height="calc(100vh - 200px)" />
         ) : (
           <Accordion multiple variant="contained" chevronPosition="left" classNames={classes} className={classes.root}>
             {[...cheatTeamInfo.values()]
@@ -322,10 +386,10 @@ const CheatInfoTableView: FC<CheatInfoTableViewProps> = (props) => {
   const { t } = useTranslation()
   const { locale } = useLanguage()
 
-  const rows = props.cheatInfo
-    .sort((a, b) => (dayjs(b.submission?.time).unix() ?? 0) - (dayjs(a.submission?.time).unix() ?? 0))
-    .map((item, i) => (
-      <Table.Tr key={`${item.submission?.time}@${i}`}>
+  const rows = ToKeyedCheatInfo(props.cheatInfo)
+    .sort((a, b) => (b.info.submission?.time ?? 0) - (a.info.submission?.time ?? 0))
+    .map(({ info: item, key }) => (
+      <Table.Tr key={key}>
         <Table.Td ff="monospace">
           <Badge size="sm" color="indigo">
             {dayjs(item.submission?.time).locale(locale).format('SL HH:mm:ss')}
@@ -370,7 +434,15 @@ const CheatInfoTableView: FC<CheatInfoTableViewProps> = (props) => {
 
   return (
     <Paper shadow="md" p="md">
-      <ScrollArea offsetScrollbars h="calc(100vh - 200px)">
+      <ScrollArea
+        offsetScrollbars
+        h="calc(100vh - 200px)"
+        viewportProps={{
+          role: 'region',
+          tabIndex: 0,
+          'aria-label': t('game.label.cheat_info.submission_log_caption', 'Suspicious flag submission log'),
+        }}
+      >
         <Table className={classes.table}>
           <Table.Caption>
             <VisuallyHidden>
@@ -402,7 +474,17 @@ const CheatInfoTableView: FC<CheatInfoTableViewProps> = (props) => {
               </Table.Th>
             </Table.Tr>
           </Table.Thead>
-          <Table.Tbody>{rows}</Table.Tbody>
+          <Table.Tbody>
+            {rows.length === 0 ? (
+              <Table.Tr>
+                <Table.Td colSpan={7}>
+                  <CheatSubmissionEmptyState height="calc(100vh - 300px)" />
+                </Table.Td>
+              </Table.Tr>
+            ) : (
+              rows
+            )}
+          </Table.Tbody>
         </Table>
       </ScrollArea>
     </Paper>
@@ -414,10 +496,23 @@ interface CheatSubmissionLogProps {
 }
 
 export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
-  const { data: cheatInfo } = api.game.useGameCheatInfo(gameId, OnceSWRConfig)
+  const {
+    data: cheatInfo,
+    error,
+    isLoading,
+    isValidating,
+    mutate,
+  } = api.game.useGameCheatInfo(gameId, {
+    refreshInterval: CHEAT_INFO_REFRESH_INTERVAL_MS,
+    revalidateOnFocus: true,
+    revalidateOnReconnect: true,
+    refreshWhenHidden: false,
+    refreshWhenOffline: false,
+    shouldRetryOnError: false,
+    keepPreviousData: false,
+  })
 
   const [disabled, setDisabled] = useState(false)
-  const [cheatTeamInfo, setCheatTeamInfo] = useState<Map<number, CheatTeamInfo>>()
   const [teamView, setTeamView] = useLocalStorage({
     key: 'cheat-info-team-view',
     defaultValue: true,
@@ -425,27 +520,35 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
   })
 
   const { t } = useTranslation()
+  const cheatTeamInfo = useMemo(() => ToCheatTeamInfo(cheatInfo ?? []), [cheatInfo])
 
-  useEffect(() => {
-    if (!cheatInfo) return
-
-    setCheatTeamInfo(ToCheatTeamInfo(cheatInfo))
-  }, [cheatInfo])
+  const refresh = async () => {
+    try {
+      await mutate()
+    } catch {
+      // SWR exposes the request error on the next render.
+    }
+  }
 
   const setParticipation = async (id: number, model: ParticipationEditModel) => {
     setDisabled(true)
     try {
       await api.admin.adminParticipation(id, model)
-      const current = cheatTeamInfo?.get(id)
-      if (cheatTeamInfo && current) {
-        setCheatTeamInfo(
-          cheatTeamInfo.set(id, {
-            ...current,
-            // only update status in cheatTeamInfo
-            status: model.status ?? current.status,
-          })
-        )
-      }
+      await mutate(
+        (current) =>
+          (current ?? []).map((info) => ({
+            ...info,
+            ownedTeam:
+              info.ownedTeam?.id === id
+                ? { ...info.ownedTeam, status: model.status ?? info.ownedTeam.status }
+                : info.ownedTeam,
+            submitTeam:
+              info.submitTeam?.id === id
+                ? { ...info.submitTeam, status: model.status ?? info.submitTeam.status }
+                : info.submitTeam,
+          })),
+        { revalidate: false }
+      )
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.participation.updated'),
@@ -458,12 +561,56 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
     }
   }
 
-  if (!cheatInfo) {
-    return <Loader aria-label={t('game.label.cheat_info.loading', 'Loading suspicious submissions')} />
+  if (error && !cheatInfo) {
+    return (
+      <Alert
+        color="red"
+        variant="light"
+        role="alert"
+        icon={<Icon path={mdiAlertCircle} size={1} aria-hidden />}
+        title={t('game.content.cheat.submissions_load_failed_title', 'Failed to load suspicious submissions')}
+      >
+        <Stack gap="sm" align="flex-start">
+          <Text size="sm">{tryGetErrorMsg(error, t)}</Text>
+          <Button size="xs" variant="outline" color="red" loading={isValidating} onClick={() => void refresh()}>
+            {t('common.button.retry', 'Retry')}
+          </Button>
+        </Stack>
+      </Alert>
+    )
+  }
+
+  if (isLoading || !cheatInfo) {
+    return (
+      <Center h="30vh">
+        <Stack align="center" gap="sm" role="status" aria-live="polite">
+          <Loader aria-hidden="true" />
+          <Text c="dimmed" size="sm">
+            {t('game.label.cheat_info.loading', 'Loading suspicious submissions…')}
+          </Text>
+        </Stack>
+      </Center>
+    )
   }
 
   return (
     <Stack gap="md">
+      {error && (
+        <Alert
+          color="red"
+          variant="light"
+          role="alert"
+          icon={<Icon path={mdiAlertCircle} size={1} aria-hidden />}
+          title={t('game.content.cheat.submissions_refresh_failed_title', 'Could not refresh suspicious submissions')}
+        >
+          <Stack gap="sm" align="flex-start">
+            <Text size="sm">{tryGetErrorMsg(error, t)}</Text>
+            <Button size="xs" variant="outline" color="red" loading={isValidating} onClick={() => void refresh()}>
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Stack>
+        </Alert>
+      )}
       <Group justify="space-between" w="100%">
         <Switch
           label={SwitchLabel(
@@ -473,15 +620,22 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
           checked={teamView}
           onChange={(e) => setTeamView(e.currentTarget.checked)}
         />
+        <Button
+          size="xs"
+          variant="subtle"
+          leftSection={<Icon path={mdiRefresh} size={0.8} aria-hidden />}
+          loading={isValidating}
+          aria-busy={isValidating}
+          aria-label={t('game.label.cheat_info.refresh', 'Refresh suspicious submissions')}
+          onClick={() => void refresh()}
+        >
+          {t('game.button.cheat_info.refresh', 'Refresh')}
+        </Button>
       </Group>
       {teamView ? (
-        <CheatInfoTeamView
-          disabled={disabled}
-          cheatTeamInfo={cheatTeamInfo ?? new Map()}
-          setParticipation={setParticipation}
-        />
+        <CheatInfoTeamView disabled={disabled} cheatTeamInfo={cheatTeamInfo} setParticipation={setParticipation} />
       ) : (
-        <CheatInfoTableView cheatInfo={cheatInfo ?? []} />
+        <CheatInfoTableView cheatInfo={cheatInfo} />
       )}
     </Stack>
   )

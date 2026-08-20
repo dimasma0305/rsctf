@@ -18,6 +18,7 @@ pub mod git_sync;
 pub mod health;
 pub mod honeypot_listener;
 pub mod k8s;
+pub(crate) mod live_roster;
 pub mod mail;
 pub(crate) mod participation_evidence;
 pub mod proxy_admission;

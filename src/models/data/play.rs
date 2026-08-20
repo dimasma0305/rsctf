@@ -2,6 +2,7 @@
 
 pub mod participation {
     use crate::utils::enums::ParticipationStatus;
+    use chrono::{DateTime, Utc};
     use sea_orm::entity::prelude::*;
     use serde::{Deserialize, Serialize};
 
@@ -17,6 +18,8 @@ pub mod participation {
         pub team_id: i32,
         pub division_id: Option<i32>,
         pub suspicion_score: i32,
+        #[serde(skip)]
+        pub competitive_admitted_at_utc: Option<DateTime<Utc>>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -58,6 +61,20 @@ pub mod submission {
         pub participation_id: i32,
         pub game_id: i32,
         pub challenge_id: i32,
+        #[serde(skip)]
+        pub submit_remote_ip_hash: Option<Vec<u8>>,
+        #[serde(skip)]
+        pub container_id: Option<Uuid>,
+        #[serde(skip)]
+        pub container_last_operation_at_submit: Option<DateTime<Utc>>,
+        #[serde(skip)]
+        pub container_was_loaded_at_submit: Option<bool>,
+        #[serde(skip)]
+        pub first_open_at_submit: Option<DateTime<Utc>>,
+        #[serde(skip)]
+        pub first_download_at_submit: Option<DateTime<Utc>>,
+        #[serde(skip)]
+        pub first_container_start_at_submit: Option<DateTime<Utc>>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -160,6 +177,7 @@ pub mod first_solve {
 }
 
 pub mod cheat_info {
+    use chrono::{DateTime, Utc};
     use sea_orm::entity::prelude::*;
     use serde::{Deserialize, Serialize};
 
@@ -172,6 +190,49 @@ pub mod cheat_info {
         pub submit_team_id: i32,
         pub source_team_id: i32,
         pub submission_id: i32,
+        pub submit_participation_id: i32,
+        pub source_participation_id: i32,
+        pub challenge_id: i32,
+        pub evidence_key: String,
+        pub observed_at_utc: DateTime<Utc>,
+        pub evidence_payload: Json,
+        pub evidence_version: i16,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+pub mod suspicion_evaluation_outbox {
+    use chrono::{DateTime, Utc};
+    use sea_orm::entity::prelude::*;
+    use serde::{Deserialize, Serialize};
+    use uuid::Uuid;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
+    #[sea_orm(table_name = "SuspicionEvaluationOutbox")]
+    pub struct Model {
+        #[sea_orm(primary_key)]
+        pub id: i64,
+        pub job_kind: i16,
+        pub source_kind: i16,
+        pub source_id: i32,
+        pub game_id: i32,
+        pub participation_id: i32,
+        pub challenge_id: Option<i32>,
+        pub rule_kind: Option<i16>,
+        pub evidence_key: String,
+        pub observed_at_utc: DateTime<Utc>,
+        pub evidence_payload: Json,
+        pub evidence_version: i16,
+        pub available_at_utc: DateTime<Utc>,
+        pub lease_token: Option<Uuid>,
+        pub lease_expires_at_utc: Option<DateTime<Utc>>,
+        pub attempts: i32,
+        pub completed_at_utc: Option<DateTime<Utc>>,
+        pub last_error: Option<String>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

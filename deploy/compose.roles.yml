@@ -3,10 +3,12 @@
 # grant Docker/TUN privileges; add compose.roles.docker.yml or
 # compose.roles.ad-vpn.yml when those capabilities are required.
 #
-# Before first start/upgrade, run the one-shot migration command documented in
-# docs/deploy/scaling.md. Then:
+# Before a fresh first start, run the one-shot migration command documented in
+# docs/deploy/scaling.md. Existing installations must use the stop-the-world
+# maintenance-cutover script so no old role writes during incompatible schema
+# changes. Then:
 # The bundled PostgreSQL default safely budgets two 26-connection web pools
-# plus the 20-connection control pool. Read docs/deploy/scaling.md and provide
+# plus the 21-connection control pool. Read docs/deploy/scaling.md and provide
 # PgBouncer or a larger reviewed database budget before adding a third web.
 #   docker compose up -d --scale rsctf=2
 services:
@@ -83,6 +85,7 @@ services:
       RSCTF_AD_FLAG_PUSH_ATTEMPTS: ${RSCTF_AD_FLAG_PUSH_ATTEMPTS:-3}
       RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS: ${RSCTF_AD_FLAG_PUSH_TIMEOUT_SECONDS:-2}
       RSCTF_JWT_SECRET: ${RSCTF_JWT_SECRET:?Set RSCTF_JWT_SECRET in deploy/.env}
+      RSCTF_IDENTITY_HASH_KEY: ${RSCTF_IDENTITY_HASH_KEY:?Set RSCTF_IDENTITY_HASH_KEY in deploy/.env}
       RSCTF_BOOTSTRAP_TOKEN: ${RSCTF_BOOTSTRAP_TOKEN:?Set RSCTF_BOOTSTRAP_TOKEN in deploy/.env to a random 32-byte value}
       RSCTF_JWT_TTL_SECS: ${RSCTF_JWT_TTL_SECS:-604800}
       RSCTF_PUBLIC_URL: ${RSCTF_PUBLIC_URL:?Set RSCTF_PUBLIC_URL in deploy/.env}
@@ -101,11 +104,14 @@ services:
       RSCTF_S3_SECRET_KEY: ${RSCTF_S3_SECRET_KEY:-}
       RSCTF_ASSET_SIGNED_URL_TTL_SECS: ${RSCTF_ASSET_SIGNED_URL_TTL_SECS:-0}
       RSCTF_MIGRATE: "0"
-      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_CONTROL_DB_MAX_CONNECTIONS:-20}
+      RSCTF_DB_MAX_CONNECTIONS: ${RSCTF_CONTROL_DB_MAX_CONNECTIONS:-21}
+      RSCTF_SUSPICION_RECONCILE_SECONDS: ${RSCTF_SUSPICION_RECONCILE_SECONDS:-30}
+      RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS: ${RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS:-360}
       RSCTF_PROVISIONING_CONCURRENCY: ${RSCTF_PROVISIONING_CONCURRENCY:-4}
       RSCTF_REPO_SCAN_CONCURRENCY: ${RSCTF_REPO_SCAN_CONCURRENCY:-1}
       RSCTF_CONTAINER_BACKEND: ${RSCTF_CONTAINER_BACKEND:-none}
       RSCTF_DOCKER_SCOPE: ${RSCTF_DOCKER_SCOPE:-}
+      RSCTF_DOCKER_PROXY_BIND: ${RSCTF_DOCKER_PROXY_BIND:-172.31.253.1}
       RSCTF_CONTAINER_MAX_MEMORY_MB: ${RSCTF_CONTAINER_MAX_MEMORY_MB:-4096}
       RSCTF_CONTAINER_MAX_CPU_COUNT: ${RSCTF_CONTAINER_MAX_CPU_COUNT:-8}
       RSCTF_TRAFFIC_CAPTURE_ENABLED: ${RSCTF_TRAFFIC_CAPTURE_ENABLED:-false}
@@ -119,6 +125,7 @@ services:
         aliases:
           - rsctf-network
       backend: {}
+      challenge-proxy: {}
     expose:
       - "8080"
     healthcheck:

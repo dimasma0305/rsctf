@@ -283,7 +283,12 @@ jobs:
           install -m 0644 \
             deploy/postgres/init/00-pg-stat-statements.sql \
             "$bundle_root/deploy/postgres/init/"
-          install -m 0755 scripts/install.sh "$bundle_root/scripts/install.sh"
+          install -m 0755 \
+            scripts/install.sh \
+            scripts/compose-maintenance-cutover.sh \
+            scripts/kubernetes-maintenance-cutover.sh \
+            scripts/docker-proxy-firewall.sh \
+            "$bundle_root/scripts/"
           install -m 0644 LICENSE.txt NOTICE "$bundle_root/"
           printf 'RSCTF_RELEASE_VERSION=%s\nRSCTF_RELEASE_IMAGE=%s\n' \
             "$GITHUB_REF_NAME" "$PINNED_IMAGE" \
