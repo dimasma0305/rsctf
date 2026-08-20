@@ -117,14 +117,18 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            writeup_note, blood_bonus_value, ad_allow_snapshot_download,
            ad_scoring_paused, ad_epoch_ticks, koth_epoch_ticks,
            koth_cycle_ticks, koth_champion_cooldown_ticks,
-           koth_claim_confirmation_ticks)
+           koth_claim_confirmation_ticks, vpn_access_required,
+           vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
+           vpn_provider_dns_telemetry_enabled, vpn_source_asn_telemetry_enabled,
+           vpn_device_sharing_telemetry_enabled, vpn_policy_revision)
         VALUES
           (9, 'repair-game', 'repair-public', 'repair-private', FALSE, FALSE,
            '', '', FALSE, FALSE, FALSE, 4, 4,
            clock_timestamp() - INTERVAL '1 hour',
            clock_timestamp() + INTERVAL '1 hour',
            clock_timestamp() + INTERVAL '2 hours', '', 0, FALSE,
-           FALSE, 8, 12, 3, 1, 2);
+           FALSE, 8, 12, 3, 1, 2,
+           FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 1);
         INSERT INTO "Participations"
           (id, status, token, game_id, team_id, suspicion_score)
         VALUES
@@ -136,11 +140,12 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            review_status, build_status, enable_traffic_capture,
            enable_shared_container, disable_blood_bonus, original_score,
            min_score_rate, difficulty, score_curve, ad_allow_egress,
-           ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted)
+           ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted,
+           variant_mode, solve_receipt_mode)
         VALUES
           (930, 9, 'repair-challenge', '', 0, 2, TRUE, 0, 0, 0, 0, 0,
            FALSE, FALSE, FALSE, 100, 0.2, 1.0, 0, FALSE, FALSE,
-           FALSE, FALSE);
+           FALSE, FALSE, 0, 0);
         INSERT INTO "Submissions"
           (id, answer, status, submit_time_utc, user_id, team_id,
            participation_id, game_id, challenge_id)
@@ -419,13 +424,17 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            writeup_note, blood_bonus_value, ad_allow_snapshot_download,
            ad_scoring_paused, ad_epoch_ticks, koth_epoch_ticks,
            koth_cycle_ticks, koth_champion_cooldown_ticks,
-           koth_claim_confirmation_ticks)
+           koth_claim_confirmation_ticks, vpn_access_required,
+           vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
+           vpn_provider_dns_telemetry_enabled, vpn_source_asn_telemetry_enabled,
+           vpn_device_sharing_telemetry_enabled, vpn_policy_revision)
         VALUES
           (1, 'game', 'public', 'private', FALSE, FALSE, '', '', FALSE,
            FALSE, FALSE, 4, 4, clock_timestamp() - INTERVAL '1 hour',
            clock_timestamp() + INTERVAL '1 hour',
            clock_timestamp() + INTERVAL '2 hours', '', 0, FALSE,
-           FALSE, 8, 12, 3, 1, 2);
+           FALSE, 8, 12, 3, 1, 2,
+           FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 1);
         INSERT INTO "Participations"
           (id, status, token, game_id, team_id, suspicion_score)
         VALUES
@@ -437,11 +446,12 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            review_status, build_status, enable_traffic_capture,
            enable_shared_container, disable_blood_bonus, original_score,
            min_score_rate, difficulty, score_curve, ad_allow_egress,
-           ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted)
+           ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted,
+           variant_mode, solve_receipt_mode)
         VALUES
           (30, 1, 'challenge', '', 0, 2, TRUE, 0, 0, 0, 0, 0,
            FALSE, FALSE, FALSE, 100, 0.2, 1.0, 0, FALSE, FALSE,
-           FALSE, FALSE);
+           FALSE, FALSE, 0, 0);
         INSERT INTO "Submissions"
           (id, answer, status, submit_time_utc, user_id, team_id,
            participation_id, game_id, challenge_id)

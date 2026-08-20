@@ -116,6 +116,8 @@ async fn repeated_accepted_submission_counts_one_canonical_solve() {
           disable_blood_bonus BOOLEAN NOT NULL,
           "Type" SMALLINT NOT NULL,
           shared_container_id UUID,
+          solve_receipt_mode SMALLINT NOT NULL DEFAULT 0,
+          variant_mode SMALLINT NOT NULL DEFAULT 0,
           submission_count INTEGER NOT NULL,
           accepted_count INTEGER NOT NULL
         );
@@ -150,6 +152,8 @@ async fn repeated_accepted_submission_counts_one_canonical_solve() {
             .bind(false)
             .bind(0_i16)
             .bind(None::<uuid::Uuid>)
+            .bind(0_i16)
+            .bind(0_i16)
             .execute(&mut *transaction)
             .await
             .unwrap();
