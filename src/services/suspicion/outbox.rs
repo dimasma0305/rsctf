@@ -677,6 +677,11 @@ async fn reconcile_one_game(
     if let Err(error) = super::run_honeypot_chain_checks(state, game_id).await {
         errors.push(format!("honeypot chain: {error}"));
     }
+    if let Err(error) =
+        crate::services::event_security::derive_context_findings(state, game_id).await
+    {
+        errors.push(format!("event-security context: {error}"));
+    }
 
     for error in &errors {
         tracing::warn!(game = game_id, %error, "suspicion game reconciliation detector failed");

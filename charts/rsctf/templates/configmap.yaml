@@ -92,5 +92,11 @@ data:
   {{- with .Values.vpn.allowedIps }}
   RSCTF_AD_VPN_ALLOWED_IPS: {{ . | quote }}
   {{- end }}
+  {{- with .Values.vpn.eventProofUrl }}
+  RSCTF_EVENT_VPN_PROOF_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.vpn.eventAllowedIps }}
+  RSCTF_EVENT_VPN_ALLOWED_IPS: {{ . | quote }}
+  {{- end }}
   {{- end }}
 {{- end }}

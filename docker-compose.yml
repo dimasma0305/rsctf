@@ -125,6 +125,14 @@ services:
       RSCTF_JWT_SECRET: "${RSCTF_JWT_SECRET:?Set RSCTF_JWT_SECRET in .env to a random 32-byte value}"
       RSCTF_IDENTITY_HASH_KEY: "${RSCTF_IDENTITY_HASH_KEY:?Set RSCTF_IDENTITY_HASH_KEY in .env to a separate random 32-byte value}"
       RSCTF_BOOTSTRAP_TOKEN: "${RSCTF_BOOTSTRAP_TOKEN:?Set RSCTF_BOOTSTRAP_TOKEN in .env to a random 32-byte value}"
+      # Event security is opt-in at the game level. Independent secrets remain
+      # empty by default, so an organizer cannot accidentally enable a partial
+      # or unverifiable policy.
+      RSCTF_EVENT_VPN_CREDENTIAL_KEY: "${RSCTF_EVENT_VPN_CREDENTIAL_KEY:-}"
+      RSCTF_EVENT_VPN_PROOF_URL: "${RSCTF_EVENT_VPN_PROOF_URL:-https://${PUBLIC_ENTRY:-tcp.1pc.tf}}"
+      RSCTF_EVENT_VPN_ALLOWED_IPS: "${RSCTF_EVENT_VPN_ALLOWED_IPS:-}"
+      RSCTF_EVENT_SENSOR_TOKEN: "${RSCTF_EVENT_SENSOR_TOKEN:-}"
+      RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN: "${RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN:-}"
       RSCTF_DOCKER_SCOPE: "${RSCTF_DOCKER_SCOPE:-}"
       # Private host bridge used only for PlatformProxy challenge ports.
       RSCTF_DOCKER_PROXY_BIND: "${RSCTF_DOCKER_PROXY_BIND:-172.23.254.1}"

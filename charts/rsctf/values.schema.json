@@ -61,13 +61,16 @@
     "existingSecret": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "databaseUrlKey", "jwtSecretKey", "identityHashKey", "bootstrapTokenKey", "redisUrlKey", "postgresqlPasswordKey", "redisPasswordKey"],
+      "required": ["name", "databaseUrlKey", "jwtSecretKey", "identityHashKey", "bootstrapTokenKey", "eventVpnCredentialKey", "eventSensorTokenKey", "solveReceiptIssuerTokenKey", "redisUrlKey", "postgresqlPasswordKey", "redisPasswordKey"],
       "properties": {
         "name": {"type": "string"},
         "databaseUrlKey": {"$ref": "#/definitions/secretKey"},
         "jwtSecretKey": {"$ref": "#/definitions/secretKey"},
         "identityHashKey": {"$ref": "#/definitions/secretKey"},
         "bootstrapTokenKey": {"$ref": "#/definitions/secretKey"},
+        "eventVpnCredentialKey": {"$ref": "#/definitions/secretKey"},
+        "eventSensorTokenKey": {"$ref": "#/definitions/secretKey"},
+        "solveReceiptIssuerTokenKey": {"$ref": "#/definitions/secretKey"},
         "redisUrlKey": {"$ref": "#/definitions/secretKey"},
         "postgresqlPasswordKey": {"$ref": "#/definitions/secretKey"},
         "redisPasswordKey": {"$ref": "#/definitions/secretKey"}
@@ -76,11 +79,14 @@
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["jwtSecret", "identityHashKey", "bootstrapToken"],
+      "required": ["jwtSecret", "identityHashKey", "bootstrapToken", "eventVpnCredentialKey", "eventSensorToken", "solveReceiptIssuerToken"],
       "properties": {
         "jwtSecret": {"type": "string", "description": "At least 32 random characters unless existingSecret.name is used."},
         "identityHashKey": {"type": "string", "description": "At least 32 random characters, independent from jwtSecret and stable across replicas, restarts, and JWT rotations, unless existingSecret.name is used."},
-        "bootstrapToken": {"type": "string", "description": "Optional 32+ character first-admin setup token; generated and retained when empty."}
+        "bootstrapToken": {"type": "string", "description": "Optional 32+ character first-admin setup token; generated and retained when empty."},
+        "eventVpnCredentialKey": {"type": "string", "description": "Stable independent key for per-user VPN private-key encryption and proof signing."},
+        "eventSensorToken": {"type": "string", "description": "Dedicated token for the bounded local sensor API."},
+        "solveReceiptIssuerToken": {"type": "string", "description": "Dedicated token for trusted challenge solve-receipt issuance."}
       }
     },
     "storage": {
@@ -406,7 +412,7 @@
     "vpn": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "required", "listenPort", "serverEndpoint", "clientCidr", "servicesCidr", "dns", "allowedIps", "devicePath", "service"],
+      "required": ["enabled", "required", "listenPort", "serverEndpoint", "clientCidr", "servicesCidr", "dns", "allowedIps", "eventProofUrl", "eventAllowedIps", "devicePath", "service", "sensor"],
       "properties": {
         "enabled": {"type": "boolean"},
         "required": {"type": "boolean"},
@@ -416,6 +422,8 @@
         "servicesCidr": {"type": "string", "minLength": 1},
         "dns": {"type": "string", "minLength": 1},
         "allowedIps": {"type": "string"},
+        "eventProofUrl": {"type": "string"},
+        "eventAllowedIps": {"type": "string"},
         "devicePath": {"type": "string", "pattern": "^/"},
         "service": {
           "type": "object",
@@ -426,6 +434,17 @@
             "port": {"type": "integer", "minimum": 1, "maximum": 65535},
             "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
             "externalTrafficPolicy": {"type": "string", "enum": ["", "Cluster", "Local"]}
+          }
+        },
+        "sensor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "interface", "asnFile", "resources"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "interface": {"type": "string", "minLength": 1},
+            "asnFile": {"type": "string"},
+            "resources": {"type": "object"}
           }
         }
       }

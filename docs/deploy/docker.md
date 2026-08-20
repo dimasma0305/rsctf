@@ -151,6 +151,14 @@ The VPN override adds:
 
 It requires rootful Docker on Linux, WireGuard/ipset kernel support, non-overlapping network ranges, and a reachable public endpoint. `NET_RAW` stays on the singleton VPN owner; public web replicas receive neither VPN capability. Test this mode on the production host before the event.
 
+For opt-in event security, configure the independent event secrets and the
+HTTPS proof route in `deploy/.env`, then add `event-sensor` to
+`COMPOSE_PROFILES`. The sensor service in `compose.ad-vpn.yml` shares the VPN
+owner's network namespace, runs read-only with only `NET_RAW`, and is limited to
+0.5 CPU and 128 MiB. Do not enable its profile with an empty
+`RSCTF_EVENT_SENSOR_TOKEN`; it deliberately exits instead of collecting
+unauthenticated telemetry. See [Event VPN and anti-cheat telemetry](../organizers/event-security).
+
 The Docker A&D services bridge is internal-only. Enabling a challenge's
 `allowEgress` setting is rejected before Docker creates or pulls the workload;
 Kubernetes is required for isolated allowed egress.

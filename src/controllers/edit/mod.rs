@@ -41,9 +41,9 @@ use crate::models::data::{
 use crate::services::container::ContainerSpec;
 use crate::utils::codec::sha256_str;
 use crate::utils::enums::{
-    ChallengeBuildStatus, ChallengeCategory, ChallengeReviewStatus, ChallengeType, ContainerStatus,
-    FileType, GamePermission, NetworkMode, NoticeType, ParticipationStatus, ReviewRating, Role,
-    ScoreCurve,
+    ChallengeBuildStatus, ChallengeCategory, ChallengeReviewStatus, ChallengeType,
+    ChallengeVariantMode, ContainerStatus, FileType, GamePermission, NetworkMode, NoticeType,
+    ParticipationStatus, ReviewRating, Role, ScoreCurve, SolveReceiptMode,
 };
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
@@ -188,6 +188,11 @@ pub struct ChallengeUpdateModel {
     pub ad_ssh_requires_flag: Option<bool>,
     pub ad_self_hosted: Option<bool>,
     pub ad_scoring_weight: Option<f64>,
+    pub variant_mode: Option<ChallengeVariantMode>,
+    pub variant_generator_image: Option<String>,
+    pub variant_generator_digest: Option<String>,
+    pub solve_receipt_mode: Option<SolveReceiptMode>,
+    pub receipt_verifier_identity: Option<String>,
 }
 
 fn present_optional<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
@@ -328,6 +333,11 @@ pub struct ChallengeEditDetailModel {
     pub ad_ssh_requires_flag: bool,
     pub ad_self_hosted: bool,
     pub ad_scoring_weight: f64,
+    pub variant_mode: ChallengeVariantMode,
+    pub variant_generator_image: Option<String>,
+    pub variant_generator_digest: Option<String>,
+    pub solve_receipt_mode: SolveReceiptMode,
+    pub receipt_verifier_identity: Option<String>,
     pub flags: Vec<FlagInfoModel>,
 }
 
@@ -423,6 +433,11 @@ impl ChallengeEditDetailModel {
             ad_ssh_requires_flag: c.ad_ssh_requires_flag,
             ad_self_hosted: c.ad_self_hosted,
             ad_scoring_weight: c.ad_scoring_weight,
+            variant_mode: c.variant_mode,
+            variant_generator_image: c.variant_generator_image.clone(),
+            variant_generator_digest: c.variant_generator_digest.clone(),
+            solve_receipt_mode: c.solve_receipt_mode,
+            receipt_verifier_identity: c.receipt_verifier_identity.clone(),
             flags,
         })
     }
@@ -621,6 +636,14 @@ pub fn router() -> Router<SharedState> {
         )
         .route("/api/edit/games/{id}/HashSalt", get(get_hash_salt))
         .route("/api/edit/games/{id}/Clone", post(clone_game))
+        .route(
+            "/api/edit/games/{id}/variants",
+            get(event_security::list_variants),
+        )
+        .route(
+            "/api/edit/games/{id}/variants/generate",
+            post(event_security::generate_variants),
+        )
         .route("/api/edit/games/{id}/writeups", delete(delete_writeups))
         .route(
             "/api/edit/games/{id}/poster",
@@ -859,6 +882,7 @@ mod builds;
 mod challenges;
 mod deletion_locks;
 mod divisions;
+mod event_security;
 mod flags;
 mod games;
 mod helpers;

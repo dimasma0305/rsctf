@@ -148,6 +148,14 @@ uses S3.
 | `RSCTF_AD_VPN_SERVER_ENDPOINT` | Derived | Public `host:port` placed in player configurations |
 | `RSCTF_AD_VPN_DNS` | `1.1.1.1` | DNS server placed in generated WireGuard profiles |
 | `RSCTF_AD_VPN_ALLOWED_IPS` | Derived routes | Optional explicit routes in player profiles |
+| `RSCTF_EVENT_VPN_CREDENTIAL_KEY` | Unset | Independent 32+ character key for event peer private-key encryption and short-lived proof signing |
+| `RSCTF_EVENT_VPN_PROOF_URL` | Unset | HTTPS rsctf origin reachable only over an event split route; required before an event can enable its VPN gate |
+| `RSCTF_EVENT_VPN_ALLOWED_IPS` | VPN client CIDR plus service routes | Additional narrow split-tunnel routes in event profiles; default routes are rejected |
+| `RSCTF_EVENT_SENSOR_TOKEN` | Unset | Independent 32+ character bearer credential shared only by the network owner and optional sensor sidecar |
+| `RSCTF_EVENT_SENSOR_API_URL` | `http://127.0.0.1:8080` | Loopback HTTP or HTTPS machine API used by the sidecar |
+| `RSCTF_EVENT_SENSOR_INTERFACE` | `wg0` | Capture interface for aggregate event telemetry |
+| `RSCTF_EVENT_SENSOR_ASN_FILE` | Unset | Optional local `CIDR,ASN,CLASS` prefix file; rsctf performs no remote lookup |
+| `RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN` | Unset | Independent 32+ character machine credential for trusted challenge verifiers |
 | `RSCTF_AD_SSH_PORT` | `2222` | A&D SSH bastion listen port |
 | `RSCTF_AD_SSH_PUBLIC_HOST` | Docker public entry | Host advertised for the SSH bastion |
 | `RSCTF_AD_BYOC_AGENT_IMAGE` | Same-release GHCR digest in official images; none in direct source/local builds | Immutable `repository@sha256:...` relay-agent override. Tagged official server images embed the exact amd64/arm64 agent index produced by their workflow. Direct builds fail BYOC bundle generation until this points to an agent built from the same ACK-capable release. |

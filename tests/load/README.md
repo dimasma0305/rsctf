@@ -16,6 +16,7 @@ cd tests/load
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
       npm run asset-download # fixed-rate authenticated 1 MiB attachment ranges
+      npm run event-security # destructive fixed-rate bounded telemetry/resource comparison
       npm run scoreboard-evidence # isolated fixed-rate canonical FirstSolve query benchmark
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
@@ -29,6 +30,24 @@ Requires `k6`, `node`, and `docker exec <PG>` / `docker` access; the stack up wi
 running game (default `GAME=10`, BYOC challenge `CID=68`). BYOC runs require at least
 `N` distinct Accepted participations; the harness fails before spawning when fewer are
 available rather than fabricating participation IDs that production authorization rejects.
+
+### Bounded event-security telemetry
+
+Run this only against an explicitly acknowledged disposable event with one live
+event-VPN peer and telemetry enabled:
+
+```sh
+EVENT_SECURITY_STRESS_ACK=1 GAME=92001 RATE=2 ROWS_PER_BATCH=256 \
+  DURATION=60s SUMMARY_JSON=event-security.json npm run event-security
+```
+
+The Node orchestrator runs equal-rate empty-control and aggregate-ingest phases,
+samples rsctf/PostgreSQL CPU and RSS once per second, verifies exact `/healthz`,
+and fails on 5xx responses, invalid response bodies, dropped arrivals, or a
+logical quota breach. It measures the bounded aggregate API/SQL path; it does
+not retain packet payloads, DNS names, public IP addresses, or flag plaintext.
+The current fixed-rate acceptance numbers and artifact hashes are retained in
+[REPORT.md](./REPORT.md#bounded-event-security-telemetry-fixed-rate-acceptance--20-august-2026).
 
 ## Layout
 
@@ -54,6 +73,7 @@ tests/load/
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
   polled-read.mjs   read-only broad-token fixed-rate polling smoke
   asset-download.mjs fixed-rate range/resume delivery benchmark
+  event-security.mjs fixed-rate control-vs-telemetry CPU/RAM/storage benchmark
   asset-download-model.js shared asset-path and deterministic range rules
   scoreboard-evidence.mjs isolated accepted-history versus FirstSolves DB benchmark
   player.mjs        → runs k6/player.js         (npm run player)
@@ -69,6 +89,7 @@ tests/load/
     organizer-hubs.js  fixed-rate privileged negotiate, WebSocket, and exec traffic
     polled-read.js     one read per iteration across the dominant polled endpoints
     asset-download.js  one authenticated deterministic attachment range per iteration
+    event-security.js  fixed-rate empty-control and aggregate sensor-ingest phases
     player.js         A&D + KotH player: poll format/Overall boards, tokens/state, submit flags
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable

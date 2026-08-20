@@ -1,5 +1,7 @@
 //! Live authorization snapshot shared by proxy opens and established leases.
 
+use std::net::Ipv4Addr;
+
 use uuid::Uuid;
 
 use crate::services::live_roster::LiveParticipationIdentity;
@@ -188,6 +190,8 @@ pub(super) async fn try_acquire_game_proxy_open_fence(
     caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
     target: &GameProxyTargetIdentity,
+    source: Option<Ipv4Addr>,
+    bypass_event_vpn: bool,
 ) -> Option<GameProxyOpenFence> {
     let permit = crate::utils::single_flight::roster_access_permit()
         .await
@@ -238,10 +242,54 @@ pub(super) async fn try_acquire_game_proxy_open_fence(
         let _ = roster.rollback().await;
         return None;
     }
+    if !bypass_event_vpn
+        && crate::services::event_security::require_event_vpn_source_on(
+            roster.transaction_mut().as_mut(),
+            caller.game_id,
+            caller.user_id,
+            caller.participation_id,
+            source,
+        )
+        .await
+        .is_err()
+    {
+        let _ = roster.rollback().await;
+        return None;
+    }
     Some(GameProxyOpenFence {
         roster,
         _permit: permit,
     })
+}
+
+pub(super) async fn game_proxy_session_is_valid(
+    pool: &sqlx::PgPool,
+    caller: LiveParticipationIdentity<'_>,
+    challenge_id: i32,
+    target: &GameProxyTargetIdentity,
+    source: Option<Ipv4Addr>,
+    bypass_event_vpn: bool,
+) -> bool {
+    let Ok(Some(mut roster)) =
+        try_acquire_game_proxy_scope_guard(pool, caller, challenge_id, target).await
+    else {
+        return false;
+    };
+    if !bypass_event_vpn
+        && crate::services::event_security::require_event_vpn_source_on(
+            roster.transaction_mut().as_mut(),
+            caller.game_id,
+            caller.user_id,
+            caller.participation_id,
+            source,
+        )
+        .await
+        .is_err()
+    {
+        let _ = roster.rollback().await;
+        return false;
+    }
+    roster.release().await.is_ok()
 }
 
 /// Fail closed if any mutable owner of a player proxy is being removed or is
@@ -348,6 +396,8 @@ mod tests {
             },
             4,
             target,
+            None,
+            true,
         )
         .await
     }

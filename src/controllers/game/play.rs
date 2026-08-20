@@ -188,6 +188,7 @@ pub async fn game_details(
         team_name,
         practice_mode: g.practice_mode,
         allow_user_submissions: g.allow_user_submissions,
+        vpn_access_required: g.vpn_access_required,
         status,
         challenges,
         start: g.start_time_utc,
@@ -626,6 +627,28 @@ pub async fn get_challenge(
     let ctx = context_info(&st, &user, id, false).await?;
 
     let challenge = load_playable_challenge(&st, id, challenge_id).await?;
+    let variant = if challenge.variant_mode == ChallengeVariantMode::PerParticipation {
+        Some(
+            crate::services::event_security::variant_for_participation(
+                &st,
+                id,
+                challenge_id,
+                ctx.participation.id,
+            )
+            .await?
+            .ok_or_else(|| {
+                AppError::unavailable(
+                    "This participation's deterministic challenge variant is not ready",
+                )
+            })?,
+        )
+    } else {
+        None
+    };
+    let variant_manifest = variant
+        .as_ref()
+        .map(|row| crate::services::event_security::decode_manifest(&row.manifest))
+        .transpose()?;
     let mut response_grant = final_policy::PreparedChallengeGrant::new(&challenge);
 
     // Division may restrict viewing this challenge (RSCTF GetChallenge gate):
@@ -751,10 +774,17 @@ pub async fn get_challenge(
     let model = ChallengeDetailModel {
         id: challenge.id,
         title: challenge.title,
-        content: challenge.content,
+        content: variant_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.content.clone())
+            .unwrap_or(challenge.content),
         category: challenge.category,
         challenge_type: challenge.challenge_type,
-        hints: challenge.hints,
+        hints: variant_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.hints.as_ref())
+            .map(|hints| serde_json::json!(hints))
+            .or(challenge.hints),
         score: current_score,
         context,
         limit: challenge.submission_limit,
@@ -762,6 +792,13 @@ pub async fn get_challenge(
         deadline: challenge.deadline_utc,
         user_rating,
         user_comment,
+        solve_receipt_mode: challenge.solve_receipt_mode,
+        receipt_verifier_identity: challenge.receipt_verifier_identity,
+        variant: variant.map(|row| ClientChallengeVariant {
+            id: row.id,
+            revision: row.revision,
+            artifact_hash: hex::encode(row.artifact_hash),
+        }),
     };
 
     // Final authority, current game/challenge/division policy, the response,

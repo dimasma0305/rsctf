@@ -33,7 +33,7 @@
 //! sessions are capped per user, participation and workload so one team cannot
 //! consume every trusted-worker data stream.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -68,8 +68,8 @@ mod transport;
 
 use access_log::log_container_access_on;
 use authorization::{
-    game_proxy_scope_is_valid, try_acquire_game_proxy_open_fence, GameProxyOpenFence,
-    GameProxyTargetIdentity,
+    game_proxy_scope_is_valid, game_proxy_session_is_valid, try_acquire_game_proxy_open_fence,
+    GameProxyOpenFence, GameProxyTargetIdentity,
 };
 use egress::{build_egress_scan, record_flag_egress, EgressScan, RollingFlagMatcher};
 use transport::{close_cleanly, endpoint_unavailable_close, normal_close, transport_failure_close};
@@ -119,6 +119,7 @@ async fn proxy_for_instance(
     // (best-effort forensics), never for access control.
     let remote_ip =
         crate::services::anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_default();
+    let event_vpn_source = remote_ip.parse::<Ipv4Addr>().ok();
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -162,6 +163,8 @@ async fn proxy_for_instance(
                                 },
                                 game.challenge_id,
                                 &game.target_identity,
+                                event_vpn_source,
+                                game.is_monitor,
                             )
                             .await
                             else {
@@ -201,6 +204,8 @@ async fn proxy_for_instance(
                                     participation_id: game.accessing_participation_id,
                                     challenge_id: game.challenge_id,
                                     target_identity: game.target_identity.clone(),
+                                    event_vpn_source,
+                                    bypass_event_vpn: game.is_monitor,
                                 },
                             };
                             (admission, scan, lease, Some(open_fence))
@@ -799,6 +804,8 @@ enum LeaseOwner {
         participation_id: i32,
         challenge_id: i32,
         target_identity: GameProxyTargetIdentity,
+        event_vpn_source: Option<Ipv4Addr>,
+        bypass_event_vpn: bool,
     },
     Exercise {
         exercise_instance_id: i32,
@@ -819,8 +826,10 @@ async fn wait_for_revocation(lease: InstanceLease) {
                 participation_id,
                 challenge_id,
                 target_identity,
+                event_vpn_source,
+                bypass_event_vpn,
             } => {
-                game_proxy_scope_is_valid(
+                game_proxy_session_is_valid(
                     &lease.pool,
                     LiveParticipationIdentity {
                         user_id: lease.user_id,
@@ -831,6 +840,8 @@ async fn wait_for_revocation(lease: InstanceLease) {
                     },
                     *challenge_id,
                     target_identity,
+                    *event_vpn_source,
+                    *bypass_event_vpn,
                 )
                 .await
             }

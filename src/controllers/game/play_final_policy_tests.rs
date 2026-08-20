@@ -28,6 +28,9 @@ fn challenge_model() -> ChallengeDetailModel {
         deadline: None,
         user_rating: ReviewRating::None,
         user_comment: None,
+        solve_receipt_mode: SolveReceiptMode::Disabled,
+        receipt_verifier_identity: None,
+        variant: None,
     }
 }
 

@@ -161,6 +161,16 @@ db_enum!(
 );
 
 db_enum!(
+    /// Whether a challenge has a deterministic artifact per participation.
+    ChallengeVariantMode { Disabled = 0, PerParticipation = 1 }
+);
+
+db_enum!(
+    /// Trusted verifier receipt policy for accepted submissions.
+    SolveReceiptMode { Disabled = 0, Optional = 1, Required = 2 }
+);
+
+db_enum!(
     /// Flag-submission outcome. Negative `NotFound` matches the C# `sbyte`.
     AnswerResult { NotFound = -1, FlagSubmitted = 0, Accepted = 1, WrongAnswer = 2, CheatDetected = 3 }
 );

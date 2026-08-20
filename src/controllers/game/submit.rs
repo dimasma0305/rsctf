@@ -13,7 +13,7 @@ pub use review::{review_challenge, status};
 
 const LOAD_GRADING_POLICY_SQL: &str = r#"
     SELECT submission_limit, deadline_utc, disable_blood_bonus, "Type",
-           shared_container_id
+           shared_container_id, solve_receipt_mode, variant_mode
       FROM "GameChallenges"
      WHERE id = $1 AND game_id = $2 AND is_enabled AND review_status = $3
 "#;
@@ -31,7 +31,48 @@ const FINALIZE_SUBMISSION_SQL: &str = r#"
        AND disable_blood_bonus = $7
        AND "Type" = $8
        AND shared_container_id IS NOT DISTINCT FROM $9
+       AND solve_receipt_mode = $10
+       AND variant_mode = $11
 "#;
+
+async fn grade_variant_answer(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+    challenge_id: i32,
+    participation_id: i32,
+    answer: &str,
+) -> AppResult<(AnswerResult, Option<i32>)> {
+    let variants = sqlx::query_as::<_, (i32, String)>(
+        r#"SELECT participation_id, manifest->>'flag'
+             FROM "ChallengeVariants"
+            WHERE game_id = $1 AND challenge_id = $2
+              AND frozen_at_utc IS NOT NULL
+            ORDER BY participation_id"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !variants
+        .iter()
+        .any(|(candidate, _)| *candidate == participation_id)
+    {
+        return Err(AppError::unavailable(
+            "This participation's deterministic challenge variant is not ready",
+        ));
+    }
+    for (owner, flag) in variants {
+        if ct_eq(&flag, answer) {
+            return if owner == participation_id {
+                Ok((AnswerResult::Accepted, None))
+            } else {
+                Ok((AnswerResult::CheatDetected, Some(owner)))
+            };
+        }
+    }
+    Ok((AnswerResult::WrongAnswer, None))
+}
 
 fn normal_flag_submit_type_allowed(
     challenge_type: i16,
@@ -303,20 +344,29 @@ pub async fn submit(
     // do not lock the challenge row here: the late conditional counter UPDATE is
     // the policy fence, so unrelated teams can judge concurrently and hold the hot
     // row only for the final few statements of a successful transaction.
-    let current: Option<(i32, Option<DateTime<Utc>>, bool, i16, Option<Uuid>)> =
-        sqlx::query_as(LOAD_GRADING_POLICY_SQL)
-            .bind(challenge_id)
-            .bind(id)
-            .bind(ChallengeReviewStatus::Active as i16)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+    let current: Option<(
+        i32,
+        Option<DateTime<Utc>>,
+        bool,
+        i16,
+        Option<Uuid>,
+        i16,
+        i16,
+    )> = sqlx::query_as(LOAD_GRADING_POLICY_SQL)
+        .bind(challenge_id)
+        .bind(id)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let Some((
         submission_limit,
         current_deadline,
         disable_blood_bonus,
         challenge_type,
         shared_container_id,
+        solve_receipt_mode,
+        variant_mode,
     )) = current
     else {
         return Err(AppError::not_found("Challenge not found"));
@@ -397,6 +447,25 @@ pub async fn submit(
         return Err(AppError::Forbidden);
     }
 
+    let solve_receipt_mode = match solve_receipt_mode {
+        value if value == SolveReceiptMode::Disabled as i16 => SolveReceiptMode::Disabled,
+        value if value == SolveReceiptMode::Optional as i16 => SolveReceiptMode::Optional,
+        value if value == SolveReceiptMode::Required as i16 => SolveReceiptMode::Required,
+        _ => return Err(AppError::internal("invalid solve receipt mode")),
+    };
+    let receipt = crate::services::event_security::validate_receipt_for_submission(
+        &mut transaction,
+        &st.config.event_vpn_credential_key,
+        model.proof.as_deref(),
+        solve_receipt_mode,
+        id,
+        challenge_id,
+        ctx.participation.id,
+        user.id,
+        &answer,
+    )
+    .await?;
+
     let in_practice_phase = practice_mode && submit_time >= game_end;
     if submission_limit > 0 && !in_practice_phase {
         let attempts: i64 = sqlx::query_scalar(
@@ -432,6 +501,7 @@ pub async fn submit(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+
     let (submit_container_id, container_was_loaded_at_submit, container_last_operation_at_submit) =
         match own_instance {
             Some((container_id, was_loaded, last_operation)) => (
@@ -452,35 +522,45 @@ pub async fn submit(
             submit_time,
         )
         .await?;
-    let mut cheat_source_participation_id = None;
-    let mut result = if is_static {
-        let flags: Vec<String> = sqlx::query_scalar(
-            r#"SELECT flag
+    let (mut result, cheat_source_participation_id) =
+        if variant_mode == ChallengeVariantMode::PerParticipation as i16 {
+            grade_variant_answer(
+                &mut transaction,
+                id,
+                challenge_id,
+                ctx.participation.id,
+                &answer,
+            )
+            .await?
+        } else if variant_mode == ChallengeVariantMode::Disabled as i16 && is_static {
+            let flags: Vec<String> = sqlx::query_scalar(
+                r#"SELECT flag
                  FROM "FlagContexts"
                 WHERE challenge_id = $1
                 FOR SHARE"#,
-        )
-        .bind(challenge_id)
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        if flags.iter().any(|flag| ct_eq(flag, &answer)) {
-            AnswerResult::Accepted
+            )
+            .bind(challenge_id)
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+            if flags.iter().any(|flag| ct_eq(flag, &answer)) {
+                (AnswerResult::Accepted, None)
+            } else {
+                (AnswerResult::WrongAnswer, None)
+            }
+        } else if variant_mode == ChallengeVariantMode::Disabled as i16 {
+            let (grade, source_participation_id) = grade_dynamic_answer(
+                &mut transaction,
+                ctx.participation.id,
+                challenge_id,
+                &answer,
+                submit_time < game_end,
+            )
+            .await?;
+            (grade, source_participation_id)
         } else {
-            AnswerResult::WrongAnswer
-        }
-    } else {
-        let (grade, source_participation_id) = grade_dynamic_answer(
-            &mut transaction,
-            ctx.participation.id,
-            challenge_id,
-            &answer,
-            submit_time < game_end,
-        )
-        .await?;
-        cheat_source_participation_id = source_participation_id;
-        grade
-    };
+            return Err(AppError::internal("invalid challenge variant mode"));
+        };
 
     // ------ Stolen-flag (cheat) detection ------
     // Always scan the transactionally locked, authoritative map. In particular,
@@ -542,6 +622,10 @@ pub async fn submit(
     .fetch_one(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+
+    if let Some(receipt) = receipt {
+        crate::services::event_security::consume_receipt(&mut transaction, receipt, sub_id).await?;
+    }
 
     // Canonical stolen-flag provenance is committed with the grade. Unlike the
     // presentation event, this row preserves both participation identities and
@@ -719,6 +803,8 @@ pub async fn submit(
         .bind(disable_blood_bonus)
         .bind(challenge_type)
         .bind(shared_container_id)
+        .bind(solve_receipt_mode as i16)
+        .bind(variant_mode)
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;

@@ -93,6 +93,21 @@ pub struct GameInfoModel {
     pub ad_scoring_start_round: Option<i32>,
     #[serde(default, skip_deserializing)]
     pub koth_scoring_start_round: Option<i32>,
+    #[serde(default)]
+    pub vpn_access_required: bool,
+    #[serde(default)]
+    pub vpn_behavior_telemetry_enabled: bool,
+    #[serde(default)]
+    pub vpn_flag_scan_enabled: bool,
+    #[serde(default)]
+    pub vpn_provider_dns_telemetry_enabled: bool,
+    #[serde(default)]
+    pub vpn_source_asn_telemetry_enabled: bool,
+    #[serde(default)]
+    pub vpn_device_sharing_telemetry_enabled: bool,
+    /// Required only when an existing event's VPN/telemetry policy changes.
+    #[serde(default, skip_serializing)]
+    pub vpn_policy_change_reason: Option<String>,
 }
 
 impl GameInfoModel {
@@ -134,6 +149,13 @@ impl GameInfoModel {
             koth_claim_confirmation_ticks: Some(g.koth_claim_confirmation_ticks),
             ad_scoring_start_round: g.ad_scoring_start_round,
             koth_scoring_start_round: g.koth_scoring_start_round,
+            vpn_access_required: g.vpn_access_required,
+            vpn_behavior_telemetry_enabled: g.vpn_behavior_telemetry_enabled,
+            vpn_flag_scan_enabled: g.vpn_flag_scan_enabled,
+            vpn_provider_dns_telemetry_enabled: g.vpn_provider_dns_telemetry_enabled,
+            vpn_source_asn_telemetry_enabled: g.vpn_source_asn_telemetry_enabled,
+            vpn_device_sharing_telemetry_enabled: g.vpn_device_sharing_telemetry_enabled,
+            vpn_policy_change_reason: None,
         }
     }
 
@@ -161,6 +183,43 @@ impl GameInfoModel {
 
     fn validate(&self) -> AppResult<()> {
         self.configuration().validate()
+    }
+
+    fn validate_event_security(&self, st: &SharedState) -> AppResult<()> {
+        let telemetry = self.vpn_behavior_telemetry_enabled
+            || self.vpn_flag_scan_enabled
+            || self.vpn_provider_dns_telemetry_enabled
+            || self.vpn_source_asn_telemetry_enabled
+            || self.vpn_device_sharing_telemetry_enabled;
+        if telemetry && !self.vpn_access_required {
+            return Err(AppError::bad_request(
+                "Event VPN telemetry requires the per-event VPN access policy",
+            ));
+        }
+        if self.vpn_access_required {
+            if !crate::services::ad_vpn::enabled() {
+                return Err(AppError::bad_request(
+                    "Event VPN access requires RSCTF_AD_VPN_ENABLED=true",
+                ));
+            }
+            crate::services::event_security::validate_credential_key(
+                &st.config.event_vpn_credential_key,
+            )?;
+            crate::services::event_security::proof_url(self.id.max(1))?;
+        }
+        if telemetry
+            && (st.config.event_sensor_token.len() < 32
+                || st
+                    .config
+                    .event_sensor_token
+                    .chars()
+                    .any(char::is_whitespace))
+        {
+            return Err(AppError::bad_request(
+                "Event VPN telemetry requires RSCTF_EVENT_SENSOR_TOKEN",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -253,6 +312,7 @@ pub async fn add_game(
     Json(model): Json<GameInfoModel>,
 ) -> AppResult<RequestResponse<GameInfoModel>> {
     model.validate()?;
+    model.validate_event_security(&st)?;
     let koth_epoch_ticks = model.koth_epoch_ticks.unwrap_or(12);
     let koth_cycle_ticks = model.koth_cycle_ticks.unwrap_or(3);
     let koth_champion_cooldown_ticks = model.koth_champion_cooldown_ticks.unwrap_or(1);
@@ -292,6 +352,12 @@ pub async fn add_game(
         // mutable until the first round with a real A&D roster declares the boundary.
         ad_scoring_start_round: Set(None),
         ad_scoring_paused: Set(false),
+        vpn_access_required: Set(model.vpn_access_required),
+        vpn_behavior_telemetry_enabled: Set(model.vpn_behavior_telemetry_enabled),
+        vpn_flag_scan_enabled: Set(model.vpn_flag_scan_enabled),
+        vpn_provider_dns_telemetry_enabled: Set(model.vpn_provider_dns_telemetry_enabled),
+        vpn_source_asn_telemetry_enabled: Set(model.vpn_source_asn_telemetry_enabled),
+        vpn_device_sharing_telemetry_enabled: Set(model.vpn_device_sharing_telemetry_enabled),
         ..Default::default()
     };
     apply_ad_creation_settings(&model, &mut am);
@@ -375,6 +441,7 @@ pub async fn update_game(
 ) -> AppResult<RequestResponse<GameInfoModel>> {
     manager_or_admin(&st, &user, id).await?;
     model.validate()?;
+    model.validate_event_security(&st)?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     let tx = control.transaction_mut();
     // Global lock order is game-control -> A&D rollup -> KotH rollup -> table
@@ -441,6 +508,51 @@ pub async fn update_game(
     if deletion_pending {
         return Err(AppError::conflict("Game is being deleted"));
     }
+
+    let current_vpn_policy: (bool, bool, bool, bool, bool, bool, i64) = sqlx::query_as(
+        r#"SELECT vpn_access_required, vpn_behavior_telemetry_enabled,
+                  vpn_flag_scan_enabled, vpn_provider_dns_telemetry_enabled,
+                  vpn_source_asn_telemetry_enabled,
+                  vpn_device_sharing_telemetry_enabled, vpn_policy_revision
+             FROM "Games" WHERE id = $1"#,
+    )
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let requested_vpn_policy = (
+        model.vpn_access_required,
+        model.vpn_behavior_telemetry_enabled,
+        model.vpn_flag_scan_enabled,
+        model.vpn_provider_dns_telemetry_enabled,
+        model.vpn_source_asn_telemetry_enabled,
+        model.vpn_device_sharing_telemetry_enabled,
+    );
+    let vpn_policy_changed = requested_vpn_policy
+        != (
+            current_vpn_policy.0,
+            current_vpn_policy.1,
+            current_vpn_policy.2,
+            current_vpn_policy.3,
+            current_vpn_policy.4,
+            current_vpn_policy.5,
+        );
+    let vpn_policy_reason = if vpn_policy_changed {
+        let reason = model
+            .vpn_policy_change_reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| (8..=512).contains(&reason.len()))
+            .ok_or_else(|| {
+                AppError::bad_request(
+                    "A reason of 8 to 512 characters is required for VPN policy changes.",
+                )
+            })?;
+        Some(reason)
+    } else {
+        None
+    };
+    let requested_vpn_revision = current_vpn_policy.6 + i64::from(vpn_policy_changed);
 
     // Normal submissions hold the Games row FOR SHARE through commit. This
     // FOR UPDATE therefore waits for every in-flight FirstSolve, blocks new
@@ -569,7 +681,14 @@ pub async fn update_game(
                ad_epoch_ticks = $28, ad_scoring_start_round = $29,
                koth_epoch_ticks = $30, koth_cycle_ticks = $31,
                koth_champion_cooldown_ticks = $32,
-               koth_claim_confirmation_ticks = $33
+               koth_claim_confirmation_ticks = $33,
+               vpn_access_required = $34,
+               vpn_behavior_telemetry_enabled = $35,
+               vpn_flag_scan_enabled = $36,
+               vpn_provider_dns_telemetry_enabled = $37,
+               vpn_source_asn_telemetry_enabled = $38,
+               vpn_device_sharing_telemetry_enabled = $39,
+               vpn_policy_revision = $40
              WHERE id = $1"#,
     )
     .bind(id)
@@ -605,15 +724,57 @@ pub async fn update_game(
     .bind(requested_koth_cycle_ticks)
     .bind(requested_koth_champion_cooldown_ticks)
     .bind(requested_koth_claim_confirmation_ticks)
+    .bind(model.vpn_access_required)
+    .bind(model.vpn_behavior_telemetry_enabled)
+    .bind(model.vpn_flag_scan_enabled)
+    .bind(model.vpn_provider_dns_telemetry_enabled)
+    .bind(model.vpn_source_asn_telemetry_enabled)
+    .bind(model.vpn_device_sharing_telemetry_enabled)
+    .bind(requested_vpn_revision)
     .execute(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(reason) = vpn_policy_reason {
+        let old_policy = serde_json::json!({
+            "accessRequired": current_vpn_policy.0,
+            "behaviorTelemetry": current_vpn_policy.1,
+            "flagScan": current_vpn_policy.2,
+            "providerDnsTelemetry": current_vpn_policy.3,
+            "sourceAsnTelemetry": current_vpn_policy.4,
+            "deviceSharingTelemetry": current_vpn_policy.5,
+        });
+        let new_policy = serde_json::json!({
+            "accessRequired": model.vpn_access_required,
+            "behaviorTelemetry": model.vpn_behavior_telemetry_enabled,
+            "flagScan": model.vpn_flag_scan_enabled,
+            "providerDnsTelemetry": model.vpn_provider_dns_telemetry_enabled,
+            "sourceAsnTelemetry": model.vpn_source_asn_telemetry_enabled,
+            "deviceSharingTelemetry": model.vpn_device_sharing_telemetry_enabled,
+        });
+        sqlx::query(
+            r#"INSERT INTO "EventVpnPolicyAudit"
+                 (game_id, actor_user_id, old_revision, new_revision,
+                  old_policy, new_policy, reason)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+        )
+        .bind(id)
+        .bind(user.id)
+        .bind(current_vpn_policy.6)
+        .bind(requested_vpn_revision)
+        .bind(sqlx::types::Json(old_policy))
+        .bind(sqlx::types::Json(new_policy))
+        .bind(reason)
+        .execute(&mut **tx)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
     control
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
     crate::controllers::game::invalidate_game_row_cache(id);
+    crate::services::event_security::invalidate_policy(&st, id).await;
     flush_game_scoreboards(&st, id).await;
     let updated = load_game(&st, id).await?;
     crate::services::ad_vpn::ensure_hub_and_sync(&st.db).await?;
@@ -737,174 +898,7 @@ pub async fn get_hash_salt(
     Ok(RequestResponse::ok(salt))
 }
 
-fn apply_clone_challenge_defaults(clone: &mut game_challenge::ActiveModel) {
-    clone.enable_shared_container = Set(false);
-    clone.score_curve = Set(ScoreCurve::Standard);
-    clone.network_mode = Set(Some(NetworkMode::Open));
-    clone.ad_allow_egress = Set(false);
-    clone.ad_allow_self_reset = Set(false);
-    clone.ad_ssh_requires_flag = Set(false);
-    clone.ad_self_hosted = Set(false);
-}
-
-/// `POST /api/edit/games/{id}/Clone` — deep-copy a game (settings + challenges,
-/// static flags included) into a new **hidden** template. Contract: raw new
-/// game id (`number`). Mirrors `EditController.CloneGame`.
-pub async fn clone_game(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Path(id): Path<i32>,
-    Json(model): Json<GameCloneModel>,
-) -> AppResult<RequestResponse<i32>> {
-    let source_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-    let source = load_game(&st, id).await?;
-    let sources = if model.include_challenges {
-        game_challenge::Entity::find()
-            .filter(game_challenge::Column::GameId.eq(id))
-            .all(&st.db)
-            .await?
-    } else {
-        Vec::new()
-    };
-    let mut clone_configuration = GameInfoModel::from_game(&source).configuration();
-    clone_configuration.start_time_utc = model.start_time_utc;
-    clone_configuration.end_time_utc = model.end_time_utc;
-    clone_configuration.freeze_time_utc = None;
-    clone_configuration.validate()?;
-    source_control
-        .release()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-
-    // Fresh key pair — copying the source's private key would collide the
-    // TeamHashSalt across the two games. (Placeholder, as in add_game.)
-    let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
-    // A clone is one aggregate. If any challenge or flag cannot be copied, do
-    // not leave a hidden, half-populated game behind.
-    let transaction = st.db.begin().await?;
-
-    let new_game = game::ActiveModel {
-        title: Set(model.title.trim().to_string()),
-        public_key: Set(public_key),
-        private_key: Set(private_key),
-        summary: Set(source.summary.clone()),
-        content: Set(source.content.clone()),
-        practice_mode: Set(source.practice_mode),
-        accept_without_review: Set(source.accept_without_review),
-        // RSCTF `CloneGame` copies neither of these — the clone starts from the
-        // Game entity defaults (AllowUserSubmissions = false, WriteupDeadline =
-        // Unix epoch), not the source's values.
-        allow_user_submissions: Set(false),
-        writeup_required: Set(source.writeup_required),
-        writeup_note: Set(source.writeup_note.clone()),
-        team_member_count_limit: Set(source.team_member_count_limit),
-        container_count_limit: Set(source.container_count_limit),
-        blood_bonus_value: Set(source.blood_bonus_value),
-        start_time_utc: Set(model.start_time_utc),
-        end_time_utc: Set(model.end_time_utc),
-        writeup_deadline: Set(super::epoch()),
-        hidden: Set(true),
-        // RSCTF CloneGame does not copy AdAllowSnapshotDownload — the new Game
-        // starts from the entity default (true).
-        ad_allow_snapshot_download: Set(true),
-        // Official score shape is template configuration, not historical state.
-        ad_epoch_ticks: Set(source.ad_epoch_ticks),
-        koth_epoch_ticks: Set(source.koth_epoch_ticks),
-        koth_cycle_ticks: Set(source.koth_cycle_ticks),
-        koth_champion_cooldown_ticks: Set(source.koth_champion_cooldown_ticks),
-        koth_claim_confirmation_ticks: Set(source.koth_claim_confirmation_ticks),
-        ad_warmup_seconds: Set(source.ad_warmup_seconds),
-        ad_snapshot_retention_days: Set(source.ad_snapshot_retention_days),
-        ad_tick_seconds: Set(source.ad_tick_seconds),
-        ad_flag_lifetime_ticks: Set(source
-            .ad_flag_lifetime_ticks
-            .map(|ticks| ticks.clamp(1, 50))),
-        ad_getflag_window_fraction: Set(source.ad_getflag_window_fraction),
-        ad_min_grace_period_seconds: Set(source.ad_min_grace_period_seconds),
-        ad_reset_cooldown_minutes: Set(source.ad_reset_cooldown_minutes),
-        ad_scoring_start_round: Set(None),
-        koth_scoring_start_round: Set(None),
-        ad_scoring_paused: Set(false),
-        ..Default::default()
-    };
-    let new_game = new_game.insert(&transaction).await?;
-
-    for src in sources {
-        let mut clone = game_challenge::ActiveModel {
-            game_id: Set(new_game.id),
-            title: Set(src.title.clone()),
-            content: Set(src.content.clone()),
-            category: Set(src.category),
-            challenge_type: Set(src.challenge_type),
-            hints: Set(src.hints.clone()),
-            flag_template: Set(src.flag_template.clone()),
-            file_name: Set(src.file_name.clone()),
-            container_image: Set(src.container_image.clone()),
-            network_mode: Set(src.network_mode),
-            memory_limit: Set(src.memory_limit),
-            storage_limit: Set(src.storage_limit),
-            cpu_count: Set(src.cpu_count),
-            expose_port: Set(src.expose_port),
-            workload_spec: Set(src.workload_spec.clone()),
-            enable_traffic_capture: Set(src.enable_traffic_capture),
-            disable_blood_bonus: Set(src.disable_blood_bonus),
-            original_score: Set(src.original_score),
-            min_score_rate: Set(src.min_score_rate),
-            difficulty: Set(src.difficulty),
-            ad_scoring_weight: Set(src.ad_scoring_weight),
-            submission_limit: Set(src.submission_limit),
-            is_enabled: Set(false),
-            accepted_count: Set(0),
-            submission_count: Set(0),
-            review_status: Set(ChallengeReviewStatus::Active),
-            build_status: Set(ChallengeBuildStatus::None),
-            // RSCTF CloneGame's GameChallenge whitelist copies neither
-            // EnableSharedContainer, ScoreCurve, nor the operational AD knobs
-            // (AdCheckerImage/AdAllowEgress/AdAllowSelfReset/
-            // AdSshRequiresFlag/AdSelfHosted) — they stay at entity defaults.
-            // The official scoring weight is intentionally preserved above.
-            ..Default::default()
-        };
-        apply_clone_challenge_defaults(&mut clone);
-        let clone = clone.insert(&transaction).await?;
-
-        // Copy static flags (the flag text, not the attachment blob).
-        let flags = flag_context::Entity::find()
-            .filter(flag_context::Column::ChallengeId.eq(src.id))
-            .all(&transaction)
-            .await?;
-        for f in flags {
-            let am = flag_context::ActiveModel {
-                flag: Set(f.flag),
-                is_occupied: Set(false),
-                challenge_id: Set(Some(clone.id)),
-                ..Default::default()
-            };
-            am.insert(&transaction).await?;
-        }
-    }
-
-    transaction.commit().await?;
-    Ok(RequestResponse::ok(new_game.id))
-}
-
-/// `DELETE /api/edit/games/{id}/writeups` — clear submitted writeups; returns
-/// the game (contract: `GameInfoModel`).
-pub async fn delete_writeups(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Path(id): Path<i32>,
-) -> AppResult<RequestResponse<GameInfoModel>> {
-    let g = load_game(&st, id).await?;
-
-    let deleted_hashes = crate::services::blob_refs::clear_game_writeups(st.pg(), id).await?;
-    for hash in deleted_hashes {
-        if let Err(error) =
-            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
-                .await
-        {
-            tracing::warn!(%error, %hash, "deleted game writeup purge failed");
-        }
-    }
-    Ok(RequestResponse::ok(GameInfoModel::from_game(&g)))
-}
+mod cloning;
+#[cfg(test)]
+use cloning::apply_clone_challenge_defaults;
+pub use cloning::{clone_game, delete_writeups};

@@ -48,6 +48,33 @@ services:
     networks:
       - rsctf-ad
 
+  rsctf-event-sensor:
+    profiles: [event-sensor]
+    image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to one immutable rsctf image digest}
+    entrypoint: ["/usr/local/bin/rsctf-event-sensor"]
+    restart: unless-stopped
+    init: true
+    user: "65532:65532"
+    network_mode: service:rsctf-control
+    depends_on:
+      rsctf-control:
+        condition: service_healthy
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.50
+    environment:
+      RSCTF_EVENT_SENSOR_API_URL: http://127.0.0.1:8080
+      RSCTF_EVENT_SENSOR_TOKEN: ${RSCTF_EVENT_SENSOR_TOKEN:-}
+      RSCTF_EVENT_SENSOR_INTERFACE: wg0
+      RSCTF_EVENT_SENSOR_ASN_FILE: ${RSCTF_EVENT_SENSOR_ASN_FILE:-}
+      RUST_LOG: ${RSCTF_EVENT_SENSOR_LOG:-info}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m,mode=1777
+
 networks:
   rsctf-ad:
     name: ${RSCTF_AD_VPN_SERVICES_NETWORK:-${COMPOSE_PROJECT_NAME:-rsctf}-ad}

@@ -207,6 +207,68 @@ fn challenge_scoring_fields_changed(
             .is_some_and(|value| (value - challenge.ad_scoring_weight).abs() > f64::EPSILON)
 }
 
+fn validate_event_security_policy(
+    challenge_type: ChallengeType,
+    variant_mode: ChallengeVariantMode,
+    generator_image: Option<&str>,
+    generator_digest: Option<&str>,
+    receipt_mode: SolveReceiptMode,
+    verifier_identity: Option<&str>,
+    event_secret: &str,
+    receipt_issuer_token: &str,
+) -> AppResult<()> {
+    if challenge_type.uses_ad_engine()
+        && (variant_mode != ChallengeVariantMode::Disabled
+            || receipt_mode != SolveReceiptMode::Disabled)
+    {
+        return Err(AppError::bad_request(
+            "Challenge variants and solve receipts apply only to Jeopardy challenges",
+        ));
+    }
+    match (generator_image, generator_digest) {
+        (None, None) if variant_mode == ChallengeVariantMode::Disabled => {}
+        (Some(image), Some(digest))
+            if crate::services::challenge_images::is_repository_digest(image)
+                && image.ends_with(digest)
+                && digest.starts_with("sha256:")
+                && digest.len() == 71
+                && digest[7..]
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit()) => {}
+        _ => {
+            return Err(AppError::bad_request(
+                "Variant generation requires one matching immutable image@sha256 digest and digest field",
+            ));
+        }
+    }
+    if variant_mode == ChallengeVariantMode::PerParticipation
+        && (generator_image.is_none() || generator_digest.is_none())
+    {
+        return Err(AppError::bad_request(
+            "Per-participation variants require a generator image",
+        ));
+    }
+    if variant_mode == ChallengeVariantMode::PerParticipation {
+        crate::services::event_security::validate_credential_key(event_secret)?;
+    }
+    if receipt_mode != SolveReceiptMode::Disabled
+        && !verifier_identity.is_some_and(|identity| (1..=128).contains(&identity.len()))
+    {
+        return Err(AppError::bad_request(
+            "Solve receipts require a 1 to 128 character verifier identity",
+        ));
+    }
+    if receipt_mode != SolveReceiptMode::Disabled
+        && (receipt_issuer_token.len() < 32
+            || receipt_issuer_token.chars().any(char::is_whitespace))
+    {
+        return Err(AppError::bad_request(
+            "Solve receipts require RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN",
+        ));
+    }
+    Ok(())
+}
+
 /// `PUT /api/edit/games/{id}/challenges/{cId}`
 pub async fn update_challenge(
     State(st): State<SharedState>,
@@ -461,6 +523,43 @@ pub async fn update_challenge(
     } else {
         challenge
     };
+    let current_variant_policy = (
+        update_base.variant_mode,
+        update_base.variant_generator_image.clone(),
+        update_base.variant_generator_digest.clone(),
+        update_base.solve_receipt_mode,
+        update_base.receipt_verifier_identity.clone(),
+    );
+    let next_variant_mode = model.variant_mode.unwrap_or(current_variant_policy.0);
+    let next_generator_image = model
+        .variant_generator_image
+        .as_ref()
+        .map(|value| value.trim())
+        .map(|value| (!value.is_empty()).then_some(value))
+        .unwrap_or(current_variant_policy.1.as_deref());
+    let next_generator_digest = model
+        .variant_generator_digest
+        .as_ref()
+        .map(|value| value.trim())
+        .map(|value| (!value.is_empty()).then_some(value))
+        .unwrap_or(current_variant_policy.2.as_deref());
+    let next_receipt_mode = model.solve_receipt_mode.unwrap_or(current_variant_policy.3);
+    let next_verifier_identity = model
+        .receipt_verifier_identity
+        .as_ref()
+        .map(|value| value.trim())
+        .map(|value| (!value.is_empty()).then_some(value))
+        .unwrap_or(current_variant_policy.4.as_deref());
+    validate_event_security_policy(
+        ch_type,
+        next_variant_mode,
+        next_generator_image,
+        next_generator_digest,
+        next_receipt_mode,
+        next_verifier_identity,
+        &st.config.event_vpn_credential_key,
+        &st.config.solve_receipt_issuer_token,
+    )?;
     let mut am: game_challenge::ActiveModel = update_base.into();
     if let Some(v) = model.title {
         am.title = Set(v);
@@ -568,6 +667,74 @@ pub async fn update_challenge(
     }
     if let Some(v) = model.ad_scoring_weight {
         am.ad_scoring_weight = Set(v);
+    }
+    let variant_policy_changed = model
+        .variant_mode
+        .is_some_and(|value| value != current_variant_policy.0)
+        || model
+            .variant_generator_image
+            .as_ref()
+            .is_some_and(|value| Some(value.trim()) != current_variant_policy.1.as_deref())
+        || model
+            .variant_generator_digest
+            .as_ref()
+            .is_some_and(|value| Some(value.trim()) != current_variant_policy.2.as_deref())
+        || model
+            .solve_receipt_mode
+            .is_some_and(|value| value != current_variant_policy.3)
+        || model
+            .receipt_verifier_identity
+            .as_ref()
+            .is_some_and(|value| Some(value.trim()) != current_variant_policy.4.as_deref());
+    if variant_policy_changed {
+        let policy_frozen: bool = sqlx::query_scalar(
+            r#"SELECT clock_timestamp() >= start_time_utc
+                 FROM "Games" WHERE id = $1 FOR SHARE"#,
+        )
+        .bind(id)
+        .fetch_one(
+            engine_control
+                .as_mut()
+                .expect("challenge update holds the game control lock")
+                .transaction_mut()
+                .as_mut(),
+        )
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if policy_frozen {
+            return Err(AppError::bad_request(
+                "Challenge variant and solve-receipt settings are frozen at event start.",
+            ));
+        }
+    }
+    if let Some(v) = model.variant_mode {
+        am.variant_mode = Set(v);
+    }
+    if let Some(v) = model.variant_generator_image {
+        let value = v.trim();
+        am.variant_generator_image = Set((!value.is_empty()).then(|| value.to_owned()));
+    }
+    if let Some(v) = model.variant_generator_digest {
+        let value = v.trim();
+        if !value.is_empty()
+            && (!value.starts_with("sha256:")
+                || value.len() != 71
+                || !value[7..]
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit()))
+        {
+            return Err(AppError::bad_request(
+                "Variant generator digest must be sha256:<64 lowercase hex characters>.",
+            ));
+        }
+        am.variant_generator_digest = Set((!value.is_empty()).then(|| value.to_ascii_lowercase()));
+    }
+    if let Some(v) = model.solve_receipt_mode {
+        am.solve_receipt_mode = Set(v);
+    }
+    if let Some(v) = model.receipt_verifier_identity {
+        let value = v.trim();
+        am.receipt_verifier_identity = Set((!value.is_empty()).then(|| value.to_owned()));
     }
 
     let updated = am.update(&st.db).await?;

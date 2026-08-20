@@ -181,6 +181,23 @@ const GameDetail: FC = () => {
     }
   }
 
+  const onDownloadVpnConfig = async () => {
+    try {
+      const response = await api.eventSecurity.gameVpnConfig(numId)
+      const blob = new Blob([response.data], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `rsctf-event-${numId}.conf`
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      showErrorMsg(err, t)
+    }
+  }
+
   // Allow join if game is not finished OR practice mode is enabled
   const isGameOpenForJoin = !finished || game?.practiceMode
 
@@ -274,6 +291,11 @@ const GameDetail: FC = () => {
           {t('game.button.challenges')}
         </Button>
       )}
+      {status === ParticipationStatus.Accepted && game?.vpnAccessRequired && !finished && (
+        <Button variant="outline" onClick={onDownloadVpnConfig}>
+          {t('game.button.event_vpn', 'Download event VPN')}
+        </Button>
+      )}
     </>
   )
 
@@ -307,6 +329,11 @@ const GameDetail: FC = () => {
                 {game?.practiceMode && (
                   <Badge variant="light" color="violet">
                     {t('game.tag.practice', 'Practice mode')}
+                  </Badge>
+                )}
+                {game?.vpnAccessRequired && (
+                  <Badge variant="light" color="cyan">
+                    {t('game.tag.vpn_required', 'Event VPN required')}
                   </Badge>
                 )}
                 {game?.hidden && <Badge variant="outline">{t('game.tag.hidden')}</Badge>}
@@ -392,6 +419,14 @@ const GameDetail: FC = () => {
       <Container fluid className={classes.content}>
         <Stack gap="md" pb={100}>
           {GetAlert(status, game?.teamName ?? '')}
+          {game?.vpnAccessRequired && status === ParticipationStatus.Accepted && !finished && (
+            <Alert color="cyan" title={t('game.vpn.title', 'This event uses its own VPN')}>
+              {t(
+                'game.vpn.description',
+                'Import your personal WireGuard configuration. During the active event, protected player APIs require a short-lived proof from that tunnel.'
+              )}
+            </Alert>
+          )}
           {teamRequire && (
             <Alert
               color="yellow"

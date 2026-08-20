@@ -87,6 +87,7 @@ import type {
 import api, { ParticipationStatus } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 import classes from './CheatInfo.module.css'
+import { FusedEvidencePanel } from './FusedEvidencePanel'
 
 dayjs.extend(relativeTime)
 
@@ -2017,6 +2018,12 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                 )}
               </Text>
             </Box>
+            {canManageParticipations && selectedSuspicion.participationId !== undefined && (
+              <>
+                <Divider />
+                <FusedEvidencePanel gameId={gameId} participationId={selectedSuspicion.participationId} />
+              </>
+            )}
             <Divider />
             <ScrollArea
               h={380}

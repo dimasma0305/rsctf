@@ -37,6 +37,9 @@ existingSecret:
   jwtSecretKey: jwt-secret
   identityHashKey: identity-hash-key
   bootstrapTokenKey: bootstrap-token
+  eventVpnCredentialKey: event-vpn-credential-key
+  eventSensorTokenKey: event-sensor-token
+  solveReceiptIssuerTokenKey: solve-receipt-issuer-token
   redisUrlKey: redis-url
   postgresqlPasswordKey: postgresql-password
   redisPasswordKey: redis-password
@@ -51,6 +54,11 @@ secrets:
   # Optional. When empty, Helm generates and retains a 48-character first-admin
   # setup token in the release Secret.
   bootstrapToken: ""
+  # Optional when the related features stay disabled. When this chart manages
+  # the Secret, empty values are generated once and retained across upgrades.
+  eventVpnCredentialKey: ""
+  eventSensorToken: ""
+  solveReceiptIssuerToken: ""
 
 # Blob storage selection. Local storage remains the default and uses the PVC
 # below. S3 stores content-addressed blobs, but repositories, packet captures,
@@ -355,12 +363,32 @@ vpn:
   servicesCidr: 10.13.40.0/24
   dns: 1.1.1.1
   allowedIps: ""
+  # HTTPS origin used only to mint the 30-second event-access proof. Route the
+  # origin's exact address through WireGuard and keep it on the same browser
+  # origin as rsctf so the session cookie is never shared cross-origin.
+  eventProofUrl: ""
+  # Comma-separated split-tunnel routes for event-only HTTP/assets/proxy use.
+  # Include the eventProofUrl address as a /32; default routes are rejected.
+  eventAllowedIps: ""
   devicePath: /dev/net/tun
   service:
     type: LoadBalancer
     port: 51820
     annotations: {}
     externalTrafficPolicy: Local
+  sensor:
+    # The sidecar shares the Pod network namespace with the singleton VPN
+    # owner. It receives NET_RAW only, no database URL and no NET_ADMIN.
+    enabled: false
+    interface: wg0
+    asnFile: ""
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        cpu: 500m
+        memory: 128Mi
 
 # Appended directly to the rsctf container. Use secretKeyRef/valueFrom for any
 # additional credentials; do not place credentials in config.extraEnv values.

@@ -14,6 +14,64 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Bounded event-security telemetry fixed-rate acceptance — 20 August 2026
+
+The event-security release candidate was measured locally against a disposable
+PostgreSQL 18.4 database after a clean migrations 1–94 upgrade. The optimized
+server SHA-256 was
+`c263db539a8b272d57379bedb1cc2bef9c95f7ff1c676beca494651b4b32330e`;
+the packet-sensor SHA-256 was
+`6e4b0560fb1f9c5e30ae5de603a29e57a40cde8ceb3904dec4cd7861eff08869`.
+No benchmark request or fixture write reached production.
+
+The harness held both phases at 2 requests/s for 60 seconds with 16
+preallocated VUs. Control requests submitted an empty batch. Ingest requests
+submitted 256 fixed-width flow aggregates, so the accepted path sustained 512
+aggregate records/s. This is deliberately a same-rate resource comparison, not
+a peak-throughput test.
+
+| Metric | Empty control | 256-row ingest |
+| --- | ---: | ---: |
+| Requests / observed rate | 121 / 2.016473 s⁻¹ | 121 / 2.015073 s⁻¹ |
+| Latency p50 | 4.271 ms | 46.293 ms |
+| Latency p95 | 14.934 ms | 124.811 ms |
+| Latency p99 | 25.634 ms | 323.493 ms |
+| Latency maximum | 36.595 ms | 513.473 ms |
+| rsctf CPU average / maximum | 0.596% / 2.752% | 1.455% / 7.279% |
+| rsctf RSS maximum | 54.039 MiB | 70.133 MiB |
+| PostgreSQL CPU average / maximum | 0.915% / 5.210% | 11.531% / 48.350% |
+| PostgreSQL RSS maximum | 83.700 MiB | 91.610 MiB |
+| 5xx / invalid / quota-drop rates | 0 / 0 / 0 | 0 / 0 / 0 |
+| Dropped iterations | 0 | 0 |
+
+The four bounded telemetry relations started at zero rows and 114,688 physical
+bytes after an audited disposable-event purge and `VACUUM FULL`. Ingest retained
+30,976 rows, 5,947,392 logical bytes (5.672 MiB), and 10,018,816 additional
+physical bytes (9.555 MiB). That is 2.22% of the hard 256 MiB logical per-event
+quota. The API remained healthy with the exact body `ok` after both phases.
+
+The positive fusion probe used one AI-provider DNS bucket, two hosting-provider
+network observations, and one VPN peer seen from two endpoints. It produced
+four linked shadow findings, all Context tier, with total score 0, finding score
+0, and zero actionable evidence families. These signals support investigation;
+they do not assert AI use or cheating and cannot independently punish a team.
+
+During harness bring-up, the first non-empty run exposed a timestamp-shape bug:
+wire-format Unix milliseconds were being passed to PostgreSQL's `timestamptz`
+JSON decoder. The transaction failed and committed no telemetry. The ingest
+adapter now builds private RFC 3339 database rows while retaining millisecond
+API timestamps, with a regression test. The retained-summary parser was also
+made compatible with both k6 1.x nested and k6 2.x direct metric fields, so a
+successful run cannot be reported as zero traffic.
+
+This run exercises the dominant bounded HTTP/SQL ingest, quota, accounting,
+health, and fusion paths. Live packet capture from an actual `wg0` interface was
+not available in the disposable environment; the release sensor's PCAP/parser,
+real-current-flag Aho-Corasick matching, hashing, batching, and drop-accounting
+paths are covered by its three passing binary tests. This is feature-overhead
+characterization, not an optimization claim, so it adds no optimization-ledger
+row.
+
 ## Immutable anti-cheat ledger fixed-rate acceptance — 20 August 2026
 
 The anti-cheat integrity release was measured against the deployed v0.1.44

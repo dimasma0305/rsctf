@@ -111,6 +111,24 @@ spec:
                   name: {{ include "rsctf.secretName" . }}
                   key: {{ .Values.existingSecret.bootstrapTokenKey }}
                   optional: true
+            - name: RSCTF_EVENT_VPN_CREDENTIAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.eventVpnCredentialKey }}
+                  optional: true
+            - name: RSCTF_EVENT_SENSOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.eventSensorTokenKey }}
+                  optional: true
+            - name: RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.solveReceiptIssuerTokenKey }}
+                  optional: true
             {{- if or .Values.redis.enabled (not (empty .Values.redis.url)) (not (empty .Values.existingSecret.name)) }}
             - name: RSCTF_REDIS_URL
               valueFrom:
@@ -213,6 +231,43 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- if and $vpnOwner .Values.vpn.sensor.enabled }}
+        - name: event-sensor
+          image: {{ include "rsctf.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/rsctf-event-sensor"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10000
+            runAsGroup: 10000
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_RAW"]
+          env:
+            - name: RSCTF_EVENT_SENSOR_API_URL
+              value: http://127.0.0.1:8080
+            - name: RSCTF_EVENT_SENSOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rsctf.secretName" . }}
+                  key: {{ .Values.existingSecret.eventSensorTokenKey }}
+            - name: RSCTF_EVENT_SENSOR_INTERFACE
+              value: {{ .Values.vpn.sensor.interface | quote }}
+            {{- with .Values.vpn.sensor.asnFile }}
+            - name: RSCTF_EVENT_SENSOR_ASN_FILE
+              value: {{ . | quote }}
+            {{- end }}
+            - name: RUST_LOG
+              value: {{ .Values.config.logLevel | quote }}
+          resources:
+            {{- toYaml .Values.vpn.sensor.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+        {{- end }}
       volumes:
         - name: files
           {{- if .Values.persistence.enabled }}

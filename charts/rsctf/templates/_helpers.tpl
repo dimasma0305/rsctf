@@ -276,6 +276,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and (eq $backend "worker") .Values.vpn.enabled (ne $role "all") -}}
 {{- fail "hybrid worker VPN is currently supported only with runtimeRole=all; split lifecycle and web policy coordination are not implemented and must fail closed" -}}
 {{- end -}}
+{{- if and .Values.vpn.sensor.enabled (not .Values.vpn.enabled) -}}
+{{- fail "vpn.sensor.enabled=true requires vpn.enabled=true because the sensor captures only the managed WireGuard interface" -}}
+{{- end -}}
+{{- if and (not (empty .Values.vpn.eventProofUrl)) (not (hasPrefix "https://" .Values.vpn.eventProofUrl)) -}}
+{{- fail "vpn.eventProofUrl must use HTTPS" -}}
+{{- end -}}
+{{- if or (contains "0.0.0.0/0" .Values.vpn.eventAllowedIps) (contains "::/0" .Values.vpn.eventAllowedIps) -}}
+{{- fail "vpn.eventAllowedIps must remain split-tunnel and cannot contain a default route" -}}
+{{- end -}}
 {{- if .Values.vpn.enabled -}}
   {{- if not (has $localBackend (list "docker" "kubernetes")) -}}
     {{- fail "vpn.enabled=true requires a local Docker or Kubernetes backend; set containerBackend directly or configure workerBackend.localBackend for a hybrid worker deployment" -}}

@@ -36,6 +36,16 @@ pub mod game {
         pub repo_binding_id: Option<i32>,
         pub event_manifest_path: Option<String>,
 
+        // --- Event VPN access and bounded anti-cheat telemetry ---
+        pub vpn_access_required: bool,
+        pub vpn_behavior_telemetry_enabled: bool,
+        pub vpn_flag_scan_enabled: bool,
+        pub vpn_provider_dns_telemetry_enabled: bool,
+        pub vpn_source_asn_telemetry_enabled: bool,
+        pub vpn_device_sharing_telemetry_enabled: bool,
+        #[serde(skip)]
+        pub vpn_policy_revision: i64,
+
         // --- Attack-Defense / KotH engine tunables ---
         pub ad_warmup_seconds: Option<i32>,
         pub ad_tick_seconds: Option<i32>,

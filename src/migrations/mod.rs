@@ -111,6 +111,9 @@ mod m0088_koth_api_wave_scoring;
 mod m0089_cheat_evidence_ledger;
 mod m0090_identity_observations;
 mod m0091_suspicion_score_integrity;
+mod m0092_event_vpn_policy;
+mod m0093_bounded_anticheat_telemetry;
+mod m0094_challenge_variants_and_receipts;
 
 pub struct Migrator;
 
@@ -215,6 +218,9 @@ impl MigratorTrait for Migrator {
             Box::new(m0089_cheat_evidence_ledger::Migration),
             Box::new(m0090_identity_observations::Migration),
             Box::new(m0091_suspicion_score_integrity::Migration),
+            Box::new(m0092_event_vpn_policy::Migration),
+            Box::new(m0093_bounded_anticheat_telemetry::Migration),
+            Box::new(m0094_challenge_variants_and_receipts::Migration),
         ]
     }
 }

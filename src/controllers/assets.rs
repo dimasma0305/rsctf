@@ -337,6 +337,8 @@ async fn serve_asset(
 ) -> AppResult<Response> {
     let authorization = authorize_asset_download(st, hash, user).await?;
     let cache_policy = authorization.cache_policy;
+    let event_vpn_source = crate::services::anti_cheat::client_ip(headers, Some(peer.ip()))
+        .and_then(|value| value.parse::<std::net::Ipv4Addr>().ok());
 
     // Conditional caching (RSCTF `AssetsController`): a content-hash blob is
     // immutable, so an `ETag` of hash[8..16] lets the browser skip re-downloading.
@@ -346,7 +348,8 @@ async fn serve_asset(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag))
     {
-        finalize_asset_download(st.pg(), &authorization, token, false).await?;
+        let _ = finalize_asset_download(st.pg(), &authorization, event_vpn_source, token, false)
+            .await?;
         return Ok((
             StatusCode::NOT_MODIFIED,
             [
@@ -403,7 +406,14 @@ async fn serve_asset(
             {
                 Ok(range) => Some(range),
                 Err(()) => {
-                    finalize_asset_download(st.pg(), &authorization, token, false).await?;
+                    let _ = finalize_asset_download(
+                        st.pg(),
+                        &authorization,
+                        event_vpn_source,
+                        token,
+                        false,
+                    )
+                    .await?;
                     return Ok(range_not_satisfiable(size, &etag, cache_policy));
                 }
             },
@@ -428,7 +438,19 @@ async fn serve_asset(
             {
                 Ok(Some(location)) => match signed_download_response(&location) {
                     Ok(response) => {
-                        finalize_asset_download(st.pg(), &authorization, token, true).await?;
+                        let vpn_gate_active = finalize_asset_download(
+                            st.pg(),
+                            &authorization,
+                            event_vpn_source,
+                            token,
+                            true,
+                        )
+                        .await?;
+                        if vpn_gate_active {
+                            return Err(AppError::unavailable(
+                                "Event VPN policy changed; retry the platform download",
+                            ));
+                        }
                         return Ok(response);
                     }
                     Err(error) => tracing::warn!(
@@ -488,7 +510,7 @@ async fn serve_asset(
     // Storage preparation can be slow. Revalidate the exact roster, stamp,
     // challenge, and division now; commit the precisely timed Download event
     // under that fence, then release it before Axum begins streaming the body.
-    finalize_asset_download(st.pg(), &authorization, token, true).await?;
+    let _ = finalize_asset_download(st.pg(), &authorization, event_vpn_source, token, true).await?;
 
     asset_response(
         body,

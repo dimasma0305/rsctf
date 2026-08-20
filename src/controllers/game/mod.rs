@@ -43,9 +43,9 @@ use crate::models::data::{
 use crate::services::container::ContainerSpec;
 use crate::utils::crypto_utils::ct_eq;
 use crate::utils::enums::{
-    AnswerResult, ChallengeCategory, ChallengeReviewStatus, ChallengeType, ContainerStatus,
-    EventType, FileType, GamePermission, NoticeType, ParticipationStatus, ReviewRating, ScoreCurve,
-    SubmissionType,
+    AnswerResult, ChallengeCategory, ChallengeReviewStatus, ChallengeType, ChallengeVariantMode,
+    ContainerStatus, EventType, FileType, GamePermission, NoticeType, ParticipationStatus,
+    ReviewRating, ScoreCurve, SolveReceiptMode, SubmissionType,
 };
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
@@ -136,6 +136,7 @@ pub struct DetailedGameInfoModel {
     pub team_name: Option<String>,
     pub practice_mode: bool,
     pub allow_user_submissions: bool,
+    pub vpn_access_required: bool,
     pub status: ParticipationStatus,
     /// Category (int-string) -> challenge briefs, for accepted participants
     /// (RSCTF surfaces the challenge set on the game detail).
@@ -368,6 +369,18 @@ pub struct ChallengeDetailModel {
     pub deadline: Option<DateTime<Utc>>,
     pub user_rating: ReviewRating,
     pub user_comment: Option<String>,
+    pub solve_receipt_mode: SolveReceiptMode,
+    pub receipt_verifier_identity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<ClientChallengeVariant>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientChallengeVariant {
+    pub id: Uuid,
+    pub revision: i32,
+    pub artifact_hash: String,
 }
 
 /// RSCTF `ContainerInfoModel`.
@@ -521,6 +534,9 @@ pub struct GameJoinModel {
 #[serde(rename_all = "camelCase")]
 pub struct FlagSubmitModel {
     pub flag: String,
+    /// Optional one-use proof minted by a configured trusted verifier.
+    #[serde(default)]
+    pub proof: Option<String>,
 }
 
 /// RSCTF `ChallengeReviewModel`.
@@ -954,6 +970,7 @@ mod scoreboard_board;
 mod scoreboard_encoding;
 mod submit;
 mod traffic;
+mod vpn_access;
 mod writeup;
 
 pub use cheat::*;
@@ -965,4 +982,5 @@ pub use scoreboard::*;
 pub(crate) use scoreboard_board::*;
 pub use submit::*;
 pub use traffic::*;
+pub use vpn_access::*;
 pub use writeup::*;

@@ -79,6 +79,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const [disabled, setDisabled] = useState(false)
   const [submitId, setSubmitId] = useState(0)
   const [flag, setFlag] = useInputState('')
+  const [receiptProof, setReceiptProof] = useInputState('')
   const [solvedChallengeId, setSolvedChallengeId] = useState<number | null>(null)
   const [flagVerdict, dispatchFlagVerdict] = useReducer(flagVerdictReducer, null)
 
@@ -189,6 +190,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     try {
       const res = await api.game.gameSubmit(gameId, challengeId, {
         flag: await encryptApiData(t, flag, config.apiPublicKey),
+        proof: receiptProof.trim() || undefined,
       })
       setSubmitId(res.data)
       notifications.clean()
@@ -241,6 +243,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         if (res.data !== AnswerResult.FlagSubmitted) {
           setDisabled(false)
           setFlag('')
+          setReceiptProof('')
           checkDataFlag(submitId, res.data)
           clearInterval(polling)
           setSubmitId(0) // reset so the next attempt starts clean
@@ -248,6 +251,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       } catch (err) {
         setDisabled(false)
         setFlag('')
+        setReceiptProof('')
         showErrorMsg(err, t)
         clearInterval(polling)
         setSubmitId(0)
@@ -350,6 +354,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       solvers={solvers}
       flag={flag}
       setFlag={setFlag}
+      receiptProof={receiptProof}
+      setReceiptProof={setReceiptProof}
       onCreate={onCreate}
       onDestroy={onDestroy}
       onSubmitFlag={onSubmit}

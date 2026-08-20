@@ -57,6 +57,7 @@ impl AssetAuthorizationHarness {
               hidden BOOLEAN NOT NULL,
               poster_hash TEXT,
               deletion_pending BOOLEAN NOT NULL DEFAULT FALSE,
+              vpn_access_required BOOLEAN NOT NULL DEFAULT FALSE,
               start_time_utc TIMESTAMPTZ NOT NULL DEFAULT
                   (CURRENT_TIMESTAMP + interval '1 hour'),
               end_time_utc TIMESTAMPTZ NOT NULL DEFAULT

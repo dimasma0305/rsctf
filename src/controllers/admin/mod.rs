@@ -144,6 +144,34 @@ pub fn router() -> Router<SharedState> {
             "/api/admin/anticheatblocks/{id}",
             delete(delete_anti_cheat_block),
         )
+        .route(
+            "/api/admin/games/{gameId}/anti-cheat/derive",
+            post(derive_event_security_findings),
+        )
+        .route(
+            "/api/admin/games/{gameId}/anti-cheat/fusion/{participationId}",
+            get(fused_event_security_breakdown),
+        )
+        .route(
+            "/api/admin/games/{gameId}/anti-cheat/findings/{findingId}/review",
+            post(review_event_security_finding),
+        )
+        .route(
+            "/api/admin/games/{gameId}/anti-cheat/telemetry/purge",
+            post(purge_event_security_telemetry),
+        )
+        .route(
+            "/api/admin/games/{gameId}/vpn-override",
+            post(create_event_vpn_override),
+        )
+        .route(
+            "/api/admin/games/{gameId}/vpn-overrides",
+            get(list_event_vpn_overrides),
+        )
+        .route(
+            "/api/admin/games/{gameId}/vpn-override/{overrideId}/revoke",
+            post(revoke_event_vpn_override),
+        )
         // --- Auto-build pipeline ---
         .route("/api/admin/builds", get(list_builds))
         .route("/api/admin/builds/inprogress", get(builds_in_progress))
