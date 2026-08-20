@@ -323,9 +323,9 @@ impl CaptchaSettings {
             .and_then(|value| value.as_deref())
             .map(|value| value == "true")
             .unwrap_or(fallback_use_captcha);
-        let stored_provider = nonempty_value(&values, "CaptchaConfig:Provider");
-        let stored_site_key = nonempty_value(&values, "CaptchaConfig:SiteKey");
-        let stored_secret = nonempty_value(&values, "CaptchaConfig:SecretKey");
+        let stored_provider = nonempty_value(values, "CaptchaConfig:Provider");
+        let stored_site_key = nonempty_value(values, "CaptchaConfig:SiteKey");
+        let stored_secret = nonempty_value(values, "CaptchaConfig:SecretKey");
         let stored_difficulty = values
             .get("CaptchaConfig:HashPow:Difficulty")
             .and_then(|value| value.as_deref())

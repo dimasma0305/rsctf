@@ -771,10 +771,12 @@ pub async fn get_challenge(
     final_policy::finish_challenge_response(
         st.pg(),
         &user,
-        id,
-        ctx.participation.team_id,
-        ctx.participation.id,
-        challenge_id,
+        final_policy::ChallengeResponseScope::new(
+            id,
+            ctx.participation.team_id,
+            ctx.participation.id,
+            challenge_id,
+        ),
         response_grant,
         model,
     )

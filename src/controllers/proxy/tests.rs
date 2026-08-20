@@ -1,4 +1,5 @@
 use super::*;
+use axum::extract::ws::close_code;
 
 #[test]
 fn proxy_client_messages_have_a_small_memory_bound() {

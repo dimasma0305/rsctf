@@ -374,7 +374,7 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
               AND table_name = 'CheatInfo'
               AND column_name = ANY($1)"#,
     )
-    .bind(&[
+    .bind([
         "submit_participation_id",
         "source_participation_id",
         "challenge_id",

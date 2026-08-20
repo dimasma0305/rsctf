@@ -2,6 +2,7 @@
 
 use uuid::Uuid;
 
+use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::enums::{ChallengeReviewStatus, GamePermission, ParticipationStatus, Role};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -143,21 +144,17 @@ async fn game_proxy_scope_is_valid_on(
 
 async fn try_acquire_game_proxy_scope_guard(
     pool: &sqlx::PgPool,
-    user_id: Uuid,
-    expected_security_stamp: &str,
-    game_id: i32,
-    team_id: i32,
-    participation_id: i32,
+    caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
     target: &GameProxyTargetIdentity,
 ) -> crate::utils::error::AppResult<Option<crate::utils::single_flight::PgAdvisoryLock>> {
     let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
         pool,
-        user_id,
-        expected_security_stamp,
-        game_id,
-        team_id,
-        participation_id,
+        caller.user_id,
+        caller.expected_security_stamp,
+        caller.game_id,
+        caller.team_id,
+        caller.participation_id,
         true,
     )
     .await?
@@ -165,10 +162,10 @@ async fn try_acquire_game_proxy_scope_guard(
         return Ok(None);
     };
     let scope_valid = game_proxy_scope_is_valid_on(
-        &mut **roster.transaction_mut(),
-        user_id,
-        game_id,
-        participation_id,
+        roster.transaction_mut(),
+        caller.user_id,
+        caller.game_id,
+        caller.participation_id,
         challenge_id,
         target,
     )
@@ -188,11 +185,7 @@ async fn try_acquire_game_proxy_scope_guard(
 /// prevents slow or unreachable backends from consuming the PostgreSQL pool.
 pub(super) async fn try_acquire_game_proxy_open_fence(
     pool: &sqlx::PgPool,
-    user_id: Uuid,
-    expected_security_stamp: &str,
-    game_id: i32,
-    team_id: i32,
-    participation_id: i32,
+    caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
     target: &GameProxyTargetIdentity,
 ) -> Option<GameProxyOpenFence> {
@@ -203,14 +196,14 @@ pub(super) async fn try_acquire_game_proxy_open_fence(
     // then the suspicion advisory, and only then row-lock live identity/scope.
     // Access-audit insertion continues on this same transaction, avoiding both
     // detector lock inversion and a nested pool checkout.
-    let roster_key = crate::services::live_roster::lock_key(team_id);
+    let roster_key = crate::services::live_roster::lock_key(caller.team_id);
     let mut roster =
         crate::utils::single_flight::PgAdvisoryLock::try_acquire_shared(pool, &roster_key)
             .await
             .ok()??;
     if crate::services::suspicion::lock_participation_suspicion_writes(
         roster.transaction_mut(),
-        participation_id,
+        caller.participation_id,
     )
     .await
     .is_err()
@@ -219,12 +212,12 @@ pub(super) async fn try_acquire_game_proxy_open_fence(
         return None;
     }
     let live = crate::services::live_roster::participation_caller_is_live_on(
-        &mut **roster.transaction_mut(),
-        user_id,
-        expected_security_stamp,
-        game_id,
-        team_id,
-        participation_id,
+        roster.transaction_mut().as_mut(),
+        caller.user_id,
+        caller.expected_security_stamp,
+        caller.game_id,
+        caller.team_id,
+        caller.participation_id,
         true,
     )
     .await;
@@ -233,10 +226,10 @@ pub(super) async fn try_acquire_game_proxy_open_fence(
         return None;
     }
     let scope_valid = game_proxy_scope_is_valid_on(
-        &mut **roster.transaction_mut(),
-        user_id,
-        game_id,
-        participation_id,
+        roster.transaction_mut(),
+        caller.user_id,
+        caller.game_id,
+        caller.participation_id,
         challenge_id,
         target,
     )
@@ -256,25 +249,12 @@ pub(super) async fn try_acquire_game_proxy_open_fence(
 /// expose their containers for practice until an organizer disables them.
 pub(super) async fn game_proxy_scope_is_valid(
     pool: &sqlx::PgPool,
-    user_id: Uuid,
-    expected_security_stamp: &str,
-    game_id: i32,
-    team_id: i32,
-    participation_id: i32,
+    caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
     target: &GameProxyTargetIdentity,
 ) -> bool {
-    let Ok(Some(roster)) = try_acquire_game_proxy_scope_guard(
-        pool,
-        user_id,
-        expected_security_stamp,
-        game_id,
-        team_id,
-        participation_id,
-        challenge_id,
-        target,
-    )
-    .await
+    let Ok(Some(roster)) =
+        try_acquire_game_proxy_scope_guard(pool, caller, challenge_id, target).await
     else {
         return false;
     };
@@ -337,7 +317,19 @@ mod tests {
         user_id: Uuid,
         target: &GameProxyTargetIdentity,
     ) -> bool {
-        game_proxy_scope_is_valid(pool, user_id, "stamp", 1, 2, 3, 4, target).await
+        game_proxy_scope_is_valid(
+            pool,
+            LiveParticipationIdentity {
+                user_id,
+                expected_security_stamp: "stamp",
+                game_id: 1,
+                team_id: 2,
+                participation_id: 3,
+            },
+            4,
+            target,
+        )
+        .await
     }
 
     async fn fixture_open_fence(
@@ -345,7 +337,19 @@ mod tests {
         user_id: Uuid,
         target: &GameProxyTargetIdentity,
     ) -> Option<GameProxyOpenFence> {
-        try_acquire_game_proxy_open_fence(pool, user_id, "stamp", 1, 2, 3, 4, target).await
+        try_acquire_game_proxy_open_fence(
+            pool,
+            LiveParticipationIdentity {
+                user_id,
+                expected_security_stamp: "stamp",
+                game_id: 1,
+                team_id: 2,
+                participation_id: 3,
+            },
+            4,
+            target,
+        )
+        .await
     }
 
     #[tokio::test]
@@ -577,17 +581,13 @@ mod tests {
         });
         let roster_key = crate::services::live_roster::lock_key(2);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                match crate::utils::single_flight::PgAdvisoryLock::try_acquire(&pool, &roster_key)
+            while let Some(probe) =
+                crate::utils::single_flight::PgAdvisoryLock::try_acquire(&pool, &roster_key)
                     .await
                     .unwrap()
-                {
-                    Some(probe) => {
-                        probe.release().await.unwrap();
-                        tokio::task::yield_now().await;
-                    }
-                    None => break,
-                }
+            {
+                probe.release().await.unwrap();
+                tokio::task::yield_now().await;
             }
         })
         .await

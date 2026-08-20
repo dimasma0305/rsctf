@@ -149,7 +149,7 @@ pub(super) async fn leave_game_membership_locked(
         return Err(AppError::bad_request("Cannot leave after approval"));
     }
     if crate::services::participation_evidence::has_competition_evidence(
-        &mut **transaction,
+        transaction,
         participation_id,
     )
     .await?
@@ -171,7 +171,7 @@ pub(super) async fn leave_game_membership_locked(
     .map_err(|error| AppError::internal(error.to_string()))?;
 
     crate::services::participation_evidence::delete_unlinked_pending_or_rejected_without_evidence(
-        &mut **transaction,
+        transaction,
         participation_id,
     )
     .await?;
@@ -449,7 +449,7 @@ pub(super) async fn persist_game_join_locked(
         .is_some_and(|(historical_id, target_id)| historical_id == target_id);
     if let Some(historical_id) = rejected_participation_id.filter(|_| !reuses_historical_link) {
         if crate::services::participation_evidence::has_competition_evidence(
-            &mut **transaction,
+            transaction,
             historical_id,
         )
         .await?

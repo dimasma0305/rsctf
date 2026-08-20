@@ -137,9 +137,7 @@ pub fn compute_breakdown(
             // rows. m0091 freezes their score deltas, but the prefix must keep
             // the original one-incident-per-rule collision behavior.
             let is_legacy = e.score_delta.is_none() || e.evidence_key.starts_with("legacy:");
-            let is_new_incident = if is_untrusted {
-                false
-            } else if is_legacy && legacy_incident_seen {
+            let is_new_incident = if is_untrusted || (is_legacy && legacy_incident_seen) {
                 false
             } else if is_legacy {
                 legacy_incident_seen = true;
@@ -184,21 +182,21 @@ pub fn compute_breakdown(
             }
         }
 
-        if tier == SuspicionTier::Context
-            && newest_trusted_context_index.is_some()
-            && context_seen.insert(rule_code.clone())
-        {
-            let unit = i64::from(ty.map(|t| t.corroboration_unit()).unwrap_or(5));
-            if unit > 0 {
-                let newest_annotated_index =
-                    newest_trusted_context_index.expect("checked trusted context event exists");
-                let newest = &annotated[newest_annotated_index];
-                context_candidates.push((
-                    newest.time,
-                    rule_code.clone(),
-                    newest_annotated_index,
-                    unit,
-                ));
+        if tier == SuspicionTier::Context {
+            match newest_trusted_context_index {
+                Some(newest_annotated_index) if context_seen.insert(rule_code.clone()) => {
+                    let unit = i64::from(ty.map(|t| t.corroboration_unit()).unwrap_or(5));
+                    if unit > 0 {
+                        let newest = &annotated[newest_annotated_index];
+                        context_candidates.push((
+                            newest.time,
+                            rule_code.clone(),
+                            newest_annotated_index,
+                            unit,
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
     }

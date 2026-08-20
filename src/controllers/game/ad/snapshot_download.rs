@@ -1,10 +1,9 @@
 //! Final authorization boundary for player A&D snapshot downloads.
 
+use crate::services::live_roster::LiveParticipationIdentity;
+use crate::utils::error::{AppError, AppResult};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
-use uuid::Uuid;
-
-use crate::utils::error::{AppError, AppResult};
 
 pub(super) struct SnapshotResponseGrant {
     pub(super) team_service_id: i32,
@@ -15,11 +14,7 @@ pub(super) struct SnapshotResponseGrant {
 
 pub(super) async fn finish_snapshot_response(
     pool: &sqlx::PgPool,
-    user_id: Uuid,
-    expected_security_stamp: &str,
-    game_id: i32,
-    team_id: i32,
-    participation_id: i32,
+    caller: LiveParticipationIdentity<'_>,
     grant: SnapshotResponseGrant,
     archive: Vec<u8>,
 ) -> AppResult<Response> {
@@ -29,11 +24,11 @@ pub(super) async fn finish_snapshot_response(
     // stamp rotation discards the prepared bytes.
     let mut roster = crate::services::live_roster::try_acquire_participation_fence(
         pool,
-        user_id,
-        expected_security_stamp,
-        game_id,
-        team_id,
-        participation_id,
+        caller.user_id,
+        caller.expected_security_stamp,
+        caller.game_id,
+        caller.team_id,
+        caller.participation_id,
         true,
     )
     .await?
@@ -71,8 +66,8 @@ pub(super) async fn finish_snapshot_response(
             FOR SHARE OF service, challenge, game, snapshot, file"#,
     )
     .bind(grant.team_service_id)
-    .bind(game_id)
-    .bind(participation_id)
+    .bind(caller.game_id)
+    .bind(caller.participation_id)
     .bind(grant.snapshot_id)
     .bind(&grant.hash)
     .bind(&grant.filename)
@@ -238,10 +233,17 @@ mod tests {
             hash: "snapshot-hash".to_string(),
             filename: "snapshot.tar.zst".to_string(),
         };
+        let caller = LiveParticipationIdentity {
+            user_id,
+            expected_security_stamp: "stamp",
+            game_id: 1,
+            team_id: 2,
+            participation_id: 3,
+        };
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            finish_snapshot_response(&pool, user_id, "stamp", 1, 2, 3, grant(), vec![1, 2, 3]),
+            finish_snapshot_response(&pool, caller, grant(), vec![1, 2, 3]),
         )
         .await
         .expect("a one-connection pool deadlocked")
@@ -255,8 +257,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            finish_snapshot_response(&pool, user_id, "stamp", 1, 2, 3, grant(), vec![1, 2, 3])
-                .await,
+            finish_snapshot_response(&pool, caller, grant(), vec![1, 2, 3]).await,
             Err(AppError::NotFound(_))
         ));
         sqlx::query(r#"UPDATE "Games" SET ad_allow_snapshot_download = TRUE WHERE id = 1"#)
@@ -268,8 +269,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            finish_snapshot_response(&pool, user_id, "stamp", 1, 2, 3, grant(), vec![1, 2, 3])
-                .await,
+            finish_snapshot_response(&pool, caller, grant(), vec![1, 2, 3]).await,
             Err(AppError::NotFound(_))
         ));
         sqlx::query(r#"UPDATE "GameChallenges" SET ad_self_hosted = FALSE WHERE id = 4"#)
@@ -286,8 +286,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            finish_snapshot_response(&pool, user_id, "stamp", 1, 2, 3, grant(), vec![4, 5, 6],)
-                .await,
+            finish_snapshot_response(&pool, caller, grant(), vec![4, 5, 6]).await,
             Err(AppError::Forbidden)
         ));
 
@@ -303,8 +302,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            finish_snapshot_response(&pool, user_id, "stamp", 1, 2, 3, grant(), vec![4, 5, 6])
-                .await,
+            finish_snapshot_response(&pool, caller, grant(), vec![4, 5, 6]).await,
             Err(AppError::NotFound(_))
         ));
 

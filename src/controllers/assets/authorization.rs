@@ -511,7 +511,7 @@ async fn authorize_participant_target(
     // authoritative. A writeup has no challenge override, so its division's
     // default permission is the effective policy.
     let row = load_authorized_target_on(
-        &mut **roster.transaction_mut(),
+        roster.transaction_mut(),
         user.id,
         target.game_id,
         historical.participation_id,
@@ -820,7 +820,7 @@ pub(super) async fn finalize_asset_download(
     };
 
     let row = load_authorized_target_on(
-        &mut **roster.transaction_mut(),
+        roster.transaction_mut(),
         grant.user_id,
         grant.game_id,
         grant.participation_id,
@@ -853,7 +853,7 @@ pub(super) async fn finalize_asset_download(
                 .acquire_additional(&download_event_lock_key(&event))
                 .await
                 .map_err(|error| AppError::internal(error.to_string()))?;
-            insert_download_event_on(&mut **roster.transaction_mut(), &event, token).await?;
+            insert_download_event_on(roster.transaction_mut(), &event, token).await?;
         }
     }
 

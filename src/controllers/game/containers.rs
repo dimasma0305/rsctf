@@ -2,6 +2,7 @@
 use super::*;
 
 mod eligibility;
+use crate::services::live_roster::LiveParticipationIdentity;
 use eligibility::{
     load_eligible_shared_challenge, player_container_request_is_eligible, ContainerRequestMode,
 };
@@ -34,6 +35,13 @@ pub async fn create_container(
     Path((id, cid)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<ContainerInfoModel>> {
     let ctx = context_info(&st, &user, id, true).await?;
+    let caller = LiveParticipationIdentity {
+        user_id: user.id,
+        expected_security_stamp: &user.security_stamp,
+        game_id: id,
+        team_id: ctx.participation.team_id,
+        participation_id: ctx.participation.id,
+    };
 
     let challenge = load_playable_challenge(&st, id, cid).await?;
     // Division may restrict viewing (hence provisioning) this challenge: lacking
@@ -75,12 +83,8 @@ pub async fn create_container(
             .await?;
         let result = async {
             if !player_container_request_is_eligible(
-                &mut **distributed.transaction_mut(),
-                user.id,
-                &user.security_stamp,
-                id,
-                ctx.participation.id,
-                ctx.participation.team_id,
+                distributed.transaction_mut(),
+                caller,
                 cid,
                 ContainerRequestMode::Shared,
             )
@@ -93,12 +97,8 @@ pub async fn create_container(
             // this caller loses eligibility, but the stale request must not receive
             // its endpoint after the potentially slow backend operation.
             if !player_container_request_is_eligible(
-                &mut **distributed.transaction_mut(),
-                user.id,
-                &user.security_stamp,
-                id,
-                ctx.participation.id,
-                ctx.participation.team_id,
+                distributed.transaction_mut(),
+                caller,
                 cid,
                 ContainerRequestMode::Shared,
             )
@@ -127,12 +127,8 @@ pub async fn create_container(
         .await?;
 
     if !player_container_request_is_eligible(
-        &mut **distributed.transaction_mut(),
-        user.id,
-        &user.security_stamp,
-        id,
-        ctx.participation.id,
-        ctx.participation.team_id,
+        distributed.transaction_mut(),
+        caller,
         cid,
         ContainerRequestMode::PerTeam,
     )
@@ -285,12 +281,8 @@ pub async fn create_container(
 
     let backend_id = info.id.clone();
     match player_container_request_is_eligible(
-        &mut **distributed.transaction_mut(),
-        user.id,
-        &user.security_stamp,
-        id,
-        participation.id,
-        participation.team_id,
+        distributed.transaction_mut(),
+        caller,
         cid,
         ContainerRequestMode::PerTeam,
     )
@@ -440,12 +432,8 @@ pub async fn create_container(
     // link exists: if a team/game/challenge teardown swept before those rows became
     // visible, this request now owns enough information to revoke its own late publish.
     let stale_error = match player_container_request_is_eligible(
-        &mut **distributed.transaction_mut(),
-        user.id,
-        &user.security_stamp,
-        id,
-        participation.id,
-        participation.team_id,
+        distributed.transaction_mut(),
+        caller,
         cid,
         ContainerRequestMode::PerTeam,
     )
@@ -644,6 +632,13 @@ pub async fn extend_container(
     Path((id, cid)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<ContainerInfoModel>> {
     let ctx = context_info(&st, &user, id, true).await?;
+    let caller = LiveParticipationIdentity {
+        user_id: user.id,
+        expected_security_stamp: &user.security_stamp,
+        game_id: id,
+        team_id: ctx.participation.team_id,
+        participation_id: ctx.participation.id,
+    };
     let guard_challenge = load_playable_challenge(&st, id, cid).await?;
 
     let perm = effective_permission(&st, &ctx.participation, cid).await?;
@@ -668,12 +663,8 @@ pub async fn extend_container(
             .await?;
         let result = async {
             if !player_container_request_is_eligible(
-                &mut **distributed.transaction_mut(),
-                user.id,
-                &user.security_stamp,
-                id,
-                ctx.participation.id,
-                ctx.participation.team_id,
+                distributed.transaction_mut(),
+                caller,
                 cid,
                 ContainerRequestMode::Shared,
             )
@@ -734,12 +725,8 @@ pub async fn extend_container(
         .await?;
     let result = async {
         if !player_container_request_is_eligible(
-            &mut **distributed.transaction_mut(),
-            user.id,
-            &user.security_stamp,
-            id,
-            ctx.participation.id,
-            ctx.participation.team_id,
+            distributed.transaction_mut(),
+            caller,
             cid,
             ContainerRequestMode::PerTeam,
         )

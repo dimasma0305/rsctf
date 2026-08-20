@@ -10,6 +10,19 @@ use uuid::Uuid;
 use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
 
+/// Stable identity of one authenticated caller's historical participation.
+///
+/// Keeping these fields together prevents sensitive final-boundary helpers from
+/// accepting mismatched game, team, participation, or session-stamp arguments.
+#[derive(Clone, Copy)]
+pub(crate) struct LiveParticipationIdentity<'a> {
+    pub(crate) user_id: Uuid,
+    pub(crate) expected_security_stamp: &'a str,
+    pub(crate) game_id: i32,
+    pub(crate) team_id: i32,
+    pub(crate) participation_id: i32,
+}
+
 pub(crate) fn lock_key(team_id: i32) -> String {
     format!("team-roster:{team_id}")
 }

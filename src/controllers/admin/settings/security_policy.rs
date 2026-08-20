@@ -189,8 +189,10 @@ mod tests {
         config.account.use_captcha = false;
 
         config.public_url = None;
-        let mut confirmation = AccountPolicy::default();
-        confirmation.email_confirmation_required = true;
+        let confirmation = AccountPolicy {
+            email_confirmation_required: true,
+            ..AccountPolicy::default()
+        };
         let missing_origin = save_security_policy(&pool, &config, Some(confirmation), None)
             .await
             .expect_err("email confirmation was enabled without a public origin");
@@ -214,8 +216,10 @@ mod tests {
                 ..captcha("CloudflareTurnstile", Some("secret-without-site"), 18)
             },
         ] {
-            let mut enabled = AccountPolicy::default();
-            enabled.use_captcha = true;
+            let enabled = AccountPolicy {
+                use_captcha: true,
+                ..AccountPolicy::default()
+            };
             let error = save_security_policy(&pool, &config, Some(enabled), Some(invalid))
                 .await
                 .expect_err("invalid enabled captcha combination committed");
@@ -239,8 +243,10 @@ mod tests {
             );
         }
 
-        let mut disabled = AccountPolicy::default();
-        disabled.use_captcha = false;
+        let disabled = AccountPolicy {
+            use_captcha: false,
+            ..AccountPolicy::default()
+        };
         save_security_policy(
             &pool,
             &config,
@@ -249,8 +255,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut enabled = AccountPolicy::default();
-        enabled.use_captcha = true;
+        let enabled = AccountPolicy {
+            use_captcha: true,
+            ..AccountPolicy::default()
+        };
         save_security_policy(
             &pool,
             &config,

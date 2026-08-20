@@ -36,7 +36,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
@@ -52,6 +52,7 @@ use futures::{SinkExt, StreamExt};
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser, MaybeUser};
 use crate::models::data::{container, game_instance, participation, user, user_participation};
+use crate::services::live_roster::LiveParticipationIdentity;
 use crate::services::worker::{parse_worker_handle, WorkerHandle};
 use crate::utils::enums::{ParticipationStatus, Role};
 use rsctf_worker_protocol::{
@@ -63,6 +64,7 @@ mod authorization;
 mod egress;
 #[cfg(test)]
 mod tests;
+mod transport;
 
 use access_log::log_container_access_on;
 use authorization::{
@@ -70,6 +72,7 @@ use authorization::{
     GameProxyTargetIdentity,
 };
 use egress::{build_egress_scan, record_flag_egress, EgressScan, RollingFlagMatcher};
+use transport::{close_cleanly, endpoint_unavailable_close, normal_close, transport_failure_close};
 
 /// Buffer size for TCP→WebSocket reads, matching RSCTF's `BufferSize`.
 const BUFFER_SIZE: usize = 4096;
@@ -150,11 +153,13 @@ async fn proxy_for_instance(
                             // suspicion advisory before row locks.
                             let Some(mut open_fence) = try_acquire_game_proxy_open_fence(
                                 st_log.pg(),
-                                a.accessing_user_id,
-                                &a.accessing_security_stamp,
-                                game.game_id,
-                                game.accessing_team_id,
-                                game.accessing_participation_id,
+                                LiveParticipationIdentity {
+                                    user_id: a.accessing_user_id,
+                                    expected_security_stamp: &a.accessing_security_stamp,
+                                    game_id: game.game_id,
+                                    team_id: game.accessing_team_id,
+                                    participation_id: game.accessing_participation_id,
+                                },
                                 game.challenge_id,
                                 &game.target_identity,
                             )
@@ -309,7 +314,7 @@ async fn resolve_instance_target(
 
     if container.game_instance_id.is_none() {
         match resolve_exercise_instance_target(st, &user, &container).await {
-            ExerciseResolution::Granted(access) => return Some(access),
+            ExerciseResolution::Granted(access) => return Some(*access),
             ExerciseResolution::Denied => return None,
             ExerciseResolution::NotExercise => {
                 return resolve_shared_instance_target(st, &user, container).await;
@@ -342,11 +347,13 @@ async fn resolve_instance_target(
     let target_identity = game_proxy_target_identity(&container, Some(instance.id));
     if !game_proxy_scope_is_valid(
         st.pg(),
-        user.id,
-        &user.security_stamp,
-        part.game_id,
-        part.team_id,
-        part.id,
+        LiveParticipationIdentity {
+            user_id: user.id,
+            expected_security_stamp: &user.security_stamp,
+            game_id: part.game_id,
+            team_id: part.team_id,
+            participation_id: part.id,
+        },
         instance.challenge_id,
         &target_identity,
     )
@@ -402,7 +409,7 @@ struct ExerciseAccessRow {
 }
 
 enum ExerciseResolution {
-    Granted(InstanceAccess),
+    Granted(Box<InstanceAccess>),
     Denied,
     NotExercise,
 }
@@ -443,14 +450,14 @@ async fn resolve_exercise_instance_target(
     let Some(endpoint) = proxy_target(container) else {
         return ExerciseResolution::Denied;
     };
-    ExerciseResolution::Granted(InstanceAccess {
+    ExerciseResolution::Granted(Box::new(InstanceAccess {
         endpoint,
         container_id: container.id,
         accessing_user_id: user.id,
         accessing_user_name: user.name.clone(),
         accessing_security_stamp: user.security_stamp.clone(),
         owner: InstanceOwner::Exercise(exercise),
-    })
+    }))
 }
 
 fn authorize_exercise_access(
@@ -519,11 +526,13 @@ async fn resolve_shared_instance_target(
     let target_identity = game_proxy_target_identity(&container, None);
     if !game_proxy_scope_is_valid(
         st.pg(),
-        user.id,
-        &user.security_stamp,
-        row.game_id,
-        row.team_id,
-        row.participation_id,
+        LiveParticipationIdentity {
+            user_id: user.id,
+            expected_security_stamp: &user.security_stamp,
+            game_id: row.game_id,
+            team_id: row.team_id,
+            participation_id: row.participation_id,
+        },
         row.challenge_id,
         &target_identity,
     )
@@ -813,11 +822,13 @@ async fn wait_for_revocation(lease: InstanceLease) {
             } => {
                 game_proxy_scope_is_valid(
                     &lease.pool,
-                    lease.user_id,
-                    &lease.security_stamp,
-                    *game_id,
-                    *team_id,
-                    *participation_id,
+                    LiveParticipationIdentity {
+                        user_id: lease.user_id,
+                        expected_security_stamp: &lease.security_stamp,
+                        game_id: *game_id,
+                        team_id: *team_id,
+                        participation_id: *participation_id,
+                    },
                     *challenge_id,
                     target_identity,
                 )
@@ -966,29 +977,4 @@ where
         _ = ws_to_tcp => {}
         _ = tcp_to_ws => {}
     }
-}
-
-/// Accept the upgraded socket and close it cleanly (used when there is nothing
-/// to proxy). Send a Close frame, then drop the socket.
-async fn close_cleanly(mut socket: WebSocket) {
-    let _ = socket.send(normal_close()).await;
-}
-
-fn normal_close() -> Message {
-    close_message(close_code::NORMAL, "")
-}
-
-fn endpoint_unavailable_close() -> Message {
-    close_message(close_code::AGAIN, "proxy endpoint unavailable")
-}
-
-fn transport_failure_close() -> Message {
-    close_message(close_code::ERROR, "proxy transport failed")
-}
-
-fn close_message(code: u16, reason: &'static str) -> Message {
-    Message::Close(Some(CloseFrame {
-        code,
-        reason: reason.into(),
-    }))
 }

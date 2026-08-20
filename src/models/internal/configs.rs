@@ -379,7 +379,7 @@ fn validate_identity_hash_key(secret: &str, jwt_secret: &str) -> anyhow::Result<
     if secret.chars().any(char::is_whitespace) {
         anyhow::bail!("RSCTF_IDENTITY_HASH_KEY must not contain whitespace");
     }
-    if secret.as_bytes().len() < 32 {
+    if secret.len() < 32 {
         anyhow::bail!("RSCTF_IDENTITY_HASH_KEY must contain at least 32 bytes");
     }
     if secret == jwt_secret {

@@ -89,6 +89,8 @@ mod tests {
 
     use super::{persist_raw_honeypot_hit, INSERT_RAW_HONEYPOT_HIT_SQL};
 
+    type RawHoneypotRow = (String, Option<i32>, Option<i32>, Option<Uuid>);
+
     #[test]
     fn raw_insert_cannot_carry_participant_attribution() {
         assert!(INSERT_RAW_HONEYPOT_HIT_SQL.contains("VALUES (NULL, NULL"));
@@ -167,7 +169,7 @@ mod tests {
         .await
         .is_err());
 
-        let rows: Vec<(String, Option<i32>, Option<i32>, Option<Uuid>)> = sqlx::query_as(
+        let rows: Vec<RawHoneypotRow> = sqlx::query_as(
             r#"SELECT bait, game_id, participation_id, user_id
                  FROM "HoneypotHits"
                 ORDER BY id"#,
