@@ -7,6 +7,19 @@ use std::collections::HashSet;
 pub use sea_orm_migration::prelude::*;
 use sea_orm_migration::sea_orm::DatabaseConnection;
 
+#[cfg(test)]
+pub(crate) fn test_process_application_name() -> &'static str {
+    static APPLICATION_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    APPLICATION_NAME.get_or_init(|| format!("rsctf:test:process:{}", uuid::Uuid::new_v4().simple()))
+}
+
+#[cfg(test)]
+pub(crate) fn test_pg_connect_options(database_url: &str) -> sqlx::postgres::PgConnectOptions {
+    <sqlx::postgres::PgConnectOptions as std::str::FromStr>::from_str(database_url)
+        .expect("parse test database URL")
+        .application_name(test_process_application_name())
+}
+
 mod m0001_init;
 mod m0002_extra;
 mod m0003_managers;
