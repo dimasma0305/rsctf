@@ -751,9 +751,10 @@ async fn inflight_submit_commits_before_team_deletion_checks_evidence() {
 async fn locked_roster_revocation_reuses_the_existing_game_fence() {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to a disposable PostgreSQL database");
+    let admin_options = crate::migrations::test_pg_connect_options(&database_url);
     let admin_pool = PgPoolOptions::new()
         .max_connections(1)
-        .connect(&database_url)
+        .connect_with(admin_options)
         .await
         .expect("connect test database");
     let schema = format!("rsctf_locked_roster_{}", uuid::Uuid::new_v4().simple());
@@ -761,8 +762,7 @@ async fn locked_roster_revocation_reuses_the_existing_game_fence() {
         .execute(&admin_pool)
         .await
         .expect("create isolated test schema");
-    let options = PgConnectOptions::from_str(&database_url)
-        .expect("parse test database URL")
+    let options = crate::migrations::test_pg_connect_options(&database_url)
         .options([("search_path", schema.as_str())]);
     let pool = PgPoolOptions::new()
         .max_connections(8)

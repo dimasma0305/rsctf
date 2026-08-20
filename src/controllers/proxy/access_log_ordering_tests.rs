@@ -49,7 +49,8 @@ async fn concurrent_accesses_timestamp_in_participation_lock_order() {
           id INTEGER PRIMARY KEY,
           game_id INTEGER NOT NULL,
           team_id INTEGER NOT NULL,
-          status SMALLINT NOT NULL
+          status SMALLINT NOT NULL,
+          competitive_admitted_at_utc TIMESTAMPTZ
         );
         CREATE TABLE "GameChallenges" (
           id INTEGER PRIMARY KEY,

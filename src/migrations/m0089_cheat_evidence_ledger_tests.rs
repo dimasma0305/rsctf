@@ -1,15 +1,10 @@
-use std::{str::FromStr, sync::OnceLock};
+use std::str::FromStr;
 
 use sea_orm_migration::sea_orm::{ConnectionTrait, SqlxPostgresConnector};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use super::UP_SQL;
-use crate::migrations::{Migrator, MigratorTrait};
-
-fn test_process_application_name() -> &'static str {
-    static APPLICATION_NAME: OnceLock<String> = OnceLock::new();
-    APPLICATION_NAME.get_or_init(|| format!("rsctf:test:m0089:{}", uuid::Uuid::new_v4().simple()))
-}
+use crate::migrations::{test_process_application_name, Migrator, MigratorTrait};
 
 #[test]
 fn ledger_contract_is_immutable_consistent_and_replayable() {

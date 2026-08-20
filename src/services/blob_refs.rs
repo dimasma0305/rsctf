@@ -432,7 +432,8 @@ mod tests {
             r#"
             CREATE TABLE "Games" (
               id INTEGER PRIMARY KEY, deletion_pending BOOLEAN NOT NULL,
-              start_time_utc TIMESTAMPTZ NOT NULL, writeup_required BOOLEAN NOT NULL,
+              start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL,
+              writeup_required BOOLEAN NOT NULL,
               writeup_deadline TIMESTAMPTZ NOT NULL
             );
             CREATE TABLE "Teams" (
@@ -477,7 +478,8 @@ mod tests {
         let user_id = uuid::Uuid::new_v4();
         sqlx::query(
             r#"INSERT INTO "Games" VALUES
-               (1, FALSE, clock_timestamp() - interval '1 hour', TRUE,
+               (1, FALSE, clock_timestamp() - interval '1 hour',
+                clock_timestamp() + interval '1 hour', TRUE,
                 clock_timestamp() + interval '1 hour')"#,
         )
         .execute(&pool)

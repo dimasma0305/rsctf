@@ -571,6 +571,10 @@ mod tests {
         // wait on that advisory before taking any row locks, so this ordering
         // cannot form detector<->proxy deadlock.
         let mut detector = pool.begin().await.unwrap();
+        let detector_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *detector)
+            .await
+            .unwrap();
         crate::services::suspicion::lock_participation_suspicion_writes(&mut detector, 3)
             .await
             .unwrap();
@@ -579,19 +583,37 @@ mod tests {
             let target = target.clone();
             async move { fixture_open_fence(&pool, user_id, &target).await }
         });
-        let roster_key = crate::services::live_roster::lock_key(2);
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while let Some(probe) =
-                crate::utils::single_flight::PgAdvisoryLock::try_acquire(&pool, &roster_key)
-                    .await
-                    .unwrap()
-            {
-                probe.release().await.unwrap();
-                tokio::task::yield_now().await;
+        let scheduling_timeout = std::time::Duration::from_secs(10);
+        tokio::time::timeout(scheduling_timeout, async {
+            loop {
+                let waiting_on_detector: bool = sqlx::query_scalar(
+                    r#"SELECT EXISTS (
+                           SELECT 1
+                             FROM pg_locks held
+                             JOIN pg_locks waiting
+                               ON waiting.locktype = held.locktype
+                              AND waiting.database IS NOT DISTINCT FROM held.database
+                              AND waiting.classid IS NOT DISTINCT FROM held.classid
+                              AND waiting.objid IS NOT DISTINCT FROM held.objid
+                              AND waiting.objsubid IS NOT DISTINCT FROM held.objsubid
+                            WHERE held.pid = $1
+                              AND held.locktype = 'advisory'
+                              AND held.granted
+                              AND NOT waiting.granted
+                       )"#,
+                )
+                .bind(detector_pid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                if waiting_on_detector {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
         .await
-        .expect("proxy never reached its roster-before-suspicion wait");
+        .expect("proxy never reached the detector suspicion wait");
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
             sqlx::query(r#"SELECT id FROM "Participations" WHERE id = 3 FOR UPDATE"#)
@@ -601,7 +623,7 @@ mod tests {
         .expect("proxy row locks inverted the detector suspicion order")
         .unwrap();
         detector.commit().await.unwrap();
-        let queued_open = tokio::time::timeout(std::time::Duration::from_secs(2), queued_open)
+        let queued_open = tokio::time::timeout(scheduling_timeout, queued_open)
             .await
             .expect("proxy did not resume after detector commit")
             .unwrap()

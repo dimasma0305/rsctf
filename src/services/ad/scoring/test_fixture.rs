@@ -1,8 +1,6 @@
-use std::str::FromStr;
-
 use sea_orm::SqlxPostgresConnector;
 use sea_orm_migration::MigratorTrait;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::PgPoolOptions;
 
 pub(super) struct AdScoringFixture {
     pub pool: sqlx::PgPool,
@@ -29,9 +27,10 @@ impl AdScoringFixture {
 pub(super) async fn ad_scoring_fixture() -> AdScoringFixture {
     let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
         .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin_options = crate::migrations::test_pg_connect_options(&database_url);
     let admin_pool = PgPoolOptions::new()
         .max_connections(1)
-        .connect(&database_url)
+        .connect_with(admin_options)
         .await
         .expect("connect A&D fixture admin pool");
     let schema = format!("rsctf_ad_scoring_{}", uuid::Uuid::new_v4().simple());
@@ -39,8 +38,7 @@ pub(super) async fn ad_scoring_fixture() -> AdScoringFixture {
         .execute(&admin_pool)
         .await
         .expect("create isolated A&D fixture schema");
-    let options = PgConnectOptions::from_str(&database_url)
-        .expect("parse test database URL")
+    let options = crate::migrations::test_pg_connect_options(&database_url)
         .options([("search_path", schema.as_str())]);
     let pool = PgPoolOptions::new()
         .max_connections(4)
