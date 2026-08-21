@@ -19,10 +19,14 @@ async fn import_with_game_lock(
 #[test]
 fn pending_imports_are_inert_from_the_initial_insert() {
     let now = Utc::now();
-    let policy = ImportPolicy::PendingReview;
+    let submitter = uuid::Uuid::new_v4();
+    let policy = ImportPolicy::PendingReview {
+        submitted_by_user_id: submitter,
+    };
     assert_eq!(policy.review_status(), ChallengeReviewStatus::Pending);
     assert_eq!(policy.reviewed_at(now), None);
     assert!(!policy.may_execute());
+    assert_eq!(policy.submitted_by_user_id(), Some(submitter));
 }
 
 #[test]
@@ -32,6 +36,46 @@ fn trusted_imports_preserve_inline_preparation() {
     assert_eq!(policy.review_status(), ChallengeReviewStatus::Active);
     assert_eq!(policy.reviewed_at(now), Some(now));
     assert!(policy.may_execute());
+    assert_eq!(policy.submitted_by_user_id(), None);
+}
+
+#[test]
+fn pending_manifest_complexity_is_bounded_before_database_writes() {
+    let mut model = ChallengeYaml {
+        flags: Some(vec!["flag{ok}".to_string(); MAX_PENDING_STATIC_FLAGS]),
+        hints: Some(vec!["hint".to_string(); MAX_PENDING_HINTS]),
+        ..Default::default()
+    };
+    assert!(validate_pending_manifest(&model).is_ok());
+
+    model.flags.as_mut().unwrap().push("flag{too_many}".into());
+    assert!(validate_pending_manifest(&model).is_err());
+    model.flags.as_mut().unwrap().pop();
+
+    model.hints.as_mut().unwrap().push("too many".into());
+    assert!(validate_pending_manifest(&model).is_err());
+}
+
+#[test]
+fn new_import_review_metadata_keeps_submitter_attribution() {
+    let now = Utc::now();
+    let submitter = uuid::Uuid::new_v4();
+    let mut pending = <game_challenge::ActiveModel as Default>::default();
+    initialize_new_import_review(
+        &mut pending,
+        ImportPolicy::PendingReview {
+            submitted_by_user_id: submitter,
+        },
+        now,
+    );
+    assert_eq!(pending.review_status, Set(ChallengeReviewStatus::Pending));
+    assert_eq!(pending.submitted_by_user_id, Set(Some(submitter)));
+    assert_eq!(pending.submitted_at_utc, Set(Some(now)));
+
+    let mut trusted = <game_challenge::ActiveModel as Default>::default();
+    initialize_new_import_review(&mut trusted, ImportPolicy::Trusted, now);
+    assert_eq!(trusted.review_status, Set(ChallengeReviewStatus::Active));
+    assert_eq!(trusted.submitted_by_user_id, Set(None));
 }
 
 #[test]

@@ -40,11 +40,12 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "pullPolicy", "tag"],
+      "required": ["repository", "pullPolicy", "tag", "digest"],
       "properties": {
         "repository": {"type": "string", "minLength": 1},
         "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]},
-        "tag": {"type": "string"}
+        "tag": {"type": "string"},
+        "digest": {"type": "string", "pattern": "^$|^sha256:[0-9a-f]{64}$", "description": "Immutable manifest digest. Takes precedence over tag when set."}
       }
     },
     "imagePullSecrets": {
@@ -60,12 +61,16 @@
     "existingSecret": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "databaseUrlKey", "jwtSecretKey", "bootstrapTokenKey", "redisUrlKey", "postgresqlPasswordKey", "redisPasswordKey"],
+      "required": ["name", "databaseUrlKey", "jwtSecretKey", "identityHashKey", "bootstrapTokenKey", "eventVpnCredentialKey", "eventSensorTokenKey", "solveReceiptIssuerTokenKey", "redisUrlKey", "postgresqlPasswordKey", "redisPasswordKey"],
       "properties": {
         "name": {"type": "string"},
         "databaseUrlKey": {"$ref": "#/definitions/secretKey"},
         "jwtSecretKey": {"$ref": "#/definitions/secretKey"},
+        "identityHashKey": {"$ref": "#/definitions/secretKey"},
         "bootstrapTokenKey": {"$ref": "#/definitions/secretKey"},
+        "eventVpnCredentialKey": {"$ref": "#/definitions/secretKey"},
+        "eventSensorTokenKey": {"$ref": "#/definitions/secretKey"},
+        "solveReceiptIssuerTokenKey": {"$ref": "#/definitions/secretKey"},
         "redisUrlKey": {"$ref": "#/definitions/secretKey"},
         "postgresqlPasswordKey": {"$ref": "#/definitions/secretKey"},
         "redisPasswordKey": {"$ref": "#/definitions/secretKey"}
@@ -74,10 +79,14 @@
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["jwtSecret", "bootstrapToken"],
+      "required": ["jwtSecret", "identityHashKey", "bootstrapToken", "eventVpnCredentialKey", "eventSensorToken", "solveReceiptIssuerToken"],
       "properties": {
         "jwtSecret": {"type": "string", "description": "At least 32 random characters unless existingSecret.name is used."},
-        "bootstrapToken": {"type": "string", "description": "Optional 32+ character first-admin setup token; generated and retained when empty."}
+        "identityHashKey": {"type": "string", "description": "At least 32 random characters, independent from jwtSecret and stable across replicas, restarts, and JWT rotations, unless existingSecret.name is used."},
+        "bootstrapToken": {"type": "string", "description": "Optional 32+ character first-admin setup token; generated and retained when empty."},
+        "eventVpnCredentialKey": {"type": "string", "description": "Stable independent key for per-user VPN private-key encryption and proof signing."},
+        "eventSensorToken": {"type": "string", "description": "Dedicated token for the bounded local sensor API."},
+        "solveReceiptIssuerToken": {"type": "string", "description": "Dedicated token for trusted challenge solve-receipt issuance."}
       }
     },
     "storage": {
@@ -317,7 +326,7 @@
     "config": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["publicUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "adSubmitBurstFlags", "containerMaxMemoryMb", "containerMaxCpuCount"],
+      "required": ["publicUrl", "cookieSecure", "trustedProxyCidrs", "jwtTtlSeconds", "allowRegister", "emailConfirm", "adminConfirm", "activeOnRegister", "useCaptcha", "migrate", "logLevel", "provisioningConcurrency", "repoScanConcurrency", "dbMaxConnections", "checkerUidBase", "checkerProcessBudget", "adSubmitBurstFlags", "suspicionReconcileSeconds", "suspicionFinalizeGraceSeconds", "containerMaxMemoryMb", "containerMaxCpuCount"],
       "properties": {
         "publicUrl": {"type": "string", "pattern": "^(|https?://[^[:space:]]+)$"},
         "cookieSecure": {"type": "boolean"},
@@ -332,10 +341,12 @@
         "logLevel": {"type": "string", "minLength": 1},
         "provisioningConcurrency": {"type": "integer", "minimum": 1, "description": "P in the database pool floor; each concurrent provisioning operation may retain two connections."},
         "repoScanConcurrency": {"type": "integer", "minimum": 1, "maximum": 4, "description": "R in the database pool floor; a checker-bearing repository scan may briefly retain five connections."},
-        "dbMaxConnections": {"type": "integer", "minimum": 2, "description": "Per-process pool cap. Required minimum is 2 for migrate; 5R+2P+1 for engine; 5R+2P+13 for web; 5R+2P+3 or +6 for non-VPN/VPN control and network; and 5R+2P+15 or +18 for non-VPN/VPN all."},
+        "dbMaxConnections": {"type": "integer", "minimum": 2, "description": "Per-process pool cap. Required minimum is 2 for migrate; 5R+2P+3 for engine; 5R+2P+13 for web; 5R+2P+5 or +8 for non-VPN/VPN control; 5R+2P+3 or +6 for network; and 5R+2P+17 or +20 for all."},
         "checkerUidBase": {"type": "integer", "minimum": 1, "maximum": 65534, "description": "First otherwise-unused numeric UID reserved for process checker isolation."},
         "checkerProcessBudget": {"type": "integer", "minimum": 1, "maximum": 256, "description": "Reserved UID count and per-process custom-checker concurrency bound."},
         "adSubmitBurstFlags": {"type": "integer", "minimum": 100, "maximum": 3200, "description": "Immediate per-participation A&D flag-work budget before the fixed 10 flags/second refill."},
+        "suspicionReconcileSeconds": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "All/control/engine full-history anti-cheat sweep interval."},
+        "suspicionFinalizeGraceSeconds": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Ended-game pause before the barrier-backed final anti-cheat pass."},
         "containerMaxMemoryMb": {"type": "integer", "minimum": 1},
         "containerMaxCpuCount": {"type": "integer", "minimum": 1}
       }
@@ -364,7 +375,7 @@
     "kubernetes": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "metrics", "adServiceCidr", "isolatedPodNetns"],
+      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "metrics", "adServiceCidr", "networkPolicyEnforced", "isolatedPodNetns"],
       "properties": {
         "challengeNamespace": {"type": "string"},
         "createChallengeNamespace": {"type": "boolean"},
@@ -378,6 +389,7 @@
           "properties": {"enabled": {"type": "boolean"}}
         },
         "adServiceCidr": {"type": "string"},
+        "networkPolicyEnforced": {"type": "boolean"},
         "isolatedPodNetns": {"type": "boolean"}
       }
     },
@@ -400,7 +412,7 @@
     "vpn": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "required", "listenPort", "serverEndpoint", "clientCidr", "servicesCidr", "dns", "allowedIps", "devicePath", "service"],
+      "required": ["enabled", "required", "listenPort", "serverEndpoint", "clientCidr", "servicesCidr", "dns", "allowedIps", "eventProofUrl", "eventAllowedIps", "devicePath", "service", "sensor"],
       "properties": {
         "enabled": {"type": "boolean"},
         "required": {"type": "boolean"},
@@ -410,6 +422,8 @@
         "servicesCidr": {"type": "string", "minLength": 1},
         "dns": {"type": "string", "minLength": 1},
         "allowedIps": {"type": "string"},
+        "eventProofUrl": {"type": "string"},
+        "eventAllowedIps": {"type": "string"},
         "devicePath": {"type": "string", "pattern": "^/"},
         "service": {
           "type": "object",
@@ -420,6 +434,17 @@
             "port": {"type": "integer", "minimum": 1, "maximum": 65535},
             "annotations": {"type": "object", "additionalProperties": {"type": "string"}},
             "externalTrafficPolicy": {"type": "string", "enum": ["", "Cluster", "Local"]}
+          }
+        },
+        "sensor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "interface", "asnFile", "resources"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "interface": {"type": "string", "minLength": 1},
+            "asnFile": {"type": "string"},
+            "resources": {"type": "object"}
           }
         }
       }

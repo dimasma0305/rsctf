@@ -33,7 +33,7 @@ overrides:
   # Keep each consumer on its existing Nano ID major while fixing bounded-loop
   # handling for zero and negative custom-generator sizes.
   "@xdsec/wsrx>nanoid": "5.1.16"
-  "postcss>nanoid": "3.3.17"
+  "postcss>nanoid": "3.3.18"
 
 minimumReleaseAgeExclude:
   # Exact security hotfixes may bypass the seven-day cooldown; every unrelated
@@ -43,4 +43,4 @@ minimumReleaseAgeExclude:
   - fast-uri@3.1.5
   - postcss@8.5.23
   - dompurify@3.4.13
-  - nanoid@3.3.17
+  - nanoid@3.3.18

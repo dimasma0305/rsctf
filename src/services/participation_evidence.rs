@@ -14,16 +14,28 @@ use crate::utils::error::{AppError, AppResult};
 /// `AdTeamServices` are not evidence by themselves; their scored children are.
 const COMPETITION_EVIDENCE_SELECT_SQL: &str = r#"
     SELECT 1 FROM "Participations" participation
-     WHERE participation.id = $1 AND participation.writeup_id IS NOT NULL
+     WHERE participation.id = $1
+       AND (participation.writeup_id IS NOT NULL
+            OR participation.competitive_admitted_at_utc IS NOT NULL)
     UNION ALL
     SELECT 1 FROM "Submissions" submission
      WHERE submission.participation_id = $1
+    UNION ALL
+    SELECT 1 FROM "CheatInfo" cheat
+     WHERE cheat.submit_participation_id = $1
+        OR cheat.source_participation_id = $1
+    UNION ALL
+    SELECT 1 FROM "SuspicionEvaluationOutbox" evaluation
+     WHERE evaluation.participation_id = $1
     UNION ALL
     SELECT 1 FROM "FirstSolves" first_solve
      WHERE first_solve.participation_id = $1
     UNION ALL
     SELECT 1 FROM "SuspicionEvents" suspicion
      WHERE suspicion.participation_id = $1
+    UNION ALL
+    SELECT 1 FROM "IdentityObservations" identity
+     WHERE identity.participation_id = $1
     UNION ALL
     SELECT 1 FROM "HoneypotHits" hit
      WHERE hit.participation_id = $1
@@ -166,6 +178,70 @@ pub(crate) async fn lock_audit_insert_scope_sqlx(
     challenge_id: Option<i32>,
     participation_ids: &[i32],
 ) -> Result<bool, sqlx::Error> {
+    lock_audit_insert_scope_mode_sqlx(transaction, game_id, challenge_id, participation_ids, false)
+        .await
+}
+
+/// Read the durable competitive-intake phase after the caller has acquired the
+/// target Game row's shared lock. `None` means the game is absent or pending
+/// deletion; `Some(false)` is the explicit finalization closure that allows
+/// callers to retain non-competitive raw telemetry without creating a score.
+pub async fn competitive_evidence_is_open(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+) -> AppResult<Option<bool>> {
+    competitive_evidence_is_open_sqlx(transaction, game_id)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
+pub(crate) async fn competitive_evidence_is_open_sqlx(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+) -> Result<Option<bool>, sqlx::Error> {
+    sqlx::query_scalar(
+        r#"SELECT reconciliation.evidence_closed_at_utc IS NULL
+              FROM "Games" game
+              LEFT JOIN "SuspicionReconciliationState" reconciliation
+                ON reconciliation.game_id = game.id
+             WHERE game.id = $1 AND game.deletion_pending = FALSE"#,
+    )
+    .bind(game_id)
+    .fetch_optional(&mut **transaction)
+    .await
+}
+
+/// Lock an already-observed audit identity for replay/reconciliation. Historical
+/// evidence remains attributable after the participation is suspended or the
+/// challenge is disabled; deletion-pending identities remain fenced out.
+pub(crate) async fn lock_historical_audit_insert_scope(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+    challenge_id: Option<i32>,
+    participation_ids: &[i32],
+) -> AppResult<bool> {
+    lock_historical_audit_insert_scope_sqlx(transaction, game_id, challenge_id, participation_ids)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
+pub(crate) async fn lock_historical_audit_insert_scope_sqlx(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+    challenge_id: Option<i32>,
+    participation_ids: &[i32],
+) -> Result<bool, sqlx::Error> {
+    lock_audit_insert_scope_mode_sqlx(transaction, game_id, challenge_id, participation_ids, true)
+        .await
+}
+
+async fn lock_audit_insert_scope_mode_sqlx(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+    challenge_id: Option<i32>,
+    participation_ids: &[i32],
+    historical: bool,
+) -> Result<bool, sqlx::Error> {
     let game_exists = sqlx::query_scalar::<_, i32>(
         r#"SELECT id
               FROM "Games"
@@ -179,17 +255,21 @@ pub(crate) async fn lock_audit_insert_scope_sqlx(
     if !game_exists {
         return Ok(false);
     }
+    if !historical && competitive_evidence_is_open_sqlx(transaction, game_id).await? != Some(true) {
+        return Ok(false);
+    }
     if let Some(challenge_id) = challenge_id {
         let challenge_exists = sqlx::query_scalar::<_, i32>(
             r#"SELECT id
                   FROM "GameChallenges"
                  WHERE id = $1 AND game_id = $2
-                   AND is_enabled = TRUE
+                   AND ($3 OR is_enabled = TRUE)
                    AND deletion_pending = FALSE
                  FOR SHARE"#,
         )
         .bind(challenge_id)
         .bind(game_id)
+        .bind(historical)
         .fetch_optional(&mut **transaction)
         .await?
         .is_some();
@@ -210,7 +290,10 @@ pub(crate) async fn lock_audit_insert_scope_sqlx(
               JOIN "Teams" team ON team.id = participation.team_id
              WHERE participation.id = ANY($1)
                AND participation.game_id = $2
-               AND participation.status = $3
+               AND (
+                     (NOT $4 AND participation.status = $3)
+                     OR ($4 AND participation.competitive_admitted_at_utc IS NOT NULL)
+               )
                AND team.deletion_pending = FALSE
              ORDER BY participation.id
              FOR SHARE OF participation"#,
@@ -218,6 +301,7 @@ pub(crate) async fn lock_audit_insert_scope_sqlx(
     .bind(&participation_ids)
     .bind(game_id)
     .bind(ParticipationStatus::Accepted as i16)
+    .bind(historical)
     .fetch_all(&mut **transaction)
     .await?;
     Ok(locked.len() == participation_ids.len())
@@ -329,12 +413,26 @@ pub(crate) async fn delete_unlinked_pending_or_rejected_without_evidence(
 pub(crate) async fn create_test_evidence_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(
         r#"
+        ALTER TABLE "Participations"
+          ADD COLUMN IF NOT EXISTS competitive_admitted_at_utc TIMESTAMPTZ;
+        CREATE TABLE IF NOT EXISTS "SuspicionReconciliationState" (
+          game_id INTEGER PRIMARY KEY,
+          evidence_closed_at_utc TIMESTAMPTZ
+        );
         CREATE TABLE IF NOT EXISTS "Submissions" (
           id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
           participation_id INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS "CheatInfo" (
+          submit_participation_id INTEGER NOT NULL,
+          source_participation_id INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS "SuspicionEvaluationOutbox" (
+          participation_id INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS "FirstSolves" (participation_id INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS "SuspicionEvents" (participation_id INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS "IdentityObservations" (participation_id INTEGER);
         CREATE TABLE IF NOT EXISTS "HoneypotHits" (participation_id INTEGER);
         CREATE TABLE IF NOT EXISTS "ContainerAccessEvents" (
           container_owner_participation_id INTEGER NOT NULL,
@@ -439,8 +537,34 @@ mod tests {
                 r#"UPDATE "Participations" SET writeup_id = 42 WHERE id = $1"#,
             ),
             (
+                "immutable competitive cohort membership",
+                r#"UPDATE "Participations"
+                      SET competitive_admitted_at_utc = clock_timestamp()
+                    WHERE id = $1"#,
+            ),
+            (
                 "suspicion event",
                 r#"INSERT INTO "SuspicionEvents" (participation_id) VALUES ($1)"#,
+            ),
+            (
+                "identity observation",
+                r#"INSERT INTO "IdentityObservations" (participation_id) VALUES ($1)"#,
+            ),
+            (
+                "stolen flag submit provenance",
+                r#"INSERT INTO "CheatInfo"
+                     (submit_participation_id, source_participation_id)
+                   VALUES ($1, -1)"#,
+            ),
+            (
+                "stolen flag source provenance",
+                r#"INSERT INTO "CheatInfo"
+                     (submit_participation_id, source_participation_id)
+                   VALUES (-1, $1)"#,
+            ),
+            (
+                "pending suspicion evaluation",
+                r#"INSERT INTO "SuspicionEvaluationOutbox" (participation_id) VALUES ($1)"#,
             ),
             (
                 "honeypot hit",

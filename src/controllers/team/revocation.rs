@@ -47,6 +47,7 @@ impl TryFrom<ParticipationRow> for participation::Model {
             team_id: row.team_id,
             division_id: row.division_id,
             suspicion_score: row.suspicion_score,
+            competitive_admitted_at_utc: None,
         })
     }
 }

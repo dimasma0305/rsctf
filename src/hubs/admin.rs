@@ -121,6 +121,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 role,
                 name: "organizer-hub-test".to_string(),
+                security_stamp: "test-stamp".to_string(),
             });
         }
         test_app().oneshot(request).await.unwrap()

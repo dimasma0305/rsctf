@@ -66,6 +66,10 @@ Use this checklist before exposing rsctf to untrusted players.
   receive neither networking capability.
   Every round-engine role also needs `NET_ADMIN` for the process checker's
   uid-scoped, default-deny egress firewall; `web` receives neither capability.
+- Keep event-only VPN routing split. Route only the exact rsctf proof origin and
+  event services, never `0.0.0.0/0` or `::/0`. The optional sensor must have an
+  independent bearer token, no database credential, and no writable capture
+  volume. Treat AI/hosting/DNS and peer-endpoint findings as context, not proof.
 - Treat a round-engine startup failure to install that firewall as a deployment
   error. Keep `NET_ADMIN` for the role's lifetime: rsctf intentionally refuses
   to run a checker unless it can add and remove that UID's exact target rule.

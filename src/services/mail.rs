@@ -20,6 +20,15 @@ use crate::utils::error::{AppError, AppResult};
 
 const SMTP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// Validate a user-supplied recipient as one bare RFC mailbox address before
+/// persisting it as an account identity.
+pub fn validate_recipient(address: &str) -> AppResult<()> {
+    address
+        .parse::<lettre::Address>()
+        .map(|_| ())
+        .map_err(|_| AppError::bad_request("Invalid email address"))
+}
+
 /// SMTP configuration resolved from the process environment.
 ///
 /// Mirrors the fields RSCTF reads from `EmailConfig`/`SmtpConfig`
@@ -66,6 +75,63 @@ impl MailSender {
                 Self { inner: None }
             }
         }
+    }
+
+    /// Resolve the effective SMTP configuration used by account workflows.
+    /// Values persisted by the admin settings UI take precedence per field;
+    /// environment configuration remains the fallback for env-only installs.
+    pub async fn from_database(pool: &sqlx::PgPool) -> AppResult<Self> {
+        const KEYS: &[&str] = &[
+            "EmailConfig:Smtp:Host",
+            "EmailConfig:Smtp:Port",
+            "EmailConfig:UserName",
+            "EmailConfig:Password",
+            "EmailConfig:SenderAddress",
+            "EmailConfig:SenderName",
+        ];
+        let rows = sqlx::query_as::<_, (String, Option<String>)>(
+            r#"SELECT config_key, value
+                 FROM "Configs"
+                WHERE config_key = ANY($1)"#,
+        )
+        .bind(KEYS)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        let values = rows
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        let value = |key: &str| values.get(key).and_then(|value| non_empty(value.clone()));
+        let fallback = Self::config_from_env();
+        let host = value("EmailConfig:Smtp:Host")
+            .or_else(|| fallback.as_ref().map(|config| config.host.clone()));
+        let port = value("EmailConfig:Smtp:Port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port > 0)
+            .or_else(|| fallback.as_ref().map(|config| config.port))
+            .unwrap_or(587);
+        let username = value("EmailConfig:UserName")
+            .or_else(|| fallback.as_ref().and_then(|config| config.username.clone()));
+        let password = value("EmailConfig:Password")
+            .or_else(|| fallback.as_ref().and_then(|config| config.password.clone()));
+        let sender_address = value("EmailConfig:SenderAddress")
+            .or_else(|| fallback.as_ref().map(|config| config.from.clone()));
+        let Some(host) = host else {
+            return Ok(Self { inner: None });
+        };
+        let Some(sender_address) = sender_address else {
+            return Ok(Self { inner: None });
+        };
+        let from = value("EmailConfig:SenderName")
+            .map(|name| format!("{name} <{sender_address}>"))
+            .unwrap_or(sender_address);
+        Ok(Self::new(SmtpConfig {
+            host,
+            port,
+            username,
+            password,
+            from,
+        }))
     }
 
     /// Read + validate the environment into an [`SmtpConfig`], or `None` if the
@@ -351,6 +417,14 @@ mod tests {
         assert_eq!(non_empty(Some("  x ".into())), Some("x".into()));
         assert_eq!(non_empty(Some("   ".into())), None);
         assert_eq!(non_empty(None), None);
+    }
+
+    #[test]
+    fn recipient_validation_rejects_values_the_smtp_builder_cannot_deliver() {
+        assert!(validate_recipient("person@example.test").is_ok());
+        assert!(validate_recipient("person@example.test@evil.test").is_err());
+        assert!(validate_recipient("Display Name <person@example.test>").is_err());
+        assert!(validate_recipient("person@").is_err());
     }
 
     #[test]

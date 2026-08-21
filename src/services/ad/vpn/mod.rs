@@ -2,8 +2,8 @@
 //! Requires `NET_ADMIN`, `NET_RAW` for the iptables ipset matcher, and
 //! `/dev/net/tun`.
 
-use std::collections::HashSet;
-use std::net::Ipv4Addr;
+use std::collections::{HashMap, HashSet};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 
 use chrono::Utc;
@@ -299,6 +299,36 @@ pub fn enabled() -> bool {
     std::env::var("RSCTF_AD_VPN_ENABLED")
         .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
+}
+
+/// Read the public endpoint currently authenticated for each kernel peer.
+///
+/// The privileged network owner performs this read so the packet-capture
+/// sidecar needs only `NET_RAW`; it never receives `NET_ADMIN` or direct
+/// firewall/WireGuard mutation authority. Callers must keep the returned
+/// addresses in memory and must not persist them verbatim.
+pub async fn live_peer_endpoints() -> AppResult<HashMap<String, SocketAddr>> {
+    if !enabled() {
+        return Ok(HashMap::new());
+    }
+    tokio::task::spawn_blocking(|| {
+        use defguard_wireguard_rs::{WGApi, WireguardInterfaceApi};
+
+        let api =
+            WGApi::<defguard_wireguard_rs::Kernel>::new(IFNAME.to_string()).map_err(|error| {
+                AppError::internal(format!("failed to open WireGuard API: {error}"))
+            })?;
+        let host = api.read_interface_data().map_err(|error| {
+            AppError::internal(format!("failed to read WireGuard peer state: {error}"))
+        })?;
+        Ok(host
+            .peers
+            .into_iter()
+            .filter_map(|(key, peer)| peer.endpoint.map(|endpoint| (key.to_string(), endpoint)))
+            .collect())
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("WireGuard peer read task failed: {error}")))?
 }
 
 pub async fn reconcile_for_deployment(db: &DatabaseConnection) -> AppResult<()> {
@@ -698,7 +728,7 @@ async fn ensure_peer_inner(
         }
     }
     let key = Key::generate();
-    let used_addresses: HashSet<Ipv4Addr> = ad_vpn_peer::Entity::find()
+    let mut used_addresses: HashSet<Ipv4Addr> = ad_vpn_peer::Entity::find()
         .all(db)
         .await?
         .into_iter()
@@ -709,6 +739,17 @@ async fn ensure_peer_inner(
         })
         .filter_map(|peer| peer.address.parse().ok())
         .collect();
+    let event_addresses = sqlx::query_scalar::<_, String>(
+        r#"SELECT address FROM "EventVpnUserPeers" WHERE revoked_at_utc IS NULL"#,
+    )
+    .fetch_all(db.get_postgres_connection_pool())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    used_addresses.extend(
+        event_addresses
+            .into_iter()
+            .filter_map(|address| address.parse::<Ipv4Addr>().ok()),
+    );
     let address = assign_available_ip(&configured_client_cidr, participation_id, &used_addresses)
         .filter(|address| peer_address_allowed(address, &client_network, &service_networks))
         .ok_or_else(|| AppError::internal("Could not assign a safe VPN address"))?;

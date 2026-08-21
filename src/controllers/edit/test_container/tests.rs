@@ -88,6 +88,20 @@ fn repository_subpaths_are_canonical_descendants() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[test]
+fn public_batches_are_single_manifest_and_quota_is_identity_scoped() {
+    let pending = crate::services::git_sync::ImportPolicy::PendingReview {
+        submitted_by_user_id: Uuid::new_v4(),
+    };
+    assert!(validate_import_batch(pending, 1).is_ok());
+    assert!(validate_import_batch(pending, 2).is_err());
+    assert!(validate_import_batch(crate::services::git_sync::ImportPolicy::Trusted, 2).is_ok());
+
+    assert!(PENDING_CHALLENGE_COUNT_SQL.contains("game_id = $1"));
+    assert!(PENDING_CHALLENGE_COUNT_SQL.contains("submitted_by_user_id = $2"));
+    assert!(PENDING_CHALLENGE_COUNT_SQL.contains("review_status = $3"));
+}
+
 #[cfg(unix)]
 #[test]
 fn repository_subpaths_reject_symlink_escapes() {

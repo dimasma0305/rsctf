@@ -70,6 +70,19 @@ export enum ScoreCurve {
   Logarithmic = "Logarithmic",
 }
 
+/** Deterministic challenge content generated separately for each participation. */
+export enum ChallengeVariantMode {
+  Disabled = "Disabled",
+  PerParticipation = "PerParticipation",
+}
+
+/** Whether a trusted external verifier proof may or must accompany a solve. */
+export enum SolveReceiptMode {
+  Disabled = "Disabled",
+  Optional = "Optional",
+  Required = "Required",
+}
+
 /** Container status */
 export enum ContainerStatus {
   Pending = "Pending",
@@ -1159,13 +1172,45 @@ export interface CollusionCompareResult {
 
 export interface CheatReport {
   /** @format uint64 */
-  generatedAt?: number;
-  ipAnalysis?: IpAnalysisResult[];
-  abnormalSolves?: AbnormalSolveResult[];
+  generatedAt: number;
+  /** Persisted time of the last successful detector reconciliation. */
+  lastReconciledAt?: number | null;
+  /** Time competitive evidence intake was durably closed. */
+  evidenceClosedAt?: number | null;
+  /** Time the immutable final detector snapshot completed. */
+  sealedAt?: number | null;
+  /** In-window evaluation jobs that can still change this report. */
+  pendingJobs?: number;
+  /** @format uint64 */
+  oldestPendingAt?: number | null;
+  /** Last detector reconciliation failure, when present. */
+  lastError?: string | null;
+  ipAnalysis: IpAnalysisResult[];
+  abnormalSolves: AbnormalSolveResult[];
+  collusionGroups: CollusionGroupResult[];
+  suspicionList: SuspicionRecordResult[];
+  identityOverlaps: IdentityOverlapResult[];
+  /** Detector inventory is optional for rolling compatibility. */
+  detectorCapabilities?: DetectorCapability[];
+}
 
-  collusionGroups?: CollusionGroupResult[];
-  suspicionList?: SuspicionRecordResult[];
-  identityOverlaps?: IdentityOverlapResult[];
+export interface DetectorCapability {
+  code: string;
+  status: "active" | "background" | "telemetryOnly" | "unimplemented";
+  scope: "allGames" | "jeopardy" | "jeopardyContainers" | "platform";
+  detail?: string;
+}
+
+export interface EventVpnOverrideModel {
+  id: string;
+  reason: string;
+  /** @format uint64 */
+  createdAtUtc: number;
+  /** @format uint64 */
+  expiresAtUtc: number;
+  /** @format uint64 */
+  revokedAtUtc?: number | null;
+  active: boolean;
 }
 
 export interface SuspicionRecordResult {
@@ -1191,15 +1236,62 @@ export interface SuspicionRecordResult {
 }
 
 export interface SuspicionEventResult {
+  /** Stable persisted event identifier, when supplied by the server. */
+  eventId?: number | null;
   type?: string;
   /** @format int32 */
   scoreDelta?: number;
+  /** Actual contribution after incident and tier caps. @format int32 */
+  appliedDelta?: number;
   details?: string;
   /** @format uint64 */
   time?: number;
   /** context | behavioral | strong | hard */
   tier?: string;
   counted?: boolean;
+}
+
+export interface EvidenceFact {
+  label: string;
+  value: string;
+}
+
+export interface EvidenceSourceReview {
+  sourceType: string;
+  title: string;
+  sourceId?: string | null;
+  /** @format uint64 */
+  recordedAt?: number | null;
+  immutable: boolean;
+  summary: string;
+  facts: EvidenceFact[];
+}
+
+export interface SuspicionEvidenceReview {
+  /** @format int32 */
+  eventId: number;
+  detectorCode: string;
+  assessment: "directEvidence" | "strongIndicator" | "behavioralIndicator" | "contextOnly";
+  sourceStatus: "verified" | "supporting" | "synthetic" | "unavailable" | "quarantined";
+  isDirectProof: boolean;
+  summary: string;
+  explanation: string;
+  evidenceKey: string;
+  /** @format uint64 */
+  observedAt: number;
+  /** @format int32 */
+  scoreDelta: number;
+  /** @format int32 */
+  teamId: number;
+  teamName: string;
+  /** @format int32 */
+  participationId: number;
+  /** @format int32 */
+  challengeId?: number | null;
+  challengeTitle?: string | null;
+  sources: EvidenceSourceReview[];
+  limitations: string[];
+  reviewGuidance: string[];
 }
 
 export interface IdentityOverlapResult {
@@ -1241,10 +1333,10 @@ export interface AbnormalSolveResult {
 
 export interface SequenceSuspectDetail {
   challengeName?: string | null;
-  /** @format date-time */
-  timeA?: string;
-  /** @format date-time */
-  timeB?: string;
+  /** Unix milliseconds. @format uint64 */
+  timeA?: number;
+  /** Unix milliseconds. @format uint64 */
+  timeB?: number;
   /** @format double */
   timeDiff?: number;
 }
@@ -1429,6 +1521,20 @@ export interface GameInfoModel {
    * @format int32
    */
   adMinGracePeriodSeconds?: number | null;
+  /** Require a short-lived proof minted through the event-owned WireGuard tunnel. */
+  vpnAccessRequired?: boolean;
+  /** Store bounded five-minute aggregate flow counters. */
+  vpnBehaviorTelemetryEnabled?: boolean;
+  /** Match exact platform-issued flags in memory and retain hashes only. */
+  vpnFlagScanEnabled?: boolean;
+  /** Store only coarse AI/hosting DNS provider categories. */
+  vpnProviderDnsTelemetryEnabled?: boolean;
+  /** Store a keyed endpoint hash and coarse source-network class. */
+  vpnSourceAsnTelemetryEnabled?: boolean;
+  /** Record when one event peer appears from several endpoint identities. */
+  vpnDeviceSharingTelemetryEnabled?: boolean;
+  /** Required audit reason when any VPN/security switch changes. */
+  vpnPolicyChangeReason?: string | null;
 }
 
 /** List response */
@@ -1763,6 +1869,11 @@ export interface ChallengeEditDetailModel {
   buildStatus?: ChallengeBuildStatus;
   /** Live-updated build log tail */
   lastBuildLog?: string | null;
+  variantMode: ChallengeVariantMode;
+  variantGeneratorImage?: string | null;
+  variantGeneratorDigest?: string | null;
+  solveReceiptMode: SolveReceiptMode;
+  receiptVerifierIdentity?: string | null;
 }
 
 export interface Attachment {
@@ -2060,6 +2171,11 @@ export interface ChallengeUpdateModel {
    * @default 1
    */
   adScoringWeight?: number | null;
+  variantMode?: ChallengeVariantMode | null;
+  variantGeneratorImage?: string | null;
+  variantGeneratorDigest?: string | null;
+  solveReceiptMode?: SolveReceiptMode | null;
+  receiptVerifierIdentity?: string | null;
 }
 
 /**
@@ -2615,6 +2731,8 @@ export interface DetailedGameInfoModel {
   practiceMode?: boolean;
   /** Whether users may submit challenges (with admin review) for this game */
   allowUserSubmissions?: boolean;
+  /** Whether active player APIs require an event-WireGuard proof. */
+  vpnAccessRequired?: boolean;
   /** Team participation status */
   status?: ParticipationStatus;
   /**
@@ -2674,6 +2792,10 @@ export interface GameJoinModel {
   divisionId?: number | null;
   /** Invitation code for participation */
   inviteCode?: string | null;
+  /** Encrypted browser fingerprint when collection is enabled. */
+  fingerprint?: string | null;
+  /** Encrypted one-time proof bound to the fingerprint challenge. */
+  fingerprintProof?: string | null;
 }
 
 /** Scoreboard */
@@ -2946,11 +3068,11 @@ export interface Submission {
 /** Cheat behavior information */
 export interface CheatInfoModel {
   /** Team owning the flag */
-  ownedTeam?: ParticipationModel;
+  ownedTeam: ParticipationModel;
   /** Team submitting the flag */
-  submitTeam?: ParticipationModel;
+  submitTeam: ParticipationModel;
   /** Submission corresponding to this cheating behavior */
-  submission?: Submission;
+  submission: Submission & { answer: string; status: AnswerResult; time: number };
 }
 
 /** Team participation information */
@@ -2959,11 +3081,11 @@ export interface ParticipationModel {
    * Participation ID
    * @format int32
    */
-  id?: number;
+  id: number;
   /** Team information */
-  team?: TeamModel;
+  team: TeamModel;
   /** Team participation status */
-  status?: ParticipationStatus;
+  status: ParticipationStatus;
   /** Team division */
   division?: string | null;
   /**
@@ -3221,7 +3343,13 @@ export interface AntiCheatBlockModel {
   conflictUserName?: string | null
   kind: AntiCheatBlockKind
   conflictingValue?: string | null
-  occurredAtUtc: string
+  /** Unix milliseconds. */
+  occurredAtUtc: number
+  /** Unix milliseconds; present after an operator adjudicates the match. */
+  adjudicatedAtUtc?: number | null
+  adjudicatedByUserId?: string | null
+  /** Unix milliseconds; the scoped exemption is active until this instant. */
+  exemptionExpiresAtUtc?: number | null
 }
 
 
@@ -3351,6 +3479,16 @@ export interface ChallengeDetailModel {
   userRating?: ReviewRating;
   /** User's comment */
   userComment?: string | null;
+  solveReceiptMode?: SolveReceiptMode;
+  receiptVerifierIdentity?: string | null;
+  /** Public identity of this team's deterministic variant; never includes its answer. */
+  variant?: ClientChallengeVariant | null;
+}
+
+export interface ClientChallengeVariant {
+  id: string;
+  revision: number;
+  artifactHash: string;
 }
 
 export interface ClientFlagContext {
@@ -3387,6 +3525,101 @@ export interface FlagSubmitModel {
    * @minLength 1
    */
   flag: string;
+  /** Optional one-use proof minted by the challenge's trusted verifier. */
+  proof?: string | null;
+}
+
+export interface EventVpnChallengeModel {
+  challenge: string;
+  proofUrl: string;
+  proofHeader: string;
+  /** @format uint64 */
+  expiresAtUtc: number;
+}
+
+export interface EventVpnProofModel {
+  proof: string;
+  proofHeader: string;
+  /** @format uint64 */
+  expiresAtUtc: number;
+}
+
+export interface VariantSummary {
+  challengeId: number;
+  participationId: number;
+  revision: number;
+  generatorImage: string;
+  generatorDigest: string;
+  artifactHash: string;
+  /** @format uint64 */
+  frozenAtUtc: number;
+}
+
+export type EvidenceFamily =
+  | "identityCorrelation"
+  | "networkSession"
+  | "timingCadence"
+  | "trajectorySimilarity"
+  | "crossTeamPossession"
+  | "trustedProvenance";
+
+export type FindingReviewStatus =
+  | "explained"
+  | "suspicious"
+  | "confirmed"
+  | "dismissed"
+  | "needsMoreEvidence";
+
+export interface AntiCheatFindingRow {
+  id: number;
+  gameId: number;
+  participationId: number;
+  userId?: string | null;
+  challengeId?: number | null;
+  detectorCode: string;
+  detectorVersion: number;
+  evidenceFamily: number;
+  evidenceTier: number;
+  scoreDelta: number;
+  evidenceKey: string;
+  /** @format uint64 */
+  occurredAtUtc: number;
+  details: Record<string, unknown>;
+  shadow: boolean;
+  /** @format uint64 */
+  createdAtUtc: number;
+  latestReviewStatus?: number | null;
+}
+
+export interface EvidenceRelationshipRow {
+  findingId: number;
+  relatedFindingId?: number | null;
+  relationKind: number;
+  relatedSourceType?: string | null;
+  relatedSourceKey?: string | null;
+}
+
+export interface FamilyContribution {
+  family: EvidenceFamily;
+  behavioral: number;
+  strong: number;
+  hard: number;
+  contextCount: number;
+  existingIncidents: number;
+}
+
+export interface FusedEvidenceBreakdown {
+  participationId: number;
+  total: number;
+  band: string;
+  bandLabel: string;
+  reviewerConfirmed: boolean;
+  independentActionableFamilies: number;
+  existingScore: number;
+  findingScore: number;
+  families: FamilyContribution[];
+  findings: AntiCheatFindingRow[];
+  relationships: EvidenceRelationshipRow[];
 }
 
 /** Game writeup submission information */
@@ -3542,6 +3775,7 @@ import type {
   ResponseType,
 } from "axios";
 import axios from "axios";
+import { installEventVpnProof } from "@Utils/EventVpnProof";
 
 export type QueryParamsType = Record<string | number, any>;
 
@@ -4027,7 +4261,7 @@ export class Api<
       query?: { count?: number; skip?: number },
       params: RequestParams = {},
     ) =>
-      this.request<ChallengeReview[], RequestResponse>({
+      this.request<ChallengeReviewDetailModel[], RequestResponse>({
         path: `/api/admin/reviews`,
         method: "GET",
         query: query,
@@ -4047,7 +4281,7 @@ export class Api<
       query?: { count?: number; skip?: number },
       params: RequestParams = {},
     ) =>
-      this.request<CheatInfo[], RequestResponse>({
+      this.request<CheatInfoModel[], RequestResponse>({
         path: `/api/admin/cheat-reports`,
         method: "GET",
         query: query,
@@ -5564,6 +5798,31 @@ export class Api<
         format: "json",
         ...params,
       }),
+
+    /**
+     * @description Load the privacy-safe immutable sources behind one suspicion event.
+     * @request GET:/api/game/{id}/cheatreport/events/{eventId}
+     */
+    cheatReportEventEvidence: (id: number, eventId: number, params: RequestParams = {}) =>
+      this.request<SuspicionEvidenceReview, any>({
+        path: `/api/game/${id}/cheatreport/events/${eventId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @request GET:/api/game/{id}/cheatreport/events/{eventId}
+     */
+    useCheatReportEventEvidence: (
+      id: number,
+      eventId: number | null,
+      options?: SWRConfiguration,
+    ) =>
+      useSWR<SuspicionEvidenceReview, any>(
+        eventId === null ? null : `/api/game/${id}/cheatreport/events/${eventId}`,
+        options,
+      ),
 
     /**
      * @request GET:/api/game/{id}/cheatreport/compare
@@ -9160,7 +9419,16 @@ export class Api<
      * @summary Accept invitation
      * @request POST:/api/team/accept
      */
-    teamAccept: (data: string, params: RequestParams = {}) =>
+    teamAccept: (
+      data:
+        | string
+        | {
+            code: string;
+            fingerprint?: string | null;
+            fingerprintProof?: string | null;
+          },
+      params: RequestParams = {},
+    ) =>
       this.request<void, RequestResponse>({
         path: `/api/team/accept`,
         method: "POST",
@@ -9478,9 +9746,139 @@ export class Api<
         ...params,
       }),
   };
+
+  eventSecurity = {
+    gameVpnChallenge: (gameId: number, params: RequestParams = {}) =>
+      this.request<EventVpnChallengeModel, RequestResponse>({
+        path: `/api/game/${gameId}/vpn/challenge`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    gameVpnProof: (
+      gameId: number,
+      data: { challenge: string },
+      params: RequestParams = {},
+    ) =>
+      this.request<EventVpnProofModel, RequestResponse>({
+        path: `/api/game/${gameId}/vpn/proof`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    gameVpnConfig: (gameId: number, params: RequestParams = {}) =>
+      this.request<string, RequestResponse>({
+        path: `/api/game/${gameId}/vpn/config`,
+        method: "GET",
+        format: "text",
+        ...params,
+      }),
+
+    listVariants: (gameId: number, params: RequestParams = {}) =>
+      this.request<VariantSummary[], RequestResponse>({
+        path: `/api/edit/games/${gameId}/variants`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    generateVariants: (gameId: number, params: RequestParams = {}) =>
+      this.request<{ generated: number }, RequestResponse>({
+        path: `/api/edit/games/${gameId}/variants/generate`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    deriveFindings: (gameId: number, params: RequestParams = {}) =>
+      this.request<{ inserted: number }, RequestResponse>({
+        path: `/api/admin/games/${gameId}/anti-cheat/derive`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    fusedBreakdown: (
+      gameId: number,
+      participationId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<FusedEvidenceBreakdown, RequestResponse>({
+        path: `/api/admin/games/${gameId}/anti-cheat/fusion/${participationId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    reviewFinding: (
+      gameId: number,
+      findingId: number,
+      data: { status: FindingReviewStatus; note?: string | null },
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/games/${gameId}/anti-cheat/findings/${findingId}/review`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        ...params,
+      }),
+
+    purgeTelemetry: (
+      gameId: number,
+      data: { reason: string },
+      params: RequestParams = {},
+    ) =>
+      this.request<{ rowsRemoved: number; logicalBytesRemoved: number }, RequestResponse>({
+        path: `/api/admin/games/${gameId}/anti-cheat/telemetry/purge`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    createVpnOverride: (
+      gameId: number,
+      data: { reason: string; durationMinutes: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<{ id: string; expiresAtUtc: number }, RequestResponse>({
+        path: `/api/admin/games/${gameId}/vpn-override`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    listVpnOverrides: (gameId: number, params: RequestParams = {}) =>
+      this.request<EventVpnOverrideModel[], RequestResponse>({
+        path: `/api/admin/games/${gameId}/vpn-overrides`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    revokeVpnOverride: (
+      gameId: number,
+      overrideId: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<void, RequestResponse>({
+        path: `/api/admin/games/${gameId}/vpn-override/${overrideId}/revoke`,
+        method: "POST",
+        ...params,
+      }),
+  };
 }
 
 const api = new Api();
+installEventVpnProof(api.instance);
 export default api;
 
 export const fetcher = async (

@@ -26,6 +26,15 @@ struct AppliedPeer {
 }
 
 #[derive(Debug, Clone)]
+struct DesiredPeer {
+    stable_id: String,
+    game_id: i32,
+    participation_id: i32,
+    public_key: String,
+    address: String,
+}
+
+#[derive(Debug, Clone)]
 struct AppliedState {
     fingerprint: [u8; 32],
     hub_identity: [u8; 32],
@@ -121,7 +130,7 @@ fn transition_quarantine(previous: &AppliedState, desired: &AppliedState) -> Tra
     }
 }
 
-fn build_peer(row: &ad_vpn_peer::Model) -> Option<(AppliedPeer, Peer)> {
+fn build_peer(row: &DesiredPeer) -> Option<(AppliedPeer, Peer)> {
     let address = row.address.parse::<Ipv4Addr>().ok()?;
     let public_key = Key::from_str(&row.public_key).ok()?;
     let mut peer = Peer::new(public_key);
@@ -151,7 +160,7 @@ fn policy_fingerprint(
     configured_client_cidr: &str,
     configured_service_cidrs: &[String],
     route_fingerprint: &str,
-    peers: &[ad_vpn_peer::Model],
+    peers: &[DesiredPeer],
     policies: &[GameVpnPolicy],
 ) -> [u8; 32] {
     let mut fingerprint = Sha256::new();
@@ -163,7 +172,7 @@ fn policy_fingerprint(
     }
     fingerprint.update(route_fingerprint.as_bytes());
     for peer in peers {
-        fingerprint.update(peer.id.to_be_bytes());
+        fingerprint.update(peer.stable_id.as_bytes());
         fingerprint.update(peer.game_id.to_be_bytes());
         fingerprint.update(peer.participation_id.to_be_bytes());
         fingerprint.update(peer.public_key.as_bytes());
@@ -303,7 +312,7 @@ fn apply_kernel_state(
     early.unlock()
 }
 
-async fn load_peers(
+async fn load_team_peers(
     db: &DatabaseConnection,
     client_network: &Ipv4Net,
     service_networks: &[Ipv4Net],
@@ -373,9 +382,110 @@ async fn load_peers(
     Ok(peers)
 }
 
+#[derive(sqlx::FromRow)]
+struct EventPeerIntent {
+    id: uuid::Uuid,
+    game_id: i32,
+    participation_id: i32,
+    public_key: String,
+    address: String,
+    valid: bool,
+}
+
+async fn load_peers(
+    db: &DatabaseConnection,
+    client_network: &Ipv4Net,
+    service_networks: &[Ipv4Net],
+) -> AppResult<Vec<DesiredPeer>> {
+    let team_peers = load_team_peers(db, client_network, service_networks).await?;
+    let event_peers = sqlx::query_as::<_, EventPeerIntent>(
+        r#"SELECT peer.id, peer.game_id, peer.participation_id,
+                  peer.public_key, peer.address,
+                  (
+                      game.vpn_access_required = TRUE
+                      AND game.deletion_pending = FALSE
+                      AND clock_timestamp() < game.end_time_utc
+                      AND participation.status = 1
+                      AND team.deletion_pending = FALSE
+                      AND account.email_confirmed = TRUE
+                      AND account.role <> -1
+                      AND historical.user_id IS NOT NULL
+                      AND (
+                          team.captain_id = peer.user_id
+                          OR member.user_id IS NOT NULL
+                      )
+                  ) AS valid
+             FROM "EventVpnUserPeers" peer
+             JOIN "Games" game ON game.id = peer.game_id
+             JOIN "Participations" participation
+               ON participation.game_id = peer.game_id
+              AND participation.id = peer.participation_id
+             JOIN "Teams" team ON team.id = participation.team_id
+             JOIN "AspNetUsers" account ON account.id = peer.user_id
+             LEFT JOIN "UserParticipations" historical
+               ON historical.user_id = peer.user_id
+              AND historical.game_id = peer.game_id
+              AND historical.team_id = participation.team_id
+              AND historical.participation_id = participation.id
+             LEFT JOIN "TeamMembers" member
+               ON member.team_id = team.id AND member.user_id = peer.user_id
+            WHERE peer.revoked_at_utc IS NULL
+            ORDER BY peer.id"#,
+    )
+    .fetch_all(db.get_postgres_connection_pool())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let invalid = event_peers
+        .iter()
+        .filter(|peer| {
+            !peer.valid || !peer_address_allowed(&peer.address, client_network, service_networks)
+        })
+        .map(|peer| peer.id)
+        .collect::<Vec<_>>();
+    if !invalid.is_empty() {
+        sqlx::query(
+            r#"UPDATE "EventVpnUserPeers"
+                  SET revoked_at_utc = clock_timestamp()
+                WHERE id = ANY($1) AND revoked_at_utc IS NULL"#,
+        )
+        .bind(&invalid)
+        .execute(db.get_postgres_connection_pool())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    let mut peers = team_peers
+        .into_iter()
+        .map(|peer| DesiredPeer {
+            stable_id: format!("team:{}", peer.id),
+            game_id: peer.game_id,
+            participation_id: peer.participation_id,
+            public_key: peer.public_key,
+            address: peer.address,
+        })
+        .collect::<Vec<_>>();
+    peers.extend(
+        event_peers
+            .into_iter()
+            .filter(|peer| {
+                peer.valid
+                    && peer_address_allowed(&peer.address, client_network, service_networks)
+                    && !invalid.contains(&peer.id)
+            })
+            .map(|peer| DesiredPeer {
+                stable_id: format!("user:{}", peer.id),
+                game_id: peer.game_id,
+                participation_id: peer.participation_id,
+                public_key: peer.public_key,
+                address: peer.address,
+            }),
+    );
+    peers.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+    Ok(peers)
+}
+
 async fn load_policies(
     db: &DatabaseConnection,
-    peers: &[ad_vpn_peer::Model],
+    peers: &[DesiredPeer],
     client_network: &Ipv4Net,
     service_networks: &[Ipv4Net],
 ) -> AppResult<Vec<GameVpnPolicy>> {

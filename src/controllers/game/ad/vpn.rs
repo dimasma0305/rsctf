@@ -59,6 +59,7 @@ pub(crate) async fn acquire_roster_access(
     let authorized = crate::services::ad::roster::user_allows_shared_credentials_on(
         &mut *distributed.transaction_mut(),
         user.id,
+        &user.security_stamp,
         part.game_id,
         part.team_id,
         part.id,

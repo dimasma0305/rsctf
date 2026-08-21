@@ -2,11 +2,10 @@
 //!
 //! A set of decoy "bait" routes for well-known scanner/attacker targets
 //! (`/.env`, `/wp-login.php`, `/.git/config`, actuator endpoints, backup archives,
-//! …). A real player has no reason to fetch these, so a hit from an authenticated
-//! participant is a strong probe/automation signal: each hit is logged and, when
-//! attributable to an active participation, raises `HoneypotHit` (and, once enough
-//! distinct baits are tripped in a window, `HoneypotChain`). Every handler returns
-//! a plausible 404 so the decoy never reveals itself.
+//! …). Each hit is retained as raw telemetry. These global routes do not carry a
+//! trustworthy game/participation identity, so they never create suspicion events;
+//! an authenticated caller id is retained only for manual audit. Every handler
+//! returns a plausible 404 so the decoy never reveals itself.
 
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, StatusCode, Uri};
@@ -63,8 +62,7 @@ pub fn router() -> Router<SharedState> {
     router
 }
 
-/// Every bait route funnels here: log the hit (attributing it to the caller's live
-/// participation when authenticated) and return an innocuous 404.
+/// Every bait route funnels here: retain raw telemetry and return an innocuous 404.
 async fn bait(
     State(st): State<SharedState>,
     MaybeUser(user): MaybeUser,

@@ -80,11 +80,16 @@ impl ContainerManager for HybridWorkerContainerManager {
         spec: ValidatedWorkloadSpec,
         operation_id: Option<String>,
         flag: Option<String>,
+        proxy_only: bool,
     ) -> AppResult<ContainerInfo> {
         if spec.game_kind == GameKind::Jeopardy {
-            self.worker.create_workload(spec, operation_id, flag).await
+            self.worker
+                .create_workload(spec, operation_id, flag, proxy_only)
+                .await
         } else {
-            self.local.create_workload(spec, operation_id, flag).await
+            self.local
+                .create_workload(spec, operation_id, flag, proxy_only)
+                .await
         }
     }
 
@@ -187,6 +192,7 @@ mod tests {
             cpu_count: 1,
             expose_port: 8080,
             publish_port: true,
+            proxy_only: false,
             env: Vec::new(),
             flag: None,
             ad_network: None,

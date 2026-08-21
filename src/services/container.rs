@@ -68,14 +68,15 @@ mod tests;
 use self::docker::{
     docker_network_mode, image_requests_restricted_profile, is_conflict, is_not_found,
     launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
-    restricted_tmpfs_mounts, stamp_restricted_profile, LAUNCH_SPEC_LABEL,
+    restricted_tmpfs_mounts, stamp_restricted_profile, validate_docker_container_spec,
+    LAUNCH_SPEC_LABEL,
 };
 use logging::bounded_log_config;
 use naming::{container_name, map_status};
 
 pub use backend::{
-    ContainerBackendKind, ContainerExecAdmission, ContainerExecError, ContainerLiveness,
-    ContainerManager, ContainerStatus, FileChange, NoopContainerManager,
+    should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
+    ContainerLiveness, ContainerManager, ContainerStatus, FileChange, NoopContainerManager,
 };
 pub use docker::{from_env, from_env_required};
 
@@ -113,10 +114,6 @@ const SNAPSHOT_EXPORT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
 // One capture at a time keeps the control replica comfortably inside its 2 GiB
 // production memory limit even for the maximum admitted source archive.
 const MAX_CONCURRENT_SNAPSHOT_EXPORTS: usize = 1;
-const DOCKER_COMPETITIVE_EGRESS_ERROR: &str =
-    "Docker does not safely support allowEgress=true for A&D or KotH workloads; \
-     set allowEgress=false or use the Kubernetes backend with per-workload NetworkPolicy isolation";
-
 fn snapshot_export_slots() -> &'static tokio::sync::Semaphore {
     static SLOTS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
     SLOTS.get_or_init(|| tokio::sync::Semaphore::new(MAX_CONCURRENT_SNAPSHOT_EXPORTS))
@@ -256,6 +253,9 @@ pub struct ContainerSpec {
     /// the authenticated exec hub. Docker also gives a no-publish workload no
     /// network when `ad_network` is absent, preventing default-bridge egress.
     pub publish_port: bool,
+    /// Bind a published Jeopardy port only to the configured private proxy
+    /// entry instead of every host interface.
+    pub proxy_only: bool,
     /// Additional environment variables injected at creation time.
     pub env: Vec<(String, String)>,
     /// Optional dynamic flag baked into the container environment.
@@ -306,6 +306,7 @@ impl ContainerSpec {
             cpu_count,
             expose_port,
             publish_port: true,
+            proxy_only: false,
             env: vec![(TEAM_ENV.into(), team_id.to_string())],
             flag: Some(flag),
             ad_network: Some(crate::services::ad_vpn::services_network()),
@@ -353,19 +354,14 @@ pub(crate) fn validate_container_spec(spec: &ContainerSpec) -> AppResult<()> {
             "container expose port must be between 1 and 65535",
         ));
     }
-    Ok(())
-}
-
-fn validate_docker_container_spec(spec: &ContainerSpec) -> AppResult<()> {
-    if spec.allow_egress
-        && matches!(
-            spec.game_kind,
-            GameKind::AttackDefense | GameKind::KingOfTheHill
-        )
+    if spec.proxy_only
+        && (!spec.publish_port || spec.ad_network.is_some() || spec.game_kind != GameKind::Jeopardy)
     {
-        return Err(AppError::bad_request(DOCKER_COMPETITIVE_EGRESS_ERROR));
+        return Err(AppError::bad_request(
+            "proxy-only publication is valid only for published Jeopardy containers",
+        ));
     }
-    validate_container_spec(spec)
+    Ok(())
 }
 
 /// Runtime information about a created / running container.
@@ -399,6 +395,8 @@ pub struct DockerContainerManager {
     /// Public host/IP that exposed container ports are advertised on. When set,
     /// [`ContainerInfo::ip`] is this value (matching RSCTF `PublicEntry`).
     pub public_entry: Option<String>,
+    /// Private host-side address used only by the authenticated platform proxy.
+    proxy_bind: Option<std::net::Ipv4Addr>,
     /// Hashed installation identity shared by replicas using the same Docker
     /// daemon. It prevents one deployment's orphan sweep or operation adoption
     /// from touching another deployment's workloads.
@@ -419,6 +417,7 @@ impl DockerContainerManager {
         Ok(Self {
             endpoint: std::env::var("DOCKER_HOST").ok(),
             public_entry: std::env::var("RSCTF_DOCKER_PUBLIC_ENTRY").ok(),
+            proxy_bind: docker::configured_proxy_bind()?,
             scope: docker_installation_scope(),
             docker: Some(docker),
         })
@@ -615,17 +614,15 @@ impl ContainerManager for DockerContainerManager {
             .publish_port
             .then(|| HashMap::from([(port_key.clone(), HashMap::new())]));
         let port_bindings: Option<HashMap<String, Option<Vec<PortBinding>>>> =
-            if spec.ad_network.is_some() || !spec.publish_port {
-                None
-            } else {
-                Some(HashMap::from([(
+            docker::published_bind_ip(&spec, self.proxy_bind)?.map(|host_ip| {
+                HashMap::from([(
                     port_key.clone(),
                     Some(vec![PortBinding {
-                        host_ip: Some("0.0.0.0".to_string()),
+                        host_ip: Some(host_ip),
                         host_port: Some("0".to_string()),
                     }]),
-                )]))
-            };
+                )])
+            });
 
         // 4. Resource limits: memory (MB → bytes), CPU quota (whole cores →
         // nano-cpus), and a pids cap to blunt fork bombs.
@@ -789,24 +786,26 @@ impl ContainerManager for DockerContainerManager {
             .and_then(|v| v.as_ref())
             .and_then(|v| v.first());
 
-        let port = binding
+        let published_port = binding
             .and_then(|b| b.host_port.as_deref())
-            .and_then(|p| p.parse::<i32>().ok())
-            .unwrap_or(spec.expose_port);
+            .and_then(|p| p.parse::<i32>().ok());
+        if spec.proxy_only && published_port.is_none() {
+            return Err(AppError::unavailable(
+                "Docker did not allocate the private PlatformProxy port",
+            ));
+        }
+        let port = published_port.unwrap_or(spec.expose_port);
 
         // Routable IP: prefer the configured public entry, then the binding's
         // host IP (unless it's the wildcard), then loopback. We deliberately do
         // NOT surface the container's *internal* network IP as the primary
         // endpoint — with published ports the reachable address is host-side.
-        let ip = self
-            .public_entry
-            .clone()
-            .or_else(|| {
-                binding
-                    .and_then(|b| b.host_ip.clone())
-                    .filter(|h| !h.is_empty() && h != "0.0.0.0")
-            })
-            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let ip = docker::advertised_endpoint_ip(
+            &spec,
+            self.public_entry.as_deref(),
+            binding.and_then(|binding| binding.host_ip.as_deref()),
+            self.proxy_bind,
+        )?;
 
         Ok(ContainerInfo {
             id,

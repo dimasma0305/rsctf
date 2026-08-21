@@ -5,15 +5,15 @@ use std::str::FromStr;
 use crate::services::cache::{Cache, InMemoryCache};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-struct Harness {
+pub(super) struct Harness {
     admin: sqlx::PgPool,
-    pool: sqlx::PgPool,
+    pub(super) pool: sqlx::PgPool,
     cache: InMemoryCache,
     schema: String,
 }
 
 impl Harness {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
             .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
         let admin = PgPoolOptions::new()
@@ -110,7 +110,7 @@ impl Harness {
         }
     }
 
-    async fn cleanup(self) {
+    pub(super) async fn cleanup(self) {
         self.pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{}" CASCADE"#, self.schema))
             .execute(&self.admin)
@@ -119,7 +119,7 @@ impl Harness {
     }
 }
 
-async fn insert_user(
+pub(super) async fn insert_user(
     executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
     id: Uuid,
     user_name: &str,
@@ -147,7 +147,7 @@ async fn insert_user(
     .unwrap();
 }
 
-fn explicit_write<'a>(
+pub(super) fn explicit_write<'a>(
     user_name: &'a str,
     email: &'a str,
     password_hash: &'a str,

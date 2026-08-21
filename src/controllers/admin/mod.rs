@@ -35,9 +35,9 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::AdminUser;
 use crate::models::data::{
-    anti_cheat_block, api_token, build_record, challenge_review, config, container, division,
-    flag_context, game, game_challenge, game_instance, game_manager, local_file, log_entry,
-    participation, repo_binding, repo_binding_scan, submission, suspicion_event, team, user,
+    api_token, build_record, challenge_review, config, container, division, game, game_challenge,
+    game_manager, local_file, log_entry, participation, repo_binding, repo_binding_scan,
+    submission, team, user,
 };
 use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::{
@@ -143,6 +143,34 @@ pub fn router() -> Router<SharedState> {
         .route(
             "/api/admin/anticheatblocks/{id}",
             delete(delete_anti_cheat_block),
+        )
+        .route(
+            "/api/admin/games/{gameId}/anti-cheat/derive",
+            post(derive_event_security_findings),
+        )
+        .route(
+            "/api/admin/games/{gameId}/anti-cheat/fusion/{participationId}",
+            get(fused_event_security_breakdown),
+        )
+        .route(
+            "/api/admin/games/{gameId}/anti-cheat/findings/{findingId}/review",
+            post(review_event_security_finding),
+        )
+        .route(
+            "/api/admin/games/{gameId}/anti-cheat/telemetry/purge",
+            post(purge_event_security_telemetry),
+        )
+        .route(
+            "/api/admin/games/{gameId}/vpn-override",
+            post(create_event_vpn_override),
+        )
+        .route(
+            "/api/admin/games/{gameId}/vpn-overrides",
+            get(list_event_vpn_overrides),
+        )
+        .route(
+            "/api/admin/games/{gameId}/vpn-override/{overrideId}/revoke",
+            post(revoke_event_vpn_override),
         )
         // --- Auto-build pipeline ---
         .route("/api/admin/builds", get(list_builds))

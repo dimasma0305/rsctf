@@ -39,8 +39,15 @@ fn router_with_domains(
         .route("/api/game/{id}/submissions", get(submissions))
         .route("/api/game/{id}/submissionsheet", get(submission_sheet))
         .route("/api/game/{id}/check", get(join_check))
+        .route("/api/game/{id}/vpn/challenge", post(vpn_challenge))
+        .route("/api/game/{id}/vpn/proof", post(vpn_proof))
+        .route("/api/game/{id}/vpn/config", get(vpn_config))
         .route("/api/game/{id}/cheatinfo", get(cheat_info))
         .route("/api/game/{id}/cheatreport", get(cheat_report))
+        .route(
+            "/api/game/{id}/cheatreport/events/{eventId}",
+            limited(Policy::Query, get(suspicion_event_evidence)),
+        )
         .route(
             "/api/game/{id}/cheatreport/compare",
             get(cheat_report_compare),

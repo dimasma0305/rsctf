@@ -53,6 +53,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="${RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH}" \
     cargo build --release --locked \
     && cp /app/target/release/rsctf /tmp/rsctf \
+    && cp /app/target/release/rsctf-event-sensor /tmp/rsctf-event-sensor \
     && rm -rf /app/target
 
 # --- runtime stage ---
@@ -76,6 +77,8 @@ ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
 LABEL org.opencontainers.image.rsctf.byoc-agent="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}"
 WORKDIR /app
 COPY --from=builder /tmp/rsctf /usr/local/bin/rsctf
+COPY --from=builder /tmp/rsctf-event-sensor /usr/local/bin/rsctf-event-sensor
+COPY --chmod=0755 scripts/docker-proxy-firewall.sh /usr/local/sbin/rsctf-proxy-firewall
 COPY --from=web-builder /web/build /app/web/build
 COPY LICENSING.md LICENSE.txt NOTICE /app/web/build/legal/
 COPY web/src/lib/creepjs/LICENSE /app/web/build/legal/third-party/CreepJS-LICENSE.txt

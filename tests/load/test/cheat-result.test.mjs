@@ -27,8 +27,8 @@ const result = {
   challengeId: 149,
   completed: true,
   completedAtMs: 1_700_000_123_000,
-  offenderPids: [1, 2, 3, 4, 5, 6],
-  cleanControlCount: 94,
+  offenderPids: [1, 2, 3, 4, 5],
+  cleanControlCount: 95,
   suspicionRows: 16,
   cleanContextCount: 10,
   integrity,
@@ -43,7 +43,7 @@ const expected = {
   gameChallengeIds: [100, result.challengeId],
 };
 
-test("writes and reads only a schema-v3 run-bound result", () => {
+test("writes and reads only a schema-v4 run-bound result", () => {
   const directory = mkdtempSync(join(tmpdir(), "rsctf-cheat-result-test-"));
   try {
     const path = join(directory, "result.json");
@@ -77,7 +77,7 @@ test("rejects extra fields, legacy schemas, and non-numeric identifiers", () => 
   );
   assert.throws(
     () => sanitizeCheatResult({ ...result, schemaVersion: 1 }),
-    /schema-v3/,
+    /schema-v4.*older artifacts are unsupported/,
   );
   assert.throws(
     () => sanitizeCheatResult({ ...result, gameId: "44" }),
@@ -114,12 +114,12 @@ test("validates exact run, event, challenge, cohort, and execution window", () =
   assert.throws(
     () =>
       validateCheatResultForRun(
-        { ...result, offenderPids: [1, 2, 3, 4, 5, 101] },
+        { ...result, offenderPids: [1, 2, 3, 4, 101] },
         expected,
       ),
     /offenders from the frozen fleet/,
   );
-  for (const cleanControlCount of [1, 93, 95]) {
+  for (const cleanControlCount of [1, 94, 96]) {
     assert.throws(
       () =>
         validateCheatResultForRun({ ...result, cleanControlCount }, expected),
@@ -150,11 +150,11 @@ test("requires the complete passing semantic integrity contract", () => {
   );
   assert.throws(
     () =>
-      validateCheatResultForRun({ ...result, cleanContextCount: 95 }, expected),
+      validateCheatResultForRun({ ...result, cleanContextCount: 96 }, expected),
     /clean-context count/,
   );
   assert.throws(
-    () => validateCheatResultForRun({ ...result, suspicionRows: 5 }, expected),
+    () => validateCheatResultForRun({ ...result, suspicionRows: 4 }, expected),
     /fewer suspicion rows/,
   );
 });

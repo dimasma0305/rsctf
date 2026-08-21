@@ -180,6 +180,12 @@ fn imported_game_model(
         koth_claim_confirmation_ticks: Set(source.koth_claim_confirmation_ticks),
         ad_scoring_start_round: Set(None),
         ad_scoring_paused: Set(false),
+        vpn_access_required: Set(source.vpn_access_required),
+        vpn_behavior_telemetry_enabled: Set(source.vpn_behavior_telemetry_enabled),
+        vpn_flag_scan_enabled: Set(source.vpn_flag_scan_enabled),
+        vpn_provider_dns_telemetry_enabled: Set(source.vpn_provider_dns_telemetry_enabled),
+        vpn_source_asn_telemetry_enabled: Set(source.vpn_source_asn_telemetry_enabled),
+        vpn_device_sharing_telemetry_enabled: Set(source.vpn_device_sharing_telemetry_enabled),
         ..Default::default()
     }
 }
@@ -229,6 +235,11 @@ fn imported_challenge_model(
         ad_ssh_requires_flag: Set(source.ad_ssh_requires_flag),
         ad_self_hosted: Set(source.ad_self_hosted),
         ad_scoring_weight: Set(source.ad_scoring_weight),
+        variant_mode: Set(source.variant_mode),
+        variant_generator_image: Set(source.variant_generator_image.clone()),
+        variant_generator_digest: Set(source.variant_generator_digest.clone()),
+        solve_receipt_mode: Set(source.solve_receipt_mode),
+        receipt_verifier_identity: Set(source.receipt_verifier_identity.clone()),
         ..Default::default()
     }
 }

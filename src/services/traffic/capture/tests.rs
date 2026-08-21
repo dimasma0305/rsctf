@@ -294,6 +294,10 @@ async fn runtime_failure_deactivates_only_the_exact_observed_endpoint() {
             id INTEGER PRIMARY KEY,
             deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
+        CREATE TEMP TABLE "SuspicionReconciliationState" (
+            game_id INTEGER PRIMARY KEY,
+            evidence_closed_at_utc TIMESTAMPTZ
+        );
         CREATE TEMP TABLE "Teams" (
             id INTEGER PRIMARY KEY,
             deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
@@ -308,7 +312,8 @@ async fn runtime_failure_deactivates_only_the_exact_observed_endpoint() {
             id INTEGER PRIMARY KEY,
             game_id INTEGER NOT NULL,
             team_id INTEGER NOT NULL,
-            status SMALLINT NOT NULL
+            status SMALLINT NOT NULL,
+            competitive_admitted_at_utc TIMESTAMPTZ
         );
         CREATE TEMP TABLE "AdTeamServices" (
             id INTEGER PRIMARY KEY,
