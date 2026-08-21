@@ -49,6 +49,13 @@ test('each suspicion event has a lazy source-backed review with explicit proof l
   assert.doesNotMatch(evidenceReview, /rawIp|rawFingerprint|flagValue/)
 })
 
+test('suspicion details use a near-viewport review workspace', () => {
+  assert.match(analysis, /size="min\(96rem, calc\(100vw - 1rem\)\)"/)
+  assert.match(analysis, /xOffset="0\.5rem"/)
+  assert.match(analysis, /yOffset="0\.5rem"/)
+  assert.match(analysis, /h="min\(60dvh, 50rem\)"/)
+})
+
 test('analysis filters and scrollable evidence tables expose keyboard semantics and filtered empty states', () => {
   const namedRegions = analysis.match(
     /viewportProps=\{\{[\s\S]*?role: 'region',[\s\S]*?tabIndex: 0,[\s\S]*?'aria-label':[\s\S]*?\}\}/g

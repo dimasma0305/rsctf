@@ -1965,7 +1965,9 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
             <Text fw={700}>{t('game.cheat_analysis.suspicion_details', 'Suspicion Details')}</Text>
           </Group>
         }
-        size="lg"
+        size="min(96rem, calc(100vw - 1rem))"
+        xOffset="0.5rem"
+        yOffset="0.5rem"
         centered
       >
         {selectedSuspicion && (
@@ -2045,7 +2047,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
             )}
             <Divider />
             <ScrollArea
-              h={380}
+              h="min(60dvh, 50rem)"
               viewportProps={{
                 role: 'region',
                 tabIndex: 0,
