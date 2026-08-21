@@ -876,8 +876,8 @@ const GameChallengeEdit: FC = () => {
                     })
                   }
                 />
-                {(challengeInfo.variantMode ?? ChallengeVariantMode.Disabled) !== ChallengeVariantMode.Disabled && (
-                  challenge?.variantGeneratorManaged ? (
+                {(challengeInfo.variantMode ?? ChallengeVariantMode.Disabled) !== ChallengeVariantMode.Disabled &&
+                  (challenge?.variantGeneratorManaged ? (
                     <Stack gap="xs">
                       <Text size="sm" fw={500}>
                         {t('admin.event_security.managed_generator', 'Repository generator')}
@@ -898,32 +898,31 @@ const GameChallengeEdit: FC = () => {
                     </Stack>
                   ) : (
                     <>
-                    <TextInput
-                      required
-                      disabled={disabled || eventSecurityFrozen}
-                      label={t('admin.event_security.generator_image', 'Generator image@digest')}
-                      description={t(
-                        'admin.event_security.generator_image_description',
-                        'Immutable repository reference ending in the same sha256 digest below.'
-                      )}
-                      value={challengeInfo.variantGeneratorImage ?? ''}
-                      onChange={(event) =>
-                        setChallengeInfo({ ...challengeInfo, variantGeneratorImage: event.currentTarget.value })
-                      }
-                    />
-                    <TextInput
-                      required
-                      disabled={disabled || eventSecurityFrozen}
-                      label={t('admin.event_security.generator_digest', 'Generator sha256 digest')}
-                      placeholder="sha256:…"
-                      value={challengeInfo.variantGeneratorDigest ?? ''}
-                      onChange={(event) =>
-                        setChallengeInfo({ ...challengeInfo, variantGeneratorDigest: event.currentTarget.value })
-                      }
-                    />
+                      <TextInput
+                        required
+                        disabled={disabled || eventSecurityFrozen}
+                        label={t('admin.event_security.generator_image', 'Generator image@digest')}
+                        description={t(
+                          'admin.event_security.generator_image_description',
+                          'Immutable repository reference ending in the same sha256 digest below.'
+                        )}
+                        value={challengeInfo.variantGeneratorImage ?? ''}
+                        onChange={(event) =>
+                          setChallengeInfo({ ...challengeInfo, variantGeneratorImage: event.currentTarget.value })
+                        }
+                      />
+                      <TextInput
+                        required
+                        disabled={disabled || eventSecurityFrozen}
+                        label={t('admin.event_security.generator_digest', 'Generator sha256 digest')}
+                        placeholder="sha256:…"
+                        value={challengeInfo.variantGeneratorDigest ?? ''}
+                        onChange={(event) =>
+                          setChallengeInfo({ ...challengeInfo, variantGeneratorDigest: event.currentTarget.value })
+                        }
+                      />
                     </>
-                  )
-                )}
+                  ))}
                 {(challengeInfo.solveReceiptMode ?? SolveReceiptMode.Disabled) !== SolveReceiptMode.Disabled && (
                   <TextInput
                     required
@@ -942,7 +941,10 @@ const GameChallengeEdit: FC = () => {
               </SimpleGrid>
               {eventSecurityFrozen && (
                 <Text size="xs" c="dimmed">
-                  {t('admin.event_security.frozen', 'Variant and receipt policy is frozen because the event has started.')}
+                  {t(
+                    'admin.event_security.frozen',
+                    'Variant and receipt policy is frozen because the event has started.'
+                  )}
                 </Text>
               )}
             </Stack>

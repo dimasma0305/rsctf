@@ -199,6 +199,12 @@ fn imported_challenge_model(
     attachment_id: Option<i32>,
     workload_spec: Option<JsonValue>,
 ) -> game_challenge::ActiveModel {
+    // A repository-built generator is a daemon-local executable plus an
+    // unbundled source archive. Game exports cannot safely move either one to
+    // another installation, so require the imported copy to be re-bound to a
+    // repository (or configured with an explicit registry digest) first.
+    let managed_generator = source.variant_generator_build_context_subdir.as_deref()
+        == Some(crate::services::git_sync::GENERATOR_CONTEXT_SUBDIR);
     game_challenge::ActiveModel {
         game_id: Set(game_id),
         attachment_id: Set(attachment_id),
@@ -239,14 +245,20 @@ fn imported_challenge_model(
         ad_ssh_requires_flag: Set(source.ad_ssh_requires_flag),
         ad_self_hosted: Set(source.ad_self_hosted),
         ad_scoring_weight: Set(source.ad_scoring_weight),
-        variant_mode: Set(source.variant_mode),
-        variant_generator_image: Set(source.variant_generator_image.clone()),
-        variant_generator_digest: Set(source.variant_generator_digest.clone()),
-        variant_generator_build_context_subdir: Set(source
-            .variant_generator_build_context_subdir
-            .clone()),
-        variant_generator_build_status: Set(source.variant_generator_build_status),
-        variant_generator_last_build_log: Set(source.variant_generator_last_build_log.clone()),
+        variant_mode: Set(if managed_generator {
+            ChallengeVariantMode::Disabled
+        } else {
+            source.variant_mode
+        }),
+        variant_generator_image: Set((!managed_generator)
+            .then(|| source.variant_generator_image.clone())
+            .flatten()),
+        variant_generator_digest: Set((!managed_generator)
+            .then(|| source.variant_generator_digest.clone())
+            .flatten()),
+        variant_generator_build_context_subdir: Set(None),
+        variant_generator_build_status: Set(ChallengeBuildStatus::None),
+        variant_generator_last_build_log: Set(None),
         solve_receipt_mode: Set(source.solve_receipt_mode),
         receipt_verifier_identity: Set(source.receipt_verifier_identity.clone()),
         ..Default::default()
@@ -352,6 +364,29 @@ mod tests {
         assert_eq!(
             imported_challenge.network_mode,
             Set(Some(NetworkMode::Isolated))
+        );
+
+        let managed: ExportChallengeModel = serde_json::from_value(serde_json::json!({
+            "variantMode": "PerParticipation",
+            "variantGeneratorImage": format!("sha256:{}", "a".repeat(64)),
+            "variantGeneratorDigest": format!("sha256:{}", "a".repeat(64)),
+            "variantGeneratorBuildContextSubdir": "generator",
+            "variantGeneratorBuildStatus": "Success"
+        }))
+        .unwrap();
+        let imported_managed = imported_challenge_model(&managed, 7, None, None);
+        assert_eq!(
+            imported_managed.variant_mode,
+            Set(ChallengeVariantMode::Disabled)
+        );
+        assert_eq!(imported_managed.variant_generator_image, Set(None));
+        assert_eq!(
+            imported_managed.variant_generator_build_context_subdir,
+            Set(None)
+        );
+        assert_eq!(
+            imported_managed.variant_generator_build_status,
+            Set(ChallengeBuildStatus::None)
         );
     }
 

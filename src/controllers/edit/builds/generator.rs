@@ -264,6 +264,9 @@ pub(crate) async fn run_import_variant_generator_build(
     st: &SharedState,
     challenge_id: i32,
 ) -> Result<(), String> {
+    // The builder consumes the complete enum-rich challenge model. Retain this
+    // single primary-key ORM hydration rather than duplicating every model
+    // column in a fragile raw-SQL row mapping.
     let challenge = game_challenge::Entity::find_by_id(challenge_id)
         .one(&st.db)
         .await

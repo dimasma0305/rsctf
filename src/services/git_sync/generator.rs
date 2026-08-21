@@ -26,6 +26,7 @@ pub(super) struct GeneratorImportIntent {
     pub(super) automatic: bool,
     pub(super) build_queued: bool,
     pub(super) retain_source_archive: bool,
+    pub(super) source_archive_refresh_required: bool,
 }
 
 impl GeneratorImportIntent {
@@ -39,6 +40,7 @@ impl GeneratorImportIntent {
             automatic: false,
             build_queued: false,
             retain_source_archive: false,
+            source_archive_refresh_required: false,
         }
     }
 }
@@ -116,6 +118,18 @@ fn successful_local_identity(existing: &game_challenge::Model) -> Option<&str> {
         .then_some(image)
 }
 
+pub(super) fn ensure_source_archive_refresh_allowed(
+    preserve_live_runtime: bool,
+    source_archive_refresh_required: bool,
+) -> AppResult<()> {
+    if preserve_live_runtime && source_archive_refresh_required {
+        return Err(AppError::conflict(
+            "the enabled live runtime retains its published source archive; disable the challenge, rescan to build the changed generator, then re-enable it",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) async fn resolve_generator_import_intent(
     st: &SharedState,
     model: &ChallengeYaml,
@@ -185,6 +199,7 @@ pub(super) async fn resolve_generator_import_intent(
             automatic: true,
             build_queued: false,
             retain_source_archive: true,
+            source_archive_refresh_required: false,
         });
     }
 
@@ -197,6 +212,7 @@ pub(super) async fn resolve_generator_import_intent(
         automatic: true,
         build_queued: true,
         retain_source_archive: true,
+        source_archive_refresh_required: !source_matches,
     })
 }
 
@@ -230,5 +246,12 @@ mod tests {
         #[cfg(unix)]
         assert!(regular_generator_context(&root).is_none());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn changed_generator_cannot_replace_an_enabled_runtime_archive() {
+        assert!(ensure_source_archive_refresh_allowed(true, true).is_err());
+        assert!(ensure_source_archive_refresh_allowed(true, false).is_ok());
+        assert!(ensure_source_archive_refresh_allowed(false, true).is_ok());
     }
 }

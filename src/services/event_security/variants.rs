@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use bollard::container::{Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions};
-use bollard::models::HostConfig;
+use bollard::models::{HostConfig, HostConfigLogConfig};
 use bollard::Docker;
 use futures::StreamExt;
 use hmac::{Hmac, KeyInit, Mac};
@@ -21,6 +21,7 @@ const GENERATOR_NANO_CPUS: i64 = 500_000_000;
 const GENERATOR_PIDS: i64 = 64;
 const GENERATOR_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_GENERATOR_OUTPUT: usize = 1024 * 1024;
+const GENERATOR_LOG_MAX_SIZE: &str = "1m";
 static GENERATOR_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(2));
 
@@ -189,11 +190,19 @@ async fn run_generator_once(
         ])),
         host_config: Some(HostConfig {
             memory: Some(GENERATOR_MEMORY_BYTES),
+            memory_swap: Some(GENERATOR_MEMORY_BYTES),
             nano_cpus: Some(GENERATOR_NANO_CPUS),
             pids_limit: Some(GENERATOR_PIDS),
             readonly_rootfs: Some(true),
             cap_drop: Some(vec!["ALL".to_string()]),
             security_opt: Some(vec!["no-new-privileges:true".to_string()]),
+            log_config: Some(HostConfigLogConfig {
+                typ: Some("json-file".to_string()),
+                config: Some(HashMap::from([
+                    ("max-size".to_string(), GENERATOR_LOG_MAX_SIZE.to_string()),
+                    ("max-file".to_string(), "1".to_string()),
+                ])),
+            }),
             tmpfs: Some(HashMap::from([(
                 "/tmp".to_string(),
                 "rw,noexec,nosuid,nodev,size=16m".to_string(),
@@ -247,9 +256,10 @@ async fn run_generator_once(
         }
         Ok(output)
     };
-    let result = tokio::time::timeout(GENERATOR_TIMEOUT, run)
-        .await
-        .map_err(|_| AppError::unavailable("Variant generator timed out"))?;
+    let result = match tokio::time::timeout(GENERATOR_TIMEOUT, run).await {
+        Ok(result) => result,
+        Err(_) => Err(AppError::unavailable("Variant generator timed out")),
+    };
     let cleanup = docker
         .remove_container(
             &container_id,
@@ -488,6 +498,7 @@ mod tests {
         assert_eq!(GENERATOR_PIDS, 64);
         assert_eq!(GENERATOR_TIMEOUT, Duration::from_secs(30));
         assert_eq!(MAX_GENERATOR_OUTPUT, 1024 * 1024);
+        assert_eq!(GENERATOR_LOG_MAX_SIZE, "1m");
     }
 
     #[test]

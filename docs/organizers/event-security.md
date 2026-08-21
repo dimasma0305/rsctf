@@ -133,6 +133,11 @@ event starts. Generator output is size- and time-bounded, and the resulting
 manifest is frozen. Variant policy and generator source cannot change after the
 game starts.
 
+If the same package owns an enabled container runtime, disable that challenge
+before changing its generator source, rescan/build, and then re-enable it. This
+keeps the published runtime archive and the generator build on one package
+revision.
+
 Solve receipts are also opt-in per Jeopardy challenge. A trusted verifier calls
 the machine endpoint with its dedicated issuer token and returns the short-lived
 receipt to the player. Submission consumes it once in the same transaction as

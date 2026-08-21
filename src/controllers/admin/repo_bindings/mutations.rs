@@ -1,5 +1,55 @@
 use super::*;
 
+pub(crate) async fn commit_already_applied(
+    st: &SharedState,
+    binding: &repo_binding::Model,
+    commit_sha: Option<&str>,
+) -> AppResult<bool> {
+    let Some(commit_sha) = commit_sha else {
+        return Ok(false);
+    };
+    if binding.last_commit_sha.as_deref() != Some(commit_sha) {
+        return Ok(false);
+    }
+    let clean = sqlx::query_scalar::<_, bool>(
+        r#"SELECT failures = 0
+             FROM "RepoBindingScans"
+            WHERE binding_id = $1 AND commit_sha = $2
+            ORDER BY id DESC
+            LIMIT 1"#,
+    )
+    .bind(binding.id)
+    .bind(commit_sha)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .unwrap_or(false);
+    if !clean {
+        return Ok(false);
+    }
+    let generators = sqlx::query_scalar::<_, String>(
+        r#"SELECT challenge.variant_generator_image
+             FROM "GameChallenges" challenge
+             JOIN "Games" game ON game.id = challenge.game_id
+            WHERE game.repo_binding_id = $1
+              AND game.deletion_pending = FALSE
+              AND challenge.deletion_pending = FALSE
+              AND challenge.variant_generator_build_context_subdir = 'generator'
+              AND challenge.variant_generator_build_status = 1
+              AND challenge.variant_generator_image IS NOT NULL"#,
+    )
+    .bind(binding.id)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    for image in generators {
+        if !st.containers.image_exists(&image).await {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 async fn remove_repo_checkout(path: &std::path::Path) -> AppResult<()> {
     let metadata = match tokio::fs::symlink_metadata(path).await {
         Ok(metadata) => metadata,
@@ -149,6 +199,45 @@ pub(crate) async fn record_scan_completion(
         return Err(AppError::not_found("Repo binding not found"));
     }
     Ok(())
+}
+
+/// Refresh repository identity without allowing a scan to mutate a game whose
+/// multi-stage hard deletion has already committed. The game advisory lock is
+/// acquired before the raw row lock, matching every other game mutation.
+pub(crate) async fn update_bound_game_manifest_path(
+    db: &sea_orm::DatabaseConnection,
+    game_id: i32,
+    manifest_rel: &str,
+) -> AppResult<()> {
+    let mut control = crate::services::ad_engine::acquire_ad_game_lock(db, game_id).await?;
+    let result = async {
+        let deletion_pending: Option<bool> =
+            sqlx::query_scalar(r#"SELECT deletion_pending FROM "Games" WHERE id = $1 FOR UPDATE"#)
+                .bind(game_id)
+                .fetch_optional(&mut **control.transaction_mut())
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+        match deletion_pending {
+            Some(false) => {}
+            Some(true) => return Err(AppError::conflict("Game is being deleted")),
+            None => return Err(AppError::not_found("Game not found")),
+        }
+        sqlx::query(r#"UPDATE "Games" SET event_manifest_path = $2 WHERE id = $1"#)
+            .bind(game_id)
+            .bind(manifest_rel)
+            .execute(&mut **control.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        Ok(())
+    }
+    .await;
+    if result.is_ok() {
+        control
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
+    result
 }
 
 #[cfg(test)]

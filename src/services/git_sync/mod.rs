@@ -95,8 +95,8 @@ use git::{url_without_credentials, validate_checkout_tree, validate_sync_repo_ur
 mod package;
 use package::{find_dockerfile_context, image_tag, parse_enum, resolve_category, zip_context_dir};
 mod generator;
-use generator::resolve_generator_import_intent;
 pub(crate) use generator::GENERATOR_CONTEXT_SUBDIR;
+use generator::{ensure_source_archive_refresh_allowed, resolve_generator_import_intent};
 mod manifest;
 pub use manifest::{
     parse_event_manifest, AdSection, ChallengeYaml, ContainerSection, GzEventAd, GzEventModel,
@@ -401,6 +401,10 @@ pub async fn import_manifest(
     let preserve_live_runtime = existing
         .as_ref()
         .is_some_and(|challenge| challenge.is_enabled && challenge.challenge_type.is_container());
+    ensure_source_archive_refresh_allowed(
+        preserve_live_runtime,
+        generator_intent.source_archive_refresh_required,
+    )?;
     let declared_container_image = if is_container {
         container
             .and_then(|c| c.container_image.clone())

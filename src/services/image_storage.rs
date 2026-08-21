@@ -37,10 +37,16 @@ const OWNERSHIP_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc,
 
 const CHALLENGE_REFERENCES_SQL: &str = r#"SELECT id, title, "Type" AS challenge_type,
        container_image, ad_checker_image, original_archive_blob_path,
-       build_context_subdir, build_status, build_image_digest, workload_spec
+       build_context_subdir, build_status, build_image_digest, workload_spec,
+       variant_generator_image, variant_generator_digest,
+       variant_generator_build_context_subdir, variant_generator_build_status
   FROM "GameChallenges"
  WHERE (container_image IS NOT NULL AND BTRIM(container_image) <> '')
-    OR (ad_checker_image IS NOT NULL AND BTRIM(ad_checker_image) <> '')"#;
+    OR (ad_checker_image IS NOT NULL AND BTRIM(ad_checker_image) <> '')
+    OR (variant_generator_build_context_subdir = 'generator'
+        AND variant_generator_build_status = 1
+        AND variant_generator_image IS NOT NULL
+        AND variant_generator_image = variant_generator_digest)"#;
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub(crate) struct ImageOwnership {
@@ -68,6 +74,10 @@ struct ChallengeReference {
     build_status: i16,
     build_image_digest: Option<String>,
     workload_spec: Option<serde_json::Value>,
+    variant_generator_image: Option<String>,
+    variant_generator_digest: Option<String>,
+    variant_generator_build_context_subdir: Option<String>,
+    variant_generator_build_status: i16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -282,6 +292,9 @@ fn reference_matches(reference: Option<&str>, canonical_ref: &str) -> bool {
 }
 
 fn reference_is_rebuildable(reference: &ChallengeReference, ownership: &ImageOwnership) -> bool {
+    if managed_generator_matches(reference, ownership) {
+        return false;
+    }
     reference_matches(
         reference.container_image.as_deref(),
         &ownership.canonical_ref,
@@ -305,15 +318,31 @@ fn reference_is_rebuildable(reference: &ChallengeReference, ownership: &ImageOwn
             .is_some_and(|digest| digest.eq_ignore_ascii_case(&ownership.image_id))
 }
 
+fn managed_generator_matches(reference: &ChallengeReference, ownership: &ImageOwnership) -> bool {
+    reference.variant_generator_build_context_subdir.as_deref()
+        == Some(crate::services::git_sync::GENERATOR_CONTEXT_SUBDIR)
+        && reference.variant_generator_build_status == ChallengeBuildStatus::Success as i16
+        && reference.variant_generator_image == reference.variant_generator_digest
+        && reference
+            .variant_generator_image
+            .as_deref()
+            .is_some_and(|image| image.eq_ignore_ascii_case(&ownership.image_id))
+}
+
 fn references_for<'a>(
     references: &'a [ChallengeReference],
-    canonical_ref: &str,
+    ownership: &ImageOwnership,
 ) -> Vec<&'a ChallengeReference> {
     references
         .iter()
         .filter(|reference| {
-            reference_matches(reference.container_image.as_deref(), canonical_ref)
-                || reference_matches(reference.ad_checker_image.as_deref(), canonical_ref)
+            reference_matches(
+                reference.container_image.as_deref(),
+                &ownership.canonical_ref,
+            ) || reference_matches(
+                reference.ad_checker_image.as_deref(),
+                &ownership.canonical_ref,
+            ) || managed_generator_matches(reference, ownership)
         })
         .collect()
 }
@@ -412,7 +441,7 @@ async fn evict_one(
         .fetch_all(lock.connection_mut())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let matching = references_for(&references, &current.canonical_ref);
+    let matching = references_for(&references, &current);
     let orphan = matching.is_empty();
     let expired = current.retention_anchor() <= cutoff;
     if !(expired || (pressure && orphan))
@@ -654,6 +683,10 @@ mod tests {
             build_status: ChallengeBuildStatus::Success as i16,
             build_image_digest: Some(format!("sha256:{}", "a".repeat(64))),
             workload_spec: None,
+            variant_generator_image: None,
+            variant_generator_digest: None,
+            variant_generator_build_context_subdir: None,
+            variant_generator_build_status: ChallengeBuildStatus::None as i16,
         }
     }
 
@@ -681,6 +714,20 @@ mod tests {
         assert!(!reference_is_rebuildable(&candidate, &owned));
         candidate = reference();
         candidate.build_image_digest = Some(format!("sha256:{}", "b".repeat(64)));
+        assert!(!reference_is_rebuildable(&candidate, &owned));
+    }
+
+    #[test]
+    fn managed_generators_keep_their_immutable_image_owned() {
+        let owned = ownership();
+        let digest = owned.image_id.clone();
+        let mut candidate = reference();
+        candidate.variant_generator_image = Some(digest.clone());
+        candidate.variant_generator_digest = Some(digest);
+        candidate.variant_generator_build_context_subdir = Some("generator".to_string());
+        candidate.variant_generator_build_status = ChallengeBuildStatus::Success as i16;
+
+        assert_eq!(references_for(&[candidate.clone()], &owned).len(), 1);
         assert!(!reference_is_rebuildable(&candidate, &owned));
     }
 

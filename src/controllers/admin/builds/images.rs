@@ -25,8 +25,7 @@ const REFERENCES_SQL: &str = r#"
  SELECT title, ad_checker_image AS image_ref FROM "GameChallenges"
  WHERE ad_checker_image IS NOT NULL AND BTRIM(ad_checker_image)<>''
  UNION ALL
- SELECT title,
-        'rsctf/' || game_id::TEXT || '/variant-generator-' || id::TEXT || ':latest' AS image_ref
+ SELECT title, variant_generator_image AS image_ref
  FROM "GameChallenges"
  WHERE variant_generator_build_context_subdir = 'generator'
    AND variant_generator_build_status = 1
@@ -67,12 +66,17 @@ fn docker_not_found(error: &DockerError) -> bool {
     )
 }
 
-fn reference_titles(rows: &[ReferenceRow], canonical_ref: &str) -> Vec<String> {
+fn reference_titles(
+    rows: &[ReferenceRow],
+    canonical_ref: &str,
+    immutable_image_id: &str,
+) -> Vec<String> {
     let mut titles = rows
         .iter()
         .filter(|row| {
-            crate::controllers::edit::canonical_image_reference(Some(&row.image_ref))
-                == canonical_ref
+            row.image_ref.eq_ignore_ascii_case(immutable_image_id)
+                || crate::controllers::edit::canonical_image_reference(Some(&row.image_ref))
+                    == canonical_ref
         })
         .map(|row| row.title.clone())
         .collect::<Vec<_>>();
@@ -172,7 +176,8 @@ async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImag
                 "owned build image is missing from Docker list output");
             continue;
         };
-        let referenced_by = reference_titles(&references, &ownership.canonical_ref);
+        let referenced_by =
+            reference_titles(&references, &ownership.canonical_ref, &ownership.image_id);
         let entry = grouped
             .entry(ownership.image_id.clone())
             .or_insert_with(|| BuildImageModel {
@@ -329,7 +334,7 @@ async fn remove_one(
             ));
         }
     };
-    let referenced_by = reference_titles(&references, &canonical_ref);
+    let referenced_by = reference_titles(&references, &canonical_ref, &ownership.image_id);
     if !referenced_by.is_empty() {
         let _ = lock.release().await;
         return Removal::blocked(format!(
@@ -538,7 +543,7 @@ mod tests {
             title: "active".to_string(),
             image_ref: "index.docker.io/rsctf/game/app".to_string(),
         }];
-        assert_eq!(reference_titles(&rows, CANONICAL), vec!["active"]);
+        assert_eq!(reference_titles(&rows, CANONICAL, ID), vec!["active"]);
     }
 
     #[tokio::test]
@@ -637,12 +642,12 @@ mod tests {
             .fetch_all(second.connection_mut())
             .await
             .unwrap();
-        assert_eq!(reference_titles(&rows, CANONICAL), vec!["late reference"]);
         assert_eq!(
-            reference_titles(
-                &rows,
-                "docker.io/rsctf/9/variant-generator-2:latest"
-            ),
+            reference_titles(&rows, CANONICAL, OTHER_ID),
+            vec!["late reference"]
+        );
+        assert_eq!(
+            reference_titles(&rows, "docker.io/rsctf/unrelated:latest", ID),
             vec!["managed generator"]
         );
         second.release().await.unwrap();
