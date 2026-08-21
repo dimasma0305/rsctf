@@ -88,6 +88,7 @@ import api, { ParticipationStatus } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 import classes from './CheatInfo.module.css'
 import { FusedEvidencePanel } from './FusedEvidencePanel'
+import { SuspicionEvidenceReviewPanel } from './SuspicionEvidenceReview'
 
 dayjs.extend(relativeTime)
 
@@ -1283,7 +1284,13 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
   // Suspicion Modal
   const [susOpened, { open: openSus, close: closeSus }] = useDisclosure(false)
   const [selectedSuspicion, setSelectedSuspicion] = useState<SuspicionRecordResult | null>(null)
+  const [reviewEventId, setReviewEventId] = useState<number | null>(null)
   const [changingParticipationId, setChangingParticipationId] = useState<number | null>(null)
+
+  const closeSuspicionDetails = useCallback(() => {
+    setReviewEventId(null)
+    closeSus()
+  }, [closeSus])
 
   // Search states
   const [globalSearch, setGlobalSearch] = useState('')
@@ -1336,9 +1343,9 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
       setSelectedSuspicion(refreshed)
     } else {
       setSelectedSuspicion(null)
-      closeSus()
+      closeSuspicionDetails()
     }
-  }, [closeSus, report?.suspicionList, susOpened])
+  }, [closeSuspicionDetails, report?.suspicionList, selectedSuspicion, susOpened])
 
   // 5. Collusion Group Sort State
   const [collusionSort, setCollusionSort] = useState<SortConfig<CollusionGroupResult>>({
@@ -1419,6 +1426,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
 
   const handleViewSuspicion = useCallback(
     (item: SuspicionRecordResult) => {
+      setReviewEventId(null)
       setSelectedSuspicion(item)
       openSus()
     },
@@ -1948,7 +1956,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
 
       <Modal
         opened={susOpened}
-        onClose={closeSus}
+        onClose={closeSuspicionDetails}
         title={
           <Group gap="xs">
             <ThemeIcon size="sm" color="alert" variant="light" radius="sm">
@@ -2018,6 +2026,17 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                 )}
               </Text>
             </Box>
+            <Alert
+              color="blue"
+              title={t('game.cheat_analysis.triage_not_verdict', 'This score is triage, not a verdict')}
+            >
+              <Text size="sm">
+                {t(
+                  'game.cheat_analysis.triage_not_verdict_detail',
+                  'Open Review evidence for each incident and verify its source records. Only a verified direct-evidence source can stand as proof; indicators and context require independent corroboration.'
+                )}
+              </Text>
+            </Alert>
             {canManageParticipations && selectedSuspicion.participationId !== undefined && (
               <>
                 <Divider />
@@ -2033,7 +2052,7 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                 'aria-label': t('game.cheat_analysis.evidence_scroll_region', 'Evidence events'),
               }}
             >
-              <Table striped miw="68rem">
+              <Table striped miw="76rem">
                 <AccessibleTableCaption>
                   {t('game.cheat_analysis.evidence_events_caption', 'Evidence events for the selected team')}
                 </AccessibleTableCaption>
@@ -2057,6 +2076,9 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                     <Table.Th scope="col" w="23rem" miw="23rem">
                       {t('game.cheat_analysis.details', 'Details')}
                     </Table.Th>
+                    <Table.Th scope="col" w="9rem" miw="9rem">
+                      {t('game.cheat_analysis.evidence_review', 'Evidence review')}
+                    </Table.Th>
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -2065,75 +2087,99 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
                     const contribution = evidenceContribution(evt)
                     const counted = evt.counted ?? contribution !== 0
                     const rawDelta = evt.scoreDelta ?? 0
+                    const rowKey = evt.eventId ?? `${evt.type ?? 'event'}:${evt.time ?? 'time'}:${idx}`
                     return (
-                      <Table.Tr
-                        key={evt.eventId ?? `${evt.type ?? 'event'}:${evt.time ?? 'time'}:${idx}`}
-                        style={{ opacity: counted ? 1 : 0.65 }}
-                      >
-                        <Table.Td miw="6rem">
-                          <Text size="xs" ff="monospace" c="dimmed">
-                            {evt.eventId == null ? '—' : `#${evt.eventId}`}
-                          </Text>
-                        </Table.Td>
-                        <Table.Td miw="10rem">
-                          <Text size="sm" fw={600}>
-                            {evt.type ?? t('common.label.unknown', 'Unknown')}
-                          </Text>
-                        </Table.Td>
-                        <Table.Td miw="9rem">
-                          <Group gap={4} wrap="nowrap">
-                            <Badge color={tm.color} size="sm" variant={counted ? 'filled' : 'outline'}>
-                              {t(`game.cheat_analysis.tier.${evt.tier ?? 'behavioral'}`, tm.label)}
-                            </Badge>
-                            {!counted && (
-                              <Text size="xs" c="dimmed">
-                                {evt.tier === 'context'
-                                  ? t('game.cheat_analysis.not_scored', 'context')
-                                  : t('game.cheat_analysis.capped', 'capped')}
-                              </Text>
-                            )}
-                          </Group>
-                        </Table.Td>
-                        <Table.Td miw="10rem">
-                          <Tooltip
-                            withArrow
-                            label={
-                              counted
-                                ? t(
-                                    'game.cheat_analysis.score_applied_detail',
-                                    'Raw rule weight: {{raw}}. Applied after caps: {{applied}}.',
-                                    { raw: rawDelta, applied: contribution }
-                                  )
-                                : t(
-                                    'game.cheat_analysis.score_not_applied_detail',
-                                    'Raw rule weight: {{raw}}. This event did not add points.',
-                                    { raw: rawDelta }
-                                  )
-                            }
-                          >
-                            <Badge
-                              size="sm"
-                              variant={counted ? 'light' : 'outline'}
-                              color={contribution > 0 ? 'orange' : contribution < 0 ? 'teal' : 'gray'}
+                      <React.Fragment key={rowKey}>
+                        <Table.Tr style={{ opacity: counted ? 1 : 0.65 }}>
+                          <Table.Td miw="6rem">
+                            <Text size="xs" ff="monospace" c="dimmed">
+                              {evt.eventId == null ? '—' : `#${evt.eventId}`}
+                            </Text>
+                          </Table.Td>
+                          <Table.Td miw="10rem">
+                            <Text size="sm" fw={600}>
+                              {evt.type ?? t('common.label.unknown', 'Unknown')}
+                            </Text>
+                          </Table.Td>
+                          <Table.Td miw="9rem">
+                            <Group gap={4} wrap="nowrap">
+                              <Badge color={tm.color} size="sm" variant={counted ? 'filled' : 'outline'}>
+                                {t(`game.cheat_analysis.tier.${evt.tier ?? 'behavioral'}`, tm.label)}
+                              </Badge>
+                              {!counted && (
+                                <Text size="xs" c="dimmed">
+                                  {evt.tier === 'context'
+                                    ? t('game.cheat_analysis.not_scored', 'context')
+                                    : t('game.cheat_analysis.capped', 'capped')}
+                                </Text>
+                              )}
+                            </Group>
+                          </Table.Td>
+                          <Table.Td miw="10rem">
+                            <Tooltip
+                              withArrow
+                              label={
+                                counted
+                                  ? t(
+                                      'game.cheat_analysis.score_applied_detail',
+                                      'Raw rule weight: {{raw}}. Applied after caps: {{applied}}.',
+                                      { raw: rawDelta, applied: contribution }
+                                    )
+                                  : t(
+                                      'game.cheat_analysis.score_not_applied_detail',
+                                      'Raw rule weight: {{raw}}. This event did not add points.',
+                                      { raw: rawDelta }
+                                    )
+                              }
                             >
-                              {counted
-                                ? `${contribution > 0 ? '+' : ''}${contribution}`
-                                : t('game.cheat_analysis.not_counted_score', '0 (not counted)')}
-                            </Badge>
-                          </Tooltip>
-                        </Table.Td>
-                        <Table.Td fz="xs" ff="monospace" miw="11rem">
-                          {fmtAbsTime(evt.time, locale, 'MM-DD HH:mm:ss')}
-                        </Table.Td>
-                        <Table.Td miw="23rem">
-                          <ReadableDetails details={evt.details} />
-                        </Table.Td>
-                      </Table.Tr>
+                              <Badge
+                                size="sm"
+                                variant={counted ? 'light' : 'outline'}
+                                color={contribution > 0 ? 'orange' : contribution < 0 ? 'teal' : 'gray'}
+                              >
+                                {counted
+                                  ? `${contribution > 0 ? '+' : ''}${contribution}`
+                                  : t('game.cheat_analysis.not_counted_score', '0 (not counted)')}
+                              </Badge>
+                            </Tooltip>
+                          </Table.Td>
+                          <Table.Td fz="xs" ff="monospace" miw="11rem">
+                            {fmtAbsTime(evt.time, locale, 'MM-DD HH:mm:ss')}
+                          </Table.Td>
+                          <Table.Td miw="23rem">
+                            <ReadableDetails details={evt.details} />
+                          </Table.Td>
+                          <Table.Td miw="9rem">
+                            <Button
+                              size="compact-xs"
+                              variant={reviewEventId === evt.eventId ? 'filled' : 'light'}
+                              color={reviewEventId === evt.eventId ? 'blue' : 'gray'}
+                              disabled={evt.eventId == null}
+                              onClick={() =>
+                                evt.eventId != null &&
+                                setReviewEventId((current) => (current === evt.eventId ? null : (evt.eventId ?? null)))
+                              }
+                              aria-expanded={reviewEventId === evt.eventId}
+                            >
+                              {reviewEventId === evt.eventId
+                                ? t('common.action.hide', 'Hide')
+                                : t('game.cheat_analysis.review_evidence', 'Review evidence')}
+                            </Button>
+                          </Table.Td>
+                        </Table.Tr>
+                        {evt.eventId != null && reviewEventId === evt.eventId && (
+                          <Table.Tr>
+                            <Table.Td colSpan={7} p="sm">
+                              <SuspicionEvidenceReviewPanel gameId={gameId} eventId={evt.eventId} />
+                            </Table.Td>
+                          </Table.Tr>
+                        )}
+                      </React.Fragment>
                     )
                   })}
                   {!selectedSuspicion.events?.length && (
                     <Table.Tr>
-                      <Table.Td colSpan={6}>
+                      <Table.Td colSpan={7}>
                         <Text size="sm" c="dimmed" ta="center" py="md">
                           {t('game.cheat_analysis.no_evidence_events', 'No event details are available.')}
                         </Text>
