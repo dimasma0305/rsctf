@@ -130,11 +130,15 @@ mod tests {
 
     #[test]
     fn unsafe_counts_and_durations_are_rejected() {
-        let mut policy = ContainerPolicy::default();
-        policy.max_exercise_container_count_per_user = 0;
+        let policy = ContainerPolicy {
+            max_exercise_container_count_per_user: 0,
+            ..Default::default()
+        };
         assert!(policy.validate().is_err());
-        policy = ContainerPolicy::default();
-        policy.default_lifetime = 0;
+        let policy = ContainerPolicy {
+            default_lifetime: 0,
+            ..Default::default()
+        };
         assert!(policy.validate().is_err());
     }
 }

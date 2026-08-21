@@ -39,10 +39,6 @@
 //! Docker manager here. The game/A&D controllers thread `st.containers` through
 //! and call create/destroy/exec/snapshot_changes for the full instance lifecycle.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
-use std::time::Duration;
-
 use async_trait::async_trait;
 use bollard::container::NetworkingConfig;
 use bollard::container::{
@@ -55,10 +51,12 @@ use bollard::Docker;
 use futures::StreamExt;
 use ipnet::Ipv4Net;
 use rsctf_worker_protocol::GameKind;
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use crate::utils::enums::{ChallengeType, NetworkMode};
 use crate::utils::error::{AppError, AppResult};
-
 mod backend;
 mod docker;
 mod logging;
@@ -72,18 +70,17 @@ use self::docker::{
     restricted_tmpfs_mounts, stamp_restricted_profile, validate_docker_container_spec,
     writable_layer_quota_supported, writable_layer_storage_opt, LAUNCH_SPEC_LABEL,
 };
+pub use backend::{
+    should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
+    ContainerLiveness, ContainerManager, ContainerStatus, FileChange, NoopContainerManager,
+};
+pub use docker::{from_env, from_env_required};
 use logging::bounded_log_config;
 use naming::{container_name, map_status};
 pub(crate) use policy::validate_container_spec;
 pub use policy::{
     storage_limit_or_default, validate_network_mode_value, validate_storage_limit_value,
 };
-
-pub use backend::{
-    should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
-    ContainerLiveness, ContainerManager, ContainerStatus, FileChange, NoopContainerManager,
-};
-pub use docker::{from_env, from_env_required};
 
 /// Label stamped on every rsctf-managed container so orphans left behind by a
 /// crash can be reaped by a sweeper (mirrors RSCTF tagging containers with
@@ -99,7 +96,6 @@ pub(crate) const IMAGE_REFERENCE_LABEL: &str = "rsctf.image.ref";
 const DOCKER_SCOPE_ENV: &str = "RSCTF_DOCKER_SCOPE";
 const JWT_SECRET_ENV: &str = "RSCTF_JWT_SECRET";
 const MIB: usize = 1024 * 1024;
-
 /// Environment names injected into rsctf-managed challenge containers.
 const FLAG_ENV: &str = "RSCTF_FLAG";
 const FLAG_FILE_ENV: &str = "RSCTF_FLAG_FILE";
@@ -299,6 +295,14 @@ pub struct ContainerSpec {
     pub operation_id: Option<String>,
 }
 
+/// Resource ceilings shared by every container backend.
+#[derive(Debug, Clone, Copy)]
+pub struct ContainerResourceLimits {
+    pub memory_limit: i32,
+    pub cpu_count: i32,
+    pub storage_limit: i32,
+}
+
 pub fn game_kind_for_challenge(challenge_type: ChallengeType) -> GameKind {
     match challenge_type {
         ChallengeType::AttackDefense => GameKind::AttackDefense,
@@ -315,9 +319,7 @@ impl ContainerSpec {
     /// restart/reset must use this constructor.
     pub fn ad_service(
         image: String,
-        memory_limit: i32,
-        cpu_count: i32,
-        storage_limit: i32,
+        resources: ContainerResourceLimits,
         expose_port: i32,
         team_id: i32,
         allow_egress: bool,
@@ -326,9 +328,9 @@ impl ContainerSpec {
         Self {
             game_kind: GameKind::AttackDefense,
             image,
-            memory_limit,
-            cpu_count,
-            storage_limit,
+            memory_limit: resources.memory_limit,
+            cpu_count: resources.cpu_count,
+            storage_limit: resources.storage_limit,
             expose_port,
             publish_port: true,
             proxy_only: false,
@@ -470,6 +472,14 @@ impl DockerContainerManager {
             },
             None => Ipam::default(),
         };
+        let options = if disable_icc {
+            HashMap::from([(
+                "com.docker.network.bridge.enable_icc".to_string(),
+                "false".to_string(),
+            )])
+        } else {
+            HashMap::new()
+        };
         let opts = CreateNetworkOptions {
             name: name.to_string(),
             check_duplicate: true,
@@ -477,14 +487,7 @@ impl DockerContainerManager {
             internal,
             ipam,
             labels: scoped_managed_labels(&self.scope),
-            options: disable_icc
-                .then(|| {
-                    HashMap::from([(
-                        "com.docker.network.bridge.enable_icc".to_string(),
-                        "false".to_string(),
-                    )])
-                })
-                .unwrap_or_default(),
+            options,
             ..Default::default()
         };
         match docker.create_network(opts).await {

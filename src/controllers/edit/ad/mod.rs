@@ -1,4 +1,5 @@
 //! Edit-facing A&D operator console.
+use crate::services::container::storage_limit_or_default;
 use axum::extract::Query;
 use axum::response::IntoResponse;
 
@@ -747,9 +748,11 @@ pub async fn ad_restart_service(
         .containers
         .create(ContainerSpec::ad_service(
             image,
-            challenge.memory_limit.unwrap_or(256),
-            challenge.cpu_count.unwrap_or(1),
-            crate::services::container::storage_limit_or_default(challenge.storage_limit),
+            ContainerResourceLimits {
+                memory_limit: challenge.memory_limit.unwrap_or(256),
+                cpu_count: challenge.cpu_count.unwrap_or(1),
+                storage_limit: storage_limit_or_default(challenge.storage_limit),
+            },
             challenge.expose_port.unwrap_or(80),
             part.team_id,
             challenge.ad_allow_egress,

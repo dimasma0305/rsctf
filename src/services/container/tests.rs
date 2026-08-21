@@ -18,8 +18,8 @@ use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
     docker_workload_scope, game_kind_for_challenge, labels_match_scope, managed_container_filters,
     network_scope_matches, scoped_managed_labels, scoped_operation_id, should_use_platform_proxy,
-    validate_container_spec, ContainerLiveness, ContainerManager, ContainerSpec,
-    DockerContainerManager, DEFAULT_CONTAINER_STORAGE_MB,
+    validate_container_spec, ContainerLiveness, ContainerManager, ContainerResourceLimits,
+    ContainerSpec, DockerContainerManager, DEFAULT_CONTAINER_STORAGE_MB,
 };
 
 #[test]
@@ -465,9 +465,11 @@ fn docker_publication_keeps_proxy_private_and_direct_mode_public() {
     let ad = ContainerSpec::ad_service(
         "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             .into(),
-        256,
-        1,
-        DEFAULT_CONTAINER_STORAGE_MB,
+        ContainerResourceLimits {
+            memory_limit: 256,
+            cpu_count: 1,
+            storage_limit: DEFAULT_CONTAINER_STORAGE_MB,
+        },
         8080,
         7,
         false,
@@ -577,9 +579,11 @@ fn jwt_secret_is_the_replica_safe_scope_fallback() {
 fn ad_service_specs_are_internal_only() {
     let spec = ContainerSpec::ad_service(
         "image".into(),
-        256,
-        1,
-        DEFAULT_CONTAINER_STORAGE_MB,
+        ContainerResourceLimits {
+            memory_limit: 256,
+            cpu_count: 1,
+            storage_limit: DEFAULT_CONTAINER_STORAGE_MB,
+        },
         8080,
         7,
         false,
@@ -621,9 +625,11 @@ fn docker_competitive_egress_fails_closed_for_both_game_modes() {
     let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let mut spec = ContainerSpec::ad_service(
         image.into(),
-        256,
-        1,
-        DEFAULT_CONTAINER_STORAGE_MB,
+        ContainerResourceLimits {
+            memory_limit: 256,
+            cpu_count: 1,
+            storage_limit: DEFAULT_CONTAINER_STORAGE_MB,
+        },
         8080,
         7,
         true,
@@ -655,9 +661,11 @@ fn docker_competitive_default_deny_egress_remains_supported() {
     let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let mut spec = ContainerSpec::ad_service(
         image.into(),
-        256,
-        1,
-        DEFAULT_CONTAINER_STORAGE_MB,
+        ContainerResourceLimits {
+            memory_limit: 256,
+            cpu_count: 1,
+            storage_limit: DEFAULT_CONTAINER_STORAGE_MB,
+        },
         8080,
         7,
         false,
@@ -674,9 +682,11 @@ async fn docker_create_rejects_competitive_egress_before_daemon_access() {
     let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let spec = ContainerSpec::ad_service(
         image.into(),
-        256,
-        1,
-        DEFAULT_CONTAINER_STORAGE_MB,
+        ContainerResourceLimits {
+            memory_limit: 256,
+            cpu_count: 1,
+            storage_limit: DEFAULT_CONTAINER_STORAGE_MB,
+        },
         8080,
         7,
         true,
@@ -699,9 +709,11 @@ fn container_resource_limits_reject_invalid_values() {
     let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let mut spec = ContainerSpec::ad_service(
         image.into(),
-        256,
-        1,
-        DEFAULT_CONTAINER_STORAGE_MB,
+        ContainerResourceLimits {
+            memory_limit: 256,
+            cpu_count: 1,
+            storage_limit: DEFAULT_CONTAINER_STORAGE_MB,
+        },
         8080,
         7,
         false,

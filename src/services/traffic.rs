@@ -445,7 +445,6 @@ fn capture_live_inner(
                     // closed and a new one opened before that packet is written.
                     let header = *packet.header;
                     let data = packet.data.to_vec();
-                    drop(packet);
                     savefile
                         .flush()
                         .map_err(|e| pcap_err("flush capture rotation", e))?;
