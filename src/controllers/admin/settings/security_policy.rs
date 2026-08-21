@@ -56,6 +56,11 @@ pub(super) async fn save_security_policy(
                 "OAuth-only registration is incompatible with browser fingerprinting",
             ));
         }
+        if config.public_url.is_none() {
+            return Err(AppError::bad_request(
+                "OAuth-only registration requires a canonical RSCTF_PUBLIC_URL",
+            ));
+        }
         if !crate::services::oauth_config::OAuthSettings::load_in_transaction(&mut transaction)
             .await?
             .any_configured()
@@ -123,12 +128,34 @@ async fn write_oauth_policy(
     transaction: &mut Transaction<'_, Postgres>,
     oauth: OAuthConfig,
 ) -> AppResult<()> {
-    for (key, value) in [
-        ("OAuthConfig:GoogleClientId", oauth.google_client_id),
-        ("OAuthConfig:DiscordClientId", oauth.discord_client_id),
+    let client_id_keys = ["OAuthConfig:GoogleClientId", "OAuthConfig:DiscordClientId"];
+    let persisted_client_ids = sqlx::query_scalar::<_, String>(
+        r#"SELECT config_key
+             FROM "Configs"
+            WHERE config_key = ANY($1)"#,
+    )
+    .bind(&client_id_keys[..])
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    for (key, environment_key, value) in [
+        (
+            "OAuthConfig:GoogleClientId",
+            "RSCTF_GOOGLE_CLIENT_ID",
+            oauth.google_client_id,
+        ),
+        (
+            "OAuthConfig:DiscordClientId",
+            "RSCTF_DISCORD_CLIENT_ID",
+            oauth.discord_client_id,
+        ),
     ] {
         if let Some(value) = value {
-            upsert(transaction, key, value).await?;
+            let already_persisted = persisted_client_ids.iter().any(|saved| saved == key);
+            let fallback = std::env::var(environment_key).ok();
+            if should_persist_client_id(already_persisted, &value, fallback.as_deref()) {
+                upsert(transaction, key, value).await?;
+            }
         }
     }
     for (key, value) in [
@@ -143,6 +170,20 @@ async fn write_oauth_policy(
         }
     }
     Ok(())
+}
+
+fn should_persist_client_id(
+    already_persisted: bool,
+    incoming: &str,
+    environment_fallback: Option<&str>,
+) -> bool {
+    if already_persisted {
+        return true;
+    }
+    let environment_fallback = environment_fallback
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    environment_fallback != Some(incoming.trim())
 }
 
 async fn write_captcha_policy(
@@ -361,6 +402,26 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        config.public_url = None;
+        let missing_oauth_origin = save_security_policy(
+            &pool,
+            &config,
+            Some(AccountPolicy {
+                allow_password_registration: false,
+                use_captcha: false,
+                ..AccountPolicy::default()
+            }),
+            None,
+            Some(oauth("google-id", "google-secret")),
+        )
+        .await
+        .expect_err("OAuth-only registration committed without a public origin");
+        assert_eq!(
+            missing_oauth_origin.status(),
+            axum::http::StatusCode::BAD_REQUEST
+        );
+        config.public_url = Some("https://ctf.example".to_string());
+
         let oauth_only = AccountPolicy {
             allow_password_registration: false,
             use_captcha: false,
@@ -399,6 +460,14 @@ mod tests {
             .await
             .unwrap();
         assert!(effective.google_configured());
+        let fast_rejection =
+            crate::services::anti_cheat::preflight_password_registration(&pool, &config, false)
+                .await
+                .expect_err("OAuth-only policy did not reject the cheap password preflight");
+        assert_eq!(fast_rejection.status(), axum::http::StatusCode::BAD_REQUEST);
+        crate::services::anti_cheat::preflight_password_registration(&pool, &config, true)
+            .await
+            .expect("first-administrator bootstrap must bypass the fast policy rejection");
 
         let fingerprint_conflict = save_security_policy(
             &pool,
@@ -445,5 +514,26 @@ mod tests {
             has_google_client_secret: false,
             has_discord_client_secret: false,
         }
+    }
+
+    #[test]
+    fn unchanged_environment_client_ids_are_not_promoted_to_database_overrides() {
+        assert!(!should_persist_client_id(
+            false,
+            "deployment-id",
+            Some(" deployment-id ")
+        ));
+        assert!(should_persist_client_id(
+            false,
+            "admin-override",
+            Some("deployment-id")
+        ));
+        assert!(should_persist_client_id(false, "", Some("deployment-id")));
+        assert!(should_persist_client_id(false, "new-id", None));
+        assert!(should_persist_client_id(
+            true,
+            "deployment-id",
+            Some("deployment-id")
+        ));
     }
 }
