@@ -15,8 +15,10 @@ pub use enrollment::*;
 pub use framing::*;
 pub use workload::*;
 
-/// First revision of the trusted worker wire protocol.
-pub const PROTOCOL_REVISION: u16 = 1;
+/// Second revision of the trusted worker wire protocol. Revision 2 carries a
+/// per-service writable-layer limit so the control plane cannot silently lose
+/// an author-selected storage boundary at the worker handoff.
+pub const PROTOCOL_REVISION: u16 = 2;
 
 /// ALPN selected by the long-lived control connection.
 pub const CONTROL_ALPN: &[u8] = b"rsctf-worker-control/1";

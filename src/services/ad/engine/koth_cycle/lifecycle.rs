@@ -434,6 +434,7 @@ fn replacement_container_spec(
         image,
         memory_limit: spec.memory_limit,
         cpu_count: spec.cpu_count,
+        storage_limit: spec.storage_limit,
         expose_port: spec.expose_port,
         publish_port: true,
         proxy_only: false,
@@ -445,6 +446,7 @@ fn replacement_container_spec(
         flag: Some(spec.runtime_flag.clone().unwrap_or_default()),
         ad_network: Some(crate::services::ad_vpn::services_network()),
         allow_egress: spec.allow_egress,
+        network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some(format!(
             "koth-cycle:{}:attempt:{}",
             cycle.id, cycle.reset_attempt

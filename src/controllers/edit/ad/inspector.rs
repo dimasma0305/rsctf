@@ -13,6 +13,7 @@ struct InspectorDefinition {
     build_image_digest: Option<String>,
     memory_limit: Option<i32>,
     cpu_count: Option<i32>,
+    storage_limit: Option<i32>,
     expose_port: Option<i32>,
     workload_spec: Option<JsonValue>,
 }
@@ -31,6 +32,7 @@ const LOAD_DEFINITION_SQL: &str = r#"SELECT challenge.id AS challenge_id,
                   challenge.build_image_digest,
                   challenge.memory_limit,
                   challenge.cpu_count,
+                  challenge.storage_limit,
                   challenge.expose_port,
                   challenge.workload_spec
              FROM "AdTeamServices" service
@@ -244,6 +246,9 @@ pub async fn ad_spawn_inspector(
                 image: image.clone(),
                 memory_limit: definition.memory_limit.unwrap_or(64),
                 cpu_count: definition.cpu_count.unwrap_or(1),
+                storage_limit: crate::services::container::storage_limit_or_default(
+                    definition.storage_limit,
+                ),
                 expose_port: definition.expose_port.unwrap_or(80),
                 publish_port: false,
                 proxy_only: false,
@@ -251,6 +256,7 @@ pub async fn ad_spawn_inspector(
                 flag: None,
                 ad_network: None,
                 allow_egress: false,
+                network_mode: crate::utils::enums::NetworkMode::Isolated,
                 operation_id,
             })
             .await?;
@@ -403,6 +409,7 @@ mod tests {
                  build_image_digest TEXT,
                  memory_limit INTEGER,
                  cpu_count INTEGER,
+                 storage_limit INTEGER,
                  expose_port INTEGER,
                  workload_spec JSONB,
                  deletion_pending BOOLEAN NOT NULL,
@@ -427,7 +434,7 @@ mod tests {
                INSERT INTO "GameChallenges" VALUES
                  (4, 1, 5, FALSE, 2,
                   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-                  64, 1, 8080, NULL, FALSE, TRUE, 0);
+                  64, 1, 512, 8080, NULL, FALSE, TRUE, 0);
                INSERT INTO "AdTeamServices" VALUES (5, 1, 4, 3);"#,
         )
         .execute(&pool)

@@ -18,6 +18,7 @@ test('the Linux example uses the camelCase trusted-worker wire format', () => {
   assert.equal(parsed.services[0].stateless, true)
   assert.equal(parsed.services[0].image.type, 'registryDigest')
   assert.equal(parsed.services[0].resources.cpuMillis, 500)
+  assert.equal(parsed.services[0].resources.storageBytes, 536_870_912)
   assert.equal(parsed.services[0].resources.memoryBytes, 134_217_728)
   assert.deepEqual(parsed.primaryEndpoint, { service: 'challenge', port: 'service' })
   assert.deepEqual(parsed.flagTarget, { service: 'challenge', path: '/flag' })

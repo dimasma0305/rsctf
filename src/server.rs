@@ -9,6 +9,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::timeout::RequestBodyDeadlineLayer;
 use tower_http::trace::{MakeSpan, TraceLayer};
 
 use crate::app_state::SharedState;
@@ -150,6 +151,12 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
     app.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         crate::middlewares::event_vpn::middleware,
+    ))
+    // A per-field size limit does not stop a slow client from retaining an
+    // almost-complete multipart buffer forever. Cap total body transfer time;
+    // buffered upload handlers also take weighted admission permits.
+    .layer(RequestBodyDeadlineLayer::new(
+        crate::utils::upload::REQUEST_BODY_DEADLINE,
     ))
     // Per-request user-activity stamp (RSCTF's UserInfo.UpdateByHttpContext) —
     // inside the rate limiter, so activity is not stamped for throttled 429s.

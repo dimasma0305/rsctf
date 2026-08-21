@@ -537,7 +537,7 @@ const Dashboard: FC = () => {
                         </Table.Td>
                         <Table.Td>
                           {w.url && (
-                            <Badge color="blue" component="a" href={w.url} target="_blank">
+                            <Badge color="blue" component="a" href={w.url} target="_blank" rel="noreferrer">
                               {t('common.label.download', 'Download')}
                             </Badge>
                           )}

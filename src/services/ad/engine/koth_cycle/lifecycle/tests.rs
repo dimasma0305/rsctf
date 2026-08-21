@@ -100,6 +100,7 @@ fn persistent_replacement_preserves_the_static_runtime_flag() {
         image: cycle.expected_image.clone(),
         memory_limit: 512,
         cpu_count: 2,
+        storage_limit: 1_024,
         expose_port: 8080,
         allow_egress: false,
         checker_dir: None,
@@ -114,6 +115,8 @@ fn persistent_replacement_preserves_the_static_runtime_flag() {
         Some("koth-cycle:41:attempt:3")
     );
     assert_eq!(spec.expose_port, 8080);
+    assert_eq!(spec.storage_limit, 1_024);
+    assert_eq!(spec.network_mode, crate::utils::enums::NetworkMode::Open);
 }
 
 #[test]

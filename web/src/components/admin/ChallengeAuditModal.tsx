@@ -78,7 +78,7 @@ export const ChallengeAuditModal: FC<ChallengeAuditModalProps> = (props) => {
 
   const downloadArchive = () => {
     if (challengeId == null) return
-    window.open(`/api/edit/games/${gameId}/challenges/${challengeId}/auditarchive`, '_blank')
+    window.open(`/api/edit/games/${gameId}/challenges/${challengeId}/auditarchive`, '_blank', 'noopener,noreferrer')
   }
 
   const [rebuilding, setRebuilding] = useState(false)
@@ -91,11 +91,15 @@ export const ChallengeAuditModal: FC<ChallengeAuditModalProps> = (props) => {
       // local state to Queued immediately so the operator sees the
       // transition; the next AuditMeta tick (kicked by reloadKey
       // bumping) will drive Building → Success/Failed.
-      setAudit((prev) => prev ? {
-        ...prev,
-        buildStatus: resp.data.buildStatus,
-        lastBuildLog: resp.data.lastBuildLog,
-      } : prev)
+      setAudit((prev) =>
+        prev
+          ? {
+              ...prev,
+              buildStatus: resp.data.buildStatus,
+              lastBuildLog: resp.data.lastBuildLog,
+            }
+          : prev
+      )
       setReloadKey((k) => k + 1)
     } catch (e) {
       showErrorMsg(e, t)
@@ -152,11 +156,7 @@ export const ChallengeAuditModal: FC<ChallengeAuditModalProps> = (props) => {
                     {t('admin.button.audit.rebuild')}
                   </Button>
                 )}
-                <Button
-                  size="xs"
-                  leftSection={<Icon path={mdiDownload} size={0.9} />}
-                  onClick={downloadArchive}
-                >
+                <Button size="xs" leftSection={<Icon path={mdiDownload} size={0.9} />} onClick={downloadArchive}>
                   {t('admin.button.audit.download')}
                 </Button>
               </Group>
@@ -175,12 +175,17 @@ export const ChallengeAuditModal: FC<ChallengeAuditModalProps> = (props) => {
                   <Badge
                     size="xs"
                     color={
-                      audit.buildStatus === 'Success' ? 'teal'
-                      : audit.buildStatus === 'Failed' ? 'red'
-                      : audit.buildStatus === 'NotApplicable' ? 'gray'
-                      : audit.buildStatus === 'MissingDockerfile' ? 'orange'
-                      : audit.buildStatus === 'Queued' ? 'blue'
-                      : 'yellow'
+                      audit.buildStatus === 'Success'
+                        ? 'teal'
+                        : audit.buildStatus === 'Failed'
+                          ? 'red'
+                          : audit.buildStatus === 'NotApplicable'
+                            ? 'gray'
+                            : audit.buildStatus === 'MissingDockerfile'
+                              ? 'orange'
+                              : audit.buildStatus === 'Queued'
+                                ? 'blue'
+                                : 'yellow'
                     }
                     variant={audit.buildStatus === 'Failed' ? 'filled' : 'light'}
                   >
@@ -200,7 +205,9 @@ export const ChallengeAuditModal: FC<ChallengeAuditModalProps> = (props) => {
                     {audit.lastBuildLog}
                   </Code>
                 ) : (
-                  <Text size="xs" c="dimmed">{t('admin.content.audit.no_build_log')}</Text>
+                  <Text size="xs" c="dimmed">
+                    {t('admin.content.audit.no_build_log')}
+                  </Text>
                 )}
               </Stack>
             </Paper>

@@ -304,6 +304,14 @@ pub fn list_flows_bounded(
 /// interval with no packet, which is how the loop below gets a chance to notice
 /// the `stop` flag. Kept short so a stop request is honoured promptly.
 const LIVE_READ_TIMEOUT_MS: i32 = 200;
+const PCAP_GLOBAL_HEADER_BYTES: u64 = 24;
+const PCAP_PACKET_HEADER_BYTES: u64 = 16;
+const FREE_SPACE_CHECK_INTERVAL_BYTES: u64 = 1024 * 1024;
+mod live_limits;
+use live_limits::{
+    enforce_capture_directory_budget, refresh_capture_space_if_needed, rotated_capture_path,
+    CaptureDiskReservation, LiveCaptureLimits,
+};
 
 /// Capture live traffic off a NIC into a `.pcap` file until `stop` is signalled.
 ///
@@ -335,21 +343,29 @@ pub fn capture_live(
     out_path: &Path,
     stop: Arc<AtomicBool>,
 ) -> AppResult<u64> {
-    capture_live_inner(device, bpf_filter, out_path, stop, None)
+    capture_live_inner(
+        device,
+        bpf_filter,
+        out_path,
+        stop,
+        LiveCaptureLimits::default(),
+        None,
+    )
 }
 
 /// Capture entry point used by the durable owner. The startup channel is
 /// completed only after the device, BPF program, and savefile are all open, so
 /// a reconciliation acknowledgement never mistakes a spawned thread for an
 /// operational capture.
-pub(super) fn capture_live_with_startup(
+fn capture_live_with_startup(
     device: &str,
     bpf_filter: Option<&str>,
     out_path: &Path,
     stop: Arc<AtomicBool>,
+    limits: LiveCaptureLimits,
     startup: tokio::sync::oneshot::Sender<Result<(), String>>,
 ) -> AppResult<u64> {
-    capture_live_inner(device, bpf_filter, out_path, stop, Some(startup))
+    capture_live_inner(device, bpf_filter, out_path, stop, limits, Some(startup))
 }
 
 fn capture_live_inner(
@@ -357,6 +373,7 @@ fn capture_live_inner(
     bpf_filter: Option<&str>,
     out_path: &Path,
     stop: Arc<AtomicBool>,
+    limits: LiveCaptureLimits,
     startup: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
 ) -> AppResult<u64> {
     // Build an inactive handle, configure it, then activate. `from_device`
@@ -377,14 +394,25 @@ fn capture_live_inner(
                 .map_err(|e| pcap_err("apply BPF filter", e))?;
         }
 
+        let directory = out_path
+            .parent()
+            .ok_or_else(|| AppError::internal("capture output has no parent directory"))?;
+        enforce_capture_directory_budget(
+            directory,
+            limits.max_directory_bytes,
+            limits.max_file_bytes,
+        )?;
+        let disk_reservation =
+            CaptureDiskReservation::acquire(directory, limits.free_space_floor_bytes)?;
+
         // `savefile` returns an owned `pcap::Savefile` (no borrow of
         // `capture`), so it can coexist with mutable capture reads below.
         let savefile = capture
             .savefile(out_path)
             .map_err(|e| pcap_err("create capture savefile", e))?;
-        Ok((capture, savefile))
+        Ok((capture, savefile, disk_reservation))
     })();
-    let (mut capture, mut savefile) = match initialized {
+    let (mut capture, mut savefile, _disk_reservation) = match initialized {
         Ok(handles) => {
             if let Some(startup) = startup {
                 let _ = startup.send(Ok(()));
@@ -400,11 +428,70 @@ fn capture_live_inner(
     };
 
     let mut packet_count: u64 = 0;
+    let mut current_path = out_path.to_path_buf();
+    let mut current_bytes = PCAP_GLOBAL_HEADER_BYTES;
+    let mut next_space_check = FREE_SPACE_CHECK_INTERVAL_BYTES;
+    let mut file_started = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         match capture.next_packet() {
             Ok(packet) => {
-                savefile.write(&packet);
+                let packet_bytes = PCAP_PACKET_HEADER_BYTES
+                    .saturating_add(u64::try_from(packet.data.len()).unwrap_or(u64::MAX));
+                if current_bytes.saturating_add(packet_bytes) > limits.max_file_bytes
+                    || file_started.elapsed() >= limits.max_file_duration
+                {
+                    // `Packet` borrows the capture handle. Copy only the one packet
+                    // that crosses a rotation boundary so the old savefile can be
+                    // closed and a new one opened before that packet is written.
+                    let header = *packet.header;
+                    let data = packet.data.to_vec();
+                    savefile
+                        .flush()
+                        .map_err(|e| pcap_err("flush capture rotation", e))?;
+                    drop(savefile);
+                    let directory = current_path
+                        .parent()
+                        .ok_or_else(|| {
+                            AppError::internal("capture output has no parent directory")
+                        })?
+                        .to_path_buf();
+                    enforce_capture_directory_budget(
+                        &directory,
+                        limits.max_directory_bytes,
+                        limits.max_file_bytes,
+                    )?;
+                    current_path = rotated_capture_path(out_path)?;
+                    savefile = capture
+                        .savefile(&current_path)
+                        .map_err(|e| pcap_err("create rotated capture savefile", e))?;
+                    current_bytes = PCAP_GLOBAL_HEADER_BYTES;
+                    next_space_check = FREE_SPACE_CHECK_INTERVAL_BYTES;
+                    file_started = std::time::Instant::now();
+
+                    refresh_capture_space_if_needed(
+                        &directory,
+                        limits.free_space_floor_bytes,
+                        current_bytes,
+                        packet_bytes,
+                        &mut next_space_check,
+                    )?;
+                    let packet = pcap::Packet::new(&header, &data);
+                    savefile.write(&packet);
+                } else {
+                    let directory = current_path.parent().ok_or_else(|| {
+                        AppError::internal("capture output has no parent directory")
+                    })?;
+                    refresh_capture_space_if_needed(
+                        directory,
+                        limits.free_space_floor_bytes,
+                        current_bytes,
+                        packet_bytes,
+                        &mut next_space_check,
+                    )?;
+                    savefile.write(&packet);
+                }
                 packet_count += 1;
+                current_bytes = current_bytes.saturating_add(packet_bytes);
             }
             // Read timeout: no packet this interval — re-check `stop` and retry.
             Err(pcap::Error::TimeoutExpired) => continue,
@@ -665,7 +752,7 @@ fn ones_complement_checksum(bytes: &[u8]) -> u16 {
 
 mod capture;
 
-pub(crate) use capture::destroy_container_after_capture_fence;
+pub(crate) use capture::{destroy_container_after_capture_fence, purge_expired_captures};
 pub use capture::{
     fence_unowned_capture_owner, start_capture_reconciler, start_container_capture,
     stop_container_capture,

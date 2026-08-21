@@ -235,7 +235,9 @@ const AttachmentEditor: FC = () => {
             value={challenge?.attachment?.url ?? ''}
             style={{ flex: '2 1 24rem', minWidth: 0 }}
             classNames={{ input: uploadClasses.hover }}
-            onClick={() => challenge?.attachment?.url && window.open(challenge?.attachment?.url, '_blank')}
+            onClick={() =>
+              challenge?.attachment?.url && window.open(challenge.attachment.url, '_blank', 'noopener,noreferrer')
+            }
           />
         ) : (
           <TextInput
@@ -511,7 +513,9 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
             value={challenge?.attachment?.url ?? ''}
             style={{ flex: '2 1 24rem', minWidth: 0 }}
             classNames={{ input: uploadClasses.hover }}
-            onClick={() => challenge?.attachment?.url && window.open(challenge?.attachment?.url, '_blank')}
+            onClick={() =>
+              challenge?.attachment?.url && window.open(challenge.attachment.url, '_blank', 'noopener,noreferrer')
+            }
           />
         ) : (
           <TextInput

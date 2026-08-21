@@ -39,6 +39,52 @@ pub(super) fn capture_enabled() -> bool {
         .unwrap_or(true)
 }
 
+fn configured_bytes(name: &str, default: u64, minimum: u64, maximum: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (minimum..=maximum).contains(value))
+        .unwrap_or(default)
+}
+
+pub(super) fn capture_limits() -> crate::services::traffic::LiveCaptureLimits {
+    const MIB: u64 = 1024 * 1024;
+    let max_file_bytes = configured_bytes(
+        "RSCTF_CAPTURE_MAX_FILE_BYTES",
+        128 * MIB,
+        MIB,
+        4 * 1024 * MIB,
+    );
+    let max_directory_bytes = configured_bytes(
+        "RSCTF_CAPTURE_MAX_PARTICIPATION_BYTES",
+        256 * MIB,
+        max_file_bytes,
+        16 * 1024 * MIB,
+    )
+    .max(max_file_bytes);
+    let free_space_floor_bytes = configured_bytes(
+        "RSCTF_CAPTURE_FREE_SPACE_FLOOR_BYTES",
+        512 * MIB,
+        64 * MIB,
+        64 * 1024 * MIB,
+    );
+    let max_file_seconds = configured_bytes("RSCTF_CAPTURE_MAX_FILE_SECONDS", 3_600, 60, 86_400);
+    crate::services::traffic::LiveCaptureLimits {
+        max_file_bytes,
+        max_directory_bytes,
+        free_space_floor_bytes,
+        max_file_duration: Duration::from_secs(max_file_seconds),
+    }
+}
+
+pub(super) fn retention_days() -> i64 {
+    std::env::var("RSCTF_CAPTURE_RETENTION_DAYS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| (1..=3_650).contains(value))
+        .unwrap_or(14)
+}
+
 pub(super) fn unexpected_exit_error(result: Result<Result<u64, String>, String>) -> String {
     match result {
         Ok(Ok(packets)) => format!("capture exited unexpectedly after {packets} packets"),

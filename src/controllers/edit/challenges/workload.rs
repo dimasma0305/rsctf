@@ -358,6 +358,7 @@ pub(super) fn update_changes_runtime_definition(model: &super::ChallengeUpdateMo
         || model.memory_limit.is_some()
         || model.cpu_count.is_some()
         || model.storage_limit.is_some()
+        || model.network_mode.is_some()
         || model.expose_port.is_some()
         || model.flag_template.is_some()
         || model.enable_traffic_capture.is_some()
@@ -423,6 +424,7 @@ mod tests {
                 resources: ResourceLimits {
                     cpu_millis: 100,
                     memory_bytes: 64 * 1024 * 1024,
+                    storage_bytes: rsctf_worker_protocol::DEFAULT_STORAGE_BYTES,
                 },
                 replicas: 1,
                 stateless,
@@ -531,6 +533,7 @@ mod tests {
             "memoryLimit",
             "cpuCount",
             "storageLimit",
+            "networkMode",
             "exposePort",
             "flagTemplate",
             "enableTrafficCapture",
@@ -544,6 +547,8 @@ mod tests {
         for field in fields {
             let value = if field == "workloadSpec" {
                 serde_json::Value::Null
+            } else if field == "networkMode" {
+                serde_json::json!("Isolated")
             } else if matches!(
                 field,
                 "isEnabled"

@@ -115,15 +115,35 @@ fn proxy_policy_allows_only_the_control_identity_on_the_exact_tcp_port() {
 
 #[test]
 fn rollback_policy_ownership_covers_private_modes_only() {
-    assert!(!network::network_policy_required(false, false));
-    assert!(network::network_policy_required(false, true));
-    assert!(network::network_policy_required(true, false));
+    assert!(!network::network_policy_required(false, false, false));
+    assert!(network::network_policy_required(false, true, false));
+    assert!(network::network_policy_required(true, false, false));
+    assert!(network::network_policy_required(false, false, true));
 
     assert!(network::rollback_created_policy(true, false));
     assert!(!network::rollback_created_policy(false, false));
     assert!(
         !network::rollback_created_policy(true, true),
         "a retry must not remove the new policy protecting an adopted pod"
+    );
+}
+
+#[test]
+fn isolated_policy_allows_only_the_service_port_and_denies_egress() {
+    let labels = BTreeMap::from([(APP_LABEL.to_string(), "rsctf-isolated".to_string())]);
+    let policy = network::isolated_network_policy("isolated", &labels, 8080);
+    let spec = policy.spec.unwrap();
+    assert_eq!(spec.egress, Some(Vec::new()));
+    assert_eq!(
+        spec.policy_types,
+        Some(vec!["Ingress".to_string(), "Egress".to_string()])
+    );
+    let ingress = spec.ingress.unwrap();
+    assert_eq!(ingress.len(), 1);
+    assert!(ingress[0].from.is_none());
+    assert_eq!(
+        ingress[0].ports.as_ref().unwrap()[0].port,
+        Some(IntOrString::Int(8080))
     );
 }
 

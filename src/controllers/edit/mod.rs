@@ -38,7 +38,7 @@ use crate::models::data::{
     game_challenge, game_instance, game_manager, game_notice, koth_target, local_file,
     participation, post, team, user,
 };
-use crate::services::container::ContainerSpec;
+use crate::services::container::{ContainerResourceLimits, ContainerSpec};
 use crate::utils::codec::sha256_str;
 use crate::utils::enums::{
     ChallengeBuildStatus, ChallengeCategory, ChallengeReviewStatus, ChallengeType,

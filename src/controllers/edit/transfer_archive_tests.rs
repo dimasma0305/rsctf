@@ -107,6 +107,21 @@ fn archive_import_rejects_duplicate_ids_and_invalid_engine_weights() {
 }
 
 #[test]
+fn archive_import_preserves_supported_isolation_and_rejects_unsafe_modes() {
+    let mut challenge = valid_import_challenge(10);
+    challenge.challenge_type = ChallengeType::DynamicContainer;
+    challenge.network_mode = Some(NetworkMode::Isolated);
+    assert!(validate_import_challenges(std::slice::from_ref(&challenge)).is_ok());
+
+    challenge.challenge_type = ChallengeType::AttackDefense;
+    assert!(validate_import_challenges(std::slice::from_ref(&challenge)).is_err());
+
+    challenge.challenge_type = ChallengeType::DynamicContainer;
+    challenge.network_mode = Some(NetworkMode::Custom);
+    assert!(validate_import_challenges(&[challenge]).is_err());
+}
+
+#[test]
 fn game_export_zip_contains_manifest_and_bounded_attachments() {
     let game: ExportGameModel = serde_json::from_value(serde_json::json!({})).unwrap();
     let mut files = BTreeMap::new();

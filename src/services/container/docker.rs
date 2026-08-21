@@ -1,5 +1,7 @@
 use bollard::container::{RemoveContainerOptions, StartContainerOptions, StatsOptions};
-use bollard::models::{ContainerInspectResponse, ContainerStateStatusEnum, ImageInspect};
+use bollard::models::{
+    ContainerInspectResponse, ContainerStateStatusEnum, ImageInspect, SystemInfo,
+};
 use bollard::Docker;
 use futures::StreamExt;
 use rsctf_worker_protocol::GameKind;
@@ -103,6 +105,7 @@ struct DockerLaunchSpec<'a> {
     image: &'a str,
     memory_limit: i32,
     cpu_count: i32,
+    storage_limit: i32,
     expose_port: i32,
     #[serde(skip_serializing_if = "is_true")]
     publish_port: bool,
@@ -112,6 +115,7 @@ struct DockerLaunchSpec<'a> {
     flag: Option<&'a str>,
     ad_network: Option<&'a str>,
     allow_egress: bool,
+    network_mode: crate::utils::enums::NetworkMode,
 }
 
 fn is_true(value: &bool) -> bool {
@@ -196,24 +200,46 @@ pub(super) fn docker_network_mode(spec: &ContainerSpec) -> Option<String> {
     (!spec.publish_port && spec.ad_network.is_none()).then(|| "none".to_string())
 }
 
+pub(super) fn writable_layer_quota_supported(info: &SystemInfo) -> bool {
+    match info
+        .driver
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("btrfs" | "devicemapper" | "windowsfilter" | "zfs") => true,
+        Some("overlay2") => info.driver_status.as_ref().is_some_and(|rows| {
+            rows.iter().any(|row| {
+                row.first()
+                    .is_some_and(|key| key.eq_ignore_ascii_case("Backing Filesystem"))
+                    && row
+                        .get(1)
+                        .is_some_and(|value| value.eq_ignore_ascii_case("xfs"))
+            })
+        }),
+        _ => false,
+    }
+}
+
+pub(super) fn writable_layer_storage_opt(
+    storage_limit: i32,
+) -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::from([("size".to_string(), format!("{storage_limit}M"))])
+}
+
 /// Hash every launch-affecting caller input into a non-secret identity label.
 /// Operation and installation identities have their own labels and deliberately
 /// do not affect whether a crash retry represents the same workload.
 pub(super) fn launch_spec_fingerprint(spec: &ContainerSpec) -> String {
     let canonical = DockerLaunchSpec {
-        // Preserve exact v1 direct-publication and v2 no-publish identities;
-        // proxy-only publication gets v3 so retries cannot adopt a public bind.
-        revision: if spec.proxy_only {
-            3
-        } else if spec.publish_port {
-            1
-        } else {
-            2
-        },
+        // v4 adds writable-layer and author-selected network isolation. Older
+        // workloads must never be adopted because they lack those boundaries.
+        revision: 4,
         game_kind: spec.game_kind,
         image: &spec.image,
         memory_limit: spec.memory_limit,
         cpu_count: spec.cpu_count,
+        storage_limit: spec.storage_limit,
         expose_port: spec.expose_port,
         publish_port: spec.publish_port,
         proxy_only: spec.proxy_only,
@@ -221,6 +247,7 @@ pub(super) fn launch_spec_fingerprint(spec: &ContainerSpec) -> String {
         flag: spec.flag.as_deref(),
         ad_network: spec.ad_network.as_deref(),
         allow_egress: spec.allow_egress,
+        network_mode: spec.network_mode,
     };
     let bytes = serde_json::to_vec(&canonical)
         .expect("the fixed Docker launch identity is always JSON serializable");

@@ -184,12 +184,12 @@ const Configs: FC = () => {
   type SectionStatus = 'configured' | 'inactive' | 'attention'
   const oauthConfigured = Boolean(
     (oauth?.googleClientId && (oauth.googleClientSecret || oauth.hasGoogleClientSecret)) ||
-      (oauth?.discordClientId && (oauth.discordClientSecret || oauth.hasDiscordClientSecret))
+    (oauth?.discordClientId && (oauth.discordClientSecret || oauth.hasDiscordClientSecret))
   )
   const oauthOnlyRegistrationNeedsAttention = Boolean(
     accountPolicy?.allowRegister &&
-      accountPolicy.allowPasswordRegistration === false &&
-      (!oauthConfigured || accountUniqueness.fingerprintCollectionEnabled)
+    accountPolicy.allowPasswordRegistration === false &&
+    (!oauthConfigured || accountUniqueness.fingerprintCollectionEnabled)
   )
   const statuses: Record<SectionKey, SectionStatus> = useMemo(() => {
     const captchaConfigured =
@@ -825,8 +825,27 @@ const Configs: FC = () => {
                     setContainerPolicy({ ...containerPolicy, renewalWindow: number })
                   }}
                 />
+                <NumberInput
+                  label={t(
+                    'admin.content.settings.container.max_exercise_containers.label',
+                    'Maximum exercise containers per user'
+                  )}
+                  description={t(
+                    'admin.content.settings.container.max_exercise_containers.description',
+                    'The number of practice containers one user may run at once.'
+                  )}
+                  min={1}
+                  max={100}
+                  disabled={disabled}
+                  value={containerPolicy?.maxExerciseContainerCountPerUser ?? 1}
+                  onChange={(e) => {
+                    const number = getInputNumber(e)
+                    if (isNaN(number)) return
+                    setContainerPolicy({ ...containerPolicy, maxExerciseContainerCountPerUser: number })
+                  }}
+                />
                 <Switch
-                  checked={containerPolicy?.autoDestroyOnLimitReached ?? true}
+                  checked={containerPolicy?.autoDestroyOnLimitReached ?? false}
                   disabled={disabled}
                   label={SwitchLabel(
                     t('admin.content.settings.container.auto_destroy.label'),

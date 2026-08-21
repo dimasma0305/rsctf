@@ -241,6 +241,14 @@ pub async fn update_challenge(
         model.difficulty.unwrap_or(challenge.difficulty),
         model.submission_limit.unwrap_or(challenge.submission_limit),
     )?;
+    if let Some(storage_limit) = model.storage_limit {
+        crate::services::container::validate_storage_limit_value(storage_limit)?;
+    }
+    let requested_network_mode = model
+        .network_mode
+        .or(challenge.network_mode)
+        .unwrap_or(NetworkMode::Open);
+    crate::services::container::validate_network_mode_value(ch_type, requested_network_mode)?;
     // A normal submit locks Games before its challenge-scoped grading lock.
     // Preserve that order here so the global boundary and this challenge's
     // policy are both linearizable without a lock inversion.

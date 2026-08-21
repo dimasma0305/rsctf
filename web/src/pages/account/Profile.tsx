@@ -192,6 +192,7 @@ const Profile: FC = () => {
           w="100%"
           value={profile.userName ?? 'ctfer'}
           disabled={disabled}
+          maxLength={128}
           onChange={(event) => setProfile({ ...profile, userName: event.target.value })}
         />
         <SimpleGrid cols={{ base: 1, xs: 2 }}>
@@ -209,6 +210,7 @@ const Profile: FC = () => {
             w="100%"
             value={profile.phone ?? ''}
             disabled={disabled}
+            maxLength={64}
             onChange={(event) => setProfile({ ...profile, phone: event.target.value })}
           />
           <TextInput
@@ -217,6 +219,7 @@ const Profile: FC = () => {
             w="100%"
             value={profile.stdNumber ?? ''}
             disabled={disabled}
+            maxLength={128}
             onChange={(event) => setProfile({ ...profile, stdNumber: event.target.value })}
           />
           <TextInput
@@ -225,6 +228,7 @@ const Profile: FC = () => {
             w="100%"
             value={profile.realName ?? ''}
             disabled={disabled}
+            maxLength={256}
             onChange={(event) => setProfile({ ...profile, realName: event.target.value })}
           />
         </SimpleGrid>
@@ -233,6 +237,7 @@ const Profile: FC = () => {
           value={profile.bio ?? t('account.placeholder.bio')}
           w="100%"
           disabled={disabled}
+          maxLength={4096}
           autosize
           minRows={2}
           maxRows={4}

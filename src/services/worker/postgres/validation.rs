@@ -46,7 +46,9 @@ fn validate_text(value: &str, maximum: usize, error: &'static str) -> WorkerResu
     Ok(())
 }
 
-pub(super) fn validate_v1_capabilities(capabilities: &WorkerCapabilities) -> WorkerResult<()> {
+pub(super) fn validate_required_capabilities(
+    capabilities: &WorkerCapabilities,
+) -> WorkerResult<()> {
     if !capabilities.ensure_workload
         || !capabilities.write_flag
         || !capabilities.tcp_proxy
@@ -56,7 +58,7 @@ pub(super) fn validate_v1_capabilities(capabilities: &WorkerCapabilities) -> Wor
         || usize::from(capabilities.max_workload_replicas) > MAX_WORKLOAD_REPLICAS
     {
         return Err(WorkerError::Protocol(
-            "worker is missing required revision 1 capabilities",
+            "worker is missing required protocol capabilities",
         ));
     }
     Ok(())
@@ -175,7 +177,7 @@ mod tests {
 
     fn hello() -> WorkerHello {
         WorkerHello {
-            protocol_revision: 1,
+            protocol_revision: rsctf_worker_protocol::PROTOCOL_REVISION,
             worker_id: Uuid::new_v4(),
             boot_id: Uuid::new_v4(),
             agent_version: "1.0.0".into(),

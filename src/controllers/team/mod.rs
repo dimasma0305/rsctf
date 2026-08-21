@@ -48,6 +48,38 @@ pub(crate) use roster_policy::ensure_roster_change_allowed;
 pub(crate) const MAX_TEAMS_ALLOWED: u64 = 3;
 /// Defensive roster bound; per-game limits remain authoritative for participation.
 pub(crate) const MAX_TEAM_MEMBERS: u64 = 100;
+pub(crate) const MAX_TEAM_NAME_CHARS: usize = 128;
+pub(crate) const MAX_TEAM_BIO_CHARS: usize = 4_096;
+
+pub(crate) fn validate_team_profile(name: Option<&str>, bio: Option<&str>) -> AppResult<()> {
+    if let Some(name) = name {
+        let length = name.chars().count();
+        if !(1..=MAX_TEAM_NAME_CHARS).contains(&length) {
+            return Err(AppError::bad_request(format!(
+                "Team name must be between 1 and {MAX_TEAM_NAME_CHARS} characters"
+            )));
+        }
+    }
+    if bio.is_some_and(|bio| bio.chars().count() > MAX_TEAM_BIO_CHARS) {
+        return Err(AppError::bad_request(format!(
+            "Team bio cannot exceed {MAX_TEAM_BIO_CHARS} characters"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn team_profile_bounds_are_character_based() {
+        assert!(validate_team_profile(Some(&"界".repeat(128)), Some(&"x".repeat(4_096))).is_ok());
+        assert!(validate_team_profile(Some(&"x".repeat(129)), None).is_err());
+        assert!(validate_team_profile(Some(""), None).is_err());
+        assert!(validate_team_profile(None, Some(&"x".repeat(4_097))).is_err());
+    }
+}
 
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -105,9 +137,7 @@ pub async fn create_team(
     Json(model): Json<TeamUpdateModel>,
 ) -> AppResult<RequestResponse<TeamInfoModel>> {
     let name = model.name.unwrap_or_default().trim().to_string();
-    if name.is_empty() {
-        return Err(AppError::bad_request("Team name cannot be empty"));
-    }
+    validate_team_profile(Some(&name), model.bio.as_deref())?;
     let team_id = create_team_rows(
         st.pg(),
         user.id,
@@ -146,14 +176,13 @@ pub async fn update_team(
 
     let old_name = team.name.clone();
     let mut am: team::ActiveModel = team.into();
+    let normalized_name = model.name.as_deref().map(str::trim);
+    validate_team_profile(normalized_name, model.bio.as_deref())?;
     if let Some(name) = model.name {
         let name = name.trim().to_string();
-        if !name.is_empty() {
-            // RSCTF `UpdateTeam` → `Team.UpdateInfo` sets the name unconditionally;
-            // it does NOT enforce team-name uniqueness on rename (only the on-wire
-            // invite code embeds the id, so duplicate names are harmless). Match that.
-            am.name = Set(name);
-        }
+        // RSCTF `UpdateTeam` → `Team.UpdateInfo` does not enforce name uniqueness;
+        // the invite code embeds the id, so duplicate bounded names are harmless.
+        am.name = Set(name);
     }
     if let Some(bio) = model.bio {
         am.bio = Set(Some(bio));

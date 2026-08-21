@@ -37,9 +37,9 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{MessageResponse, RequestResponse, Wrapped};
 
 const MAX_AVATAR_BYTES: usize = crate::utils::upload::IMAGE_FILE_BYTES;
-pub(super) const MAX_PASSWORD_BYTES: usize = 1_024;
-pub(super) const MAX_EMAIL_BYTES: usize = 320;
-pub(super) const MAX_USER_NAME_BYTES: usize = 128;
+pub(crate) const MAX_PASSWORD_BYTES: usize = 1_024;
+pub(crate) const MAX_EMAIL_BYTES: usize = 320;
+pub(crate) const MAX_USER_NAME_BYTES: usize = 128;
 pub(super) const MAX_ACCOUNT_TOKEN_BYTES: usize = 256;
 pub(super) const MAX_ENCODED_EMAIL_BYTES: usize = 1_024;
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$YBSHJA9ANNWFII7EsOe1rw$O5h6h9EwR/6Pyoe9wCcjK91HivbrgJZwb44fhsiqonw";
@@ -64,9 +64,12 @@ fn registration_disposition(
 mod avatar;
 mod bootstrap;
 mod email_confirmation;
+mod profile_bounds;
 mod recovery;
 pub use avatar::avatar;
 pub use email_confirmation::verify;
+use profile_bounds::load_user;
+pub(crate) use profile_bounds::validate_profile_fields;
 pub use recovery::*;
 
 pub fn router() -> Router<SharedState> {
@@ -867,6 +870,12 @@ pub async fn update(
     Json(model): Json<ProfileUpdateModel>,
 ) -> AppResult<MessageResponse> {
     let current = load_user(&st, user.id).await?;
+    validate_profile_fields(
+        model.bio.as_deref(),
+        model.phone.as_deref(),
+        model.real_name.as_deref(),
+        model.std_number.as_deref(),
+    )?;
     let mut am: user::ActiveModel = current.into();
 
     if let Some(name) = model.user_name {
@@ -980,13 +989,6 @@ pub(super) fn validate_password(pw: &str) -> AppResult<()> {
         ));
     }
     Ok(())
-}
-
-pub(super) async fn load_user(st: &SharedState, id: Uuid) -> AppResult<user::Model> {
-    user::Entity::find_by_id(id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("User not found"))
 }
 
 #[cfg(test)]

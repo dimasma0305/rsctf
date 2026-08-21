@@ -299,6 +299,8 @@ pub struct ExportChallengeModel {
     #[serde(default)]
     pub container_image: Option<String>,
     #[serde(default)]
+    pub network_mode: Option<NetworkMode>,
+    #[serde(default)]
     pub memory_limit: Option<i32>,
     #[serde(default)]
     pub storage_limit: Option<i32>,
@@ -382,6 +384,7 @@ impl ExportChallengeModel {
             flag_template: c.flag_template.clone(),
             file_name: c.file_name.clone(),
             container_image: c.container_image.clone(),
+            network_mode: c.network_mode,
             memory_limit: c.memory_limit,
             storage_limit: c.storage_limit,
             cpu_count: c.cpu_count,
@@ -433,6 +436,8 @@ pub async fn import_game(
     _admin: AdminUser,
     mut multipart: Multipart,
 ) -> AppResult<RequestResponse<i32>> {
+    let _upload_reservation =
+        crate::utils::upload::reserve_buffered(crate::utils::upload::ARCHIVE_BODY_BYTES)?;
     // Read the uploaded `file` field into memory.
     let mut data: Option<Vec<u8>> = None;
     while let Some(field) = multipart
@@ -506,6 +511,10 @@ fn validate_import_challenges(challenges: &[ExportChallengeModel]) -> AppResult<
             challenge.min_score_rate,
             challenge.difficulty,
             challenge.submission_limit,
+        )?;
+        crate::services::container::validate_network_mode_value(
+            challenge.challenge_type,
+            challenge.network_mode.unwrap_or(NetworkMode::Open),
         )?;
         if !challenge.ad_scoring_weight.is_finite()
             || !(0.8..=1.2).contains(&challenge.ad_scoring_weight)

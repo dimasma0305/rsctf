@@ -402,6 +402,9 @@ pub async fn import_manifest(
     } else {
         None
     };
+    if let Some(storage_limit) = storage_limit {
+        crate::services::container::validate_storage_limit_value(storage_limit)?;
+    }
     let expose_port = if is_container {
         container.and_then(|c| c.expose_port)
     } else {
@@ -421,6 +424,9 @@ pub async fn import_manifest(
             .and_then(|c| c.network_mode)
             .unwrap_or(NetworkMode::Open),
     );
+    if let Some(network_mode) = network_mode {
+        crate::services::container::validate_network_mode_value(challenge_type, network_mode)?;
+    }
 
     // A&D-engine knobs. Egress is deny-by-default; self-reset retains the
     // upstream default. A sparse manifest must opt into outbound access.

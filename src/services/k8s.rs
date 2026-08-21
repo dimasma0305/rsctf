@@ -59,8 +59,9 @@ mod network;
 mod orphans;
 use metrics::{parse_cpu_cores, parse_memory_bytes};
 use network::{
-    ad_network_config, ad_network_policy, network_policy_required, proxy_network_policy,
-    rollback_created_policy, service_ip_is_routed, validate_policy_enforcement_acknowledgement,
+    ad_network_config, ad_network_policy, isolated_network_policy, isolated_proxy_network_policy,
+    network_policy_required, proxy_network_policy, rollback_created_policy, service_ip_is_routed,
+    validate_policy_enforcement_acknowledgement,
 };
 use orphans::APP_LABEL;
 
@@ -347,6 +348,7 @@ impl ContainerManager for KubernetesContainerManager {
         );
         let name = format!("{}-{}", sanitize_image(&spec.image), uid);
         let ad_internal = spec.ad_network.is_some();
+        let isolated = spec.network_mode == crate::utils::enums::NetworkMode::Isolated;
         let internal_only = ad_internal || spec.proxy_only;
         let ad_config = if ad_internal {
             Some(ad_network_config()?)
@@ -391,9 +393,17 @@ impl ContainerManager for KubernetesContainerManager {
             "memory".to_string(),
             Quantity(format!("{}Mi", spec.memory_limit)),
         );
+        limits.insert(
+            "ephemeral-storage".to_string(),
+            Quantity(format!("{}Mi", spec.storage_limit)),
+        );
         let mut requests = BTreeMap::new();
         requests.insert("cpu".to_string(), Quantity("10m".to_string()));
         requests.insert("memory".to_string(), Quantity("32Mi".to_string()));
+        requests.insert(
+            "ephemeral-storage".to_string(),
+            Quantity(format!("{}Mi", spec.storage_limit.min(32))),
+        );
 
         let labels =
             orphans::workload_labels(&name, &uid, &self.scope, spec.operation_id.as_deref());
@@ -437,7 +447,7 @@ impl ContainerManager for KubernetesContainerManager {
         // cluster or Internet. The unique selector makes a crash-orphaned policy
         // harmless; normal destroy/rollback still removes it by name.
         let policies = self.network_policies();
-        let has_network_policy = network_policy_required(ad_internal, spec.proxy_only);
+        let has_network_policy = network_policy_required(ad_internal, spec.proxy_only, isolated);
         let private_policy = if let Some(config) = ad_config.as_ref() {
             Some(ad_network_policy(
                 &name,
@@ -447,8 +457,16 @@ impl ContainerManager for KubernetesContainerManager {
                 spec.allow_egress,
                 config,
             ))
+        } else if spec.proxy_only && isolated {
+            Some(isolated_proxy_network_policy(
+                &name,
+                &labels,
+                spec.expose_port,
+            )?)
         } else if spec.proxy_only {
             Some(proxy_network_policy(&name, &labels, spec.expose_port)?)
+        } else if isolated {
+            Some(isolated_network_policy(&name, &labels, spec.expose_port))
         } else {
             None
         };

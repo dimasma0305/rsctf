@@ -70,21 +70,15 @@ function validRegistryDomain(value: string): boolean {
   const host = hasPort ? value.slice(0, colon) : value
   const port = hasPort ? value.slice(colon + 1) : null
   if (!host || host.includes(':') || (port !== null && !validRegistryPort(port))) return false
-  return host.split('.').every(
-    (label) =>
-      label.length >= 1 &&
-      label.length <= 63 &&
-      /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label)
-  )
+  return host
+    .split('.')
+    .every(
+      (label) => label.length >= 1 && label.length <= 63 && /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label)
+    )
 }
 
 function validRegistryRepository(value: string): boolean {
-  if (
-    !value ||
-    byteLength(value) > MAX_REGISTRY_REPOSITORY_BYTES ||
-    !isAscii(value) ||
-    value.includes('@')
-  ) {
+  if (!value || byteLength(value) > MAX_REGISTRY_REPOSITORY_BYTES || !isAscii(value) || value.includes('@')) {
     return false
   }
   const components = value.split('/')
@@ -166,13 +160,20 @@ function validateService(service: unknown, index: number): string | null {
   if (imageError) return imageError
 
   if (!isRecord(service.resources)) return `${path}.resources must be an object`
-  const resourceKeyError = validateObjectKeys(service.resources, `${path}.resources`, ['cpuMillis', 'memoryBytes'])
+  const resourceKeyError = validateObjectKeys(service.resources, `${path}.resources`, [
+    'cpuMillis',
+    'memoryBytes',
+    'storageBytes',
+  ])
   if (resourceKeyError) return resourceKeyError
   if (!isPositiveSafeInteger(service.resources.cpuMillis) || service.resources.cpuMillis > MAX_U32) {
     return `${path}.resources.cpuMillis must be a positive 32-bit integer`
   }
   if (!isPositiveSafeInteger(service.resources.memoryBytes)) {
     return `${path}.resources.memoryBytes must be a positive safe integer`
+  }
+  if (service.resources.storageBytes !== undefined && !isPositiveSafeInteger(service.resources.storageBytes)) {
+    return `${path}.resources.storageBytes must be a positive safe integer`
   }
   if (
     typeof service.replicas !== 'number' ||
@@ -343,6 +344,7 @@ export function createDefaultJeopardyWorkloadSpec(): WorkloadSpec {
         resources: {
           cpuMillis: 500,
           memoryBytes: 134_217_728,
+          storageBytes: 536_870_912,
         },
         replicas: 1,
         stateless: true,

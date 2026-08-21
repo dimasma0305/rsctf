@@ -73,6 +73,7 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
             placeholder="team"
             w="100%"
             disabled={disabled}
+            maxLength={128}
             value={createTeam?.name ?? ''}
             onChange={(event) => setCreateTeam({ ...createTeam, name: event.currentTarget.value })}
           />
@@ -85,6 +86,7 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
             minRows={2}
             maxRows={4}
             disabled={disabled}
+            maxLength={4096}
             onChange={(event) => setCreateTeam({ ...createTeam, bio: event.currentTarget.value })}
           />
           <Button fullWidth variant="outline" onClick={onCreateTeam} disabled={disabled}>

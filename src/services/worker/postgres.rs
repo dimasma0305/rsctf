@@ -155,7 +155,7 @@ impl WorkerAuthority for PostgresWorkerAuthority {
         hello: &WorkerHello,
     ) -> WorkerResult<SessionFence> {
         validate_hello_metadata(hello)?;
-        validate_v1_capabilities(&hello.capabilities)?;
+        validate_required_capabilities(&hello.capabilities)?;
         validate_labels(hello)?;
         let capacity = ResourceReservation {
             cpu_millis: i64::try_from(hello.capacity.cpu_millis)
@@ -549,7 +549,7 @@ mod tests {
     };
     use sqlx::{postgres::PgPoolOptions, PgPool};
 
-    use super::health_tests::v1_capabilities;
+    use super::health_tests::complete_capabilities;
     use super::*;
 
     pub(super) struct AuthorityFixture {
@@ -678,7 +678,7 @@ mod tests {
             )
             .bind(worker_id)
             .bind(format!("worker-{worker_id}"))
-            .bind(serde_json::to_value(v1_capabilities()).unwrap())
+            .bind(serde_json::to_value(complete_capabilities()).unwrap())
             .bind([7_u8; 32].as_slice())
             .bind(Utc::now() + ChronoDuration::hours(1))
             .bind(session_id)
@@ -752,6 +752,7 @@ mod tests {
                 resources: ResourceLimits {
                     cpu_millis: 100,
                     memory_bytes: 1_048_576,
+                    storage_bytes: rsctf_worker_protocol::DEFAULT_STORAGE_BYTES,
                 },
                 replicas: 2,
                 stateless: true,

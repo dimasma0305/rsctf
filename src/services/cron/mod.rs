@@ -209,6 +209,12 @@ async fn run_with_lease(
 /// not abort the others (mirrors RSCTF running each `CronJob` in its own scope
 /// and swallowing per-job exceptions).
 async fn run_jobs(state: &SharedState) {
+    match crate::services::traffic::purge_expired_captures(state, 128).await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: purged expired traffic capture tree(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("cron: traffic capture retention sweep failed: {e}"),
+    }
+
     match crate::services::blob_refs::purge_expired_service_snapshots(
         state.pg(),
         state.storage.as_ref(),

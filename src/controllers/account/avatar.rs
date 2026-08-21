@@ -9,6 +9,8 @@ pub async fn avatar(
     user: CurrentUser,
     mut multipart: Multipart,
 ) -> AppResult<RequestResponse<String>> {
+    let _upload_reservation =
+        crate::utils::upload::reserve_buffered(crate::utils::upload::IMAGE_BODY_BYTES)?;
     let mut data: Option<Vec<u8>> = None;
     while let Some(field) = multipart
         .next_field()

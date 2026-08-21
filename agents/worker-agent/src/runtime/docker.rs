@@ -50,6 +50,7 @@ const LABEL_SERVICE: &str = "io.rsctf.workload.service";
 const LABEL_REPLICA: &str = "io.rsctf.workload.replica";
 const LABEL_CPU: &str = "io.rsctf.workload.cpu-millis";
 const LABEL_MEMORY: &str = "io.rsctf.workload.memory-bytes";
+const LABEL_STORAGE: &str = "io.rsctf.workload.storage-bytes";
 const LABEL_EXPECTED_REPLICAS: &str = "io.rsctf.workload.expected-replicas";
 const LABEL_PORT_PREFIX: &str = "io.rsctf.port.";
 const MAX_CONCURRENT_READINESS_PROBES: usize = 32;
@@ -69,15 +70,6 @@ pub struct DockerRuntime {
     ready_containers: DashSet<String>,
     flag_sequences: DashMap<(Uuid, Uuid, u64, String), u64>,
     tombstones: TombstoneStore,
-}
-
-struct ContainerReplicaPlan<'a> {
-    fence: WorkloadFence,
-    spec_hash: &'a str,
-    network: &'a str,
-    service: &'a rsctf_worker_protocol::ServiceSpec,
-    expected_replicas: usize,
-    operating_system: OperatingSystem,
 }
 
 impl DockerRuntime {
@@ -378,6 +370,10 @@ impl DockerRuntime {
             service.resources.memory_bytes.to_string(),
         );
         labels.insert(
+            LABEL_STORAGE.to_string(),
+            service.resources.storage_bytes.to_string(),
+        );
+        labels.insert(
             LABEL_EXPECTED_REPLICAS.to_string(),
             expected_replicas.to_string(),
         );
@@ -402,7 +398,10 @@ impl DockerRuntime {
             network,
             service.resources.cpu_millis,
             service.resources.memory_bytes,
-            self.writable_layer_bytes,
+            effective_writable_layer_limit(
+                self.writable_layer_bytes,
+                service.resources.storage_bytes,
+            ),
         );
         let config = Config {
             image: Some(image),

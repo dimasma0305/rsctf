@@ -4,6 +4,7 @@ use axum::http::header;
 use axum::response::{IntoResponse, Response};
 
 use super::*;
+use crate::services::container::ContainerResourceLimits;
 
 /// Self-service reset cooldown fallback (seconds), used only when the game row
 /// leaves `ad_reset_cooldown_minutes` null. The live value is
@@ -787,8 +788,13 @@ pub async fn reset_service(
         .containers
         .create(crate::services::container::ContainerSpec::ad_service(
             image,
-            challenge.memory_limit.unwrap_or(256),
-            challenge.cpu_count.unwrap_or(1),
+            ContainerResourceLimits {
+                memory_limit: challenge.memory_limit.unwrap_or(256),
+                cpu_count: challenge.cpu_count.unwrap_or(1),
+                storage_limit: crate::services::container::storage_limit_or_default(
+                    challenge.storage_limit,
+                ),
+            },
             challenge.expose_port.unwrap_or(80),
             part.team_id,
             challenge.ad_allow_egress,

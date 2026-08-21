@@ -114,6 +114,9 @@ mod m0091_suspicion_score_integrity;
 mod m0092_event_vpn_policy;
 mod m0093_bounded_anticheat_telemetry;
 mod m0094_challenge_variants_and_receipts;
+mod m0095_player_field_bounds;
+mod m0096_container_storage_bounds;
+mod m0097_container_network_modes;
 
 pub struct Migrator;
 
@@ -221,6 +224,9 @@ impl MigratorTrait for Migrator {
             Box::new(m0092_event_vpn_policy::Migration),
             Box::new(m0093_bounded_anticheat_telemetry::Migration),
             Box::new(m0094_challenge_variants_and_receipts::Migration),
+            Box::new(m0095_player_field_bounds::Migration),
+            Box::new(m0096_container_storage_bounds::Migration),
+            Box::new(m0097_container_network_modes::Migration),
         ]
     }
 }

@@ -110,6 +110,14 @@ names/CIDRs. The default derives from `RSCTF_JWT_SECRET`. Set an explicit value
 before rotating that secret so existing workloads remain owned by the same
 installation.
 
+Every challenge writable layer is capped by its `storageLimit` (512 MiB when
+unset). The local Docker backend fails closed unless the daemon storage driver
+supports Docker's per-container `size` option. For `overlay2`, put Docker's data
+root on XFS mounted with project quotas (`pquota`) and confirm `docker info`
+reports `Backing Filesystem: xfs`; btrfs, devicemapper, zfs, and windowsfilter
+are also recognized. An unsupported driver makes container creation unavailable
+instead of silently ignoring the author-selected limit.
+
 Docker deliberately rejects `allowEgress: true` for every A&D and KotH
 workload. A shared external bridge cannot prevent one hostile workload from
 reaching peers, private networks, or cloud metadata, so treating that bridge as
@@ -132,6 +140,14 @@ Packet capture is a separate least-privilege opt-in. Add
 `compose.roles.capture.yml` last for split roles. The matching overlay both
 enables capture and grants `NET_RAW` only to its owner; setting the environment
 variable without the overlay is not sufficient.
+
+Capture files rotate at 128 MiB or one hour by default, retain at most 256 MiB
+per challenge participation, stop before the capture filesystem drops below
+512 MiB free, and expire 14 days after the game ends. Operators can tune these
+bounds with `RSCTF_CAPTURE_MAX_FILE_BYTES`,
+`RSCTF_CAPTURE_MAX_PARTICIPATION_BYTES`,
+`RSCTF_CAPTURE_FREE_SPACE_FLOOR_BYTES`, `RSCTF_CAPTURE_MAX_FILE_SECONDS`, and
+`RSCTF_CAPTURE_RETENTION_DAYS`.
 
 ### Automatic HTTPS
 

@@ -81,6 +81,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
               w="100%"
               value={teamInfo.name ?? 'team'}
               disabled={disabled}
+              maxLength={128}
               onChange={(event) => setTeamInfo({ ...teamInfo, name: event.target.value })}
             />
           </Grid.Col>
@@ -98,6 +99,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
           value={teamInfo.bio ?? t('team.placeholder.bio')}
           w="100%"
           disabled={disabled}
+          maxLength={4096}
           autosize
           minRows={2}
           maxRows={4}
