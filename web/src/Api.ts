@@ -620,6 +620,8 @@ export interface BuildRegistryConfig {
 export interface AccountPolicy {
   /** Allow user registration */
   allowRegister?: boolean;
+  /** Allow users to create accounts with a username and password */
+  allowPasswordRegistration?: boolean;
   /** Activate account upon registration */
   activeOnRegister?: boolean;
   /** Use captcha verification */
@@ -3702,6 +3704,8 @@ export interface ClientConfig {
   renewalWindow?: number;
   /** Enable browser fingerprinting in Login/Register */
   enableBrowserFingerprint?: boolean;
+  /** Whether public username/password account creation is enabled */
+  allowPasswordRegistration?: boolean;
   /** Whether Google OAuth sign-in is configured and available */
   enableGoogleAuth?: boolean;
   /** Whether Discord OAuth sign-in is configured and available */

@@ -10,8 +10,8 @@
 //!     `code`, read the userinfo, find-or-create the user, then issue the
 //!     rsctf session cookie and land back on `returnUrl`.
 //!
-//! Credentials come from the environment (`RSCTF_{PROVIDER}_CLIENT_ID` /
-//! `_CLIENT_SECRET`); an unconfigured provider is treated as disabled. Every
+//! Credentials come from live admin settings with deployment environment
+//! values as fallback; an unconfigured provider is treated as disabled. Every
 //! failure path (network, decode, CSRF, missing email, …) degrades to a graceful
 //! redirect to `/account/login` — an external sign-in must never surface a 500 or
 //! a JSON error envelope to the browser mid-redirect.
@@ -39,6 +39,7 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::set_session_cookie;
 use crate::models::data::user;
 use crate::services::anti_cheat;
+use crate::services::oauth_config::OAuthSettings;
 use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::Role;
 use crate::utils::error::AppError;
@@ -127,8 +128,6 @@ pub fn router() -> Router<SharedState> {
 struct Provider {
     /// Canonical lowercase key used in URLs and the cached state value.
     name: &'static str,
-    /// Env-var infix: `RSCTF_{env}_CLIENT_ID` / `_CLIENT_SECRET`.
-    env: &'static str,
     authorize: String,
     token: String,
     userinfo: String,
@@ -151,7 +150,6 @@ fn lookup_provider(name: &str) -> Option<Provider> {
     match name {
         "google" => Some(Provider {
             name: "google",
-            env: "GOOGLE",
             authorize: endpoint(
                 "GOOGLE",
                 "AUTH",
@@ -167,7 +165,6 @@ fn lookup_provider(name: &str) -> Option<Provider> {
         }),
         "discord" => Some(Provider {
             name: "discord",
-            env: "DISCORD",
             authorize: endpoint(
                 "DISCORD",
                 "AUTH",
@@ -181,31 +178,15 @@ fn lookup_provider(name: &str) -> Option<Provider> {
     }
 }
 
-/// A provider is configured when both credential env vars are non-empty. Mirrors
-/// `info.rs::oauth_configured` (which is private, so the same check is inlined).
-fn credentials(env: &str) -> Option<(String, String)> {
-    let id = std::env::var(format!("RSCTF_{env}_CLIENT_ID")).unwrap_or_default();
-    let secret = std::env::var(format!("RSCTF_{env}_CLIENT_SECRET")).unwrap_or_default();
-    if id.trim().is_empty() || secret.trim().is_empty() {
-        None
-    } else {
-        Some((id, secret))
-    }
-}
-
-/// Public origin the provider redirects back to (`RSCTF_PUBLIC_URL`, trailing
-/// slash trimmed). Empty when unset — the callback path stays site-relative,
-/// which still works when the SPA and API share an origin.
-fn public_url() -> String {
-    std::env::var("RSCTF_PUBLIC_URL")
-        .ok()
-        .map(|u| u.trim_end_matches('/').to_string())
-        .unwrap_or_default()
-}
-
 /// The redirect URI registered in the provider console for this provider.
-fn callback_url(provider: &str) -> String {
-    format!("{}/api/oauth/{provider}/callback", public_url())
+fn callback_url(st: &SharedState, provider: &str) -> String {
+    let origin = st
+        .config
+        .public_url
+        .as_deref()
+        .unwrap_or_default()
+        .trim_end_matches('/');
+    format!("{origin}/api/oauth/{provider}/callback")
 }
 
 /// Constrain `returnUrl` to a same-site absolute path (open-redirect guard):
@@ -276,9 +257,14 @@ async fn start(
     let Some(p) = lookup_provider(&provider) else {
         return login_redirect();
     };
-    let Some((client_id, _secret)) = credentials(p.env) else {
+    let credentials = match OAuthSettings::load(st.pg()).await {
+        Ok(credentials) => credentials,
+        Err(_) => return login_redirect(),
+    };
+    let Some(credentials) = credentials.provider(p.name) else {
         return login_redirect();
     };
+    let client_id = &credentials.client_id;
 
     let return_url = sanitize_return(q.return_url.as_deref());
 
@@ -305,7 +291,7 @@ async fn start(
         )
         .await;
 
-    let redirect_uri = callback_url(p.name);
+    let redirect_uri = callback_url(&st, p.name);
     // `parse_with_params` percent-encodes every value (scope has spaces, the
     // redirect_uri has `:` and `/`), so we never hand-roll query encoding.
     let authorize = match reqwest::Url::parse_with_params(
@@ -423,8 +409,12 @@ async fn callback_inner(
     }
     let provider = provider.to_lowercase();
     let p = lookup_provider(&provider).ok_or_else(|| AppError::bad_request("unknown provider"))?;
-    let (client_id, client_secret) =
-        credentials(p.env).ok_or_else(|| AppError::bad_request("provider not configured"))?;
+    let credentials = OAuthSettings::load(st.pg()).await?;
+    let credentials = credentials
+        .provider(p.name)
+        .ok_or_else(|| AppError::bad_request("provider not configured"))?;
+    let client_id = &credentials.client_id;
+    let client_secret = &credentials.client_secret;
 
     let code = q
         .code
@@ -460,7 +450,7 @@ async fn callback_inner(
     let client = oauth_http_client()?;
 
     // Exchange the authorization code for an access token.
-    let redirect_uri = callback_url(p.name);
+    let redirect_uri = callback_url(&st, p.name);
     let token_resp = client
         .post(p.token.as_str())
         .form(&[

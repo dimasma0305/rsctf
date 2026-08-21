@@ -1,6 +1,6 @@
 use sqlx::{Postgres, Transaction};
 
-use super::{AccountPolicy, CaptchaConfig};
+use super::{AccountPolicy, CaptchaConfig, OAuthConfig};
 use crate::models::internal::configs::AppConfig;
 use crate::services::anti_cheat::{self, PolicyFlags};
 use crate::services::captcha::CaptchaSettings;
@@ -14,6 +14,7 @@ pub(super) async fn save_security_policy(
     config: &AppConfig,
     account: Option<AccountPolicy>,
     captcha: Option<CaptchaConfig>,
+    oauth: Option<OAuthConfig>,
 ) -> AppResult<()> {
     if let Some(account) = account.as_ref() {
         if account.email_confirmation_required && config.public_url.is_none() {
@@ -40,11 +41,30 @@ pub(super) async fn save_security_policy(
     if let Some(captcha) = captcha {
         write_captcha_policy(&mut transaction, captcha).await?;
     }
+    if let Some(oauth) = oauth {
+        write_oauth_policy(&mut transaction, oauth).await?;
+    }
 
     // Resolve and validate the effective merged state before commit. In
     // particular, an omitted/empty incoming secret preserves the stored one;
     // enabling Turnstile with no effective secret rolls the whole update back.
     CaptchaSettings::load_in_transaction(&mut transaction, config.account.use_captcha).await?;
+    let account = anti_cheat::load_account_policy_after_lock(&mut transaction, config).await?;
+    if account.allow_register && !account.allow_password_registration {
+        if account.identity.fingerprint_required() {
+            return Err(AppError::bad_request(
+                "OAuth-only registration is incompatible with browser fingerprinting",
+            ));
+        }
+        if !crate::services::oauth_config::OAuthSettings::load_in_transaction(&mut transaction)
+            .await?
+            .any_configured()
+        {
+            return Err(AppError::bad_request(
+                "OAuth-only registration requires a configured Google or Discord provider",
+            ));
+        }
+    }
     transaction.commit().await.map_err(database_error)?;
     Ok(())
 }
@@ -57,6 +77,10 @@ async fn write_account_policy(
         (
             "AccountPolicy:AllowRegister",
             account.allow_register.to_string(),
+        ),
+        (
+            "AccountPolicy:AllowPasswordRegistration",
+            account.allow_password_registration.to_string(),
         ),
         (
             "AccountPolicy:ActiveOnRegister",
@@ -91,6 +115,32 @@ async fn write_account_policy(
     ];
     for (key, value) in values {
         upsert(transaction, key, value).await?;
+    }
+    Ok(())
+}
+
+async fn write_oauth_policy(
+    transaction: &mut Transaction<'_, Postgres>,
+    oauth: OAuthConfig,
+) -> AppResult<()> {
+    for (key, value) in [
+        ("OAuthConfig:GoogleClientId", oauth.google_client_id),
+        ("OAuthConfig:DiscordClientId", oauth.discord_client_id),
+    ] {
+        if let Some(value) = value {
+            upsert(transaction, key, value).await?;
+        }
+    }
+    for (key, value) in [
+        ("OAuthConfig:GoogleClientSecret", oauth.google_client_secret),
+        (
+            "OAuthConfig:DiscordClientSecret",
+            oauth.discord_client_secret,
+        ),
+    ] {
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            upsert(transaction, key, value).await?;
+        }
     }
     Ok(())
 }
@@ -193,7 +243,7 @@ mod tests {
             email_confirmation_required: true,
             ..AccountPolicy::default()
         };
-        let missing_origin = save_security_policy(&pool, &config, Some(confirmation), None)
+        let missing_origin = save_security_policy(&pool, &config, Some(confirmation), None, None)
             .await
             .expect_err("email confirmation was enabled without a public origin");
         assert_eq!(missing_origin.status(), axum::http::StatusCode::BAD_REQUEST);
@@ -204,9 +254,15 @@ mod tests {
         assert_eq!(persisted, 0);
         config.public_url = Some("https://ctf.example".to_string());
 
-        save_security_policy(&pool, &config, None, Some(captcha("HashPow", None, 18)))
-            .await
-            .unwrap();
+        save_security_policy(
+            &pool,
+            &config,
+            None,
+            Some(captcha("HashPow", None, 18)),
+            None,
+        )
+        .await
+        .unwrap();
         for invalid in [
             captcha("None", None, 18),
             captcha("UnknownProvider", None, 18),
@@ -220,7 +276,7 @@ mod tests {
                 use_captcha: true,
                 ..AccountPolicy::default()
             };
-            let error = save_security_policy(&pool, &config, Some(enabled), Some(invalid))
+            let error = save_security_policy(&pool, &config, Some(enabled), Some(invalid), None)
                 .await
                 .expect_err("invalid enabled captcha combination committed");
             assert_eq!(error.status(), axum::http::StatusCode::BAD_REQUEST);
@@ -252,6 +308,7 @@ mod tests {
             &config,
             Some(disabled),
             Some(captcha("CloudflareTurnstile", Some("stored-secret"), 18)),
+            None,
         )
         .await
         .unwrap();
@@ -267,6 +324,7 @@ mod tests {
                 site_key: Some(String::new()),
                 ..captcha("CloudflareTurnstile", Some(""), 18)
             }),
+            None,
         )
         .await
         .expect("empty incoming secret should preserve the existing secret");
@@ -291,6 +349,76 @@ mod tests {
             )
         );
 
+        sqlx::query(
+            r#"INSERT INTO "Configs" (config_key, value, cache_keys)
+               VALUES
+                 ('OAuthConfig:GoogleClientId', '', NULL),
+                 ('OAuthConfig:GoogleClientSecret', '', NULL),
+                 ('OAuthConfig:DiscordClientId', '', NULL),
+                 ('OAuthConfig:DiscordClientSecret', '', NULL)
+               ON CONFLICT (config_key) DO UPDATE SET value = EXCLUDED.value"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let oauth_only = AccountPolicy {
+            allow_password_registration: false,
+            use_captcha: false,
+            ..AccountPolicy::default()
+        };
+        let missing_provider = save_security_policy(&pool, &config, Some(oauth_only), None, None)
+            .await
+            .expect_err("OAuth-only registration committed without a provider");
+        assert_eq!(
+            missing_provider.status(),
+            axum::http::StatusCode::BAD_REQUEST
+        );
+        let password_registration: String = sqlx::query_scalar(
+            r#"SELECT value FROM "Configs"
+                WHERE config_key='AccountPolicy:AllowPasswordRegistration'"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(password_registration, "true");
+
+        save_security_policy(
+            &pool,
+            &config,
+            Some(AccountPolicy {
+                allow_password_registration: false,
+                use_captcha: false,
+                ..AccountPolicy::default()
+            }),
+            None,
+            Some(oauth("google-id", "google-secret")),
+        )
+        .await
+        .expect("configured OAuth provider should enable OAuth-only registration");
+        let effective = crate::services::oauth_config::OAuthSettings::load(&pool)
+            .await
+            .unwrap();
+        assert!(effective.google_configured());
+
+        let fingerprint_conflict = save_security_policy(
+            &pool,
+            &config,
+            Some(AccountPolicy {
+                allow_password_registration: false,
+                enable_browser_fingerprint: true,
+                use_captcha: false,
+                ..AccountPolicy::default()
+            }),
+            None,
+            None,
+        )
+        .await
+        .expect_err("fingerprinting committed with OAuth-only registration");
+        assert_eq!(
+            fingerprint_conflict.status(),
+            axum::http::StatusCode::BAD_REQUEST
+        );
+
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
             .execute(&admin_pool)
@@ -305,6 +433,17 @@ mod tests {
             secret_key: secret_key.map(str::to_string),
             hash_pow: Some(HashPowConfig { difficulty }),
             has_secret_key: secret_key.is_some_and(|secret| !secret.is_empty()),
+        }
+    }
+
+    fn oauth(client_id: &str, client_secret: &str) -> OAuthConfig {
+        OAuthConfig {
+            google_client_id: Some(client_id.to_string()),
+            google_client_secret: Some(client_secret.to_string()),
+            discord_client_id: None,
+            discord_client_secret: None,
+            has_google_client_secret: false,
+            has_discord_client_secret: false,
         }
     }
 }

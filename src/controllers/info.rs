@@ -48,15 +48,6 @@ pub struct PostDetailModel {
     pub time: chrono::DateTime<chrono::Utc>,
 }
 
-/// An OAuth provider is available to the client when its `RSCTF_<P>_CLIENT_ID`
-/// and `RSCTF_<P>_CLIENT_SECRET` env vars are both set (mirrors RSCTF's
-/// `ClientConfig.EnableGoogleAuth`/`EnableDiscordAuth` = credentials configured).
-fn oauth_configured(provider: &str) -> bool {
-    let id = std::env::var(format!("RSCTF_{provider}_CLIENT_ID")).unwrap_or_default();
-    let secret = std::env::var(format!("RSCTF_{provider}_CLIENT_SECRET")).unwrap_or_default();
-    !id.trim().is_empty() && !secret.trim().is_empty()
-}
-
 fn effective_port_mapping(configured: String, backend_requires_proxy: bool) -> String {
     if backend_requires_proxy {
         "PlatformProxy".to_string()
@@ -80,6 +71,7 @@ pub struct ClientConfig {
     pub extension_duration: i32,
     pub renewal_window: i32,
     pub enable_browser_fingerprint: bool,
+    pub allow_password_registration: bool,
     pub enable_google_auth: bool,
     pub enable_discord_auth: bool,
 }
@@ -124,6 +116,7 @@ pub async fn get_client_config(
     let mut custom_theme: Option<String> = None;
     let mut logo_hash: Option<String> = None;
     let mut enable_browser_fingerprint = false;
+    let mut allow_password_registration = st.config.account.allow_password_registration;
     // Container port-mapping mode advertised to the client (`ContainerPortMappingType`):
     // `Default` = direct host:port, `PlatformProxy` = wsrx-proxied. The client gates
     // wsrx on `config.portMapping === PlatformProxy` (InstanceEntry.tsx).
@@ -164,6 +157,9 @@ pub async fn get_client_config(
             "AccountPolicy:EnableBrowserFingerprint" => {
                 enable_browser_fingerprint = value == "true";
             }
+            "AccountPolicy:AllowPasswordRegistration" => {
+                allow_password_registration = value == "true";
+            }
             _ => {}
         }
     }
@@ -178,6 +174,7 @@ pub async fn get_client_config(
     let logo_url = logo_hash
         .filter(|h| !h.is_empty())
         .map(|h| format!("/assets/{h}/logo"));
+    let oauth = crate::services::oauth_config::OAuthSettings::load(st.pg()).await?;
 
     Ok(RequestResponse::ok(ClientConfig {
         title,
@@ -191,8 +188,9 @@ pub async fn get_client_config(
         extension_duration,
         renewal_window,
         enable_browser_fingerprint,
-        enable_google_auth: oauth_configured("GOOGLE"),
-        enable_discord_auth: oauth_configured("DISCORD"),
+        allow_password_registration,
+        enable_google_auth: oauth.google_configured(),
+        enable_discord_auth: oauth.discord_configured(),
     }))
 }
 

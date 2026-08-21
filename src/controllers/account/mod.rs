@@ -392,9 +392,7 @@ pub async fn register(
     let password_hash = hash_password_async(model.password.clone()).await?;
     let security_stamp = Uuid::new_v4().to_string();
 
-    // The initial count above is only a cheap disabled-registration fast path.
-    // Re-evaluate while holding a transaction-scoped advisory lock so exactly one
-    // concurrent request can observe an empty user table and become bootstrap admin.
+    // Re-evaluate under the registration lock so only one caller can bootstrap.
     let mut txn = st
         .pg()
         .begin()
@@ -412,11 +410,11 @@ pub async fn register(
     let account_policy =
         anti_cheat::lock_and_load_account_policy(&mut txn, st.config.as_ref()).await?;
     bootstrap::require(is_first, model.bootstrap_token.as_deref())?;
-    if !is_first && !account_policy.allow_register {
+    if let Err(error) = account_policy.authorize_password_registration(is_first) {
         txn.rollback()
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
-        return Err(AppError::bad_request("Registration is disabled"));
+        return Err(error);
     }
     account_policy.authorize_captcha(captcha_admission)?;
     if !verify_email_domain(&email, &account_policy.email_domain_list) {

@@ -46,8 +46,8 @@ pub use network::{
 mod policy;
 pub use policy::load_policy_flags;
 pub(crate) use policy::{
-    authorize_captcha_admission, lock_and_load_account_policy, lock_and_load_admission_policy,
-    lock_policy_update,
+    authorize_captcha_admission, load_account_policy_after_lock, lock_and_load_account_policy,
+    lock_and_load_admission_policy, lock_policy_update,
 };
 mod roster;
 pub use roster::admit_team_member_in_transaction;

@@ -9,7 +9,10 @@
   },
   "oauth": {
     "fingerprint_disabled_title": "External sign-in unavailable",
-    "fingerprint_disabled_detail": "Browser Fingerprinting is enabled, but an external-provider redirect cannot return a validated fingerprint. Use your username or email and password."
+    "fingerprint_disabled_detail": "Browser Fingerprinting is enabled, but an external-provider redirect cannot return a validated fingerprint. Use your username or email and password.",
+    "registration_only_description": "New accounts must be created through an approved external provider.",
+    "registration_only_notice": "Choose Google or Discord below to create your account. Existing users can return to password login.",
+    "registration_unavailable": "OAuth registration is temporarily unavailable. Contact an administrator."
   },
   "button": {
     "accept_tos": "Accept & Continue",

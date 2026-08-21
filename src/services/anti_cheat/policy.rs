@@ -13,6 +13,7 @@ const IDENTITY_POLICY_LOCK_ID: i64 = 0x4944_504F_4C49_4359; // "IDPOLICY"
 pub(crate) struct AccountPolicySnapshot {
     pub identity: PolicyFlags,
     pub allow_register: bool,
+    pub allow_password_registration: bool,
     pub active_on_register: bool,
     pub email_confirmation_required: bool,
     pub email_domain_list: String,
@@ -22,6 +23,23 @@ pub(crate) struct AccountPolicySnapshot {
 impl AccountPolicySnapshot {
     pub fn authorize_captcha(&self, admission: CaptchaAdmission) -> AppResult<()> {
         self.captcha.authorize(admission)
+    }
+
+    pub fn authorize_password_registration(&self, is_first: bool) -> AppResult<()> {
+        if is_first {
+            return Ok(());
+        }
+        if !self.allow_register {
+            return Err(crate::utils::error::AppError::bad_request(
+                "Registration is disabled",
+            ));
+        }
+        if !self.allow_password_registration {
+            return Err(crate::utils::error::AppError::bad_request(
+                "Password registration is disabled; continue with OAuth",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -110,6 +128,15 @@ pub(crate) async fn lock_and_load_account_policy(
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
+    load_account_policy_after_lock(transaction, config).await
+}
+
+/// Read the canonical account policy after the caller has already acquired the
+/// shared or exclusive identity-policy advisory lock.
+pub(crate) async fn load_account_policy_after_lock(
+    transaction: &mut Transaction<'_, Postgres>,
+    config: &AppConfig,
+) -> AppResult<AccountPolicySnapshot> {
     let rows = sqlx::query_as::<_, (String, Option<String>)>(
         r#"SELECT config_key, value
              FROM "Configs"
@@ -148,6 +175,10 @@ pub(crate) async fn lock_and_load_account_policy(
     Ok(AccountPolicySnapshot {
         identity,
         allow_register: bool_value("AccountPolicy:AllowRegister", config.account.allow_register),
+        allow_password_registration: bool_value(
+            "AccountPolicy:AllowPasswordRegistration",
+            config.account.allow_password_registration,
+        ),
         active_on_register: bool_value(
             "AccountPolicy:ActiveOnRegister",
             config.account.active_on_register,
@@ -185,4 +216,42 @@ fn identity_policy_keys() -> &'static [&'static str] {
         "AccountPolicy:RequireUniqueIpGlobal",
         "AccountPolicy:RequireUniqueFingerprintGlobal",
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account_policy(
+        allow_register: bool,
+        allow_password_registration: bool,
+    ) -> AccountPolicySnapshot {
+        AccountPolicySnapshot {
+            identity: PolicyFlags::default(),
+            allow_register,
+            allow_password_registration,
+            active_on_register: true,
+            email_confirmation_required: false,
+            email_domain_list: String::new(),
+            captcha: CaptchaSettings::from_values(&BTreeMap::new(), false).unwrap(),
+        }
+    }
+
+    #[test]
+    fn password_registration_policy_preserves_first_admin_bootstrap() {
+        let oauth_only = account_policy(true, false);
+        assert!(oauth_only.authorize_password_registration(true).is_ok());
+        assert!(oauth_only.authorize_password_registration(false).is_err());
+
+        let all_registration_disabled = account_policy(false, true);
+        assert!(all_registration_disabled
+            .authorize_password_registration(true)
+            .is_ok());
+        assert!(all_registration_disabled
+            .authorize_password_registration(false)
+            .is_err());
+        assert!(account_policy(true, true)
+            .authorize_password_registration(false)
+            .is_ok());
+    }
 }

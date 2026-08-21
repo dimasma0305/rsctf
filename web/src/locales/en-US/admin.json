@@ -608,6 +608,12 @@
           "description": "Allow users to register new accounts",
           "label": "Allow Register"
         },
+        "allow_password_registration": {
+          "description": "When disabled, new users must register through a configured OAuth provider. Existing password accounts can still sign in.",
+          "label": "Allow Password Registration"
+        },
+        "oauth_only_not_ready": "OAuth-only registration needs at least one complete Google or Discord configuration, and Browser Fingerprinting must be off.",
+        "oauth_only_ready": "New accounts will be created only through Google or Discord OAuth. Existing password accounts can still sign in.",
         "auto_active": {
           "description": "Whether to activate users after registered",
           "label": "Auto-activate"
@@ -653,7 +659,8 @@
         }
       },
       "oauth": {
-        "fingerprint_disabled": "External sign-in is unavailable while Browser Fingerprinting is enabled because OAuth redirects cannot return a validated fingerprint. Password login remains available."
+        "fingerprint_disabled": "External sign-in is unavailable while Browser Fingerprinting is enabled because OAuth redirects cannot return a validated fingerprint. Password login remains available.",
+        "redirect_hint": "Register the matching HTTPS redirect URI with each provider, then enter its client ID and secret. For Discord, enable the identify and email scopes."
       },
       "container": {
         "auto_destroy": {

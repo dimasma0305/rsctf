@@ -182,6 +182,7 @@ pub struct AppConfig {
 #[derive(Debug, Clone)]
 pub struct AccountPolicy {
     pub allow_register: bool,
+    pub allow_password_registration: bool,
     pub email_confirmation_required: bool,
     pub admin_confirmation_required: bool,
     /// Whether newly-registered accounts are active immediately.
@@ -200,6 +201,7 @@ impl Default for AccountPolicy {
     fn default() -> Self {
         Self {
             allow_register: true,
+            allow_password_registration: true,
             email_confirmation_required: false,
             admin_confirmation_required: false,
             active_on_register: true,
@@ -272,6 +274,7 @@ impl AppConfig {
             asset_signed_url_ttl_error,
             account: AccountPolicy {
                 allow_register: env_bool("RSCTF_ALLOW_REGISTER", true),
+                allow_password_registration: env_bool("RSCTF_ALLOW_PASSWORD_REGISTRATION", true),
                 email_confirmation_required: env_bool("RSCTF_EMAIL_CONFIRM", false),
                 admin_confirmation_required: env_bool("RSCTF_ADMIN_CONFIRM", false),
                 active_on_register: env_bool("RSCTF_ACTIVE_ON_REGISTER", true),
