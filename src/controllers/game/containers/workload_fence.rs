@@ -41,7 +41,11 @@ pub(super) async fn load_playable_definition_snapshot(
     game_id: i32,
     challenge_id: i32,
 ) -> AppResult<DefinitionSnapshot> {
-    for _ in 0..2 {
+    for _ in 0..3 {
+        let candidate = load_playable_challenge(st, game_id, challenge_id).await?;
+        if super::image_repair::prepare_queued_image(st, &candidate).await? {
+            continue;
+        }
         let snapshot = load_playable_definition_snapshot_once(st, game_id, challenge_id).await?;
         let repaired = match snapshot.4.as_deref() {
             Some(image) => {
@@ -53,6 +57,15 @@ pub(super) async fn load_playable_definition_snapshot(
             // A rebuild may publish a new immutable ID. Retake the complete
             // definition snapshot instead of launching the stale missing ID.
             continue;
+        }
+        if let Some(image) = snapshot.4.as_deref() {
+            if crate::services::image_storage::reserve_runtime_image(st, &snapshot.0, image).await?
+                == crate::services::image_storage::RuntimeImageReservation::Missing
+            {
+                // Cleanup won the image lock just before this start reserved
+                // it. Retake the snapshot and let the repair path restore it.
+                continue;
+            }
         }
         return Ok(snapshot);
     }
@@ -121,7 +134,11 @@ pub(super) async fn load_shared_definition_snapshot(
     game_id: i32,
     challenge_id: i32,
 ) -> AppResult<DefinitionSnapshot> {
-    for _ in 0..2 {
+    for _ in 0..3 {
+        let candidate = load_eligible_shared_challenge(st, challenge_id).await?;
+        if super::image_repair::prepare_queued_image(st, &candidate).await? {
+            continue;
+        }
         let snapshot = load_shared_definition_snapshot_once(st, game_id, challenge_id).await?;
         let repaired = match snapshot.4.as_deref() {
             Some(image) => {
@@ -131,6 +148,13 @@ pub(super) async fn load_shared_definition_snapshot(
         };
         if repaired {
             continue;
+        }
+        if let Some(image) = snapshot.4.as_deref() {
+            if crate::services::image_storage::reserve_runtime_image(st, &snapshot.0, image).await?
+                == crate::services::image_storage::RuntimeImageReservation::Missing
+            {
+                continue;
+            }
         }
         return Ok(snapshot);
     }

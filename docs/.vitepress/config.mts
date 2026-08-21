@@ -142,6 +142,7 @@ export default defineConfig({
           text: 'Reference',
           items: [
             { text: 'Configuration', link: '/reference/configuration' },
+            { text: 'Source development', link: '/reference/source-development' },
             { text: 'Installer options', link: '/reference/installer' },
             { text: 'Health and troubleshooting', link: '/reference/troubleshooting' },
             { text: 'Testing and coverage', link: '/reference/testing' },

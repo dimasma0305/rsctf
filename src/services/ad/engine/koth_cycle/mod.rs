@@ -38,7 +38,11 @@ mod tests {
 
     #[test]
     fn unprivileged_http_roles_cannot_execute_koth_recovery() {
-        for role in [RuntimeRole::Web, RuntimeRole::Migrate] {
+        for role in [
+            RuntimeRole::Development,
+            RuntimeRole::Web,
+            RuntimeRole::Migrate,
+        ] {
             let error = super::require_recovery_owner(role).unwrap_err();
             assert_eq!(error.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
         }

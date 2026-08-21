@@ -1,0 +1,62 @@
+name: rsctf-source-dev
+
+x-development-logging: &development-logging
+  driver: json-file
+  options:
+    max-size: 5m
+    max-file: "2"
+
+services:
+  db:
+    image: postgres:18.4-alpine3.24
+    restart: "no"
+    environment:
+      POSTGRES_USER: rsctf_dev
+      POSTGRES_PASSWORD: rsctf_dev
+      POSTGRES_DB: rsctf_dev
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - compute_query_id=on
+      - -c
+      - pg_stat_statements.max=1000
+      - -c
+      - pg_stat_statements.track_utility=off
+    ports:
+      - "127.0.0.1:${RSCTF_DEV_DB_PORT:-55432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql
+      - ./postgres/init/00-pg-stat-statements.sql:/docker-entrypoint-initdb.d/00-pg-stat-statements.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rsctf_dev -d rsctf_dev"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    logging: *development-logging
+
+  redis:
+    image: redis:7-alpine
+    restart: "no"
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 64mb
+      - --maxmemory-policy
+      - allkeys-lru
+    ports:
+      - "127.0.0.1:${RSCTF_DEV_REDIS_PORT:-56379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    logging: *development-logging
+
+volumes:
+  db-data:

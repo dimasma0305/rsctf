@@ -17,6 +17,45 @@ pub(super) enum ContainerRequestMode {
     Shared,
 }
 
+/// Authorize the resource-intensive first-build transition without retaining
+/// a database checkout while Docker works. The caller must revalidate again at
+/// the actual provisioning boundary.
+pub(super) async fn authorize_on_demand_build(
+    st: &SharedState,
+    caller: LiveParticipationIdentity<'_>,
+    challenge: &game_challenge::Model,
+) -> AppResult<bool> {
+    if challenge.build_status != ChallengeBuildStatus::Queued {
+        return Ok(false);
+    }
+    let policy = crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
+    if !crate::services::image_storage::lazy_build_eligible(&policy, challenge) {
+        return Ok(false);
+    }
+    let mut connection = st
+        .pg()
+        .acquire()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let mode = if uses_shared_container(challenge) {
+        ContainerRequestMode::Shared
+    } else {
+        ContainerRequestMode::PerTeam
+    };
+    let eligible = player_container_start_request_is_eligible(
+        &mut connection,
+        caller,
+        challenge.id,
+        mode,
+        true,
+    )
+    .await?;
+    if !eligible {
+        return Err(AppError::Forbidden);
+    }
+    Ok(true)
+}
+
 /// Re-check every mutable authorization input while the matching lifecycle lock is
 /// held. The normal play-context helpers intentionally use short-lived caches; those
 /// caches are unsuitable for a create/delete exclusion boundary because an operator
@@ -28,7 +67,27 @@ pub(super) async fn player_container_request_is_eligible(
     challenge_id: i32,
     mode: ContainerRequestMode,
 ) -> AppResult<bool> {
-    player_container_request_is_eligible_on(connection, caller, challenge_id, mode).await
+    player_container_request_is_eligible_on(connection, caller, challenge_id, mode, false).await
+}
+
+/// Exact pre-build authorization for the one transition where an active,
+/// recoverable challenge is intentionally still Queued. Every post-build and
+/// response boundary continues to require Success.
+pub(super) async fn player_container_start_request_is_eligible(
+    connection: &mut sqlx::PgConnection,
+    caller: LiveParticipationIdentity<'_>,
+    challenge_id: i32,
+    mode: ContainerRequestMode,
+    allow_queued_build: bool,
+) -> AppResult<bool> {
+    player_container_request_is_eligible_on(
+        connection,
+        caller,
+        challenge_id,
+        mode,
+        allow_queued_build,
+    )
+    .await
 }
 
 async fn player_container_request_is_eligible_on(
@@ -36,6 +95,7 @@ async fn player_container_request_is_eligible_on(
     caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
     mode: ContainerRequestMode,
+    allow_queued_build: bool,
 ) -> AppResult<bool> {
     let eligible = sqlx::query_scalar::<_, bool>(
         r#"SELECT EXISTS(
@@ -67,9 +127,10 @@ async fn player_container_request_is_eligible_on(
                   AND challenge.is_enabled
                   AND challenge.deletion_pending = FALSE
                   AND challenge.review_status = $8
-                  AND (challenge.workload_spec IS NOT NULL OR (
-                       challenge.build_status = $15
-                       AND NULLIF(BTRIM(challenge.build_image_digest), '') IS NOT NULL))
+                  AND (challenge.workload_spec IS NOT NULL
+                       OR (challenge.build_status = $15
+                           AND NULLIF(BTRIM(challenge.build_image_digest), '') IS NOT NULL)
+                       OR ($16 AND challenge.build_status = $17))
                   AND (
                         participation.division_id IS NULL
                         OR (COALESCE(permission.permissions, division.default_permissions, $9) & $10) = $10
@@ -116,6 +177,8 @@ async fn player_container_request_is_eligible_on(
     .bind(ChallengeType::AttackDefense as i16)
     .bind(ChallengeType::KingOfTheHill as i16)
     .bind(ChallengeBuildStatus::Success as i16)
+    .bind(allow_queued_build)
+    .bind(ChallengeBuildStatus::Queued as i16)
     .fetch_one(&mut *connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -325,9 +388,47 @@ mod tests {
             caller,
             4,
             ContainerRequestMode::PerTeam,
+            false,
         )
         .await
         .unwrap());
+        sqlx::query(
+            r#"UPDATE "GameChallenges"
+                  SET build_status = $1, build_image_digest = NULL
+                WHERE id = 4"#,
+        )
+        .bind(ChallengeBuildStatus::Queued as i16)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(!player_container_request_is_eligible_on(
+            &mut connection,
+            caller,
+            4,
+            ContainerRequestMode::PerTeam,
+            false,
+        )
+        .await
+        .unwrap());
+        assert!(player_container_request_is_eligible_on(
+            &mut connection,
+            caller,
+            4,
+            ContainerRequestMode::PerTeam,
+            true,
+        )
+        .await
+        .unwrap());
+        sqlx::query(
+            r#"UPDATE "GameChallenges"
+                  SET build_status = $1, build_image_digest = $2
+                WHERE id = 4"#,
+        )
+        .bind(ChallengeBuildStatus::Success as i16)
+        .bind("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(r#"UPDATE "GameChallenges" SET deletion_pending = TRUE WHERE id = 4"#)
             .execute(&pool)
             .await
@@ -337,6 +438,7 @@ mod tests {
             caller,
             4,
             ContainerRequestMode::PerTeam,
+            false,
         )
         .await
         .unwrap());
@@ -352,6 +454,7 @@ mod tests {
             caller,
             4,
             ContainerRequestMode::PerTeam,
+            false,
         )
         .await
         .unwrap());
@@ -368,6 +471,7 @@ mod tests {
             caller,
             4,
             ContainerRequestMode::PerTeam,
+            false,
         )
         .await
         .unwrap());

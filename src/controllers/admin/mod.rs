@@ -182,6 +182,11 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/builds/bulkdelete", post(bulk_delete_builds))
         .route("/api/admin/builds/prunefailed", post(prune_failed_builds))
         .route("/api/admin/builds/pruneimages", post(prune_images))
+        .route("/api/admin/builds/storage", get(build_storage_status))
+        .route(
+            "/api/admin/builds/prunestorage",
+            post(cleanup_build_storage),
+        )
         .route("/api/admin/builds/{auditId}", delete(delete_build))
         .route(
             "/api/admin/builds/{auditId}/reenqueue",

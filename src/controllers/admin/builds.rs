@@ -5,7 +5,9 @@ use super::*;
 mod images;
 #[cfg(test)]
 mod in_progress_tests;
-pub use images::{build_images, delete_build_image, prune_images};
+pub use images::{
+    build_images, build_storage_status, cleanup_build_storage, delete_build_image, prune_images,
+};
 
 const BUILDS_IN_PROGRESS_SQL: &str = r#"
 SELECT id AS audit_id,
@@ -134,6 +136,12 @@ pub struct BuildImageModel {
     pub referenced: bool,
     pub referenced_by: Vec<String>,
     pub is_checker: bool,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub last_used_utc: Option<DateTime<Utc>>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub retention_expires_utc: DateTime<Utc>,
+    /// Any running or stopped Docker container still references this image id.
+    pub in_use: bool,
 }
 
 /// `GET /api/admin/builds` query (`?count=&skip=&status=&gameId=`).

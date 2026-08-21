@@ -117,6 +117,7 @@ mod m0094_challenge_variants_and_receipts;
 mod m0095_player_field_bounds;
 mod m0096_container_storage_bounds;
 mod m0097_container_network_modes;
+mod m0098_build_image_retention;
 
 pub struct Migrator;
 
@@ -227,6 +228,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0095_player_field_bounds::Migration),
             Box::new(m0096_container_storage_bounds::Migration),
             Box::new(m0097_container_network_modes::Migration),
+            Box::new(m0098_build_image_retention::Migration),
         ]
     }
 }

@@ -10,6 +10,7 @@
 *.log
 /scratch
 /visual-audit-output
+/.rsctf-dev
 
 target/
 **/target/

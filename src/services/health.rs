@@ -419,7 +419,12 @@ mod tests {
 
     #[test]
     fn draining_stateful_roles_reject_new_work_but_keep_health_probes() {
-        for role in [RuntimeRole::All, RuntimeRole::Control, RuntimeRole::Network] {
+        for role in [
+            RuntimeRole::All,
+            RuntimeRole::Development,
+            RuntimeRole::Control,
+            RuntimeRole::Network,
+        ] {
             assert!(accepts_new_request(
                 RuntimeReadiness::Ready,
                 role,
@@ -464,8 +469,8 @@ mod tests {
         );
 
         let self_contained = crate::services::runtime_topology::RuntimeTopologyProbe::new(
-            RuntimeRole::Control,
-            true,
+            RuntimeRole::Development,
+            false,
         );
         let response = topology_response(&self_contained);
         assert_eq!(response.status(), StatusCode::OK);

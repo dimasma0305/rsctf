@@ -10,8 +10,8 @@ use super::docker::{
     image_requests_restricted_profile, launch_spec_fingerprint, launch_spec_matches,
     parse_proxy_bind, published_bind_ip, restricted_profile_matches, restricted_tmpfs_mounts,
     stamp_restricted_profile, validate_docker_container_spec, verify_container_scope,
-    writable_layer_quota_supported, writable_layer_storage_opt, FailedStartAction,
-    LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
+    writable_layer_quota_supported, writable_layer_storage_opt, writable_layer_storage_option,
+    FailedStartAction, LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
     RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
 };
 use super::{
@@ -228,6 +228,25 @@ fn docker_storage_quota_support_is_detected_fail_closed() {
             .get("size")
             .map(String::as_str),
         Some("768M")
+    );
+
+    assert!(writable_layer_storage_option(&ext4, false, 768).is_err());
+    assert_eq!(
+        writable_layer_storage_option(&ext4, true, 768).unwrap(),
+        None
+    );
+    assert_eq!(
+        writable_layer_storage_option(
+            &SystemInfo {
+                driver: Some("btrfs".to_string()),
+                ..Default::default()
+            },
+            false,
+            768,
+        )
+        .unwrap()
+        .and_then(|options| options.get("size").cloned()),
+        Some("768M".to_string())
     );
 }
 

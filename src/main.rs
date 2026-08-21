@@ -120,7 +120,7 @@ async fn async_main() -> anyhow::Result<()> {
     // read-then-insert backfills during simultaneous startup.
     if matches!(
         role,
-        RuntimeRole::All | RuntimeRole::Control | RuntimeRole::Migrate
+        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control | RuntimeRole::Migrate
     ) {
         rsctf::services::suspicion::seed_default_rules(&db).await?;
         let _ = rsctf::controllers::edit::backfill_build_records(&db).await;
@@ -152,7 +152,7 @@ async fn async_main() -> anyhow::Result<()> {
     // Narrow runtime roles are intended to cooperate as replicas. Requiring
     // Redis prevents them from silently falling back to process-local cache,
     // event fanout, leader leases, or rate limits.
-    let replica_mode = role != RuntimeRole::All;
+    let replica_mode = !matches!(role, RuntimeRole::All | RuntimeRole::Development);
     if replica_mode && config.redis_url.is_none() {
         anyhow::bail!("RSCTF_REDIS_URL is required when RSCTF_ROLE={role}");
     }
@@ -249,6 +249,11 @@ async fn async_main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "auto".to_string())
         .trim()
         .to_ascii_lowercase();
+    if role == RuntimeRole::Development && backend_mode != "none" {
+        return Err(anyhow::anyhow!(
+            "RSCTF_ROLE=development requires RSCTF_CONTAINER_BACKEND=none"
+        ));
+    }
     if rsctf::services::ad_vpn::enabled() && backend_mode == "auto" {
         return Err(anyhow::anyhow!(
             "RSCTF_CONTAINER_BACKEND=docker or kubernetes is required when RSCTF_AD_VPN_ENABLED=true"
@@ -423,7 +428,7 @@ async fn async_main() -> anyhow::Result<()> {
     }
 
     let app = match role {
-        RuntimeRole::All => server::build_router(state.clone()),
+        RuntimeRole::All | RuntimeRole::Development => server::build_router(state.clone()),
         RuntimeRole::Web => server::build_web_router(state.clone()),
         RuntimeRole::Control | RuntimeRole::Network => server::build_stateful_router(state.clone()),
         RuntimeRole::Engine | RuntimeRole::Migrate => server::build_health_router(state.clone()),
@@ -439,6 +444,7 @@ async fn async_main() -> anyhow::Result<()> {
 
     state.readiness.mark_ready();
     tracing::info!(%role, "listening on {}", config.bind_addr);
+    let supervise_required_workers = !background.required.is_empty();
     let mut server_shutdown = shutdown_rx;
     let mut server = tokio::spawn(async move {
         axum::serve(
@@ -465,7 +471,7 @@ async fn async_main() -> anyhow::Result<()> {
         _ = wait_for_shutdown_signal() => {
             StopReason::Signal
         }
-        failure = background.failures.recv() => {
+        failure = background.failures.recv(), if supervise_required_workers => {
             StopReason::RequiredWorker(failure.unwrap_or_else(|| {
                 "required worker supervision ended unexpectedly".to_string()
             }))
@@ -668,7 +674,7 @@ fn start_background_services(
                 ),
             ));
         }
-        RuntimeRole::Web | RuntimeRole::Migrate => {}
+        RuntimeRole::Development | RuntimeRole::Web | RuntimeRole::Migrate => {}
     }
 
     if let Some(topology) = rsctf::services::runtime_topology::spawn(
@@ -707,12 +713,14 @@ fn start_background_services(
 fn owns_suspicion_reconciliation(role: RuntimeRole) -> bool {
     matches!(
         role,
-        RuntimeRole::All | RuntimeRole::Control | RuntimeRole::Engine
+        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control | RuntimeRole::Engine
     )
 }
 
 fn should_run_migrations(role: RuntimeRole, combined_migrations_disabled: bool) -> bool {
-    role == RuntimeRole::Migrate || (role == RuntimeRole::All && !combined_migrations_disabled)
+    role == RuntimeRole::Migrate
+        || role == RuntimeRole::Development
+        || (role == RuntimeRole::All && !combined_migrations_disabled)
 }
 
 fn supervise_background_tasks(
@@ -771,9 +779,11 @@ async fn drain_background_services(mut background: BackgroundServices, role: Run
         RuntimeRole::All | RuntimeRole::Engine => Duration::from_secs(250),
         // A split network owner must release its singleton lease promptly so a
         // replacement can take over. Durable round leases fence aborted work.
-        RuntimeRole::Web | RuntimeRole::Control | RuntimeRole::Network | RuntimeRole::Migrate => {
-            Duration::from_secs(30)
-        }
+        RuntimeRole::Development
+        | RuntimeRole::Web
+        | RuntimeRole::Control
+        | RuntimeRole::Network
+        | RuntimeRole::Migrate => Duration::from_secs(30),
     };
 
     let drain = async {
@@ -841,6 +851,7 @@ mod startup_tests {
         assert!(owns_suspicion_reconciliation(RuntimeRole::Control));
         assert!(owns_suspicion_reconciliation(RuntimeRole::Engine));
         assert!(!owns_suspicion_reconciliation(RuntimeRole::Web));
+        assert!(owns_suspicion_reconciliation(RuntimeRole::Development));
         assert!(!owns_suspicion_reconciliation(RuntimeRole::Network));
         assert!(!owns_suspicion_reconciliation(RuntimeRole::Migrate));
     }
@@ -850,6 +861,7 @@ mod startup_tests {
         assert!(!should_run_migrations(RuntimeRole::All, true));
         assert!(should_run_migrations(RuntimeRole::All, false));
         assert!(should_run_migrations(RuntimeRole::Migrate, true));
+        assert!(should_run_migrations(RuntimeRole::Development, true));
         assert!(!should_run_migrations(RuntimeRole::Web, false));
     }
 }

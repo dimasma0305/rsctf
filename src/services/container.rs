@@ -52,7 +52,6 @@ use futures::StreamExt;
 use ipnet::Ipv4Net;
 use rsctf_worker_protocol::GameKind;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::utils::enums::{ChallengeType, NetworkMode};
@@ -65,10 +64,12 @@ mod policy;
 #[cfg(test)]
 mod tests;
 use self::docker::{
-    docker_network_mode, image_requests_restricted_profile, is_conflict, is_not_found,
-    launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
-    restricted_tmpfs_mounts, stamp_restricted_profile, validate_docker_container_spec,
-    writable_layer_quota_supported, writable_layer_storage_opt, LAUNCH_SPEC_LABEL,
+    append_snapshot_chunk, development_unbounded_storage, docker_network_mode,
+    image_requests_restricted_profile, is_conflict, is_not_found, launch_spec_fingerprint,
+    launch_spec_matches, restricted_profile_matches, restricted_tmpfs_mounts,
+    snapshot_export_slots, stamp_restricted_profile, validate_docker_container_spec,
+    writable_layer_storage_option, LAUNCH_SPEC_LABEL, MAX_SNAPSHOT_EXPORT_BYTES,
+    SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
 };
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
@@ -95,7 +96,6 @@ pub(crate) const IMAGE_SCOPE_LABEL: &str = "rsctf.image.scope";
 pub(crate) const IMAGE_REFERENCE_LABEL: &str = "rsctf.image.ref";
 const DOCKER_SCOPE_ENV: &str = "RSCTF_DOCKER_SCOPE";
 const JWT_SECRET_ENV: &str = "RSCTF_JWT_SECRET";
-const MIB: usize = 1024 * 1024;
 /// Environment names injected into rsctf-managed challenge containers.
 const FLAG_ENV: &str = "RSCTF_FLAG";
 const FLAG_FILE_ENV: &str = "RSCTF_FLAG_FILE";
@@ -106,39 +106,6 @@ const DEFAULT_MAX_CPU_COUNT: i32 = 8;
 pub const DEFAULT_CONTAINER_STORAGE_MB: i32 = 512;
 const DEFAULT_MAX_STORAGE_MB: i32 = 1_048_576;
 pub(super) const MAX_EXEC_OUTPUT_BYTES: usize = 1024 * 1024;
-/// Raw Docker filesystem exports are bounded before compression. This must
-/// accommodate ordinary A&D images (which commonly export to 150-300 MiB)
-/// while preventing a participant-created sparse/random file from consuming
-/// unbounded control-plane memory during post-event capture.
-pub(crate) const MAX_SNAPSHOT_EXPORT_BYTES: usize = 512 * MIB;
-const SNAPSHOT_EXPORT_MAX_DURATION: Duration = Duration::from_secs(120);
-const SNAPSHOT_EXPORT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
-// Export + compression temporarily holds the raw TAR and compressed archive.
-// One capture at a time keeps the control replica comfortably inside its 2 GiB
-// production memory limit even for the maximum admitted source archive.
-const MAX_CONCURRENT_SNAPSHOT_EXPORTS: usize = 1;
-fn snapshot_export_slots() -> &'static tokio::sync::Semaphore {
-    static SLOTS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
-    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(MAX_CONCURRENT_SNAPSHOT_EXPORTS))
-}
-
-fn append_snapshot_chunk(out: &mut Vec<u8>, chunk: &[u8], limit: usize) -> AppResult<()> {
-    let next_len = out
-        .len()
-        .checked_add(chunk.len())
-        .ok_or_else(|| AppError::bad_request("snapshot export size overflow"))?;
-    if next_len > limit {
-        return Err(AppError::payload_too_large(format!(
-            "snapshot export exceeds the {} MiB safety limit",
-            limit / (1024 * 1024)
-        )));
-    }
-    out.try_reserve(chunk.len())
-        .map_err(|_| AppError::internal("failed to reserve snapshot export buffer"))?;
-    out.extend_from_slice(chunk);
-    Ok(())
-}
-
 fn docker_workload_scope(explicit: Option<&str>, jwt_secret: Option<&str>) -> String {
     let (source, identity) = explicit
         .map(str::trim)
@@ -381,6 +348,8 @@ pub struct DockerContainerManager {
     /// daemon. It prevents one deployment's orphan sweep or operation adoption
     /// from touching another deployment's workloads.
     scope: String,
+    /// Debug-only escape hatch for a disposable, quota-less Docker daemon.
+    allow_unbounded_storage: bool,
     /// Live Docker client handle populated by [`Self::connect`].
     docker: Option<Docker>,
 }
@@ -399,6 +368,7 @@ impl DockerContainerManager {
             public_entry: std::env::var("RSCTF_DOCKER_PUBLIC_ENTRY").ok(),
             proxy_bind: docker::configured_proxy_bind()?,
             scope: docker_installation_scope(),
+            allow_unbounded_storage: development_unbounded_storage()?,
             docker: Some(docker),
         })
     }
@@ -555,11 +525,11 @@ impl ContainerManager for DockerContainerManager {
                 "could not verify Docker writable-layer quota support: {error}"
             ))
         })?;
-        if !writable_layer_quota_supported(&daemon_info) {
-            return Err(AppError::unavailable(
-                "Docker writable-layer quotas require btrfs, devicemapper, zfs, windowsfilter, or overlay2 on XFS with project quotas",
-            ));
-        }
+        let storage_opt = writable_layer_storage_option(
+            &daemon_info,
+            self.allow_unbounded_storage,
+            spec.storage_limit,
+        )?;
         let launch_fingerprint = launch_spec_fingerprint(&spec);
 
         // 1. Pull an absent repository digest without changing identity. A
@@ -630,7 +600,7 @@ impl ContainerManager for DockerContainerManager {
             memory: Some(i64::from(spec.memory_limit) * 1024 * 1024),
             nano_cpus: Some(i64::from(spec.cpu_count) * 1_000_000_000),
             pids_limit: Some(512),
-            storage_opt: Some(writable_layer_storage_opt(spec.storage_limit)),
+            storage_opt,
             cap_drop: restricted_profile.then(|| vec!["ALL".to_string()]),
             readonly_rootfs: restricted_profile.then_some(true),
             security_opt: restricted_profile.then(|| vec!["no-new-privileges:true".to_string()]),

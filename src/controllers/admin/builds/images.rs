@@ -2,6 +2,7 @@
 
 use super::{BuildImageModel, DeleteImageQuery, PruneResultModel};
 use axum::extract::{Query, State};
+use bollard::container::ListContainersOptions;
 use bollard::errors::Error as DockerError;
 use bollard::image::{ListImagesOptions, RemoveImageOptions};
 use bollard::Docker;
@@ -13,9 +14,9 @@ use crate::middlewares::privilege_authentication::AdminUser;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
-const OWNERSHIPS_SQL: &str = r#"SELECT canonical_ref, image_id
+const OWNERSHIPS_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc, last_used_at_utc
  FROM "BuildImageOwnerships" WHERE installation_scope=$1 ORDER BY canonical_ref"#;
-const OWNERSHIP_SQL: &str = r#"SELECT canonical_ref, image_id
+const OWNERSHIP_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc, last_used_at_utc
  FROM "BuildImageOwnerships" WHERE installation_scope=$1 AND canonical_ref=$2"#;
 const REFERENCES_SQL: &str = r#"
  SELECT title, container_image AS image_ref FROM "GameChallenges"
@@ -28,6 +29,8 @@ const REFERENCES_SQL: &str = r#"
 struct OwnershipRow {
     canonical_ref: String,
     image_id: String,
+    updated_at_utc: DateTime<Utc>,
+    last_used_at_utc: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -104,6 +107,7 @@ fn validate_inspect(
 }
 
 async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImageModel>> {
+    let policy = crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
     let scope = crate::services::container::docker_installation_scope();
     let ownerships = sqlx::query_as::<_, OwnershipRow>(OWNERSHIPS_SQL)
         .bind(&scope)
@@ -124,6 +128,18 @@ async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImag
         .into_iter()
         .map(|summary| (summary.id.clone(), summary))
         .collect::<HashMap<_, _>>();
+    let container_image_ids = docker
+        .list_containers(Some(ListContainersOptions::<String> {
+            all: true,
+            ..Default::default()
+        }))
+        .await
+        .map_err(|error| {
+            AppError::unavailable(format!("Docker container inventory failed: {error}"))
+        })?
+        .into_iter()
+        .filter_map(|container| container.image_id)
+        .collect::<std::collections::HashSet<_>>();
 
     let mut grouped = BTreeMap::<String, BuildImageModel>::new();
     for ownership in ownerships {
@@ -159,11 +175,24 @@ async fn inventory(st: &SharedState, docker: &Docker) -> AppResult<Vec<BuildImag
                 referenced: false,
                 referenced_by: Vec::new(),
                 is_checker: false,
+                last_used_utc: ownership.last_used_at_utc,
+                retention_expires_utc: ownership
+                    .last_used_at_utc
+                    .unwrap_or(ownership.updated_at_utc)
+                    + chrono::Duration::hours(i64::from(policy.image_idle_retention_hours)),
+                in_use: container_image_ids.contains(&ownership.image_id),
             });
         entry.tags.push(tag.clone());
         entry.referenced_by.extend(referenced_by);
         entry.referenced = !entry.referenced_by.is_empty();
         entry.is_checker |= tag.contains("checker");
+        entry.last_used_utc = entry.last_used_utc.max(ownership.last_used_at_utc);
+        let expires = ownership
+            .last_used_at_utc
+            .unwrap_or(ownership.updated_at_utc)
+            + chrono::Duration::hours(i64::from(policy.image_idle_retention_hours));
+        entry.retention_expires_utc = entry.retention_expires_utc.max(expires);
+        entry.in_use |= container_image_ids.contains(&ownership.image_id);
     }
     let mut images = grouped.into_values().collect::<Vec<_>>();
     for image in &mut images {
@@ -181,6 +210,25 @@ pub async fn build_images(
 ) -> AppResult<RequestResponse<Vec<BuildImageModel>>> {
     let docker = reachable_docker().await.map_err(AppError::unavailable)?;
     Ok(RequestResponse::ok(inventory(&st, &docker).await?))
+}
+
+pub async fn build_storage_status(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+) -> AppResult<RequestResponse<crate::services::image_storage::ImageStorageStatus>> {
+    Ok(RequestResponse::ok(
+        crate::services::image_storage::storage_status(&st).await?,
+    ))
+}
+
+pub async fn cleanup_build_storage(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+) -> AppResult<RequestResponse<crate::services::image_storage::ImageCleanupReport>> {
+    let policy = crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
+    Ok(RequestResponse::ok(
+        crate::services::image_storage::cleanup(&st, &policy).await?,
+    ))
 }
 
 struct Removal {
@@ -451,6 +499,8 @@ mod tests {
         let ownership = OwnershipRow {
             canonical_ref: CANONICAL.to_string(),
             image_id: ID.to_string(),
+            updated_at_utc: Utc::now(),
+            last_used_at_utc: None,
         };
         assert!(validate_inspect(&inspect(ID), &ownership, SCOPE).is_ok());
         assert!(validate_inspect(&inspect(OTHER_ID), &ownership, SCOPE)

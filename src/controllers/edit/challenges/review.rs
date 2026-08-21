@@ -111,6 +111,12 @@ pub async fn approve_challenge(
     }
     let needs_build = requires_successful_build
         && crate::services::challenge_workloads::resolve_runtime(&st, &challenge).is_err();
+    let defer_build = if needs_build {
+        let policy = crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
+        crate::services::image_storage::lazy_build_eligible(&policy, &challenge)
+    } else {
+        false
+    };
     if needs_build {
         let staged = if let Some(control) = engine_control.as_mut() {
             sqlx::query(
@@ -171,45 +177,53 @@ pub async fn approve_challenge(
             ));
         }
 
-        // Commit checker reachability before invoking the coordinated builder,
-        // which rechecks the exact image/archive/context triple under its own
-        // cross-replica image lock. The challenge remains Pending throughout.
-        if let Some(lock) = engine_control.take() {
-            lock.release()
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-        }
-        if let Some(guard) = checker_artifact_guard.take() {
-            guard
-                .release()
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-        }
-
         challenge.ad_checker_image = checker_path.clone();
         challenge.build_status = ChallengeBuildStatus::Queued;
-        let (outcome, _) =
-            crate::controllers::edit::run_challenge_build(&st, &challenge, "Approval", 1).await;
-        if outcome.status != ChallengeBuildStatus::Success {
-            return Err(AppError::bad_request(format!(
-                "Challenge remains pending because its reviewed image did not build successfully: {}",
-                outcome
-                    .log
-                    .as_deref()
-                    .unwrap_or("build did not complete successfully")
-            )));
+        challenge.build_image_digest = None;
+        if !defer_build {
+            // Commit checker reachability before invoking the coordinated builder,
+            // which rechecks the exact image/archive/context triple under its own
+            // cross-replica image lock. The challenge remains Pending throughout.
+            if let Some(lock) = engine_control.take() {
+                lock.release()
+                    .await
+                    .map_err(|error| AppError::internal(error.to_string()))?;
+            }
+            if let Some(guard) = checker_artifact_guard.take() {
+                guard
+                    .release()
+                    .await
+                    .map_err(|error| AppError::internal(error.to_string()))?;
+            }
+            let (outcome, _) =
+                crate::controllers::edit::run_challenge_build(&st, &challenge, "Approval", 1).await;
+            if outcome.status != ChallengeBuildStatus::Success {
+                return Err(AppError::bad_request(format!(
+                    "Challenge remains pending because its reviewed image did not build successfully: {}",
+                    outcome
+                        .log
+                        .as_deref()
+                        .unwrap_or("build did not complete successfully")
+                )));
+            }
+            challenge = load_challenge(&st, id, c_id).await?;
+            let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+            if competition_scoring_started_locked(control.transaction_mut(), id).await? {
+                return Err(AppError::bad_request(
+                    "The challenge image was built but remains pending because competition scoring started during approval.",
+                ));
+            }
+            crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id)
+                .await?;
+            engine_control = Some(control);
         }
-        challenge = load_challenge(&st, id, c_id).await?;
-        let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-        if competition_scoring_started_locked(control.transaction_mut(), id).await? {
-            return Err(AppError::bad_request(
-                "The challenge image was built but remains pending because competition scoring started during approval.",
-            ));
-        }
-        crate::utils::scoring::lock_jeopardy_flags_exclusive(control.transaction_mut(), c_id)
-            .await?;
-        engine_control = Some(control);
     }
+
+    let required_build_status = if defer_build {
+        ChallengeBuildStatus::Queued
+    } else {
+        ChallengeBuildStatus::Success
+    };
 
     let updated = if let Some(control) = engine_control.as_mut() {
         sqlx::query(
@@ -232,7 +246,7 @@ pub async fn approve_challenge(
         .bind(checker_path.as_deref())
         .bind(ChallengeReviewStatus::Active as i16)
         .bind(requires_successful_build)
-        .bind(ChallengeBuildStatus::Success as i16)
+        .bind(required_build_status as i16)
         .bind(challenge.build_image_digest.as_deref())
         .bind(challenge.original_archive_blob_path.as_deref())
         .bind(challenge.container_image.as_deref())
@@ -260,7 +274,7 @@ pub async fn approve_challenge(
         .bind(id)
         .bind(ChallengeReviewStatus::Active as i16)
         .bind(requires_successful_build)
-        .bind(ChallengeBuildStatus::Success as i16)
+        .bind(required_build_status as i16)
         .bind(challenge.build_image_digest.as_deref())
         .bind(challenge.original_archive_blob_path.as_deref())
         .bind(challenge.container_image.as_deref())

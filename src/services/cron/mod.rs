@@ -239,6 +239,31 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: checker revision GC failed: {e}"),
     }
 
+    match crate::services::image_storage::scheduled_cleanup(state).await {
+        Ok(Some(report)) if report.images_removed > 0 || report.cache_bytes_reclaimed > 0 => {
+            tracing::info!(
+                images = report.images_removed,
+                image_bytes = report.image_bytes_evicted,
+                cache_bytes = report.cache_bytes_reclaimed,
+                dangling_bytes = report.dangling_bytes_reclaimed,
+                free_before = report.available_bytes_before,
+                free_after = report.available_bytes_after,
+                pressure = report.pressure_mode,
+                "cron: completed bounded Docker storage cleanup"
+            );
+            for message in report.messages {
+                tracing::warn!(%message, "cron: Docker storage cleanup note");
+            }
+        }
+        Ok(Some(report)) => {
+            for message in report.messages {
+                tracing::warn!(%message, "cron: Docker storage cleanup note");
+            }
+        }
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "cron: Docker storage cleanup failed"),
+    }
+
     match reap_expired_containers(state).await {
         Ok(n) if n > 0 => tracing::info!("cron: reaped {n} expired container(s)"),
         Ok(_) => {}

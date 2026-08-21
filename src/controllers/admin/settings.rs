@@ -354,6 +354,26 @@ pub async fn get_config(
         default_lifetime: get_i32("ContainerPolicy:DefaultLifetime", cd.default_lifetime),
         extension_duration: get_i32("ContainerPolicy:ExtensionDuration", cd.extension_duration),
         renewal_window: get_i32("ContainerPolicy:RenewalWindow", cd.renewal_window),
+        build_images_on_demand: get_bool(
+            "ContainerPolicy:BuildImagesOnDemand",
+            cd.build_images_on_demand,
+        ),
+        image_cleanup_enabled: get_bool(
+            "ContainerPolicy:ImageCleanupEnabled",
+            cd.image_cleanup_enabled,
+        ),
+        image_idle_retention_hours: get_i32(
+            "ContainerPolicy:ImageIdleRetentionHours",
+            cd.image_idle_retention_hours,
+        ),
+        build_cache_retention_hours: get_i32(
+            "ContainerPolicy:BuildCacheRetentionHours",
+            cd.build_cache_retention_hours,
+        ),
+        minimum_free_storage_gib: get_i32(
+            "ContainerPolicy:MinimumFreeStorageGiB",
+            cd.minimum_free_storage_gib,
+        ),
     };
 
     // --- Advanced sections (round-trip what update_config persisted) ---------
@@ -539,6 +559,36 @@ pub async fn update_config(
             &st,
             "ContainerPolicy:RenewalWindow",
             Some(c.renewal_window.to_string()),
+        )
+        .await?;
+        upsert_config(
+            &st,
+            "ContainerPolicy:BuildImagesOnDemand",
+            Some(c.build_images_on_demand.to_string()),
+        )
+        .await?;
+        upsert_config(
+            &st,
+            "ContainerPolicy:ImageCleanupEnabled",
+            Some(c.image_cleanup_enabled.to_string()),
+        )
+        .await?;
+        upsert_config(
+            &st,
+            "ContainerPolicy:ImageIdleRetentionHours",
+            Some(c.image_idle_retention_hours.to_string()),
+        )
+        .await?;
+        upsert_config(
+            &st,
+            "ContainerPolicy:BuildCacheRetentionHours",
+            Some(c.build_cache_retention_hours.to_string()),
+        )
+        .await?;
+        upsert_config(
+            &st,
+            "ContainerPolicy:MinimumFreeStorageGiB",
+            Some(c.minimum_free_storage_gib.to_string()),
         )
         .await?;
     }
