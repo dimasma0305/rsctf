@@ -316,7 +316,14 @@ pub async fn get_config(
         favicon_hash: get("GlobalConfig:FaviconHash"),
     };
 
-    let defaults = AccountPolicy::default();
+    let defaults = AccountPolicy {
+        allow_register: st.config.account.allow_register,
+        allow_password_registration: st.config.account.allow_password_registration,
+        active_on_register: st.config.account.active_on_register,
+        use_captcha: st.config.account.use_captcha,
+        email_confirmation_required: st.config.account.email_confirmation_required,
+        ..AccountPolicy::default()
+    };
     let account = AccountPolicy {
         allow_register: get_bool("AccountPolicy:AllowRegister", defaults.allow_register),
         allow_password_registration: get_bool(

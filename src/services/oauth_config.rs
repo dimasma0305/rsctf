@@ -17,13 +17,14 @@ const OAUTH_CONFIG_KEYS: &[&str] = &[
     "OAuthConfig:DiscordClientSecret",
 ];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+// Deliberately omit `Debug`: this value contains the live client secret.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct OAuthProviderCredentials {
     pub client_id: String,
     pub client_secret: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct OAuthSettings {
     google: Option<OAuthProviderCredentials>,
     discord: Option<OAuthProviderCredentials>,
@@ -161,13 +162,9 @@ mod tests {
             fallback,
         );
 
-        assert_eq!(
-            configured.provider("google"),
-            Some(&OAuthProviderCredentials {
-                client_id: "db-id".to_string(),
-                client_secret: "db-secret".to_string(),
-            })
-        );
+        let google = configured.provider("google").unwrap();
+        assert_eq!(google.client_id, "db-id");
+        assert_eq!(google.client_secret, "db-secret");
         assert!(!configured.discord_configured());
         assert!(configured.any_configured());
     }
