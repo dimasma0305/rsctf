@@ -293,9 +293,13 @@ pub async fn bulk_rebuild(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
-        enqueued += 1;
-        let (outcome, _record) =
-            crate::controllers::edit::run_challenge_build(&st, &challenge, "Bulk", attempt).await;
+        let (outcome, _record, executed) =
+            crate::controllers::edit::retry_failed_challenge_build(&st, &challenge, attempt).await;
+        if executed {
+            enqueued += 1;
+        } else {
+            skipped += 1;
+        }
         let detail = outcome
             .log
             .unwrap_or_else(|| "build returned no detail".to_string());

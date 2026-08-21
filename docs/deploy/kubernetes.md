@@ -120,6 +120,13 @@ Set the chart's container backend to Kubernetes only after you understand the ex
   NetworkPolicy that admits only the configured rsctf control namespace, pod
   label, TCP port, and selected challenge Pod.
 - `RSCTF_K8S_PUBLIC_ENTRY` must lead players to nodes where those ports are reachable.
+- Direct `Isolated` NodePorts additionally require
+  `kubernetes.isolatedIngressCidrs` (the post-NAT source ranges seen by Pods)
+  and `kubernetes.podCidrs` (every cluster Pod range). rsctf subtracts Pod
+  ranges from each ingress block and refuses ambiguous overlap, preventing a
+  different challenge Pod from reaching the isolated workload. These Services
+  use `externalTrafficPolicy: Local` to preserve the source address, so route a
+  player's connection to the node currently hosting that challenge Pod.
 - A&D services use ClusterIP and per-instance NetworkPolicies.
 - KotH marker reads use the narrowly scoped `pods/exec` subresource.
 - Private challenge image pull credentials are not currently attached to generated Pods.
@@ -141,6 +148,8 @@ trafficCapture:
   enabled: false
 kubernetes:
   adServiceCidr: 10.96.0.0/12
+  isolatedIngressCidrs: [198.51.100.0/24]
+  podCidrs: [10.244.0.0/16]
   networkPolicyEnforced: true
 ```
 

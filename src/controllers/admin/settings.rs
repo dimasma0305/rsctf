@@ -495,6 +495,12 @@ pub async fn update_config(
     _admin: AdminUser,
     Json(mut model): Json<ConfigEditModel>,
 ) -> AppResult<MessageResponse> {
+    // Reject the complete request before any independently persisted section
+    // can change. In particular, an invalid container policy must not leave a
+    // successful security/global partial save behind an HTTP 400 response.
+    if let Some(policy) = model.container_policy.as_ref() {
+        policy.validate()?;
+    }
     let account_policy = model.account_policy.take();
     let captcha = model.captcha.take();
     let o_auth = model.o_auth.take();
@@ -530,7 +536,6 @@ pub async fn update_config(
     }
 
     if let Some(c) = model.container_policy {
-        c.validate()?;
         upsert_config(
             &st,
             "ContainerPolicy:AutoDestroyOnLimitReached",

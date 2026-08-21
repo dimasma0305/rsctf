@@ -466,7 +466,7 @@ impl ContainerManager for KubernetesContainerManager {
         } else if spec.proxy_only {
             Some(proxy_network_policy(&name, &labels, spec.expose_port)?)
         } else if isolated {
-            Some(isolated_network_policy(&name, &labels, spec.expose_port))
+            Some(isolated_network_policy(&name, &labels, spec.expose_port)?)
         } else {
             None
         };
@@ -552,6 +552,10 @@ impl ContainerManager for KubernetesContainerManager {
             },
             spec: Some(ServiceSpec {
                 type_: Some(service_type(internal_only).to_string()),
+                // Preserve source addresses for isolated NodePorts. Without
+                // Local routing, kube-proxy may SNAT a hostile Pod to a node
+                // address that an ingress IPBlock legitimately allows.
+                external_traffic_policy: (!internal_only && isolated).then(|| "Local".to_string()),
                 selector: Some(BTreeMap::from([(APP_LABEL.to_string(), app_label.clone())])),
                 ports: Some(vec![ServicePort {
                     port: spec.expose_port,

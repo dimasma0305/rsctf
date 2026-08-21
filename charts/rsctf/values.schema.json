@@ -376,7 +376,7 @@
     "kubernetes": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "metrics", "adServiceCidr", "networkPolicyEnforced", "isolatedPodNetns"],
+      "required": ["challengeNamespace", "createChallengeNamespace", "challengeNamespaceLabels", "publicEntry", "challengeUid", "metrics", "adServiceCidr", "isolatedIngressCidrs", "podCidrs", "networkPolicyEnforced", "isolatedPodNetns"],
       "properties": {
         "challengeNamespace": {"type": "string"},
         "createChallengeNamespace": {"type": "boolean"},
@@ -390,6 +390,8 @@
           "properties": {"enabled": {"type": "boolean"}}
         },
         "adServiceCidr": {"type": "string"},
+        "isolatedIngressCidrs": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "podCidrs": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
         "networkPolicyEnforced": {"type": "boolean"},
         "isolatedPodNetns": {"type": "boolean"}
       }

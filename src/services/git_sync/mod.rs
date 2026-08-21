@@ -109,14 +109,14 @@ pub(crate) use repository::{manifest_candidate_in_checkout, tombstone_missing_ch
 mod runtime;
 use runtime::{live_runtime_update_deferred, LiveRuntimeIntent};
 mod grading;
-use grading::{
-    competition_scoring_started_locked, event_started_locked, grading_fence_locked, GradingIntent,
-};
+use grading::{competition_scoring_started_locked, grading_fence_locked, GradingIntent};
 mod policy;
 pub use policy::ImportPolicy;
 use policy::{initialize_new_import_review, validate_pending_manifest, MAX_PENDING_MANIFEST_BYTES};
 #[cfg(test)]
 use policy::{MAX_PENDING_HINTS, MAX_PENDING_STATIC_FLAGS};
+mod provenance;
+use provenance::{publish_provenance_policy_locked, ProvenanceIntent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManifestImportResult {
@@ -764,7 +764,10 @@ pub async fn import_manifest(
     if !is_update {
         initialize_new_import_review(&mut am, policy, now);
     }
-    if provenance_fields_present {
+    // The broad ActiveModel write retains the stored/default policy whenever
+    // provenance changes. Those fields are published separately with the
+    // event-start predicate in that same UPDATE statement.
+    if provenance_fields_present && !provenance_policy_changed {
         am.variant_mode = Set(variant_mode);
         am.variant_generator_image = Set(generator_intent.image.clone());
         am.variant_generator_digest = Set(generator_intent.digest.clone());
@@ -773,8 +776,18 @@ pub async fn import_manifest(
         am.variant_generator_build_status = Set(generator_intent.build_status);
         am.variant_generator_last_build_log = Set(generator_intent.last_build_log.clone());
         am.solve_receipt_mode = Set(receipt_mode);
-        am.receipt_verifier_identity = Set(verifier_identity);
+        am.receipt_verifier_identity = Set(verifier_identity.clone());
     }
+    let provenance_intent = ProvenanceIntent {
+        variant_mode,
+        generator_image: generator_intent.image.clone(),
+        generator_digest: generator_intent.digest.clone(),
+        generator_build_context_subdir: generator_intent.build_context_subdir.clone(),
+        generator_build_status: generator_intent.build_status,
+        generator_last_build_log: generator_intent.last_build_log.clone(),
+        solve_receipt_mode: receipt_mode,
+        receipt_verifier_identity: verifier_identity,
+    };
 
     // Persist the row and its static flags together. On an update the loaded
     // ActiveModel carries the original id and progress fields, so no FK cascade
@@ -796,11 +809,6 @@ pub async fn import_manifest(
         let transaction = st.db.begin().await?;
         let competition_scoring_started =
             competition_scoring_started_locked(&transaction, game_id).await?;
-        if provenance_policy_changed && event_started_locked(&transaction, game_id).await? {
-            return Err(AppError::bad_request(
-                "Challenge variant and solve-receipt settings are frozen at event start.",
-            ));
-        }
         if existing
             .as_ref()
             .is_some_and(|challenge| !challenge.challenge_type.uses_ad_engine())
@@ -833,11 +841,29 @@ pub async fn import_manifest(
                 am.flag_template = Set(flag_template.clone());
             }
         }
-        let challenge = if is_update {
+        let mut challenge = if is_update {
             am.update(&transaction).await?
         } else {
             am.insert(&transaction).await?
         };
+        if provenance_policy_changed {
+            if !publish_provenance_policy_locked(
+                &transaction,
+                challenge.id,
+                game_id,
+                &provenance_intent,
+            )
+            .await?
+            {
+                return Err(AppError::bad_request(
+                    "Challenge variant and solve-receipt settings are frozen at event start.",
+                ));
+            }
+            challenge = game_challenge::Entity::find_by_id(challenge.id)
+                .one(&transaction)
+                .await?
+                .ok_or_else(|| AppError::not_found("Challenge not found"))?;
+        }
         if is_update && !preserve_live_runtime && !grading_fence.protected {
             // Dynamic/runtime flags are ownership records, not repository
             // policy. Replace only unoccupied flags that no GameInstance still

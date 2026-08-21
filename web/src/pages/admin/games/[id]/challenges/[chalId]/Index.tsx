@@ -586,6 +586,7 @@ const GameChallengeEdit: FC = () => {
                   ...challengeInfo,
                   category: category as ChallengeCategory,
                   minScoreRate: minRate / 100,
+                  networkMode: isAdEngine ? NetworkMode.Open : (challengeInfo.networkMode as NetworkMode),
                 })
               }
             >
@@ -1018,14 +1019,14 @@ const GameChallengeEdit: FC = () => {
                 required
                 label={t('admin.content.games.challenges.network_mode.label')}
                 description={t('admin.content.games.challenges.network_mode.description')}
-                value={networkMode ?? NetworkMode.Open}
-                disabled={disabled}
+                value={isAdEngine ? NetworkMode.Open : (networkMode ?? NetworkMode.Open)}
+                disabled={disabled || isAdEngine}
                 onChange={(e) => {
                   setNetworkMode(e)
                   setChallengeInfo({ ...challengeInfo, networkMode: e as NetworkMode })
                 }}
                 renderOption={NetworkModeItem}
-                data={NetworkModeList.map((mode) => {
+                data={(isAdEngine ? [NetworkMode.Open] : NetworkModeList).map((mode) => {
                   const data = networkModeLabelMap.get(mode)
                   return { value: mode, ...data } as ComboboxItem
                 })}

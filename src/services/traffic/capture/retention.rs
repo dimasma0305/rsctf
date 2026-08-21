@@ -6,6 +6,14 @@ use crate::utils::error::{AppError, AppResult};
 use super::config::retention_days;
 
 const MAX_RETENTION_SCAN_DIRECTORIES: usize = 100_000;
+const EXPIRED_CAPTURE_IDS_SQL: &str = r#"
+SELECT candidate.id
+  FROM unnest($1::integer[]) AS candidate(id)
+  LEFT JOIN "GameChallenges" challenge ON challenge.id = candidate.id
+  LEFT JOIN "Games" game ON game.id = challenge.game_id
+ WHERE challenge.id IS NULL
+    OR game.end_time_utc < clock_timestamp() - ($2 * interval '1 day')
+"#;
 
 fn capture_retention_candidates(root: &Path) -> AppResult<Vec<(i32, PathBuf)>> {
     let entries = match std::fs::read_dir(root) {
@@ -51,21 +59,14 @@ pub(crate) async fn purge_expired_captures(state: &SharedState, batch: usize) ->
         return Ok(0);
     }
     let ids = candidates.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-    let expired = sqlx::query_scalar::<_, i32>(
-        r#"SELECT challenge.id
-             FROM "GameChallenges" challenge
-             JOIN "Games" game ON game.id = challenge.game_id
-            WHERE challenge.id = ANY($1)
-              AND game.end_time_utc <
-                  clock_timestamp() - ($2 * interval '1 day')"#,
-    )
-    .bind(&ids)
-    .bind(retention_days())
-    .fetch_all(state.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .into_iter()
-    .collect::<std::collections::HashSet<_>>();
+    let expired = sqlx::query_scalar::<_, i32>(EXPIRED_CAPTURE_IDS_SQL)
+        .bind(&ids)
+        .bind(retention_days())
+        .fetch_all(state.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
     let targets = candidates
         .into_iter()
         .filter(|(id, _)| expired.contains(id))
@@ -95,4 +96,15 @@ pub(crate) async fn purge_expired_captures(state: &SharedState, batch: usize) ->
     .await
     .map_err(|error| AppError::internal(error.to_string()))??;
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retention_query_expires_deleted_challenges() {
+        assert!(EXPIRED_CAPTURE_IDS_SQL.contains("challenge.id IS NULL"));
+        assert!(EXPIRED_CAPTURE_IDS_SQL.contains("unnest($1::integer[])"));
+    }
 }

@@ -8,7 +8,13 @@ use crate::utils::enums::{ChallengeType, NetworkMode};
 use crate::utils::error::{AppError, AppResult};
 
 pub fn storage_limit_or_default(value: Option<i32>) -> i32 {
-    value.unwrap_or(DEFAULT_CONTAINER_STORAGE_MB)
+    let maximum =
+        configured_positive_limit("RSCTF_CONTAINER_MAX_STORAGE_MB", DEFAULT_MAX_STORAGE_MB);
+    storage_limit_or_default_with_maximum(value, maximum)
+}
+
+fn storage_limit_or_default_with_maximum(value: Option<i32>, maximum: i32) -> i32 {
+    value.unwrap_or(DEFAULT_CONTAINER_STORAGE_MB.min(maximum))
 }
 
 fn configured_positive_limit(name: &str, default: i32) -> i32 {
@@ -98,4 +104,16 @@ pub(crate) fn validate_container_spec(spec: &ContainerSpec) -> AppResult<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_implicit_storage_limit_never_exceeds_the_runtime_ceiling() {
+        assert_eq!(storage_limit_or_default_with_maximum(None, 128), 128);
+        assert_eq!(storage_limit_or_default_with_maximum(None, 1024), 512);
+        assert_eq!(storage_limit_or_default_with_maximum(Some(768), 128), 768);
+    }
 }
