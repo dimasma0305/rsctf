@@ -1251,6 +1251,49 @@ export interface SuspicionEventResult {
   counted?: boolean;
 }
 
+export interface EvidenceFact {
+  label: string;
+  value: string;
+}
+
+export interface EvidenceSourceReview {
+  sourceType: string;
+  title: string;
+  sourceId?: string | null;
+  /** @format uint64 */
+  recordedAt?: number | null;
+  immutable: boolean;
+  summary: string;
+  facts: EvidenceFact[];
+}
+
+export interface SuspicionEvidenceReview {
+  /** @format int32 */
+  eventId: number;
+  detectorCode: string;
+  assessment: "directEvidence" | "strongIndicator" | "behavioralIndicator" | "contextOnly";
+  sourceStatus: "verified" | "supporting" | "synthetic" | "unavailable" | "quarantined";
+  isDirectProof: boolean;
+  summary: string;
+  explanation: string;
+  evidenceKey: string;
+  /** @format uint64 */
+  observedAt: number;
+  /** @format int32 */
+  scoreDelta: number;
+  /** @format int32 */
+  teamId: number;
+  teamName: string;
+  /** @format int32 */
+  participationId: number;
+  /** @format int32 */
+  challengeId?: number | null;
+  challengeTitle?: string | null;
+  sources: EvidenceSourceReview[];
+  limitations: string[];
+  reviewGuidance: string[];
+}
+
 export interface IdentityOverlapResult {
   /** "fingerprint" or "ip" */
   kind?: string;
@@ -5755,6 +5798,31 @@ export class Api<
         format: "json",
         ...params,
       }),
+
+    /**
+     * @description Load the privacy-safe immutable sources behind one suspicion event.
+     * @request GET:/api/game/{id}/cheatreport/events/{eventId}
+     */
+    cheatReportEventEvidence: (id: number, eventId: number, params: RequestParams = {}) =>
+      this.request<SuspicionEvidenceReview, any>({
+        path: `/api/game/${id}/cheatreport/events/${eventId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @request GET:/api/game/{id}/cheatreport/events/{eventId}
+     */
+    useCheatReportEventEvidence: (
+      id: number,
+      eventId: number | null,
+      options?: SWRConfiguration,
+    ) =>
+      useSWR<SuspicionEvidenceReview, any>(
+        eventId === null ? null : `/api/game/${id}/cheatreport/events/${eventId}`,
+        options,
+      ),
 
     /**
      * @request GET:/api/game/{id}/cheatreport/compare

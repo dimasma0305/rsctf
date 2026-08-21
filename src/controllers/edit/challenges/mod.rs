@@ -214,8 +214,7 @@ fn validate_event_security_policy(
     generator_digest: Option<&str>,
     receipt_mode: SolveReceiptMode,
     verifier_identity: Option<&str>,
-    event_secret: &str,
-    receipt_issuer_token: &str,
+    config: &crate::models::internal::configs::AppConfig,
 ) -> AppResult<()> {
     if challenge_type.uses_ad_engine()
         && (variant_mode != ChallengeVariantMode::Disabled
@@ -249,7 +248,7 @@ fn validate_event_security_policy(
         ));
     }
     if variant_mode == ChallengeVariantMode::PerParticipation {
-        crate::services::event_security::validate_credential_key(event_secret)?;
+        crate::services::event_security::validate_credential_key(&config.event_vpn_credential_key)?;
     }
     if receipt_mode != SolveReceiptMode::Disabled
         && !verifier_identity.is_some_and(|identity| (1..=128).contains(&identity.len()))
@@ -259,8 +258,11 @@ fn validate_event_security_policy(
         ));
     }
     if receipt_mode != SolveReceiptMode::Disabled
-        && (receipt_issuer_token.len() < 32
-            || receipt_issuer_token.chars().any(char::is_whitespace))
+        && (config.solve_receipt_issuer_token.len() < 32
+            || config
+                .solve_receipt_issuer_token
+                .chars()
+                .any(char::is_whitespace))
     {
         return Err(AppError::bad_request(
             "Solve receipts require RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN",
@@ -557,8 +559,7 @@ pub async fn update_challenge(
         next_generator_digest,
         next_receipt_mode,
         next_verifier_identity,
-        &st.config.event_vpn_credential_key,
-        &st.config.solve_receipt_issuer_token,
+        st.config.as_ref(),
     )?;
     let mut am: game_challenge::ActiveModel = update_base.into();
     if let Some(v) = model.title {

@@ -380,12 +380,17 @@ mod tests {
                  start_time_utc, end_time_utc, writeup_deadline, writeup_note,
                  blood_bonus_value, ad_allow_snapshot_download, ad_scoring_paused,
                  koth_epoch_ticks, koth_cycle_ticks,
-                 koth_champion_cooldown_ticks, koth_claim_confirmation_ticks
+                 koth_champion_cooldown_ticks, koth_claim_confirmation_ticks,
+                 vpn_access_required, vpn_behavior_telemetry_enabled,
+                 vpn_flag_scan_enabled, vpn_provider_dns_telemetry_enabled,
+                 vpn_source_asn_telemetry_enabled,
+                 vpn_device_sharing_telemetry_enabled, vpn_policy_revision
                ) VALUES (
                  900001, 'constant KotH migration', 'public', 'private', FALSE, FALSE,
                  '', '', FALSE, FALSE, FALSE, 1, 1,
                  now() - interval '1 hour', now() + interval '1 hour',
-                 now() + interval '2 hours', '', 0, FALSE, FALSE, 12, 3, 1, 2
+                 now() + interval '2 hours', '', 0, FALSE, FALSE, 12, 3, 1, 2,
+                 FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, 1
                )"#,
         )
         .execute(&pool)

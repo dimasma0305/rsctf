@@ -51,7 +51,7 @@ use futures::{SinkExt, StreamExt};
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser, MaybeUser};
-use crate::models::data::{container, game_instance, participation, user, user_participation};
+use crate::models::data::{container, game_instance, participation, user_participation};
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::services::worker::{parse_worker_handle, WorkerHandle};
 use crate::utils::enums::{ParticipationStatus, Role};
@@ -194,7 +194,6 @@ async fn proxy_for_instance(
                                 return;
                             }
                             let lease = InstanceLease {
-                                db: st_log.db.clone(),
                                 pool: st_log.pg().clone(),
                                 user_id: a.accessing_user_id,
                                 security_stamp: a.accessing_security_stamp.clone(),
@@ -220,7 +219,6 @@ async fn proxy_for_instance(
                                 return;
                             };
                             let lease = InstanceLease {
-                                db: st_log.db.clone(),
                                 pool: st_log.pg().clone(),
                                 user_id: a.accessing_user_id,
                                 security_stamp: a.accessing_security_stamp.clone(),
@@ -789,7 +787,6 @@ enum WorkerProxyOpenError {
 }
 
 struct InstanceLease {
-    db: sea_orm::DatabaseConnection,
     pool: sqlx::PgPool,
     user_id: Uuid,
     security_stamp: String,
@@ -850,21 +847,15 @@ async fn wait_for_revocation(lease: InstanceLease) {
                 exercise_id,
                 container_id,
             } => {
-                let account_valid = user::Entity::find_by_id(lease.user_id)
-                    .one(&lease.db)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|account| account.role != Role::Banned);
-                account_valid
-                    && exercise_lease_is_valid(
-                        &lease.pool,
-                        lease.user_id,
-                        *exercise_instance_id,
-                        *exercise_id,
-                        *container_id,
-                    )
-                    .await
+                exercise_lease_is_valid(
+                    &lease.pool,
+                    lease.user_id,
+                    &lease.security_stamp,
+                    *exercise_instance_id,
+                    *exercise_id,
+                    *container_id,
+                )
+                .await
             }
         };
         if !lease_valid {
@@ -878,6 +869,7 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
       FROM "ExerciseInstances" instance
       JOIN "ExerciseChallenges" exercise ON exercise.id = instance.exercise_id
       JOIN "Containers" container ON container.id = instance.container_id
+      JOIN "AspNetUsers" account ON account.id = instance.user_id
      WHERE instance.id = $1
        AND instance.exercise_id = $2
        AND instance.user_id = $3
@@ -887,6 +879,9 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
        AND exercise.publish_time_utc <= clock_timestamp()
        AND container.is_proxy = TRUE
        AND container.game_instance_id IS NULL
+       AND account.security_stamp = $5
+       AND account.email_confirmed = TRUE
+       AND account.role <> $6
        AND (
            container.exercise_instance_id IS NULL
            OR container.exercise_instance_id = instance.id
@@ -896,6 +891,7 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
 async fn exercise_lease_is_valid(
     pool: &sqlx::PgPool,
     user_id: Uuid,
+    expected_security_stamp: &str,
     exercise_instance_id: i32,
     exercise_id: i32,
     container_id: Uuid,
@@ -905,6 +901,8 @@ async fn exercise_lease_is_valid(
         .bind(exercise_id)
         .bind(user_id)
         .bind(container_id)
+        .bind(expected_security_stamp)
+        .bind(Role::Banned as i16)
         .fetch_one(pool)
         .await
         .unwrap_or(false)

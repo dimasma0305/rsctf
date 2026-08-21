@@ -4,6 +4,7 @@ import { test } from 'node:test'
 
 const reportPage = readFileSync('src/pages/games/[id]/monitor/CheatCheck.tsx', 'utf8')
 const analysis = readFileSync('src/components/monitor/CheatInfo.tsx', 'utf8')
+const evidenceReview = readFileSync('src/components/monitor/SuspicionEvidenceReview.tsx', 'utf8')
 const blockHistory = readFileSync('src/pages/admin/anti-cheat.tsx', 'utf8')
 const oauthButtons = readFileSync('src/components/OAuthButtons.tsx', 'utf8')
 const settings = readFileSync('src/pages/admin/Settings.tsx', 'utf8')
@@ -31,6 +32,28 @@ test('participation mutations are admin-gated and evidence shows stable IDs and 
   assert.match(analysis, /const contribution = evidenceContribution\(evt\)/)
   assert.match(analysis, /0 \(not counted\)/)
   assert.doesNotMatch(analysis, /One browser across teams is conclusive/)
+})
+
+test('each suspicion event has a lazy source-backed review with explicit proof limits', () => {
+  assert.match(analysis, /SuspicionEvidenceReviewPanel gameId=\{gameId\} eventId=\{evt\.eventId\}/)
+  assert.match(analysis, /Review evidence/)
+  assert.match(analysis, /This score is triage, not a verdict/)
+  assert.match(apiTypes, /export interface SuspicionEvidenceReview/)
+  assert.match(apiTypes, /assessment: "directEvidence" \| "strongIndicator" \| "behavioralIndicator" \| "contextOnly"/)
+  assert.match(apiTypes, /cheatreport\/events\/\$\{eventId\}/)
+  assert.match(evidenceReview, /Direct source verified/)
+  assert.match(evidenceReview, /Human review required/)
+  assert.match(evidenceReview, /Limitations/)
+  assert.match(evidenceReview, /Admin review checklist/)
+  assert.match(evidenceReview, /Download evidence JSON/)
+  assert.doesNotMatch(evidenceReview, /rawIp|rawFingerprint|flagValue/)
+})
+
+test('suspicion details use a near-viewport review workspace', () => {
+  assert.match(analysis, /size="min\(96rem, calc\(100vw - 1rem\)\)"/)
+  assert.match(analysis, /xOffset="0\.5rem"/)
+  assert.match(analysis, /yOffset="0\.5rem"/)
+  assert.match(analysis, /h="min\(60dvh, 50rem\)"/)
 })
 
 test('analysis filters and scrollable evidence tables expose keyboard semantics and filtered empty states', () => {
