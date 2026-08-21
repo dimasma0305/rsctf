@@ -57,6 +57,29 @@ fn pending_manifest_complexity_is_bounded_before_database_writes() {
 }
 
 #[test]
+fn challenge_manifest_parses_provenance_automation_fields() {
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let source = format!(
+        "name: Deterministic example\ntype: StaticAttachment\nvariantMode: PerParticipation\nvariantGeneratorImage: ghcr.io/example/generator@{digest}\nvariantGeneratorDigest: {digest}\nsolveReceiptMode: Required\nreceiptVerifierIdentity: example-verifier-v1\n"
+    );
+    let parsed: ChallengeYaml = serde_norway::from_str(&source).unwrap();
+
+    assert_eq!(
+        parsed.variant_mode,
+        Some(crate::utils::enums::ChallengeVariantMode::PerParticipation)
+    );
+    assert_eq!(parsed.variant_generator_digest.as_deref(), Some(&*digest));
+    assert_eq!(
+        parsed.solve_receipt_mode,
+        Some(crate::utils::enums::SolveReceiptMode::Required)
+    );
+    assert_eq!(
+        parsed.receipt_verifier_identity.as_deref(),
+        Some("example-verifier-v1")
+    );
+}
+
+#[test]
 fn new_import_review_metadata_keeps_submitter_attribution() {
     let now = Utc::now();
     let submitter = uuid::Uuid::new_v4();

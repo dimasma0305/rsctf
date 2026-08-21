@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use super::GitCredentials;
 use crate::models::data::game_challenge;
-use crate::utils::enums::NetworkMode;
+use crate::utils::enums::{ChallengeVariantMode, NetworkMode, SolveReceiptMode};
 use crate::utils::error::{AppError, AppResult};
 
 /// Serializable mirror of [`ChallengeYaml`](super::ChallengeYaml) used to
@@ -52,6 +52,25 @@ struct ChallengeYamlOut {
     submission_limit: Option<i32>,
     #[serde(rename = "disableBloodBonus", skip_serializing_if = "Option::is_none")]
     disable_blood_bonus: Option<bool>,
+    #[serde(rename = "variantMode", skip_serializing_if = "Option::is_none")]
+    variant_mode: Option<ChallengeVariantMode>,
+    #[serde(
+        rename = "variantGeneratorImage",
+        skip_serializing_if = "Option::is_none"
+    )]
+    variant_generator_image: Option<String>,
+    #[serde(
+        rename = "variantGeneratorDigest",
+        skip_serializing_if = "Option::is_none"
+    )]
+    variant_generator_digest: Option<String>,
+    #[serde(rename = "solveReceiptMode", skip_serializing_if = "Option::is_none")]
+    solve_receipt_mode: Option<SolveReceiptMode>,
+    #[serde(
+        rename = "receiptVerifierIdentity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    receipt_verifier_identity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     container: Option<ContainerOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,6 +190,13 @@ fn serialize_challenge_inner(
         difficulty: (ch.difficulty != 5.0).then_some(ch.difficulty),
         submission_limit: (ch.submission_limit != 0).then_some(ch.submission_limit),
         disable_blood_bonus: ch.disable_blood_bonus.then_some(true),
+        variant_mode: (ch.variant_mode != ChallengeVariantMode::Disabled)
+            .then_some(ch.variant_mode),
+        variant_generator_image: ch.variant_generator_image.clone(),
+        variant_generator_digest: ch.variant_generator_digest.clone(),
+        solve_receipt_mode: (ch.solve_receipt_mode != SolveReceiptMode::Disabled)
+            .then_some(ch.solve_receipt_mode),
+        receipt_verifier_identity: ch.receipt_verifier_identity.clone(),
         container: None,
         ad: None,
     };
@@ -360,8 +386,8 @@ mod tests {
     use crate::models::data::game_challenge;
     use crate::services::git_sync::ChallengeYaml;
     use crate::utils::enums::{
-        ChallengeBuildStatus, ChallengeCategory, ChallengeReviewStatus, ChallengeType, NetworkMode,
-        ScoreCurve,
+        ChallengeBuildStatus, ChallengeCategory, ChallengeReviewStatus, ChallengeType,
+        ChallengeVariantMode, NetworkMode, ScoreCurve, SolveReceiptMode,
     };
 
     fn challenge(challenge_type: ChallengeType) -> game_challenge::Model {
@@ -496,6 +522,34 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("current challenge manifest is invalid")
+        );
+    }
+
+    #[test]
+    fn provenance_policy_round_trips_through_push_back() {
+        let mut challenge = challenge(ChallengeType::StaticAttachment);
+        let digest = format!("sha256:{}", "a".repeat(64));
+        challenge.variant_mode = ChallengeVariantMode::PerParticipation;
+        challenge.variant_generator_image =
+            Some(format!("ghcr.io/example/provenance-generator@{digest}"));
+        challenge.variant_generator_digest = Some(digest.clone());
+        challenge.solve_receipt_mode = SolveReceiptMode::Required;
+        challenge.receipt_verifier_identity = Some("example-verifier-v1".to_string());
+
+        let parsed = parse(&serialize_challenge(&challenge, &[]).unwrap());
+        assert_eq!(
+            parsed.variant_mode,
+            Some(ChallengeVariantMode::PerParticipation)
+        );
+        assert_eq!(
+            parsed.variant_generator_image,
+            challenge.variant_generator_image
+        );
+        assert_eq!(parsed.variant_generator_digest, Some(digest));
+        assert_eq!(parsed.solve_receipt_mode, Some(SolveReceiptMode::Required));
+        assert_eq!(
+            parsed.receipt_verifier_identity.as_deref(),
+            Some("example-verifier-v1")
         );
     }
 

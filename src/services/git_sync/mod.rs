@@ -48,19 +48,20 @@ use std::path::Path;
 #[cfg(test)]
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
-use sea_orm::{
-    ActiveModelTrait, ConnectionTrait, DatabaseBackend, EntityTrait, Set, Statement,
-    TransactionTrait,
-};
-use serde::Deserialize;
-
 use crate::app_state::SharedState;
 use crate::models::data::{flag_context, game, game_challenge};
 #[cfg(test)]
 use crate::utils::enums::ChallengeReviewStatus;
-use crate::utils::enums::{ChallengeBuildStatus, ChallengeType, NetworkMode, ScoreCurve};
+use crate::utils::enums::{
+    ChallengeBuildStatus, ChallengeType, ChallengeVariantMode, NetworkMode, ScoreCurve,
+    SolveReceiptMode,
+};
 use crate::utils::error::{AppError, AppResult};
+use chrono::Utc;
+use sea_orm::{
+    ActiveModelTrait, ConnectionTrait, DatabaseBackend, EntityTrait, Set, Statement,
+    TransactionTrait,
+};
 
 mod checker;
 use checker::{
@@ -93,6 +94,10 @@ pub use git::{
 use git::{url_without_credentials, validate_checkout_tree, validate_sync_repo_url};
 mod package;
 use package::{find_dockerfile_context, image_tag, parse_enum, resolve_category, zip_context_dir};
+mod manifest;
+pub use manifest::{
+    parse_event_manifest, AdSection, ChallengeYaml, ContainerSection, GzEventAd, GzEventModel,
+};
 mod discovery;
 pub use discovery::{discover_challenges, discover_events};
 mod repository;
@@ -101,7 +106,9 @@ pub(crate) use repository::{manifest_candidate_in_checkout, tombstone_missing_ch
 mod runtime;
 use runtime::{live_runtime_update_deferred, LiveRuntimeIntent};
 mod grading;
-use grading::{competition_scoring_started_locked, grading_fence_locked, GradingIntent};
+use grading::{
+    competition_scoring_started_locked, event_started_locked, grading_fence_locked, GradingIntent,
+};
 mod policy;
 pub use policy::ImportPolicy;
 use policy::{initialize_new_import_review, validate_pending_manifest, MAX_PENDING_MANIFEST_BYTES};
@@ -151,137 +158,6 @@ const MAX_REPO_FILES: usize = 2_048;
 const MAX_REPO_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_REPO_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_REPO_DEPTH: usize = 32;
-
-/// In-memory shape of one `.gzevent` event manifest, mirroring RSCTF
-/// `Models/Request/Edit/GzEventModel`. Every field is optional (a sparse
-/// manifest only seeds what it names); nested keys are camelCase. Used at
-/// game-CREATE time only — a re-scan never re-applies these over operator edits.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GzEventModel {
-    pub title: Option<String>,
-    pub start: Option<DateTime<Utc>>,
-    pub end: Option<DateTime<Utc>>,
-    pub poster: Option<String>,
-    pub hidden: Option<bool>,
-    pub summary: Option<String>,
-    pub content: Option<String>,
-    pub accept_without_review: Option<bool>,
-    pub invite_code: Option<String>,
-    pub organizations: Option<Vec<String>>,
-    pub team_member_count_limit: Option<i32>,
-    pub container_count_limit: Option<i32>,
-    pub practice_mode: Option<bool>,
-    pub writeup_required: Option<bool>,
-    pub writeup_deadline: Option<DateTime<Utc>>,
-    pub writeup_note: Option<String>,
-    pub blood_bonus: Option<i64>,
-    pub ad: Option<GzEventAd>,
-}
-
-/// The `ad:` section of a `.gzevent` — event-wide Attack & Defense knobs, each
-/// optional and applied onto the Game only when named (mirrors `AdEventSection`).
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GzEventAd {
-    pub tick_seconds: Option<i32>,
-    pub flag_lifetime_ticks: Option<i32>,
-    pub warmup_seconds: Option<i32>,
-    pub reset_cooldown_minutes: Option<i32>,
-    pub allow_snapshot_download: Option<bool>,
-    pub snapshot_retention_days: Option<i32>,
-    pub getflag_window_fraction: Option<f64>,
-    pub min_grace_period_seconds: Option<i32>,
-}
-
-/// Parse a `.gzevent` manifest into a [`GzEventModel`]. Unrecognized keys are
-/// ignored (serde default), so a manifest with extra fields still loads.
-pub async fn parse_event_manifest(path: &Path) -> AppResult<GzEventModel> {
-    let raw = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|e| AppError::internal(format!("git_sync: read {}: {e}", path.display())))?;
-    serde_norway::from_str(&raw)
-        .map_err(|e| AppError::bad_request(format!("invalid .gzevent: {e}")))
-}
-
-/// In-memory shape of one `challenge.yml` / `challenge.yaml` file, mirroring
-/// RSCTF `Models/Request/Edit/ChallengeYamlModel` — the subset of the gzcli
-/// template schema that maps onto a `GameChallenge`.
-///
-/// Aliases match the upstream (camelCase for nested fields). Unrecognized keys
-/// are ignored (serde's default) and every field is optional (`Option` missing
-/// ⇒ `None`), so a sparse manifest only sets what it names.
-#[derive(Debug, Default, Deserialize)]
-pub struct ChallengeYaml {
-    pub name: Option<String>,
-    pub author: Option<String>,
-    pub description: Option<String>,
-    /// One of `StaticAttachment`, `StaticContainer`, `DynamicAttachment`,
-    /// `DynamicContainer`, `AttackDefense`, `KingOfTheHill` (case-insensitive).
-    #[serde(rename = "type")]
-    pub challenge_type: Option<String>,
-    pub category: Option<String>,
-    #[serde(rename = "minScoreRate")]
-    pub min_score_rate: Option<f64>,
-    pub difficulty: Option<f64>,
-    /// When true the challenge opts out of sync entirely — never created.
-    pub ignore: Option<bool>,
-    pub hints: Option<Vec<String>>,
-    pub flags: Option<Vec<String>>,
-    #[serde(rename = "flagTemplate")]
-    pub flag_template: Option<String>,
-    /// Attachment source (RSCTF `provide`): a file OR directory path relative to
-    /// the challenge dir. When absent, the TCP1P `dist/` convention is used.
-    pub provide: Option<String>,
-    #[serde(rename = "disableBloodBonus")]
-    pub disable_blood_bonus: Option<bool>,
-    #[serde(rename = "submissionLimit")]
-    pub submission_limit: Option<i32>,
-    pub container: Option<ContainerSection>,
-    /// Attack-&-Defense / King-of-the-Hill block — only consulted when the
-    /// challenge type uses the A&D engine.
-    pub ad: Option<AdSection>,
-}
-
-/// Container knobs (`container:` block). Present on any container-typed
-/// challenge; the image + ports also feed the A&D service container.
-#[derive(Debug, Default, Deserialize)]
-pub struct ContainerSection {
-    #[serde(rename = "containerImage")]
-    pub container_image: Option<String>,
-    #[serde(rename = "flagTemplate")]
-    pub flag_template: Option<String>,
-    #[serde(rename = "memoryLimit")]
-    pub memory_limit: Option<i32>,
-    #[serde(rename = "cpuCount")]
-    pub cpu_count: Option<i32>,
-    #[serde(rename = "storageLimit")]
-    pub storage_limit: Option<i32>,
-    #[serde(rename = "exposePort")]
-    pub expose_port: Option<i32>,
-    #[serde(rename = "enableTrafficCapture")]
-    pub enable_traffic_capture: Option<bool>,
-    #[serde(rename = "enableSharedContainer")]
-    pub enable_shared_container: Option<bool>,
-    #[serde(rename = "networkMode")]
-    pub network_mode: Option<NetworkMode>,
-}
-
-/// A&D-specific per-challenge knobs (`ad:` block). Only the A&D-specific fields
-/// live here; the service image + ports come from the shared `container:` block.
-#[derive(Debug, Default, Deserialize)]
-pub struct AdSection {
-    #[serde(rename = "checkerImage")]
-    pub checker_image: Option<String>,
-    #[serde(rename = "allowEgress")]
-    pub allow_egress: Option<bool>,
-    #[serde(rename = "allowSelfReset")]
-    pub allow_self_reset: Option<bool>,
-    #[serde(rename = "sshRequiresFlag")]
-    pub ssh_requires_flag: Option<bool>,
-    #[serde(rename = "selfHosted")]
-    pub self_hosted: Option<bool>,
-}
 
 /// Parse a `challenge.yml` / `challenge.yaml` manifest and persist the resulting
 /// `GameChallenge` (plus its static `FlagContext` rows) under `game_id`.
@@ -382,6 +258,61 @@ pub async fn import_manifest(
             "repository sync cannot change an existing challenge type; create a new manifest path instead",
         ));
     }
+    let provenance_fields_present = model.variant_mode.is_some()
+        || model.variant_generator_image.is_some()
+        || model.variant_generator_digest.is_some()
+        || model.solve_receipt_mode.is_some()
+        || model.receipt_verifier_identity.is_some();
+    let current_variant_mode = existing
+        .as_ref()
+        .map_or(ChallengeVariantMode::Disabled, |challenge| {
+            challenge.variant_mode
+        });
+    let current_generator_image = existing
+        .as_ref()
+        .and_then(|challenge| challenge.variant_generator_image.clone());
+    let current_generator_digest = existing
+        .as_ref()
+        .and_then(|challenge| challenge.variant_generator_digest.clone());
+    let current_receipt_mode = existing
+        .as_ref()
+        .map_or(SolveReceiptMode::Disabled, |challenge| {
+            challenge.solve_receipt_mode
+        });
+    let current_verifier_identity = existing
+        .as_ref()
+        .and_then(|challenge| challenge.receipt_verifier_identity.clone());
+    let variant_mode = model.variant_mode.unwrap_or(current_variant_mode);
+    let generator_image = match model.variant_generator_image.as_deref() {
+        Some(value) => (!value.trim().is_empty()).then(|| value.trim().to_string()),
+        None => current_generator_image.clone(),
+    };
+    let generator_digest = match model.variant_generator_digest.as_deref() {
+        Some(value) => (!value.trim().is_empty()).then(|| value.trim().to_string()),
+        None => current_generator_digest.clone(),
+    };
+    let receipt_mode = model.solve_receipt_mode.unwrap_or(current_receipt_mode);
+    let verifier_identity = match model.receipt_verifier_identity.as_deref() {
+        Some(value) => (!value.trim().is_empty()).then(|| value.trim().to_string()),
+        None => current_verifier_identity.clone(),
+    };
+    if provenance_fields_present {
+        crate::services::event_security::validate_challenge_provenance_policy(
+            challenge_type,
+            variant_mode,
+            generator_image.as_deref(),
+            generator_digest.as_deref(),
+            receipt_mode,
+            verifier_identity.as_deref(),
+            st.config.as_ref(),
+        )?;
+    }
+    let provenance_policy_changed = provenance_fields_present
+        && (variant_mode != current_variant_mode
+            || generator_image != current_generator_image
+            || generator_digest != current_generator_digest
+            || receipt_mode != current_receipt_mode
+            || verifier_identity != current_verifier_identity);
     if challenge_type == ChallengeType::KingOfTheHill {
         crate::services::ad_engine::koth_cycle::validate_crown_shape(
             game.koth_epoch_ticks,
@@ -800,6 +731,13 @@ pub async fn import_manifest(
     if !is_update {
         initialize_new_import_review(&mut am, policy, now);
     }
+    if provenance_fields_present {
+        am.variant_mode = Set(variant_mode);
+        am.variant_generator_image = Set(generator_image);
+        am.variant_generator_digest = Set(generator_digest);
+        am.solve_receipt_mode = Set(receipt_mode);
+        am.receipt_verifier_identity = Set(verifier_identity);
+    }
 
     // Persist the row and its static flags together. On an update the loaded
     // ActiveModel carries the original id and progress fields, so no FK cascade
@@ -821,6 +759,11 @@ pub async fn import_manifest(
         let transaction = st.db.begin().await?;
         let competition_scoring_started =
             competition_scoring_started_locked(&transaction, game_id).await?;
+        if provenance_policy_changed && event_started_locked(&transaction, game_id).await? {
+            return Err(AppError::bad_request(
+                "Challenge variant and solve-receipt settings are frozen at event start.",
+            ));
+        }
         if existing
             .as_ref()
             .is_some_and(|challenge| !challenge.challenge_type.uses_ad_engine())

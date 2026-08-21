@@ -134,3 +134,8 @@ copying it to another account or team does not work.
 
 Neither mechanism claims to detect whether prose or code was written by an AI.
 They make sharing less reusable and add trustworthy provenance around a solve.
+
+For a copyable repository manifest, deterministic generator, contract test, and
+pre-event API client, see the [sample challenge repository](./sample-repository)
+and its
+[provenance automation guide](https://github.com/dimasma0305/rsctf-challenges/blob/main/PROVENANCE.md).

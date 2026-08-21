@@ -207,70 +207,6 @@ fn challenge_scoring_fields_changed(
             .is_some_and(|value| (value - challenge.ad_scoring_weight).abs() > f64::EPSILON)
 }
 
-fn validate_event_security_policy(
-    challenge_type: ChallengeType,
-    variant_mode: ChallengeVariantMode,
-    generator_image: Option<&str>,
-    generator_digest: Option<&str>,
-    receipt_mode: SolveReceiptMode,
-    verifier_identity: Option<&str>,
-    config: &crate::models::internal::configs::AppConfig,
-) -> AppResult<()> {
-    if challenge_type.uses_ad_engine()
-        && (variant_mode != ChallengeVariantMode::Disabled
-            || receipt_mode != SolveReceiptMode::Disabled)
-    {
-        return Err(AppError::bad_request(
-            "Challenge variants and solve receipts apply only to Jeopardy challenges",
-        ));
-    }
-    match (generator_image, generator_digest) {
-        (None, None) if variant_mode == ChallengeVariantMode::Disabled => {}
-        (Some(image), Some(digest))
-            if crate::services::challenge_images::is_repository_digest(image)
-                && image.ends_with(digest)
-                && digest.starts_with("sha256:")
-                && digest.len() == 71
-                && digest[7..]
-                    .chars()
-                    .all(|character| character.is_ascii_hexdigit()) => {}
-        _ => {
-            return Err(AppError::bad_request(
-                "Variant generation requires one matching immutable image@sha256 digest and digest field",
-            ));
-        }
-    }
-    if variant_mode == ChallengeVariantMode::PerParticipation
-        && (generator_image.is_none() || generator_digest.is_none())
-    {
-        return Err(AppError::bad_request(
-            "Per-participation variants require a generator image",
-        ));
-    }
-    if variant_mode == ChallengeVariantMode::PerParticipation {
-        crate::services::event_security::validate_credential_key(&config.event_vpn_credential_key)?;
-    }
-    if receipt_mode != SolveReceiptMode::Disabled
-        && !verifier_identity.is_some_and(|identity| (1..=128).contains(&identity.len()))
-    {
-        return Err(AppError::bad_request(
-            "Solve receipts require a 1 to 128 character verifier identity",
-        ));
-    }
-    if receipt_mode != SolveReceiptMode::Disabled
-        && (config.solve_receipt_issuer_token.len() < 32
-            || config
-                .solve_receipt_issuer_token
-                .chars()
-                .any(char::is_whitespace))
-    {
-        return Err(AppError::bad_request(
-            "Solve receipts require RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN",
-        ));
-    }
-    Ok(())
-}
-
 /// `PUT /api/edit/games/{id}/challenges/{cId}`
 pub async fn update_challenge(
     State(st): State<SharedState>,
@@ -552,7 +488,7 @@ pub async fn update_challenge(
         .map(|value| value.trim())
         .map(|value| (!value.is_empty()).then_some(value))
         .unwrap_or(current_variant_policy.4.as_deref());
-    validate_event_security_policy(
+    crate::services::event_security::validate_challenge_provenance_policy(
         ch_type,
         next_variant_mode,
         next_generator_image,
