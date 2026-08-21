@@ -13,7 +13,9 @@ function positiveInteger(value, label) {
 export function cohortSeedQuery(gameId, count) {
   const gid = positiveInteger(gameId, "cohort game id");
   const size = positiveInteger(count, "cohort size");
-  return `WITH cohort AS MATERIALIZED (
+  return `WITH neutral_provisioning AS MATERIALIZED (
+    SELECT set_config('rsctf.identity_neutral_insert','1',true)
+), cohort AS MATERIALIZED (
     SELECT ordinal,
            gen_random_uuid() AS user_id,
            'lt${gid}_' || ordinal AS user_name
@@ -30,6 +32,7 @@ export function cohortSeedQuery(gameId, count) {
            1,now(),now(),now(),true,0,false,false,
            '0.0.0.0','','','',false
       FROM cohort
+      CROSS JOIN neutral_provisioning
      ORDER BY ordinal
     RETURNING id
 ), inserted_teams AS (

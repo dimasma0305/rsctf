@@ -51,7 +51,11 @@ const AD_NET = process.env.AD_NET || 'rsctf-ad';
 export const nowMs = () => Number(sql('SELECT (extract(epoch from now())*1000)::bigint')); // clock via DB (no Date in workflows, fine here)
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
-/** One API call. Returns { status, json, text }. jwt → Bearer; ip → X-Real-IP. */
+/**
+ * One API call. Returns { status, json, text }. jwt → Bearer; ip → the legacy
+ * X-Real-IP load/rate-limit header. Identity-admission scenarios must supply
+ * an explicit X-Forwarded-For chain through their trusted test proxy.
+ */
 export async function api(
   method,
   path,

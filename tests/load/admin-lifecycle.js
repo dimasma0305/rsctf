@@ -186,6 +186,43 @@ export const ADMIN_OPERATIONS = Object.freeze([
     responseKind: "message",
     params: { id: "antiCheatBlockId" },
   }),
+  operation("admin_event_security_derive", "POST", "/api/admin/games/{gameId}/anti-cheat/derive", {
+    mutation: true,
+    responseKind: "object",
+    params: { gameId: "gameId" },
+  }),
+  operation("admin_event_security_fusion", "GET", "/api/admin/games/{gameId}/anti-cheat/fusion/{participationId}", {
+    responseKind: "object",
+    params: { gameId: "gameId", participationId: "participationId" },
+  }),
+  operation("admin_event_security_review", "POST", "/api/admin/games/{gameId}/anti-cheat/findings/{findingId}/review", {
+    mutation: true,
+    responseKind: "error",
+    expectedStatuses: [404],
+    params: { gameId: "gameId", findingId: "findingId" },
+  }),
+  operation("admin_event_security_purge", "POST", "/api/admin/games/{gameId}/anti-cheat/telemetry/purge", {
+    mutation: true,
+    responseKind: "error",
+    expectedStatuses: [400],
+    params: { gameId: "gameId" },
+  }),
+  operation("admin_event_vpn_override_create", "POST", "/api/admin/games/{gameId}/vpn-override", {
+    mutation: true,
+    responseKind: "error",
+    expectedStatuses: [400],
+    params: { gameId: "gameId" },
+  }),
+  operation("admin_event_vpn_overrides_get", "GET", "/api/admin/games/{gameId}/vpn-overrides", {
+    responseKind: "array",
+    params: { gameId: "gameId" },
+  }),
+  operation("admin_event_vpn_override_revoke", "POST", "/api/admin/games/{gameId}/vpn-override/{overrideId}/revoke", {
+    mutation: true,
+    responseKind: "error",
+    expectedStatuses: [404],
+    params: { gameId: "gameId", overrideId: "overrideId" },
+  }),
   operation("admin_builds_get", "GET", "/api/admin/builds", {
     poll: true,
     responseKind: "array",

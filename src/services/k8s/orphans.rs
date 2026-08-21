@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::time::Duration;
 
 use k8s_openapi::api::core::v1::{Pod, Service};
 use k8s_openapi::api::networking::v1::NetworkPolicy;
@@ -187,14 +188,11 @@ pub(super) async fn destroy_owned(
     scope: &str,
 ) -> AppResult<()> {
     let mut errors = Vec::new();
-    for result in [
-        delete_owned(&services, name, scope, "service").await,
-        delete_owned(&policies, name, scope, "network policy").await,
-        delete_owned(&pods, name, scope, "pod").await,
-    ] {
-        if let Err(error) = result {
-            errors.push(error);
-        }
+    if let Err(error) = delete_owned(&services, name, scope, "service").await {
+        errors.push(error);
+    }
+    if let Err(error) = delete_pod_before_policy(&pods, &policies, name, scope).await {
+        errors.push(error);
     }
     if errors.is_empty() {
         Ok(())
@@ -204,6 +202,50 @@ pub(super) async fn destroy_owned(
             errors.join("; ")
         )))
     }
+}
+
+/// Remove an owned Pod and wait until it is absent before removing the policy
+/// that isolates its labels. If Pod deletion stalls or a replacement appears,
+/// the policy remains in place and the orphan reconciler can retry later.
+async fn delete_pod_before_policy(
+    pods: &Api<Pod>,
+    policies: &Api<NetworkPolicy>,
+    name: &str,
+    scope: &str,
+) -> Result<(), String> {
+    delete_owned(pods, name, scope, "pod").await?;
+    wait_until_absent(pods, name, "pod").await?;
+    delete_owned(policies, name, scope, "network policy").await
+}
+
+pub(super) async fn rollback_created_pod(
+    pods: &Api<Pod>,
+    policies: &Api<NetworkPolicy>,
+    name: &str,
+    scope: &str,
+    remove_policy: bool,
+) -> Result<(), String> {
+    if remove_policy {
+        delete_pod_before_policy(pods, policies, name, scope).await
+    } else {
+        delete_owned(pods, name, scope, "pod").await
+    }
+}
+
+async fn wait_until_absent<K>(api: &Api<K>, name: &str, kind: &str) -> Result<(), String>
+where
+    K: Clone + Debug + DeserializeOwned + Resource,
+{
+    for _ in 0..300 {
+        match api.get(name).await {
+            Err(error) if super::is_not_found(&error) => return Ok(()),
+            Ok(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            Err(error) => return Err(format!("{kind} deletion check: {error}")),
+        }
+    }
+    Err(format!(
+        "{kind} deletion did not complete; retaining its NetworkPolicy"
+    ))
 }
 
 async fn delete_owned<K>(api: &Api<K>, name: &str, scope: &str, kind: &str) -> Result<(), String>

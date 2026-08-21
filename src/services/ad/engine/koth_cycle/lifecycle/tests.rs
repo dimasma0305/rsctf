@@ -1,9 +1,11 @@
 use super::{
     data::snapshot_ids,
     deadline::{action as deadline_action, Action as DeadlineAction},
-    drive_hills_fail_isolated, record_receipt, rotate_capability_window, set_phase,
-    CapabilityWindow, CrownPhase, CycleRow,
+    drive_hills_fail_isolated, record_receipt, replacement_container_spec,
+    replacement_endpoint_is_valid, rotate_capability_window, set_phase, CapabilityWindow,
+    CrownPhase, CycleRow,
 };
+use crate::services::container::ContainerInfo;
 use crate::utils::enums::ParticipationStatus;
 use serde_json::json;
 
@@ -73,6 +75,64 @@ fn event_deadline_adopts_unpublished_runtime_before_reclaiming_it() {
         deadline_action(CrownPhase::Ended, true),
         DeadlineAction::Done
     );
+}
+
+#[test]
+fn persistent_replacement_preserves_the_static_runtime_flag() {
+    let cycle = CycleRow {
+        id: 41,
+        game_id: 7,
+        challenge_id: 9,
+        cycle_number: 1,
+        phase: "CreatePending".to_string(),
+        planned_start_round: 1,
+        old_container_id: None,
+        replacement_container_id: None,
+        replacement_host: None,
+        replacement_port: None,
+        expected_image: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .to_string(),
+        reset_attempt: 3,
+        readiness_attempt: 0,
+    };
+    let hill = super::data::HillSpec {
+        target_id: 5,
+        image: cycle.expected_image.clone(),
+        memory_limit: 512,
+        cpu_count: 2,
+        expose_port: 8080,
+        allow_egress: false,
+        checker_dir: None,
+        runtime_flag: Some("flag{sealed-runtime-value}".to_string()),
+    };
+
+    let spec = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill);
+
+    assert_eq!(spec.flag.as_deref(), Some("flag{sealed-runtime-value}"));
+    assert_eq!(
+        spec.operation_id.as_deref(),
+        Some("koth-cycle:41:attempt:3")
+    );
+    assert_eq!(spec.expose_port, 8080);
+}
+
+#[test]
+fn persistent_replacement_rejects_an_unusable_backend_endpoint() {
+    let missing_host = ContainerInfo {
+        id: "container-1".to_string(),
+        ip: String::new(),
+        port: 8080,
+        status: "stopped".to_string(),
+    };
+    let valid = ContainerInfo {
+        id: "container-2".to_string(),
+        ip: "10.13.40.9".to_string(),
+        port: 8080,
+        status: "running".to_string(),
+    };
+
+    assert!(!replacement_endpoint_is_valid(&missing_host));
+    assert!(replacement_endpoint_is_valid(&valid));
 }
 
 #[tokio::test]

@@ -13,6 +13,8 @@ import { TeamEditModal } from '@Components/TeamEditModal'
 import { WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
 import { showErrorMsg } from '@Utils/Shared'
+import { encryptApiData } from '@Utils/Crypto'
+import { useConfig } from '@Hooks/useConfig'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useTeams, useUser } from '@Hooks/useUser'
@@ -22,6 +24,7 @@ import classes from '@Styles/Teams.module.css'
 const Teams: FC = () => {
   const { user, error: userError, mutate: mutateUser } = useUser()
   const { teams, mutate: mutateTeams, error: teamsError } = useTeams()
+  const { config } = useConfig()
 
   const [joinOpened, setJoinOpened] = useState(false)
   const [joinTeamCode, setJoinTeamCode] = useState('')
@@ -72,7 +75,26 @@ const Teams: FC = () => {
 
     setJoining(true)
     try {
-      await api.team.teamAccept(joinTeamCode)
+      const identity = config.enableBrowserFingerprint
+        ? await (async () => {
+            const challengeResponse = await api.account.accountFingerprintChallenge()
+            const challenge = challengeResponse.data.data
+            if (!challenge?.nonce || !challenge.requiredSignals) {
+              throw new Error('Invalid fingerprint challenge')
+            }
+            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
+            const payload = await getFingerprintPayload({
+              nonce: challenge.nonce,
+              requiredSignals: challenge.requiredSignals,
+            })
+            return {
+              code: joinTeamCode,
+              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
+              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
+            }
+          })()
+        : { code: joinTeamCode }
+      await api.team.teamAccept(identity)
       showNotification({
         color: 'teal',
         title: t('team.notification.join.success'),

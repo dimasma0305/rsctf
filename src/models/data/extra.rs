@@ -94,9 +94,9 @@ pub mod suspicion_event {
         #[serde(skip)]
         pub evidence_key: String,
         /// Weight resolved when this immutable evidence row was first recorded.
-        /// Legacy rows remain `None` and use the current configured fallback.
+        /// Migration m0091 freezes the fallback for legacy rows as well.
         #[serde(skip)]
-        pub score_delta: Option<i32>,
+        pub score_delta: i32,
         pub created_at: DateTime<Utc>,
     }
 
@@ -117,7 +117,7 @@ pub mod suspicion_event {
                 challenge_id: Some(4),
                 kind: 0,
                 evidence_key: "submission:5".to_string(),
-                score_delta: Some(100),
+                score_delta: 100,
                 created_at: chrono::Utc::now(),
             };
 
@@ -209,7 +209,14 @@ pub mod anti_cheat_block {
         /// "Ip" | "Fingerprint" (AntiCheatBlockKind on the wire).
         pub kind: String,
         pub conflicting_value: Option<String>,
+        /// Domain-separated HMAC-SHA-256 of the normalized IP/fingerprint. New
+        /// fingerprint rows expose only a short hint in `conflicting_value`.
+        #[serde(skip_serializing)]
+        pub conflicting_value_hash: Option<Vec<u8>>,
         pub occurred_at_utc: DateTime<Utc>,
+        pub adjudicated_at_utc: Option<DateTime<Utc>>,
+        pub adjudicated_by_user_id: Option<Uuid>,
+        pub exemption_expires_at_utc: Option<DateTime<Utc>>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

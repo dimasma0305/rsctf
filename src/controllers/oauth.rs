@@ -27,9 +27,7 @@ use axum::routing::get;
 use axum::Router;
 use base64::Engine;
 use chrono::Utc;
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, Set,
-};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -39,7 +37,7 @@ use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::set_session_cookie;
-use crate::models::data::{config, user};
+use crate::models::data::user;
 use crate::services::anti_cheat;
 use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::Role;
@@ -268,6 +266,12 @@ async fn start(
     Path(provider): Path<String>,
     Query(q): Query<StartQuery>,
 ) -> Response {
+    // The redirect flow cannot carry the one-time browser proof used by
+    // password login. Fail closed instead of silently bypassing that policy.
+    match anti_cheat::load_policy_flags(st.pg()).await {
+        Ok(policy) if oauth_identity_policy_supported(policy) => {}
+        _ => return login_redirect(),
+    }
     let provider = provider.to_lowercase();
     let Some(p) = lookup_provider(&provider) else {
         return login_redirect();
@@ -381,6 +385,11 @@ fn oauth_account_active(role: Role, email_confirmed: bool) -> bool {
     role != Role::Banned && email_confirmed
 }
 
+fn oauth_identity_policy_supported(policy: anti_cheat::PolicyFlags) -> bool {
+    // OAuth cannot carry the one-time proof collected by the password form.
+    !policy.fingerprint_required()
+}
+
 /// Outer handler: any error from the exchange becomes the login redirect, so the
 /// browser is never shown a 500 or a JSON error body mid-flow.
 async fn callback(
@@ -408,6 +417,10 @@ async fn callback_inner(
     q: CallbackQuery,
     peer: SocketAddr,
 ) -> Result<Response, AppError> {
+    let identity_policy = anti_cheat::load_policy_flags(st.pg()).await?;
+    if !oauth_identity_policy_supported(identity_policy) {
+        return Err(AppError::Forbidden);
+    }
     let provider = provider.to_lowercase();
     let p = lookup_provider(&provider).ok_or_else(|| AppError::bad_request("unknown provider"))?;
     let (client_id, client_secret) =
@@ -497,15 +510,34 @@ async fn callback_inner(
     let display = ui.name.or(ui.username);
     let norm_email = email.to_uppercase();
 
+    let current_ip = anti_cheat::client_ip(&headers, Some(peer.ip()));
+
     // Find by email, or provision a fresh external account (no password).
-    let account = match user::Entity::find()
+    let provisioned = match user::Entity::find()
         .filter(user::Column::NormalizedEmail.eq(norm_email.clone()))
         .one(&st.db)
         .await?
     {
-        Some(u) => u,
-        None => create_external_user(&st, &email, &norm_email, display.as_deref(), p.name).await?,
+        Some(account) => ProvisionedOAuthAccount {
+            account,
+            admission: None,
+        },
+        None => {
+            create_external_user(
+                &st,
+                &email,
+                &norm_email,
+                display.as_deref(),
+                p.name,
+                current_ip.as_deref(),
+            )
+            .await?
+        }
     };
+    let ProvisionedOAuthAccount {
+        account,
+        admission: initial_admission,
+    } = provisioned;
 
     if account.role == Role::Banned {
         return Err(AppError::Forbidden);
@@ -519,36 +551,36 @@ async fn callback_inner(
     // (fingerprint = None). A conflict records a block and — mirroring RSCTF's
     // `OAuthError("anti_cheat")` — bounces to the login page without minting the
     // cookie (the outer handler turns this Err into `login_redirect()`).
-    let current_ip = anti_cheat::client_ip(&headers, Some(peer.ip()));
-    let policy = anti_cheat::load_policy_flags(&st.db).await?;
-    if anti_cheat::check_login_conflict(&st.db, &policy, &account, current_ip.as_deref(), None)
-        .await?
-        .is_some()
-    {
+    let security_stamp = account
+        .security_stamp
+        .clone()
+        .filter(|stamp| !stamp.is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let admission = match initial_admission {
+        Some(outcome) => outcome,
+        None => {
+            anti_cheat::admit_existing_user(
+                st.pg(),
+                st.config.as_ref(),
+                account.id,
+                account.user_name.as_deref(),
+                current_ip.as_deref(),
+                None,
+                anti_cheat::IdentitySource::OAuth,
+                &security_stamp,
+                Some(&norm_email),
+                crate::services::captcha::CaptchaAdmission::OAuthProvider,
+            )
+            .await?
+        }
+    };
+    if admission == anti_cheat::AdmissionOutcome::Blocked {
         return Err(AppError::Forbidden);
     }
 
     let id = account.id;
     let role = account.role;
     let user_name = account.user_name.clone().unwrap_or_default();
-    let security_stamp = account
-        .security_stamp
-        .clone()
-        .filter(|stamp| !stamp.is_empty())
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let needs_security_stamp = account.security_stamp.as_deref().is_none_or(str::is_empty);
-
-    // Record the sign-in, matching the password login flow (RSCTF stamps the IP
-    // via `UpdateByHttpContext`). Only overwrite `ip` when we captured one.
-    let mut am: user::ActiveModel = account.into();
-    am.last_signed_in_utc = Set(Utc::now());
-    if needs_security_stamp {
-        am.security_stamp = Set(Some(security_stamp.clone()));
-    }
-    if let Some(ip) = current_ip.as_deref() {
-        am.ip = Set(ip.to_string());
-    }
-    am.update(&st.db).await?;
 
     // Issue the session cookie and land back on the requested page.
     let jwt = st.token.issue(id, role, &user_name, &security_stamp)?;
@@ -564,6 +596,12 @@ async fn callback_inner(
 // Account provisioning
 // ---------------------------------------------------------------------------
 
+struct ProvisionedOAuthAccount {
+    account: user::Model,
+    /// Present when provisioning evaluated identity atomically with insertion.
+    admission: Option<anti_cheat::AdmissionOutcome>,
+}
+
 /// Create a new `Role::User` account for an externally-authenticated identity.
 /// External users have no usable password, so a random one is hashed and stored;
 /// the email is trusted (provider-verified) and marked confirmed. Field layout
@@ -574,7 +612,8 @@ async fn create_external_user(
     norm_email: &str,
     display: Option<&str>,
     provider: &str,
-) -> Result<user::Model, AppError> {
+    current_ip: Option<&str>,
+) -> Result<ProvisionedOAuthAccount, AppError> {
     let domain_list = crate::controllers::account::load_email_domain_list(st).await?;
     if !crate::controllers::account::verify_email_domain(email, &domain_list) {
         return Err(AppError::bad_request("email domain is not allowed"));
@@ -586,78 +625,154 @@ async fn create_external_user(
     // the column is never empty and cannot be used to authenticate.
     let password_hash = hash_password_async(Uuid::new_v4().to_string()).await?;
 
-    let txn = crate::controllers::account::locked_registration_transaction(st).await?;
-    let has_admin = user::Entity::find()
-        .filter(user::Column::Role.eq(Role::Admin))
-        .count(&txn)
-        .await?
-        > 0;
+    let mut txn = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(crate::controllers::account::REGISTRATION_LOCK_ID)
+        .execute(&mut *txn)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let account_policy =
+        anti_cheat::lock_and_load_account_policy(&mut txn, st.config.as_ref()).await?;
+    // OAuth provider authentication is the deliberate exemption from the
+    // local password-flow captcha policy; keep it explicit at the canonical
+    // policy snapshot instead of passing an unversioned success boolean.
+    account_policy.authorize_captcha(crate::services::captcha::CaptchaAdmission::OAuthProvider)?;
+    let has_admin: bool =
+        sqlx::query_scalar(r#"SELECT EXISTS (SELECT 1 FROM "AspNetUsers" WHERE role = $1)"#)
+            .bind(Role::Admin as i16)
+            .fetch_one(&mut *txn)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
     if !has_admin {
-        txn.rollback().await?;
+        txn.rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         return Err(AppError::bad_request(
             "bootstrap an administrator with password registration before OAuth provisioning",
         ));
     }
-    let allow_register = config::Entity::find_by_id("AccountPolicy:AllowRegister".to_string())
-        .one(&txn)
-        .await?
-        .and_then(|row| row.value)
-        .map(|value| value == "true")
-        .unwrap_or(st.config.account.allow_register);
-    if !allow_register {
-        txn.rollback().await?;
+    if !account_policy.allow_register {
+        txn.rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
         return Err(AppError::bad_request("registration is disabled"));
     }
-    let active_on_register =
-        config::Entity::find_by_id("AccountPolicy:ActiveOnRegister".to_string())
-            .one(&txn)
-            .await?
-            .and_then(|row| row.value)
-            .map(|value| value == "true")
-            .unwrap_or(st.config.account.active_on_register);
-    // The pre-lock callback lookup may race another successful provider callback.
-    if let Some(existing) = user::Entity::find()
-        .filter(user::Column::NormalizedEmail.eq(norm_email))
-        .one(&txn)
-        .await?
-    {
-        txn.rollback().await?;
-        return Ok(existing);
+    let active_on_register = account_policy.active_on_register;
+    if !crate::controllers::account::verify_email_domain(email, &account_policy.email_domain_list) {
+        return Err(AppError::bad_request("email domain is not allowed"));
     }
-    let user_name = unique_user_name(&txn, &base).await?;
+    // The pre-lock callback lookup may race another successful provider callback.
+    if let Some(existing_id) =
+        sqlx::query_scalar::<_, Uuid>(r#"SELECT id FROM "AspNetUsers" WHERE normalized_email = $1"#)
+            .bind(norm_email)
+            .fetch_optional(&mut *txn)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+    {
+        txn.rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let existing = user::Entity::find_by_id(existing_id)
+            .one(&st.db)
+            .await?
+            .ok_or_else(|| AppError::internal("OAuth account disappeared"))?;
+        return Ok(ProvisionedOAuthAccount {
+            account: existing,
+            admission: None,
+        });
+    }
+    let user_name = unique_user_name(&mut txn, &base).await?;
     let norm_name = user_name.to_uppercase();
-
-    let am = user::ActiveModel {
-        id: Set(id),
-        user_name: Set(Some(user_name.clone())),
-        normalized_user_name: Set(Some(norm_name)),
-        email: Set(Some(email.to_string())),
-        normalized_email: Set(Some(norm_email.to_string())),
-        email_confirmed: Set(active_on_register),
-        password_hash: Set(Some(password_hash)),
-        security_stamp: Set(Some(Uuid::new_v4().to_string())),
-        concurrency_stamp: Set(Some(Uuid::new_v4().to_string())),
-        phone_number: Set(None),
-        phone_number_confirmed: Set(false),
-        two_factor_enabled: Set(false),
-        lockout_end: Set(None),
-        lockout_enabled: Set(false),
-        access_failed_count: Set(0),
-        role: Set(Role::User),
-        ip: Set("0.0.0.0".to_string()),
-        browser_fingerprint: Set(None),
-        last_signed_in_utc: Set(now),
-        last_visited_utc: Set(now),
-        register_time_utc: Set(now),
-        bio: Set(String::new()),
-        real_name: Set(String::new()),
-        std_number: Set(String::new()),
-        exercise_visible: Set(true),
-        avatar_hash: Set(None),
+    let security_stamp = Uuid::new_v4().to_string();
+    let concurrency_stamp = Uuid::new_v4().to_string();
+    let admission = if active_on_register {
+        Some(
+            anti_cheat::admit_new_user_in_transaction(
+                &mut txn,
+                st.config.as_ref(),
+                id,
+                Some(&user_name),
+                current_ip,
+                None,
+                anti_cheat::IdentitySource::OAuth,
+            )
+            .await?,
+        )
+    } else {
+        anti_cheat::mark_identity_neutral_insert(&mut txn).await?;
+        None
     };
-    let saved = am.insert(&txn).await?;
-    txn.commit().await?;
-    Ok(saved)
+    let accepted_ip = if admission == Some(anti_cheat::AdmissionOutcome::Accepted) {
+        current_ip.unwrap_or("0.0.0.0")
+    } else {
+        "0.0.0.0"
+    };
+    sqlx::query(
+        r#"INSERT INTO "AspNetUsers"
+             (id, user_name, normalized_user_name, email, normalized_email,
+              email_confirmed, password_hash, security_stamp, concurrency_stamp,
+              phone_number, phone_number_confirmed, two_factor_enabled, lockout_end,
+              lockout_enabled, access_failed_count, role, ip, browser_fingerprint,
+              last_signed_in_utc, last_visited_utc, register_time_utc, bio,
+              real_name, std_number, exercise_visible, avatar_hash)
+           VALUES
+             ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+              NULL, FALSE, FALSE, NULL, FALSE, 0, $10, $11, NULL,
+              $12, $12, $12, '', '', '', TRUE, NULL)"#,
+    )
+    .bind(id)
+    .bind(&user_name)
+    .bind(&norm_name)
+    .bind(email)
+    .bind(norm_email)
+    .bind(active_on_register)
+    .bind(&password_hash)
+    .bind(&security_stamp)
+    .bind(&concurrency_stamp)
+    .bind(Role::User as i16)
+    .bind(accepted_ip)
+    .bind(now)
+    .execute(&mut *txn)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    txn.commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(ProvisionedOAuthAccount {
+        account: user::Model {
+            id,
+            user_name: Some(user_name),
+            normalized_user_name: Some(norm_name),
+            email: Some(email.to_string()),
+            normalized_email: Some(norm_email.to_string()),
+            email_confirmed: active_on_register,
+            password_hash: Some(password_hash),
+            security_stamp: Some(security_stamp),
+            concurrency_stamp: Some(concurrency_stamp),
+            phone_number: None,
+            phone_number_confirmed: false,
+            two_factor_enabled: false,
+            lockout_end: None,
+            lockout_enabled: false,
+            access_failed_count: 0,
+            role: Role::User,
+            ip: accepted_ip.to_string(),
+            browser_fingerprint: None,
+            last_signed_in_utc: now,
+            last_visited_utc: now,
+            register_time_utc: now,
+            bio: String::new(),
+            real_name: String::new(),
+            std_number: String::new(),
+            exercise_visible: true,
+            avatar_hash: None,
+        },
+        admission,
+    })
 }
 
 /// Derive the base username: the provider display name, else the email local
@@ -688,25 +803,35 @@ fn derive_base_name(display: Option<&str>, email: &str, provider: &str) -> Strin
 
 /// Return `base` if free, else `base_NNNN` with a random 4-digit suffix, probing
 /// up to 50 times before falling back to a uuid suffix (RSCTF parity).
-async fn unique_user_name<C: ConnectionTrait>(db: &C, base: &str) -> Result<String, AppError> {
-    if !name_taken(db, base).await? {
+async fn unique_user_name(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    base: &str,
+) -> Result<String, AppError> {
+    if !name_taken(transaction, base).await? {
         return Ok(base.to_string());
     }
     for _ in 0..50 {
         let candidate = format!("{base}_{}", rand_suffix());
-        if !name_taken(db, &candidate).await? {
+        if !name_taken(transaction, &candidate).await? {
             return Ok(candidate);
         }
     }
     Ok(format!("{base}_{}", Uuid::new_v4().simple()))
 }
 
-async fn name_taken<C: ConnectionTrait>(db: &C, name: &str) -> Result<bool, AppError> {
-    Ok(user::Entity::find()
-        .filter(user::Column::NormalizedUserName.eq(name.to_uppercase()))
-        .one(db)
-        .await?
-        .is_some())
+async fn name_taken(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    name: &str,
+) -> Result<bool, AppError> {
+    sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS (
+               SELECT 1 FROM "AspNetUsers" WHERE normalized_user_name = $1
+           )"#,
+    )
+    .bind(name.to_uppercase())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
 }
 
 /// A `[1000, 10000)` suffix drawn from random uuid bytes (avoids pulling in the
@@ -752,6 +877,22 @@ mod tests {
         assert!(oauth_account_active(Role::User, true));
         assert!(!oauth_account_active(Role::User, false));
         assert!(!oauth_account_active(Role::Banned, true));
+    }
+
+    #[test]
+    fn oauth_fails_closed_for_every_fingerprint_collection_policy() {
+        assert!(oauth_identity_policy_supported(
+            anti_cheat::PolicyFlags::default()
+        ));
+        assert!(!oauth_identity_policy_supported(anti_cheat::PolicyFlags {
+            enable_browser_fingerprint: true,
+            ..Default::default()
+        }));
+        assert!(!oauth_identity_policy_supported(anti_cheat::PolicyFlags {
+            enable_browser_fingerprint: true,
+            require_unique_fingerprint_global: true,
+            ..Default::default()
+        }));
     }
 
     #[tokio::test]

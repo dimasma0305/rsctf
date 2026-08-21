@@ -238,7 +238,8 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
           invite_code TEXT,
           team_member_count_limit INTEGER NOT NULL,
           ad_scoring_start_round INTEGER,
-          koth_scoring_start_round INTEGER
+          koth_scoring_start_round INTEGER,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
         );
         CREATE TABLE "Divisions" (
           id INTEGER PRIMARY KEY,
@@ -769,9 +770,9 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
         }));
     }
 
-    // Legacy rejected solvers may still reach both physical cleanup paths.
-    // Leaving removes only the membership; the participation and its evidence
-    // must remain. Re-registering through another team must preserve them too.
+    // Exercise the low-level orphan cleanup against a legacy link that was
+    // already removed. The production leave fence now refuses that unlink;
+    // this cleanup must still preserve the participation and its evidence.
     sqlx::query(r#"TRUNCATE "UserParticipations", "Participations" RESTART IDENTITY"#)
         .execute(&pool)
         .await
@@ -850,7 +851,32 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
     .execute(&pool)
     .await
     .unwrap();
-    let replacement_id = emulate_replica_join(
+    let same_team_evidence_error = emulate_replica_join(
+        &pool,
+        history_user,
+        history_game,
+        history_team,
+        Arc::new(tokio::sync::Barrier::new(1)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        same_team_evidence_error.to_string(),
+        "A participation with competition evidence may only move between Accepted and Suspended."
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>(
+            r#"SELECT participation_id FROM "UserParticipations"
+                WHERE user_id = $1 AND game_id = $2"#,
+        )
+        .bind(history_user)
+        .bind(history_game)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        history_participation
+    );
+    let replacement_error = emulate_replica_join(
         &pool,
         history_user,
         history_game,
@@ -858,8 +884,11 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
         Arc::new(tokio::sync::Barrier::new(1)),
     )
     .await
-    .unwrap();
-    assert_ne!(replacement_id, history_participation);
+    .unwrap_err();
+    assert_eq!(
+        replacement_error.to_string(),
+        "Cannot join another team after competition evidence has been recorded"
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Participations" WHERE id = $1"#,)
             .bind(history_participation)
@@ -874,6 +903,74 @@ async fn concurrent_cross_team_join_commits_one_link_and_no_orphan() {
             r#"SELECT COUNT(*) FROM "Submissions" WHERE participation_id = $1"#,
         )
         .bind(history_participation)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>(
+            r#"SELECT participation_id FROM "UserParticipations"
+                WHERE user_id = $1 AND game_id = $2"#,
+        )
+        .bind(history_user)
+        .bind(history_game)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        history_participation,
+        "cross-team re-registration erased the evidence-bearing actor link"
+    );
+
+    // Re-registering through the same team reuses an evidence-free rejected
+    // participation in place; the durable link is never transiently deleted.
+    let same_team_user = Uuid::new_v4();
+    let same_team_game = 8_101;
+    let same_team_id = 8_102;
+    let same_team_participation: i32 = sqlx::query_scalar(
+        r#"INSERT INTO "Participations"
+             (status, token, game_id, team_id, suspicion_score)
+           VALUES ($1, 'same-team', $2, $3, 0)
+           RETURNING id"#,
+    )
+    .bind(ParticipationStatus::Rejected as i16)
+    .bind(same_team_game)
+    .bind(same_team_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "UserParticipations"
+             (user_id, game_id, team_id, participation_id)
+           VALUES ($1, $2, $3, $4)"#,
+    )
+    .bind(same_team_user)
+    .bind(same_team_game)
+    .bind(same_team_id)
+    .bind(same_team_participation)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        emulate_replica_join(
+            &pool,
+            same_team_user,
+            same_team_game,
+            same_team_id,
+            Arc::new(tokio::sync::Barrier::new(1)),
+        )
+        .await
+        .unwrap(),
+        same_team_participation
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM "UserParticipations"
+                WHERE user_id = $1 AND game_id = $2 AND participation_id = $3"#,
+        )
+        .bind(same_team_user)
+        .bind(same_team_game)
+        .bind(same_team_participation)
         .fetch_one(&pool)
         .await
         .unwrap(),

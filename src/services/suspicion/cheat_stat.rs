@@ -11,33 +11,31 @@
 //! game, so we key everything on `participation_id` (the unit the
 //! `suspicion_event` audit table + scoring model use) and map `GameEvent.TeamId`
 //! back through the participation table. Every fired signal is persisted with the
-//! shared `record_with_dedup` insert path (one event per stable global or
-//! challenge key), reusing the exact weight/score-bump logic the
-//! behavioral rules use.
+//! shared timestamp-aware dedup path, using stable challenge, pair, or source
+//! identities and the same ledger/projection logic as the behavioral rules.
 //!
 //! Detectors (each cites the RSCTF source range it mirrors):
-//! * **SequenceSimilarity** (Check 3, `cs:1183-1290`) — pairwise RSI =
-//!   `0.7·Jaccard(solved sets) + 0.3·(LCS(solve order)/min len)`; flags **both**
-//!   teams when `RSI >= 0.85`.
-//! * **SolutionRelay** (Check C, `cs:1292-1356`) — nested inside the
-//!   SequenceSimilarity pair loop (so it only ever examines pairs that already
-//!   cleared `RSI >= 0.85`); constant-lag temporal relay: per shared challenge
-//!   the receiver's solve minus the source's, flagged when `mean ∈ [2,30]` min,
-//!   population `stddev < 5` min, and coverage `>= 60%` of shared challenges
-//!   (`>= 6` lags). Recorded against the **receiver** in each direction.
+//! * **SequenceSimilarity** (Check 3, `cs:1183-1290`) — RSI =
+//!   `0.7·Jaccard(solved sets) + 0.3·(LCS(solve order)/min len)` over informative
+//!   (not commonly solved) challenges; flags **both** teams when `RSI >= 0.85`.
+//!   PostgreSQL's inverted challenge index generates only pairs sharing at least
+//!   three informative solves, avoiding both an all-pairs scan and the old
+//!   top-50 blind spot.
+//! * **SolutionRelay** (Check C, `cs:1292-1356`) — constant-lag temporal relay:
+//!   per shared informative challenge the receiver's solve minus the source's,
+//!   flagged when `mean ∈ [2,30]` min, population `stddev < 5` min, and coverage
+//!   `>= 60%` (`>= 6` lags). Recorded against the receiver in each direction and
+//!   evaluated independently of RSI.
 //! * **AdaptiveFastSolve** (Check D, `cs:1141-1180`) — a solve at `< 5%` of the
 //!   community **median** solve offset, only when that median `> 60` min, gated
 //!   on `>= 8` community solves and the `IsChallengeEasy` + fast-cohort (`>= 3`
 //!   other teams under 15% of median) suppression guards.
-//! * **DirectedSolving** (Check E, `cs:1455-1522`) — a team whose
-//!   opened/solved-challenge ratio is `< 1.05` (`>= 8` solves) while the
-//!   community median ratio is `>= 1.5` (they open only what they solve).
+//! * **DirectedSolving** (Check E, `cs:1455-1522`) is telemetry-only and does
+//!   not emit: `ChallengeOpened` is best-effort, so a missing audit row cannot
+//!   prove that a team opened only the challenges it solved.
 
 use super::*;
 use crate::app_state::SharedState;
-use crate::models::data::{game, game_event, submission};
-use crate::utils::enums::{AnswerResult, EventType};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,6 +89,89 @@ fn true_median(mut v: Vec<f64>) -> f64 {
     }
 }
 
+/// Candidate generation for cross-team correlation. Joining the canonical
+/// projection by challenge lets PostgreSQL use `ix_firstsolves_challenge` and
+/// emits only pairs with enough shared informative evidence; Rust never walks
+/// the quadratic Cartesian product of all participating teams.
+const COLLABORATION_CANDIDATES_SQL: &str = r#"
+    WITH canonical AS MATERIALIZED (
+        SELECT first_solve.participation_id,
+               first_solve.challenge_id
+          FROM "FirstSolves" first_solve
+          JOIN "Submissions" submission
+            ON submission.id = first_solve.submission_id
+           AND submission.participation_id = first_solve.participation_id
+           AND submission.challenge_id = first_solve.challenge_id
+          JOIN "Participations" participation
+            ON participation.id = submission.participation_id
+           AND participation.game_id = submission.game_id
+         WHERE submission.game_id = $1
+           AND submission.status = $2
+           AND submission.submit_time_utc >= $3
+           AND submission.submit_time_utc < $4
+           AND first_solve.challenge_id = ANY($5)
+           AND participation.competitive_admitted_at_utc IS NOT NULL
+           AND participation.competitive_admitted_at_utc < $4
+    )
+    SELECT source.participation_id, receiver.participation_id
+      FROM canonical source
+      JOIN canonical receiver
+        ON receiver.challenge_id = source.challenge_id
+       AND receiver.participation_id > source.participation_id
+     GROUP BY source.participation_id, receiver.participation_id
+    HAVING COUNT(*) >= 3
+     ORDER BY source.participation_id, receiver.participation_id
+"#;
+
+pub(super) async fn collaboration_candidates(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    window: super::detectors::CompetitiveGameWindow,
+    informative_challenge_ids: &[i32],
+) -> AppResult<Vec<(i32, i32)>> {
+    if informative_challenge_ids.len() < 3 {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_as(COLLABORATION_CANDIDATES_SQL)
+        .bind(game_id)
+        .bind(crate::utils::enums::AnswerResult::Accepted as i16)
+        .bind(window.start)
+        .bind(window.end)
+        .bind(informative_challenge_ids)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
+fn is_relay_pattern(lags: &[f64], shared_count: usize) -> bool {
+    if lags.len() < 6 || shared_count == 0 || (lags.len() as f64 / shared_count as f64) < 0.60 {
+        return false;
+    }
+
+    let mean = lags.iter().sum::<f64>() / lags.len() as f64;
+    if !(2.0..=30.0).contains(&mean) {
+        return false;
+    }
+    let variance = lags
+        .iter()
+        .map(|lag| {
+            let distance = lag - mean;
+            distance * distance
+        })
+        .sum::<f64>()
+        / lags.len() as f64;
+    variance.sqrt() < 5.0
+}
+
+fn directed_solving_is_actionable() -> bool {
+    false
+}
+
+fn statistical_snapshot_is_final(snapshot: super::detectors::ReconciliationSnapshot) -> bool {
+    super::detectors::final_snapshot_ready(snapshot)
+}
+
 /// Persist one statistical signal via the shared dedup+score path (a throwaway
 /// `codes` vec — the return codes matter only on the per-submission path).
 async fn record(
@@ -99,57 +180,42 @@ async fn record(
     participation_id: i32,
     challenge_id: Option<i32>,
     ty: SuspicionType,
+    observed_at: chrono::DateTime<chrono::Utc>,
 ) -> AppResult<()> {
-    let mut codes: Vec<i16> = Vec::new();
     let evidence_key = challenge_id
         .map(challenge_evidence_key)
         .unwrap_or_else(|| GLOBAL_EVIDENCE_KEY.to_string());
-    super::detectors::record_with_dedup(
+    record_with_evidence(
         db,
         game_id,
         participation_id,
         challenge_id,
         ty,
         &evidence_key,
-        &mut codes,
+        observed_at,
     )
     .await
 }
 
-/// Check C `ReportRelay`: flag `receiver_pid` for `SolutionRelay` when `lags`
-/// (fractional-minute gaps, already filtered to `(1, 60]`) form a constant-lag
-/// relay across `>= 60%` of `shared_count` shared challenges.
-async fn report_relay(
+async fn record_with_evidence(
     db: &sea_orm::DatabaseConnection,
     game_id: i32,
-    lags: &[f64],
-    shared_count: usize,
-    receiver_pid: i32,
+    participation_id: i32,
+    challenge_id: Option<i32>,
+    ty: SuspicionType,
+    evidence_key: &str,
+    observed_at: chrono::DateTime<chrono::Utc>,
 ) -> AppResult<()> {
-    if lags.len() < 6 {
-        return Ok(());
-    }
-    // Coverage denominator is the DISTINCT shared-challenge count, not the lag
-    // count (relay sharing spans all challenges; coincidence clusters locally).
-    let coverage = lags.len() as f64 / shared_count as f64;
-    if coverage < 0.60 {
-        return Ok(());
-    }
-    let mean = lags.iter().sum::<f64>() / lags.len() as f64;
-    // Population stddev (÷ N), matching C# `.Select(..).Average()` on the
-    // squared deviations.
-    let variance = lags.iter().map(|l| (l - mean) * (l - mean)).sum::<f64>() / lags.len() as f64;
-    let stddev = variance.sqrt();
-    // Constant-lag relay: mean 2–30 min, stddev < 5 min.
-    if !(2.0..=30.0).contains(&mean) || stddev >= 5.0 {
-        return Ok(());
-    }
-    record(
+    let mut codes: Vec<i16> = Vec::new();
+    super::detectors::record_with_dedup_at(
         db,
         game_id,
-        receiver_pid,
-        None,
-        SuspicionType::SolutionRelay,
+        participation_id,
+        challenge_id,
+        ty,
+        evidence_key,
+        observed_at,
+        &mut codes,
     )
     .await
 }
@@ -164,30 +230,39 @@ async fn report_relay(
 /// of RSCTF `CheatReportController` (Checks 3, C, D, E). Idempotent: safe to run
 /// on every sweep.
 pub async fn run_statistical_checks(st: &SharedState, game_id: i32) -> AppResult<()> {
+    run_statistical_checks_for_snapshot(st, game_id, super::detectors::ReconciliationSnapshot::Live)
+        .await
+}
+
+pub(super) async fn run_statistical_checks_for_snapshot(
+    st: &SharedState,
+    game_id: i32,
+    snapshot: super::detectors::ReconciliationSnapshot,
+) -> AppResult<()> {
     let db = &st.db;
 
-    let Some(game) = game::Entity::find_by_id(game_id).one(db).await? else {
+    let Some(window) = super::detectors::load_competitive_game_window(st.pg(), game_id).await?
+    else {
         return Ok(());
     };
-    let start = game.start_time_utc;
+    // Every rule below is community-relative and therefore non-monotonic while
+    // solves/opens can still arrive. SuspicionEvents are immutable, so a live
+    // partial snapshot could leave evidence that the final population would
+    // suppress. Evaluate once the configured competitive window is closed.
+    if !statistical_snapshot_is_final(snapshot) {
+        return Ok(());
+    }
+    let start = window.start;
 
     // Accepted submissions for the game, time-ordered (drives sequences,
     // per-challenge stats, cohort suppression). All four detectors are
     // accepted-only — wrong submissions feed only the easy-challenge gate below.
-    let mut accepted = submission::Entity::find()
-        .filter(submission::Column::GameId.eq(game_id))
-        .filter(submission::Column::Status.eq(AnswerResult::Accepted))
-        .all(db)
-        .await?;
+    let mut accepted = super::detectors::load_canonical_solves(st.pg(), game_id, window).await?;
     accepted.sort_by_key(|s| s.submit_time_utc);
 
     // Wrong submissions, keyed (participation, challenge) → times, for the
     // zero-attempt-rate component of `IsChallengeEasy`.
-    let wrong = submission::Entity::find()
-        .filter(submission::Column::GameId.eq(game_id))
-        .filter(submission::Column::Status.eq(AnswerResult::WrongAnswer))
-        .all(db)
-        .await?;
+    let wrong = super::detectors::load_competitive_wrong_attempts(st.pg(), game_id, window).await?;
     let mut wrong_by_part_chal: HashMap<(i32, i32), Vec<chrono::DateTime<chrono::Utc>>> =
         HashMap::new();
     for w in &wrong {
@@ -197,17 +272,27 @@ pub async fn run_statistical_checks(st: &SharedState, game_id: i32) -> AppResult
             .push(w.submit_time_utc);
     }
 
-    // Participations in this game = the participating teams. team_id →
-    // participation_id lets us map GameEvent.TeamId into participation space.
-    let parts = participation::Entity::find()
-        .filter(participation::Column::GameId.eq(game_id))
-        .all(db)
-        .await?;
-    let team_to_part: HashMap<i32, i32> = parts.iter().map(|p| (p.team_id, p.id)).collect();
-    let team_participating_count = parts.len();
+    // The immutable pre-end admitted cohort is the denominator; later status
+    // changes and post-end practice joins cannot make common challenges look
+    // artificially hard.
+    let team_participating_count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM "Participations"
+            WHERE game_id = $1
+              AND competitive_admitted_at_utc IS NOT NULL
+              AND competitive_admitted_at_utc < $2"#,
+    )
+    .bind(game_id)
+    .bind(window.end)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let team_participating_count = usize::try_from(team_participating_count)
+        .map_err(|_| AppError::internal("participation count exceeds usize"))?;
 
     // ── Per-challenge community statistics ──────────────────────────────────
-    let mut challenge_accepts: BTreeMap<i32, Vec<&submission::Model>> = BTreeMap::new();
+    let mut challenge_accepts: BTreeMap<i32, Vec<&super::detectors::CanonicalSolve>> =
+        BTreeMap::new();
     for s in &accepted {
         challenge_accepts.entry(s.challenge_id).or_default().push(s);
     }
@@ -242,13 +327,28 @@ pub async fn run_statistical_checks(st: &SharedState, game_id: i32) -> AppResult
     // Easy challenge: solve-rate > 40% of participating teams, OR
     // zero-attempt-rate > 30%. Suppresses FP-heavy per-challenge signals.
     let is_easy = |cid: i32| -> bool {
-        let by_solve = team_participating_count > 0
-            && *challenge_solve_count.get(&cid).unwrap_or(&0) as f64
-                / team_participating_count as f64
-                > 0.40;
-        let by_zero = *zero_attempt_rate.get(&cid).unwrap_or(&0.0) > 0.30;
-        by_solve || by_zero
+        super::detectors::is_easy_challenge(
+            *challenge_solve_count.get(&cid).unwrap_or(&0),
+            team_participating_count,
+            *zero_attempt_rate.get(&cid).unwrap_or(&0.0),
+        )
     };
+    // Ordering commonness is deliberately prevalence-only. Reusing the
+    // ZeroWrong/AdaptiveFast `zero_attempt_rate` suppression here would let a
+    // copied first-try solve sequence label its own challenges easy and erase
+    // every collusion candidate.
+    let is_common_ordering_challenge = |cid: i32| -> bool {
+        super::detectors::is_common_ordering_challenge(
+            *challenge_solve_count.get(&cid).unwrap_or(&0),
+            team_participating_count,
+        )
+    };
+    let informative_challenge_ids: Vec<i32> = challenge_accepts
+        .keys()
+        .copied()
+        .filter(|challenge_id| !is_common_ordering_challenge(*challenge_id))
+        .collect();
+    let informative_challenges: HashSet<i32> = informative_challenge_ids.iter().copied().collect();
 
     // ── Check D: Adaptive Fast Solve ────────────────────────────────────────
     // Per accepted submission: solve offset < 5% of the community median while
@@ -282,6 +382,7 @@ pub async fn run_statistical_checks(st: &SharedState, game_id: i32) -> AppResult
                     sub.participation_id,
                     Some(cid),
                     SuspicionType::AdaptiveFastSolve,
+                    sub.submit_time_utc,
                 )
                 .await?;
             }
@@ -289,168 +390,202 @@ pub async fn run_statistical_checks(st: &SharedState, game_id: i32) -> AppResult
     }
 
     // ── Check 3 + Check C: Sequence Similarity & Solution Relay ──────────────
-    // Ordered accepted-solve sequence per participation (accepted is already
-    // time-sorted, so each vec is in solve order). Keep those with >= 3 solves,
-    // take the 50 longest (tie-broken by participation id for determinism —
-    // RSCTF's Take(50) is order-undefined on ties, benign unless a game has
-    // >50 teams).
-    let mut seq_map: BTreeMap<i32, Vec<&submission::Model>> = BTreeMap::new();
-    for s in &accepted {
-        seq_map.entry(s.participation_id).or_default().push(s);
-    }
-    let mut team_seqs: Vec<(i32, Vec<&submission::Model>)> =
-        seq_map.into_iter().filter(|(_, v)| v.len() >= 3).collect();
-    team_seqs.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
-    team_seqs.truncate(50);
-
-    for i in 0..team_seqs.len() {
-        for j in (i + 1)..team_seqs.len() {
-            let (pa, raw_a) = (team_seqs[i].0, &team_seqs[i].1);
-            let (pb, raw_b) = (team_seqs[j].0, &team_seqs[j].1);
-
-            let seq_a: Vec<i32> = raw_a.iter().map(|s| s.challenge_id).collect();
-            let seq_b: Vec<i32> = raw_b.iter().map(|s| s.challenge_id).collect();
-            let set_a: HashSet<i32> = seq_a.iter().copied().collect();
-            let set_b: HashSet<i32> = seq_b.iter().copied().collect();
-
-            // Distinct shared challenges (set intersection). Threshold >= 3.
-            let shared_ids: Vec<i32> = set_a
-                .iter()
-                .copied()
-                .filter(|c| set_b.contains(c))
-                .collect();
-            let shared_count = shared_ids.len();
-            if shared_count < 3 {
-                continue;
-            }
-            let union_count = set_a.union(&set_b).count();
-            if union_count == 0 {
-                continue;
-            }
-
-            let jaccard = shared_count as f64 / union_count as f64;
-            let lcs = lcs_len(&seq_a, &seq_b);
-            let min_len = seq_a.len().min(seq_b.len());
-            let lcs_score = if min_len == 0 {
-                0.0
-            } else {
-                lcs as f64 / min_len as f64
-            };
-            let rsi = jaccard * 0.7 + lcs_score * 0.3;
-            if rsi < 0.85 {
-                continue;
-            }
-
-            // Flag BOTH teams — the copy is symmetric.
-            record(db, game_id, pa, None, SuspicionType::SequenceSimilarity).await?;
-            record(db, game_id, pb, None, SuspicionType::SequenceSimilarity).await?;
-
-            // Check C stays nested here (rsi >= 0.85 already holds, so the inner
-            // rsi >= 0.7 gate is trivially true) plus >= 6 shared challenges.
-            if rsi >= 0.7 && shared_count >= 6 {
-                let times_a: HashMap<i32, chrono::DateTime<chrono::Utc>> = raw_a
-                    .iter()
-                    .map(|s| (s.challenge_id, s.submit_time_utc))
-                    .collect();
-                let times_b: HashMap<i32, chrono::DateTime<chrono::Utc>> = raw_b
-                    .iter()
-                    .map(|s| (s.challenge_id, s.submit_time_utc))
-                    .collect();
-
-                // Direction A→B: positive lag = B solved after A. Receiver = B.
-                let lags_a_to_b: Vec<f64> = shared_ids
-                    .iter()
-                    .filter_map(|cid| match (times_a.get(cid), times_b.get(cid)) {
-                        (Some(ta), Some(tb)) => Some(minutes_between(*ta, *tb)),
-                        _ => None,
-                    })
-                    .filter(|&lag| lag > 1.0 && lag <= 60.0)
-                    .collect();
-                // Direction B→A: positive lag = A solved after B. Receiver = A.
-                let lags_b_to_a: Vec<f64> = shared_ids
-                    .iter()
-                    .filter_map(|cid| match (times_a.get(cid), times_b.get(cid)) {
-                        (Some(ta), Some(tb)) => Some(minutes_between(*tb, *ta)),
-                        _ => None,
-                    })
-                    .filter(|&lag| lag > 1.0 && lag <= 60.0)
-                    .collect();
-
-                report_relay(db, game_id, &lags_a_to_b, shared_count, pb).await?;
-                report_relay(db, game_id, &lags_b_to_a, shared_count, pa).await?;
-            }
+    // Easy/common solves do not meaningfully identify a copied order. Use an
+    // inverted-index SQL query to nominate only pairs sharing at least three
+    // informative canonical solves; unlike the former Take(50), every team can
+    // become a candidate without an O(team²) application scan.
+    let mut seq_map: BTreeMap<i32, Vec<&super::detectors::CanonicalSolve>> = BTreeMap::new();
+    for solve in &accepted {
+        if informative_challenges.contains(&solve.challenge_id) {
+            seq_map
+                .entry(solve.participation_id)
+                .or_default()
+                .push(solve);
         }
     }
 
-    // ── Check E: Directed Solving ───────────────────────────────────────────
-    // Opened-challenge set per participation from ChallengeOpened events
-    // (values[0] = challenge id string).
-    let opens = game_event::Entity::find()
-        .filter(game_event::Column::GameId.eq(game_id))
-        .filter(game_event::Column::EventType.eq(EventType::ChallengeOpened))
-        .all(db)
-        .await?;
-    let mut opened_by_part: BTreeMap<i32, HashSet<i32>> = BTreeMap::new();
-    for e in &opens {
-        let Some(&pid) = team_to_part.get(&e.team_id) else {
+    let candidates =
+        collaboration_candidates(st.pg(), game_id, window, &informative_challenge_ids).await?;
+    for (pa, pb) in candidates {
+        let (Some(raw_a), Some(raw_b)) = (seq_map.get(&pa), seq_map.get(&pb)) else {
             continue;
         };
-        if let Some(cid) = e
-            .values
-            .get(0)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<i32>().ok())
-        {
-            opened_by_part.entry(pid).or_default().insert(cid);
+        let seq_a: Vec<i32> = raw_a.iter().map(|solve| solve.challenge_id).collect();
+        let seq_b: Vec<i32> = raw_b.iter().map(|solve| solve.challenge_id).collect();
+        let set_a: HashSet<i32> = seq_a.iter().copied().collect();
+        let set_b: HashSet<i32> = seq_b.iter().copied().collect();
+        let shared_ids: Vec<i32> = set_a.intersection(&set_b).copied().collect();
+        let shared_count = shared_ids.len();
+        if shared_count < 3 {
+            continue;
+        }
+
+        let union_count = set_a.union(&set_b).count();
+        let pair_observed_at = raw_a
+            .iter()
+            .chain(raw_b.iter())
+            .filter(|solve| {
+                set_a.contains(&solve.challenge_id) && set_b.contains(&solve.challenge_id)
+            })
+            .map(|solve| solve.submit_time_utc)
+            .max()
+            .expect("candidate pairs share at least three solves");
+        let jaccard = shared_count as f64 / union_count as f64;
+        let lcs_score = lcs_len(&seq_a, &seq_b) as f64 / seq_a.len().min(seq_b.len()) as f64;
+        let rsi = jaccard * 0.7 + lcs_score * 0.3;
+        if rsi >= 0.85 {
+            let pair_key = format!("pair:{}:{}", pa.min(pb), pa.max(pb));
+            record_with_evidence(
+                db,
+                game_id,
+                pa,
+                None,
+                SuspicionType::SequenceSimilarity,
+                &pair_key,
+                pair_observed_at,
+            )
+            .await?;
+            record_with_evidence(
+                db,
+                game_id,
+                pb,
+                None,
+                SuspicionType::SequenceSimilarity,
+                &pair_key,
+                pair_observed_at,
+            )
+            .await?;
+        }
+
+        // Relay is directional temporal evidence, not evidence of identical
+        // global solve order. Evaluate it for every candidate independently of
+        // RSI so unrelated extra solves cannot hide a stable source→receiver lag.
+        if shared_count >= 6 {
+            let times_a: HashMap<i32, chrono::DateTime<chrono::Utc>> = raw_a
+                .iter()
+                .map(|solve| (solve.challenge_id, solve.submit_time_utc))
+                .collect();
+            let times_b: HashMap<i32, chrono::DateTime<chrono::Utc>> = raw_b
+                .iter()
+                .map(|solve| (solve.challenge_id, solve.submit_time_utc))
+                .collect();
+            let lags_a_to_b: Vec<f64> = shared_ids
+                .iter()
+                .filter_map(|challenge_id| {
+                    Some(minutes_between(
+                        *times_a.get(challenge_id)?,
+                        *times_b.get(challenge_id)?,
+                    ))
+                })
+                .filter(|lag| *lag > 1.0 && *lag <= 60.0)
+                .collect();
+            let lags_b_to_a: Vec<f64> = shared_ids
+                .iter()
+                .filter_map(|challenge_id| {
+                    Some(minutes_between(
+                        *times_b.get(challenge_id)?,
+                        *times_a.get(challenge_id)?,
+                    ))
+                })
+                .filter(|lag| *lag > 1.0 && *lag <= 60.0)
+                .collect();
+
+            if is_relay_pattern(&lags_a_to_b, shared_count) {
+                let source_key = format!("source:{pa}");
+                record_with_evidence(
+                    db,
+                    game_id,
+                    pb,
+                    None,
+                    SuspicionType::SolutionRelay,
+                    &source_key,
+                    pair_observed_at,
+                )
+                .await?;
+            }
+            if is_relay_pattern(&lags_b_to_a, shared_count) {
+                let source_key = format!("source:{pb}");
+                record_with_evidence(
+                    db,
+                    game_id,
+                    pa,
+                    None,
+                    SuspicionType::SolutionRelay,
+                    &source_key,
+                    pair_observed_at,
+                )
+                .await?;
+            }
         }
     }
 
-    // Solved-challenge set per participation.
-    let mut solved_by_part: BTreeMap<i32, HashSet<i32>> = BTreeMap::new();
-    for s in &accepted {
-        solved_by_part
-            .entry(s.participation_id)
-            .or_default()
-            .insert(s.challenge_id);
-    }
-
-    // Community median open/solve ratio (>= 4 solves & > 0 opens qualify).
-    // Plain sorted[len/2] index — NOT a true median — default 2.0 when empty.
-    let mut ratios: Vec<f64> = solved_by_part
-        .iter()
-        .filter_map(|(pid, solved)| {
-            let opened = opened_by_part.get(pid).map(|o| o.len()).unwrap_or(0);
-            if solved.len() >= 4 && opened > 0 {
-                Some(opened as f64 / solved.len() as f64)
-            } else {
-                None
-            }
-        })
-        .collect();
-    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let community_median = if ratios.is_empty() {
-        2.0
-    } else {
-        ratios[ratios.len() / 2]
-    };
-
-    // Suppress entirely if the whole game browses little (focused sprint).
-    if community_median >= 1.5 {
-        for (pid, solved) in &solved_by_part {
-            if solved.len() < 8 {
-                continue;
-            }
-            let opened = opened_by_part.get(pid).map(|o| o.len()).unwrap_or(0);
-            if opened == 0 {
-                continue;
-            }
-            let exploration_ratio = opened as f64 / solved.len() as f64;
-            if exploration_ratio >= 1.05 {
-                continue;
-            }
-            record(db, game_id, *pid, None, SuspicionType::DirectedSolving).await?;
-        }
+    // DirectedSolving intentionally has no actionable implementation. Raw
+    // ChallengeOpened events remain available as telemetry, but their
+    // best-effort absence/ratio cannot create immutable suspicion evidence.
+    if directed_solving_is_actionable() {
+        return Err(AppError::internal(
+            "DirectedSolving requires a durable barrier-fenced evidence source",
+        ));
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        directed_solving_is_actionable, is_relay_pattern, lcs_len, statistical_snapshot_is_final,
+        true_median, COLLABORATION_CANDIDATES_SQL,
+    };
+    use crate::services::suspicion::detectors::{
+        is_common_ordering_challenge, is_easy_challenge, ReconciliationSnapshot,
+    };
+
+    #[test]
+    fn sequence_candidates_are_canonical_indexed_and_unbounded() {
+        assert!(COLLABORATION_CANDIDATES_SQL.contains("\"FirstSolves\""));
+        assert!(COLLABORATION_CANDIDATES_SQL.contains("first_solve.challenge_id = ANY($5)"));
+        assert!(COLLABORATION_CANDIDATES_SQL.contains("HAVING COUNT(*) >= 3"));
+        assert!(!COLLABORATION_CANDIDATES_SQL.contains("LIMIT 50"));
+    }
+
+    #[test]
+    fn directed_solving_is_telemetry_only() {
+        assert!(!directed_solving_is_actionable());
+    }
+
+    #[test]
+    fn ordering_commonness_is_prevalence_only_and_strict() {
+        assert!(!is_common_ordering_challenge(0, 0));
+        assert!(!is_common_ordering_challenge(4, 10));
+        assert!(is_common_ordering_challenge(5, 10));
+        assert!(!is_common_ordering_challenge(1, 10));
+        assert!(is_easy_challenge(1, 10, 0.31));
+    }
+
+    #[test]
+    fn lcs_and_true_median_preserve_order_statistics() {
+        assert_eq!(lcs_len(&[1, 2, 3, 4], &[1, 3, 2, 4]), 3);
+        assert_eq!(true_median(vec![4.0, 1.0, 3.0, 2.0]), 2.5);
+        assert_eq!(true_median(vec![9.0, 1.0, 5.0]), 5.0);
+    }
+
+    #[test]
+    fn relay_is_directional_stable_and_independent_of_sequence_rsi() {
+        assert!(is_relay_pattern(&[8.0, 8.5, 9.0, 9.5, 10.0, 10.5], 8));
+        assert!(!is_relay_pattern(&[8.0, 8.5, 9.0, 9.5, 10.0, 10.5], 11));
+        assert!(!is_relay_pattern(&[2.0, 8.0, 14.0, 20.0, 26.0, 30.0], 6));
+        assert!(!is_relay_pattern(
+            &[-8.0, -8.5, -9.0, -9.5, -10.0, -10.5],
+            6
+        ));
+    }
+
+    #[test]
+    fn community_relative_statistics_are_final_only() {
+        assert!(!statistical_snapshot_is_final(ReconciliationSnapshot::Live));
+        assert!(statistical_snapshot_is_final(
+            ReconciliationSnapshot::BarrierBackedFinal
+        ));
+    }
 }

@@ -36,15 +36,36 @@ For a configuration-only run that does not start containers:
 ./scripts/install.sh --configure-only
 ```
 
-After installation, all normal operations are run from this directory:
+After installation, status and logs are read from this directory:
 
 ```bash
 cd deploy
 docker compose ps
 docker compose logs -f rsctf
-docker compose pull && docker compose up -d
 docker compose down
 ```
+
+An application upgrade is a maintenance cutover, not a plain `compose up`.
+Back up PostgreSQL and the files volume, resolve the reviewed release to one
+immutable digest, record the same value in `deploy/.env`, and use the helper
+shipped in this bundle:
+
+```bash
+cd deploy
+export RSCTF_IMAGE=ghcr.io/dimasma0305/rsctf@sha256:<verified-release-digest>
+docker compose pull
+../scripts/compose-maintenance-cutover.sh \
+  --project-name "${COMPOSE_PROJECT_NAME:-rsctf}" \
+  --project-directory "$PWD" \
+  --env-file .env \
+  --image "$RSCTF_IMAGE"
+```
+
+The helper stops and verifies every old runtime before migration and starts the
+new digest only after migration succeeds. A failure deliberately leaves the old
+containers stopped and preserves replica counts for a safe retry. Do not start
+an old image against the migrated database; restoring the pre-cutover database
+and files together is the rollback path.
 
 `COMPOSE_FILE` in `.env` automatically selects the requested features:
 

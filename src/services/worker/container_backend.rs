@@ -35,6 +35,16 @@ fn require_jeopardy_game_kind(game_kind: GameKind) -> AppResult<()> {
     Ok(())
 }
 
+fn require_proxy_only_workload(proxy_only: bool) -> AppResult<()> {
+    if proxy_only {
+        Ok(())
+    } else {
+        Err(AppError::unavailable(
+            "trusted worker workloads require authenticated PlatformProxy routing",
+        ))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkerHandle {
     pub workload_id: Uuid,
@@ -360,8 +370,8 @@ fn next_ready_poll(current: Duration) -> Duration {
 
 fn jittered_ready_poll(base: Duration, workload_id: Uuid, attempt: u64) -> Duration {
     let mut seed = attempt.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    for chunk in workload_id.as_bytes().chunks_exact(8) {
-        seed ^= u64::from_le_bytes(chunk.try_into().expect("UUID chunk is eight bytes"));
+    for chunk in workload_id.as_bytes().as_chunks::<8>().0 {
+        seed ^= u64::from_le_bytes(*chunk);
         seed = seed.rotate_left(17).wrapping_mul(0x94d0_49bb_1331_11eb);
     }
     let percent = 80 + seed % 41;
@@ -388,6 +398,7 @@ impl ContainerManager for WorkerContainerManager {
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
         require_jeopardy_game_kind(spec.game_kind)?;
         validate_container_spec(&spec)?;
+        require_proxy_only_workload(spec.proxy_only)?;
         if spec.ad_network.is_some() {
             return Err(AppError::bad_request(
                 "remote-worker A&D/KotH networking is not enabled; use the local Docker or Kubernetes backend",
@@ -441,8 +452,10 @@ impl ContainerManager for WorkerContainerManager {
         spec: ValidatedWorkloadSpec,
         operation_id: Option<String>,
         flag: Option<String>,
+        proxy_only: bool,
     ) -> AppResult<ContainerInfo> {
         require_jeopardy_game_kind(spec.game_kind)?;
+        require_proxy_only_workload(proxy_only)?;
         self.place_validated(spec, operation_id, flag).await
     }
 
@@ -780,6 +793,12 @@ mod tests {
         assert!(require_jeopardy_game_kind(GameKind::AttackDefense).is_err());
         assert!(require_jeopardy_game_kind(GameKind::KingOfTheHill).is_err());
         assert!(require_jeopardy_game_kind(GameKind::Jeopardy).is_ok());
+    }
+
+    #[test]
+    fn worker_workloads_fail_closed_without_platform_proxy_admission() {
+        assert!(require_proxy_only_workload(true).is_ok());
+        assert!(require_proxy_only_workload(false).is_err());
     }
 
     #[test]

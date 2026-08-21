@@ -623,29 +623,40 @@ pub(crate) async fn load_challenge(
 /// `challenge_id`. Insert-if-missing seeded with the division's default
 /// permissions — never clobbers an existing (possibly admin-tuned) row.
 pub(crate) async fn seed_division_configs(
-    st: &SharedState,
+    connection: &mut sqlx::PgConnection,
     game_id: i32,
     challenge_id: i32,
 ) -> AppResult<()> {
-    let divisions = division::Entity::find()
-        .filter(division::Column::GameId.eq(game_id))
-        .all(&st.db)
-        .await?;
-    for div in divisions {
-        let existing = division_challenge_config::Entity::find_by_id((div.id, challenge_id))
-            .one(&st.db)
-            .await?;
-        if existing.is_none() {
-            let am = division_challenge_config::ActiveModel {
-                division_id: Set(div.id),
-                challenge_id: Set(challenge_id),
-                permissions: Set(div.default_permissions),
-            };
-            am.insert(&st.db).await?;
-        }
-    }
+    // Division policy writers lock the parent row before replacing defaults or
+    // overrides, and final player/proxy authorization takes FOR SHARE on that
+    // same row. Seed under those parents in deterministic order and read the
+    // default only after acquiring the lock, so a completed revoke can never be
+    // followed by an override copied from its stale pre-revoke value.
+    sqlx::query(
+        r#"WITH locked_divisions AS MATERIALIZED (
+               SELECT id, default_permissions
+                 FROM "Divisions"
+                WHERE game_id = $1
+                ORDER BY id
+                FOR UPDATE
+           )
+           INSERT INTO "DivisionChallengeConfigs"
+                  (division_id, challenge_id, permissions)
+           SELECT id, $2, default_permissions
+             FROM locked_divisions
+           ON CONFLICT (division_id, challenge_id) DO NOTHING"#,
+    )
+    .bind(game_id)
+    .bind(challenge_id)
+    .execute(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "helpers_division_seed_tests.rs"]
+mod division_seed_tests;
 
 /// Batch-resolve challenge id -> title (skips the query on an empty id list to
 /// avoid a degenerate `IN ()`).

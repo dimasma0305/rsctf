@@ -20,6 +20,9 @@ image:
   repository: ghcr.io/dimasma0305/rsctf
   pullPolicy: IfNotPresent
   tag: latest
+  # Production cutovers should pin the verified manifest digest. When set,
+  # this takes precedence over tag and must use sha256:<64 lowercase hex>.
+  digest: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -32,7 +35,11 @@ existingSecret:
   name: ""
   databaseUrlKey: database-url
   jwtSecretKey: jwt-secret
+  identityHashKey: identity-hash-key
   bootstrapTokenKey: bootstrap-token
+  eventVpnCredentialKey: event-vpn-credential-key
+  eventSensorTokenKey: event-sensor-token
+  solveReceiptIssuerTokenKey: solve-receipt-issuer-token
   redisUrlKey: redis-url
   postgresqlPasswordKey: postgresql-password
   redisPasswordKey: redis-password
@@ -41,9 +48,17 @@ secrets:
   # Required when existingSecret.name is empty. Generate at least 32 random
   # bytes, for example: openssl rand -hex 32
   jwtSecret: ""
+  # Required when existingSecret.name is empty. This must be independent from
+  # jwtSecret and remain stable across restarts, replicas, and JWT rotations.
+  identityHashKey: ""
   # Optional. When empty, Helm generates and retains a 48-character first-admin
   # setup token in the release Secret.
   bootstrapToken: ""
+  # Optional when the related features stay disabled. When this chart manages
+  # the Secret, empty values are generated once and retained across upgrades.
+  eventVpnCredentialKey: ""
+  eventSensorToken: ""
+  solveReceiptIssuerToken: ""
 
 # Blob storage selection. Local storage remains the default and uses the PVC
 # below. S3 stores content-addressed blobs, but repositories, packet captures,
@@ -253,12 +268,12 @@ config:
   useCaptcha: false
   migrate: true
   logLevel: info
-  # Pool floor: 2 for migrate; 5R+2P+1 for engine; 5R+2P+13 for web;
-  # 5R+2P+3 for a non-VPN control/network owner; 5R+2P+6 for a VPN owner;
-  # or 5R+2P+15 / +18 for the corresponding all-in-one role.
+  # Pool floor: 2 for migrate; 5R+2P+3 for engine; 5R+2P+13 for web;
+  # 5R+2P+5 / +8 for non-VPN/VPN control; 5R+2P+3 / +6 for network;
+  # or 5R+2P+17 / +20 for the corresponding all-in-one role.
   provisioningConcurrency: 4
   repoScanConcurrency: 1
-  dbMaxConnections: 32
+  dbMaxConnections: 33
   # Reserve this otherwise-unused numeric UID range for simultaneous process
   # checkers. The budget is also the per-rsctf-process custom-checker cap.
   checkerUidBase: 60000
@@ -266,6 +281,10 @@ config:
   # Four maximum-size A&D submit batches per participation, then 10 flags/s.
   # Increase only for a controlled, isolated load campaign.
   adSubmitBurstFlags: 400
+  # All/control/engine full-history anti-cheat sweep interval (1..3600 seconds).
+  suspicionReconcileSeconds: 30
+  # Pause ended-game sweeps before the barrier-backed final pass.
+  suspicionFinalizeGraceSeconds: 360
   containerMaxMemoryMb: 4096
   containerMaxCpuCount: 8
 
@@ -320,6 +339,9 @@ kubernetes:
   # is the cluster Service CIDR used by provisioning and checker isolation,
   # not a CIDR selected by this chart.
   adServiceCidr: ""
+  # Explicit operator acknowledgement. Set true only after a cross-Pod probe
+  # proves the cluster CNI enforces networking.k8s.io/v1 NetworkPolicy.
+  networkPolicyEnforced: false
   isolatedPodNetns: true
 
 docker:
@@ -341,12 +363,32 @@ vpn:
   servicesCidr: 10.13.40.0/24
   dns: 1.1.1.1
   allowedIps: ""
+  # HTTPS origin used only to mint the 30-second event-access proof. Route the
+  # origin's exact address through WireGuard and keep it on the same browser
+  # origin as rsctf so the session cookie is never shared cross-origin.
+  eventProofUrl: ""
+  # Comma-separated split-tunnel routes for event-only HTTP/assets/proxy use.
+  # Include the eventProofUrl address as a /32; default routes are rejected.
+  eventAllowedIps: ""
   devicePath: /dev/net/tun
   service:
     type: LoadBalancer
     port: 51820
     annotations: {}
     externalTrafficPolicy: Local
+  sensor:
+    # The sidecar shares the Pod network namespace with the singleton VPN
+    # owner. It receives NET_RAW only, no database URL and no NET_ADMIN.
+    enabled: false
+    interface: wg0
+    asnFile: ""
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        cpu: 500m
+        memory: 128Mi
 
 # Appended directly to the rsctf container. Use secretKeyRef/valueFrom for any
 # additional credentials; do not place credentials in config.extraEnv values.

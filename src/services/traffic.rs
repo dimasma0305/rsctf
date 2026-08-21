@@ -645,11 +645,11 @@ fn tcp_segment(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
 /// Standard internet 16-bit ones-complement checksum over `bytes`.
 fn ones_complement_checksum(bytes: &[u8]) -> u16 {
     let mut sum: u32 = 0;
-    let mut chunks = bytes.chunks_exact(2);
-    for pair in &mut chunks {
-        sum += u16::from_be_bytes([pair[0], pair[1]]) as u32;
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+    for pair in pairs {
+        sum += u16::from_be_bytes(*pair) as u32;
     }
-    if let [last] = chunks.remainder() {
+    if let [last] = remainder {
         sum += (*last as u32) << 8;
     }
     while (sum >> 16) != 0 {

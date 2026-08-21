@@ -930,6 +930,13 @@ async function positiveReadAndMutationSurface() {
   await call('edit_game_update', { jwt: identities.managerJwt, body: updatedGameBody });
   const salt = await call('edit_game_hash_salt', { jwt: identities.managerJwt });
   requireCondition(/^[a-f0-9]{64}$/.test(salt.model), 'game hash salt is not a SHA-256 value');
+  const variants = await call('edit_variants_get', { jwt: identities.managerJwt });
+  requireCondition(Array.isArray(variants.model), 'variant ledger response is not an array');
+  const generatedVariants = await call('edit_variants_generate', { jwt: identities.managerJwt });
+  requireCondition(
+    generatedVariants.model.generated === 0,
+    'fixture with no configured generators unexpectedly created variants',
+  );
 
   const clone = await call('edit_game_clone', {
     body: {

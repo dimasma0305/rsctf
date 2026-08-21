@@ -11,7 +11,9 @@ const users = [
 
 test("cohort seed is one atomic statement with database-owned identity mapping", () => {
   const query = cohortSeedQuery(77, 100);
-  assert.match(query, /^WITH cohort AS MATERIALIZED/);
+  assert.match(query, /^WITH neutral_provisioning AS MATERIALIZED/);
+  assert.match(query, /set_config\('rsctf\.identity_neutral_insert','1',true\)/);
+  assert.match(query, /CROSS JOIN neutral_provisioning/);
   assert.equal((query.match(/INSERT INTO/g) || []).length, 5);
   assert.match(query, /FROM generate_series\(1,100\)/);
   assert.match(query, /'LT77_' \|\| cohort\.ordinal/);

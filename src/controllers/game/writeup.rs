@@ -102,9 +102,13 @@ pub async fn submit_writeup(
     let (_blob, deleted_hash) = crate::services::blob_refs::store_and_replace_writeup(
         st.pg(),
         st.storage.as_ref(),
-        ctx.game.id,
-        ctx.participation.id,
-        user.id,
+        crate::services::live_roster::LiveParticipationIdentity {
+            user_id: user.id,
+            expected_security_stamp: &user.security_stamp,
+            game_id: ctx.game.id,
+            team_id: ctx.participation.team_id,
+            participation_id: ctx.participation.id,
+        },
         &name,
         &bytes,
     )

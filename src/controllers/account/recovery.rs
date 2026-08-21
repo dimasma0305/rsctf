@@ -2,6 +2,7 @@
 //! — split from account/mod.rs to stay under the 1000-line rule.
 use super::*;
 use sea_orm::sea_query::Expr;
+use sea_orm::DatabaseTransaction;
 
 const RECOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const RECOVERY_RESPONSE_FLOOR: std::time::Duration = std::time::Duration::from_millis(25);
@@ -80,6 +81,21 @@ enum EmailUpdateOutcome {
     StampMismatch,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmailUpdateMode {
+    Immediate,
+    ConfirmedTicket,
+}
+
+struct EmailUpdateRequest<'a> {
+    user_id: Uuid,
+    expected_stamp: &'a str,
+    email: &'a str,
+    normalized_email: &'a str,
+    new_stamp: String,
+    mode: EmailUpdateMode,
+}
+
 /// Commit an email identity change under the same cross-replica lock used by
 /// password registration, OAuth provisioning, and admin identity writers.
 /// `normalized_email` is not protected by a database unique constraint on
@@ -87,11 +103,8 @@ enum EmailUpdateOutcome {
 /// any earlier handler-level lookup is only a fast failure path.
 async fn update_email_serialized(
     pool: &sqlx::PgPool,
-    user_id: Uuid,
-    expected_stamp: &str,
-    email: &str,
-    normalized_email: &str,
-    new_stamp: String,
+    config: &crate::models::internal::configs::AppConfig,
+    request: EmailUpdateRequest<'_>,
 ) -> AppResult<EmailUpdateOutcome> {
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
@@ -102,14 +115,28 @@ async fn update_email_serialized(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
+    // REGISTRATION_LOCK_ID precedes the shared account-policy lock everywhere
+    // a user identity can be created or changed. Revalidate the domain and
+    // confirmation mode here, after any admin policy update we waited behind.
+    let policy =
+        crate::services::anti_cheat::lock_and_load_account_policy(&mut transaction, config).await?;
+    if !verify_email_domain(request.email, &policy.email_domain_list) {
+        return Err(AppError::bad_request("Email domain is not allowed"));
+    }
+    if request.mode == EmailUpdateMode::Immediate && policy.email_confirmation_required {
+        return Err(AppError::bad_request(
+            "Email confirmation policy changed; retry the email change",
+        ));
+    }
+
     let collision: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(
                SELECT 1 FROM "AspNetUsers"
                 WHERE normalized_email = $1 AND id <> $2
            )"#,
     )
-    .bind(normalized_email)
-    .bind(user_id)
+    .bind(request.normalized_email)
+    .bind(request.user_id)
     .fetch_one(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -127,13 +154,17 @@ async fn update_email_serialized(
                   normalized_email = $2,
                   email_confirmed = TRUE,
                   security_stamp = $3
-            WHERE id = $4 AND security_stamp = $5"#,
+            WHERE id = $4
+              AND security_stamp = $5
+              AND email_confirmed = TRUE
+              AND role <> $6"#,
     )
-    .bind(email)
-    .bind(normalized_email)
-    .bind(new_stamp)
-    .bind(user_id)
-    .bind(expected_stamp)
+    .bind(request.email)
+    .bind(request.normalized_email)
+    .bind(request.new_stamp)
+    .bind(request.user_id)
+    .bind(request.expected_stamp)
+    .bind(Role::Banned as i16)
     .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -166,6 +197,35 @@ pub(super) async fn invalidate_password_reset_tokens(st: &SharedState, user_id: 
     }
 }
 
+async fn update_authenticated_password(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    expected_security_stamp: &str,
+    expected_password_hash: &str,
+    new_password_hash: String,
+    new_security_stamp: &str,
+) -> AppResult<bool> {
+    let updated = sqlx::query(
+        r#"UPDATE "AspNetUsers"
+              SET password_hash = $1, security_stamp = $2
+            WHERE id = $3
+              AND security_stamp = $4
+              AND password_hash = $5
+              AND email_confirmed = TRUE
+              AND role <> $6"#,
+    )
+    .bind(new_password_hash)
+    .bind(new_security_stamp)
+    .bind(user_id)
+    .bind(expected_security_stamp)
+    .bind(expected_password_hash)
+    .bind(Role::Banned as i16)
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(updated.rows_affected() == 1)
+}
+
 /// `POST /api/account/logout` -> `void`. Valid sessions are revoked; invalid or
 /// deleted sessions still receive a clearing cookie so the browser can recover.
 pub async fn logout(
@@ -173,10 +233,18 @@ pub async fn logout(
     MaybeUser(user): MaybeUser,
 ) -> AppResult<Response> {
     if let Some(user) = user {
-        let current = load_user(&st, user.id).await?;
-        let mut am: user::ActiveModel = current.into();
-        am.security_stamp = Set(Some(Uuid::new_v4().to_string()));
-        am.update(&st.db).await?;
+        // A stale cached request may clear its own browser cookie, but it must
+        // not rotate a newer live session that was issued after this JWT.
+        sqlx::query(
+            r#"UPDATE "AspNetUsers" SET security_stamp = $1
+                WHERE id = $2 AND security_stamp = $3"#,
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(user.id)
+        .bind(&user.security_stamp)
+        .execute(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     }
 
     let mut resp = StatusCode::OK.into_response();
@@ -192,18 +260,33 @@ pub async fn change_password(
 ) -> AppResult<Response> {
     validate_password(&model.new)?;
     let current = load_user(&st, user.id).await?;
+    if !current.email_confirmed
+        || current.role == Role::Banned
+        || current.security_stamp.as_deref() != Some(user.security_stamp.as_str())
+    {
+        return Err(AppError::Unauthorized);
+    }
+    let old_hash = current.password_hash.clone().unwrap_or_default();
     if model.old.len() > MAX_PASSWORD_BYTES {
         return Err(AppError::bad_request("Old password is incorrect"));
     }
-    if !verify_password_async(model.old, current.password_hash.clone().unwrap_or_default()).await {
+    if !verify_password_async(model.old, old_hash.clone()).await {
         return Err(AppError::bad_request("Old password is incorrect"));
     }
     let new_hash = hash_password_async(model.new).await?;
     let new_stamp = Uuid::new_v4().to_string();
-    let mut am: user::ActiveModel = current.into();
-    am.password_hash = Set(Some(new_hash));
-    am.security_stamp = Set(Some(new_stamp.clone()));
-    am.update(&st.db).await?;
+    if !update_authenticated_password(
+        st.pg(),
+        user.id,
+        &user.security_stamp,
+        &old_hash,
+        new_hash,
+        &new_stamp,
+    )
+    .await?
+    {
+        return Err(AppError::Unauthorized);
+    }
     invalidate_password_reset_tokens(&st, user.id).await;
 
     crate::services::audit::info(
@@ -239,15 +322,18 @@ pub async fn recovery(
     // enforced when the live `AccountPolicy:UseCaptcha` is on, so captcha-off
     // recovery is unaffected. `PasswordReset` carries no captcha token and is
     // intentionally NOT gated (RSCTF verifies captcha only on recovery, not reset).
-    let captcha = crate::services::captcha::CaptchaSettings::load(&st.db).await;
-    if captcha.use_captcha
-        && !captcha
-            .service()
-            .verify(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
-            .await?
-    {
-        return Err(AppError::bad_request("Captcha failed"));
-    }
+    let captcha =
+        crate::services::captcha::CaptchaSettings::load(st.pg(), st.config.account.use_captcha)
+            .await?;
+    let captcha_admission = captcha
+        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .await?;
+    crate::services::anti_cheat::authorize_captcha_admission(
+        st.pg(),
+        st.config.as_ref(),
+        captcha_admission,
+    )
+    .await?;
 
     let response_started = tokio::time::Instant::now();
     let norm_email = if model.email.len() <= MAX_EMAIL_BYTES {
@@ -430,54 +516,6 @@ pub async fn password_reset(
     Ok(resp)
 }
 
-/// `POST /api/account/verify` -> `void`.
-///
-/// Confirm an account's email using a cached single-use confirmation token. With
-/// no token present (the store is empty in the default wiring) the request
-/// degrades to a plain success rather than erroring — it never returns 500.
-pub async fn verify(
-    State(st): State<SharedState>,
-    Json(model): Json<AccountVerifyModel>,
-) -> AppResult<MessageResponse> {
-    if model.token.len() > MAX_ACCOUNT_TOKEN_BYTES || model.email.len() > MAX_ENCODED_EMAIL_BYTES {
-        return Ok(MessageResponse::ok(""));
-    }
-    let key = format!("emailconfirm:{}", model.token);
-    if let Some(user_id) = st.cache.get(&key).await.and_then(|b| {
-        std::str::from_utf8(&b)
-            .ok()
-            .and_then(|s| Uuid::parse_str(s).ok())
-    }) {
-        // Act only when the token maps to the account named by the (base64) email.
-        let email = crate::utils::codec::base64_decode(&model.email)
-            .and_then(|b| String::from_utf8(b).ok())
-            .map(|e| e.trim().to_uppercase());
-
-        if let Some(current) = user::Entity::find_by_id(user_id).one(&st.db).await? {
-            if email.is_none() || current.normalized_email.as_deref() == email.as_deref() {
-                let name = current.user_name.clone().unwrap_or_default();
-                let mut am: user::ActiveModel = current.into();
-                am.email_confirmed = Set(true);
-                am.update(&st.db).await?;
-
-                // RSCTF `AccountController` audit event (`Account_EmailVerified`).
-                // Best-effort.
-                crate::services::audit::info(
-                    &st,
-                    "AccountController",
-                    Some(name.clone()),
-                    None,
-                    format!("User {name} verified email"),
-                )
-                .await;
-            }
-        }
-        st.cache.remove(&key).await;
-    }
-
-    Ok(MessageResponse::ok(""))
-}
-
 /// `PUT /api/account/changeemail` -> `RequestResponseOfBoolean`.
 ///
 /// Re-authentication is mandatory in both modes so possession of a session JWT
@@ -497,6 +535,12 @@ pub async fn change_email(
     let norm = new_mail.to_uppercase();
 
     let current = load_user(&st, user.id).await?;
+    if !current.email_confirmed
+        || current.role == Role::Banned
+        || current.security_stamp.as_deref() != Some(user.security_stamp.as_str())
+    {
+        return Err(AppError::Unauthorized);
+    }
     if model.password.len() > MAX_PASSWORD_BYTES {
         return Err(AppError::bad_request("Current password is incorrect"));
     }
@@ -508,11 +552,7 @@ pub async fn change_email(
     {
         return Err(AppError::bad_request("Current password is incorrect"));
     }
-    let expected_stamp = current
-        .security_stamp
-        .clone()
-        .filter(|stamp| !stamp.is_empty())
-        .ok_or(AppError::Unauthorized)?;
+    let expected_stamp = user.security_stamp.clone();
     if user::Entity::find()
         .filter(user::Column::NormalizedEmail.eq(norm.clone()))
         .filter(user::Column::Id.ne(user.id))
@@ -577,11 +617,15 @@ pub async fn change_email(
         let new_stamp = Uuid::new_v4().to_string();
         match update_email_serialized(
             st.pg(),
-            user.id,
-            &expected_stamp,
-            &new_mail,
-            &norm,
-            new_stamp.clone(),
+            st.config.as_ref(),
+            EmailUpdateRequest {
+                user_id: user.id,
+                expected_stamp: &expected_stamp,
+                email: &new_mail,
+                normalized_email: &norm,
+                new_stamp: new_stamp.clone(),
+                mode: EmailUpdateMode::Immediate,
+            },
         )
         .await?
         {
@@ -692,11 +736,15 @@ pub async fn mail_change_confirm(
     let name = current.user_name.clone().unwrap_or_default();
     match update_email_serialized(
         st.pg(),
-        ticket.user_id,
-        &ticket.security_stamp,
-        &ticket.new_email,
-        &normalized,
-        Uuid::new_v4().to_string(),
+        st.config.as_ref(),
+        EmailUpdateRequest {
+            user_id: ticket.user_id,
+            expected_stamp: &ticket.security_stamp,
+            email: &ticket.new_email,
+            normalized_email: &normalized,
+            new_stamp: Uuid::new_v4().to_string(),
+            mode: EmailUpdateMode::ConfirmedTicket,
+        },
     )
     .await?
     {
@@ -724,156 +772,5 @@ pub async fn mail_change_confirm(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-    use std::str::FromStr;
-
-    #[test]
-    fn unknown_login_uses_a_valid_dummy_argon2_hash() {
-        assert!(argon2::PasswordHash::new(DUMMY_PASSWORD_HASH).is_ok());
-        assert!(!crate::utils::crypto_utils::verify_password(
-            "any submitted password",
-            DUMMY_PASSWORD_HASH,
-        ));
-    }
-
-    #[test]
-    fn email_domain_validation_requires_one_complete_address() {
-        assert!(verify_email_domain("user@allowed.test", "allowed.test"));
-        assert!(verify_email_domain("user@allowed.test", "ALLOWED.TEST"));
-        assert!(!verify_email_domain(
-            "user@allowed.test@evil.test",
-            "allowed.test"
-        ));
-        assert!(!verify_email_domain("@allowed.test", "allowed.test"));
-        assert!(!verify_email_domain("user@", ""));
-    }
-
-    #[test]
-    fn email_change_ticket_is_bound_to_the_security_stamp() {
-        let ticket = EmailChangeTicket {
-            user_id: Uuid::nil(),
-            new_email: "new@example.test".to_string(),
-            security_stamp: "stamp-1".to_string(),
-        };
-        let encoded = serde_json::to_vec(&ticket).unwrap();
-        let decoded: EmailChangeTicket = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(decoded.security_stamp, "stamp-1");
-    }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn email_change_rechecks_identity_after_a_registration_lock_wait() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let admin = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .unwrap();
-        let schema = format!("rsctf_email_identity_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-            .execute(&admin)
-            .await
-            .unwrap();
-        let options = PgConnectOptions::from_str(&database_url)
-            .unwrap()
-            .options([("search_path", schema.as_str())]);
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect_with(options)
-            .await
-            .unwrap();
-        sqlx::query(
-            r#"CREATE TABLE "AspNetUsers" (
-                 id UUID PRIMARY KEY,
-                 email TEXT,
-                 normalized_email TEXT,
-                 email_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
-                 security_stamp TEXT
-               )"#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let changer = Uuid::new_v4();
-        sqlx::query(
-            r#"INSERT INTO "AspNetUsers"
-                 (id, email, normalized_email, email_confirmed, security_stamp)
-               VALUES ($1, 'old@example.test', 'OLD@EXAMPLE.TEST', TRUE, 'stamp-old')"#,
-        )
-        .bind(changer)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        // Model a public/OAuth/admin registration that selected the requested
-        // email while holding the shared identity lock but has not committed.
-        let mut registration = crate::utils::database::begin_sqlx_transaction(&pool)
-            .await
-            .unwrap();
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(REGISTRATION_LOCK_ID)
-            .execute(&mut *registration)
-            .await
-            .unwrap();
-        sqlx::query(
-            r#"INSERT INTO "AspNetUsers"
-                 (id, email, normalized_email, email_confirmed, security_stamp)
-               VALUES ($1, 'claimed@example.test', 'CLAIMED@EXAMPLE.TEST', TRUE, 'stamp-owner')"#,
-        )
-        .bind(Uuid::new_v4())
-        .execute(&mut *registration)
-        .await
-        .unwrap();
-
-        let contender = tokio::spawn({
-            let pool = pool.clone();
-            async move {
-                update_email_serialized(
-                    &pool,
-                    changer,
-                    "stamp-old",
-                    "claimed@example.test",
-                    "CLAIMED@EXAMPLE.TEST",
-                    "stamp-new".to_string(),
-                )
-                .await
-            }
-        });
-        tokio::task::yield_now().await;
-        registration.commit().await.unwrap();
-
-        assert_eq!(
-            contender.await.unwrap().unwrap(),
-            EmailUpdateOutcome::Conflict
-        );
-        let changer_identity: (Option<String>, Option<String>) = sqlx::query_as(
-            r#"SELECT normalized_email, security_stamp
-                 FROM "AspNetUsers" WHERE id = $1"#,
-        )
-        .bind(changer)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            changer_identity,
-            (Some("OLD@EXAMPLE.TEST".into()), Some("stamp-old".into()))
-        );
-        let owners: i64 = sqlx::query_scalar(
-            r#"SELECT COUNT(*)::bigint FROM "AspNetUsers"
-                WHERE normalized_email = 'CLAIMED@EXAMPLE.TEST'"#,
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(owners, 1);
-
-        pool.close().await;
-        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-            .execute(&admin)
-            .await
-            .unwrap();
-    }
-}
+#[path = "recovery_tests.rs"]
+mod tests;

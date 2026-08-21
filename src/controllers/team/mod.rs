@@ -7,28 +7,33 @@
 
 use std::collections::BTreeSet;
 
-use axum::extract::{DefaultBodyLimit, Path, State};
-use axum::http::StatusCode;
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
 };
+use serde::Deserialize;
+use std::net::SocketAddr;
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::models::data::{container, game_instance, participation, team, team_member, user};
+use crate::services::anti_cheat;
 use crate::utils::codec::random_hex;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
+mod account_lifecycle;
 mod avatar;
 mod lifecycle;
 mod models;
 mod revocation;
 mod roster_policy;
+pub(crate) use account_lifecycle::{create_team_rows, transfer_captain_locked};
 pub use avatar::avatar;
 pub use models::*;
 pub(crate) use revocation::{
@@ -103,7 +108,14 @@ pub async fn create_team(
     if name.is_empty() {
         return Err(AppError::bad_request("Team name cannot be empty"));
     }
-    let team_id = create_team_rows(st.pg(), user.id, &name, model.bio.as_deref()).await?;
+    let team_id = create_team_rows(
+        st.pg(),
+        user.id,
+        &user.security_stamp,
+        &name,
+        model.bio.as_deref(),
+    )
+    .await?;
     let team = load_team(&st, team_id).await?;
 
     // RSCTF `Team_Created` — "Create team {name}" (TeamController, Success).
@@ -118,65 +130,6 @@ pub async fn create_team(
 
     let info = to_info(&st, &team, true).await?;
     Ok(RequestResponse::ok(info))
-}
-
-/// Atomically enforce account liveness + the captain limit, then create both
-/// ownership rows. The account lock is the hand-off with admin deletion: one
-/// side commits first and the other must observe either the new captaincy or
-/// the durable Banned role.
-pub(crate) async fn create_team_rows(
-    pool: &sqlx::PgPool,
-    creator_id: Uuid,
-    name: &str,
-    bio: Option<&str>,
-) -> AppResult<i32> {
-    let mut transaction = pool
-        .begin()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let role: Option<i16> =
-        sqlx::query_scalar(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#)
-            .bind(creator_id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    if role.is_none_or(|role| role == crate::utils::enums::Role::Banned as i16) {
-        return Err(AppError::Forbidden);
-    }
-    let captained: i64 =
-        sqlx::query_scalar(r#"SELECT COUNT(*)::bigint FROM "Teams" WHERE captain_id = $1"#)
-            .bind(creator_id)
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    if captained >= MAX_TEAMS_ALLOWED as i64 {
-        return Err(AppError::bad_request("Exceeded team creation limit"));
-    }
-
-    let team_id: i32 = sqlx::query_scalar(
-        r#"INSERT INTO "Teams"
-             (name, bio, avatar_hash, locked, invite_token, captain_id)
-           VALUES ($1, $2, NULL, FALSE, $3, $4)
-        RETURNING id"#,
-    )
-    .bind(name)
-    .bind(bio)
-    .bind(random_hex(16))
-    .bind(creator_id)
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES ($1, $2)"#)
-        .bind(team_id)
-        .bind(creator_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(team_id)
 }
 
 /// `PUT /api/team/{id}` — update name/bio (captain only).
@@ -316,17 +269,43 @@ pub async fn update_invite_token(
 }
 
 /// `POST /api/team/accept` — join a team via its invite code (`name:id:token`).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum TeamAcceptModel {
+    Legacy(String),
+    Identity(TeamAcceptIdentityModel),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamAcceptIdentityModel {
+    pub code: String,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub fingerprint_proof: Option<String>,
+}
+
 async fn lock_live_roster_account(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
+    expected_security_stamp: &str,
 ) -> AppResult<()> {
-    let role: Option<i16> =
-        sqlx::query_scalar(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR SHARE"#)
-            .bind(user_id)
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    if role.is_none_or(|role| role == crate::utils::enums::Role::Banned as i16) {
+    let account = sqlx::query_as::<_, (bool, i16, Option<String>)>(
+        r#"SELECT email_confirmed, role, security_stamp
+             FROM "AspNetUsers"
+            WHERE id = $1
+            FOR SHARE"#,
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if account.is_none_or(|(confirmed, role, stamp)| {
+        !confirmed
+            || role == crate::utils::enums::Role::Banned as i16
+            || stamp.as_deref() != Some(expected_security_stamp)
+    }) {
         return Err(AppError::Forbidden);
     }
     Ok(())
@@ -334,9 +313,20 @@ async fn lock_live_roster_account(
 
 pub async fn accept(
     State(st): State<SharedState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     user: CurrentUser,
-    Json(code): Json<String>,
+    Json(model): Json<TeamAcceptModel>,
 ) -> AppResult<StatusCode> {
+    let (code, submitted_fingerprint, submitted_proof, legacy_request) = match model {
+        TeamAcceptModel::Legacy(code) => (code, None, None, true),
+        TeamAcceptModel::Identity(model) => (
+            model.code,
+            model.fingerprint,
+            model.fingerprint_proof,
+            false,
+        ),
+    };
     // Invite code format: `{name}:{id}:{token}` where token is 32 lowercase hex.
     // Team names may themselves contain colons, so split on the *last* colon of
     // the prefix (matching RSCTF's `LastIndexOf(':')`).
@@ -360,16 +350,25 @@ pub async fn accept(
     let team_id: i32 = pre_code[last_colon + 1..]
         .parse()
         .map_err(|_| AppError::bad_request("Invalid invite code"))?;
+    let preflight_policy = anti_cheat::load_policy_flags(st.pg()).await?;
+    if legacy_request && preflight_policy.fingerprint_required() {
+        return Err(AppError::bad_request(
+            "A fresh browser fingerprint proof is required to join a team.",
+        ));
+    }
+    let fingerprint = anti_cheat::validate_fingerprint_submission(
+        &st,
+        preflight_policy,
+        submitted_fingerprint.as_deref(),
+        submitted_proof.as_deref(),
+    )
+    .await?;
+    let current_ip = anti_cheat::client_ip(&headers, Some(peer.ip()));
 
     let roster_key = format!("team-roster:{team_id}");
     let _roster_guard = crate::utils::single_flight::coalesce(&roster_key).await;
     let mut distributed =
         crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &roster_key).await?;
-    // Retain a share lock until the membership insert commits. Account deletion
-    // first takes the conflicting row lock and sets Role::Banned, so it either
-    // waits for this membership (and snapshots it) or this request observes the
-    // fence and cannot create a late roster entry.
-    lock_live_roster_account(distributed.transaction_mut(), user.id).await?;
     let team: Option<(String, String, bool, Uuid)> = sqlx::query_as(
         r#"SELECT name, invite_token, deletion_pending, captain_id
               FROM "Teams" WHERE id = $1"#,
@@ -403,7 +402,6 @@ pub async fn accept(
     if already_member {
         return Err(AppError::bad_request("Already a member of this team"));
     }
-    ensure_roster_change_allowed(distributed.transaction_mut(), team_id).await?;
     let member_count: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*)::bigint
               FROM (
@@ -419,6 +417,34 @@ pub async fn accept(
     if member_count >= MAX_TEAM_MEMBERS as i64 {
         return Err(AppError::bad_request("Team is full"));
     }
+
+    // Registration happens before a user belongs to a team, so per-team
+    // uniqueness must be re-evaluated in the same serialized transaction as
+    // this roster insert. Otherwise register-then-join bypasses the policy.
+    let identity_admission = admit_team_member_with_roster_fence(
+        distributed.transaction_mut(),
+        st.config.as_ref(),
+        user.id,
+        Some(&user.name),
+        team_id,
+        current_ip.as_deref(),
+        fingerprint.as_deref(),
+    )
+    .await?;
+    if identity_admission == anti_cheat::AdmissionOutcome::Blocked {
+        // Commit the rejected-attempt audit, but never insert the membership.
+        distributed.release().await?;
+        return Err(AppError::Coded {
+            http: StatusCode::FORBIDDEN,
+            code: 403,
+            title: anti_cheat::block_message().to_string(),
+        });
+    }
+
+    // Identity locks precede the account row lock. Retain this share lock until
+    // the membership insert commits so deletion either snapshots the new
+    // membership or this request observes the durable banned fence.
+    lock_live_roster_account(distributed.transaction_mut(), user.id, &user.security_stamp).await?;
 
     // Add the caller to the roster (RSCTF `team.Members.Add(user)`).
     sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES ($1, $2)"#)
@@ -443,6 +469,33 @@ pub async fn accept(
     // `void` with no JSON parse, so emit an empty 200 rather than a `{title,status}`
     // body.
     Ok(StatusCode::OK)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn admit_team_member_with_roster_fence(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    config: &crate::models::internal::configs::AppConfig,
+    user_id: Uuid,
+    user_name: Option<&str>,
+    team_id: i32,
+    current_ip: Option<&str>,
+    fingerprint: Option<&str>,
+) -> AppResult<anti_cheat::AdmissionOutcome> {
+    let outcome = anti_cheat::admit_team_member_in_transaction(
+        transaction,
+        config,
+        user_id,
+        user_name,
+        team_id,
+        current_ip,
+        fingerprint,
+    )
+    .await?;
+    // Identity policy/user/value locks must precede the roster's Game fences.
+    // Game registration uses the same roster -> identity -> Games order; a
+    // queued exclusive policy update can otherwise complete a three-way cycle.
+    ensure_roster_change_allowed(transaction, team_id).await?;
+    Ok(outcome)
 }
 
 /// `POST /api/team/{id}/leave` — leave a team. A captain must atomically transfer
@@ -557,6 +610,7 @@ pub async fn transfer(
         distributed.transaction_mut(),
         id,
         user.id,
+        &user.security_stamp,
         model.new_captain_id,
     )
     .await?;
@@ -564,97 +618,6 @@ pub async fn transfer(
     let team = load_team(&st, id).await?;
     let info = to_info(&st, &team, true).await?;
     Ok(RequestResponse::ok(info))
-}
-
-async fn transfer_captain_locked(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    team_id: i32,
-    current_captain_id: Uuid,
-    new_captain_id: Uuid,
-) -> AppResult<()> {
-    let team: Option<(Uuid, bool, bool)> = sqlx::query_as(
-        r#"SELECT captain_id, locked, deletion_pending
-              FROM "Teams" WHERE id = $1"#,
-    )
-    .bind(team_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let Some((captain_id, locked, deletion_pending)) = team else {
-        return Err(AppError::not_found("Team not found"));
-    };
-    if captain_id != current_captain_id {
-        return Err(AppError::Forbidden);
-    }
-    if deletion_pending {
-        return Err(AppError::conflict("Team is being deleted"));
-    }
-    if locked {
-        let active_game: bool = sqlx::query_scalar(
-            r#"SELECT EXISTS(
-                   SELECT 1
-                     FROM "Participations" participation
-                     JOIN "Games" game ON game.id = participation.game_id
-                    WHERE participation.team_id = $1
-                      AND game.end_time_utc > clock_timestamp()
-               )"#,
-        )
-        .bind(team_id)
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        if active_game {
-            return Err(AppError::bad_request("Team is locked by an active game"));
-        }
-    }
-    let target_is_member: bool = new_captain_id == captain_id
-        || sqlx::query_scalar(
-            r#"SELECT EXISTS(
-                   SELECT 1 FROM "TeamMembers"
-                    WHERE team_id = $1 AND user_id = $2
-               )"#,
-        )
-        .bind(team_id)
-        .bind(new_captain_id)
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if !target_is_member {
-        return Err(AppError::bad_request(
-            "New captain must already be a team member",
-        ));
-    }
-
-    // FOR UPDATE serializes the captain limit across teams and conflicts with
-    // the admin deletion fence. A pre-authenticated transfer therefore cannot
-    // make an already-fenced account the new captain.
-    let target_role: Option<i16> =
-        sqlx::query_scalar(r#"SELECT role FROM "AspNetUsers" WHERE id = $1 FOR UPDATE"#)
-            .bind(new_captain_id)
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    if target_role.is_none_or(|role| role == crate::utils::enums::Role::Banned as i16) {
-        return Err(AppError::bad_request("New captain not found"));
-    }
-    let captained: i64 =
-        sqlx::query_scalar(r#"SELECT COUNT(*)::bigint FROM "Teams" WHERE captain_id = $1"#)
-            .bind(new_captain_id)
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    if captained >= MAX_TEAMS_ALLOWED as i64 {
-        return Err(AppError::bad_request(
-            "New captain already captains too many teams",
-        ));
-    }
-    sqlx::query(r#"UPDATE "Teams" SET captain_id = $1 WHERE id = $2"#)
-        .bind(new_captain_id)
-        .bind(team_id)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
 }
 
 /// `POST /api/team/verify` — verify a team signature. Mirrors RSCTF

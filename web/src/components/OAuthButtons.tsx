@@ -1,5 +1,5 @@
-import { Button, Divider, Stack } from '@mantine/core'
-import { mdiGoogle } from '@mdi/js'
+import { Alert, Button, Divider, Stack, Text } from '@mantine/core'
+import { mdiGoogle, mdiShieldLockOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -24,6 +24,26 @@ export const OAuthButtons: FC = () => {
   const params = useSearchParams()[0]
 
   if (!config.enableGoogleAuth && !config.enableDiscordAuth) return null
+
+  if (config.enableBrowserFingerprint) {
+    return (
+      <Alert
+        w="100%"
+        color="blue"
+        variant="light"
+        role="note"
+        icon={<Icon path={mdiShieldLockOutline} size={0.9} aria-hidden />}
+        title={t('account.oauth.fingerprint_disabled_title', 'External sign-in unavailable')}
+      >
+        <Text size="sm">
+          {t(
+            'account.oauth.fingerprint_disabled_detail',
+            'Browser Fingerprinting is enabled, but an external-provider redirect cannot return a validated fingerprint. Use your username or email and password.'
+          )}
+        </Text>
+      </Alert>
+    )
+  }
 
   const from = params.get('from') ?? '/'
   const go = (provider: string) => {

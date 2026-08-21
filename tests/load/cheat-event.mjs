@@ -2,12 +2,14 @@
 //
 // This runner only targets the load-test namespace from provision.mjs. It creates
 // one dynamic-flag audit challenge, gives every existing team a unique flag, and
-// drives three known-bad behaviours through the public HTTP surface:
+// drives two known-bad behaviours and one raw-telemetry control through the
+// public HTTP surface:
 //   * four teams submit another team's valid flag;
 //   * one team coordinates 40 machine-speed wrong submissions across five accounts;
-//   * one team follows three authenticated same-origin honeypot routes.
-// Each run takes six actors without prior actionable evidence, then freezes every
-// other roster member as a clean control. Only post-baseline evidence is judged,
+//   * one clean team follows three authenticated same-origin honeypot routes.
+// Each run takes five offenders without prior actionable evidence and one clean
+// actor without any prior suspicion evidence for the telemetry check, then freezes
+// every other roster member as a clean control. Only post-baseline evidence is judged,
 // so ordinary-play history cannot hide a drill false positive or satisfy its actor
 // gates. Credentials live only in a temporary k6 input file.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -16,6 +18,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import * as A from "./applib.mjs";
+import {
+  CHEAT_SCENARIO_RULES,
+  SUSPICION_RULE_BY_KIND,
+  computeExpectedBreakdown,
+  effectiveRuleWeights,
+  validateDetectorCapabilities,
+} from "./cheat-contract.js";
 import { freezeCheatCohort } from "./cheat-cohort.js";
 import { cheatK6Environment } from "./cheat-environment.js";
 import {
@@ -23,13 +32,16 @@ import {
   inheritedCheatOrchestrationToken,
   recordCheatSimulation,
 } from "./cheat-retention.js";
-import { writeCheatResult } from "./cheat-result.js";
+import {
+  CHEAT_RESULT_SCHEMA_VERSION,
+  writeCheatResult,
+} from "./cheat-result.js";
 import {
   acquireExclusiveProcessLock,
   loadOrchestrationLockPath,
 } from "./process-control.mjs";
 import { loadAuthoritativeAfterConcurrentSweep } from "./report-convergence.js";
-import { TARGET, mintJwt, sql } from "./lib.mjs";
+import { TARGET, mintJwt, sleep, sql } from "./lib.mjs";
 
 const REQUIRED_TEAMS = 100;
 const RETENTION = cheatRetentionPolicy(process.env);
@@ -37,15 +49,13 @@ const STOLEN_ACTORS = 4;
 const BRUTE_ACCOUNTS = 5;
 const BRUTE_ATTEMPTS_PER_ACCOUNT = 8;
 const HONEYPOT_BAITS = ["/.env", "/.git/config", "/wp-login.php"];
-const CONTEXT_KINDS = [1, 2, 3, 4, 5, 6, 22, 23, 26, 32, 37];
+const CONTEXT_KINDS = [1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14, 21, 22, 23, 26, 28, 29, 31, 32, 36, 37];
 const EVIDENCE_KIND = Object.freeze({
   stolenFlag: 0,
   highWrongRate: 24,
   automatedPattern: 25,
-  honeypotHit: 28,
-  honeypotChain: 31,
 });
-const ORIGIN = process.env.ORIGIN || "https://tcp.1pc.tf";
+const ORIGIN = process.env.ORIGIN || process.env.BROWSER_ORIGIN || TARGET;
 
 let activeK6 = null;
 let activeTemporaryDirectory = null;
@@ -159,6 +169,121 @@ function parseJsonQuery(query, label) {
   } catch (error) {
     throw new Error(`${label} returned malformed JSON: ${error.message}`);
   }
+}
+
+function configuredSuspicionRules() {
+  return parseJsonQuery(
+    `SELECT COALESCE(json_agg(json_build_object(` +
+      `'ruleCode',rule_code,'weight',weight) ORDER BY id),'[]'::json)::text ` +
+      `FROM "SuspicionRules"`,
+    "configured suspicion-rule query",
+  );
+}
+
+function suspicionEvidence(gameId, afterId = 0) {
+  return parseJsonQuery(
+    `SELECT COALESCE(json_agg(json_build_object(` +
+      `'id',id,'participationId',participation_id,'challengeId',challenge_id,` +
+      `'kind',kind,'evidenceKey',evidence_key,'scoreDelta',score_delta,` +
+      `'createdAtMs',floor(extract(epoch from created_at)*1000)::bigint,` +
+      `'createdAtMicros',floor(extract(epoch from created_at)*1000000)::bigint) ORDER BY id),'[]'::json)::text ` +
+      `FROM "SuspicionEvents" WHERE game_id=${positiveInteger(gameId, "game id")} ` +
+      `AND id>${positiveIntegerOrZero(afterId, "suspicion evidence floor")}`,
+    "suspicion evidence query",
+  );
+}
+
+function honeypotTelemetryState(config, baseline) {
+  const hitFloor = positiveIntegerOrZero(
+    baseline.honeypotHitId,
+    "honeypot hit floor",
+  );
+  const eventFloor = positiveIntegerOrZero(
+    baseline.suspicionEventId,
+    "honeypot suspicion-event floor",
+  );
+  const outboxFloor = positiveIntegerOrZero(
+    baseline.suspicionOutboxId,
+    "honeypot outbox floor",
+  );
+  return parseJsonQuery(
+    `SELECT json_build_object(` +
+      `'hits',(SELECT COALESCE(json_agg(json_build_array(` +
+      `hit.id,hit.user_id,hit.game_id,hit.participation_id,hit.bait,` +
+      `hit.remote_ip,hit.user_agent,hit.hit_at_utc) ORDER BY hit.id),'[]'::json) ` +
+      `FROM "HoneypotHits" hit WHERE hit.id>${hitFloor} ` +
+      `AND hit.user_agent=${literal(config.honeypot.honeypotUserAgent)}),` +
+      `'outboxJobs',(SELECT count(*) FROM "SuspicionEvaluationOutbox" job ` +
+      `WHERE job.id>${outboxFloor} AND (` +
+      `job.rule_kind IN (28,29,31) OR EXISTS (` +
+      `SELECT 1 FROM "HoneypotHits" hit WHERE job.source_kind=1 ` +
+      `AND job.source_id=hit.id AND hit.id>${hitFloor} ` +
+      `AND hit.user_agent=${literal(config.honeypot.honeypotUserAgent)}))),` +
+      `'suspicionEvents',(SELECT count(*) FROM "SuspicionEvents" ` +
+      `WHERE id>${eventFloor} AND kind IN (28,29,31)),` +
+      `'storedScore',(SELECT suspicion_score FROM "Participations" ` +
+      `WHERE id=${positiveInteger(config.honeypot.participationId, "honeypot participation id")} ` +
+      `AND game_id=${positiveInteger(config.gameId, "honeypot game id")})` +
+      `)::text`,
+    "honeypot raw telemetry query",
+  );
+}
+
+function assertHoneypotTelemetry(config, baseline) {
+  const state = honeypotTelemetryState(config, baseline);
+  const hits = Array.isArray(state.hits) ? state.hits : [];
+  const actualBaits = hits.map((row) => row[4]).sort();
+  const exactAttribution = hits.every(
+    (row) =>
+      String(row[1]).toLowerCase() === config.honeypot.userId.toLowerCase() &&
+      row[2] === null &&
+      row[3] === null,
+  );
+  if (
+    hits.length !== HONEYPOT_BAITS.length ||
+    !sameMembers(actualBaits, HONEYPOT_BAITS) ||
+    !exactAttribution ||
+    Number(state.outboxJobs) !== 0 ||
+    Number(state.suspicionEvents) !== 0 ||
+    state.storedScore === null ||
+    Number(state.storedScore) !== 0
+  ) {
+    throw new Error(
+      `honeypot telemetry diverged: ${JSON.stringify({
+        hitCount: hits.length,
+        actualBaits,
+        exactAttribution,
+        outboxJobs: state.outboxJobs,
+        suspicionEvents: state.suspicionEvents,
+        storedScore: state.storedScore,
+      })}`,
+    );
+  }
+  return state;
+}
+
+function positiveIntegerOrZero(value, label) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0)
+    throw new Error(`invalid ${label}: ${value}`);
+  return number;
+}
+
+function sameMembers(actual, expected) {
+  const left = [...actual].sort();
+  const right = [...expected].sort();
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function containsMembers(actual, required) {
+  const remaining = new Map();
+  for (const value of actual) remaining.set(value, (remaining.get(value) ?? 0) + 1);
+  for (const value of required) {
+    const count = remaining.get(value) ?? 0;
+    if (count === 0) return false;
+    remaining.set(value, count - 1);
+  }
+  return true;
 }
 
 function challengeExists(gameId, challengeId) {
@@ -286,16 +411,32 @@ function chooseCohort(state) {
       `AND kind NOT IN (${CONTEXT_KINDS.join(",")})`,
     "actionable participation query",
   );
-  const offenderCount = STOLEN_ACTORS + 2;
+  const anySuspicion = new Set(
+    parseJsonQuery(
+      `SELECT COALESCE(json_agg(participation.id ORDER BY participation.id),'[]'::json)::text ` +
+        `FROM "Participations" participation WHERE participation.game_id=${gameId} AND (` +
+        `participation.suspicion_score<>0 OR EXISTS (` +
+        `SELECT 1 FROM "SuspicionEvents" event ` +
+        `WHERE event.game_id=${gameId} AND event.participation_id=participation.id))`,
+      "any-suspicion participation query",
+    ).map(Number),
+  );
+  const offenderCount = STOLEN_ACTORS + 1;
   const { offenderIndices, cleanIndices } = freezeCheatCohort(
     state.adPartIds,
     actionable,
     offenderCount,
   );
   const offenderSet = new Set(offenderIndices);
+  const honeypotIndex = cleanIndices.find(
+    (index) => !anySuspicion.has(Number(state.adPartIds[index])),
+  );
+  if (honeypotIndex === undefined) {
+    throw new Error("the anti-cheat fixture needs a zero-score actor for honeypot telemetry");
+  }
   const victimIndices = state.adPartIds
     .map((_, index) => index)
-    .filter((index) => !offenderSet.has(index))
+    .filter((index) => !offenderSet.has(index) && index !== honeypotIndex)
     .slice(0, STOLEN_ACTORS);
   if (victimIndices.length !== STOLEN_ACTORS) {
     throw new Error(
@@ -306,7 +447,7 @@ function chooseCohort(state) {
   return {
     stolenIndices: offenderIndices.slice(0, STOLEN_ACTORS),
     bruteIndex: offenderIndices[STOLEN_ACTORS],
-    honeypotIndex: offenderIndices[STOLEN_ACTORS + 1],
+    honeypotIndex,
     victimIndices,
     cleanIndices,
   };
@@ -329,7 +470,9 @@ function ensureBruteAccounts(state, bruteIndex) {
   );
   const botNameList = botNames.map(literal).join(",");
   sql(
-    `INSERT INTO "AspNetUsers" ` +
+    `WITH neutral_provisioning AS MATERIALIZED (` +
+      `SELECT set_config('rsctf.identity_neutral_insert','1',true)` +
+      `) INSERT INTO "AspNetUsers" ` +
       `(id,user_name,normalized_user_name,email,normalized_email,email_confirmed,password_hash,` +
       `security_stamp,concurrency_stamp,role,register_time_utc,last_signed_in_utc,last_visited_utc,` +
       `lockout_enabled,access_failed_count,phone_number_confirmed,two_factor_enabled,ip,bio,real_name,std_number,exercise_visible) ` +
@@ -338,6 +481,7 @@ function ensureBruteAccounts(state, bruteIndex) {
       `true,'x-load-placeholder',gen_random_uuid()::text,gen_random_uuid()::text,1,` +
       `now(),now(),now(),true,0,false,false,'0.0.0.0','','','',false ` +
       `FROM generate_series(1,${BRUTE_ACCOUNTS}) g ` +
+      `CROSS JOIN neutral_provisioning ` +
       `ON CONFLICT (user_name) DO NOTHING`,
   );
   // A fresh security stamp gives every rerun a fresh authenticated limiter
@@ -352,8 +496,11 @@ function ensureBruteAccounts(state, bruteIndex) {
       `AND team_id<>${teamId}`,
   );
   sql(
-    `INSERT INTO "TeamMembers"(team_id,user_id) ` +
+    `WITH neutral_provisioning AS MATERIALIZED (` +
+      `SELECT set_config('rsctf.identity_neutral_insert','1',true)` +
+      `) INSERT INTO "TeamMembers"(team_id,user_id) ` +
       `SELECT ${teamId},id FROM "AspNetUsers" account ` +
+      `CROSS JOIN neutral_provisioning ` +
       `WHERE account.user_name IN (${botNameList}) AND NOT EXISTS (` +
       `SELECT 1 FROM "TeamMembers" member WHERE member.team_id=${teamId} AND member.user_id=account.id)`,
   );
@@ -387,6 +534,7 @@ function actor(state, index, ip) {
   if (!userId || !stamp)
     throw new Error(`missing player identity at roster index ${index}`);
   return {
+    userId,
     jwt: mintJwt(userId, stamp, 1),
     ip,
     participationId: positiveInteger(
@@ -439,6 +587,7 @@ function buildK6Config(state, challengeId, bots, cohort, runId) {
     honeypot: {
       ...actor(state, cohort.honeypotIndex, "198.51.100.30"),
       baits: HONEYPOT_BAITS,
+      honeypotUserAgent: `rsctf-cheat-drill/${runId}`,
     },
     clean: cohort.cleanIndices.map((index, offset) =>
       actor(state, index, `203.0.113.${(offset % 240) + 10}`),
@@ -477,7 +626,238 @@ function eventTypes(record) {
   return new Set((record?.events || []).map((event) => event.type));
 }
 
+function expectedScenarioEvidence(config, phase) {
+  const expected = new Map();
+  for (const entry of config.stolen) {
+    expected.set(entry.participationId, {
+      role: "stolen",
+      codes: CHEAT_SCENARIO_RULES.stolen[phase],
+    });
+  }
+  expected.set(config.brute.tokens[0].participationId, {
+    role: "brute",
+    // H1 intentionally matures for five minutes so a subsequent solve can
+    // suppress it. The retained public drill validates raw/outbox evidence
+    // immediately, then waits for the immutable source timestamps to mature.
+    codes: phase === "live" ? [] : CHEAT_SCENARIO_RULES.brute[phase],
+  });
+  if (expected.size !== STOLEN_ACTORS + 1) {
+    throw new Error("anti-cheat scenario actors are not distinct");
+  }
+  return expected;
+}
+
+function assertExactScenarioEvidence(config, evidence, phase, configuredWeights) {
+  if (!Array.isArray(evidence)) throw new Error(`${phase} suspicion evidence is not an array`);
+  const expected = expectedScenarioEvidence(config, phase);
+  const byPid = new Map([...expected.keys()].map((pid) => [pid, []]));
+  for (const row of evidence) {
+    const pid = positiveInteger(row.participationId, "evidence participation id");
+    if (byPid.has(pid)) byPid.get(pid).push(row);
+  }
+
+  for (const [pid, actor] of expected) {
+    const actual = byPid.get(pid);
+    const actualCodes = actual.map((row) => {
+      const rule = SUSPICION_RULE_BY_KIND.get(Number(row.kind));
+      if (!rule) throw new Error(`${phase} evidence for ${pid} has unsupported kind ${row.kind}`);
+      const expectedWeight = configuredWeights.get(rule.code) ?? rule.defaultWeight;
+      if (Number(row.scoreDelta) !== expectedWeight) {
+        throw new Error(
+          `${phase} ${rule.code} for ${pid} stored delta ${row.scoreDelta}; expected configured ${expectedWeight}`,
+        );
+      }
+      if (actor.role === "stolen") {
+        if (
+          Number(row.challengeId) !== Number(config.challengeId) ||
+          !/^submission:\d+$/.test(String(row.evidenceKey))
+        ) {
+          throw new Error(`${phase} stolen-flag evidence for ${pid} has the wrong incident identity`);
+        }
+      } else if (actor.role === "brute") {
+        if (
+          Number(row.challengeId) !== Number(config.challengeId) ||
+          row.evidenceKey !== `challenge:${config.challengeId}`
+        ) {
+          throw new Error(`${phase} brute-force evidence for ${pid} has the wrong challenge identity`);
+        }
+      } else {
+        throw new Error(`${phase} evidence has unsupported scenario role ${actor.role}`);
+      }
+      return rule.code;
+    }).sort();
+    const expectedCodes = [...actor.codes].sort();
+    const allowedCodes = phase === "live"
+      ? actor.role === "brute"
+        // AutomatedPattern may be produced directly from the fresh cadence,
+        // but HighWrongRate must remain absent until its five-minute solve
+        // suppression window has matured.
+        ? ["AutomatedPattern"]
+        : [...CHEAT_SCENARIO_RULES[actor.role].reconciled].sort()
+      : expectedCodes;
+    const hasRequired = containsMembers(actualCodes, expectedCodes);
+    const hasOnlyAllowed = containsMembers(allowedCodes, actualCodes);
+    const identities = actual.map((row) => `${row.kind}|${row.evidenceKey}`);
+    const hasDuplicateIdentity = new Set(identities).size !== identities.length;
+    if (!hasRequired || !hasOnlyAllowed || hasDuplicateIdentity ||
+        (phase !== "live" && !sameMembers(actualCodes, expectedCodes))) {
+      throw new Error(
+        `${phase} ${actor.role} actor ${pid} has [${actualCodes.join(", ")}], ` +
+          `${phase === "live" ? "requires" : "expected exactly"} [${expectedCodes.join(", ")}]` +
+          `${phase === "live" ? ` and allows only [${allowedCodes.join(", ")}]` : ""}`,
+      );
+    }
+  }
+
+  return true;
+}
+
+async function waitForScenarioEvidence(
+  config,
+  gameId,
+  afterId,
+  phase,
+  configuredWeights,
+) {
+  const timeoutMs = positiveInteger(
+    process.env.CHEAT_RECONCILE_TIMEOUT_MS || 45_000,
+    "cheat evidence timeout",
+  );
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  do {
+    const evidence = suspicionEvidence(gameId, afterId);
+    try {
+      assertExactScenarioEvidence(config, evidence, phase, configuredWeights);
+      return evidence;
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(200);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `${phase} anti-cheat evidence did not converge within ${timeoutMs} ms: ${lastError?.message}`,
+  );
+}
+
+function ledgerSnapshot(gameId) {
+  const id = positiveInteger(gameId, "game id");
+  return sql(
+    `SELECT json_build_object(` +
+      `'events',(SELECT COALESCE(json_agg(json_build_array(` +
+      `event.id,event.participation_id,event.challenge_id,event.kind,event.evidence_key,` +
+      `event.score_delta,event.created_at) ORDER BY event.id),'[]'::json) ` +
+      `FROM "SuspicionEvents" event WHERE event.game_id=${id}),` +
+      `'scores',(SELECT COALESCE(json_agg(json_build_array(` +
+      `participation.id,participation.suspicion_score) ORDER BY participation.id),'[]'::json) ` +
+      `FROM "Participations" participation WHERE participation.game_id=${id}),` +
+      `'outbox',(SELECT COALESCE(json_agg(json_build_array(` +
+      `job.id,job.completed_at_utc,job.attempts,job.last_error,job.lease_token,` +
+      `job.lease_expires_at_utc) ORDER BY job.id),'[]'::json) ` +
+      `FROM "SuspicionEvaluationOutbox" job WHERE job.game_id=${id}),` +
+      `'sources',json_build_array(` +
+      `(SELECT count(*) FROM "Submissions" WHERE game_id=${id}),` +
+      `(SELECT count(*) FROM "HoneypotHits" WHERE game_id=${id}),` +
+      `(SELECT count(*) FROM "IdentityObservations" WHERE game_id=${id}))` +
+      `)::text`,
+  );
+}
+
+async function stableLedgerSnapshot(gameId) {
+  let previous = ledgerSnapshot(gameId);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await sleep(500);
+    const current = ledgerSnapshot(gameId);
+    if (current === previous) return current;
+    previous = current;
+  }
+  throw new Error("anti-cheat ledger did not settle before the read-only report check");
+}
+
+function reportEventSignature(event) {
+  return [
+    Number(event.eventId ?? event.id),
+    event.type,
+    Number(event.scoreDelta),
+    Number(event.appliedDelta),
+    event.tier,
+    Boolean(event.counted),
+    Number(event.time),
+  ].join("|");
+}
+
+function assertIndependentReportScoring(gameId, reportRows, configuredWeights) {
+  const events = suspicionEvidence(gameId);
+  const scoreRows = parseJsonQuery(
+    `SELECT COALESCE(json_agg(json_build_object(` +
+      `'participationId',id,'score',suspicion_score) ORDER BY id),'[]'::json)::text ` +
+      `FROM "Participations" WHERE game_id=${positiveInteger(gameId, "game id")}`,
+    "participation suspicion-score query",
+  );
+  const storedScores = new Map(
+    scoreRows.map((row) => [Number(row.participationId), Number(row.score)]),
+  );
+  const eventsByPid = new Map();
+  for (const event of events) {
+    const pid = positiveInteger(event.participationId, "evidence participation id");
+    if (!eventsByPid.has(pid)) eventsByPid.set(pid, []);
+    eventsByPid.get(pid).push(event);
+  }
+
+  const reportByPid = new Map();
+  for (const row of reportRows) {
+    const pid = positiveInteger(row.participationId, "reported participation id");
+    if (reportByPid.has(pid)) throw new Error(`cheat report contains duplicate participation ${pid}`);
+    reportByPid.set(pid, row);
+  }
+  const unexpectedRows = [...reportByPid.keys()].filter((pid) => !eventsByPid.has(pid));
+  if (unexpectedRows.length) {
+    throw new Error(`cheat report contains participations without evidence: ${unexpectedRows.join(", ")}`);
+  }
+
+  for (const [pid, participantEvents] of eventsByPid) {
+    const expected = computeExpectedBreakdown(participantEvents, configuredWeights);
+    const row = reportByPid.get(pid);
+    if (!row) throw new Error(`cheat report omitted participation ${pid}`);
+    for (const [field, value] of Object.entries({
+      score: expected.total,
+      band: expected.band,
+      hard: expected.hard,
+      strong: expected.strong,
+      behavioral: expected.behavioral,
+      corroboration: expected.corroboration,
+    })) {
+      if (row[field] !== value) {
+        throw new Error(
+          `cheat report ${field} for ${pid} is ${row[field]}; independent contract expects ${value}`,
+        );
+      }
+    }
+    const actualEvents = (row.events || []).map(reportEventSignature).sort();
+    const expectedEvents = expected.events.map(reportEventSignature).sort();
+    if (
+      actualEvents.length !== expectedEvents.length ||
+      actualEvents.some((signature, index) => signature !== expectedEvents[index])
+    ) {
+      throw new Error(`cheat report event scoring for ${pid} diverges from the independent contract`);
+    }
+    if (storedScores.get(pid) !== expected.total) {
+      throw new Error(
+        `stored suspicion score for ${pid} is ${storedScores.get(pid)}; ` +
+          `independent tiered scoring expects ${expected.total}`,
+      );
+    }
+  }
+  for (const [pid, score] of storedScores) {
+    if (!eventsByPid.has(pid) && score !== 0) {
+      throw new Error(`participation ${pid} has score ${score} without suspicion evidence`);
+    }
+  }
+  return true;
+}
+
 function assertReport(config, report) {
+  validateDetectorCapabilities(report?.detectorCapabilities);
   const rows = report?.suspicionList;
   if (!Array.isArray(rows))
     throw new Error("cheat report did not return a suspicion list");
@@ -485,9 +865,9 @@ function assertReport(config, report) {
 
   for (const pid of config.stolen.map((entry) => entry.participationId)) {
     const row = byPid.get(pid);
-    if (row?.band !== "evidenced" || !eventTypes(row).has("StolenFlag")) {
+    if (!eventTypes(row).has("StolenFlag")) {
       throw new Error(
-        `stolen-flag actor ${pid} was not classified as evidenced`,
+        `stolen-flag actor ${pid} is missing StolenFlag evidence`,
       );
     }
   }
@@ -495,7 +875,6 @@ function assertReport(config, report) {
   const brutePid = config.brute.tokens[0].participationId;
   const bruteEvents = eventTypes(byPid.get(brutePid));
   if (
-    byPid.get(brutePid)?.band !== "investigate" ||
     !bruteEvents.has("HighWrongRate") ||
     !bruteEvents.has("AutomatedPattern")
   ) {
@@ -504,16 +883,24 @@ function assertReport(config, report) {
     );
   }
 
-  const honeypotPid = config.honeypot.participationId;
-  const honeypotEvents = eventTypes(byPid.get(honeypotPid));
+  const honeypotPid = positiveInteger(
+    config.honeypot.participationId,
+    "honeypot participation id",
+  );
+  const honeypotRow = byPid.get(honeypotPid);
+  if (honeypotRow && Number(honeypotRow.score) !== 0) {
+    throw new Error(`raw honeypot telemetry actor ${honeypotPid} received a report score`);
+  }
   if (
-    byPid.get(honeypotPid)?.band !== "investigate" ||
-    !honeypotEvents.has("HoneypotHit") ||
-    !honeypotEvents.has("HoneypotChain")
+    Number(
+      sql(
+        `SELECT suspicion_score FROM "Participations" ` +
+          `WHERE game_id=${positiveInteger(config.gameId, "honeypot game id")} ` +
+          `AND id=${honeypotPid}`,
+      ),
+    ) !== 0
   ) {
-    throw new Error(
-      `scanner actor ${honeypotPid} is missing honeypot-chain evidence`,
-    );
+    throw new Error(`raw honeypot telemetry actor ${honeypotPid} received a report score`);
   }
 
   const clean = new Set(config.clean.map((entry) => entry.participationId));
@@ -525,6 +912,12 @@ function assertReport(config, report) {
       ["clean", "context"].includes(row.band) &&
       (row.events || []).every((event) => event.tier === "context"),
   ).length;
+  const duplicatePids = rows
+    .map((row) => Number(row.participationId))
+    .filter((pid, index, all) => all.indexOf(pid) !== index);
+  if (duplicatePids.length) {
+    throw new Error(`cheat report contains duplicate participation rows: ${duplicatePids.join(", ")}`);
+  }
   return { rows, cleanContextCount };
 }
 
@@ -537,7 +930,7 @@ function databaseBaseline(gameId) {
     ),
     honeypotHitId: Number(
       sql(
-        `SELECT COALESCE(max(id),0) FROM "HoneypotHits" WHERE game_id=${gameId}`,
+        `SELECT COALESCE(max(id),0) FROM "HoneypotHits"`,
       ),
     ),
     suspicionEventId: Number(
@@ -545,10 +938,153 @@ function databaseBaseline(gameId) {
         `SELECT COALESCE(max(id),0) FROM "SuspicionEvents" WHERE game_id=${gameId}`,
       ),
     ),
+    suspicionOutboxId: Number(
+      sql(
+        `SELECT COALESCE(max(id),0) FROM "SuspicionEvaluationOutbox"`,
+      ),
+    ),
   };
 }
 
-function assertDatabase(state, challengeId, config, reportRows, baseline) {
+function bruteFixtureAnswers(config) {
+  return Array.from(
+    {
+      length: config.brute.tokens.length * config.brute.attemptsPerToken,
+    },
+    (_, attempt) =>
+      `flag{invalid_${config.runId}_${attempt % config.brute.tokens.length}_${attempt}}`,
+  );
+}
+
+function preReportEvidenceCounts(state, challengeId, config, baseline) {
+  const gameId = positiveInteger(state.mixGame, "mixed-event game id");
+  const brutePid = positiveInteger(
+    config.brute.tokens[0].participationId,
+    "brute-force participation id",
+  );
+  const stolenPairs = config.stolen
+    .map((entry) =>
+      `(${positiveInteger(entry.participationId, "stolen participation id")},` +
+        `${literal(entry.victimFlag)})`,
+    )
+    .join(",");
+  const bruteAnswers = bruteFixtureAnswers(config).map(literal).join(",");
+  const submissionJobs = Number(
+    sql(
+      `SELECT count(*) FROM "SuspicionEvaluationOutbox" job ` +
+        `JOIN "Submissions" submission ON job.job_kind=0 AND job.source_id=submission.id ` +
+        `AND job.game_id=submission.game_id AND job.participation_id=submission.participation_id ` +
+        `WHERE job.game_id=${gameId} AND submission.id>${baseline.submissionId} ` +
+        `AND submission.challenge_id=${challengeId} AND (` +
+        `(submission.participation_id,submission.answer) IN (${stolenPairs}) OR ` +
+        `(submission.participation_id=${brutePid} AND submission.answer IN (${bruteAnswers}))) ` +
+        `AND job.attempts>=1 AND job.completed_at_utc IS NOT NULL AND job.last_error IS NULL`,
+    ),
+  );
+  const honeypotState = honeypotTelemetryState(config, baseline);
+  const honeypotHits = Array.isArray(honeypotState.hits) ? honeypotState.hits : [];
+  return {
+    stolen: Number(
+      sql(
+        `SELECT count(*) FROM "Submissions" WHERE game_id=${gameId} ` +
+          `AND challenge_id=${challengeId} AND status=3 AND id>${baseline.submissionId} ` +
+          `AND (participation_id,answer) IN (${stolenPairs})`,
+      ),
+    ),
+    brute: Number(
+      sql(
+        `SELECT count(*) FROM "Submissions" WHERE game_id=${gameId} ` +
+          `AND challenge_id=${challengeId} AND status=2 AND id>${baseline.submissionId} ` +
+          `AND participation_id=${brutePid} AND answer IN (${bruteAnswers})`,
+      ),
+    ),
+    honeypot: honeypotHits.length,
+    honeypotAttributed: honeypotHits.filter(
+      (row) =>
+        String(row[1]).toLowerCase() === config.honeypot.userId.toLowerCase() &&
+        row[2] === null &&
+        row[3] === null,
+    ).length,
+    submissionJobs,
+    honeypotJobs: Number(honeypotState.outboxJobs),
+    honeypotSuspicion: Number(honeypotState.suspicionEvents),
+    honeypotScore: Number(honeypotState.storedScore),
+  };
+}
+
+async function waitForPreReportEvidence(state, challengeId, config, baseline) {
+  const expected = {
+    stolen: STOLEN_ACTORS,
+    brute: BRUTE_ACCOUNTS * BRUTE_ATTEMPTS_PER_ACCOUNT,
+    honeypot: HONEYPOT_BAITS.length,
+    honeypotAttributed: HONEYPOT_BAITS.length,
+    submissionJobs: STOLEN_ACTORS + BRUTE_ACCOUNTS * BRUTE_ATTEMPTS_PER_ACCOUNT,
+    honeypotJobs: 0,
+    honeypotSuspicion: 0,
+    honeypotScore: 0,
+  };
+  const deadline = Date.now() + positiveInteger(
+    process.env.CHEAT_RECONCILE_TIMEOUT_MS || 45_000,
+    "pre-report evidence timeout",
+  );
+  let observed;
+  do {
+    observed = preReportEvidenceCounts(state, challengeId, config, baseline);
+    const oversized = Object.keys(expected).filter((key) => observed[key] > expected[key]);
+    if (oversized.length) {
+      throw new Error(`pre-report fixture has unexpected extra evidence: ${oversized.join(", ")}`);
+    }
+    if (Object.keys(expected).every((key) => observed[key] === expected[key])) {
+      assertHoneypotTelemetry(config, baseline);
+      return observed;
+    }
+    await sleep(200);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `pre-report raw/outbox evidence did not converge: ${JSON.stringify(observed)}; ` +
+      `expected ${JSON.stringify(expected)}`,
+  );
+}
+
+async function awaitBruteFixtureMaturity(state, challengeId, config, baseline) {
+  const gameId = positiveInteger(state.mixGame, "mixed-event game id");
+  const brutePid = positiveInteger(
+    config.brute.tokens[0].participationId,
+    "brute-force participation id",
+  );
+  const answers = bruteFixtureAnswers(config).map(literal).join(",");
+  const expected = BRUTE_ACCOUNTS * BRUTE_ATTEMPTS_PER_ACCOUNT;
+  const fixture = parseJsonQuery(
+    `SELECT json_build_object(` +
+      `'submissions',count(*),` +
+      `'anchorMs',floor(extract(epoch from min(submission.submit_time_utc))*1000)::bigint,` +
+      `'eventEndMs',floor(extract(epoch from min(game.end_time_utc))*1000)::bigint` +
+      `)::text FROM "Submissions" submission JOIN "Games" game ` +
+      `ON game.id=submission.game_id WHERE submission.game_id=${gameId} ` +
+      `AND submission.id>${baseline.submissionId} AND submission.challenge_id=${challengeId} ` +
+      `AND submission.participation_id=${brutePid} AND submission.status=2 ` +
+      `AND submission.answer IN (${answers})`,
+    "immutable retained brute-force fixture",
+  );
+  const anchorMs = Number(fixture.anchorMs);
+  const eventEndMs = Number(fixture.eventEndMs);
+  const maturityMs = anchorMs + 5 * 60 * 1000;
+  if (
+    Number(fixture.submissions) !== expected ||
+    !Number.isSafeInteger(anchorMs) ||
+    !Number.isSafeInteger(eventEndMs) ||
+    maturityMs >= eventEndMs
+  ) {
+    throw new Error(
+      "the retained H1 fixture is incomplete or cannot mature before the event ends",
+    );
+  }
+  while (Date.now() < maturityMs) {
+    await sleep(Math.min(1_000, Math.max(1, maturityMs - Date.now())));
+  }
+}
+
+function assertDatabase(state, challengeId, config, baseline) {
   const gameId = Number(state.mixGame);
   const cleanIds = config.clean
     .map((entry) =>
@@ -569,35 +1105,10 @@ function assertDatabase(state, challengeId, config, reportRows, baseline) {
         `(${positiveInteger(entry.participationId, "stolen-flag participation id")},${literal(entry.victimFlag)})`,
     )
     .join(",");
-  const bruteAnswers = Array.from(
-    {
-      length: config.brute.tokens.length * config.brute.attemptsPerToken,
-    },
-    (_, attempt) =>
-      `flag{invalid_${config.runId}_${attempt % config.brute.tokens.length}_${attempt}}`,
-  );
+  const bruteAnswers = bruteFixtureAnswers(config);
   const bruteAnswerList = bruteAnswers.map(literal).join(",");
   const honeypotBaitList = config.honeypot.baits.map(literal).join(",");
   const challengeEvidenceKey = literal(`challenge:${challengeId}`);
-  const expectedScores = reportRows
-    .map((row) => {
-      const participationId = positiveInteger(
-        row.participationId,
-        "reported participation id",
-      );
-      const score = (row.events || []).reduce((total, event) => {
-        const delta = Number(event.scoreDelta);
-        if (!Number.isSafeInteger(delta) || delta < 0) {
-          throw new Error(
-            `invalid score delta for participation ${participationId}: ${event.scoreDelta}`,
-          );
-        }
-        return total + delta;
-      }, 0);
-      return `(${participationId},${score})`;
-    })
-    .join(",");
-  const expectedScoreCte = expectedScores || "(NULL::integer,NULL::bigint)";
   const checks = {
     "stolen submissions":
       Number(
@@ -636,18 +1147,52 @@ function assertDatabase(state, challengeId, config, reportRows, baseline) {
     "honeypot row count":
       Number(
         sql(
-          `SELECT count(*) FROM "HoneypotHits" WHERE game_id=${gameId} ` +
-            `AND participation_id=${honeypotPid} AND id>${baseline.honeypotHitId}`,
+          `SELECT count(*) FROM "HoneypotHits" WHERE id>${baseline.honeypotHitId} ` +
+            `AND user_agent=${literal(config.honeypot.honeypotUserAgent)}`,
         ),
       ) === HONEYPOT_BAITS.length,
     "honeypot bait coverage":
       Number(
         sql(
           `SELECT count(DISTINCT bait) FROM "HoneypotHits" ` +
-            `WHERE game_id=${gameId} AND participation_id=${honeypotPid} ` +
-            `AND id>${baseline.honeypotHitId} AND bait IN (${honeypotBaitList})`,
+            `WHERE id>${baseline.honeypotHitId} ` +
+            `AND user_agent=${literal(config.honeypot.honeypotUserAgent)} ` +
+            `AND bait IN (${honeypotBaitList})`,
         ),
       ) === HONEYPOT_BAITS.length,
+    "honeypot attribution isolation":
+      Number(
+        sql(
+          `SELECT count(*) FROM "HoneypotHits" WHERE id>${baseline.honeypotHitId} ` +
+            `AND user_agent=${literal(config.honeypot.honeypotUserAgent)} ` +
+            `AND user_id=${literal(config.honeypot.userId)}::uuid ` +
+            `AND game_id IS NULL AND participation_id IS NULL`,
+        ),
+      ) === HONEYPOT_BAITS.length,
+    "honeypot outbox absent":
+      Number(
+        sql(
+          `SELECT count(*) FROM "SuspicionEvaluationOutbox" job ` +
+            `WHERE job.id>${baseline.suspicionOutboxId} AND (` +
+            `job.rule_kind IN (28,29,31) OR EXISTS (` +
+            `SELECT 1 FROM "HoneypotHits" hit WHERE job.source_kind=1 ` +
+            `AND job.source_id=hit.id AND hit.id>${baseline.honeypotHitId} ` +
+            `AND hit.user_agent=${literal(config.honeypot.honeypotUserAgent)}))`,
+        ),
+      ) === 0,
+    "honeypot suspicion absent":
+      Number(
+        sql(
+          `SELECT count(*) FROM "SuspicionEvents" WHERE id>${baseline.suspicionEventId} ` +
+            `AND kind IN (28,29,31)`,
+        ),
+      ) === 0 &&
+      Number(
+        sql(
+          `SELECT suspicion_score FROM "Participations" ` +
+            `WHERE game_id=${gameId} AND id=${honeypotPid}`,
+        ),
+      ) === 0,
     "current stolen-flag evidence":
       Number(
         sql(
@@ -681,24 +1226,6 @@ function assertDatabase(state, challengeId, config, reportRows, baseline) {
             `AND evidence_key=${challengeEvidenceKey}`,
         ),
       ) === 1,
-    "current honeypot-hit evidence":
-      Number(
-        sql(
-          `SELECT count(*) FROM "SuspicionEvents" WHERE game_id=${gameId} ` +
-            `AND id>${baseline.suspicionEventId} AND participation_id=${honeypotPid} ` +
-            `AND challenge_id IS NULL AND kind=${EVIDENCE_KIND.honeypotHit} ` +
-            `AND evidence_key='global'`,
-        ),
-      ) === 1,
-    "current honeypot-chain evidence":
-      Number(
-        sql(
-          `SELECT count(*) FROM "SuspicionEvents" WHERE game_id=${gameId} ` +
-            `AND id>${baseline.suspicionEventId} AND participation_id=${honeypotPid} ` +
-            `AND challenge_id IS NULL AND kind=${EVIDENCE_KIND.honeypotChain} ` +
-            `AND evidence_key='global'`,
-        ),
-      ) === 1,
     "duplicate suspicion evidence":
       Number(
         sql(
@@ -714,16 +1241,6 @@ function assertDatabase(state, challengeId, config, reportRows, baseline) {
             `WHERE game_id=${gameId} AND participation_id IN (${cleanIds}) ` +
             `AND id>${baseline.suspicionEventId} ` +
             `AND kind NOT IN (${CONTEXT_KINDS.join(",")})`,
-        ),
-      ) === 0,
-    "suspicion score matches evidence":
-      Number(
-        sql(
-          `WITH expected(participation_id,score) AS (VALUES ${expectedScoreCte}) ` +
-            `SELECT count(*) FROM "Participations" participation ` +
-            `LEFT JOIN expected ON expected.participation_id=participation.id ` +
-            `WHERE participation.game_id=${gameId} ` +
-            `AND participation.suspicion_score<>COALESCE(expected.score,0)`,
         ),
       ) === 0,
   };
@@ -794,20 +1311,70 @@ async function main() {
     activeTemporaryDirectory = null;
   }
 
-  const report = await loadReports(current.mixGame);
-  const reportResult = assertReport(config, report);
-  const integrity = assertDatabase(
-    current,
-    challengeId,
+  const configuredWeights = effectiveRuleWeights(configuredSuspicionRules());
+  await waitForScenarioEvidence(
     config,
-    reportResult.rows,
-    baseline,
+    current.mixGame,
+    baseline.suspicionEventId,
+    "live",
+    configuredWeights,
   );
+  await waitForPreReportEvidence(current, challengeId, config, baseline);
+
+  // HighWrongRate intentionally waits five minutes for a suppressing solve.
+  // Canonical submissions are append-only. Wait for their source timestamps
+  // rather than mutating the evidence ledger to accelerate reconciliation.
+  await awaitBruteFixtureMaturity(current, challengeId, config, baseline);
+
+  await waitForScenarioEvidence(
+    config,
+    current.mixGame,
+    baseline.suspicionEventId,
+    "reconciled",
+    configuredWeights,
+  );
+  const ledgerBeforeReport = await stableLedgerSnapshot(current.mixGame);
+  const honeypotBeforeReport = JSON.stringify(
+    assertHoneypotTelemetry(config, baseline),
+  );
+  const report = await loadReports(current.mixGame);
+  const ledgerAfterReport = ledgerSnapshot(current.mixGame);
+  const honeypotAfterReport = JSON.stringify(
+    assertHoneypotTelemetry(config, baseline),
+  );
+  if (
+    ledgerAfterReport !== ledgerBeforeReport ||
+    honeypotAfterReport !== honeypotBeforeReport
+  ) {
+    throw new Error("GET /cheatreport changed sources, evidence, scores, or outbox state");
+  }
+  const reportResult = assertReport(config, report);
+  assertExactScenarioEvidence(
+    config,
+    suspicionEvidence(current.mixGame, baseline.suspicionEventId),
+    "reconciled",
+    configuredWeights,
+  );
+  assertIndependentReportScoring(
+    current.mixGame,
+    reportResult.rows,
+    configuredWeights,
+  );
+  const integrity = {
+    "live exact offender evidence": true,
+    "reconciled exact offender evidence": true,
+    "configured scoring contract": true,
+    ...assertDatabase(
+      current,
+      challengeId,
+      config,
+      baseline,
+    ),
+  };
   const completedAtMs = A.nowMs();
   const offenderPids = [
     ...config.stolen.map((entry) => entry.participationId),
     config.brute.tokens[0].participationId,
-    config.honeypot.participationId,
   ];
   const simulation = {
     challengeId,
@@ -822,7 +1389,7 @@ async function main() {
   const completedState = recordCheatSimulation(current, simulation, RETENTION);
   if (RETENTION.integrated) {
     writeCheatResult(process.env.RSCTF_CHEAT_RESULT_PATH, {
-      schemaVersion: 3,
+      schemaVersion: CHEAT_RESULT_SCHEMA_VERSION,
       runId: competitionRunId,
       gameId: current.mixGame,
       eventCreatedAtMs: current.createdAtMs,

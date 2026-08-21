@@ -10,6 +10,7 @@ export const GAME = process.env.GAME || '10';
 export const PG = process.env.PG_CONTAINER || 'rsctf-db-1';
 export const PG_USER = process.env.PG_USER || 'postgres';
 export const PG_DATABASE = process.env.PG_DATABASE || 'rsctf';
+export const LOAD_DATABASE_URL = process.env.RSCTF_LOAD_DATABASE_URL || '';
 export const RSCTF = process.env.RSCTF_CONTAINER || 'rsctf-rsctf-1';
 export const NET = process.env.NET || 'rsctf_default';
 
@@ -35,11 +36,14 @@ if (!JWT_SECRET) throw new Error('RSCTF_JWT_SECRET is required for load-test tok
 
 const b64url = (b) => Buffer.from(b).toString('base64url');
 
-/** Run a psql query in the DB container, return trimmed stdout. */
+/** Run a psql query directly in CI or through the normal Compose DB container. */
 export function sql(query) {
   // Quiet mode suppresses INSERT/UPDATE/DELETE command tags. Callers compare
   // RETURNING output as an exact identity; `uuid\nINSERT 0 1` is not a UUID.
-  return execFileSync('docker', ['exec', PG, 'psql', '-U', PG_USER, '-d', PG_DATABASE, '-qAtc', query], {
+  const [command, args] = LOAD_DATABASE_URL
+    ? ['psql', [LOAD_DATABASE_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-qAtc', query]]
+    : ['docker', ['exec', PG, 'psql', '-U', PG_USER, '-d', PG_DATABASE, '-X', '-v', 'ON_ERROR_STOP=1', '-qAtc', query]];
+  return execFileSync(command, args, {
     encoding: 'utf8',
   }).trim();
 }
