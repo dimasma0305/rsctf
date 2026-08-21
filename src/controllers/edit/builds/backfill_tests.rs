@@ -3,7 +3,7 @@ use std::str::FromStr;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
-use super::{backfill_terminal_build_records, terminal_audit_status};
+use super::{backfill_terminal_build_records, bulk_retry_status_eligible, terminal_audit_status};
 use crate::utils::enums::ChallengeBuildStatus;
 
 #[test]
@@ -20,6 +20,19 @@ fn synchronous_audit_status_is_always_terminal() {
         terminal_audit_status(ChallengeBuildStatus::Success),
         ChallengeBuildStatus::Success
     );
+}
+
+#[test]
+fn bulk_retries_only_failed_terminal_states() {
+    assert!(bulk_retry_status_eligible(
+        ChallengeBuildStatus::Failed as i16
+    ));
+    assert!(bulk_retry_status_eligible(
+        ChallengeBuildStatus::MissingDockerfile as i16
+    ));
+    assert!(!bulk_retry_status_eligible(
+        ChallengeBuildStatus::Success as i16
+    ));
 }
 
 #[tokio::test]

@@ -15,6 +15,8 @@ const AD_INGRESS_CIDRS_ENV: &str = "RSCTF_K8S_AD_INGRESS_CIDRS";
 const CONTROL_NAMESPACE_ENV: &str = "RSCTF_K8S_CONTROL_NAMESPACE";
 const CONTROL_POD_LABEL_ENV: &str = "RSCTF_K8S_CONTROL_POD_LABEL";
 const POLICY_ENFORCED_ENV: &str = "RSCTF_K8S_NETWORK_POLICY_ENFORCED";
+const ISOLATED_INGRESS_CIDRS_ENV: &str = "RSCTF_K8S_ISOLATED_INGRESS_CIDRS";
+const POD_CIDRS_ENV: &str = "RSCTF_K8S_POD_CIDRS";
 
 #[derive(Clone)]
 pub(super) struct AdNetworkConfig {
@@ -74,6 +76,27 @@ fn parse_cidr(value: &str, variable: &str) -> AppResult<IpNet> {
             "{variable} contains an invalid IP network: {value}"
         ))
     })
+}
+
+fn required_cidr_list(variable: &str) -> AppResult<Vec<IpNet>> {
+    let configured = std::env::var(variable).unwrap_or_default();
+    let mut networks = Vec::new();
+    for value in configured
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let network = parse_cidr(value, variable)?;
+        if !networks.contains(&network) {
+            networks.push(network);
+        }
+    }
+    if networks.is_empty() {
+        return Err(AppError::internal(format!(
+            "{variable} must list the exact source CIDRs seen after NodePort routing"
+        )));
+    }
+    Ok(networks)
 }
 
 pub(super) fn ad_network_config() -> AppResult<AdNetworkConfig> {
@@ -285,6 +308,23 @@ pub(super) fn isolated_network_policy(
     name: &str,
     labels: &BTreeMap<String, String>,
     expose_port: i32,
+) -> AppResult<NetworkPolicy> {
+    let allowed = required_cidr_list(ISOLATED_INGRESS_CIDRS_ENV)?;
+    let pod_cidrs = required_cidr_list(POD_CIDRS_ENV)?;
+    let peers = isolated_ingress_peers(&allowed, &pod_cidrs)?;
+    Ok(isolated_network_policy_for_peers(
+        name,
+        labels,
+        expose_port,
+        peers,
+    ))
+}
+
+pub(super) fn isolated_network_policy_for_peers(
+    name: &str,
+    labels: &BTreeMap<String, String>,
+    expose_port: i32,
+    peers: Vec<NetworkPolicyPeer>,
 ) -> NetworkPolicy {
     NetworkPolicy {
         metadata: ObjectMeta {
@@ -295,9 +335,9 @@ pub(super) fn isolated_network_policy(
         spec: Some(NetworkPolicySpec {
             egress: Some(Vec::new()),
             ingress: Some(vec![NetworkPolicyIngressRule {
-                // A directly published challenge remains reachable through its
-                // Service, but no other pod port is exposed.
-                from: None,
+                // NodePort sources are explicit IPBlocks with every overlapping
+                // Pod CIDR excluded, so another challenge Pod is never a peer.
+                from: Some(peers),
                 ports: Some(vec![network_port(expose_port, "TCP")]),
             }]),
             pod_selector: LabelSelector {
@@ -307,6 +347,27 @@ pub(super) fn isolated_network_policy(
             policy_types: Some(vec!["Ingress".to_string(), "Egress".to_string()]),
         }),
     }
+}
+
+pub(super) fn isolated_ingress_peers(
+    allowed: &[IpNet],
+    pod_cidrs: &[IpNet],
+) -> AppResult<Vec<NetworkPolicyPeer>> {
+    let mut peers = Vec::with_capacity(allowed.len());
+    for ingress in allowed {
+        if pod_cidrs.iter().any(|pod| pod.contains(ingress)) {
+            return Err(AppError::internal(format!(
+                "{ISOLATED_INGRESS_CIDRS_ENV} entry {ingress} is inside a cluster Pod CIDR"
+            )));
+        }
+        let except = pod_cidrs
+            .iter()
+            .filter(|pod| ingress.contains(*pod))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        peers.push(ip_peer(ingress, (!except.is_empty()).then_some(except)));
+    }
+    Ok(peers)
 }
 
 pub(super) fn isolated_proxy_network_policy(

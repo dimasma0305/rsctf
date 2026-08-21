@@ -27,7 +27,7 @@ use super::{
 
 mod storage;
 pub(super) use storage::{
-    effective_writable_layer_limit, storage_quota_supported, writable_layer_storage_opt,
+    effective_writable_layer_limit, verify_storage_quota_support, writable_layer_storage_opt,
 };
 
 pub(super) struct ContainerReplicaPlan<'a> {
@@ -718,7 +718,10 @@ mod tests {
         assert_eq!(config.isolation, Some(HostConfigIsolationEnum::HYPERV));
         assert_eq!(
             config.storage_opt,
-            Some(HashMap::from([("size".to_string(), "64M".to_string())]))
+            Some(HashMap::from([(
+                "size".to_string(),
+                "67108864".to_string()
+            )]))
         );
     }
 

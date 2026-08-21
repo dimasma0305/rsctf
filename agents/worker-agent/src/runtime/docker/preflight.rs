@@ -2,7 +2,7 @@ use rsctf_worker_protocol::{CommandErrorCode, OperatingSystem};
 
 use crate::runtime::RuntimeError;
 
-use super::support::{connect_docker, daemon_platform, docker_error, storage_quota_supported};
+use super::support::{connect_docker, daemon_platform, docker_error, verify_storage_quota_support};
 
 pub(in crate::runtime) async fn run(
     endpoint: Option<&str>,
@@ -24,10 +24,11 @@ pub(in crate::runtime) async fn run(
             "a Windows agent cannot safely proxy a Linux Docker daemon's private bridge addresses; switch Docker to Windows-container mode",
         ));
     }
-    if !storage_quota_supported(&info) && !allow_unbounded_storage {
-        return Err(RuntimeError::unsupported(
-            "Docker storage driver cannot enforce per-container writable-layer quotas; configure overlay2 on XFS with project quotas or native Windows windowsfilter",
-        ));
+    if let Err(error) = verify_storage_quota_support(&docker, &info).await {
+        if !allow_unbounded_storage {
+            return Err(error);
+        }
+        tracing::warn!(%error, "Docker quota preflight bypassed for an explicitly unbounded development runtime");
     }
     if info
         .docker_root_dir

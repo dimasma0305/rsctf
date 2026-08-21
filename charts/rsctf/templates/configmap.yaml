@@ -81,6 +81,12 @@ data:
   {{- with .Values.kubernetes.adServiceCidr }}
   RSCTF_K8S_AD_SERVICE_CIDR: {{ . | quote }}
   {{- end }}
+  {{- with .Values.kubernetes.isolatedIngressCidrs }}
+  RSCTF_K8S_ISOLATED_INGRESS_CIDRS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.kubernetes.podCidrs }}
+  RSCTF_K8S_POD_CIDRS: {{ join "," . | quote }}
+  {{- end }}
   {{- end }}
   {{- if .Values.vpn.enabled }}
   RSCTF_AD_VPN_ENABLED: "true"

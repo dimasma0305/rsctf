@@ -131,7 +131,12 @@ fn rollback_policy_ownership_covers_private_modes_only() {
 #[test]
 fn isolated_policy_allows_only_the_service_port_and_denies_egress() {
     let labels = BTreeMap::from([(APP_LABEL.to_string(), "rsctf-isolated".to_string())]);
-    let policy = network::isolated_network_policy("isolated", &labels, 8080);
+    let peers = network::isolated_ingress_peers(
+        &["0.0.0.0/0".parse().unwrap()],
+        &["10.244.0.0/16".parse().unwrap()],
+    )
+    .unwrap();
+    let policy = network::isolated_network_policy_for_peers("isolated", &labels, 8080, peers);
     let spec = policy.spec.unwrap();
     assert_eq!(spec.egress, Some(Vec::new()));
     assert_eq!(
@@ -140,11 +145,26 @@ fn isolated_policy_allows_only_the_service_port_and_denies_egress() {
     );
     let ingress = spec.ingress.unwrap();
     assert_eq!(ingress.len(), 1);
-    assert!(ingress[0].from.is_none());
+    let peers = ingress[0].from.as_ref().unwrap();
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0].ip_block.as_ref().unwrap().cidr, "0.0.0.0/0");
+    assert_eq!(
+        peers[0].ip_block.as_ref().unwrap().except,
+        Some(vec!["10.244.0.0/16".to_string()])
+    );
     assert_eq!(
         ingress[0].ports.as_ref().unwrap()[0].port,
         Some(IntOrString::Int(8080))
     );
+}
+
+#[test]
+fn isolated_ingress_rejects_a_source_range_inside_the_pod_network() {
+    assert!(network::isolated_ingress_peers(
+        &["10.244.2.0/24".parse().unwrap()],
+        &["10.244.0.0/16".parse().unwrap()],
+    )
+    .is_err());
 }
 
 #[test]

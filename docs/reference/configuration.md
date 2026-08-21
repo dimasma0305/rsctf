@@ -327,6 +327,8 @@ explicit isolated load campaign, not as a scoring or event-size setting.
 | `RSCTF_K8S_CONTROL_NAMESPACE` | Service-account namespace fallback | Namespace containing the rsctf control Pod |
 | `RSCTF_K8S_CONTROL_POD_LABEL` | `app.kubernetes.io/name=rsctf` | `key=value` selector allowed to reach A&D services |
 | `RSCTF_K8S_AD_INGRESS_CIDRS` | Empty | Extra exact CIDRs allowed into A&D service policies |
+| `RSCTF_K8S_ISOLATED_INGRESS_CIDRS` | Unset | Required for direct `Isolated` NodePorts; exact post-NAT source CIDRs admitted to the challenge port |
+| `RSCTF_K8S_POD_CIDRS` | Unset | Required for direct `Isolated` NodePorts; all cluster Pod CIDRs, excluded from every admitted source block |
 
 Use the Helm chart for the maintained ServiceAccount, Role, and network-policy configuration.
 

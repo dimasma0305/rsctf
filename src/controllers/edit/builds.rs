@@ -3,6 +3,10 @@ use super::*;
 
 mod archive;
 use archive::zip_bytes_to_tar;
+mod backfill;
+pub use backfill::backfill_build_records;
+#[cfg(test)]
+use backfill::backfill_terminal_build_records;
 mod identity;
 #[cfg(test)]
 use identity::immutable_image_reference;
@@ -31,53 +35,17 @@ const RUNTIME_REPAIR_STATE_SQL: &str = r#"SELECT build_status,
          FROM "GameChallenges"
         WHERE id = $1
           AND deletion_pending = FALSE"#;
-const BACKFILL_TERMINAL_BUILD_RECORDS_SQL: &str = r#"
-WITH inserted AS (
-    INSERT INTO "BuildRecords" (
-        challenge_id,
-        game_id,
-        challenge_title,
-        enqueued_at_utc,
-        started_at_utc,
-        finished_at_utc,
-        trigger,
-        kind,
-        attempt,
-        status,
-        digest,
-        image_ref,
-        log_tail
-    )
-    SELECT challenge.id,
-           challenge.game_id,
-           challenge.title,
-           clock_timestamp(),
-           clock_timestamp(),
-           clock_timestamp(),
-           'Backfill',
-           'Challenge',
-           1,
-           challenge.build_status,
-           challenge.build_image_digest,
-           CASE WHEN challenge.build_status = 1 THEN challenge.container_image END,
-           right(challenge.last_build_log, 4096)
-      FROM "GameChallenges" challenge
-     WHERE challenge.build_status IN (1, 2, 6)
-       AND NOT EXISTS (
-            SELECT 1
-              FROM "BuildRecords" record
-             WHERE record.challenge_id = challenge.id
-       )
-    RETURNING 1
-)
-SELECT COUNT(*)::BIGINT FROM inserted
-"#;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BuildIntent {
     Requested,
+    RetryFailed,
     RepairMissingRuntime,
     EnsureRuntime,
+}
+
+fn bulk_retry_status_eligible(status: i16) -> bool {
+    status == ChallengeBuildStatus::Failed as i16
+        || status == ChallengeBuildStatus::MissingDockerfile as i16
 }
 
 pub(super) fn invalidated_build_status(
@@ -117,7 +85,20 @@ pub(crate) async fn run_challenge_build(
     trigger: &str,
     attempt: i32,
 ) -> (BuildOutcome, Option<build_record::Model>) {
-    run_challenge_build_with_intent(st, challenge, trigger, attempt, BuildIntent::Requested).await
+    let (outcome, record, _) =
+        run_challenge_build_with_intent(st, challenge, trigger, attempt, BuildIntent::Requested)
+            .await;
+    (outcome, record)
+}
+
+/// Retry a bulk candidate only if it remains failed after acquiring the image
+/// lock. `executed` is false when a concurrent manual build already won.
+pub(crate) async fn retry_failed_challenge_build(
+    st: &SharedState,
+    challenge: &game_challenge::Model,
+    attempt: i32,
+) -> (BuildOutcome, Option<build_record::Model>, bool) {
+    run_challenge_build_with_intent(st, challenge, "Bulk", attempt, BuildIntent::RetryFailed).await
 }
 
 /// Rebuild a vanished daemon-local runtime image from its authoritative source
@@ -127,15 +108,15 @@ pub(crate) async fn repair_missing_challenge_image(
     st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> BuildOutcome {
-    run_challenge_build_with_intent(
+    let (outcome, _, _) = run_challenge_build_with_intent(
         st,
         challenge,
         "RuntimeRepair",
         1,
         BuildIntent::RepairMissingRuntime,
     )
-    .await
-    .0
+    .await;
+    outcome
 }
 
 /// Materialize a recoverable queued image for a player's first start. The
@@ -145,9 +126,15 @@ pub(crate) async fn ensure_challenge_image(
     st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> BuildOutcome {
-    run_challenge_build_with_intent(st, challenge, "RuntimeStart", 1, BuildIntent::EnsureRuntime)
-        .await
-        .0
+    let (outcome, _, _) = run_challenge_build_with_intent(
+        st,
+        challenge,
+        "RuntimeStart",
+        1,
+        BuildIntent::EnsureRuntime,
+    )
+    .await;
+    outcome
 }
 
 async fn run_challenge_build_with_intent(
@@ -156,7 +143,7 @@ async fn run_challenge_build_with_intent(
     trigger: &str,
     attempt: i32,
     intent: BuildIntent,
-) -> (BuildOutcome, Option<build_record::Model>) {
+) -> (BuildOutcome, Option<build_record::Model>, bool) {
     // `started` doubles as the enqueue instant — this port runs the build inline,
     // so it is enqueued and started in the same breath.
     let started = Utc::now();
@@ -169,6 +156,7 @@ async fn run_challenge_build_with_intent(
                 "Build cancelled because the challenge or its game is being deleted.",
             ),
             None,
+            false,
         );
     }
     // Image tags are mutable daemon state. Serialize every writer of the same
@@ -192,7 +180,7 @@ async fn run_challenge_build_with_intent(
                 image_digest: None,
             };
             let record = record_build(st, challenge, trigger, attempt, started, &outcome).await;
-            return (outcome, record);
+            return (outcome, record, false);
         }
     };
 
@@ -217,7 +205,7 @@ async fn run_challenge_build_with_intent(
                 "Build cancelled because the challenge or its game was deleted or fenced before it acquired the image lock.",
             );
             let _ = build_lock.release().await;
-            return (outcome, None);
+            return (outcome, None, false);
         }
         Err(error) => {
             tracing::warn!(
@@ -237,7 +225,7 @@ async fn run_challenge_build_with_intent(
                 image_digest: None,
             };
             let record = record_build(st, challenge, trigger, attempt, started, &outcome).await;
-            return (outcome, record);
+            return (outcome, record, false);
         }
     };
     if current_fingerprint != requested_fingerprint {
@@ -246,10 +234,41 @@ async fn run_challenge_build_with_intent(
         );
         let _ = build_lock.release().await;
         let record = record_build(st, challenge, trigger, attempt, started, &outcome).await;
-        return (outcome, record);
+        return (outcome, record, false);
     }
 
-    if intent != BuildIntent::Requested {
+    if intent == BuildIntent::RetryFailed {
+        let status = sqlx::query_scalar::<_, i16>(
+            r#"SELECT build_status FROM "GameChallenges"
+                WHERE id = $1 AND deletion_pending = FALSE"#,
+        )
+        .bind(challenge.id)
+        .fetch_optional(build_lock.connection_mut())
+        .await;
+        match status {
+            Ok(Some(status)) if bulk_retry_status_eligible(status) => {}
+            Ok(_) => {
+                let outcome = superseded_build_outcome(
+                    "Bulk retry skipped because a concurrent build changed the terminal status before the image lock was acquired.",
+                );
+                let _ = build_lock.release().await;
+                return (outcome, None, false);
+            }
+            Err(error) => {
+                tracing::warn!(challenge = challenge.id, %error, "bulk retry status read failed");
+                let outcome = superseded_build_outcome(
+                    "Bulk retry skipped because the current terminal status could not be verified under the image lock.",
+                );
+                let _ = build_lock.release().await;
+                return (outcome, None, false);
+            }
+        }
+    }
+
+    if matches!(
+        intent,
+        BuildIntent::RepairMissingRuntime | BuildIntent::EnsureRuntime
+    ) {
         let repair_state =
             sqlx::query_as::<_, (i16, Option<String>, Option<String>)>(RUNTIME_REPAIR_STATE_SQL)
                 .bind(challenge.id)
@@ -272,7 +291,7 @@ async fn run_challenge_build_with_intent(
                         "runtime image repair lock release failed after a completed peer repair"
                     );
                 }
-                return (outcome, None);
+                return (outcome, None, false);
             }
             Ok(Some((status, _, _))) if status == ChallengeBuildStatus::Success as i16 => {}
             Ok(Some((status, _, _)))
@@ -296,14 +315,14 @@ async fn run_challenge_build_with_intent(
                         "runtime image repair lock release failed after a terminal peer repair"
                     );
                 }
-                return (outcome, None);
+                return (outcome, None, false);
             }
             Ok(None) => {
                 let outcome = superseded_build_outcome(
                     "Automatic runtime preparation stopped because the challenge was deleted.",
                 );
                 let _ = build_lock.release().await;
-                return (outcome, None);
+                return (outcome, None, false);
             }
             Err(error) => {
                 tracing::warn!(
@@ -320,7 +339,7 @@ async fn run_challenge_build_with_intent(
                     image_digest: None,
                 };
                 let _ = build_lock.release().await;
-                return (outcome, None);
+                return (outcome, None, false);
             }
         }
     }
@@ -387,7 +406,7 @@ async fn run_challenge_build_with_intent(
         }
     }
     let record = record_build(st, challenge, trigger, attempt, started, &outcome).await;
-    (outcome, record)
+    (outcome, record, true)
 }
 
 async fn resolve_build_image_ownership(
@@ -954,39 +973,4 @@ async fn pull_image(docker: &Docker, image: &str, portable_required: bool) -> Bu
             }
         },
     }
-}
-
-/// One-time-per-boot, set-based backfill of `BuildRecords` for terminal builds
-/// that have no audit history. `Queued` and `Building` are deliberately excluded:
-/// copying those states would invent live work that no background worker owns.
-/// Idempotent: a challenge that already has any record is skipped.
-pub async fn backfill_build_records(db: &sea_orm::DatabaseConnection) -> u64 {
-    backfill_terminal_build_records(db.get_postgres_connection_pool()).await
-}
-
-async fn backfill_terminal_build_records(pool: &sqlx::PgPool) -> u64 {
-    let mut transaction = match pool.begin().await {
-        Ok(transaction) => transaction,
-        Err(_) => return 0,
-    };
-    if sqlx::query(
-        "SELECT pg_advisory_xact_lock(hashtextextended('rsctf:build-record-backfill', 0))",
-    )
-    .execute(&mut *transaction)
-    .await
-    .is_err()
-    {
-        return 0;
-    }
-    let inserted = match sqlx::query_scalar::<_, i64>(BACKFILL_TERMINAL_BUILD_RECORDS_SQL)
-        .fetch_one(&mut *transaction)
-        .await
-    {
-        Ok(inserted) => inserted.max(0) as u64,
-        Err(_) => return 0,
-    };
-    if transaction.commit().await.is_err() {
-        return 0;
-    }
-    inserted
 }

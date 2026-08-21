@@ -19,7 +19,7 @@ pub enum Command {
     Run(RunArgs),
     /// Exchange a one-time enrollment token for a locally generated mTLS identity.
     Enroll(EnrollArgs),
-    /// Validate Docker compatibility without enrolling or changing daemon state.
+    /// Validate Docker compatibility without enrolling; quota checks use and remove a disposable probe.
     Doctor(DoctorArgs),
     /// Inspect installer-owned identity state without exposing its contents.
     #[command(hide = true)]

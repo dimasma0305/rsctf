@@ -340,6 +340,11 @@ kubernetes:
   # is the cluster Service CIDR used by provisioning and checker isolation,
   # not a CIDR selected by this chart.
   adServiceCidr: ""
+  # Direct Isolated NodePorts fail closed unless both lists are configured.
+  # ingress CIDRs are the source addresses the challenge Pod sees after
+  # kube-proxy/CNI routing; pod CIDRs are excluded from every allowed block.
+  isolatedIngressCidrs: []
+  podCidrs: []
   # Explicit operator acknowledgement. Set true only after a cross-Pod probe
   # proves the cluster CNI enforces networking.k8s.io/v1 NetworkPolicy.
   networkPolicyEnforced: false

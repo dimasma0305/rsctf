@@ -95,18 +95,13 @@ impl DockerRuntime {
                 "a Windows agent cannot safely proxy a Linux Docker daemon's private bridge addresses; run the Linux agent inside the Docker VM",
             ));
         }
-        let writable_layer_bytes = if storage_quota_supported(&info) {
-            Some(options.writable_layer_bytes)
-        } else if options.allow_unbounded_storage {
-            tracing::warn!(
-                driver = ?info.driver,
-                "Docker storage quotas are unavailable; unbounded writable layers were explicitly allowed"
-            );
-            None
-        } else {
-            return Err(RuntimeError::unsupported(
-                "Docker storage driver cannot enforce per-container writable-layer quotas; configure overlay2 on XFS with project quotas or native Windows windowsfilter, or use --allow-unbounded-storage only for trusted development fixtures",
-            ));
+        let writable_layer_bytes = match verify_storage_quota_support(&docker, &info).await {
+            Ok(()) => Some(options.writable_layer_bytes),
+            Err(error) if options.allow_unbounded_storage => {
+                tracing::warn!(driver = ?info.driver, %error, "Docker storage quotas are unavailable; unbounded writable layers were explicitly allowed");
+                None
+            }
+            Err(error) => return Err(error),
         };
         let docker_root = info
             .docker_root_dir
