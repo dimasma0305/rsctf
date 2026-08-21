@@ -182,21 +182,26 @@ const Configs: FC = () => {
   // Per-section status, surfaced as a coloured badge in the sidebar
   // so an operator can see at a glance which surfaces are wired up.
   type SectionStatus = 'configured' | 'inactive' | 'attention'
+  const oauthConfigured = Boolean(
+    (oauth?.googleClientId && (oauth.googleClientSecret || oauth.hasGoogleClientSecret)) ||
+      (oauth?.discordClientId && (oauth.discordClientSecret || oauth.hasDiscordClientSecret))
+  )
+  const oauthOnlyRegistrationNeedsAttention = Boolean(
+    accountPolicy?.allowRegister &&
+      accountPolicy.allowPasswordRegistration === false &&
+      (!oauthConfigured || accountUniqueness.fingerprintCollectionEnabled)
+  )
   const statuses: Record<SectionKey, SectionStatus> = useMemo(() => {
     const captchaConfigured =
       captcha?.provider === 'CloudflareTurnstile'
         ? !!(captcha?.siteKey && captcha?.hasSecretKey)
         : captcha?.provider === 'HashPow'
-    const oauthConfigured = Boolean(
-      (oauth?.googleClientId && oauth?.hasGoogleClientSecret) ||
-      (oauth?.discordClientId && oauth?.hasDiscordClientSecret)
-    )
     return {
       // Platform always has defaults; never "off"
       platform: 'configured',
       // An enabled fingerprint policy is ineffective unless fingerprint
       // collection is also enabled, so surface that mismatch for operators.
-      account: accountUniqueness.status,
+      account: oauthOnlyRegistrationNeedsAttention ? 'attention' : accountUniqueness.status,
       container: 'configured',
       build_registry: buildRegistry?.isConfigured ? 'configured' : 'inactive',
       email: email?.isConfigured ? 'configured' : 'inactive',
@@ -214,7 +219,7 @@ const Configs: FC = () => {
       registry_pull: registry?.isConfigured ? 'configured' : 'inactive',
       diagnostics: 'configured',
     }
-  }, [accountUniqueness, buildRegistry, email, captcha, oauth, registry])
+  }, [accountUniqueness, buildRegistry, email, captcha, oauthConfigured, oauthOnlyRegistrationNeedsAttention, registry])
 
   const navItems: { key: SectionKey; icon: string }[] = [
     { key: 'platform', icon: mdiViewDashboardOutline },
@@ -259,7 +264,14 @@ const Configs: FC = () => {
       }
 
       await mutate({ ...configs, ...conf, proxyTrust }, { revalidate: false })
-      await mutateConfig({ ...conf.globalConfig, ...conf.containerPolicy }, { revalidate: false })
+      await mutateConfig(
+        {
+          ...conf.globalConfig,
+          ...conf.containerPolicy,
+          allowPasswordRegistration: conf.accountPolicy?.allowPasswordRegistration,
+        },
+        { revalidate: false }
+      )
       await mutateCaptchaConfig()
       return true
     } catch (e) {
@@ -546,6 +558,20 @@ const Configs: FC = () => {
                   }
                 />
                 <Switch
+                  checked={accountPolicy?.allowPasswordRegistration ?? true}
+                  disabled={disabled}
+                  label={SwitchLabel(
+                    t('admin.content.settings.account.allow_password_registration.label'),
+                    t('admin.content.settings.account.allow_password_registration.description')
+                  )}
+                  onChange={(e) =>
+                    setAccountPolicy({
+                      ...accountPolicy,
+                      allowPasswordRegistration: e.currentTarget.checked,
+                    })
+                  }
+                />
+                <Switch
                   checked={accountPolicy?.emailConfirmationRequired ?? false}
                   disabled={disabled}
                   label={SwitchLabel(
@@ -661,6 +687,18 @@ const Configs: FC = () => {
                   }
                 />
               </SimpleGrid>
+              {accountPolicy?.allowRegister && accountPolicy.allowPasswordRegistration === false && (
+                <Alert
+                  color={oauthOnlyRegistrationNeedsAttention ? 'orange' : 'blue'}
+                  icon={<Icon path={oauthOnlyRegistrationNeedsAttention ? mdiAlert : mdiKeyChainVariant} size={1} />}
+                >
+                  {t(
+                    oauthOnlyRegistrationNeedsAttention
+                      ? 'admin.content.settings.account.oauth_only_not_ready'
+                      : 'admin.content.settings.account.oauth_only_ready'
+                  )}
+                </Alert>
+              )}
               {accountPolicy?.enableBrowserFingerprint && (
                 <Alert color="yellow" icon={<Icon path={mdiAlert} size={1} />}>
                   {t('admin.content.settings.account.browser_fingerprint.warning')}
@@ -1056,13 +1094,13 @@ const Configs: FC = () => {
               <Text size="sm" c="dimmed">
                 {t(
                   'admin.content.settings.oauth.redirect_hint',
-                  'Register this one redirect URI (HTTPS required) with BOTH providers, then enter the client id + secret. For Discord, enable the identify + email scopes.'
+                  'Register the matching HTTPS redirect URI with each provider, then enter its client id and secret. For Discord, enable the identify and email scopes.'
                 )}
               </Text>
-              <Text size="xs" c="dimmed" ff="monospace">
-                {window.location.origin}/api/oauth/callback
-              </Text>
               <Divider label="Google" labelPosition="left" />
+              <Text size="xs" c="dimmed" ff="monospace">
+                {window.location.origin}/api/oauth/google/callback
+              </Text>
               <SimpleGrid cols={{ base: 1, sm: 2 }}>
                 <TextInput
                   label={t('admin.content.settings.oauth.google_client_id.label', 'Google client ID')}
@@ -1083,6 +1121,9 @@ const Configs: FC = () => {
                 />
               </SimpleGrid>
               <Divider label="Discord" labelPosition="left" />
+              <Text size="xs" c="dimmed" ff="monospace">
+                {window.location.origin}/api/oauth/discord/callback
+              </Text>
               <SimpleGrid cols={{ base: 1, sm: 2 }}>
                 <TextInput
                   label={t('admin.content.settings.oauth.discord_client_id.label', 'Discord client ID')}

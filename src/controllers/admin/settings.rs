@@ -33,6 +33,7 @@ pub struct GlobalConfig {
 #[serde(rename_all = "camelCase", default)]
 pub struct AccountPolicy {
     pub allow_register: bool,
+    pub allow_password_registration: bool,
     pub active_on_register: bool,
     pub use_captcha: bool,
     pub email_confirmation_required: bool,
@@ -48,6 +49,7 @@ impl Default for AccountPolicy {
     fn default() -> Self {
         Self {
             allow_register: true,
+            allow_password_registration: true,
             active_on_register: true,
             use_captcha: false,
             email_confirmation_required: false,
@@ -317,6 +319,10 @@ pub async fn get_config(
     let defaults = AccountPolicy::default();
     let account = AccountPolicy {
         allow_register: get_bool("AccountPolicy:AllowRegister", defaults.allow_register),
+        allow_password_registration: get_bool(
+            "AccountPolicy:AllowPasswordRegistration",
+            defaults.allow_password_registration,
+        ),
         active_on_register: get_bool(
             "AccountPolicy:ActiveOnRegister",
             defaults.active_on_register,
@@ -408,13 +414,18 @@ pub async fn get_config(
         is_configured: reg_server.map(|s| !s.is_empty()).unwrap_or(false),
     };
 
+    let effective_oauth = crate::services::oauth_config::OAuthSettings::load(st.pg()).await?;
     let o_auth = OAuthConfig {
-        google_client_id: get("OAuthConfig:GoogleClientId"),
+        google_client_id: effective_oauth
+            .provider("google")
+            .map(|provider| provider.client_id.clone()),
         google_client_secret: None,
-        discord_client_id: get("OAuthConfig:DiscordClientId"),
+        discord_client_id: effective_oauth
+            .provider("discord")
+            .map(|provider| provider.client_id.clone()),
         discord_client_secret: None,
-        has_google_client_secret: has("OAuthConfig:GoogleClientSecret"),
-        has_discord_client_secret: has("OAuthConfig:DiscordClientSecret"),
+        has_google_client_secret: effective_oauth.google_configured(),
+        has_discord_client_secret: effective_oauth.discord_configured(),
     };
 
     let proxy_trust = runtime_proxy_trust_config();
@@ -480,9 +491,16 @@ pub async fn update_config(
 ) -> AppResult<MessageResponse> {
     let account_policy = model.account_policy.take();
     let captcha = model.captcha.take();
-    if account_policy.is_some() || captcha.is_some() {
-        security_policy::save_security_policy(st.pg(), st.config.as_ref(), account_policy, captcha)
-            .await?;
+    let o_auth = model.o_auth.take();
+    if account_policy.is_some() || captcha.is_some() || o_auth.is_some() {
+        security_policy::save_security_policy(
+            st.pg(),
+            st.config.as_ref(),
+            account_policy,
+            captcha,
+            o_auth,
+        )
+        .await?;
     }
 
     if let Some(g) = model.global_config {
@@ -575,23 +593,6 @@ pub async fn update_config(
         write_opt(&st, "RegistryConfig:ServerAddress", r.server_address).await?;
         write_opt(&st, "RegistryConfig:UserName", r.user_name).await?;
         write_secret(&st, "RegistryConfig:Password", r.password).await?;
-    }
-
-    if let Some(o) = model.o_auth {
-        write_opt(&st, "OAuthConfig:GoogleClientId", o.google_client_id).await?;
-        write_secret(
-            &st,
-            "OAuthConfig:GoogleClientSecret",
-            o.google_client_secret,
-        )
-        .await?;
-        write_opt(&st, "OAuthConfig:DiscordClientId", o.discord_client_id).await?;
-        write_secret(
-            &st,
-            "OAuthConfig:DiscordClientSecret",
-            o.discord_client_secret,
-        )
-        .await?;
     }
 
     if let Some(b) = model.build_registry {

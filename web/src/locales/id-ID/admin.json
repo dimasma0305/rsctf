@@ -362,6 +362,12 @@
           "description": "Izinkan user untuk mendaftar akun baru",
           "label": "Izinkan Pendaftaran"
         },
+        "allow_password_registration": {
+          "description": "Jika dinonaktifkan, pengguna baru harus mendaftar melalui penyedia OAuth yang telah dikonfigurasi. Akun lama tetap dapat masuk dengan kata sandi.",
+          "label": "Izinkan Pendaftaran dengan Kata Sandi"
+        },
+        "oauth_only_not_ready": "Pendaftaran khusus OAuth memerlukan setidaknya satu konfigurasi Google atau Discord yang lengkap, dan Sidik Jari Browser harus dinonaktifkan.",
+        "oauth_only_ready": "Akun baru hanya akan dibuat melalui OAuth Google atau Discord. Akun lama tetap dapat masuk dengan kata sandi.",
         "auto_active": {
           "description": "Apakah pengguna diaktifkan setelah mendaftar",
           "label": "Aktifkan Otomatis"

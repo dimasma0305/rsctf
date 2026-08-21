@@ -7,6 +7,11 @@
     "login": "Sudah memiliki akun?",
     "recovery": "Lupa kata sandi?"
   },
+  "oauth": {
+    "registration_only_description": "Akun baru harus dibuat melalui penyedia eksternal yang disetujui.",
+    "registration_only_notice": "Pilih Google atau Discord di bawah untuk membuat akun. Pengguna lama dapat kembali ke halaman masuk dengan kata sandi.",
+    "registration_unavailable": "Pendaftaran OAuth sedang tidak tersedia. Hubungi administrator."
+  },
   "button": {
     "accept_tos": "Setuju & Lanjutkan",
     "change_password": "Ubah Kata Sandi",

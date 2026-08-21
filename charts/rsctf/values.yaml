@@ -262,6 +262,7 @@ config:
   trustedProxyCidrs: ""
   jwtTtlSeconds: 604800
   allowRegister: true
+  allowPasswordRegistration: true
   emailConfirm: false
   adminConfirm: false
   activeOnRegister: true

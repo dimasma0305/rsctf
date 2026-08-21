@@ -21,6 +21,7 @@ const fallbackConfig: ClientConfig = {
   extensionDuration: 120,
   renewalWindow: 10,
   enableBrowserFingerprint: false,
+  allowPasswordRegistration: true,
 }
 
 export const useConfig = () => {

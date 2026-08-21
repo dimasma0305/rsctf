@@ -89,7 +89,8 @@ validation and must retain the same short authorization window.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `RSCTF_ALLOW_REGISTER` | `true` | Allow public password registration; the empty-database admin bootstrap remains possible |
+| `RSCTF_ALLOW_REGISTER` | `true` | Allow public account registration through any method; the empty-database admin bootstrap remains possible |
+| `RSCTF_ALLOW_PASSWORD_REGISTRATION` | `true` | Allow public username/password account creation. Disable after configuring Google or Discord to require OAuth for new accounts; existing password login and first-admin bootstrap remain available |
 | `RSCTF_BOOTSTRAP_TOKEN` | Unset | 32+ character secret required for the first administrator while the user table is empty; ignored for later registrations |
 | `RSCTF_EMAIL_CONFIRM` | `false` | Require email-confirmation behavior for later accounts |
 | `RSCTF_ACTIVE_ON_REGISTER` | `true` | Make later registered users active immediately |
@@ -324,7 +325,12 @@ RSCTF_DISCORD_CLIENT_ID=
 RSCTF_DISCORD_CLIENT_SECRET=
 ```
 
-The callback is under `/api/oauth/<provider>/callback` on `RSCTF_PUBLIC_URL`. Provider endpoint override variables exist for enterprise/testing, but most deployments should use the defaults. OAuth login reads environment credentials, not the similarly named Admin settings.
+The callbacks are `/api/oauth/google/callback` and `/api/oauth/discord/callback`
+on `RSCTF_PUBLIC_URL`; register the matching URI with each provider. Credentials
+saved under **Admin → Settings → OAuth** take effect immediately and override
+these environment fallbacks. Persisting an empty client ID disables that
+provider. Provider endpoint override variables exist for enterprise/testing,
+but most deployments should use the defaults.
 
 ## CAPTCHA
 

@@ -36,6 +36,7 @@ data:
   RSCTF_COOKIE_SECURE: {{ .Values.config.cookieSecure | quote }}
   RSCTF_TRUSTED_PROXY_CIDRS: {{ .Values.config.trustedProxyCidrs | quote }}
   RSCTF_ALLOW_REGISTER: {{ .Values.config.allowRegister | quote }}
+  RSCTF_ALLOW_PASSWORD_REGISTRATION: {{ .Values.config.allowPasswordRegistration | quote }}
   RSCTF_EMAIL_CONFIRM: {{ .Values.config.emailConfirm | quote }}
   RSCTF_ADMIN_CONFIRM: {{ .Values.config.adminConfirm | quote }}
   RSCTF_ACTIVE_ON_REGISTER: {{ .Values.config.activeOnRegister | quote }}

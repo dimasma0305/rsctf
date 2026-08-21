@@ -1,4 +1,4 @@
-import { Anchor, Button, PasswordInput, TextInput } from '@mantine/core'
+import { Alert, Anchor, Button, PasswordInput, Text, TextInput } from '@mantine/core'
 import { useDisclosure, useInputState } from '@mantine/hooks'
 import { showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
@@ -171,6 +171,30 @@ const Register: FC = () => {
   const onRegister = async (event: React.SyntheticEvent) => {
     event.preventDefault()
     await executeRegister()
+  }
+
+  if (!bootstrapMode && config.allowPasswordRegistration === false) {
+    const providerAvailable = Boolean(config.enableGoogleAuth || config.enableDiscordAuth)
+    return (
+      <AccountView
+        title={t('account.title.register')}
+        description={t('account.oauth.registration_only_description')}
+      >
+        <Alert color={providerAvailable ? 'blue' : 'red'}>
+          <Text size="sm">
+            {t(
+              providerAvailable
+                ? 'account.oauth.registration_only_notice'
+                : 'account.oauth.registration_unavailable'
+            )}
+          </Text>
+        </Alert>
+        {providerAvailable && <OAuthButtons />}
+        <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to="/account/login">
+          {t('account.anchor.login')}
+        </Anchor>
+      </AccountView>
+    )
   }
 
   return (

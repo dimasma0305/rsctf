@@ -90,3 +90,17 @@ test('English settings copy describes inactive fingerprint policies', () => {
   assert.match(fingerprint.policy_inactive, /Inactive.*Browser Fingerprinting is off/i)
   assert.match(fingerprint.policies_ineffective, /configured but inactive/i)
 })
+
+test('Settings exposes OAuth-only registration with safe provider guidance', () => {
+  const settings = readFileSync('src/pages/admin/Settings.tsx', 'utf8')
+  const register = readFileSync('src/pages/account/Register.tsx', 'utf8')
+  const locale = JSON.parse(readFileSync('src/locales/en-US/admin.json', 'utf8'))
+
+  assert.match(settings, /allowPasswordRegistration/)
+  assert.match(settings, /oauthOnlyRegistrationNeedsAttention/)
+  assert.match(settings, /\/api\/oauth\/google\/callback/)
+  assert.match(settings, /\/api\/oauth\/discord\/callback/)
+  assert.match(locale.content.settings.account.allow_password_registration.description, /Existing password accounts/i)
+  assert.match(register, /!bootstrapMode && config\.allowPasswordRegistration === false/)
+  assert.match(register, /providerAvailable && <OAuthButtons \/>/)
+})
