@@ -41,9 +41,11 @@ fn trusted_imports_preserve_inline_preparation() {
 
 #[test]
 fn pending_manifest_complexity_is_bounded_before_database_writes() {
-    let mut model = ChallengeYaml::default();
-    model.flags = Some(vec!["flag{ok}".to_string(); MAX_PENDING_STATIC_FLAGS]);
-    model.hints = Some(vec!["hint".to_string(); MAX_PENDING_HINTS]);
+    let mut model = ChallengeYaml {
+        flags: Some(vec!["flag{ok}".to_string(); MAX_PENDING_STATIC_FLAGS]),
+        hints: Some(vec!["hint".to_string(); MAX_PENDING_HINTS]),
+        ..Default::default()
+    };
     assert!(validate_pending_manifest(&model).is_ok());
 
     model.flags.as_mut().unwrap().push("flag{too_many}".into());
