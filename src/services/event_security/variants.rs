@@ -82,6 +82,8 @@ struct VariantTarget {
     revision: i32,
     generator_image: String,
     generator_digest: String,
+    generator_build_context_subdir: Option<String>,
+    generator_build_status: i16,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -123,26 +125,52 @@ fn bounded_append(output: &mut Vec<u8>, chunk: &[u8]) -> AppResult<()> {
     Ok(())
 }
 
+fn generator_runtime_image(st: &SharedState, target: &VariantTarget) -> AppResult<String> {
+    if target.generator_build_context_subdir.is_none()
+        && crate::services::challenge_images::is_repository_digest(&target.generator_image)
+        && target.generator_image.ends_with(&target.generator_digest)
+    {
+        return Ok(target.generator_image.clone());
+    }
+    if target.generator_build_context_subdir.as_deref()
+        == Some(crate::services::git_sync::GENERATOR_CONTEXT_SUBDIR)
+        && target.generator_build_status
+            == crate::utils::enums::ChallengeBuildStatus::Success as i16
+        && target.generator_image == target.generator_digest
+        && crate::services::challenge_images::is_local_image_id(&target.generator_digest)
+    {
+        return crate::services::challenge_images::validate_runtime_reference(
+            &target.generator_digest,
+            crate::services::container::ContainerBackendKind::Docker,
+            st.config.runtime_role,
+            crate::services::challenge_images::shared_docker_daemon_acknowledged(),
+        );
+    }
+    Err(AppError::bad_request(
+        "Variant generator has no valid immutable repository or trusted local-build identity",
+    ))
+}
+
 async fn run_generator_once(
+    st: &SharedState,
     docker: &Docker,
     target: &VariantTarget,
     input: &GeneratorInput,
 ) -> AppResult<Vec<u8>> {
-    if !crate::services::challenge_images::is_repository_digest(&target.generator_image)
-        || !target.generator_image.ends_with(&target.generator_digest)
-    {
-        return Err(AppError::bad_request(
-            "Variant generator must use the configured immutable repository digest",
+    let runtime_image = generator_runtime_image(st, target)?;
+    let inspected = docker.inspect_image(&runtime_image).await.map_err(|_| {
+        AppError::unavailable(
+            "Variant generator image is not present on the trusted generator host",
+        )
+    })?;
+    if !crate::services::challenge_images::inspect_matches_immutable_reference(
+        &inspected,
+        &runtime_image,
+    ) {
+        return Err(AppError::conflict(
+            "Variant generator image no longer matches its immutable identity",
         ));
     }
-    docker
-        .inspect_image(&target.generator_image)
-        .await
-        .map_err(|_| {
-            AppError::unavailable(
-                "Variant generator image is not present on the trusted generator host",
-            )
-        })?;
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(input)
             .map_err(|error| AppError::internal(format!("encode variant input: {error}")))?,
@@ -150,7 +178,7 @@ async fn run_generator_once(
     let id = Uuid::new_v4().simple().to_string();
     let name = format!("rsctf-variant-{id}");
     let config = Config {
-        image: Some(target.generator_image.clone()),
+        image: Some(runtime_image),
         env: Some(vec![format!("RSCTF_VARIANT_INPUT={encoded}")]),
         network_disabled: Some(true),
         attach_stdout: Some(true),
@@ -237,6 +265,25 @@ async fn run_generator_once(
     result
 }
 
+async fn run_generator_deterministically(
+    st: &SharedState,
+    docker: &Docker,
+    target: &VariantTarget,
+    input: &GeneratorInput,
+) -> AppResult<(Vec<u8>, [u8; 32])> {
+    let first = run_generator_once(st, docker, target, input).await?;
+    let second = run_generator_once(st, docker, target, input).await?;
+    let first_hash: [u8; 32] = Sha256::digest(&first).into();
+    let second_hash: [u8; 32] = Sha256::digest(&second).into();
+    if first_hash != second_hash {
+        return Err(AppError::conflict(format!(
+            "Variant generator is nondeterministic for challenge {} participation {}",
+            target.challenge_id, target.participation_id
+        )));
+    }
+    Ok((first, first_hash))
+}
+
 fn parse_output(bytes: &[u8]) -> AppResult<(serde_json::Value, [u8; 32])> {
     let output: GeneratorOutput = serde_json::from_slice(bytes)
         .map_err(|_| AppError::bad_request("Variant generator must emit one JSON object"))?;
@@ -265,13 +312,51 @@ pub fn decode_manifest(value: &serde_json::Value) -> AppResult<ChallengeVariantM
     Ok(manifest)
 }
 
+/// Exercise a newly auto-built image through the same sandbox, output bounds,
+/// deterministic replay, and manifest parser used by real event generation.
+pub(crate) async fn validate_built_variant_generator(
+    st: &SharedState,
+    image: &str,
+    digest: &str,
+) -> AppResult<()> {
+    let _permit = GENERATOR_SLOTS
+        .acquire()
+        .await
+        .map_err(|_| AppError::unavailable("Variant generator is shutting down"))?;
+    let docker = Docker::connect_with_local_defaults()
+        .map_err(|error| AppError::unavailable(format!("Docker is unavailable: {error}")))?;
+    let target = VariantTarget {
+        game_id: 1,
+        challenge_id: 1,
+        participation_id: 1,
+        revision: 1,
+        generator_image: image.to_string(),
+        generator_digest: digest.to_string(),
+        generator_build_context_subdir: Some(
+            crate::services::git_sync::GENERATOR_CONTEXT_SUBDIR.to_string(),
+        ),
+        generator_build_status: crate::utils::enums::ChallengeBuildStatus::Success as i16,
+    };
+    let input = GeneratorInput {
+        game_id: 1,
+        challenge_id: 1,
+        participation_id: 1,
+        revision: 1,
+        seed: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0u8; 32]),
+    };
+    let (output, _) = run_generator_deterministically(st, &docker, &target, &input).await?;
+    parse_output(&output).map(|_| ())
+}
+
 async fn load_targets(st: &SharedState, game_id: i32) -> AppResult<Vec<VariantTarget>> {
     sqlx::query_as(
         r#"SELECT challenge.game_id, challenge.id AS challenge_id,
                   participation.id AS participation_id,
                   COALESCE(MAX(existing.revision), 0) + 1 AS revision,
                   challenge.variant_generator_image AS generator_image,
-                  challenge.variant_generator_digest AS generator_digest
+                  challenge.variant_generator_digest AS generator_digest,
+                  challenge.variant_generator_build_context_subdir AS generator_build_context_subdir,
+                  challenge.variant_generator_build_status AS generator_build_status
              FROM "GameChallenges" challenge
              JOIN "Games" game ON game.id = challenge.game_id
              JOIN "Participations" participation
@@ -285,6 +370,8 @@ async fn load_targets(st: &SharedState, game_id: i32) -> AppResult<Vec<VariantTa
               AND challenge.variant_mode = $2
               AND challenge.variant_generator_image IS NOT NULL
               AND challenge.variant_generator_digest IS NOT NULL
+              AND (challenge.variant_generator_build_context_subdir IS NULL
+                   OR challenge.variant_generator_build_status = 1)
               AND challenge.is_enabled = TRUE
               AND challenge.review_status = 0
               AND challenge."Type" NOT IN (4, 5)
@@ -299,7 +386,9 @@ async fn load_targets(st: &SharedState, game_id: i32) -> AppResult<Vec<VariantTa
               )
             GROUP BY challenge.game_id, challenge.id, participation.id,
                      challenge.variant_generator_image,
-                     challenge.variant_generator_digest
+                     challenge.variant_generator_digest,
+                     challenge.variant_generator_build_context_subdir,
+                     challenge.variant_generator_build_status
             ORDER BY challenge.id, participation.id"#,
     )
     .bind(game_id)
@@ -331,16 +420,8 @@ pub async fn generate_event_variants(st: &SharedState, game_id: i32) -> AppResul
             revision: target.revision,
             seed: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(seed),
         };
-        let first = run_generator_once(&docker, &target, &input).await?;
-        let second = run_generator_once(&docker, &target, &input).await?;
-        let first_hash: [u8; 32] = Sha256::digest(&first).into();
-        let second_hash: [u8; 32] = Sha256::digest(&second).into();
-        if first_hash != second_hash {
-            return Err(AppError::conflict(format!(
-                "Variant generator is nondeterministic for challenge {} participation {}",
-                target.challenge_id, target.participation_id
-            )));
-        }
+        let (first, first_hash) =
+            run_generator_deterministically(st, &docker, &target, &input).await?;
         let (manifest, artifact_hash) = parse_output(&first)?;
         let inserted = sqlx::query(
             r#"INSERT INTO "ChallengeVariants"

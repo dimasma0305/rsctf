@@ -877,7 +877,27 @@ const GameChallengeEdit: FC = () => {
                   }
                 />
                 {(challengeInfo.variantMode ?? ChallengeVariantMode.Disabled) !== ChallengeVariantMode.Disabled && (
-                  <>
+                  challenge?.variantGeneratorManaged ? (
+                    <Stack gap="xs">
+                      <Text size="sm" fw={500}>
+                        {t('admin.event_security.managed_generator', 'Repository generator')}
+                      </Text>
+                      <Text size="sm" c="dimmed">
+                        {t(
+                          'admin.event_security.managed_generator_description',
+                          'Built automatically from generator/Dockerfile. The immutable identity is managed by rsctf and is not written to challenge.yaml.'
+                        )}
+                      </Text>
+                      {challenge.variantGeneratorResolvedDigest && (
+                        <Code block>{challenge.variantGeneratorResolvedDigest}</Code>
+                      )}
+                      <BuildLogSection
+                        buildStatus={challenge.variantGeneratorBuildStatus}
+                        lastBuildLog={challenge.variantGeneratorLastBuildLog ?? null}
+                      />
+                    </Stack>
+                  ) : (
+                    <>
                     <TextInput
                       required
                       disabled={disabled || eventSecurityFrozen}
@@ -901,7 +921,8 @@ const GameChallengeEdit: FC = () => {
                         setChallengeInfo({ ...challengeInfo, variantGeneratorDigest: event.currentTarget.value })
                       }
                     />
-                  </>
+                    </>
+                  )
                 )}
                 {(challengeInfo.solveReceiptMode ?? SolveReceiptMode.Disabled) !== SolveReceiptMode.Disabled && (
                   <TextInput

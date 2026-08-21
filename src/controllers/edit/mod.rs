@@ -336,6 +336,10 @@ pub struct ChallengeEditDetailModel {
     pub variant_mode: ChallengeVariantMode,
     pub variant_generator_image: Option<String>,
     pub variant_generator_digest: Option<String>,
+    pub variant_generator_managed: bool,
+    pub variant_generator_resolved_digest: Option<String>,
+    pub variant_generator_build_status: ChallengeBuildStatus,
+    pub variant_generator_last_build_log: Option<String>,
     pub solve_receipt_mode: SolveReceiptMode,
     pub receipt_verifier_identity: Option<String>,
     pub flags: Vec<FlagInfoModel>,
@@ -434,8 +438,21 @@ impl ChallengeEditDetailModel {
             ad_self_hosted: c.ad_self_hosted,
             ad_scoring_weight: c.ad_scoring_weight,
             variant_mode: c.variant_mode,
-            variant_generator_image: c.variant_generator_image.clone(),
-            variant_generator_digest: c.variant_generator_digest.clone(),
+            variant_generator_image: (c.variant_generator_build_context_subdir.is_none())
+                .then(|| c.variant_generator_image.clone())
+                .flatten(),
+            variant_generator_digest: (c.variant_generator_build_context_subdir.is_none())
+                .then(|| c.variant_generator_digest.clone())
+                .flatten(),
+            variant_generator_managed: c.variant_generator_build_context_subdir.as_deref()
+                == Some(crate::services::git_sync::GENERATOR_CONTEXT_SUBDIR),
+            variant_generator_resolved_digest: c
+                .variant_generator_build_context_subdir
+                .is_some()
+                .then(|| c.variant_generator_digest.clone())
+                .flatten(),
+            variant_generator_build_status: c.variant_generator_build_status,
+            variant_generator_last_build_log: c.variant_generator_last_build_log.clone(),
             solve_receipt_mode: c.solve_receipt_mode,
             receipt_verifier_identity: c.receipt_verifier_identity.clone(),
             flags,

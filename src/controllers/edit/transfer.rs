@@ -346,6 +346,12 @@ pub struct ExportChallengeModel {
     pub variant_generator_image: Option<String>,
     #[serde(default)]
     pub variant_generator_digest: Option<String>,
+    #[serde(default)]
+    pub variant_generator_build_context_subdir: Option<String>,
+    #[serde(default = "default_challenge_build_status")]
+    pub variant_generator_build_status: ChallengeBuildStatus,
+    #[serde(default)]
+    pub variant_generator_last_build_log: Option<String>,
     #[serde(default = "default_solve_receipt_mode")]
     pub solve_receipt_mode: SolveReceiptMode,
     #[serde(default)]
@@ -408,6 +414,11 @@ impl ExportChallengeModel {
             variant_mode: c.variant_mode,
             variant_generator_image: c.variant_generator_image.clone(),
             variant_generator_digest: c.variant_generator_digest.clone(),
+            variant_generator_build_context_subdir: c
+                .variant_generator_build_context_subdir
+                .clone(),
+            variant_generator_build_status: c.variant_generator_build_status,
+            variant_generator_last_build_log: c.variant_generator_last_build_log.clone(),
             solve_receipt_mode: c.solve_receipt_mode,
             receipt_verifier_identity: c.receipt_verifier_identity.clone(),
             attachment_type,
@@ -421,6 +432,10 @@ impl ExportChallengeModel {
 
 fn default_variant_mode() -> ChallengeVariantMode {
     ChallengeVariantMode::Disabled
+}
+
+fn default_challenge_build_status() -> ChallengeBuildStatus {
+    ChallengeBuildStatus::None
 }
 
 fn default_solve_receipt_mode() -> SolveReceiptMode {

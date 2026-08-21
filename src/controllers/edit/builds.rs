@@ -12,6 +12,8 @@ pub(crate) use identity::{
 };
 mod publication;
 use publication::*;
+mod generator;
+pub(crate) use generator::run_import_variant_generator_build;
 #[cfg(test)]
 mod archive_tests;
 #[cfg(test)]

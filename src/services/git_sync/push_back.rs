@@ -135,6 +135,8 @@ struct AdOut {
 /// is never written. An AUTO-BUILT image tag (`rsctf/<game>/…`, see the parent
 /// module's `image_tag`) is omitted so the "build from ./src" intent
 /// round-trips instead of freezing into a "pull this registry image" on re-sync.
+/// The same rule applies to the immutable identity resolved from a conventional
+/// `generator/Dockerfile`: it is platform build output, not authored YAML.
 /// The importer's `Author: **X**\n\n` content prefix is reversed back into a
 /// dedicated `author:` field.
 pub fn serialize_challenge(ch: &game_challenge::Model, flag_texts: &[String]) -> AppResult<String> {
@@ -170,6 +172,8 @@ fn serialize_challenge_inner(
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
         .filter(|l| !l.is_empty());
 
+    let managed_generator = ch.variant_generator_build_context_subdir.as_deref()
+        == Some(super::GENERATOR_CONTEXT_SUBDIR);
     let mut out = ChallengeYamlOut {
         name: Some(ch.title.clone()),
         author,
@@ -192,8 +196,12 @@ fn serialize_challenge_inner(
         disable_blood_bonus: ch.disable_blood_bonus.then_some(true),
         variant_mode: (ch.variant_mode != ChallengeVariantMode::Disabled)
             .then_some(ch.variant_mode),
-        variant_generator_image: ch.variant_generator_image.clone(),
-        variant_generator_digest: ch.variant_generator_digest.clone(),
+        variant_generator_image: (!managed_generator)
+            .then(|| ch.variant_generator_image.clone())
+            .flatten(),
+        variant_generator_digest: (!managed_generator)
+            .then(|| ch.variant_generator_digest.clone())
+            .flatten(),
         solve_receipt_mode: (ch.solve_receipt_mode != SolveReceiptMode::Disabled)
             .then_some(ch.solve_receipt_mode),
         receipt_verifier_identity: ch.receipt_verifier_identity.clone(),
@@ -437,6 +445,9 @@ mod tests {
             variant_mode: crate::utils::enums::ChallengeVariantMode::Disabled,
             variant_generator_image: None,
             variant_generator_digest: None,
+            variant_generator_build_context_subdir: None,
+            variant_generator_build_status: ChallengeBuildStatus::None,
+            variant_generator_last_build_log: None,
             solve_receipt_mode: crate::utils::enums::SolveReceiptMode::Disabled,
             receipt_verifier_identity: None,
             ad_checker_image: None,
@@ -551,6 +562,25 @@ mod tests {
             parsed.receipt_verifier_identity.as_deref(),
             Some("example-verifier-v1")
         );
+    }
+
+    #[test]
+    fn auto_built_generator_identity_is_not_written_back_to_yaml() {
+        let mut challenge = challenge(ChallengeType::StaticAttachment);
+        let digest = format!("sha256:{}", "b".repeat(64));
+        challenge.variant_mode = ChallengeVariantMode::PerParticipation;
+        challenge.variant_generator_image = Some(digest.clone());
+        challenge.variant_generator_digest = Some(digest);
+        challenge.variant_generator_build_context_subdir = Some("generator".to_string());
+        challenge.variant_generator_build_status = ChallengeBuildStatus::Success;
+
+        let parsed = parse(&serialize_challenge(&challenge, &[]).unwrap());
+        assert_eq!(
+            parsed.variant_mode,
+            Some(ChallengeVariantMode::PerParticipation)
+        );
+        assert_eq!(parsed.variant_generator_image, None);
+        assert_eq!(parsed.variant_generator_digest, None);
     }
 
     #[test]

@@ -426,6 +426,7 @@ async fn import_from_dir(
         }
     }
     let mut build_jobs = Vec::new();
+    let mut generator_build_jobs = Vec::new();
     let mut archive_jobs = Vec::new();
     for manifest in manifests {
         match crate::services::git_sync::import_manifest(st, game_id, &manifest, policy).await {
@@ -443,6 +444,9 @@ async fn import_from_dir(
                 }
                 if imported.build_queued {
                     build_jobs.push(imported.challenge_id);
+                }
+                if imported.generator_build_queued {
+                    generator_build_jobs.push(imported.challenge_id);
                 }
                 if imported.runtime_update_deferred {
                     result.failed += 1;
@@ -535,6 +539,14 @@ async fn import_from_dir(
                 outcome
                     .log
                     .unwrap_or_else(|| format!("{:?}", outcome.status))
+            ));
+        }
+    }
+    for challenge_id in generator_build_jobs {
+        if let Err(error) = run_import_variant_generator_build(st, challenge_id).await {
+            result.failed += 1;
+            result.messages.push(format!(
+                "challenge #{challenge_id}: import generator build failed: {error}"
             ));
         }
     }

@@ -242,6 +242,11 @@ fn imported_challenge_model(
         variant_mode: Set(source.variant_mode),
         variant_generator_image: Set(source.variant_generator_image.clone()),
         variant_generator_digest: Set(source.variant_generator_digest.clone()),
+        variant_generator_build_context_subdir: Set(source
+            .variant_generator_build_context_subdir
+            .clone()),
+        variant_generator_build_status: Set(source.variant_generator_build_status),
+        variant_generator_last_build_log: Set(source.variant_generator_last_build_log.clone()),
         solve_receipt_mode: Set(source.solve_receipt_mode),
         receipt_verifier_identity: Set(source.receipt_verifier_identity.clone()),
         ..Default::default()

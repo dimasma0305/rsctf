@@ -563,6 +563,7 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                 let mut seen_challenge_ids =
                                     Vec::with_capacity(chal_manifests.len());
                                 let mut build_jobs = Vec::new();
+                                let mut generator_build_jobs = Vec::new();
                                 for m in &chal_manifests {
                                     match crate::services::git_sync::import_manifest(
                                         st,
@@ -578,6 +579,9 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                             seen_challenge_ids.push(imported.challenge_id);
                                             if imported.build_queued {
                                                 build_jobs.push(imported.challenge_id);
+                                            }
+                                            if imported.generator_build_queued {
+                                                generator_build_jobs.push(imported.challenge_id);
                                             }
                                             if imported.runtime_update_deferred {
                                                 failures += 1;
@@ -660,6 +664,20 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                             outcome
                                                 .log
                                                 .unwrap_or_else(|| format!("{:?}", outcome.status))
+                                        ));
+                                    }
+                                }
+                                for challenge_id in generator_build_jobs {
+                                    if let Err(error) =
+                                        crate::controllers::edit::run_import_variant_generator_build(
+                                            st,
+                                            challenge_id,
+                                        )
+                                        .await
+                                    {
+                                        failures += 1;
+                                        messages.push(format!(
+                                            "challenge #{challenge_id}: import generator build failed: {error}"
                                         ));
                                     }
                                 }
