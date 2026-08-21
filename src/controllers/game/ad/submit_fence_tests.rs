@@ -48,7 +48,9 @@ impl Fixture {
             r#"
             CREATE TABLE "AspNetUsers" (
               id UUID PRIMARY KEY,
-              role SMALLINT NOT NULL
+              role SMALLINT NOT NULL,
+              email_confirmed BOOLEAN NOT NULL,
+              security_stamp TEXT
             );
             CREATE TABLE "Teams" (
               id INTEGER PRIMARY KEY,
@@ -58,6 +60,10 @@ impl Fixture {
             CREATE TABLE "TeamMembers" (
               team_id INTEGER NOT NULL,
               user_id UUID NOT NULL
+            );
+            CREATE TABLE "Games" (
+              id INTEGER PRIMARY KEY, deletion_pending BOOLEAN NOT NULL,
+              start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
             );
             CREATE TABLE "Participations" (
               id INTEGER PRIMARY KEY,
@@ -75,6 +81,11 @@ impl Fixture {
               team_id INTEGER NOT NULL,
               participation_id INTEGER NOT NULL
             );
+            CREATE TABLE "IdentityObservations" (
+              user_id UUID NOT NULL, game_id INTEGER,
+              team_id INTEGER, participation_id INTEGER,
+              observed_at_utc TIMESTAMPTZ NOT NULL
+            );
             CREATE TABLE "AdTeamApiTokens" (
               id SERIAL PRIMARY KEY,
               participation_id INTEGER NOT NULL,
@@ -90,12 +101,16 @@ impl Fixture {
         let captain = Uuid::new_v4();
         let member = Uuid::new_v4();
         for id in [captain, member] {
-            sqlx::query(r#"INSERT INTO "AspNetUsers" (id, role) VALUES ($1, $2)"#)
-                .bind(id)
-                .bind(Role::User as i16)
-                .execute(&pool)
-                .await
-                .unwrap();
+            sqlx::query(
+                r#"INSERT INTO "AspNetUsers"
+                     (id, role, email_confirmed, security_stamp)
+                   VALUES ($1, $2, TRUE, 'stamp')"#,
+            )
+            .bind(id)
+            .bind(Role::User as i16)
+            .execute(&pool)
+            .await
+            .unwrap();
         }
         sqlx::query(r#"INSERT INTO "Teams" (id, captain_id) VALUES ($1, $2)"#)
             .bind(TEAM_ID)
@@ -103,6 +118,15 @@ impl Fixture {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "Games" VALUES
+               ($1, FALSE, clock_timestamp() + interval '1 hour',
+                clock_timestamp() + interval '2 hours')"#,
+        )
+        .bind(GAME_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES ($1, $2)"#)
             .bind(TEAM_ID)
             .bind(member)
@@ -159,6 +183,7 @@ impl Fixture {
                 team_id: TEAM_ID,
                 division_id: None,
                 suspicion_score: 0,
+                competitive_admitted_at_utc: None,
             },
         }
     }
@@ -238,7 +263,10 @@ async fn token_revocation_waits_for_the_complete_fenced_batch() {
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn session_batch_locks_account_role_and_rejects_an_orphaned_link() {
     let fixture = Fixture::create().await;
-    let caller = AdSubmitCaller::Session(fixture.member);
+    let caller = AdSubmitCaller::Session {
+        user_id: fixture.member,
+        security_stamp: "stamp".to_string(),
+    };
     let mut reader = PgAdvisoryLock::try_acquire_shared(&fixture.pool, &fixture.roster_key())
         .await
         .unwrap()
@@ -287,6 +315,52 @@ async fn session_batch_locks_account_role_and_rejects_an_orphaned_link() {
 
     sqlx::query(r#"UPDATE "AspNetUsers" SET role = $1 WHERE id = $2"#)
         .bind(Role::User as i16)
+        .bind(fixture.member)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"UPDATE "AspNetUsers" SET security_stamp = 'rotated' WHERE id = $1"#)
+        .bind(fixture.member)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    let mut stale_stamp = PgAdvisoryLock::try_acquire_shared(&fixture.pool, &fixture.roster_key())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !submit_caller_is_live(
+            stale_stamp.transaction_mut(),
+            &caller,
+            &fixture.participation,
+        )
+        .await
+        .unwrap(),
+        "a rotated JWT security stamp retained shared-credential authority"
+    );
+    stale_stamp.release().await.unwrap();
+    sqlx::query(
+        r#"UPDATE "AspNetUsers"
+              SET security_stamp = 'stamp', email_confirmed = FALSE
+            WHERE id = $1"#,
+    )
+    .bind(fixture.member)
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    let mut deconfirmed = PgAdvisoryLock::try_acquire_shared(&fixture.pool, &fixture.roster_key())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!submit_caller_is_live(
+        deconfirmed.transaction_mut(),
+        &caller,
+        &fixture.participation,
+    )
+    .await
+    .unwrap());
+    deconfirmed.release().await.unwrap();
+    sqlx::query(r#"UPDATE "AspNetUsers" SET email_confirmed = TRUE WHERE id = $1"#)
         .bind(fixture.member)
         .execute(&fixture.pool)
         .await

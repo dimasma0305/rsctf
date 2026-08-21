@@ -35,6 +35,7 @@ import {
   mdiDownload,
   mdiFileDocumentCheckOutline,
   mdiImageMultipleOutline,
+  mdiShieldLockOutline,
   mdiSwordCross,
   mdiTextBoxOutline,
 } from '@mdi/js'
@@ -51,7 +52,8 @@ import { downloadBlob } from '@Utils/ApiHelper'
 import { getInputNumber, randomInviteCode, showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { useAdminGame } from '@Hooks/useGame'
-import api, { GameInfoModel } from '@Api'
+import { useUser } from '@Hooks/useUser'
+import api, { EventVpnOverrideModel, GameInfoModel, Role } from '@Api'
 import classes from '@Styles/AdminGameInfo.module.css'
 import misc from '@Styles/Misc.module.css'
 
@@ -61,10 +63,17 @@ const GameInfoEdit: FC = () => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const { game: gameSource, mutate } = useAdminGame(numId)
+  const { user } = useUser()
   const [game, setGame] = useState<GameInfoModel>()
   const navigate = useNavigate()
 
   const [disabled, setDisabled] = useState(false)
+  const [generatingVariants, setGeneratingVariants] = useState(false)
+  const [eventSecurityAction, setEventSecurityAction] = useState<string | null>(null)
+  const [vpnOverrides, setVpnOverrides] = useState<EventVpnOverrideModel[]>([])
+  const [overrideReason, setOverrideReason] = useState('')
+  const [overrideMinutes, setOverrideMinutes] = useState<number | string>(15)
+  const [purgeReason, setPurgeReason] = useState('')
   const [start, setStart] = useInputState(dayjs())
   const [end, setEnd] = useInputState(dayjs())
   const [freeze, setFreeze] = useState<dayjs.Dayjs | null>(null)
@@ -74,6 +83,7 @@ const GameInfoEdit: FC = () => {
   const clipboard = useClipboard()
 
   const { t } = useTranslation()
+  const isAdmin = user?.role === Role.Admin
   const adScoringStarted = game?.adScoringStartRound != null
   const kothScoringStarted = game?.kothScoringStartRound != null
   const engineScoringStarted = adScoringStarted || kothScoringStarted
@@ -105,6 +115,18 @@ const GameInfoEdit: FC = () => {
       ? t('admin.error.games.freeze_out_of_range', 'Freeze time must be between the start and end times.')
       : undefined
   const timeRangeInvalid = !!endError || !!freezeError
+  const vpnPolicyChanged =
+    !!game &&
+    !!gameSource &&
+    (game.vpnAccessRequired !== gameSource.vpnAccessRequired ||
+      game.vpnBehaviorTelemetryEnabled !== gameSource.vpnBehaviorTelemetryEnabled ||
+      game.vpnFlagScanEnabled !== gameSource.vpnFlagScanEnabled ||
+      game.vpnProviderDnsTelemetryEnabled !== gameSource.vpnProviderDnsTelemetryEnabled ||
+      game.vpnSourceAsnTelemetryEnabled !== gameSource.vpnSourceAsnTelemetryEnabled ||
+      game.vpnDeviceSharingTelemetryEnabled !== gameSource.vpnDeviceSharingTelemetryEnabled)
+  const vpnPolicyReasonInvalid =
+    vpnPolicyChanged &&
+    !((game?.vpnPolicyChangeReason?.trim().length ?? 0) >= 8 && (game?.vpnPolicyChangeReason?.trim().length ?? 0) <= 512)
 
   useEffect(() => {
     if (numId < 0) {
@@ -127,6 +149,25 @@ const GameInfoEdit: FC = () => {
       setWpddl(wpddl < 0 ? 0 : wpddl)
     }
   }, [id, gameSource])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!isAdmin || numId < 0) {
+      setVpnOverrides([])
+      return
+    }
+    api.eventSecurity
+      .listVpnOverrides(numId)
+      .then((response) => {
+        if (!cancelled) setVpnOverrides(response.data)
+      })
+      .catch(() => {
+        if (!cancelled) setVpnOverrides([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isAdmin, numId])
 
   const onUpdatePoster = async (file: File | undefined) => {
     if (!game || !file) return
@@ -192,6 +233,14 @@ const GameInfoEdit: FC = () => {
       })
       return
     }
+    if (vpnPolicyReasonInvalid) {
+      showNotification({
+        color: 'orange',
+        message: t('admin.event_security.change_reason_required', 'Enter an 8–512 character policy change reason.'),
+        icon: <Icon path={mdiClose} size={1} />,
+      })
+      return
+    }
     setDisabled(true)
 
     try {
@@ -248,6 +297,127 @@ const GameInfoEdit: FC = () => {
     await downloadBlob(api.edit.editExportGame(game.id, { format: 'blob' }), setDisabled, t)
   }
 
+  const onGenerateVariants = async () => {
+    if (!game?.id) return
+    setGeneratingVariants(true)
+    try {
+      const response = await api.eventSecurity.generateVariants(game.id)
+      showNotification({
+        color: 'teal',
+        message: t('admin.event_security.variants_generated', '{{count}} deterministic variants generated', {
+          count: response.data.generated,
+        }),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setGeneratingVariants(false)
+    }
+  }
+
+  const onDeriveFindings = async () => {
+    if (!game?.id) return
+    setEventSecurityAction('derive')
+    try {
+      const response = await api.eventSecurity.deriveFindings(game.id)
+      showNotification({
+        color: 'teal',
+        message: t('admin.event_security.findings_derived', '{{count}} new context findings derived', {
+          count: response.data.inserted,
+        }),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setEventSecurityAction(null)
+    }
+  }
+
+  const onCreateVpnOverride = async () => {
+    if (!game?.id) return
+    const reason = overrideReason.trim()
+    const durationMinutes = Number(overrideMinutes)
+    if (reason.length < 8 || reason.length > 512 || !Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 60) {
+      showNotification({
+        color: 'orange',
+        message: t(
+          'admin.event_security.override_invalid',
+          'Enter an 8–512 character reason and a duration from 1 to 60 minutes.'
+        ),
+        icon: <Icon path={mdiClose} size={1} />,
+      })
+      return
+    }
+    setEventSecurityAction('override')
+    try {
+      await api.eventSecurity.createVpnOverride(game.id, { reason, durationMinutes })
+      const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
+      setVpnOverrides(refreshed.data)
+      setOverrideReason('')
+      showNotification({
+        color: 'orange',
+        message: t('admin.event_security.override_created', 'Temporary event VPN bypass created and audited.'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setEventSecurityAction(null)
+    }
+  }
+
+  const onRevokeVpnOverride = async (overrideId: string) => {
+    if (!game?.id) return
+    setEventSecurityAction(`revoke:${overrideId}`)
+    try {
+      await api.eventSecurity.revokeVpnOverride(game.id, overrideId)
+      const refreshed = await api.eventSecurity.listVpnOverrides(game.id)
+      setVpnOverrides(refreshed.data)
+      showNotification({
+        color: 'teal',
+        message: t('admin.event_security.override_revoked', 'Event VPN bypass revoked.'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setEventSecurityAction(null)
+    }
+  }
+
+  const onPurgeTelemetry = async () => {
+    if (!game?.id) return
+    const reason = purgeReason.trim()
+    if (reason.length < 8 || reason.length > 512) {
+      showNotification({
+        color: 'orange',
+        message: t('admin.event_security.purge_reason_invalid', 'Enter an 8–512 character purge reason.'),
+        icon: <Icon path={mdiClose} size={1} />,
+      })
+      return
+    }
+    setEventSecurityAction('purge')
+    try {
+      const response = await api.eventSecurity.purgeTelemetry(game.id, { reason })
+      setPurgeReason('')
+      showNotification({
+        color: 'teal',
+        message: t(
+          'admin.event_security.telemetry_purged',
+          'Purged {{rows}} raw rows ({{bytes}} logical bytes); immutable findings were retained.',
+          { rows: response.data.rowsRemoved, bytes: response.data.logicalBytesRemoved }
+        ),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      setEventSecurityAction(null)
+    }
+  }
+
   // Section tabs (mirrors /admin/settings): one category is shown at a time via the
   // IconTabs bar, and the Save action lives in a sticky bar at the bottom.
   const sections = [
@@ -261,6 +431,11 @@ const GameInfoEdit: FC = () => {
       key: 'ad',
       icon: mdiSwordCross,
       label: t('admin.content.games.info.section.ad', 'Attack & Defense · King of the Hill'),
+    },
+    {
+      key: 'security',
+      icon: mdiShieldLockOutline,
+      label: t('admin.event_security.section', 'Event security'),
     },
     {
       key: 'content',
@@ -799,6 +974,259 @@ const GameInfoEdit: FC = () => {
               </SimpleGrid>
             </Stack>
           )}
+          {activeSection === 'security' && (
+            <Stack gap="md">
+              <Title order={2}>{t('admin.event_security.section', 'Event security')}</Title>
+              <Text size="sm" c="dimmed">
+                {t(
+                  'admin.event_security.description',
+                  'Every switch is opt-in. Context telemetry never proves cheating by itself, packet payloads and DNS names are not stored, and event/global quotas fail open for gameplay.'
+                )}
+              </Text>
+              <Divider />
+              <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                <Switch
+                  disabled={disabled}
+                  checked={game?.vpnAccessRequired ?? false}
+                  label={t('admin.event_security.vpn_required', 'Require event VPN for player APIs')}
+                  description={t(
+                    'admin.event_security.vpn_required_description',
+                    'Accepted players receive individual WireGuard credentials and must prove tunnel presence during the active event.'
+                  )}
+                  onChange={(event) =>
+                    game &&
+                    setGame({
+                      ...game,
+                      vpnAccessRequired: event.currentTarget.checked,
+                      ...(!event.currentTarget.checked
+                        ? {
+                            vpnBehaviorTelemetryEnabled: false,
+                            vpnFlagScanEnabled: false,
+                            vpnProviderDnsTelemetryEnabled: false,
+                            vpnSourceAsnTelemetryEnabled: false,
+                            vpnDeviceSharingTelemetryEnabled: false,
+                          }
+                        : {}),
+                    })
+                  }
+                />
+                <Switch
+                  disabled={disabled || !game?.vpnAccessRequired}
+                  checked={game?.vpnBehaviorTelemetryEnabled ?? false}
+                  label={t('admin.event_security.flow', 'Aggregate VPN flow telemetry')}
+                  description={t(
+                    'admin.event_security.flow_description',
+                    'Five-minute byte, packet, connection, and destination-count buckets; no packet content or destination address is stored.'
+                  )}
+                  onChange={(event) =>
+                    game && setGame({ ...game, vpnBehaviorTelemetryEnabled: event.currentTarget.checked })
+                  }
+                />
+                <Switch
+                  disabled={disabled || !game?.vpnAccessRequired}
+                  checked={game?.vpnFlagScanEnabled ?? false}
+                  label={t('admin.event_security.flag_scan', 'Exact foreign-flag transport matching')}
+                  description={t(
+                    'admin.event_security.flag_scan_description',
+                    'Matches only real platform-issued flags in bounded memory and persists an HMAC, never the flag text.'
+                  )}
+                  onChange={(event) =>
+                    game && setGame({ ...game, vpnFlagScanEnabled: event.currentTarget.checked })
+                  }
+                />
+                <Switch
+                  disabled={disabled || !game?.vpnAccessRequired}
+                  checked={game?.vpnProviderDnsTelemetryEnabled ?? false}
+                  label={t('admin.event_security.provider_dns', 'AI/hosting DNS categories')}
+                  description={t(
+                    'admin.event_security.provider_dns_description',
+                    'Counts coarse provider categories only when DNS traffic crosses the event VPN. This is context, not proof of AI use.'
+                  )}
+                  onChange={(event) =>
+                    game && setGame({ ...game, vpnProviderDnsTelemetryEnabled: event.currentTarget.checked })
+                  }
+                />
+                <Switch
+                  disabled={disabled || !game?.vpnAccessRequired}
+                  checked={game?.vpnSourceAsnTelemetryEnabled ?? false}
+                  label={t('admin.event_security.source_network', 'Peer source-network class')}
+                  description={t(
+                    'admin.event_security.source_network_description',
+                    'Stores a keyed endpoint hash plus coarse ISP/VPS/VPN class; never stores the public endpoint.'
+                  )}
+                  onChange={(event) =>
+                    game && setGame({ ...game, vpnSourceAsnTelemetryEnabled: event.currentTarget.checked })
+                  }
+                />
+                <Switch
+                  disabled={disabled || !game?.vpnAccessRequired}
+                  checked={game?.vpnDeviceSharingTelemetryEnabled ?? false}
+                  label={t('admin.event_security.device_sharing', 'Multi-endpoint peer context')}
+                  description={t(
+                    'admin.event_security.device_sharing_description',
+                    'Flags one personal event profile appearing from multiple keyed endpoint identities. It remains zero-score context.'
+                  )}
+                  onChange={(event) =>
+                    game && setGame({ ...game, vpnDeviceSharingTelemetryEnabled: event.currentTarget.checked })
+                  }
+                />
+              </SimpleGrid>
+              {vpnPolicyChanged && (
+                <Textarea
+                  required
+                  minRows={2}
+                  maxLength={512}
+                  label={t('admin.event_security.change_reason', 'Policy change reason')}
+                  description={t(
+                    'admin.event_security.change_reason_description',
+                    'Required for the append-only policy audit (8–512 characters).'
+                  )}
+                  value={game?.vpnPolicyChangeReason ?? ''}
+                  onChange={(event) =>
+                    game && setGame({ ...game, vpnPolicyChangeReason: event.currentTarget.value })
+                  }
+                />
+              )}
+              <Paper withBorder p="md" radius="md">
+                <Group justify="space-between" align="flex-start" wrap="wrap">
+                  <Stack gap={2} style={{ flex: '1 1 24rem' }}>
+                    <Text fw={600}>{t('admin.event_security.variants', 'Deterministic team variants')}</Text>
+                    <Text size="xs" c="dimmed">
+                      {t(
+                        'admin.event_security.variants_description',
+                        'Runs each configured generator twice in a network-disabled, resource-limited container and freezes output only when both hashes match.'
+                      )}
+                    </Text>
+                  </Stack>
+                  <Button
+                    variant="outline"
+                    loading={generatingVariants}
+                    disabled={disabled || generatingVariants}
+                    onClick={onGenerateVariants}
+                  >
+                    {t('admin.event_security.generate_variants', 'Generate missing variants')}
+                  </Button>
+                </Group>
+              </Paper>
+              {isAdmin && (
+                <Paper withBorder p="md" radius="md">
+                  <Stack gap="md">
+                    <Stack gap={2}>
+                      <Text fw={600}>{t('admin.event_security.operations', 'Investigation and recovery')}</Text>
+                      <Text size="xs" c="dimmed">
+                        {t(
+                          'admin.event_security.operations_description',
+                          'Derivation is idempotent. Emergency bypasses are short-lived and append-only audited; they do not disable telemetry collection.'
+                        )}
+                      </Text>
+                    </Stack>
+                    <Button
+                      variant="outline"
+                      loading={eventSecurityAction === 'derive'}
+                      disabled={disabled || eventSecurityAction !== null}
+                      onClick={onDeriveFindings}
+                    >
+                      {t('admin.event_security.derive_findings', 'Derive bounded context findings')}
+                    </Button>
+                    <Divider />
+                    <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                      <Textarea
+                        minRows={2}
+                        maxLength={512}
+                        label={t('admin.event_security.override_reason', 'Emergency bypass reason')}
+                        value={overrideReason}
+                        onChange={(event) => setOverrideReason(event.currentTarget.value)}
+                      />
+                      <NumberInput
+                        min={1}
+                        max={60}
+                        allowDecimal={false}
+                        label={t('admin.event_security.override_minutes', 'Duration (minutes)')}
+                        value={overrideMinutes}
+                        onChange={setOverrideMinutes}
+                      />
+                    </SimpleGrid>
+                    <Button
+                      color="orange"
+                      variant="outline"
+                      loading={eventSecurityAction === 'override'}
+                      disabled={disabled || eventSecurityAction !== null}
+                      onClick={onCreateVpnOverride}
+                    >
+                      {t('admin.event_security.create_override', 'Create temporary VPN bypass')}
+                    </Button>
+                    {vpnOverrides.filter((item) => item.active).map((item) => (
+                      <Group key={item.id} justify="space-between" align="flex-start" wrap="wrap">
+                        <Stack gap={0} style={{ flex: '1 1 20rem' }}>
+                          <Text size="sm" fw={600}>
+                            {t('admin.event_security.active_override', 'Active until {{time}}', {
+                              time: dayjs(item.expiresAtUtc).format('L LT'),
+                            })}
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            {item.reason}
+                          </Text>
+                        </Stack>
+                        <Button
+                          size="xs"
+                          color="red"
+                          variant="outline"
+                          loading={eventSecurityAction === `revoke:${item.id}`}
+                          disabled={disabled || eventSecurityAction !== null}
+                          onClick={() => onRevokeVpnOverride(item.id)}
+                        >
+                          {t('admin.event_security.revoke_override', 'Revoke bypass')}
+                        </Button>
+                      </Group>
+                    ))}
+                  </Stack>
+                </Paper>
+              )}
+              {isAdmin && (
+                <Paper withBorder p="md" radius="md">
+                  <Stack gap="sm">
+                    <Text fw={600}>{t('admin.event_security.purge', 'Purge raw event telemetry')}</Text>
+                    <Text size="xs" c="dimmed">
+                      {t(
+                        'admin.event_security.purge_description',
+                        'Deletes bounded flow/DNS/network/flag-transport rows for this event. Findings, relationships, reviews, and the purge audit remain.'
+                      )}
+                    </Text>
+                    <Textarea
+                      minRows={2}
+                      maxLength={512}
+                      label={t('admin.event_security.purge_reason', 'Purge reason')}
+                      value={purgeReason}
+                      onChange={(event) => setPurgeReason(event.currentTarget.value)}
+                    />
+                    <Button
+                      color="red"
+                      variant="outline"
+                      loading={eventSecurityAction === 'purge'}
+                      disabled={disabled || eventSecurityAction !== null}
+                      onClick={() =>
+                        modals.openConfirmModal({
+                          title: t('admin.event_security.purge_confirm_title', 'Purge raw event telemetry?'),
+                          children: (
+                            <Text size="sm">
+                              {t(
+                                'admin.event_security.purge_confirm_body',
+                                'This cannot be undone. Immutable findings and review history will be retained.'
+                              )}
+                            </Text>
+                          ),
+                          confirmProps: { color: 'red' },
+                          onConfirm: () => void onPurgeTelemetry(),
+                        })
+                      }
+                    >
+                      {t('admin.event_security.purge_action', 'Purge raw telemetry')}
+                    </Button>
+                  </Stack>
+                </Paper>
+              )}
+            </Stack>
+          )}
           {activeSection === 'content' && (
             <Stack gap="sm">
               <Title order={2}>{t('admin.content.games.info.section.content', 'Description & media')}</Title>
@@ -882,7 +1310,7 @@ const GameInfoEdit: FC = () => {
               size="md"
               variant="filled"
               leftSection={<Icon path={disabled ? mdiDotsHorizontal : mdiContentSaveOutline} size={0.9} />}
-              disabled={disabled || timeRangeInvalid}
+              disabled={disabled || timeRangeInvalid || vpnPolicyReasonInvalid}
               onClick={onUpdateInfo}
             >
               {t('admin.button.save')}

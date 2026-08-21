@@ -2,13 +2,14 @@
 //! update (`UserInfo.UpdateByHttpContext`, invoked from `PrivilegeAuthentication`
 //! on every authenticated request).
 //!
-//! RSCTF stamps the acting user's row with their current client IP and a
-//! `LastVisitedUtc` timestamp on each authenticated hit, **throttled** to at most
+//! RSCTF stamps the acting user's `LastVisitedUtc` timestamp on authenticated
+//! hits, **throttled** to at most
 //! once per 5 seconds (`DateTimeOffset.UtcNow - user.LastVisitedUtc >
 //! TimeSpan.FromSeconds(5)`). That freshness is what feeds the anti-cheat IP gate
 //! and the `SharedIp` / `CrossTeamIp` / `IpChurn` suspicion detectors — without
 //! it `user.ip` stays frozen at its registration value and `last_visited_utc`
-//! goes stale.
+//! goes stale. Accepted IPs are now written only by the transactional identity
+//! admission service; background activity must never mutate that evidence.
 //!
 //! Design constraints (mirroring RSCTF's "activity tracking must never break a
 //! request"):
@@ -293,11 +294,9 @@ async fn execute_activity_batch(
     sort_activity_batch(&mut batch);
 
     let mut user_ids = Vec::with_capacity(batch.len());
-    let mut ips = Vec::with_capacity(batch.len());
     let mut observed_at = Vec::with_capacity(batch.len());
     for observation in batch {
         user_ids.push(observation.user_id);
-        ips.push(observation.ip);
         observed_at.push(observation.observed_at);
     }
 
@@ -306,26 +305,18 @@ async fn execute_activity_batch(
     // the cross-replica/out-of-order backstop.
     sqlx::query(
         r#"WITH activity AS (
-               SELECT id, ip, observed_at
-                 FROM UNNEST($1::uuid[], $2::text[], $3::timestamptz[])
-                      AS observed(id, ip, observed_at)
+               SELECT id, observed_at
+                 FROM UNNEST($1::uuid[], $2::timestamptz[])
+                      AS observed(id, observed_at)
            )
            UPDATE "AspNetUsers" AS users
-              SET last_visited_utc = activity.observed_at,
-                  ip = COALESCE(activity.ip, users.ip)
+              SET last_visited_utc = activity.observed_at
              FROM activity
             WHERE users.id = activity.id
               AND users.last_visited_utc < activity.observed_at
-              AND (
-                    users.last_visited_utc < activity.observed_at - interval '5 seconds'
-                    OR (
-                        activity.ip IS NOT NULL
-                        AND users.ip IS DISTINCT FROM activity.ip
-                    )
-                  )"#,
+              AND users.last_visited_utc < activity.observed_at - interval '5 seconds'"#,
     )
     .bind(user_ids)
-    .bind(ips)
     .bind(observed_at)
     .execute(connection)
     .await
@@ -728,7 +719,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result.rows_affected(), 3);
+        assert_eq!(result.rows_affected(), 2);
 
         let rows = sqlx::query(r#"SELECT id, ip, last_visited_utc FROM "AspNetUsers""#)
             .fetch_all(&mut connection)
@@ -746,7 +737,13 @@ mod tests {
                 base + chrono::Duration::seconds(4)
             )
         );
-        assert_eq!(state[&ip_changed], (Some("198.51.100.3".into()), due_at));
+        assert_eq!(
+            state[&ip_changed],
+            (
+                Some("192.0.2.3".into()),
+                base + chrono::Duration::seconds(5)
+            )
+        );
         assert_eq!(
             state[&stale_observation],
             (
@@ -782,6 +779,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(changed.rows_affected(), 1);
+        assert_eq!(changed.rows_affected(), 0);
     }
 }

@@ -2,6 +2,14 @@
 	admin off
 }
 
+(upstream_client_identity) {
+	# Never forward a client-supplied identity header into rsctf. The immediate
+	# Caddy peer is authoritative for this bundled, directly exposed frontend.
+	header_up X-Real-IP {remote_host}
+	header_up X-Forwarded-For {remote_host}
+	header_up -Forwarded
+}
+
 {$RSCTF_DOMAIN} {
 	encode zstd gzip
 
@@ -21,6 +29,7 @@
 	log_skip @hubBearer
 	handle @network {
 		reverse_proxy {
+			import upstream_client_identity
 			dynamic a {$RSCTF_NETWORK_UPSTREAM_HOST:rsctf-network} {$RSCTF_NETWORK_UPSTREAM_PORT:8080} {
 				refresh 1s
 				resolvers 127.0.0.11
@@ -44,6 +53,7 @@
 	@mutation method POST PUT PATCH DELETE
 	handle @mutation {
 		reverse_proxy {
+			import upstream_client_identity
 			dynamic a rsctf 8080 {
 				refresh 1s
 				resolvers 127.0.0.11
@@ -64,6 +74,7 @@
 		# scaled service to one container and retain stale addresses after a
 		# scale-down. Docker DNS returns every live `rsctf` replica here.
 		reverse_proxy {
+			import upstream_client_identity
 			dynamic a rsctf 8080 {
 				# Docker's embedded DNS changes immediately when replicas leave,
 				# while Caddy's A-record cache otherwise lives for one minute.

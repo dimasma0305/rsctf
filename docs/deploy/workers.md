@@ -239,11 +239,14 @@ kubectl -n rsctf create secret generic rsctf-worker-tls \
   --from-file=worker-server.key=worker-secrets/worker-server.key
 ```
 
-Enable the listener on an `all`, `control`, or `network` release:
+On a fresh installation, enable the listener on an `all`, `control`, or
+`network` release and pin the reviewed image digest:
 
 ```bash
 helm upgrade --install rsctf charts/rsctf \
+  --set-string image.digest="sha256:<verified-manifest-digest>" \
   --set-string secrets.jwtSecret="$RSCTF_JWT_SECRET" \
+  --set-string secrets.identityHashKey="$RSCTF_IDENTITY_HASH_KEY" \
   --set containerBackend=worker \
   --set workerBackend.localBackend=none \
   --set trafficCapture.enabled=false \
@@ -252,8 +255,16 @@ helm upgrade --install rsctf charts/rsctf \
   --set workerPlane.enabled=true \
   --set workerPlane.existingSecret.name=rsctf-worker-tls \
   --set workerPlane.publicEndpoint=workers.ctf.example.com:9443 \
-  --set workerPlane.serverName=workers.ctf.example.com
+  --set workerPlane.serverName=workers.ctf.example.com \
+  --wait
 ```
+
+For an existing installation that is also changing the rsctf image, put these
+settings in its values file and use the enforced
+[maintenance cutover](./operations.md#update-helm). Do not use the direct Helm
+command above to roll an incompatible image under old serving Pods. A
+configuration-only change at the already-running digest does not migrate the
+database.
 
 The chart creates a separate `<release>-rsctf-workers` raw TCP Service, a
 `LoadBalancer` on port 9443 by default. It never adds this socket to the HTTP
@@ -274,6 +285,7 @@ workerBackend:
   localBackend: kubernetes
 kubernetes:
   adServiceCidr: 10.96.0.0/12
+  networkPolicyEnforced: true
 ```
 
 On an all-in-one `runtimeRole=all` release, the chart then mounts the Pod's

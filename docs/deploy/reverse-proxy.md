@@ -62,6 +62,12 @@ Connect the rsctf service to a dedicated Traefik network and route its public ho
 
 The generic Docker wizard can add the included Caddy override. It is the easiest production path when ports 80/443 are free and the domain resolves directly to the server.
 
+The included Caddyfile overwrites `X-Real-IP` and `X-Forwarded-For` from its
+immediate socket peer on every upstream route. Do not remove those overrides:
+rsctf accepts forwarded client identity only from configured trusted proxy CIDRs,
+and passing a browser-supplied `X-Real-IP` through that boundary would corrupt
+rate-limit and anti-cheat attribution.
+
 ## Verify the boundary
 
 ```bash

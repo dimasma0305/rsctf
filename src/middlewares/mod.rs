@@ -1,3 +1,4 @@
+pub mod event_vpn;
 pub mod privilege_authentication;
 pub mod rate_limiter;
 pub mod request_security;

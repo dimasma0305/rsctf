@@ -147,60 +147,27 @@ pub(crate) async fn lock_team_shared_credentials_on(
 pub(crate) async fn user_allows_shared_credentials_on(
     connection: &mut sqlx::PgConnection,
     user_id: Uuid,
+    expected_security_stamp: &str,
     game_id: i32,
     team_id: i32,
     participation_id: i32,
 ) -> AppResult<bool> {
-    sqlx::query_scalar(
-        r#"SELECT EXISTS(
-               SELECT 1
-                 FROM "UserParticipations" link
-                 JOIN "Participations" participation
-                   ON participation.id = link.participation_id
-                 JOIN "Teams" team ON team.id = participation.team_id
-                 JOIN "AspNetUsers" account ON account.id = link.user_id
-                WHERE link.user_id = $1
-                  AND link.game_id = $2
-                  AND link.team_id = $3
-                  AND link.participation_id = $4
-                  AND participation.game_id = $2
-                  AND participation.team_id = $3
-                  AND participation.status = $5
-                  AND account.role <> $6
-                  AND team.deletion_pending = FALSE
-                  AND (
-                      team.captain_id = $1
-                      OR EXISTS (
-                          SELECT 1 FROM "TeamMembers" caller_member
-                           WHERE caller_member.team_id = team.id
-                             AND caller_member.user_id = $1
-                      )
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1
-                        FROM (
-                            SELECT team.captain_id AS user_id
-                            UNION
-                            SELECT member.user_id
-                              FROM "TeamMembers" member
-                             WHERE member.team_id = team.id
-                        ) roster
-                        LEFT JOIN "AspNetUsers" roster_account
-                          ON roster_account.id = roster.user_id
-                       WHERE roster_account.id IS NULL
-                          OR roster_account.role = $6
-                  )
-           )"#,
+    // Lock the complete current roster first. Besides preventing a banned
+    // teammate from using a team-wide bearer secret, the row locks keep the
+    // caller's confirmed/stamp/role state stable through credential issuance.
+    if !lock_team_shared_credentials_on(connection, team_id).await? {
+        return Ok(false);
+    }
+    crate::services::live_roster::participation_caller_is_live_on(
+        &mut *connection,
+        user_id,
+        expected_security_stamp,
+        game_id,
+        team_id,
+        participation_id,
+        true,
     )
-    .bind(user_id)
-    .bind(game_id)
-    .bind(team_id)
-    .bind(participation_id)
-    .bind(crate::utils::enums::ParticipationStatus::Accepted as i16)
-    .bind(Role::Banned as i16)
-    .fetch_one(&mut *connection)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))
 }
 
 #[cfg(test)]
@@ -237,13 +204,20 @@ mod tests {
             .unwrap();
         sqlx::raw_sql(
             r#"
-            CREATE TABLE "AspNetUsers" (id UUID PRIMARY KEY, role SMALLINT NOT NULL);
+            CREATE TABLE "AspNetUsers" (
+              id UUID PRIMARY KEY, role SMALLINT NOT NULL,
+              email_confirmed BOOLEAN NOT NULL, security_stamp TEXT
+            );
             CREATE TABLE "Teams" (
               id INTEGER PRIMARY KEY,
               captain_id UUID NOT NULL,
               deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
             );
             CREATE TABLE "TeamMembers" (team_id INTEGER NOT NULL, user_id UUID NOT NULL);
+            CREATE TABLE "Games" (
+              id INTEGER PRIMARY KEY, deletion_pending BOOLEAN NOT NULL,
+              start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
+            );
             CREATE TABLE "Participations" (
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
               team_id INTEGER NOT NULL, status SMALLINT NOT NULL
@@ -251,6 +225,11 @@ mod tests {
             CREATE TABLE "UserParticipations" (
               user_id UUID NOT NULL, game_id INTEGER NOT NULL,
               team_id INTEGER NOT NULL, participation_id INTEGER NOT NULL
+            );
+            CREATE TABLE "IdentityObservations" (
+              user_id UUID NOT NULL, game_id INTEGER,
+              team_id INTEGER, participation_id INTEGER,
+              observed_at_utc TIMESTAMPTZ NOT NULL
             );
             "#,
         )
@@ -261,17 +240,29 @@ mod tests {
         let captain = Uuid::new_v4();
         let member = Uuid::new_v4();
         for id in [captain, member] {
-            sqlx::query(r#"INSERT INTO "AspNetUsers" (id, role) VALUES ($1, 1)"#)
-                .bind(id)
-                .execute(&pool)
-                .await
-                .unwrap();
+            sqlx::query(
+                r#"INSERT INTO "AspNetUsers"
+                     (id, role, email_confirmed, security_stamp)
+                   VALUES ($1, 1, TRUE, 'stamp')"#,
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
         }
         sqlx::query(r#"INSERT INTO "Teams" (id, captain_id) VALUES (7, $1)"#)
             .bind(captain)
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "Games" VALUES
+               (4, FALSE, clock_timestamp() + interval '1 hour',
+                clock_timestamp() + interval '2 hours')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES (7, $1)"#)
             .bind(member)
             .execute(&pool)
@@ -299,11 +290,46 @@ mod tests {
         {
             let mut connection = pool.acquire().await.unwrap();
             assert!(
-                user_allows_shared_credentials_on(&mut connection, member, 4, 7, 17,)
+                user_allows_shared_credentials_on(&mut connection, member, "stamp", 4, 7, 17,)
                     .await
                     .unwrap()
             );
         }
+        sqlx::query(r#"UPDATE "AspNetUsers" SET security_stamp = 'rotated' WHERE id = $1"#)
+            .bind(member)
+            .execute(&pool)
+            .await
+            .unwrap();
+        {
+            let mut connection = pool.acquire().await.unwrap();
+            assert!(
+                !user_allows_shared_credentials_on(&mut connection, member, "stamp", 4, 7, 17,)
+                    .await
+                    .unwrap()
+            );
+        }
+        sqlx::query(
+            r#"UPDATE "AspNetUsers"
+                  SET security_stamp = 'stamp', email_confirmed = FALSE
+                WHERE id = $1"#,
+        )
+        .bind(member)
+        .execute(&pool)
+        .await
+        .unwrap();
+        {
+            let mut connection = pool.acquire().await.unwrap();
+            assert!(
+                !user_allows_shared_credentials_on(&mut connection, member, "stamp", 4, 7, 17,)
+                    .await
+                    .unwrap()
+            );
+        }
+        sqlx::query(r#"UPDATE "AspNetUsers" SET email_confirmed = TRUE WHERE id = $1"#)
+            .bind(member)
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query(r#"DELETE FROM "TeamMembers" WHERE team_id = 7 AND user_id = $1"#)
             .bind(member)
             .execute(&pool)
@@ -314,7 +340,7 @@ mod tests {
         {
             let mut connection = pool.acquire().await.unwrap();
             assert!(
-                !user_allows_shared_credentials_on(&mut connection, member, 4, 7, 17,)
+                !user_allows_shared_credentials_on(&mut connection, member, "stamp", 4, 7, 17,)
                     .await
                     .unwrap()
             );
@@ -342,11 +368,15 @@ mod tests {
             .await
             .unwrap();
         assert!(!team_allows_shared_credentials(&pool, 7).await.unwrap());
-        sqlx::query(r#"INSERT INTO "AspNetUsers" (id, role) VALUES ($1, 1)"#)
-            .bind(member)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "AspNetUsers"
+                 (id, role, email_confirmed, security_stamp)
+               VALUES ($1, 1, TRUE, 'stamp')"#,
+        )
+        .bind(member)
+        .execute(&pool)
+        .await
+        .unwrap();
         assert!(team_allows_shared_credentials(&pool, 7).await.unwrap());
         sqlx::query(r#"UPDATE "Teams" SET deletion_pending = TRUE WHERE id = 7"#)
             .execute(&pool)

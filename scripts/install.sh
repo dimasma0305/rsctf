@@ -276,6 +276,9 @@ validate_deployment_archive() {
 
   for required in \
     rsctf/scripts/install.sh \
+    rsctf/scripts/compose-maintenance-cutover.sh \
+    rsctf/scripts/kubernetes-maintenance-cutover.sh \
+    rsctf/scripts/docker-proxy-firewall.sh \
     rsctf/deploy/compose.yml \
     rsctf/deploy/release.env; do
     [[ $(grep -Fxc -- "$required" "$list_file") -eq 1 ]] \
@@ -370,9 +373,15 @@ bootstrap_bundle() {
   validate_deployment_archive "$archive" "$archive_list" "$archive_verbose"
   tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$extract_root"
   installed="${extract_root}/rsctf"
-  [[ -f "$installed/scripts/install.sh" && ! -L "$installed/scripts/install.sh" ]] \
-    || die "the extracted deployment installer is not a regular file"
-  chmod 0755 "$installed/scripts/install.sh"
+  for helper in \
+    install.sh \
+    compose-maintenance-cutover.sh \
+    kubernetes-maintenance-cutover.sh \
+    docker-proxy-firewall.sh; do
+    [[ -f "$installed/scripts/$helper" && ! -L "$installed/scripts/$helper" ]] \
+      || die "the extracted deployment helper scripts/$helper is not a regular file"
+    chmod 0755 "$installed/scripts/$helper"
+  done
 
   mv -T -- "$installed" "$target" \
     || die "could not atomically install the verified deployment bundle"
@@ -588,6 +597,7 @@ write_new_environment() {
     printf '\nPOSTGRES_USER=rsctf\nPOSTGRES_DB=rsctf\n'
     printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password"
     printf 'RSCTF_JWT_SECRET=%s\n' "$jwt_secret"
+    printf 'RSCTF_IDENTITY_HASH_KEY=%s\n' "$(random_hex 32)"
     printf 'RSCTF_BOOTSTRAP_TOKEN=%s\n' "$(random_hex 32)"
     printf 'RSCTF_DOCKER_SCOPE=%s\n' "$(random_hex 16)"
     printf '\nRSCTF_PUBLIC_URL=%s\n' "$PUBLIC_URL"
@@ -596,9 +606,12 @@ write_new_environment() {
     printf 'RSCTF_HTTP_PORT=%s\n' "$HTTP_PORT"
     printf 'RSCTF_TRUSTED_PROXY_CIDRS=%s\n' "$TRUSTED_PROXY_CIDRS"
     printf '\nRUST_LOG=info\nREDIS_MAXMEMORY=256mb\n'
-    printf 'RSCTF_DB_MAX_CONNECTIONS=32\nRSCTF_PROVISIONING_CONCURRENCY=4\n'
+    printf 'RSCTF_DB_MAX_CONNECTIONS=33\nRSCTF_PROVISIONING_CONCURRENCY=4\n'
     printf 'RSCTF_CONTAINER_MAX_MEMORY_MB=4096\nRSCTF_CONTAINER_MAX_CPU_COUNT=8\n'
     printf '\nRSCTF_DOCKER_PUBLIC_ENTRY=%s\n' "${PUBLIC_ENTRY:-localhost}"
+    printf 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24\n'
+    printf 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1\n'
+    printf 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0\n'
     printf 'RSCTF_DOMAIN=%s\n' "${DOMAIN:-localhost}"
     printf 'RSCTF_PROXY_SUBNET=%s\n' "$proxy_subnet"
     printf 'RSCTF_CADDY_IP=172.31.252.2\n'
@@ -632,6 +645,7 @@ complete_existing_environment() {
   append_env_if_missing POSTGRES_DB rsctf
   append_env_if_missing POSTGRES_PASSWORD "$(random_hex 24)"
   append_env_if_missing RSCTF_JWT_SECRET "$(random_hex 32)"
+  append_env_if_missing RSCTF_IDENTITY_HASH_KEY "$(random_hex 32)"
   append_env_if_missing RSCTF_BOOTSTRAP_TOKEN "$(random_hex 32)"
   append_env_if_missing RSCTF_DOCKER_SCOPE "$(random_hex 16)"
   append_env_if_missing RSCTF_PUBLIC_URL "$PUBLIC_URL"
@@ -644,11 +658,14 @@ complete_existing_environment() {
   append_env_if_missing RSCTF_TRUSTED_PROXY_CIDRS "$TRUSTED_PROXY_CIDRS"
   append_env_if_missing RUST_LOG info
   append_env_if_missing REDIS_MAXMEMORY 256mb
-  append_env_if_missing RSCTF_DB_MAX_CONNECTIONS 32
+  append_env_if_missing RSCTF_DB_MAX_CONNECTIONS 33
   append_env_if_missing RSCTF_PROVISIONING_CONCURRENCY 4
   append_env_if_missing RSCTF_CONTAINER_MAX_MEMORY_MB 4096
   append_env_if_missing RSCTF_CONTAINER_MAX_CPU_COUNT 8
   append_env_if_missing RSCTF_DOCKER_PUBLIC_ENTRY "${PUBLIC_ENTRY:-localhost}"
+  append_env_if_missing RSCTF_CHALLENGE_PROXY_SUBNET 172.31.253.0/24
+  append_env_if_missing RSCTF_DOCKER_PROXY_BIND 172.31.253.1
+  append_env_if_missing RSCTF_CHALLENGE_PROXY_BRIDGE rsctf-proxy0
   append_env_if_missing RSCTF_DOMAIN "${DOMAIN:-localhost}"
   append_env_if_missing RSCTF_PROXY_SUBNET 172.31.252.0/24
   append_env_if_missing RSCTF_CADDY_IP 172.31.252.2
@@ -669,7 +686,7 @@ guard_missing_environment_with_existing_data() {
   local volume
   while IFS= read -r volume; do
     [[ -z "$volume" ]] && continue
-    die "found existing rsctf data volume '$volume' but $ENV_FILE is missing. Restore the original .env (especially POSTGRES_PASSWORD and RSCTF_JWT_SECRET) before continuing"
+    die "found existing rsctf data volume '$volume' but $ENV_FILE is missing. Restore the original .env (especially POSTGRES_PASSWORD, RSCTF_JWT_SECRET, and RSCTF_IDENTITY_HASH_KEY) before continuing"
   done < <(
     docker volume ls --quiet \
       --filter label=com.docker.compose.project=rsctf \
@@ -678,8 +695,10 @@ guard_missing_environment_with_existing_data() {
 }
 
 check_environment_values() {
-  local jwt bootstrap_token password public_url files
+  local jwt identity_hash_key bootstrap_token password public_url files
+  local proxy_bind proxy_subnet proxy_bridge
   jwt=$(env_get RSCTF_JWT_SECRET)
+  identity_hash_key=$(env_get RSCTF_IDENTITY_HASH_KEY)
   bootstrap_token=$(env_get RSCTF_BOOTSTRAP_TOKEN)
   password=$(env_get POSTGRES_PASSWORD)
   public_url=$(env_get RSCTF_PUBLIC_URL)
@@ -688,6 +707,10 @@ check_environment_values() {
   [[ ${#jwt} -ge 32 ]] || die "RSCTF_JWT_SECRET in deploy/.env must be at least 32 characters"
   [[ "$jwt" != "change-me-in-production" && "$jwt" != "insecure-dev-secret-change-me" ]] \
     || die "replace the insecure RSCTF_JWT_SECRET in deploy/.env"
+  [[ ${#identity_hash_key} -ge 32 ]] \
+    || die "RSCTF_IDENTITY_HASH_KEY in deploy/.env must be at least 32 characters"
+  [[ "$identity_hash_key" != "$jwt" && "$identity_hash_key" != "change-me-in-production" ]] \
+    || die "RSCTF_IDENTITY_HASH_KEY must be a dedicated random secret, distinct from RSCTF_JWT_SECRET"
   [[ ${#bootstrap_token} -ge 32 ]] \
     || die "RSCTF_BOOTSTRAP_TOKEN in deploy/.env must be at least 32 characters"
   [[ "$password" =~ ^[A-Za-z0-9._~-]+$ ]] \
@@ -704,6 +727,15 @@ check_environment_values() {
   if [[ "$files" == *compose.docker.yml* || "$files" == *compose.ad-vpn.yml* ]]; then
     [[ -n "$(env_get RSCTF_DOCKER_PUBLIC_ENTRY)" ]] \
       || die "the Docker backend requires RSCTF_DOCKER_PUBLIC_ENTRY"
+    proxy_bind=$(env_get RSCTF_DOCKER_PROXY_BIND)
+    proxy_subnet=$(env_get RSCTF_CHALLENGE_PROXY_SUBNET)
+    proxy_bridge=$(env_get RSCTF_CHALLENGE_PROXY_BRIDGE)
+    [[ "$proxy_bind" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ && "$proxy_bind" != "0.0.0.0" ]] \
+      || die "the Docker backend requires a private IPv4 RSCTF_DOCKER_PROXY_BIND"
+    [[ "$proxy_subnet" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] \
+      || die "the Docker backend requires an IPv4 RSCTF_CHALLENGE_PROXY_SUBNET"
+    [[ "$proxy_bridge" =~ ^[A-Za-z0-9_.-]+$ && ${#proxy_bridge} -le 15 ]] \
+      || die "RSCTF_CHALLENGE_PROXY_BRIDGE must be a Linux interface name of at most 15 characters"
   fi
   if [[ "$files" == *compose.ad-vpn.yml* ]]; then
     [[ -n "$(env_get RSCTF_AD_VPN_SERVER_ENDPOINT)" ]] \
@@ -739,6 +771,8 @@ preflight() {
   local files
   files=$(env_get COMPOSE_FILE)
   if [[ $CONFIGURE_ONLY -eq 0 && ( "$files" == *compose.docker.yml* || "$files" == *compose.ad-vpn.yml* ) ]]; then
+    [[ "$(uname -s)" == Linux ]] \
+      || die "the Docker challenge backend requires Linux host-firewall isolation"
     [[ -S /var/run/docker.sock ]] || die "the Docker backend needs /var/run/docker.sock"
   fi
   if [[ "$files" == *compose.ad-vpn.yml* ]]; then

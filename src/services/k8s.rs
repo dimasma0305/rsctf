@@ -15,13 +15,13 @@
 //! 2. **create** — build a single-container [`Pod`] from the [`ContainerSpec`]
 //!    (image, `cpu`/`memory` limits, `RSCTF_FLAG` + caller env, the exposed
 //!    `containerPort`, and an `app=rsctf-<uid>` label), create it in the
-//!    configured namespace, then create a [`Service`] selecting the pod. Normal
-//!    challenges use NodePort; A&D services remain ClusterIP-only (not publicly
-//!    node-published, but still reachable by cluster peers absent ingress policy).
-//!    On service failure the pod is best-effort deleted so a half-created
-//!    instance doesn't leak.
-//! 3. **destroy** — delete the Service and Pod by name; a `404` (already gone)
-//!    is the desired end state and is treated as success.
+//!    configured namespace, then create a [`Service`] selecting the pod. Direct
+//!    challenges use NodePort; PlatformProxy and A&D remain ClusterIP-only (not
+//!    publicly node-published, but reachable by permitted cluster peers).
+//!    On service failure the pod is deleted before its isolating policy so a
+//!    half-created instance cannot become reachable during rollback.
+//! 3. **destroy** — delete the Service, then the Pod, and only remove its
+//!    NetworkPolicy after the Pod is absent; a `404` is the desired end state.
 //! 4. **query** — get the Pod and map its `status.phase` to a coarse
 //!    [`ContainerStatus`].
 //!
@@ -30,22 +30,17 @@
 //! runtime; genuinely-unrunnable glue is marked `// TODO`.
 
 use std::collections::BTreeMap;
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use ipnet::IpNet;
 use k8s_openapi::api::core::v1::{
     Capabilities, Container, ContainerPort, EnvVar, Pod, PodSpec, ResourceRequirements,
     SeccompProfile, SecurityContext, Service, ServicePort, ServiceSpec,
 };
-use k8s_openapi::api::networking::v1::{
-    IPBlock, NetworkPolicy, NetworkPolicyEgressRule, NetworkPolicyIngressRule, NetworkPolicyPeer,
-    NetworkPolicyPort, NetworkPolicySpec,
-};
+use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, DeleteParams, PostParams};
 use kube::core::{ApiResource, DynamicObject, ErrorResponse};
@@ -60,8 +55,13 @@ use crate::utils::error::{AppError, AppResult};
 
 mod exec;
 mod metrics;
+mod network;
 mod orphans;
 use metrics::{parse_cpu_cores, parse_memory_bytes};
+use network::{
+    ad_network_config, ad_network_policy, network_policy_required, proxy_network_policy,
+    rollback_created_policy, service_ip_is_routed, validate_policy_enforcement_acknowledgement,
+};
 use orphans::APP_LABEL;
 
 /// Flag variables injected into rsctf-managed challenge pods.
@@ -78,17 +78,6 @@ const NAMESPACE_ENV: &str = "RSCTF_K8S_NAMESPACE";
 /// Env var advertising the routable node/host IP for NodePort services
 /// (RSCTF `PublicEntry`). When set, [`ContainerInfo::ip`] is this value.
 const PUBLIC_ENTRY_ENV: &str = "RSCTF_K8S_PUBLIC_ENTRY";
-const AD_INGRESS_CIDRS_ENV: &str = "RSCTF_K8S_AD_INGRESS_CIDRS";
-const CONTROL_NAMESPACE_ENV: &str = "RSCTF_K8S_CONTROL_NAMESPACE";
-const CONTROL_POD_LABEL_ENV: &str = "RSCTF_K8S_CONTROL_POD_LABEL";
-
-#[derive(Clone)]
-struct AdNetworkConfig {
-    service_cidr: IpNet,
-    ingress_cidrs: Vec<IpNet>,
-    control_namespace: Option<String>,
-    control_pod_label: (String, String),
-}
 
 /// Kubernetes-backed container manager.
 ///
@@ -115,6 +104,7 @@ impl KubernetesContainerManager {
     /// (`kube::Client::try_default`), reading namespace + public entry from the
     /// environment.
     pub async fn connect() -> AppResult<Self> {
+        validate_policy_enforcement_acknowledgement()?;
         let client = Client::try_default()
             .await
             .map_err(|e| AppError::internal(format!("failed to build kubernetes client: {e}")))?;
@@ -131,10 +121,7 @@ impl KubernetesContainerManager {
         let public_entry = std::env::var(PUBLIC_ENTRY_ENV)
             .ok()
             .filter(|s| !s.trim().is_empty());
-        let control_namespace = std::env::var(CONTROL_NAMESPACE_ENV)
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
+        let control_namespace = network::configured_control_namespace();
         let scope = orphans::workload_scope(&namespace, control_namespace.as_deref());
         Self {
             client,
@@ -224,6 +211,27 @@ impl KubernetesContainerManager {
         }
 
         (have_mem.then_some(total_mem), have_cpu.then_some(total_cpu))
+    }
+
+    async fn rollback_new_pod(
+        &self,
+        pods: &Api<Pod>,
+        name: &str,
+        policy_created: bool,
+        pod_adopted: bool,
+    ) {
+        if pod_adopted {
+            return;
+        }
+        let policies = self.network_policies();
+        let _ = orphans::rollback_created_pod(
+            pods,
+            &policies,
+            name,
+            &self.scope,
+            rollback_created_policy(policy_created, pod_adopted),
+        )
+        .await;
     }
 }
 
@@ -318,219 +326,6 @@ fn challenge_security_context() -> SecurityContext {
     }
 }
 
-fn parse_cidr(value: &str, variable: &str) -> AppResult<IpNet> {
-    value.trim().parse::<IpNet>().map_err(|_| {
-        AppError::internal(format!(
-            "{variable} contains an invalid IP network: {value}"
-        ))
-    })
-}
-
-fn ad_network_config() -> AppResult<AdNetworkConfig> {
-    let service_cidr = crate::services::ad_vpn::kubernetes_services_cidr().ok_or_else(|| {
-        AppError::internal(
-            "RSCTF_K8S_AD_SERVICE_CIDR must be set to the cluster Service CIDR before provisioning Kubernetes A&D services",
-        )
-    })?;
-    let service_cidr = parse_cidr(&service_cidr, "RSCTF_K8S_AD_SERVICE_CIDR")?;
-    let ingress = std::env::var(AD_INGRESS_CIDRS_ENV).unwrap_or_default();
-    let mut ingress_cidrs = Vec::new();
-    for value in ingress
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        let cidr = parse_cidr(value, AD_INGRESS_CIDRS_ENV)?;
-        if !ingress_cidrs.contains(&cidr) {
-            ingress_cidrs.push(cidr);
-        }
-    }
-    let has_explicit_ingress = !ingress_cidrs.is_empty();
-    let control_namespace = std::env::var(CONTROL_NAMESPACE_ENV)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        });
-    if control_namespace.is_none() && !has_explicit_ingress {
-        return Err(AppError::internal(
-            "set RSCTF_K8S_CONTROL_NAMESPACE for an in-cluster rsctf pod or RSCTF_K8S_AD_INGRESS_CIDRS for an external WireGuard hub",
-        ));
-    }
-    let label = std::env::var(CONTROL_POD_LABEL_ENV)
-        .unwrap_or_else(|_| "app.kubernetes.io/name=rsctf".to_string());
-    let (label_key, label_value) = label.split_once('=').ok_or_else(|| {
-        AppError::internal(format!("{CONTROL_POD_LABEL_ENV} must use key=value syntax"))
-    })?;
-    if label_key.trim().is_empty() || label_value.trim().is_empty() {
-        return Err(AppError::internal(format!(
-            "{CONTROL_POD_LABEL_ENV} must use non-empty key=value syntax"
-        )));
-    }
-    let client_cidr = parse_cidr(
-        &crate::services::ad_vpn::client_cidr(),
-        "RSCTF_AD_VPN_CLIENT_CIDR",
-    )?;
-    if !ingress_cidrs.contains(&client_cidr) {
-        ingress_cidrs.push(client_cidr);
-    }
-    Ok(AdNetworkConfig {
-        service_cidr,
-        ingress_cidrs,
-        control_namespace,
-        control_pod_label: (label_key.trim().to_string(), label_value.trim().to_string()),
-    })
-}
-
-fn ip_peer(cidr: impl ToString, except: Option<Vec<String>>) -> NetworkPolicyPeer {
-    NetworkPolicyPeer {
-        ip_block: Some(IPBlock {
-            cidr: cidr.to_string(),
-            except,
-        }),
-        ..Default::default()
-    }
-}
-
-fn network_port(port: i32, protocol: &str) -> NetworkPolicyPort {
-    NetworkPolicyPort {
-        port: Some(IntOrString::Int(port)),
-        protocol: Some(protocol.to_string()),
-        ..Default::default()
-    }
-}
-
-fn internet_egress_rules(extra_private: &[IpNet]) -> Vec<NetworkPolicyEgressRule> {
-    let mut v4_except = vec![
-        "0.0.0.0/8".to_string(),
-        "10.0.0.0/8".to_string(),
-        "100.64.0.0/10".to_string(),
-        "127.0.0.0/8".to_string(),
-        "169.254.0.0/16".to_string(),
-        "172.16.0.0/12".to_string(),
-        "192.168.0.0/16".to_string(),
-        "198.18.0.0/15".to_string(),
-        "224.0.0.0/4".to_string(),
-        "240.0.0.0/4".to_string(),
-    ];
-    let mut v6_except = vec![
-        "::/128".to_string(),
-        "::1/128".to_string(),
-        "fc00::/7".to_string(),
-        "fe80::/10".to_string(),
-        "ff00::/8".to_string(),
-    ];
-    for cidr in extra_private {
-        let value = cidr.to_string();
-        let except = match cidr {
-            IpNet::V4(_) => &mut v4_except,
-            IpNet::V6(_) => &mut v6_except,
-        };
-        if !except.contains(&value) {
-            except.push(value);
-        }
-    }
-
-    let internet = NetworkPolicyEgressRule {
-        ports: None,
-        to: Some(vec![
-            ip_peer("0.0.0.0/0", Some(v4_except)),
-            ip_peer("::/0", Some(v6_except)),
-        ]),
-    };
-    let dns_peer = NetworkPolicyPeer {
-        namespace_selector: Some(LabelSelector {
-            match_labels: Some(BTreeMap::from([(
-                "kubernetes.io/metadata.name".to_string(),
-                "kube-system".to_string(),
-            )])),
-            ..Default::default()
-        }),
-        pod_selector: Some(LabelSelector {
-            match_labels: Some(BTreeMap::from([(
-                "k8s-app".to_string(),
-                "kube-dns".to_string(),
-            )])),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let dns = NetworkPolicyEgressRule {
-        ports: Some(vec![network_port(53, "UDP"), network_port(53, "TCP")]),
-        to: Some(vec![dns_peer]),
-    };
-    vec![internet, dns]
-}
-
-fn ad_network_policy(
-    name: &str,
-    labels: &BTreeMap<String, String>,
-    owner_references: Option<Vec<OwnerReference>>,
-    expose_port: i32,
-    allow_egress: bool,
-    config: &AdNetworkConfig,
-) -> NetworkPolicy {
-    let mut ingress_peers: Vec<NetworkPolicyPeer> = config
-        .ingress_cidrs
-        .iter()
-        .map(|cidr| ip_peer(cidr, None))
-        .collect();
-    if let Some(namespace) = config.control_namespace.as_ref() {
-        ingress_peers.push(NetworkPolicyPeer {
-            namespace_selector: Some(LabelSelector {
-                match_labels: Some(BTreeMap::from([(
-                    "kubernetes.io/metadata.name".to_string(),
-                    namespace.clone(),
-                )])),
-                ..Default::default()
-            }),
-            pod_selector: Some(LabelSelector {
-                match_labels: Some(BTreeMap::from([config.control_pod_label.clone()])),
-                ..Default::default()
-            }),
-            ..Default::default()
-        });
-    }
-    let egress = if allow_egress {
-        let mut private = config.ingress_cidrs.clone();
-        private.push(config.service_cidr);
-        internet_egress_rules(&private)
-    } else {
-        Vec::new()
-    };
-    NetworkPolicy {
-        metadata: ObjectMeta {
-            name: Some(name.to_string()),
-            labels: Some(labels.clone()),
-            owner_references,
-            ..Default::default()
-        },
-        spec: Some(NetworkPolicySpec {
-            egress: Some(egress),
-            ingress: Some(vec![NetworkPolicyIngressRule {
-                from: Some(ingress_peers),
-                ports: Some(vec![network_port(expose_port, "TCP")]),
-            }]),
-            pod_selector: LabelSelector {
-                match_labels: Some(labels.clone()),
-                ..Default::default()
-            },
-            policy_types: Some(vec!["Ingress".to_string(), "Egress".to_string()]),
-        }),
-    }
-}
-
-fn service_ip_is_routed(cluster_ip: &str, service_cidr: &IpNet) -> bool {
-    cluster_ip
-        .parse::<IpAddr>()
-        .ok()
-        .is_some_and(|ip| service_cidr.contains(&ip))
-}
-
 #[async_trait]
 impl ContainerManager for KubernetesContainerManager {
     fn backend_kind(&self) -> ContainerBackendKind {
@@ -551,8 +346,9 @@ impl ContainerManager for KubernetesContainerManager {
             |operation| crate::utils::codec::sha256_str(operation)[..16].to_string(),
         );
         let name = format!("{}-{}", sanitize_image(&spec.image), uid);
-        let internal_only = spec.ad_network.is_some();
-        let ad_config = if internal_only {
+        let ad_internal = spec.ad_network.is_some();
+        let internal_only = ad_internal || spec.proxy_only;
+        let ad_config = if ad_internal {
             Some(ad_network_config()?)
         } else {
             None
@@ -641,17 +437,26 @@ impl ContainerManager for KubernetesContainerManager {
         // cluster or Internet. The unique selector makes a crash-orphaned policy
         // harmless; normal destroy/rollback still removes it by name.
         let policies = self.network_policies();
-        if let Some(config) = ad_config.as_ref() {
-            let policy = ad_network_policy(
+        let has_network_policy = network_policy_required(ad_internal, spec.proxy_only);
+        let private_policy = if let Some(config) = ad_config.as_ref() {
+            Some(ad_network_policy(
                 &name,
                 &labels,
                 None,
                 spec.expose_port,
                 spec.allow_egress,
                 config,
-            );
+            ))
+        } else if spec.proxy_only {
+            Some(proxy_network_policy(&name, &labels, spec.expose_port)?)
+        } else {
+            None
+        };
+        debug_assert_eq!(private_policy.is_some(), has_network_policy);
+        let mut policy_created = false;
+        if let Some(policy) = private_policy {
             match policies.create(&PostParams::default(), &policy).await {
-                Ok(_) => {}
+                Ok(_) => policy_created = true,
                 Err(error) if is_conflict(&error) && spec.operation_id.is_some() => {
                     orphans::adopt(
                         &policies,
@@ -664,7 +469,7 @@ impl ContainerManager for KubernetesContainerManager {
                 }
                 Err(error) => {
                     return Err(AppError::internal(format!(
-                        "failed to enforce A&D NetworkPolicy: {error}"
+                        "failed to enforce private challenge NetworkPolicy: {error}"
                     )))
                 }
             }
@@ -673,29 +478,41 @@ impl ContainerManager for KubernetesContainerManager {
         let pods = self.pods();
         let (created_pod, adopted) = match pods.create(&PostParams::default(), &pod).await {
             Ok(pod) => (pod, false),
-            Err(error) if is_conflict(&error) && spec.operation_id.is_some() => (
-                orphans::adopt(
+            Err(error) if is_conflict(&error) && spec.operation_id.is_some() => {
+                match orphans::adopt(
                     &pods,
                     &name,
                     &self.scope,
                     spec.operation_id.as_deref(),
                     "pod",
                 )
-                .await?,
-                true,
-            ),
-            Err(e) => {
-                if internal_only {
-                    let _ = policies.delete(&name, &DeleteParams::default()).await;
+                .await
+                {
+                    Ok(pod) => (pod, true),
+                    Err(error) => {
+                        // The conflicting Pod may match this policy's
+                        // selector even when its ownership labels prevent
+                        // adoption. Retain the policy; the scoped orphan
+                        // reconciler removes it only after it can prove an
+                        // owned Pod is absent.
+                        return Err(error);
+                    }
                 }
+            }
+            Err(e) => {
+                // A timed-out create can have reached the API server even
+                // when the client saw an error. Removing isolation here
+                // would expose that ambiguous Pod, so retain the policy for
+                // adoption or fail-closed orphan reconciliation.
                 return Err(AppError::internal(format!("failed to create pod: {e}")));
             }
         };
         let pod_uid = created_pod.metadata.uid.clone();
 
-        // Service exposing the challenge port: A&D is not node-published; normal
-        // challenges retain NodePort. The Service is owned by the pod; the policy
-        // is explicitly removed during rollback/destroy.
+        // Service exposing the challenge port: A&D and PlatformProxy are not
+        // node-published; direct challenges retain NodePort. The Service is
+        // owned by the pod; private-policy cleanup applies to A&D and proxy-only
+        // Jeopardy workloads.
         let mut owner_refs = None;
         if let Some(uid) = pod_uid {
             owner_refs = Some(vec![OwnerReference {
@@ -729,78 +546,68 @@ impl ContainerManager for KubernetesContainerManager {
         };
 
         let services = self.services();
-        let created_svc = match services.create(&PostParams::default(), &service).await {
-            Ok(svc) => svc,
-            Err(error) if is_conflict(&error) && spec.operation_id.is_some() => {
-                orphans::adopt(
-                    &services,
-                    &name,
-                    &self.scope,
-                    spec.operation_id.as_deref(),
-                    "service",
-                )
-                .await?
-            }
-            Err(e) => {
-                // Roll back the pod so a failed service create doesn't leak it.
-                if internal_only {
-                    let _ = self
-                        .network_policies()
-                        .delete(&name, &DeleteParams::default())
+        let (created_svc, service_adopted) =
+            match services.create(&PostParams::default(), &service).await {
+                Ok(svc) => (svc, false),
+                Err(error) if is_conflict(&error) && spec.operation_id.is_some() => {
+                    match orphans::adopt(
+                        &services,
+                        &name,
+                        &self.scope,
+                        spec.operation_id.as_deref(),
+                        "service",
+                    )
+                    .await
+                    {
+                        Ok(service) => (service, true),
+                        Err(error) => {
+                            self.rollback_new_pod(&pods, &name, policy_created, adopted)
+                                .await;
+                            return Err(error);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Roll back the pod so a failed service create doesn't leak it.
+                    self.rollback_new_pod(&pods, &name, policy_created, adopted)
                         .await;
+                    return Err(AppError::internal(format!("failed to create service: {e}")));
                 }
-                if !adopted {
-                    let _ = pods.delete(&name, &DeleteParams::default()).await;
-                }
-                return Err(AppError::internal(format!("failed to create service: {e}")));
-            }
-        };
+            };
 
         let (ip, port) = if internal_only {
-            // A&D services are reachable only inside the cluster/VPN data plane;
-            // never allocate a node-wide externally scannable port for them.
+            // A&D and PlatformProxy services use cluster-only addressing; never
+            // allocate a node-wide externally scannable port for either mode.
             let cluster_ip = created_svc
                 .spec
                 .as_ref()
                 .and_then(|s| s.cluster_ip.clone())
                 .filter(|ip| !ip.is_empty() && ip != "None");
             let Some(cluster_ip) = cluster_ip else {
-                let _ = services.delete(&name, &DeleteParams::default()).await;
-                let _ = self
-                    .network_policies()
-                    .delete(&name, &DeleteParams::default())
+                if !service_adopted {
+                    let _ = services.delete(&name, &DeleteParams::default()).await;
+                }
+                self.rollback_new_pod(&pods, &name, policy_created, adopted)
                     .await;
-                let _ = pods.delete(&name, &DeleteParams::default()).await;
                 return Err(AppError::internal(
-                    "Kubernetes did not allocate a ClusterIP for the A&D service",
+                    "Kubernetes did not allocate a ClusterIP for the private service",
                 ));
             };
-            let Some(service_cidr) = ad_config.as_ref().map(|config| &config.service_cidr) else {
-                let _ = services.delete(&name, &DeleteParams::default()).await;
-                let _ = self
-                    .network_policies()
-                    .delete(&name, &DeleteParams::default())
-                    .await;
-                let _ = pods.delete(&name, &DeleteParams::default()).await;
-                return Err(AppError::internal(
-                    "Kubernetes A&D network configuration was not initialized",
-                ));
-            };
-            if !service_ip_is_routed(&cluster_ip, service_cidr) {
-                let _ = services.delete(&name, &DeleteParams::default()).await;
-                let _ = self
-                    .network_policies()
-                    .delete(&name, &DeleteParams::default())
-                    .await;
-                let _ = pods.delete(&name, &DeleteParams::default()).await;
-                return Err(AppError::internal(format!(
-                    "Kubernetes A&D ClusterIP {cluster_ip} is outside RSCTF_K8S_AD_SERVICE_CIDR {service_cidr}"
-                )));
+            if let Some(service_cidr) = ad_config.as_ref().map(|config| &config.service_cidr) {
+                if !service_ip_is_routed(&cluster_ip, service_cidr) {
+                    if !service_adopted {
+                        let _ = services.delete(&name, &DeleteParams::default()).await;
+                    }
+                    self.rollback_new_pod(&pods, &name, policy_created, adopted)
+                        .await;
+                    return Err(AppError::internal(format!(
+                        "Kubernetes A&D ClusterIP {cluster_ip} is outside RSCTF_K8S_AD_SERVICE_CIDR {service_cidr}"
+                    )));
+                }
             }
             (cluster_ip, spec.expose_port)
         } else {
-            // Normal challenge containers retain the externally reachable NodePort
-            // behavior used by direct/proxy entry modes.
+            // Direct challenge containers retain the externally reachable NodePort.
             let node_port = created_svc
                 .spec
                 .as_ref()
@@ -929,6 +736,10 @@ mod tests;
 /// pattern the Docker backend uses for reachability probing).
 pub fn from_env() -> Option<Arc<dyn ContainerManager>> {
     let handle = std::thread::spawn(|| -> Option<KubernetesContainerManager> {
+        if let Err(error) = validate_policy_enforcement_acknowledgement() {
+            tracing::error!(%error, "Kubernetes isolation configuration is incomplete");
+            return None;
+        }
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

@@ -33,10 +33,10 @@
 //! sessions are capped per user, participation and workload so one team cannot
 //! consume every trusted-worker data stream.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
@@ -51,22 +51,28 @@ use futures::{SinkExt, StreamExt};
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser, MaybeUser};
-use crate::models::data::{
-    container, game, game_instance, participation, user, user_participation,
-};
+use crate::models::data::{container, game_instance, participation, user_participation};
+use crate::services::live_roster::LiveParticipationIdentity;
 use crate::services::worker::{parse_worker_handle, WorkerHandle};
-use crate::utils::enums::{GamePermission, ParticipationStatus, Role};
+use crate::utils::enums::{ParticipationStatus, Role};
 use rsctf_worker_protocol::{
     DataStreamRequest, TcpProxyRequest, ValidatedWorkloadSpec, WorkloadFence,
 };
 
+mod access_log;
 mod authorization;
 mod egress;
 #[cfg(test)]
 mod tests;
+mod transport;
 
-use authorization::game_proxy_scope_is_valid;
+use access_log::log_container_access_on;
+use authorization::{
+    game_proxy_scope_is_valid, game_proxy_session_is_valid, try_acquire_game_proxy_open_fence,
+    GameProxyOpenFence, GameProxyTargetIdentity,
+};
 use egress::{build_egress_scan, record_flag_egress, EgressScan, RollingFlagMatcher};
+use transport::{close_cleanly, endpoint_unavailable_close, normal_close, transport_failure_close};
 
 /// Buffer size for TCP→WebSocket reads, matching RSCTF's `BufferSize`.
 const BUFFER_SIZE: usize = 4096;
@@ -113,6 +119,7 @@ async fn proxy_for_instance(
     // (best-effort forensics), never for access control.
     let remote_ip =
         crate::services::anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_default();
+    let event_vpn_source = remote_ip.parse::<Ipv4Addr>().ok();
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -123,35 +130,84 @@ async fn proxy_for_instance(
     ws.max_frame_size(MAX_CLIENT_MESSAGE_SIZE)
         .max_message_size(MAX_CLIENT_MESSAGE_SIZE)
         .on_upgrade(move |socket| async move {
-            let (endpoint, scan, lease, admission) = match access {
+            let (endpoint, scan, lease, admission, open_fence) = match access {
                 Some(a) => {
-                    let (admission, scan, lease) = match &a.owner {
+                    let (admission, scan, lease, open_fence) = match &a.owner {
                         InstanceOwner::Game(game) => {
                             let Some(admission) = st_log.proxy_admission.try_acquire(
                                 a.accessing_user_id,
                                 game.accessing_participation_id,
                                 a.container_id,
                             ) else {
-                                run_or_close(st_log, socket, None, None, None, None).await;
+                                run_or_close(st_log, socket, None, None, None, None, None).await;
                                 return;
                             };
-                            // Game access feeds game-scoped forensic evidence.
-                            // Exercises deliberately skip those tables because they
-                            // have no game, team, or participation identity.
-                            log_container_access(&st_log, &a, game, remote_ip.clone(), user_agent)
-                                .await;
-                            let scan = build_egress_scan(&st_log, &a, game, remote_ip).await;
+                            // Egress metadata is preparatory only and may use a
+                            // second pool connection. Complete it before the
+                            // one-connection final authorization transaction.
+                            let scan =
+                                build_egress_scan(&st_log, &a, game, remote_ip.clone()).await;
+                            // Request-level resolution can become stale while
+                            // HTTP upgrades. Revalidate the exact stamped roster,
+                            // effective division policy, and container/backend
+                            // identity here. The specialized helper takes the
+                            // suspicion advisory before row locks.
+                            let Some(mut open_fence) = try_acquire_game_proxy_open_fence(
+                                st_log.pg(),
+                                LiveParticipationIdentity {
+                                    user_id: a.accessing_user_id,
+                                    expected_security_stamp: &a.accessing_security_stamp,
+                                    game_id: game.game_id,
+                                    team_id: game.accessing_team_id,
+                                    participation_id: game.accessing_participation_id,
+                                },
+                                game.challenge_id,
+                                &game.target_identity,
+                                event_vpn_source,
+                                game.is_monitor,
+                            )
+                            .await
+                            else {
+                                run_or_close(st_log, socket, None, None, None, None, None).await;
+                                return;
+                            };
+                            // Stage access evidence on that same transaction.
+                            // A failed insert rolls the final authorization back;
+                            // no unaudited backend stream is opened.
+                            if let Err(error) = log_container_access_on(
+                                open_fence.transaction_mut(),
+                                &st_log,
+                                &a,
+                                game,
+                                remote_ip,
+                                user_agent,
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    container = %a.container_id,
+                                    %error,
+                                    "container access evidence transaction failed"
+                                );
+                                open_fence.rollback().await;
+                                run_or_close(st_log, socket, None, None, None, None, None).await;
+                                return;
+                            }
                             let lease = InstanceLease {
-                                db: st_log.db.clone(),
                                 pool: st_log.pg().clone(),
                                 user_id: a.accessing_user_id,
+                                security_stamp: a.accessing_security_stamp.clone(),
                                 owner: LeaseOwner::Game {
                                     game_id: game.game_id,
+                                    team_id: game.accessing_team_id,
                                     participation_id: game.accessing_participation_id,
                                     challenge_id: game.challenge_id,
+                                    target_identity: game.target_identity.clone(),
+                                    event_vpn_source,
+                                    bypass_event_vpn: game.is_monitor,
                                 },
                             };
-                            (admission, scan, lease)
+                            (admission, scan, lease, Some(open_fence))
                         }
                         InstanceOwner::Exercise(exercise) => {
                             let Some(admission) = st_log.proxy_admission.try_acquire_exercise(
@@ -159,27 +215,33 @@ async fn proxy_for_instance(
                                 exercise.exercise_instance_id,
                                 a.container_id,
                             ) else {
-                                run_or_close(st_log, socket, None, None, None, None).await;
+                                run_or_close(st_log, socket, None, None, None, None, None).await;
                                 return;
                             };
                             let lease = InstanceLease {
-                                db: st_log.db.clone(),
                                 pool: st_log.pg().clone(),
                                 user_id: a.accessing_user_id,
+                                security_stamp: a.accessing_security_stamp.clone(),
                                 owner: LeaseOwner::Exercise {
                                     exercise_instance_id: exercise.exercise_instance_id,
                                     exercise_id: exercise.exercise_id,
                                     container_id: a.container_id,
                                 },
                             };
-                            (admission, None, lease)
+                            (admission, None, lease, None)
                         }
                     };
-                    (Some(a.endpoint), scan, Some(lease), Some(admission))
+                    (
+                        Some(a.endpoint),
+                        scan,
+                        Some(lease),
+                        Some(admission),
+                        open_fence,
+                    )
                 }
-                None => (None, None, None, None),
+                None => (None, None, None, None, None),
             };
-            run_or_close(st_log, socket, endpoint, scan, lease, admission).await;
+            run_or_close(st_log, socket, endpoint, scan, lease, admission, open_fence).await;
         })
 }
 
@@ -195,7 +257,7 @@ async fn proxy_for_noinstance(
     let target = resolve_noinstance_target(&st, id).await;
     ws.max_frame_size(MAX_CLIENT_MESSAGE_SIZE)
         .max_message_size(MAX_CLIENT_MESSAGE_SIZE)
-        .on_upgrade(move |socket| run_or_close(st, socket, target, None, None, None))
+        .on_upgrade(move |socket| run_or_close(st, socket, target, None, None, None, None))
 }
 
 /// Everything needed both to proxy a player container AND to log the access +
@@ -206,6 +268,7 @@ struct InstanceAccess {
     container_id: Uuid,
     accessing_user_id: Uuid,
     accessing_user_name: String,
+    accessing_security_stamp: String,
     owner: InstanceOwner,
 }
 
@@ -216,11 +279,13 @@ enum InstanceOwner {
 
 struct GameAccess {
     game_id: i32,
+    accessing_team_id: i32,
     challenge_id: i32,
     /// Participation that owns the container (its `GameInstance`'s team).
     owner_participation_id: i32,
     /// The accessing user's own participation in this game.
     accessing_participation_id: i32,
+    target_identity: GameProxyTargetIdentity,
     /// Monitor/Admin — legitimately reaches any container, so never flagged.
     is_monitor: bool,
 }
@@ -252,7 +317,7 @@ async fn resolve_instance_target(
 
     if container.game_instance_id.is_none() {
         match resolve_exercise_instance_target(st, &user, &container).await {
-            ExerciseResolution::Granted(access) => return Some(access),
+            ExerciseResolution::Granted(access) => return Some(*access),
             ExerciseResolution::Denied => return None,
             ExerciseResolution::NotExercise => {
                 return resolve_shared_instance_target(st, &user, container).await;
@@ -282,12 +347,18 @@ async fn resolve_instance_target(
     if link.participation_id != part.id {
         return None;
     }
+    let target_identity = game_proxy_target_identity(&container, Some(instance.id));
     if !game_proxy_scope_is_valid(
         st.pg(),
-        user.id,
-        part.game_id,
-        part.id,
+        LiveParticipationIdentity {
+            user_id: user.id,
+            expected_security_stamp: &user.security_stamp,
+            game_id: part.game_id,
+            team_id: part.team_id,
+            participation_id: part.id,
+        },
         instance.challenge_id,
+        &target_identity,
     )
     .await
     {
@@ -300,11 +371,14 @@ async fn resolve_instance_target(
         container_id: id,
         accessing_user_id: user.id,
         accessing_user_name: user.name.clone(),
+        accessing_security_stamp: user.security_stamp.clone(),
         owner: InstanceOwner::Game(GameAccess {
             game_id: part.game_id,
+            accessing_team_id: part.team_id,
             challenge_id: instance.challenge_id,
             owner_participation_id: part.id,
             accessing_participation_id: link.participation_id,
+            target_identity,
             is_monitor: user.is_monitor(),
         }),
     })
@@ -338,7 +412,7 @@ struct ExerciseAccessRow {
 }
 
 enum ExerciseResolution {
-    Granted(InstanceAccess),
+    Granted(Box<InstanceAccess>),
     Denied,
     NotExercise,
 }
@@ -379,13 +453,14 @@ async fn resolve_exercise_instance_target(
     let Some(endpoint) = proxy_target(container) else {
         return ExerciseResolution::Denied;
     };
-    ExerciseResolution::Granted(InstanceAccess {
+    ExerciseResolution::Granted(Box::new(InstanceAccess {
         endpoint,
         container_id: container.id,
         accessing_user_id: user.id,
         accessing_user_name: user.name.clone(),
+        accessing_security_stamp: user.security_stamp.clone(),
         owner: InstanceOwner::Exercise(exercise),
-    })
+    }))
 }
 
 fn authorize_exercise_access(
@@ -415,12 +490,8 @@ fn authorize_exercise_access(
 struct SharedAccessRow {
     challenge_id: i32,
     participation_id: i32,
-    token: String,
-    writeup_id: Option<i32>,
     game_id: i32,
     team_id: i32,
-    division_id: Option<i32>,
-    suspicion_score: i32,
 }
 
 /// A shared Jeopardy container intentionally has no `GameInstance` owner. The
@@ -435,12 +506,8 @@ async fn resolve_shared_instance_target(
     let row = sqlx::query_as::<_, SharedAccessRow>(
         r#"SELECT challenge.id AS challenge_id,
                   participation.id AS participation_id,
-                  participation.token,
-                  participation.writeup_id,
                   participation.game_id,
-                  participation.team_id,
-                  participation.division_id,
-                  participation.suspicion_score
+                  participation.team_id
              FROM "GameChallenges" challenge
              JOIN "UserParticipations" membership
                ON membership.game_id = challenge.game_id
@@ -459,31 +526,21 @@ async fn resolve_shared_instance_target(
     .fetch_optional(st.pg())
     .await
     .ok()??;
+    let target_identity = game_proxy_target_identity(&container, None);
     if !game_proxy_scope_is_valid(
         st.pg(),
-        user.id,
-        row.game_id,
-        row.participation_id,
+        LiveParticipationIdentity {
+            user_id: user.id,
+            expected_security_stamp: &user.security_stamp,
+            game_id: row.game_id,
+            team_id: row.team_id,
+            participation_id: row.participation_id,
+        },
         row.challenge_id,
+        &target_identity,
     )
     .await
     {
-        return None;
-    }
-    let part = participation::Model {
-        id: row.participation_id,
-        status: ParticipationStatus::Accepted,
-        token: row.token,
-        writeup_id: row.writeup_id,
-        game_id: row.game_id,
-        team_id: row.team_id,
-        division_id: row.division_id,
-        suspicion_score: row.suspicion_score,
-    };
-    let permission = crate::controllers::game::effective_permission(st, &part, row.challenge_id)
-        .await
-        .ok()?;
-    if !permission.contains(GamePermission::VIEW_CHALLENGE) {
         return None;
     }
     let endpoint = proxy_target(&container)?;
@@ -492,111 +549,17 @@ async fn resolve_shared_instance_target(
         container_id: container.id,
         accessing_user_id: user.id,
         accessing_user_name: user.name.clone(),
+        accessing_security_stamp: user.security_stamp.clone(),
         owner: InstanceOwner::Game(GameAccess {
             game_id: row.game_id,
+            accessing_team_id: row.team_id,
             challenge_id: row.challenge_id,
             owner_participation_id: row.participation_id,
             accessing_participation_id: row.participation_id,
+            target_identity,
             is_monitor: user.is_monitor(),
         }),
     })
-}
-
-/// Best-effort: persist a `ContainerAccessEvent` for this proxy open (RSCTF
-/// `ContainerAccessLogger.LogAccess`) and, when the accessing participation is not
-/// the container owner and the game is still live, raise
-/// `CrossTeamContainerAccess` against the accessor. Any error is logged and
-/// swallowed so the tunnel is never broken.
-///
-/// NOTE: rsctf's proxy gate ([`resolve_instance_target`]) requires the caller to
-/// be registered on the OWNING participation, so `accessing == owner` always holds
-/// here and the cross-team branch is currently dormant. It is kept verbatim so it
-/// fires the moment the gate is relaxed to RSCTF's bearer-capability model (where
-/// any holder of a container GUID can connect). The access-event row, which feeds
-/// the four submission-time detectors, is always written.
-async fn log_container_access(
-    st: &SharedState,
-    a: &InstanceAccess,
-    game: &GameAccess,
-    remote_ip: String,
-    user_agent: Option<String>,
-) {
-    let persist = async {
-        let mut transaction = st
-            .pg()
-            .begin()
-            .await
-            .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
-        let identities = [game.owner_participation_id, game.accessing_participation_id];
-        if !crate::services::participation_evidence::lock_audit_insert_scope(
-            &mut transaction,
-            game.game_id,
-            Some(game.challenge_id),
-            &identities,
-        )
-        .await?
-        {
-            return Err(crate::utils::error::AppError::conflict(
-                "Participation changed while recording container access",
-            ));
-        }
-        sqlx::query(
-            r#"INSERT INTO "ContainerAccessEvents"
-                   (game_id, challenge_id, container_owner_participation_id,
-                    container_id, accessing_user_id, accessing_user_name,
-                    accessing_participation_id, remote_ip, user_agent,
-                    connected_at_utc)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
-        )
-        .bind(game.game_id)
-        .bind(game.challenge_id)
-        .bind(game.owner_participation_id)
-        .bind(a.container_id)
-        .bind(a.accessing_user_id)
-        .bind(&a.accessing_user_name)
-        .bind(game.accessing_participation_id)
-        .bind(&remote_ip)
-        .bind(user_agent.as_deref())
-        .bind(chrono::Utc::now())
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))
-    }
-    .await;
-    if let Err(e) = persist {
-        tracing::warn!(container = %a.container_id, error = %e, "ContainerAccessEvent persist failed");
-    }
-
-    // Cross-team access is a live-game concern: after a game ends, challenges
-    // relaunch as practice through this same proxy path, so a post-game cross-team
-    // open must not pin the top-weight signal on the just-ended game (gate matches
-    // the sibling post-game detectors). Admins/monitors legitimately reach any
-    // container.
-    if game.is_monitor || game.accessing_participation_id == game.owner_participation_id {
-        return;
-    }
-    let live = match game::Entity::find_by_id(game.game_id).one(&st.db).await {
-        Ok(Some(g)) => g.end_time_utc > chrono::Utc::now(),
-        _ => false,
-    };
-    if !live {
-        return;
-    }
-
-    if let Err(e) = crate::services::suspicion::record_cross_team_container_access(
-        &st.db,
-        game.game_id,
-        game.accessing_participation_id,
-        Some(game.challenge_id),
-    )
-    .await
-    {
-        tracing::warn!(container = %a.container_id, error = %e, "CrossTeamContainerAccess raise failed");
-    }
 }
 
 /// Resolve the reachable `ip:port` for an admin test container. The route is
@@ -634,6 +597,19 @@ fn proxy_target(container: &container::Model) -> Option<ProxyTarget> {
     target_endpoint(container).map(ProxyTarget::Tcp)
 }
 
+fn game_proxy_target_identity(
+    container: &container::Model,
+    game_instance_id: Option<i32>,
+) -> GameProxyTargetIdentity {
+    GameProxyTargetIdentity {
+        container_id: container.id,
+        runtime_id: container.container_id.clone(),
+        ip: container.ip.clone(),
+        port: container.port,
+        game_instance_id,
+    }
+}
+
 /// Build the `ip:port` the proxy should dial. RSCTF connects to the container's
 /// `IP:Port`; game.rs stores the host-reachable published address into those
 /// columns for the Docker backend. Returns `None` when the address is unusable.
@@ -653,8 +629,12 @@ async fn run_or_close(
     scan: Option<EgressScan>,
     lease: Option<InstanceLease>,
     _admission: Option<crate::services::proxy_admission::ProxyPermit>,
+    open_fence: Option<GameProxyOpenFence>,
 ) {
     let Some(target) = target else {
+        if let Some(fence) = open_fence {
+            fence.rollback().await;
+        }
         close_cleanly(socket).await;
         return;
     };
@@ -667,10 +647,19 @@ async fn run_or_close(
                 match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&target)).await {
                     Ok(Ok(stream)) => stream,
                     _ => {
+                        if let Some(fence) = open_fence {
+                            fence.rollback().await;
+                        }
                         let _ = socket.send(endpoint_unavailable_close()).await;
                         return;
                     }
                 };
+            if let Some(fence) = open_fence {
+                if !fence.release().await {
+                    let _ = socket.send(endpoint_unavailable_close()).await;
+                    return;
+                }
+            }
             let _ = stream.set_nodelay(true);
             let session = proxy_session(socket, stream, scan, lease);
             let _ = tokio::time::timeout(SESSION_TIMEOUT, session).await;
@@ -691,6 +680,9 @@ async fn run_or_close(
                         %error,
                         "trusted-worker proxy stream open failed"
                     );
+                    if let Some(fence) = open_fence {
+                        fence.rollback().await;
+                    }
                     let _ = socket.send(endpoint_unavailable_close()).await;
                     return;
                 }
@@ -701,10 +693,19 @@ async fn run_or_close(
                         generation = handle.generation,
                         "trusted-worker proxy stream open timed out"
                     );
+                    if let Some(fence) = open_fence {
+                        fence.rollback().await;
+                    }
                     let _ = socket.send(endpoint_unavailable_close()).await;
                     return;
                 }
             };
+            if let Some(fence) = open_fence {
+                if !fence.release().await {
+                    let _ = socket.send(endpoint_unavailable_close()).await;
+                    return;
+                }
+            }
             let session = proxy_session(socket, stream, scan, lease);
             let _ = tokio::time::timeout(SESSION_TIMEOUT, session).await;
         }
@@ -786,18 +787,22 @@ enum WorkerProxyOpenError {
 }
 
 struct InstanceLease {
-    db: sea_orm::DatabaseConnection,
     pool: sqlx::PgPool,
     user_id: Uuid,
+    security_stamp: String,
     owner: LeaseOwner,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum LeaseOwner {
     Game {
         game_id: i32,
+        team_id: i32,
         participation_id: i32,
         challenge_id: i32,
+        target_identity: GameProxyTargetIdentity,
+        event_vpn_source: Option<Ipv4Addr>,
+        bypass_event_vpn: bool,
     },
     Exercise {
         exercise_instance_id: i32,
@@ -811,18 +816,29 @@ async fn wait_for_revocation(lease: InstanceLease) {
     tick.tick().await;
     loop {
         tick.tick().await;
-        let lease_valid = match lease.owner {
+        let lease_valid = match &lease.owner {
             LeaseOwner::Game {
                 game_id,
+                team_id,
                 participation_id,
                 challenge_id,
+                target_identity,
+                event_vpn_source,
+                bypass_event_vpn,
             } => {
-                game_proxy_scope_is_valid(
+                game_proxy_session_is_valid(
                     &lease.pool,
-                    lease.user_id,
-                    game_id,
-                    participation_id,
-                    challenge_id,
+                    LiveParticipationIdentity {
+                        user_id: lease.user_id,
+                        expected_security_stamp: &lease.security_stamp,
+                        game_id: *game_id,
+                        team_id: *team_id,
+                        participation_id: *participation_id,
+                    },
+                    *challenge_id,
+                    target_identity,
+                    *event_vpn_source,
+                    *bypass_event_vpn,
                 )
                 .await
             }
@@ -831,21 +847,15 @@ async fn wait_for_revocation(lease: InstanceLease) {
                 exercise_id,
                 container_id,
             } => {
-                let account_valid = user::Entity::find_by_id(lease.user_id)
-                    .one(&lease.db)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|account| account.role != Role::Banned);
-                account_valid
-                    && exercise_lease_is_valid(
-                        &lease.pool,
-                        lease.user_id,
-                        exercise_instance_id,
-                        exercise_id,
-                        container_id,
-                    )
-                    .await
+                exercise_lease_is_valid(
+                    &lease.pool,
+                    lease.user_id,
+                    &lease.security_stamp,
+                    *exercise_instance_id,
+                    *exercise_id,
+                    *container_id,
+                )
+                .await
             }
         };
         if !lease_valid {
@@ -859,6 +869,7 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
       FROM "ExerciseInstances" instance
       JOIN "ExerciseChallenges" exercise ON exercise.id = instance.exercise_id
       JOIN "Containers" container ON container.id = instance.container_id
+      JOIN "AspNetUsers" account ON account.id = instance.user_id
      WHERE instance.id = $1
        AND instance.exercise_id = $2
        AND instance.user_id = $3
@@ -868,6 +879,9 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
        AND exercise.publish_time_utc <= clock_timestamp()
        AND container.is_proxy = TRUE
        AND container.game_instance_id IS NULL
+       AND account.security_stamp = $5
+       AND account.email_confirmed = TRUE
+       AND account.role <> $6
        AND (
            container.exercise_instance_id IS NULL
            OR container.exercise_instance_id = instance.id
@@ -877,6 +891,7 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
 async fn exercise_lease_is_valid(
     pool: &sqlx::PgPool,
     user_id: Uuid,
+    expected_security_stamp: &str,
     exercise_instance_id: i32,
     exercise_id: i32,
     container_id: Uuid,
@@ -886,6 +901,8 @@ async fn exercise_lease_is_valid(
         .bind(exercise_id)
         .bind(user_id)
         .bind(container_id)
+        .bind(expected_security_stamp)
+        .bind(Role::Banned as i16)
         .fetch_one(pool)
         .await
         .unwrap_or(false)
@@ -969,29 +986,4 @@ where
         _ = ws_to_tcp => {}
         _ = tcp_to_ws => {}
     }
-}
-
-/// Accept the upgraded socket and close it cleanly (used when there is nothing
-/// to proxy). Send a Close frame, then drop the socket.
-async fn close_cleanly(mut socket: WebSocket) {
-    let _ = socket.send(normal_close()).await;
-}
-
-fn normal_close() -> Message {
-    close_message(close_code::NORMAL, "")
-}
-
-fn endpoint_unavailable_close() -> Message {
-    close_message(close_code::AGAIN, "proxy endpoint unavailable")
-}
-
-fn transport_failure_close() -> Message {
-    close_message(close_code::ERROR, "proxy transport failed")
-}
-
-fn close_message(code: u16, reason: &'static str) -> Message {
-    Message::Close(Some(CloseFrame {
-        code,
-        reason: reason.into(),
-    }))
 }

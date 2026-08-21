@@ -3,8 +3,8 @@
 
 pub mod game_challenge {
     use crate::utils::enums::{
-        ChallengeBuildStatus, ChallengeCategory, ChallengeReviewStatus, ChallengeType, NetworkMode,
-        ScoreCurve,
+        ChallengeBuildStatus, ChallengeCategory, ChallengeReviewStatus, ChallengeType,
+        ChallengeVariantMode, NetworkMode, ScoreCurve, SolveReceiptMode,
     };
     use chrono::{DateTime, Utc};
     use sea_orm::entity::prelude::*;
@@ -70,6 +70,13 @@ pub mod game_challenge {
         /// Container network mode (RSCTF `Challenge.NetworkMode`, nullable, default
         /// `Open`). String on the wire (`"Open"`/`"Isolated"`/`"Custom"`).
         pub network_mode: Option<NetworkMode>,
+
+        // --- Deterministic variants and trusted solve receipts ---
+        pub variant_mode: ChallengeVariantMode,
+        pub variant_generator_image: Option<String>,
+        pub variant_generator_digest: Option<String>,
+        pub solve_receipt_mode: SolveReceiptMode,
+        pub receipt_verifier_identity: Option<String>,
 
         // --- Attack-Defense ---
         pub ad_checker_image: Option<String>,

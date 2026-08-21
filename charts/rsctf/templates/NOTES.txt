@@ -4,9 +4,12 @@ rsctf has been installed as {{ include "rsctf.fullname" . }}.
 Runtime role: {{ .Values.runtimeRole }} ({{ .Values.replicaCount }} replica(s)).
 
 {{- if eq .Values.runtimeRole "migrate" }}
-The migration hook completed before this release was installed/upgraded. This
-role does not run a long-lived Deployment. Install or upgrade the web/control
-or web/engine/network releases only after this command succeeds.
+This release renders an explicit, digest-scoped migration Job; it is not an
+automatic pre-upgrade hook. Run it only through the maintenance-cutover
+script after every old runtime Pod is terminated. The script uses Helm
+--wait --wait-for-jobs and verifies one successful Job at the exact digest.
+Keep all runtime releases scaled to zero until the Job succeeds, then upgrade
+them to the same digest. Never roll an old image back after migration.
 {{- else if ne .Values.runtimeRole "all" }}
 SPLIT-ROLE NOTICE: this release uses externally managed PostgreSQL and Redis,
 the pre-created Secret, and the same pinned rsctf build, JWT secret, storage
@@ -129,4 +132,6 @@ before writing repository, capture, checker, or snapshot files.
 {{- end }}
 
 Secrets are never printed here. For production, prefer existingSecret.name
-backed by External Secrets, Sealed Secrets, or SOPS instead of Helm values.
+backed by External Secrets, Sealed Secrets, or SOPS instead of Helm values. Its
+identity hash key must be independent from the JWT secret and remain stable
+across replicas, restarts, and JWT rotations.

@@ -70,6 +70,7 @@ fn common_api_router(game_router: Router<SharedState>) -> Router<SharedState> {
 
 pub fn api_router() -> Router<SharedState> {
     common_api_router(controllers::game::router())
+        .merge(controllers::event_security::router())
         .merge(controllers::workers::router())
         .merge(controllers::proxy::router())
         .merge(hubs::container::router())
@@ -90,6 +91,7 @@ pub fn stateful_api_router() -> Router<SharedState> {
     Router::new()
         .route("/livez", get(crate::services::health::liveness))
         .route("/healthz", get(crate::services::health::readiness))
+        .merge(controllers::event_security::router())
         .merge(controllers::game::ad::stateful_router())
         .merge(controllers::game::koth::stateful_router())
         .merge(controllers::workers::router())
@@ -145,30 +147,33 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
     // Apply cross-cutting layers after registering the SPA fallback. Axum layers
     // only routes that exist at the time `layer` is called, so this ordering keeps
     // HSTS, frame denial, and the CSP on the HTML shell as well as API responses.
-    app
-        // Per-request user-activity stamp (RSCTF's UserInfo.UpdateByHttpContext) —
-        // inside the rate limiter, so activity is not stamped for throttled 429s.
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::middlewares::user_activity::middleware,
-        ))
-        .layer(TraceLayer::new_for_http().make_span_with(RedactedHttpMakeSpan))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::middlewares::rate_limiter::global_middleware,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::middlewares::request_security::csrf_middleware,
-        ))
-        .layer(axum::middleware::from_fn(
-            crate::middlewares::request_security::security_headers,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::services::health::reject_new_work_while_draining,
-        ))
-        .with_state(state)
+    app.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middlewares::event_vpn::middleware,
+    ))
+    // Per-request user-activity stamp (RSCTF's UserInfo.UpdateByHttpContext) —
+    // inside the rate limiter, so activity is not stamped for throttled 429s.
+    .layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middlewares::user_activity::middleware,
+    ))
+    .layer(TraceLayer::new_for_http().make_span_with(RedactedHttpMakeSpan))
+    .layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middlewares::rate_limiter::global_middleware,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middlewares::request_security::csrf_middleware,
+    ))
+    .layer(axum::middleware::from_fn(
+        crate::middlewares::request_security::security_headers,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::services::health::reject_new_work_while_draining,
+    ))
+    .with_state(state)
 }
 
 /// Minimal HTTP surface for a background-only engine replica. Keeping health

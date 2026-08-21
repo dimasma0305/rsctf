@@ -1463,6 +1463,58 @@ async function observabilityAndRuntime() {
     cheats.json?.some((report) => report.submitTeam?.id === fixtureParticipation),
     'cheat report feed omitted the fixture suspicion',
   );
+  const derived = await call(
+    'POST',
+    '/api/admin/games/{gameId}/anti-cheat/derive',
+    `/api/admin/games/${fixtureGame}/anti-cheat/derive`,
+  );
+  requireCondition(
+    Number.isSafeInteger(derived.json?.inserted) && derived.json.inserted >= 0,
+    'event-security derivation returned an invalid insert count',
+  );
+  const fused = await call(
+    'GET',
+    '/api/admin/games/{gameId}/anti-cheat/fusion/{participationId}',
+    `/api/admin/games/${fixtureGame}/anti-cheat/fusion/${fixtureParticipation}`,
+  );
+  requireCondition(
+    fused.json?.participationId === fixtureParticipation &&
+      Number.isFinite(fused.json?.total) &&
+      Array.isArray(fused.json?.families) &&
+      Array.isArray(fused.json?.findings) &&
+      Array.isArray(fused.json?.relationships),
+    'event-security fusion returned a malformed evidence breakdown',
+  );
+  await call(
+    'POST',
+    '/api/admin/games/{gameId}/anti-cheat/findings/{findingId}/review',
+    `/api/admin/games/${fixtureGame}/anti-cheat/findings/9223372036854775807/review`,
+    { body: { status: 'needsMoreEvidence', note: `missing fixture ${tag}` }, expected: 404 },
+  );
+  await call(
+    'POST',
+    '/api/admin/games/{gameId}/anti-cheat/telemetry/purge',
+    `/api/admin/games/${fixtureGame}/anti-cheat/telemetry/purge`,
+    { body: { reason: 'short' }, expected: 400 },
+  );
+  await call(
+    'POST',
+    '/api/admin/games/{gameId}/vpn-override',
+    `/api/admin/games/${fixtureGame}/vpn-override`,
+    { body: { reason: `invalid zero-duration override ${tag}`, durationMinutes: 0 }, expected: 400 },
+  );
+  const overrides = await call(
+    'GET',
+    '/api/admin/games/{gameId}/vpn-overrides',
+    `/api/admin/games/${fixtureGame}/vpn-overrides`,
+  );
+  requireCondition(Array.isArray(overrides.json), 'VPN override history is not an array');
+  await call(
+    'POST',
+    '/api/admin/games/{gameId}/vpn-override/{overrideId}/revoke',
+    `/api/admin/games/${fixtureGame}/vpn-override/${randomUUID()}/revoke`,
+    { expected: 404 },
+  );
   const writeups = await call('GET', '/api/admin/writeups', '/api/admin/writeups?count=100&skip=0');
   requireCondition(
     writeups.json?.some((writeup) => writeup.id === fixtureParticipation),

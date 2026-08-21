@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod security_policy;
+
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 /// RSCTF `GlobalConfig`.
@@ -474,8 +476,15 @@ pub async fn get_config(
 pub async fn update_config(
     State(st): State<SharedState>,
     _admin: AdminUser,
-    Json(model): Json<ConfigEditModel>,
+    Json(mut model): Json<ConfigEditModel>,
 ) -> AppResult<MessageResponse> {
+    let account_policy = model.account_policy.take();
+    let captcha = model.captcha.take();
+    if account_policy.is_some() || captcha.is_some() {
+        security_policy::save_security_policy(st.pg(), st.config.as_ref(), account_policy, captcha)
+            .await?;
+    }
+
     if let Some(g) = model.global_config {
         upsert_config(&st, "GlobalConfig:Title", Some(g.title)).await?;
         upsert_config(&st, "GlobalConfig:Slogan", Some(g.slogan)).await?;
@@ -492,69 +501,6 @@ pub async fn update_config(
             &st,
             "GlobalConfig:ApiEncryption",
             Some(g.api_encryption.to_string()),
-        )
-        .await?;
-    }
-
-    if let Some(a) = model.account_policy {
-        upsert_config(
-            &st,
-            "AccountPolicy:AllowRegister",
-            Some(a.allow_register.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "AccountPolicy:ActiveOnRegister",
-            Some(a.active_on_register.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "AccountPolicy:UseCaptcha",
-            Some(a.use_captcha.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "AccountPolicy:EmailConfirmationRequired",
-            Some(a.email_confirmation_required.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "AccountPolicy:EmailDomainList",
-            Some(a.email_domain_list),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "AccountPolicy:EnableBrowserFingerprint",
-            Some(a.enable_browser_fingerprint.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "AccountPolicy:RequireUniqueIpPerTeamUser",
-            Some(a.require_unique_ip_per_team_user.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "AccountPolicy:RequireUniqueFingerprintPerTeamUser",
-            Some(a.require_unique_fingerprint_per_team_user.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "AccountPolicy:RequireUniqueIpGlobal",
-            Some(a.require_unique_ip_global.to_string()),
-        )
-        .await?;
-        upsert_config(
-            &st,
-            "AccountPolicy:RequireUniqueFingerprintGlobal",
-            Some(a.require_unique_fingerprint_global.to_string()),
         )
         .await?;
     }
@@ -620,20 +566,6 @@ pub async fn update_config(
                 &st,
                 "EmailConfig:Smtp:BypassCertVerify",
                 Some(s.bypass_cert_verify.to_string()),
-            )
-            .await?;
-        }
-    }
-
-    if let Some(c) = model.captcha {
-        upsert_config(&st, "CaptchaConfig:Provider", Some(c.provider)).await?;
-        write_opt(&st, "CaptchaConfig:SiteKey", c.site_key).await?;
-        write_secret(&st, "CaptchaConfig:SecretKey", c.secret_key).await?;
-        if let Some(h) = c.hash_pow {
-            upsert_config(
-                &st,
-                "CaptchaConfig:HashPow:Difficulty",
-                Some(h.difficulty.clamp(8, 48).to_string()),
             )
             .await?;
         }

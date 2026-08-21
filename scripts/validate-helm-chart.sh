@@ -24,14 +24,58 @@ assert_absent() {
   fi
 }
 
-jwt=(--set-string secrets.jwtSecret=0123456789abcdef0123456789abcdef)
+assert_pool_floor() {
+  local label=$1 role=$2 floor=$3
+  shift 3
+  helm template "pool-${label}" charts/rsctf "$@" \
+    --set "runtimeRole=${role}" \
+    --set "config.dbMaxConnections=${floor}" >/dev/null \
+    || fail "${label} role rejected its exact database pool floor ${floor}"
+  if helm template "pool-${label}" charts/rsctf "$@" \
+    --set "runtimeRole=${role}" \
+    --set "config.dbMaxConnections=$((floor - 1))" >/dev/null 2>&1; then
+    fail "${label} role accepted a database pool below its exact floor ${floor}"
+  fi
+}
+
+jwt=(
+  --set-string secrets.jwtSecret=0123456789abcdef0123456789abcdef
+  --set-string secrets.identityHashKey=fedcba9876543210fedcba9876543210
+)
 
 helm lint charts/rsctf --strict "${jwt[@]}"
+
+identity_rendered="$(helm template rsctf charts/rsctf "${jwt[@]}" \
+  --show-only templates/deployment.yaml \
+  --show-only templates/secret.yaml)"
+assert_contains "$identity_rendered" 'name: RSCTF_IDENTITY_HASH_KEY' \
+  "runtime Pod is missing the stable identity hash key"
+assert_contains "$identity_rendered" 'key: identity-hash-key' \
+  "runtime Pod does not use the configured identity hash Secret key"
+assert_contains "$identity_rendered" '"identity-hash-key": "fedcba9876543210fedcba9876543210"' \
+  "chart-managed Secret is missing the identity hash key"
+
+if helm template rsctf charts/rsctf \
+  --set-string secrets.jwtSecret=0123456789abcdef0123456789abcdef >/dev/null 2>&1; then
+  fail "chart accepted a missing identity hash key"
+fi
+if helm template rsctf charts/rsctf \
+  --set-string secrets.jwtSecret=0123456789abcdef0123456789abcdef \
+  --set-string secrets.identityHashKey=short >/dev/null 2>&1; then
+  fail "chart accepted a short identity hash key"
+fi
+if helm template rsctf charts/rsctf \
+  --set-string secrets.jwtSecret=0123456789abcdef0123456789abcdef \
+  --set-string secrets.identityHashKey=0123456789abcdef0123456789abcdef >/dev/null 2>&1; then
+  fail "chart accepted the JWT secret as the identity hash key"
+fi
 
 default_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --show-only templates/configmap.yaml)"
 assert_contains "$default_config" 'RSCTF_AD_SUBMIT_BURST_FLAGS: "400"' \
   "default A&D submit burst was not rendered"
+assert_contains "$default_config" 'RSCTF_DB_MAX_CONNECTIONS: "33"' \
+  "default pool does not cover the all+VPN reconciler floor"
 benchmark_config="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --set config.adSubmitBurstFlags=3200 \
   --show-only templates/configmap.yaml)"
@@ -48,6 +92,7 @@ rbac="$(helm template rsctf charts/rsctf \
   --show-only templates/rbac.yaml \
   --set containerBackend=kubernetes \
   --set kubernetes.adServiceCidr=10.96.0.0/12 \
+  --set kubernetes.networkPolicyEnforced=true \
   "${jwt[@]}")"
 grep -A1 -F 'resources: ["pods/exec"]' <<<"$rbac" \
   | grep -Fq 'verbs: ["create"]' \
@@ -100,6 +145,39 @@ if helm template rsctf-web charts/rsctf "${web[@]}" \
   --set config.dbMaxConnections=25 >/dev/null 2>&1; then
   fail "web role accepted a database pool below its replica-safe floor"
 fi
+
+split_pool=(
+  --set replicaCount=1
+  --set-string image.tag=1.2.3
+  --set postgresql.enabled=false
+  --set redis.enabled=false
+  --set existingSecret.name=rsctf-shared
+  --set persistence.enabled=true
+  --set persistence.existingClaim=rsctf-files-rwx
+  --set 'persistence.accessModes[0]=ReadWriteMany'
+  --set containerBackend=none
+  --set workerBackend.localBackend=none
+  --set trafficCapture.enabled=false
+)
+assert_pool_floor engine engine 16 "${split_pool[@]}"
+assert_pool_floor control control 18 "${split_pool[@]}"
+assert_pool_floor network network 16 "${split_pool[@]}"
+assert_pool_floor all all 30 "${jwt[@]}" --set vpn.enabled=false
+
+vpn_pool=(
+  "${split_pool[@]}"
+  --set containerBackend=docker
+  --set docker.socket.enabled=true
+  --set vpn.enabled=true
+  --set vpn.serverEndpoint=vpn.ctf.example:51820
+)
+assert_pool_floor control-vpn control 21 "${vpn_pool[@]}"
+assert_pool_floor network-vpn network 19 "${vpn_pool[@]}"
+assert_pool_floor all-vpn all 33 "${jwt[@]}" \
+  --set containerBackend=docker \
+  --set docker.socket.enabled=true \
+  --set vpn.enabled=true \
+  --set vpn.serverEndpoint=vpn.ctf.example:51820
 assert_absent "$web_rendered" 'RSCTF_WORKER_LISTEN' \
   "web role received the singleton worker listener"
 assert_absent "$web_rendered" 'worker-ca.key' \
@@ -108,6 +186,8 @@ assert_absent "$web_rendered" 'name: docker-socket' \
   "web role received the Docker socket"
 assert_absent "$web_rendered" '- NET_RAW' \
   "web role received NET_RAW while capture is disabled"
+assert_contains "$web_rendered" 'app.kubernetes.io/component: "web"' \
+  "runtime Deployment metadata does not identify its cutover component"
 
 if helm template rsctf-web charts/rsctf "${web[@]}" \
   --set workerPlane.enabled=true \
@@ -132,7 +212,7 @@ if helm template rsctf-control charts/rsctf "${web[@]}" \
   --set workerPlane.existingSecret.name=rsctf-worker-tls \
   --set workerPlane.publicEndpoint=workers.ctf.example:9443 \
   --set workerPlane.serverName=workers.ctf.example \
-  --set config.dbMaxConnections=20 >/dev/null 2>&1; then
+  --set config.dbMaxConnections=21 >/dev/null 2>&1; then
   fail "split control role accepted a hybrid local backend"
 fi
 
@@ -164,6 +244,7 @@ assert_contains "$docker_hybrid" '- NET_RAW' \
 vpn_owner="$(helm template rsctf charts/rsctf "${jwt[@]}" \
   --set containerBackend=kubernetes \
   --set kubernetes.adServiceCidr=10.96.0.0/12 \
+  --set kubernetes.networkPolicyEnforced=true \
   --set vpn.enabled=true \
   --set vpn.serverEndpoint=vpn.ctf.example:51820)"
 assert_contains "$vpn_owner" '- NET_ADMIN' \
@@ -174,7 +255,8 @@ assert_contains "$vpn_owner" '- NET_RAW' \
 kubernetes_hybrid="$(helm template rsctf charts/rsctf "${worker[@]}" \
   --set workerBackend.localBackend=kubernetes \
   --set kubernetes.challengeNamespace=rsctf-challenges \
-  --set kubernetes.adServiceCidr=10.96.0.0/12)"
+  --set kubernetes.adServiceCidr=10.96.0.0/12 \
+  --set kubernetes.networkPolicyEnforced=true)"
 assert_contains "$kubernetes_hybrid" 'RSCTF_WORKER_LOCAL_BACKEND: "kubernetes"' \
   "Kubernetes hybrid did not select its local backend"
 assert_contains "$kubernetes_hybrid" 'automountServiceAccountToken: true' \
@@ -200,6 +282,7 @@ split=(
   --set kubernetes.challengeNamespace=rsctf-challenges
   --set kubernetes.createChallengeNamespace=false
   --set kubernetes.adServiceCidr=10.96.0.0/12
+  --set kubernetes.networkPolicyEnforced=true
   --set config.dbMaxConnections=26
 )
 helm template rsctf-web charts/rsctf "${split[@]}" >/dev/null
@@ -244,6 +327,8 @@ must_reject_split "a generated application Secret" --set-string existingSecret.n
 must_reject_split "a release-owned challenge namespace" --set kubernetes.createChallengeNamespace=true
 must_reject_split "an implicit challenge namespace" --set-string kubernetes.challengeNamespace=
 must_reject_split "the mutable latest tag" --set-string image.tag=latest
+must_reject_split "a missing NetworkPolicy enforcement acknowledgement" \
+  --set kubernetes.networkPolicyEnforced=false
 
 if helm template rsctf-migrate charts/rsctf \
   --set runtimeRole=migrate \
@@ -253,6 +338,60 @@ if helm template rsctf-migrate charts/rsctf \
   --set existingSecret.name=rsctf-shared \
   --set config.dbMaxConnections=2 >/dev/null 2>&1; then
   fail "migration role accepted the mutable latest tag"
+fi
+
+migrate_rendered="$(helm template rsctf-migrate charts/rsctf \
+  --set runtimeRole=migrate \
+  --set replicaCount=1 \
+  --set postgresql.enabled=false \
+  --set redis.enabled=false \
+  --set existingSecret.name=rsctf-shared \
+  --set-string image.tag=1.2.3 \
+  --set config.dbMaxConnections=2 \
+  --show-only templates/migrate-job.yaml)"
+assert_contains "$migrate_rendered" 'name: RSCTF_IDENTITY_HASH_KEY' \
+  "migration Pod is missing the stable identity hash key"
+assert_contains "$migrate_rendered" 'key: identity-hash-key' \
+  "migration Pod does not use the configured identity hash Secret key"
+
+digest_a="sha256:$(printf 'a%.0s' {1..64})"
+digest_b="sha256:$(printf 'b%.0s' {1..64})"
+migrate_digest_args=(
+  --set runtimeRole=migrate
+  --set replicaCount=1
+  --set postgresql.enabled=false
+  --set redis.enabled=false
+  --set existingSecret.name=rsctf-shared
+  --set-string image.repository=registry.example/rsctf
+  --set config.dbMaxConnections=2
+  --show-only templates/migrate-job.yaml
+)
+migrate_digest_a="$(helm template rsctf-migrate charts/rsctf \
+  "${migrate_digest_args[@]}" --set-string "image.digest=$digest_a")"
+migrate_digest_b="$(helm template rsctf-migrate charts/rsctf \
+  "${migrate_digest_args[@]}" --set-string "image.digest=$digest_b")"
+assert_contains "$migrate_digest_a" "image: \"registry.example/rsctf@$digest_a\"" \
+  "migration Job did not pin the exact manifest digest"
+assert_absent "$migrate_digest_a" 'helm.sh/hook' \
+  "migration Job must not run automatically while old runtime Pods serve"
+job_a="$(awk '$1 == "name:" { print $2; exit }' <<<"$migrate_digest_a")"
+job_b="$(awk '$1 == "name:" { print $2; exit }' <<<"$migrate_digest_b")"
+[[ -n "$job_a" && -n "$job_b" && "$job_a" != "$job_b" ]] \
+  || fail "migration Job identity is not scoped to the immutable digest"
+long_name=rsctf-competition-control-plane-with-an-intentionally-long-resource-name
+long_job_a="$(helm template rsctf-migrate charts/rsctf \
+  "${migrate_digest_args[@]}" --set-string "image.digest=$digest_a" \
+  --set-string "fullnameOverride=$long_name" \
+  | awk '$1 == "name:" { print $2; exit }')"
+long_job_b="$(helm template rsctf-migrate charts/rsctf \
+  "${migrate_digest_args[@]}" --set-string "image.digest=$digest_b" \
+  --set-string "fullnameOverride=$long_name" \
+  | awk '$1 == "name:" { print $2; exit }')"
+[[ ${#long_job_a} -le 63 && "$long_job_a" != "$long_job_b" ]] \
+  || fail "long migration Job names do not retain their digest identity"
+if helm template rsctf-migrate charts/rsctf \
+  "${migrate_digest_args[@]}" --set-string image.digest=sha256:abc >/dev/null 2>&1; then
+  fail "chart accepted an invalid image digest"
 fi
 
 echo "Helm chart validation passed."

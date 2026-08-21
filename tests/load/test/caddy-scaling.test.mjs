@@ -58,3 +58,10 @@ test('Caddy excludes bearer-bearing hub request URIs from access logs', () => {
   assert.match(caddyfile, /^\s*@hubBearer path \/hub\/\*$/m);
   assert.match(caddyfile, /^\s*log_skip @hubBearer$/m);
 });
+
+test('Caddy overwrites client-supplied address headers on every upstream route', () => {
+  assert.match(caddyfile, /^\s*header_up X-Real-IP \{remote_host\}$/m);
+  assert.match(caddyfile, /^\s*header_up X-Forwarded-For \{remote_host\}$/m);
+  assert.match(caddyfile, /^\s*header_up -Forwarded$/m);
+  assert.equal(occurrences(/^\s*import upstream_client_identity$/gm), 3);
+});

@@ -2,6 +2,7 @@ use sea_orm::EntityTrait;
 
 use crate::app_state::SharedState;
 use crate::models::data::{game_challenge, game_challenge::Entity as GameChallenge};
+use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::enums::{
     ChallengeBuildStatus, ChallengeReviewStatus, ChallengeType, GamePermission,
     ParticipationStatus, Role,
@@ -22,33 +23,21 @@ pub(super) enum ContainerRequestMode {
 /// can reject a participation, disable a challenge, or change its container mode while
 /// a request waits for the lock or for the backend runtime.
 pub(super) async fn player_container_request_is_eligible(
-    st: &SharedState,
-    user_id: uuid::Uuid,
-    game_id: i32,
-    participation_id: i32,
+    connection: &mut sqlx::PgConnection,
+    caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
     mode: ContainerRequestMode,
 ) -> AppResult<bool> {
-    player_container_request_is_eligible_on(
-        st.pg(),
-        user_id,
-        game_id,
-        participation_id,
-        challenge_id,
-        mode,
-    )
-    .await
+    player_container_request_is_eligible_on(connection, caller, challenge_id, mode).await
 }
 
 async fn player_container_request_is_eligible_on(
-    pool: &sqlx::PgPool,
-    user_id: uuid::Uuid,
-    game_id: i32,
-    participation_id: i32,
+    connection: &mut sqlx::PgConnection,
+    caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
     mode: ContainerRequestMode,
 ) -> AppResult<bool> {
-    sqlx::query_scalar::<_, bool>(
+    let eligible = sqlx::query_scalar::<_, bool>(
         r#"SELECT EXISTS(
                SELECT 1
                  FROM "Participations" participation
@@ -112,9 +101,9 @@ async fn player_container_request_is_eligible_on(
                   )
            )"#,
     )
-    .bind(user_id)
-    .bind(game_id)
-    .bind(participation_id)
+    .bind(caller.user_id)
+    .bind(caller.game_id)
+    .bind(caller.participation_id)
     .bind(matches!(mode, ContainerRequestMode::Shared))
     .bind(challenge_id)
     .bind(ParticipationStatus::Accepted as i16)
@@ -127,9 +116,22 @@ async fn player_container_request_is_eligible_on(
     .bind(ChallengeType::AttackDefense as i16)
     .bind(ChallengeType::KingOfTheHill as i16)
     .bind(ChallengeBuildStatus::Success as i16)
-    .fetch_one(pool)
+    .fetch_one(&mut *connection)
     .await
-    .map_err(|error| AppError::internal(error.to_string()))
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !eligible {
+        return Ok(false);
+    }
+    crate::services::live_roster::participation_caller_is_live_on(
+        connection,
+        caller.user_id,
+        caller.expected_security_stamp,
+        caller.game_id,
+        caller.team_id,
+        caller.participation_id,
+        true,
+    )
+    .await
 }
 
 fn is_shared_container_mode(challenge: &game_challenge::Model) -> bool {
@@ -208,7 +210,18 @@ mod tests {
             .unwrap();
         sqlx::raw_sql(
             r#"
-            CREATE TABLE "AspNetUsers" (id UUID PRIMARY KEY, role SMALLINT NOT NULL);
+            CREATE TABLE "AspNetUsers" (
+              id UUID PRIMARY KEY, role SMALLINT NOT NULL,
+              email_confirmed BOOLEAN NOT NULL, security_stamp TEXT
+            );
+            CREATE TABLE "Teams" (
+              id INTEGER PRIMARY KEY, captain_id UUID NOT NULL,
+              deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE TABLE "TeamMembers" (
+              team_id INTEGER NOT NULL, user_id UUID NOT NULL,
+              PRIMARY KEY (team_id, user_id)
+            );
             CREATE TABLE "Games" (
               id INTEGER PRIMARY KEY,
               start_time_utc TIMESTAMPTZ NOT NULL,
@@ -224,6 +237,11 @@ mod tests {
             CREATE TABLE "UserParticipations" (
               participation_id INTEGER NOT NULL, game_id INTEGER NOT NULL,
               team_id INTEGER NOT NULL, user_id UUID NOT NULL
+            );
+            CREATE TABLE "IdentityObservations" (
+              user_id UUID NOT NULL, game_id INTEGER,
+              team_id INTEGER, participation_id INTEGER,
+              observed_at_utc TIMESTAMPTZ NOT NULL
             );
             CREATE TABLE "GameChallenges" (
               id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL,
@@ -248,7 +266,8 @@ mod tests {
         .await
         .unwrap();
         let user_id = uuid::Uuid::new_v4();
-        sqlx::query(r#"INSERT INTO "AspNetUsers" VALUES ($1, 1)"#)
+        let captain_id = uuid::Uuid::new_v4();
+        sqlx::query(r#"INSERT INTO "AspNetUsers" VALUES ($1, 1, TRUE, 'stamp')"#)
             .bind(user_id)
             .execute(&pool)
             .await
@@ -268,17 +287,42 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(r#"INSERT INTO "Teams" VALUES (3, $1, FALSE)"#)
+            .bind(captain_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"INSERT INTO "TeamMembers" VALUES (3, $1)"#)
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query(r#"INSERT INTO "UserParticipations" VALUES (2, 1, 3, $1)"#)
             .bind(user_id)
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "IdentityObservations"
+                 (user_id, game_id, team_id, participation_id, observed_at_utc)
+               VALUES ($1, 1, 3, 2, clock_timestamp())"#,
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
-        assert!(player_container_request_is_eligible_on(
-            &pool,
+        let mut connection = pool.acquire().await.unwrap();
+        let caller = LiveParticipationIdentity {
             user_id,
-            1,
-            2,
+            expected_security_stamp: "stamp",
+            game_id: 1,
+            team_id: 3,
+            participation_id: 2,
+        };
+        assert!(player_container_request_is_eligible_on(
+            &mut connection,
+            caller,
             4,
             ContainerRequestMode::PerTeam,
         )
@@ -289,10 +333,8 @@ mod tests {
             .await
             .unwrap();
         assert!(!player_container_request_is_eligible_on(
-            &pool,
-            user_id,
-            1,
-            2,
+            &mut connection,
+            caller,
             4,
             ContainerRequestMode::PerTeam,
         )
@@ -306,16 +348,31 @@ mod tests {
         .await
         .unwrap();
         assert!(!player_container_request_is_eligible_on(
-            &pool,
-            user_id,
-            1,
-            2,
+            &mut connection,
+            caller,
             4,
             ContainerRequestMode::PerTeam,
         )
         .await
         .unwrap());
 
+        sqlx::raw_sql(
+            r#"UPDATE "Games" SET deletion_pending = FALSE WHERE id = 1;
+               DELETE FROM "TeamMembers" WHERE team_id = 3 AND user_id IS NOT NULL;"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(!player_container_request_is_eligible_on(
+            &mut connection,
+            caller,
+            4,
+            ContainerRequestMode::PerTeam,
+        )
+        .await
+        .unwrap());
+
+        drop(connection);
         pool.close().await;
         sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
             .execute(&admin)

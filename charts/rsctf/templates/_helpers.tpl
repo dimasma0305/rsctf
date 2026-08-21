@@ -56,6 +56,22 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-redis" (include "rsctf.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "rsctf.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
+{{- end -}}
+{{- end }}
+
+{{- define "rsctf.migrationJobName" -}}
+{{- $identity := default (default .Chart.AppVersion .Values.image.tag) .Values.image.digest -}}
+{{- $suffix := printf "migrate-%s" (sha256sum $identity | trunc 12) -}}
+{{- $prefixLength := int (sub 62 (len $suffix)) -}}
+{{- $prefix := include "rsctf.fullname" . | trunc $prefixLength | trimSuffix "-" -}}
+{{- printf "%s-%s" $prefix $suffix -}}
+{{- end }}
+
 {{- define "rsctf.challengeNamespace" -}}
 {{- default (printf "%s-challenges" (include "rsctf.fullname" .)) .Values.kubernetes.challengeNamespace | trunc 63 | trimSuffix "-" }}
 {{- end }}
@@ -89,7 +105,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- fail (printf "runtimeRole=%s requires strategy.type=Recreate because the singleton network lease is fail-fast and has no rolling standby" $role) -}}
 {{- end -}}
 {{- $imageTag := default .Chart.AppVersion .Values.image.tag -}}
-{{- if and (ne $role "all") (eq (lower $imageTag) "latest") -}}
+{{- if and (empty .Values.image.digest) (ne $role "all") (eq (lower $imageTag) "latest") -}}
 {{- fail (printf "runtimeRole=%s cannot use image.tag=latest; pin migration and every role release to the same reviewed version" $role) -}}
 {{- end -}}
 {{- if $splitRole -}}
@@ -148,7 +164,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- fail (printf "runtimeRole=%s with containerBackend=worker must enable workerPlane on this singleton network owner" $role) -}}
 {{- end -}}
 {{- if and (eq $role "migrate") (empty .Values.existingSecret.name) -}}
-{{- fail "runtimeRole=migrate requires existingSecret.name because the pre-install migration hook runs before chart-managed Secrets exist" -}}
+{{- fail "runtimeRole=migrate requires existingSecret.name because the explicit maintenance migration Job must use the already-provisioned shared Secret" -}}
 {{- end -}}
 {{- if and (eq $role "migrate") .Values.postgresql.enabled -}}
 {{- fail "runtimeRole=migrate requires postgresql.enabled=false and an existing Secret pointing at the shared database" -}}
@@ -177,6 +193,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- else if has $role (list "all" "control" "network") -}}
   {{- $minimumConnections = add $scanConnections (mul 2 .Values.config.provisioningConcurrency) 3 -}}
 {{- end -}}
+{{- if and (ne $role "migrate") (has $role (list "all" "control" "engine")) -}}
+  {{- $minimumConnections = add $minimumConnections 2 -}}
+{{- end -}}
 {{- if and (ne $role "migrate") (has $role (list "all" "web")) -}}
   {{- $minimumConnections = add $minimumConnections 12 -}}
 {{- end -}}
@@ -198,6 +217,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- $_ := required "existingSecret.databaseUrlKey is required" .Values.existingSecret.databaseUrlKey -}}
 {{- $_ := required "existingSecret.jwtSecretKey is required" .Values.existingSecret.jwtSecretKey -}}
+{{- $_ := required "existingSecret.identityHashKey is required" .Values.existingSecret.identityHashKey -}}
 {{- $_ := required "existingSecret.bootstrapTokenKey is required" .Values.existingSecret.bootstrapTokenKey -}}
 {{- if .Values.postgresql.enabled -}}
   {{- $_ := required "existingSecret.postgresqlPasswordKey is required for bundled PostgreSQL" .Values.existingSecret.postgresqlPasswordKey -}}
@@ -214,6 +234,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   {{- end -}}
   {{- if has $jwt (list "insecure-dev-secret-change-me" "change-me-in-production") -}}
     {{- fail "secrets.jwtSecret uses a known insecure value; generate a unique secret" -}}
+  {{- end -}}
+  {{- $identity := required "secrets.identityHashKey is required when existingSecret.name is empty (use: openssl rand -hex 32)" .Values.secrets.identityHashKey -}}
+  {{- if lt (len $identity) 32 -}}
+    {{- fail "secrets.identityHashKey must contain at least 32 characters of random data" -}}
+  {{- end -}}
+  {{- if has $identity (list "insecure-dev-secret-change-me" "change-me-in-production") -}}
+    {{- fail "secrets.identityHashKey uses a known insecure value; generate a unique secret" -}}
+  {{- end -}}
+  {{- if eq $identity $jwt -}}
+    {{- fail "secrets.identityHashKey must be independent from secrets.jwtSecret so JWT rotation cannot corrupt identity correlation" -}}
   {{- end -}}
   {{- if and (not (empty .Values.secrets.bootstrapToken)) (lt (len .Values.secrets.bootstrapToken) 32) -}}
     {{- fail "secrets.bootstrapToken must contain at least 32 characters when explicitly set" -}}
@@ -234,6 +264,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- if and (eq $localBackend "kubernetes") (ne $role "migrate") -}}
   {{- $_ := required "kubernetes.adServiceCidr is required on every Kubernetes runtime role, even without VPN; set it to the cluster Service CIDR used by provisioning and checker isolation" .Values.kubernetes.adServiceCidr -}}
+  {{- if not .Values.kubernetes.networkPolicyEnforced -}}
+    {{- fail "kubernetes.networkPolicyEnforced=true is required after proving that the cluster CNI enforces NetworkPolicy for challenge Pods" -}}
+  {{- end -}}
 {{- end -}}
 
 {{- if and (eq $localBackend "kubernetes") (eq (include "rsctf.challengeNamespace" .) .Release.Namespace) -}}
@@ -242,6 +275,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- if and (eq $backend "worker") .Values.vpn.enabled (ne $role "all") -}}
 {{- fail "hybrid worker VPN is currently supported only with runtimeRole=all; split lifecycle and web policy coordination are not implemented and must fail closed" -}}
+{{- end -}}
+{{- if and .Values.vpn.sensor.enabled (not .Values.vpn.enabled) -}}
+{{- fail "vpn.sensor.enabled=true requires vpn.enabled=true because the sensor captures only the managed WireGuard interface" -}}
+{{- end -}}
+{{- if and (not (empty .Values.vpn.eventProofUrl)) (not (hasPrefix "https://" .Values.vpn.eventProofUrl)) -}}
+{{- fail "vpn.eventProofUrl must use HTTPS" -}}
+{{- end -}}
+{{- if or (contains "0.0.0.0/0" .Values.vpn.eventAllowedIps) (contains "::/0" .Values.vpn.eventAllowedIps) -}}
+{{- fail "vpn.eventAllowedIps must remain split-tunnel and cannot contain a default route" -}}
 {{- end -}}
 {{- if .Values.vpn.enabled -}}
   {{- if not (has $localBackend (list "docker" "kubernetes")) -}}

@@ -1,6 +1,5 @@
 //! First-administrator bootstrap authorization.
 
-use sea_orm::DatabaseTransaction;
 use sha2::{Digest, Sha256};
 
 use crate::app_state::SharedState;
@@ -33,21 +32,6 @@ pub(super) fn require(is_first: bool, supplied: Option<&str>) -> AppResult<()> {
     } else {
         Err(AppError::bad_request(DENIED))
     }
-}
-
-/// Authoritative check made while the registration advisory transaction is
-/// live. Explicit rollback avoids returning a failed bootstrap transaction to
-/// cleanup implicitly.
-pub(super) async fn recheck(
-    transaction: DatabaseTransaction,
-    is_first: bool,
-    supplied: Option<&str>,
-) -> AppResult<DatabaseTransaction> {
-    if let Err(error) = require(is_first, supplied) {
-        transaction.rollback().await?;
-        return Err(error);
-    }
-    Ok(transaction)
 }
 
 /// Compare fixed-width hashes and original lengths without a secret-dependent

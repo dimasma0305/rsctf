@@ -120,7 +120,8 @@
       "resume": "Resume polling"
     },
     "anti_cheat": {
-      "clear": "Clear this block"
+      "allow": "Allow this match for 7 days",
+      "retry": "Retry"
     },
     "builds": {
       "view_log": "View full build log",
@@ -622,6 +623,8 @@
         "browser_fingerprint": {
           "label": "Browser Fingerprinting",
           "description": "Collect browser fingerprint during login/registration for risk analysis.",
+          "policies_ineffective": "Fingerprint uniqueness policies are configured but inactive because Browser Fingerprinting is off. Enable fingerprint collection to apply them.",
+          "policy_inactive": "Inactive while Browser Fingerprinting is off.",
           "warning": "Enabling this feature collects additional user device information. Please ensure this complies with your local privacy regulations and update your privacy policy accordingly."
         },
         "unique_ip_per_team_user": {
@@ -632,14 +635,25 @@
           "label": "Require Unique Fingerprint per Team Member",
           "description": "Block login when another teammate has logged in with the same browser fingerprint within the last 24 hours. Requires Browser Fingerprinting to be enabled."
         },
+        "unique_ip_global": {
+          "label": "Globally Unique Login IP",
+          "description": "Block login when any other user has logged in from the same IP within the last 24 hours. This can lock out unrelated users behind a shared NAT or campus IP."
+        },
+        "unique_fingerprint_global": {
+          "label": "Globally Unique Fingerprint",
+          "description": "Block login when any other user has used the same browser fingerprint within the last 24 hours. Requires Browser Fingerprinting to be enabled."
+        },
         "unique_per_team_user": {
-          "warning": "These policies block legitimate logins from shared NAT (dorm/office), shared lab machines, or CGNAT exit IPs. Use only when each teammate is expected to log in from a distinct device and network."
+          "warning": "Uniqueness policies can block legitimate logins from shared NAT (dorm/office), shared lab machines, or CGNAT exit IPs. Use them only when affected users are expected to log in from distinct devices and networks."
         },
         "title": "Account Policy",
         "use_captcha": {
           "description": "Verify on login, registration and recovery",
           "label": "Enable CAPTCHA"
         }
+      },
+      "oauth": {
+        "fingerprint_disabled": "External sign-in is unavailable while Browser Fingerprinting is enabled because OAuth redirects cannot return a validated fingerprint. Password login remains available."
       },
       "container": {
         "auto_destroy": {
@@ -1059,16 +1073,38 @@
       }
     },
     "anti_cheat": {
-      "title": "Anti-cheat blocks",
-      "subtitle": "Logins blocked by the per-team-user IP / fingerprint policy. Clear a row when a block is a false positive (e.g., teammates sharing a NAT'd public IP).",
-      "empty_title": "No blocks recorded",
-      "empty": "When the policy fires it'll show up here. Configure it under Settings → Account.",
+      "title": "Anti-cheat conflict history",
+      "subtitle": "Review login conflicts created by the per-team IP and browser-fingerprint policies. Granting an exemption keeps the event for audit.",
+      "limit_note": "Showing the 200 most recent conflict events. Rows remain as audit history after review.",
+      "probabilistic_note": "IP and browser-fingerprint matches are probabilistic signals, not proof of account sharing. Shared devices, privacy settings, proxies, and NAT can cause legitimate overlap.",
+      "empty_title": "No conflict events recorded",
+      "empty": "When an enabled policy blocks a login, its conflict event will appear here. Configure collection and enforcement under Settings → Account.",
+      "table_caption": "Anti-cheat conflict and exemption history",
+      "scroll_region": "Anti-cheat conflict history",
+      "masked_hint": "Masked correlation hint",
+      "allow_confirm": "Allow this exact account and identity match for 7 days? The conflict remains in the audit history.",
+      "load_failed_title": "Failed to load anti-cheat conflicts",
+      "load_failed": "The anti-cheat conflict history could not be loaded.",
+      "refresh_failed_title": "Refresh failed — showing the last conflict history",
+      "kind": {
+        "ip": "IP match",
+        "fingerprint": "Browser fingerprint match"
+      },
       "column": {
         "when": "When",
         "user": "Blocked user",
         "kind": "Kind",
         "conflict_with": "Conflict with",
-        "value": "Value"
+        "value": "Masked hint",
+        "exemption": "Review / exemption"
+      },
+      "exemption": {
+        "active": "Active exemption",
+        "expired": "Exemption expired",
+        "unreviewed": "Not adjudicated",
+        "until": "Until {{time}}",
+        "ended": "Ended {{time}}",
+        "already_active": "A 7-day exemption is already active for this exact match."
       }
     }
   },
@@ -1244,7 +1280,7 @@
       "deleted": "{{name}} deleted"
     },
     "anti_cheat": {
-      "cleared": "Block cleared"
+      "exemption_granted": "Exemption granted"
     },
     "repo_binding": {
       "scanned": "Scan complete",

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use rsctf_worker_protocol::ValidatedWorkloadSpec;
+use rsctf_worker_protocol::{GameKind, ValidatedWorkloadSpec};
 
 use super::{ContainerInfo, ContainerSpec};
 use crate::utils::error::{AppError, AppResult};
@@ -38,6 +38,14 @@ pub enum ContainerBackendKind {
     Docker,
     Kubernetes,
     Worker,
+}
+
+pub fn should_use_platform_proxy(
+    game_kind: GameKind,
+    backend_requires_proxy: bool,
+    platform_proxy_configured: bool,
+) -> bool {
+    game_kind == GameKind::Jeopardy && (backend_requires_proxy || platform_proxy_configured)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +99,7 @@ pub trait ContainerManager: Send + Sync {
         _spec: ValidatedWorkloadSpec,
         _operation_id: Option<String>,
         _flag: Option<String>,
+        _proxy_only: bool,
     ) -> AppResult<ContainerInfo> {
         Err(AppError::bad_request(
             "aggregate workloads require RSCTF_CONTAINER_BACKEND=worker",

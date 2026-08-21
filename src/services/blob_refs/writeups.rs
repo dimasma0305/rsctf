@@ -228,12 +228,10 @@ pub(super) async fn replace_writeup(
 /// Store and atomically replace a participation writeup under the distributed
 /// content-hash lock. The final eligibility snapshot and reference swap share
 /// the game-to-participation lock order used by hard deletion.
-pub async fn store_and_replace_writeup(
+pub(crate) async fn store_and_replace_writeup(
     pool: &PgPool,
     storage: &dyn BlobStorage,
-    game_id: i32,
-    participation_id: i32,
-    user_id: uuid::Uuid,
+    caller: crate::services::live_roster::LiveParticipationIdentity<'_>,
     name: &str,
     bytes: &[u8],
 ) -> AppResult<(StoredBlob, Option<String>)> {
@@ -241,11 +239,32 @@ pub async fn store_and_replace_writeup(
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
+    crate::utils::single_flight::acquire_transaction_advisory_lock_shared(
+        &mut transaction,
+        &crate::services::live_roster::lock_key(caller.team_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if !crate::services::live_roster::participation_caller_is_live_on(
+        &mut *transaction,
+        caller.user_id,
+        caller.expected_security_stamp,
+        caller.game_id,
+        caller.team_id,
+        caller.participation_id,
+        true,
+    )
+    .await?
+    {
+        return Err(AppError::conflict(
+            "Writeup participation is no longer eligible",
+        ));
+    }
     let old = lock_eligible_writeup_hashes(
         &mut transaction,
-        game_id,
-        participation_id,
-        user_id,
+        caller.game_id,
+        caller.participation_id,
+        caller.user_id,
         &expected_hash,
     )
     .await?;
@@ -257,7 +276,7 @@ pub async fn store_and_replace_writeup(
     }
     let deleted_hash = replace_writeup_locked(
         &mut transaction,
-        participation_id,
+        caller.participation_id,
         old,
         &blob.hash,
         name,

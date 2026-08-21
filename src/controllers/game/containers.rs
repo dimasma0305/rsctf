@@ -2,6 +2,7 @@
 use super::*;
 
 mod eligibility;
+use crate::services::live_roster::LiveParticipationIdentity;
 use eligibility::{
     load_eligible_shared_challenge, player_container_request_is_eligible, ContainerRequestMode,
 };
@@ -34,6 +35,13 @@ pub async fn create_container(
     Path((id, cid)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<ContainerInfoModel>> {
     let ctx = context_info(&st, &user, id, true).await?;
+    let caller = LiveParticipationIdentity {
+        user_id: user.id,
+        expected_security_stamp: &user.security_stamp,
+        game_id: id,
+        team_id: ctx.participation.team_id,
+        participation_id: ctx.participation.id,
+    };
 
     let challenge = load_playable_challenge(&st, id, cid).await?;
     // Division may restrict viewing (hence provisioning) this challenge: lacking
@@ -65,15 +73,18 @@ pub async fn create_container(
     if uses_shared_container(&challenge) {
         let flight_key = format!("shared-container:{}", challenge.id);
         let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
-        let distributed =
-            crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &flight_key)
-                .await?;
+        let roster_key = crate::services::live_roster::lock_key(ctx.participation.team_id);
+        let mut distributed =
+            crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
+                st.pg(),
+                &[roster_key],
+                &flight_key,
+            )
+            .await?;
         let result = async {
             if !player_container_request_is_eligible(
-                &st,
-                user.id,
-                id,
-                ctx.participation.id,
+                distributed.transaction_mut(),
+                caller,
                 cid,
                 ContainerRequestMode::Shared,
             )
@@ -86,10 +97,8 @@ pub async fn create_container(
             // this caller loses eligibility, but the stale request must not receive
             // its endpoint after the potentially slow backend operation.
             if !player_container_request_is_eligible(
-                &st,
-                user.id,
-                id,
-                ctx.participation.id,
+                distributed.transaction_mut(),
+                caller,
                 cid,
                 ContainerRequestMode::Shared,
             )
@@ -108,15 +117,18 @@ pub async fn create_container(
     // (participation, challenge) race and the cross-challenge container-cap race.
     let flight_key = format!("game-container:{}", ctx.participation.id);
     let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &flight_key)
-            .await?;
+    let roster_key = crate::services::live_roster::lock_key(ctx.participation.team_id);
+    let mut distributed =
+        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
+            st.pg(),
+            &[roster_key],
+            &flight_key,
+        )
+        .await?;
 
     if !player_container_request_is_eligible(
-        &st,
-        user.id,
-        id,
-        ctx.participation.id,
+        distributed.transaction_mut(),
+        caller,
         cid,
         ContainerRequestMode::PerTeam,
     )
@@ -224,6 +236,14 @@ pub async fn create_container(
     } else {
         selected_static_flag.clone().unwrap_or_default()
     };
+    let game_kind = crate::services::container::game_kind_for_challenge(challenge.challenge_type);
+    let platform_proxy =
+        crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
+    let is_proxy = crate::services::container::should_use_platform_proxy(
+        game_kind,
+        st.containers.requires_proxy(),
+        platform_proxy,
+    );
     let container_uuid = uuid::Uuid::new_v4();
     let operation_id = Some(format!("container:{container_uuid}"));
     let info = match workload {
@@ -234,15 +254,13 @@ pub async fn create_container(
                 participation.team_id.to_string(),
             )?;
             st.containers
-                .create_workload(spec, operation_id, Some(flag.clone()))
+                .create_workload(spec, operation_id, Some(flag.clone()), is_proxy)
                 .await?
         }
         None => {
             st.containers
                 .create(ContainerSpec {
-                    game_kind: crate::services::container::game_kind_for_challenge(
-                        challenge.challenge_type,
-                    ),
+                    game_kind,
                     image: legacy_image
                         .clone()
                         .expect("a legacy definition has an immutable launch image"),
@@ -250,6 +268,7 @@ pub async fn create_container(
                     cpu_count: challenge.cpu_count.unwrap_or(1),
                     expose_port: challenge.expose_port.unwrap_or(80),
                     publish_port: true,
+                    proxy_only: is_proxy,
                     env: vec![("RSCTF_TEAM_ID".into(), participation.team_id.to_string())],
                     flag: Some(flag.clone()),
                     ad_network: None,
@@ -262,10 +281,8 @@ pub async fn create_container(
 
     let backend_id = info.id.clone();
     match player_container_request_is_eligible(
-        &st,
-        user.id,
-        id,
-        participation.id,
+        distributed.transaction_mut(),
+        caller,
         cid,
         ContainerRequestMode::PerTeam,
     )
@@ -355,8 +372,6 @@ pub async fn create_container(
             }
         };
 
-        let is_proxy = st.containers.requires_proxy()
-            || crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
         let c = container::ActiveModel {
             id: Set(container_uuid),
             image: Set(identity),
@@ -417,10 +432,8 @@ pub async fn create_container(
     // link exists: if a team/game/challenge teardown swept before those rows became
     // visible, this request now owns enough information to revoke its own late publish.
     let stale_error = match player_container_request_is_eligible(
-        &st,
-        user.id,
-        id,
-        participation.id,
+        distributed.transaction_mut(),
+        caller,
         cid,
         ContainerRequestMode::PerTeam,
     )
@@ -523,9 +536,28 @@ pub async fn delete_container(
     }
     let flight_key = format!("game-container:{}", ctx.participation.id);
     let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &flight_key)
-            .await?;
+    let roster_key = crate::services::live_roster::lock_key(ctx.participation.team_id);
+    let mut distributed =
+        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
+            st.pg(),
+            &[roster_key],
+            &flight_key,
+        )
+        .await?;
+    if !crate::services::live_roster::participation_caller_is_live_on(
+        &mut **distributed.transaction_mut(),
+        user.id,
+        &user.security_stamp,
+        id,
+        ctx.participation.team_id,
+        ctx.participation.id,
+        true,
+    )
+    .await?
+    {
+        distributed.release().await?;
+        return Err(AppError::Forbidden);
+    }
     let instance = game_instance::Entity::find()
         .filter(game_instance::Column::ParticipationId.eq(ctx.participation.id))
         .filter(game_instance::Column::ChallengeId.eq(cid))
@@ -600,6 +632,13 @@ pub async fn extend_container(
     Path((id, cid)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<ContainerInfoModel>> {
     let ctx = context_info(&st, &user, id, true).await?;
+    let caller = LiveParticipationIdentity {
+        user_id: user.id,
+        expected_security_stamp: &user.security_stamp,
+        game_id: id,
+        team_id: ctx.participation.team_id,
+        participation_id: ctx.participation.id,
+    };
     let guard_challenge = load_playable_challenge(&st, id, cid).await?;
 
     let perm = effective_permission(&st, &ctx.participation, cid).await?;
@@ -614,10 +653,25 @@ pub async fn extend_container(
     if uses_shared_container(&guard_challenge) {
         let flight_key = format!("shared-container:{}", guard_challenge.id);
         let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
-        let distributed =
-            crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &flight_key)
-                .await?;
+        let roster_key = crate::services::live_roster::lock_key(ctx.participation.team_id);
+        let mut distributed =
+            crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
+                st.pg(),
+                &[roster_key],
+                &flight_key,
+            )
+            .await?;
         let result = async {
+            if !player_container_request_is_eligible(
+                distributed.transaction_mut(),
+                caller,
+                cid,
+                ContainerRequestMode::Shared,
+            )
+            .await?
+            {
+                return Err(AppError::Forbidden);
+            }
             // The reaper uses the same lock and may have removed or refreshed this
             // pointer while this request waited. Never extend a pre-lock snapshot.
             let current_challenge = game_challenge::Entity::find_by_id(guard_challenge.id)
@@ -661,10 +715,25 @@ pub async fn extend_container(
     }
     let flight_key = format!("game-container:{}", ctx.participation.id);
     let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
-    let distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &flight_key)
-            .await?;
+    let roster_key = crate::services::live_roster::lock_key(ctx.participation.team_id);
+    let mut distributed =
+        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
+            st.pg(),
+            &[roster_key],
+            &flight_key,
+        )
+        .await?;
     let result = async {
+        if !player_container_request_is_eligible(
+            distributed.transaction_mut(),
+            caller,
+            cid,
+            ContainerRequestMode::PerTeam,
+        )
+        .await?
+        {
+            return Err(AppError::Forbidden);
+        }
         // Creation, deletion, and the reaper all use this participation lock. Re-read
         // both links after acquisition so an expired pre-lock row is never revived.
         let instance = game_instance::Entity::find()
@@ -772,21 +841,26 @@ pub(crate) async fn get_or_create_shared_container_locked(
     // public published port so teams reach them directly.
     let ad_network = matches!(challenge.challenge_type, ChallengeType::KingOfTheHill)
         .then(crate::services::ad_vpn::services_network);
-    let backend_requires_proxy = ad_network.is_none() && st.containers.requires_proxy();
+    let game_kind = crate::services::container::game_kind_for_challenge(challenge.challenge_type);
+    let platform_proxy =
+        crate::controllers::admin::container_port_mapping(st).await == "PlatformProxy";
+    let is_proxy = crate::services::container::should_use_platform_proxy(
+        game_kind,
+        st.containers.requires_proxy(),
+        platform_proxy,
+    );
     let container_uuid = uuid::Uuid::new_v4();
     let operation_id = Some(format!("container:{container_uuid}"));
     let info = match workload {
         Some(spec) => {
             st.containers
-                .create_workload(spec, operation_id, Some(flag))
+                .create_workload(spec, operation_id, Some(flag), is_proxy)
                 .await?
         }
         None => {
             st.containers
                 .create(ContainerSpec {
-                    game_kind: crate::services::container::game_kind_for_challenge(
-                        challenge.challenge_type,
-                    ),
+                    game_kind,
                     image: legacy_image
                         .clone()
                         .expect("a legacy definition has an immutable launch image"),
@@ -794,6 +868,7 @@ pub(crate) async fn get_or_create_shared_container_locked(
                     cpu_count: challenge.cpu_count.unwrap_or(1),
                     expose_port: challenge.expose_port.unwrap_or(80),
                     publish_port: true,
+                    proxy_only: is_proxy,
                     env: Vec::new(),
                     flag: Some(flag),
                     ad_network,
@@ -824,8 +899,6 @@ pub(crate) async fn get_or_create_shared_container_locked(
     };
     let now = Utc::now();
     let stop_at = now + chrono::Duration::hours(CONTAINER_LIFETIME_HOURS);
-    let is_proxy = backend_requires_proxy
-        || crate::controllers::admin::container_port_mapping(st).await == "PlatformProxy";
     let persisted: AppResult<container::Model> = async {
         // Publish the bookkeeping row and its challenge owner atomically. The
         // destroy path discovers its lock key through this relationship, so exposing

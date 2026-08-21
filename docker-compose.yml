@@ -59,6 +59,37 @@ services:
       timeout: 3s
       retries: 10
 
+  rsctf-proxy-firewall:
+    build: .
+    restart: unless-stopped
+    user: "0:0"
+    network_mode: host
+    entrypoint:
+      - /usr/local/sbin/rsctf-proxy-firewall
+    command:
+      - run
+    environment:
+      RSCTF_DOCKER_PROXY_BIND: "${RSCTF_DOCKER_PROXY_BIND:-172.23.254.1}"
+      RSCTF_CHALLENGE_PROXY_SUBNET: "${RSCTF_CHALLENGE_PROXY_SUBNET:-172.23.254.0/24}"
+      RSCTF_CHALLENGE_PROXY_BRIDGE: "${RSCTF_CHALLENGE_PROXY_BRIDGE:-rsctf-devpp0}"
+      RSCTF_PROXY_FIREWALL_RECONCILE_SECONDS: "${RSCTF_PROXY_FIREWALL_RECONCILE_SECONDS:-2}"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    pids_limit: 32
+    healthcheck:
+      test: ["CMD", "/usr/local/sbin/rsctf-proxy-firewall", "check"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+    stop_grace_period: 10s
+    logging: *core-logging
+
   rsctf:
     build: .
     restart: unless-stopped
@@ -71,6 +102,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rsctf-proxy-firewall:
+        condition: service_healthy
     environment:
       RSCTF_ROLE: "${RSCTF_ROLE:-all}"
       RSCTF_BIND: 0.0.0.0:8080
@@ -78,18 +111,31 @@ services:
       RSCTF_REDIS_URL: redis://redis:6379
       RSCTF_DISTRIBUTED_RATELIMIT: "${RSCTF_DISTRIBUTED_RATELIMIT:-false}"
       RSCTF_AD_SUBMIT_BURST_FLAGS: "${RSCTF_AD_SUBMIT_BURST_FLAGS:-400}"
+      RSCTF_SUSPICION_RECONCILE_SECONDS: "${RSCTF_SUSPICION_RECONCILE_SECONDS:-30}"
+      RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS: "${RSCTF_SUSPICION_FINALIZE_GRACE_SECONDS:-360}"
       # Bound the per-replica gameplay pool while keeping the documented Compose
       # override effective. Provisioning reserves additional connections through
       # its own semaphore instead of letting runtime operations drain the pool.
-      RSCTF_DB_MAX_CONNECTIONS: "${RSCTF_DB_MAX_CONNECTIONS:-32}"
+      RSCTF_DB_MAX_CONNECTIONS: "${RSCTF_DB_MAX_CONNECTIONS:-33}"
       RSCTF_PROVISIONING_CONCURRENCY: "${RSCTF_PROVISIONING_CONCURRENCY:-4}"
       RSCTF_REPO_SCAN_CONCURRENCY: "${RSCTF_REPO_SCAN_CONCURRENCY:-1}"
       # Fail closed: trust no forwarded client-IP headers unless an exact proxy
       # IP or a dedicated proxy-only network is configured explicitly in .env.
       RSCTF_TRUSTED_PROXY_CIDRS: "${RSCTF_TRUSTED_PROXY_CIDRS:-}"
       RSCTF_JWT_SECRET: "${RSCTF_JWT_SECRET:?Set RSCTF_JWT_SECRET in .env to a random 32-byte value}"
+      RSCTF_IDENTITY_HASH_KEY: "${RSCTF_IDENTITY_HASH_KEY:?Set RSCTF_IDENTITY_HASH_KEY in .env to a separate random 32-byte value}"
       RSCTF_BOOTSTRAP_TOKEN: "${RSCTF_BOOTSTRAP_TOKEN:?Set RSCTF_BOOTSTRAP_TOKEN in .env to a random 32-byte value}"
+      # Event security is opt-in at the game level. Independent secrets remain
+      # empty by default, so an organizer cannot accidentally enable a partial
+      # or unverifiable policy.
+      RSCTF_EVENT_VPN_CREDENTIAL_KEY: "${RSCTF_EVENT_VPN_CREDENTIAL_KEY:-}"
+      RSCTF_EVENT_VPN_PROOF_URL: "${RSCTF_EVENT_VPN_PROOF_URL:-https://${PUBLIC_ENTRY:-tcp.1pc.tf}}"
+      RSCTF_EVENT_VPN_ALLOWED_IPS: "${RSCTF_EVENT_VPN_ALLOWED_IPS:-}"
+      RSCTF_EVENT_SENSOR_TOKEN: "${RSCTF_EVENT_SENSOR_TOKEN:-}"
+      RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN: "${RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN:-}"
       RSCTF_DOCKER_SCOPE: "${RSCTF_DOCKER_SCOPE:-}"
+      # Private host bridge used only for PlatformProxy challenge ports.
+      RSCTF_DOCKER_PROXY_BIND: "${RSCTF_DOCKER_PROXY_BIND:-172.23.254.1}"
       RSCTF_PUBLIC_URL: "https://${PUBLIC_ENTRY:-tcp.1pc.tf}"
       RSCTF_STORAGE_ROOT: /data/files
       RSCTF_STORAGE_BACKEND: "${RSCTF_STORAGE_BACKEND:-local}"
@@ -101,10 +147,9 @@ services:
       RSCTF_S3_SECRET_KEY: "${RSCTF_S3_SECRET_KEY:-}"
       RSCTF_ASSET_SIGNED_URL_TTL_SECS: "${RSCTF_ASSET_SIGNED_URL_TTL_SECS:-0}"
       RUST_LOG: info
-      # Public host that spawned challenge/A&D container ports advertise to players.
-      # Without this, services are published on 127.0.0.1 (only reachable on the
-      # server) and remote teams can't attack each other in A&D. Set it to the host
-      # that resolves to this server AND has the ephemeral Docker port range exposed.
+      # Host advertised for direct-mode Jeopardy ports. This does not control
+      # their 0.0.0.0 bind; firewall the ephemeral range unless direct mode is
+      # intended. A&D service traffic remains on the VPN-only services bridge.
       RSCTF_DOCKER_PUBLIC_ENTRY: "${PUBLIC_ENTRY:-tcp.1pc.tf}"
       # A&D-over-VPN: the public UDP endpoint teams dial for the WireGuard hub.
       # Defaults to the public entry host on port 51820.
@@ -169,6 +214,7 @@ services:
       - default
       - traefik
       - rsctf-ad
+      - challenge-proxy
     ports:
       # Local-only debug port; public access is via Traefik on https://<domain>.
       - "127.0.0.1:8080:8080"
@@ -209,6 +255,13 @@ networks:
     ipam:
       config:
         - subnet: 10.13.40.0/24
+  challenge-proxy:
+    driver_opts:
+      com.docker.network.bridge.name: "${RSCTF_CHALLENGE_PROXY_BRIDGE:-rsctf-devpp0}"
+    ipam:
+      config:
+        - subnet: "${RSCTF_CHALLENGE_PROXY_SUBNET:-172.23.254.0/24}"
+          gateway: "${RSCTF_DOCKER_PROXY_BIND:-172.23.254.1}"
 
 volumes:
   db-data:

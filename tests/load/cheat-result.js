@@ -9,8 +9,8 @@ import { isAbsolute } from "node:path";
 
 import { recordCheatSimulation } from "./cheat-retention.js";
 
-export const CHEAT_RESULT_SCHEMA_VERSION = 3;
-export const CHEAT_OFFENDER_COUNT = 6;
+export const CHEAT_RESULT_SCHEMA_VERSION = 4;
+export const CHEAT_OFFENDER_COUNT = 5;
 export const CHEAT_INTEGRITY_KEYS = Object.freeze([
   "stolen submissions",
   "distinct stolen actors and answers",
@@ -18,14 +18,17 @@ export const CHEAT_INTEGRITY_KEYS = Object.freeze([
   "distinct brute-force answers",
   "honeypot row count",
   "honeypot bait coverage",
+  "honeypot attribution isolation",
+  "honeypot outbox absent",
+  "honeypot suspicion absent",
+  "live exact offender evidence",
+  "reconciled exact offender evidence",
+  "configured scoring contract",
   "current stolen-flag evidence",
   "current high-wrong-rate evidence",
   "current automated-pattern evidence",
-  "current honeypot-hit evidence",
-  "current honeypot-chain evidence",
   "duplicate suspicion evidence",
   "clean-control actionable suspicion",
-  "suspicion score matches evidence",
 ]);
 
 const TOP_LEVEL_KEYS = new Set([
@@ -85,7 +88,7 @@ export function sanitizeCheatResult(value) {
     throw new Error(`the anti-cheat result contains unexpected fields: ${unknown.join(", ")}`);
   }
   if (value.schemaVersion !== CHEAT_RESULT_SCHEMA_VERSION || value.completed !== true) {
-    throw new Error("the anti-cheat result is not a completed schema-v3 artifact");
+    throw new Error("the anti-cheat result is not a completed schema-v4 artifact; older artifacts are unsupported");
   }
 
   const offenderPids = exactIntegerSet(value.offenderPids, "offender participations");

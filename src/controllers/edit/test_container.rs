@@ -6,7 +6,33 @@ const MAX_ARCHIVE_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARCHIVE_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 200;
 const MAX_ARCHIVE_PATH_COMPONENTS: usize = 32;
-static CHALLENGE_IMPORT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+const MAX_PENDING_CHALLENGES_PER_USER_GAME: i64 = 10;
+static TRUSTED_CHALLENGE_IMPORT_SLOTS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(2);
+static PUBLIC_CHALLENGE_SUBMISSION_SLOTS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(1);
+
+const PENDING_CHALLENGE_COUNT_SQL: &str = r#"SELECT COUNT(*)
+      FROM "GameChallenges"
+     WHERE game_id = $1
+       AND submitted_by_user_id = $2
+       AND review_status = $3"#;
+
+fn validate_import_batch(
+    policy: crate::services::git_sync::ImportPolicy,
+    manifest_count: usize,
+) -> AppResult<()> {
+    if matches!(
+        policy,
+        crate::services::git_sync::ImportPolicy::PendingReview { .. }
+    ) && manifest_count != 1
+    {
+        return Err(AppError::bad_request(
+            "A user submission must contain exactly one challenge manifest.",
+        ));
+    }
+    Ok(())
+}
 
 /// Spawn and persist the challenge's throwaway test container.
 pub async fn create_test_container(
@@ -91,20 +117,26 @@ pub async fn create_test_container(
         selected_static_flag.clone()
     };
 
+    let game_kind = crate::services::container::game_kind_for_challenge(challenge.challenge_type);
+    let platform_proxy =
+        crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
+    let is_proxy = crate::services::container::should_use_platform_proxy(
+        game_kind,
+        st.containers.requires_proxy(),
+        platform_proxy,
+    );
     let container_uuid = Uuid::new_v4();
     let operation_id = Some(format!("container:{container_uuid}"));
     let info = match workload {
         Some(spec) => {
             st.containers
-                .create_workload(spec, operation_id, flag.clone())
+                .create_workload(spec, operation_id, flag.clone(), is_proxy)
                 .await?
         }
         None => {
             st.containers
                 .create(ContainerSpec {
-                    game_kind: crate::services::container::game_kind_for_challenge(
-                        challenge.challenge_type,
-                    ),
+                    game_kind,
                     image: legacy_image
                         .clone()
                         .expect("a legacy definition has an immutable launch image"),
@@ -112,6 +144,7 @@ pub async fn create_test_container(
                     cpu_count: challenge.cpu_count.unwrap_or(1),
                     expose_port: challenge.expose_port.unwrap_or(80),
                     publish_port: true,
+                    proxy_only: is_proxy,
                     env: Vec::new(),
                     flag: flag.clone(),
                     ad_network: None,
@@ -157,9 +190,6 @@ pub async fn create_test_container(
     };
     let now = Utc::now();
     let stop_at = now + chrono::Duration::hours(2);
-    // PlatformProxy returns the wsrx proxy guid; Default returns host:port.
-    let is_proxy = st.containers.requires_proxy()
-        || crate::controllers::admin::container_port_mapping(&st).await == "PlatformProxy";
     let persisted: AppResult<container::Model> = async {
         let txn = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
         let c = container::ActiveModel {
@@ -310,7 +340,7 @@ async fn import_from_dir(
     st: &SharedState,
     game_id: i32,
     dir: &std::path::Path,
-    auto_approve: bool,
+    policy: crate::services::git_sync::ImportPolicy,
 ) -> ChallengeImportResult {
     let mut result = ChallengeImportResult::default();
     let manifests = match crate::services::git_sync::discover_challenges(dir).await {
@@ -321,6 +351,17 @@ async fn import_from_dir(
         }
     };
     if manifests.is_empty() {
+        return result;
+    }
+    let pending_submitter = match policy {
+        crate::services::git_sync::ImportPolicy::PendingReview {
+            submitted_by_user_id,
+        } => Some(submitted_by_user_id),
+        crate::services::git_sync::ImportPolicy::Trusted => None,
+    };
+    if let Err(error) = validate_import_batch(policy, manifests.len()) {
+        result.failed = manifests.len() as i32;
+        result.messages.push(error.to_string());
         return result;
     }
     let mut configuration_lock =
@@ -347,11 +388,31 @@ async fn import_from_dir(
             return result;
         }
     }
-    let policy = if auto_approve {
-        crate::services::git_sync::ImportPolicy::Trusted
-    } else {
-        crate::services::git_sync::ImportPolicy::PendingReview
-    };
+    if let Some(submitted_by_user_id) = pending_submitter {
+        let pending_count = sqlx::query_scalar::<_, i64>(PENDING_CHALLENGE_COUNT_SQL)
+            .bind(game_id)
+            .bind(submitted_by_user_id)
+            .bind(ChallengeReviewStatus::Pending as i16)
+            .fetch_one(&mut **configuration_lock.transaction_mut())
+            .await;
+        match pending_count {
+            Ok(count) if count < MAX_PENDING_CHALLENGES_PER_USER_GAME => {}
+            Ok(_) => {
+                result.failed = manifests.len() as i32;
+                result.messages.push(format!(
+                    "At most {MAX_PENDING_CHALLENGES_PER_USER_GAME} pending challenges may be submitted per user and game."
+                ));
+                let _ = configuration_lock.release().await;
+                return result;
+            }
+            Err(error) => {
+                result.failed = manifests.len() as i32;
+                result.messages.push(error.to_string());
+                let _ = configuration_lock.release().await;
+                return result;
+            }
+        }
+    }
     let mut build_jobs = Vec::new();
     let mut archive_jobs = Vec::new();
     for manifest in manifests {
@@ -752,7 +813,7 @@ async fn import_archive_bytes(
     st: &SharedState,
     game_id: i32,
     bytes: &[u8],
-    auto_approve: bool,
+    policy: crate::services::git_sync::ImportPolicy,
 ) -> AppResult<ChallengeImportResult> {
     let tmp = std::env::temp_dir().join(format!("rsctf-import-{}", Uuid::new_v4()));
     // Create only the unpredictable leaf and fail on any pre-existing entry;
@@ -768,7 +829,7 @@ async fn import_archive_bytes(
         tokio::task::spawn_blocking(move || extract_zip(&archive, &extract_dest))
             .await
             .map_err(|e| AppError::internal(format!("ZIP extraction task failed: {e}")))??;
-        Ok::<_, AppError>(import_from_dir(st, game_id, &tmp, auto_approve).await)
+        Ok::<_, AppError>(import_from_dir(st, game_id, &tmp, policy).await)
     }
     .await;
     let _ = tokio::fs::remove_dir_all(&tmp).await;
@@ -819,7 +880,7 @@ fn resolve_subpath(
 /// discovered `challenge.yml` is imported under the game.
 pub async fn submit_challenge(
     State(st): State<SharedState>,
-    _user: CurrentUser,
+    user: CurrentUser,
     Path(id): Path<i32>,
     mut multipart: Multipart,
 ) -> AppResult<RequestResponse<ChallengeImportResult>> {
@@ -837,11 +898,23 @@ pub async fn submit_challenge(
             title: "User submissions are disabled for this game.".into(),
         });
     }
-    let _permit = CHALLENGE_IMPORT_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Challenge import capacity is busy; retry shortly"))?;
+    // Buffer and validate the bounded upload before occupying the scarce import
+    // worker; a slow client must not monopolize submission capacity.
     let bytes = read_first_archive_field(&mut multipart).await?;
-    let result = import_archive_bytes(&st, id, &bytes, false).await?;
+    let _permit = PUBLIC_CHALLENGE_SUBMISSION_SLOTS
+        .try_acquire()
+        .map_err(|_| {
+            AppError::unavailable("Challenge submission capacity is busy; retry shortly")
+        })?;
+    let result = import_archive_bytes(
+        &st,
+        id,
+        &bytes,
+        crate::services::git_sync::ImportPolicy::PendingReview {
+            submitted_by_user_id: user.id,
+        },
+    )
+    .await?;
     Ok(RequestResponse::ok(result))
 }
 
@@ -854,11 +927,17 @@ pub async fn import_challenge(
     mut multipart: Multipart,
 ) -> AppResult<RequestResponse<ChallengeImportResult>> {
     manager_or_admin(&st, &user, id).await?;
-    let _permit = CHALLENGE_IMPORT_SLOTS
+    let _permit = TRUSTED_CHALLENGE_IMPORT_SLOTS
         .try_acquire()
         .map_err(|_| AppError::unavailable("Challenge import capacity is busy; retry shortly"))?;
     let bytes = read_first_archive_field(&mut multipart).await?;
-    let result = import_archive_bytes(&st, id, &bytes, true).await?;
+    let result = import_archive_bytes(
+        &st,
+        id,
+        &bytes,
+        crate::services::git_sync::ImportPolicy::Trusted,
+    )
+    .await?;
     Ok(RequestResponse::ok(result))
 }
 
@@ -897,7 +976,15 @@ pub async fn import_from_github(
             .await
             .map_err(|e| AppError::bad_request(format!("git clone failed: {e}")))?;
         let scan_root = resolve_subpath(&tmp, subpath.as_deref())?;
-        Ok::<_, AppError>(import_from_dir(&st, id, &scan_root, true).await)
+        Ok::<_, AppError>(
+            import_from_dir(
+                &st,
+                id,
+                &scan_root,
+                crate::services::git_sync::ImportPolicy::Trusted,
+            )
+            .await,
+        )
     }
     .await;
     let _ = tokio::fs::remove_dir_all(&tmp).await;

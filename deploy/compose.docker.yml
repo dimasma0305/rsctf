@@ -3,9 +3,47 @@
 # Security note: access to the Docker socket is effectively host-root access.
 # Enable this file only on a dedicated, trusted rsctf host.
 services:
+  rsctf-proxy-firewall:
+    image: ${RSCTF_IMAGE:?Set RSCTF_IMAGE to an immutable ghcr.io/dimasma0305/rsctf@sha256 digest}
+    restart: unless-stopped
+    user: "0:0"
+    network_mode: host
+    entrypoint:
+      - /usr/local/sbin/rsctf-proxy-firewall
+    command:
+      - run
+    environment:
+      RSCTF_DOCKER_PROXY_BIND: ${RSCTF_DOCKER_PROXY_BIND:-172.31.253.1}
+      RSCTF_CHALLENGE_PROXY_SUBNET: ${RSCTF_CHALLENGE_PROXY_SUBNET:-172.31.253.0/24}
+      RSCTF_CHALLENGE_PROXY_BRIDGE: ${RSCTF_CHALLENGE_PROXY_BRIDGE:-rsctf-proxy0}
+      RSCTF_PROXY_FIREWALL_RECONCILE_SECONDS: ${RSCTF_PROXY_FIREWALL_RECONCILE_SECONDS:-2}
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    pids_limit: 32
+    healthcheck:
+      test: ["CMD", "/usr/local/sbin/rsctf-proxy-firewall", "check"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: ${RSCTF_DOCKER_LOG_MAX_SIZE:-20m}
+        max-file: "${RSCTF_DOCKER_LOG_MAX_FILES:-5}"
+
   rsctf:
     # Access to the root-owned daemon socket is deliberate and root-equivalent.
     user: "0:0"
+    depends_on:
+      rsctf-proxy-firewall:
+        condition: service_healthy
     environment:
       RSCTF_CONTAINER_BACKEND: docker
       # The role overlay scales only on this Compose host, so every replica

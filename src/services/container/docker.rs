@@ -21,6 +21,21 @@ pub(super) const RESTRICTED_IMAGE_PROFILE_LABEL: &str = "org.rsctf.security-prof
 pub(super) const RESTRICTED_IMAGE_PROFILE: &str = "restricted-v1";
 pub(super) const RESTRICTED_TMPFS_PATH: &str = "/tmp";
 pub(super) const RESTRICTED_TMPFS_OPTIONS: &str = "rw,nosuid,nodev,noexec,size=268435456,mode=1777";
+const COMPETITIVE_EGRESS_ERROR: &str =
+    "Docker does not safely support allowEgress=true for A&D or KotH workloads; \
+     set allowEgress=false or use the Kubernetes backend with per-workload NetworkPolicy isolation";
+
+pub(super) fn validate_docker_container_spec(spec: &ContainerSpec) -> AppResult<()> {
+    if spec.allow_egress
+        && matches!(
+            spec.game_kind,
+            GameKind::AttackDefense | GameKind::KingOfTheHill
+        )
+    {
+        return Err(AppError::bad_request(COMPETITIVE_EGRESS_ERROR));
+    }
+    super::validate_container_spec(spec)
+}
 
 pub(super) fn image_requests_restricted_profile(image: &ImageInspect) -> bool {
     image
@@ -91,6 +106,8 @@ struct DockerLaunchSpec<'a> {
     expose_port: i32,
     #[serde(skip_serializing_if = "is_true")]
     publish_port: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    proxy_only: bool,
     env: &'a [(String, String)],
     flag: Option<&'a str>,
     ad_network: Option<&'a str>,
@@ -99,6 +116,77 @@ struct DockerLaunchSpec<'a> {
 
 fn is_true(value: &bool) -> bool {
     *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+pub(super) const PROXY_BIND_REQUIRED: &str =
+    "PlatformProxy requires RSCTF_DOCKER_PROXY_BIND to be a private IPv4 address reachable by rsctf";
+
+pub(super) fn parse_proxy_bind(value: &str) -> AppResult<std::net::Ipv4Addr> {
+    let ip = value
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| AppError::bad_request("RSCTF_DOCKER_PROXY_BIND must be an IPv4 address"))?;
+    let octets = ip.octets();
+    let is_rfc1918 = octets[0] == 10
+        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 168);
+    if !is_rfc1918 {
+        return Err(AppError::bad_request(
+            "RSCTF_DOCKER_PROXY_BIND must be an RFC1918 IPv4 address reachable by rsctf",
+        ));
+    }
+    Ok(ip)
+}
+
+pub(super) fn configured_proxy_bind() -> AppResult<Option<std::net::Ipv4Addr>> {
+    std::env::var("RSCTF_DOCKER_PROXY_BIND")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| parse_proxy_bind(value.trim()))
+        .transpose()
+}
+
+pub(super) fn published_bind_ip(
+    spec: &ContainerSpec,
+    proxy_bind: Option<std::net::Ipv4Addr>,
+) -> AppResult<Option<String>> {
+    if spec.ad_network.is_some() || !spec.publish_port {
+        return Ok(None);
+    }
+    if spec.proxy_only {
+        return proxy_bind
+            .map(|ip| Some(ip.to_string()))
+            .ok_or_else(|| AppError::unavailable(PROXY_BIND_REQUIRED));
+    }
+    Ok(Some("0.0.0.0".to_string()))
+}
+
+pub(super) fn advertised_endpoint_ip(
+    spec: &ContainerSpec,
+    public_entry: Option<&str>,
+    inspected_bind: Option<&str>,
+    proxy_bind: Option<std::net::Ipv4Addr>,
+) -> AppResult<String> {
+    if spec.proxy_only {
+        let expected = proxy_bind.ok_or_else(|| AppError::unavailable(PROXY_BIND_REQUIRED))?;
+        if inspected_bind.and_then(|value| value.parse().ok()) != Some(expected) {
+            return Err(AppError::unavailable(
+                "Docker did not publish the PlatformProxy port on the configured private interface",
+            ));
+        }
+        return Ok(expected.to_string());
+    }
+    Ok(public_entry
+        .map(str::to_string)
+        .or_else(|| {
+            inspected_bind
+                .filter(|host| !host.is_empty() && *host != "0.0.0.0")
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "127.0.0.1".to_string()))
 }
 
 /// A no-publish local workload is reachable only through authenticated exec.
@@ -113,16 +201,22 @@ pub(super) fn docker_network_mode(spec: &ContainerSpec) -> Option<String> {
 /// do not affect whether a crash retry represents the same workload.
 pub(super) fn launch_spec_fingerprint(spec: &ContainerSpec) -> String {
     let canonical = DockerLaunchSpec {
-        // Preserve the exact v1 fingerprint for every pre-existing workload.
-        // Only the new no-publish shape needs the v2 identity, which keeps a
-        // rolling deploy able to adopt an older replica's in-flight create.
-        revision: if spec.publish_port { 1 } else { 2 },
+        // Preserve exact v1 direct-publication and v2 no-publish identities;
+        // proxy-only publication gets v3 so retries cannot adopt a public bind.
+        revision: if spec.proxy_only {
+            3
+        } else if spec.publish_port {
+            1
+        } else {
+            2
+        },
         game_kind: spec.game_kind,
         image: &spec.image,
         memory_limit: spec.memory_limit,
         cpu_count: spec.cpu_count,
         expose_port: spec.expose_port,
         publish_port: spec.publish_port,
+        proxy_only: spec.proxy_only,
         env: &spec.env,
         flag: spec.flag.as_deref(),
         ad_network: spec.ad_network.as_deref(),

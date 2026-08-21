@@ -142,24 +142,14 @@ async fn assign_team(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     target: Option<TeamTarget>,
     user_id: Uuid,
+    already_member: bool,
 ) -> AppResult<Option<i32>> {
     let Some(target) = target else {
         return Ok(None);
     };
     match target {
-        TeamTarget::Existing { id, captain_id } => {
-            let already_member: bool = captain_id == user_id
-                || sqlx::query_scalar(
-                    r#"SELECT EXISTS(SELECT 1 FROM "TeamMembers"
-                                      WHERE team_id = $1 AND user_id = $2)"#,
-                )
-                .bind(id)
-                .bind(user_id)
-                .fetch_one(&mut **transaction)
-                .await
-                .map_err(database_error)?;
+        TeamTarget::Existing { id, .. } => {
             if !already_member {
-                crate::controllers::team::ensure_roster_change_allowed(transaction, id).await?;
                 let member_count: i64 = sqlx::query_scalar(
                     r#"SELECT COUNT(*)::bigint FROM (
                            SELECT captain_id AS user_id FROM "Teams" WHERE id = $1
@@ -219,6 +209,33 @@ async fn assign_team(
     }
 }
 
+/// Determine whether the prospective account would add a roster member and,
+/// if so, acquire every game fence before the account row is locked. Public
+/// team acceptance takes the same roster -> game -> account order.
+async fn fence_team_assignment(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    target: &Option<TeamTarget>,
+    user_id: Uuid,
+) -> AppResult<bool> {
+    let Some(TeamTarget::Existing { id, captain_id }) = target else {
+        return Ok(false);
+    };
+    let already_member = *captain_id == user_id
+        || sqlx::query_scalar(
+            r#"SELECT EXISTS(SELECT 1 FROM "TeamMembers"
+                              WHERE team_id = $1 AND user_id = $2)"#,
+        )
+        .bind(id)
+        .bind(user_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    if !already_member {
+        crate::controllers::team::ensure_roster_change_allowed(transaction, *id).await?;
+    }
+    Ok(already_member)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn insert_user(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -275,8 +292,33 @@ pub(super) async fn provision_explicit_user(
     cached_team_id: Option<i32>,
 ) -> AppResult<ProvisionedUser> {
     let mut transaction = registration_transaction(pool).await?;
-    // Team/roster lock precedes the account row lock, matching ordinary joins.
+    crate::services::anti_cheat::mark_identity_neutral_insert(&mut transaction).await?;
+    let prospective_matches: Vec<(Uuid, i16)> = sqlx::query_as(
+        r#"SELECT id, role FROM "AspNetUsers"
+            WHERE normalized_user_name = $1 OR normalized_email = $2
+            ORDER BY id"#,
+    )
+    .bind(write.normalized_user_name)
+    .bind(write.normalized_email)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if prospective_matches.len() > 1 {
+        return Err(AppError::conflict(
+            "Username and email belong to different users",
+        ));
+    }
+    let prospective_id = prospective_matches
+        .first()
+        .map(|row| row.0)
+        .unwrap_or_else(Uuid::now_v7);
+
+    // Roster and game fences precede the account row lock. The registration
+    // lock makes the pre-read stable against every supported identity writer;
+    // the locked repeat below remains the authoritative safety check.
     let team_target = prepare_team_target(&mut transaction, team_name, cached_team_id).await?;
+    let already_member =
+        fence_team_assignment(&mut transaction, &team_target, prospective_id).await?;
     let matches: Vec<(Uuid, i16)> = sqlx::query_as(
         r#"SELECT id, role FROM "AspNetUsers"
             WHERE normalized_user_name = $1 OR normalized_email = $2
@@ -288,6 +330,11 @@ pub(super) async fn provision_explicit_user(
     .fetch_all(&mut *transaction)
     .await
     .map_err(database_error)?;
+    if matches != prospective_matches {
+        return Err(AppError::conflict(
+            "Account identity changed during batch import; retry",
+        ));
+    }
     if matches.len() > 1 {
         return Err(AppError::conflict(
             "Username and email belong to different users",
@@ -331,7 +378,7 @@ pub(super) async fn provision_explicit_user(
             (id, false)
         }
         None => {
-            let id = Uuid::now_v7();
+            let id = prospective_id;
             insert_user(
                 &mut transaction,
                 id,
@@ -351,7 +398,7 @@ pub(super) async fn provision_explicit_user(
             (id, true)
         }
     };
-    let team_id = assign_team(&mut transaction, team_target, id).await?;
+    let team_id = assign_team(&mut transaction, team_target, id, already_member).await?;
     transaction.commit().await.map_err(database_error)?;
     Ok(ProvisionedUser {
         id,
@@ -395,7 +442,29 @@ pub(super) async fn provision_import_user(
     cached_team_id: Option<i32>,
 ) -> AppResult<ImportProvision> {
     let mut transaction = registration_transaction(pool).await?;
+    crate::services::anti_cheat::mark_identity_neutral_insert(&mut transaction).await?;
+    let prospective_matches: Vec<(Uuid, i16, Option<String>)> = sqlx::query_as(
+        r#"SELECT id, role, user_name FROM "AspNetUsers"
+            WHERE normalized_email = $1
+            ORDER BY id"#,
+    )
+    .bind(write.normalized_email)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if prospective_matches.len() > 1 {
+        transaction.rollback().await.map_err(database_error)?;
+        return Ok(ImportProvision::Skipped(
+            "email belongs to multiple existing accounts",
+        ));
+    }
+    let prospective_id = prospective_matches
+        .first()
+        .map(|row| row.0)
+        .unwrap_or_else(Uuid::now_v7);
     let team_target = prepare_team_target(&mut transaction, team_name, cached_team_id).await?;
+    let already_member =
+        fence_team_assignment(&mut transaction, &team_target, prospective_id).await?;
     let matches: Vec<(Uuid, i16, Option<String>)> = sqlx::query_as(
         r#"SELECT id, role, user_name FROM "AspNetUsers"
             WHERE normalized_email = $1
@@ -406,6 +475,11 @@ pub(super) async fn provision_import_user(
     .fetch_all(&mut *transaction)
     .await
     .map_err(database_error)?;
+    if matches != prospective_matches {
+        return Err(AppError::conflict(
+            "Account identity changed during batch import; retry",
+        ));
+    }
     if matches.len() > 1 {
         transaction.rollback().await.map_err(database_error)?;
         return Ok(ImportProvision::Skipped(
@@ -443,7 +517,7 @@ pub(super) async fn provision_import_user(
             (id, user_name.unwrap_or_default(), false)
         }
         None => {
-            let id = Uuid::now_v7();
+            let id = prospective_id;
             let user_name = unique_user_name(&mut transaction, write.base_user_name).await?;
             insert_user(
                 &mut transaction,
@@ -464,7 +538,7 @@ pub(super) async fn provision_import_user(
             (id, user_name, true)
         }
     };
-    let team_id = assign_team(&mut transaction, team_target, id).await?;
+    let team_id = assign_team(&mut transaction, team_target, id, already_member).await?;
     // Publish the plaintext before the identity transaction commits, while the
     // global registration lock and this user's row lock still serialize every
     // competing import/email mutation. Delivery revalidates id + email + stamp,
@@ -496,6 +570,9 @@ pub(super) async fn provision_import_user(
     }))
 }
 
+#[cfg(test)]
+#[path = "users_bulk_lock_order_tests.rs"]
+mod lock_order_tests;
 #[cfg(test)]
 #[path = "users_bulk_tests.rs"]
 mod tests;

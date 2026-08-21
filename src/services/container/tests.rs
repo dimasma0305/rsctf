@@ -6,17 +6,18 @@ use bollard::models::{
 };
 
 use super::docker::{
-    docker_liveness, docker_network_mode, failed_start_action, image_requests_restricted_profile,
-    launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
-    restricted_tmpfs_mounts, stamp_restricted_profile, verify_container_scope, FailedStartAction,
-    LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
+    advertised_endpoint_ip, docker_liveness, docker_network_mode, failed_start_action,
+    image_requests_restricted_profile, launch_spec_fingerprint, launch_spec_matches,
+    parse_proxy_bind, published_bind_ip, restricted_profile_matches, restricted_tmpfs_mounts,
+    stamp_restricted_profile, validate_docker_container_spec, verify_container_scope,
+    FailedStartAction, LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
     RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
 };
 use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
     docker_workload_scope, game_kind_for_challenge, labels_match_scope, managed_container_filters,
-    network_scope_matches, scoped_managed_labels, scoped_operation_id, validate_container_spec,
-    validate_docker_container_spec, ContainerLiveness, ContainerManager, ContainerSpec,
+    network_scope_matches, scoped_managed_labels, scoped_operation_id, should_use_platform_proxy,
+    validate_container_spec, ContainerLiveness, ContainerManager, ContainerSpec,
     DockerContainerManager,
 };
 
@@ -154,6 +155,7 @@ fn fingerprint_spec() -> ContainerSpec {
         cpu_count: 1,
         expose_port: 8080,
         publish_port: true,
+        proxy_only: false,
         env: vec![("TEAM".to_string(), "7".to_string())],
         flag: Some("flag-secret".to_string()),
         ad_network: Some("rsctf-ad".to_string()),
@@ -284,6 +286,9 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
     changed = spec.clone();
     changed.publish_port = false;
     assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.proxy_only = true;
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
 
     let mut labels = scoped_managed_labels("installation-a");
     labels.insert(LAUNCH_SPEC_LABEL.to_string(), expected.clone());
@@ -360,6 +365,97 @@ fn publish_control_preserves_legacy_identity_and_isolates_inspectors() {
         None,
         "an explicit internal network remains the caller's isolation boundary"
     );
+}
+
+#[test]
+fn docker_publication_keeps_proxy_private_and_direct_mode_public() {
+    let proxy_ip = parse_proxy_bind("172.31.253.1").unwrap();
+    assert!(parse_proxy_bind("127.0.0.1").is_err());
+    assert!(parse_proxy_bind("0.0.0.0").is_err());
+    assert!(parse_proxy_bind("198.51.100.10").is_err());
+
+    let mut spec = fingerprint_spec();
+    spec.game_kind = rsctf_worker_protocol::GameKind::Jeopardy;
+    spec.ad_network = None;
+    assert_eq!(
+        published_bind_ip(&spec, Some(proxy_ip)).unwrap().as_deref(),
+        Some("0.0.0.0"),
+        "direct Jeopardy remains externally published"
+    );
+
+    spec.proxy_only = true;
+    assert!(published_bind_ip(&spec, None).is_err());
+    assert_eq!(
+        published_bind_ip(&spec, Some(proxy_ip)).unwrap().as_deref(),
+        Some("172.31.253.1")
+    );
+    assert_eq!(
+        advertised_endpoint_ip(
+            &spec,
+            Some("public.example"),
+            Some("172.31.253.1"),
+            Some(proxy_ip),
+        )
+        .unwrap(),
+        "172.31.253.1",
+        "the proxy target must never reuse the public entry"
+    );
+    assert!(advertised_endpoint_ip(
+        &spec,
+        Some("public.example"),
+        Some("0.0.0.0"),
+        Some(proxy_ip),
+    )
+    .is_err());
+
+    let ad = ContainerSpec::ad_service(
+        "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .into(),
+        256,
+        1,
+        8080,
+        7,
+        false,
+        "flag".into(),
+    );
+    assert_eq!(published_bind_ip(&ad, Some(proxy_ip)).unwrap(), None);
+}
+
+#[test]
+fn proxy_only_spec_is_restricted_to_published_jeopardy() {
+    let mut spec = fingerprint_spec();
+    spec.proxy_only = true;
+    assert!(validate_container_spec(&spec).is_err());
+    spec.game_kind = rsctf_worker_protocol::GameKind::Jeopardy;
+    spec.ad_network = None;
+    assert!(validate_container_spec(&spec).is_ok());
+    spec.publish_port = false;
+    assert!(validate_container_spec(&spec).is_err());
+}
+
+#[test]
+fn platform_proxy_selection_never_changes_competitive_direct_modes() {
+    for game_kind in [
+        rsctf_worker_protocol::GameKind::AttackDefense,
+        rsctf_worker_protocol::GameKind::KingOfTheHill,
+    ] {
+        assert!(!should_use_platform_proxy(game_kind, true, true));
+    }
+    assert!(should_use_platform_proxy(
+        rsctf_worker_protocol::GameKind::Jeopardy,
+        false,
+        true,
+    ));
+    assert!(should_use_platform_proxy(
+        rsctf_worker_protocol::GameKind::Jeopardy,
+        true,
+        false,
+    ));
+    assert!(!should_use_platform_proxy(
+        rsctf_worker_protocol::GameKind::Jeopardy,
+        false,
+        false,
+    ));
 }
 
 #[test]

@@ -34,7 +34,12 @@ make_fixture() {
   install -m 0644 \
     "$REPOSITORY_ROOT/deploy/postgres/init/00-pg-stat-statements.sql" \
     "$package/rsctf/deploy/postgres/init/"
-  install -m 0755 "$REPOSITORY_ROOT/scripts/install.sh" "$package/rsctf/scripts/install.sh"
+  install -m 0755 \
+    "$REPOSITORY_ROOT/scripts/install.sh" \
+    "$REPOSITORY_ROOT/scripts/compose-maintenance-cutover.sh" \
+    "$REPOSITORY_ROOT/scripts/kubernetes-maintenance-cutover.sh" \
+    "$REPOSITORY_ROOT/scripts/docker-proxy-firewall.sh" \
+    "$package/rsctf/scripts/"
   printf 'RSCTF_RELEASE_VERSION=v1.2.3\nRSCTF_RELEASE_IMAGE=%s\n' "$PINNED_IMAGE" \
     > "$package/rsctf/deploy/release.env"
   tar -C "$package" -czf "$fixture/rsctf-deployment-bundle.tar.gz" rsctf
@@ -72,6 +77,11 @@ local_checkout="$TEMP_DIRECTORY/local-checkout"
 mkdir -p "$local_checkout/scripts"
 cp -a "$REPOSITORY_ROOT/deploy" "$local_checkout/deploy"
 install -m 0755 "$REPOSITORY_ROOT/scripts/install.sh" "$local_checkout/scripts/install.sh"
+install -m 0755 \
+  "$REPOSITORY_ROOT/scripts/compose-maintenance-cutover.sh" \
+  "$REPOSITORY_ROOT/scripts/kubernetes-maintenance-cutover.sh" \
+  "$REPOSITORY_ROOT/scripts/docker-proxy-firewall.sh" \
+  "$local_checkout/scripts/"
 : > "$TEMP_DIRECTORY/local-curl.log"
 env \
   PATH="$TEST_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
@@ -90,6 +100,14 @@ test ! -s "$TEMP_DIRECTORY/local-curl.log"
 local_token="$(sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' "$local_checkout/deploy/.env")"
 test "${#local_token}" -eq 64
 ! grep -Fq -- "$local_token" "$TEMP_DIRECTORY/local.out"
+local_identity_key="$(sed -n 's/^RSCTF_IDENTITY_HASH_KEY=//p' "$local_checkout/deploy/.env")"
+local_jwt="$(sed -n 's/^RSCTF_JWT_SECRET=//p' "$local_checkout/deploy/.env")"
+test "${#local_identity_key}" -eq 64
+test "$local_identity_key" != "$local_jwt"
+! grep -Fq -- "$local_identity_key" "$TEMP_DIRECTORY/local.out"
+grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$local_checkout/deploy/.env"
+grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$local_checkout/deploy/.env"
 grep -Fq 'The first-administrator setup token is stored only in' \
   "$TEMP_DIRECTORY/local.out"
 
@@ -105,6 +123,22 @@ test "$(stat -c %a "$target/deploy/.env")" = 600
 token="$(sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p' "$target/deploy/.env")"
 test "${#token}" -eq 64
 ! grep -Fq -- "$token" "$output"
+identity_key="$(sed -n 's/^RSCTF_IDENTITY_HASH_KEY=//p' "$target/deploy/.env")"
+jwt="$(sed -n 's/^RSCTF_JWT_SECRET=//p' "$target/deploy/.env")"
+test "${#identity_key}" -eq 64
+test "$identity_key" != "$jwt"
+! grep -Fq -- "$identity_key" "$output"
+grep -Fxq 'RSCTF_CHALLENGE_PROXY_SUBNET=172.31.253.0/24' "$target/deploy/.env"
+grep -Fxq 'RSCTF_DOCKER_PROXY_BIND=172.31.253.1' "$target/deploy/.env"
+grep -Fxq 'RSCTF_CHALLENGE_PROXY_BRIDGE=rsctf-proxy0' "$target/deploy/.env"
+for helper in \
+  compose-maintenance-cutover.sh \
+  kubernetes-maintenance-cutover.sh \
+  docker-proxy-firewall.sh; do
+  test -x "$target/scripts/$helper"
+done
+grep -Fq '../scripts/compose-maintenance-cutover.sh' "$target/deploy/README.md"
+! grep -Fq 'docker compose pull && docker compose up -d' "$target/deploy/README.md"
 grep -Fq 'The first-administrator setup token is stored only in' "$output"
 grep -Fq "sed -n 's/^RSCTF_BOOTSTRAP_TOKEN=//p'" "$output"
 grep -Fq 'attestation verification was explicitly skipped' "$output"

@@ -9,6 +9,23 @@ use sqlx::{ConnectOptions as _, Connection as _};
 use crate::models::internal::configs::RuntimeRole;
 
 const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
+const POSTGRES_APPLICATION_NAME_MAX_BYTES: usize = 63;
+// The singleton suspicion reconciler retains one advisory-lock transaction
+// while its closure barrier or detector uses one nested checkout.
+const SUSPICION_RECONCILER_CONNECTIONS: usize = 2;
+
+fn process_application_name(role: RuntimeRole) -> String {
+    let prefix = format!("rsctf:{role}:");
+    let suffix = format!(":{}", uuid::Uuid::new_v4().simple());
+    let available_version_bytes = POSTGRES_APPLICATION_NAME_MAX_BYTES
+        .saturating_sub(prefix.len())
+        .saturating_sub(suffix.len());
+    let version = env!("CARGO_PKG_VERSION")
+        .chars()
+        .take(available_version_bytes)
+        .collect::<String>();
+    format!("{prefix}{version}{suffix}")
+}
 
 fn pool_options(max_connections: u32) -> PgPoolOptions {
     PgPoolOptions::new()
@@ -38,15 +55,14 @@ fn pool_options(max_connections: u32) -> PgPoolOptions {
 }
 
 pub async fn connect(url: &str) -> anyhow::Result<DatabaseConnection> {
-    // 32 is the sweet spot when the app + Postgres share a host (the load-test setup):
-    // raising it to 64 pegged more Postgres backends onto the same saturated cores and
-    // REGRESSED throughput ~16 % — the pool "saturating" at 32 was a symptom of a CPU-bound
-    // host, not the bottleneck. A deployment with Postgres on its own box (spare DB CPU) can
-    // raise it via RSCTF_DB_MAX_CONNECTIONS; the default stays conservative.
+    // 32 active query connections is the sweet spot when app + Postgres share a
+    // host. The 33rd default slot is reserved for the singleton reconciler's
+    // long-held fence, preserving that measured active-work ceiling. Raising the
+    // active budget to 64 regressed throughput ~16% on the load-test host.
     let max_conns = std::env::var("RSCTF_DB_MAX_CONNECTIONS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(32);
+        .unwrap_or(33);
     let repo_scan_concurrency = std::env::var("RSCTF_REPO_SCAN_CONCURRENCY")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -80,7 +96,15 @@ pub async fn connect(url: &str) -> anyhow::Result<DatabaseConnection> {
             "RSCTF_DB_MAX_CONNECTIONS must be at least {required} for RSCTF_ROLE={role} with RSCTF_REPO_SCAN_CONCURRENCY={repo_scan_concurrency}, RSCTF_PROVISIONING_CONCURRENCY={provisioning_concurrency}, and RSCTF_AD_VPN_ENABLED={vpn_enabled}"
         );
     }
-    let connect_options = url.parse::<PgConnectOptions>()?.disable_statement_logging();
+    // PostgreSQL truncates application_name at 63 bytes. Keep a compact,
+    // process-unique identity on every SQLx/SeaORM pool connection so the
+    // stop-the-world migration preflight can distinguish this pool's own two
+    // baseline sessions from every old replica, PgBouncer, and monitor.
+    let application_name = process_application_name(role);
+    let connect_options = url
+        .parse::<PgConnectOptions>()?
+        .application_name(&application_name)
+        .disable_statement_logging();
     let pool = pool_options(max_conns)
         .connect_with(connect_options)
         .await?;
@@ -96,8 +120,10 @@ pub async fn connect(url: &str) -> anyhow::Result<DatabaseConnection> {
 /// Provisioning can hold one advisory lock while issuing a query (2P). A
 /// network owner always retains the singleton BYOC ownership lease. When VPN
 /// is enabled it also retains a PgListener and needs room for nested kernel
-/// reconciliation. The one-shot migration role opens none of these paths and
-/// needs only the pool's two baseline connections.
+/// reconciliation. All/Control/Engine run one suspicion reconciler that retains
+/// its advisory transaction while one nested closure/detector checkout progresses.
+/// The one-shot migration role opens none of these paths and needs only the
+/// pool's two baseline connections.
 fn required_pool_connections(
     repo_scan_concurrency: usize,
     provisioning_concurrency: usize,
@@ -139,17 +165,25 @@ fn required_pool_connections(
     // progress. Its independent one-at-a-time admission gate therefore needs
     // four connections only on roles that expose editor controllers.
     let runtime_transition = serves_player_api.then_some(4usize);
+    let suspicion_reconciler = matches!(
+        role,
+        RuntimeRole::All | RuntimeRole::Control | RuntimeRole::Engine
+    )
+    .then_some(SUSPICION_RECONCILER_CONNECTIONS);
     scans
         .saturating_add(provisioning)
         .saturating_add(owner_connections)
         .saturating_add(roster_access.unwrap_or_default())
         .saturating_add(account_lifecycle.unwrap_or_default())
         .saturating_add(runtime_transition.unwrap_or_default())
+        .saturating_add(suspicion_reconciler.unwrap_or_default())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::required_pool_connections;
+    use std::time::Duration;
+
+    use super::{pool_options, process_application_name, required_pool_connections};
     use crate::models::internal::configs::RuntimeRole;
 
     #[test]
@@ -157,22 +191,69 @@ mod tests {
         assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::Web), 26);
         assert_eq!(
             required_pool_connections(4, 4, false, RuntimeRole::Engine),
-            29
+            31
+        );
+        assert_eq!(
+            required_pool_connections(1, 4, false, RuntimeRole::Engine),
+            16
         );
         assert_eq!(
             required_pool_connections(1, 4, false, RuntimeRole::Control),
-            16
+            18
         );
         assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::Web), 26);
         assert_eq!(
             required_pool_connections(1, 4, true, RuntimeRole::Control),
+            21
+        );
+        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::All), 30);
+        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::All), 33);
+        assert_eq!(
+            required_pool_connections(1, 4, false, RuntimeRole::Network),
+            16
+        );
+        assert_eq!(
+            required_pool_connections(1, 4, true, RuntimeRole::Network),
             19
         );
-        assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::All), 28);
-        assert_eq!(required_pool_connections(1, 4, true, RuntimeRole::All), 31);
         assert_eq!(
             required_pool_connections(4, 16, true, RuntimeRole::Migrate),
             2
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn reconciler_nested_checkout_progresses_at_its_exact_reserve() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let pool = pool_options(super::SUSPICION_RECONCILER_CONNECTIONS as u32)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let mut fence = pool.begin().await.unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock(9089)")
+            .execute(&mut *fence)
+            .await
+            .unwrap();
+        let nested = tokio::time::timeout(
+            Duration::from_secs(2),
+            sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&pool),
+        )
+        .await
+        .expect("the reserved nested checkout must not deadlock")
+        .unwrap();
+        assert_eq!(nested, 1);
+        fence.rollback().await.unwrap();
+        pool.close().await;
+    }
+
+    #[test]
+    fn process_database_identity_is_bounded_versioned_and_unique() {
+        let first = process_application_name(RuntimeRole::Migrate);
+        let second = process_application_name(RuntimeRole::Migrate);
+        assert_ne!(first, second);
+        assert!(first.starts_with(&format!("rsctf:migrate:{}:", env!("CARGO_PKG_VERSION"))));
+        assert!(first.len() <= super::POSTGRES_APPLICATION_NAME_MAX_BYTES);
     }
 }

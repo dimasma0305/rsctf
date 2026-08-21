@@ -41,8 +41,8 @@ pub async fn koth_hills(
     headers: HeaderMap,
     verified: Option<axum::Extension<crate::services::ad::api_token::VerifiedTeamToken>>,
     rejected: Option<axum::Extension<crate::services::ad::api_token::RejectedTeamToken>>,
-) -> AppResult<RequestResponse<Vec<KothHillListItem>>> {
-    let part = crate::controllers::game::ad::resolve_ad_attacker(
+) -> AppResult<Response> {
+    let caller = crate::controllers::game::ad::LiveTargetCaller::resolve(
         &st,
         &headers,
         verified.as_ref().map(|extension| &extension.0),
@@ -51,6 +51,7 @@ pub async fn koth_hills(
         id,
     )
     .await?;
+
     let board = compute_koth_hill_state(&st, id).await?;
     let mut lifecycle = load_lifecycle_map(&st, id, board.latest_round, None).await?;
 
@@ -63,7 +64,7 @@ pub async fn koth_hills(
             let is_you_cooldown = view
                 .cooldown_participants
                 .iter()
-                .any(|cooldown| cooldown.participation_id == part.id);
+                .any(|cooldown| cooldown.participation_id == caller.participation.id);
             let holder = board.holder_by_challenge.get(&hill.challenge_id).copied();
             let (status, round) = match board.latest_control_by_challenge.get(&hill.challenge_id) {
                 Some((status, round)) => (Some(status.clone()), *round),
@@ -82,7 +83,7 @@ pub async fn koth_hills(
                 provisional_claimant_team_name: view.provisional_team_name,
                 provisional_confirmation_ticks: view.confirmation_progress,
                 claim_confirmation_ticks: view.claim_confirmation_ticks,
-                is_you: holder == Some(part.id),
+                is_you: holder == Some(caller.participation.id),
                 status,
                 ip: hill.container_ip.clone(),
                 port: hill.container_port,
@@ -100,5 +101,8 @@ pub async fn koth_hills(
         .collect();
     list.sort_by_key(|hill| hill.challenge_id);
 
-    Ok(RequestResponse::ok(list))
+    // All pool-backed reads finish before the retained transaction is opened.
+    // The final recheck discards this model after any earlier revocation and
+    // keeps a later revocation behind JSON serialization.
+    caller.finish_response(st.pg(), list).await
 }
