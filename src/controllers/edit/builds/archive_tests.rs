@@ -10,6 +10,50 @@ fn archive_builds_use_buildkit_dockerfiles() {
     );
 }
 
+#[tokio::test]
+#[ignore = "requires a local Docker daemon with BuildKit"]
+async fn buildkit_archive_transport_accepts_copy_chmod() {
+    let docker = Docker::connect_with_local_defaults().expect("local Docker client");
+    let image = format!(
+        "rsctf/diagnostic/buildkit-progress-test-{}:latest",
+        uuid::Uuid::new_v4()
+    );
+    let archive = zip_entries(
+        &[
+            (
+                "Dockerfile",
+                b"FROM scratch\nCOPY --chmod=0555 payload /payload\n".as_slice(),
+            ),
+            ("payload", b"buildkit progress transport\n".as_slice()),
+        ],
+        zip::CompressionMethod::Stored,
+    );
+
+    let outcome = build_from_context(&docker, &image, archive, None).await;
+    let cleanup = docker
+        .remove_image(
+            &image,
+            Some(bollard::image::RemoveImageOptions {
+                force: false,
+                noprune: false,
+            }),
+            None,
+        )
+        .await;
+
+    assert_eq!(
+        outcome.status,
+        ChallengeBuildStatus::Success,
+        "build log: {:?}",
+        outcome.log
+    );
+    assert!(outcome
+        .image_digest
+        .as_deref()
+        .is_some_and(crate::services::challenge_images::is_local_image_id));
+    cleanup.expect("remove unique diagnostic image");
+}
+
 fn zip_entry(name: &str, data: &[u8]) -> Vec<u8> {
     zip_entries(&[(name, data)], zip::CompressionMethod::Deflated)
 }
