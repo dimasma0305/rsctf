@@ -18,6 +18,27 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::flag_generator;
 use crate::utils::shared::{ArrayResponse, MessageResponse, RequestResponse};
 
+const ELIGIBLE_EXERCISE_FLAGS_SQL: &str = r#"SELECT flag
+      FROM "FlagContexts"
+     WHERE exercise_id = $1
+       AND (
+           (id = $2 AND is_occupied = TRUE)
+           OR is_occupied = FALSE
+       )"#;
+
+async fn eligible_exercise_flags(
+    pool: &sqlx::PgPool,
+    exercise_id: i32,
+    current_flag_id: Option<i32>,
+) -> AppResult<Vec<String>> {
+    sqlx::query_scalar::<_, String>(ELIGIBLE_EXERCISE_FLAGS_SQL)
+        .bind(exercise_id)
+        .bind(current_flag_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route("/api/exercise", get(list))
@@ -128,7 +149,7 @@ async fn clear_exercise_container_owner(
     pool: &sqlx::PgPool,
     instance_id: Option<i32>,
     container_id: uuid::Uuid,
-    backend_id: &str,
+    backend_id: Option<&str>,
     created_flag_id: Option<i32>,
 ) -> AppResult<()> {
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
@@ -149,12 +170,14 @@ async fn clear_exercise_container_owner(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     }
-    sqlx::query(r#"DELETE FROM "Containers" WHERE id = $1 AND container_id = $2"#)
-        .bind(container_id)
-        .bind(backend_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    if let Some(backend_id) = backend_id {
+        sqlx::query(r#"DELETE FROM "Containers" WHERE id = $1 AND container_id = $2"#)
+            .bind(container_id)
+            .bind(backend_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+    }
     if let Some(flag_id) = created_flag_id {
         sqlx::query(
             r#"DELETE FROM "FlagContexts" flag
@@ -189,8 +212,14 @@ where
     // Await destruction before opening the cleanup transaction. A failed
     // backend call therefore leaves every durable owner available for retry.
     destroy.await?;
-    clear_exercise_container_owner(pool, instance_id, container_id, backend_id, created_flag_id)
-        .await
+    clear_exercise_container_owner(
+        pool,
+        instance_id,
+        container_id,
+        Some(backend_id),
+        created_flag_id,
+    )
+    .await
 }
 
 /// `GET /api/exercise/{id}` — exercise detail for the current user.
@@ -243,22 +272,16 @@ pub async fn submit(
         crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &lock_key).await?;
     let inst = user_instance(&st, id, user.id).await?;
 
-    // Dynamic (per-instance) flag first, else any static flag for the exercise.
-    let mut accepted = false;
-    if let Some(i) = &inst {
-        if let Some(fid) = i.flag_id {
-            if let Some(fc) = flag_context::Entity::find_by_id(fid).one(&st.db).await? {
-                accepted = ct_eq(&fc.flag, &answer);
-            }
-        }
-    }
-    if !accepted {
-        let statics = flag_context::Entity::find()
-            .filter(flag_context::Column::ExerciseId.eq(id))
-            .all(&st.db)
-            .await?;
-        accepted = statics.iter().any(|f| ct_eq(&f.flag, &answer));
-    }
+    // Only the caller's current occupied flag and author-defined unoccupied
+    // static flags are eligible. Other users' and stale instance flags share
+    // the exercise id, so exercise-id-only fallback would cross that boundary.
+    let eligible_flags = eligible_exercise_flags(
+        st.pg(),
+        id,
+        inst.as_ref().and_then(|instance| instance.flag_id),
+    )
+    .await?;
+    let accepted = eligible_flags.iter().any(|flag| ct_eq(flag, &answer));
 
     let result = if accepted {
         AnswerResult::Accepted
@@ -355,7 +378,7 @@ pub async fn create_container(
                     Some(instance.id),
                     container_id,
                     &current.container_id,
-                    None,
+                    instance.flag_id,
                     crate::services::traffic::destroy_container_after_capture_fence(
                         &st,
                         &current.container_id,
@@ -363,16 +386,14 @@ pub async fn create_container(
                 )
                 .await?;
             } else {
-                sqlx::query(
-                    r#"UPDATE "ExerciseInstances"
-                          SET container_id = NULL, is_loaded = FALSE
-                        WHERE id = $1 AND container_id = $2"#,
+                clear_exercise_container_owner(
+                    st.pg(),
+                    Some(instance.id),
+                    container_id,
+                    None,
+                    instance.flag_id,
                 )
-                .bind(instance.id)
-                .bind(container_id)
-                .execute(st.pg())
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
+                .await?;
             }
             instance.container_id = None;
             instance.is_loaded = false;
@@ -381,7 +402,7 @@ pub async fn create_container(
 
     let flag = flag_generator::generate_flag(
         e.flag_template.as_deref(),
-        &crate::utils::codec::sha256_str(&format!("EX@{id}@{}", user.id)),
+        &flag_generator::exercise_user_hash(st.config.identity_hash_key.as_bytes(), id, user.id),
     );
     let game_kind = crate::services::container::game_kind_for_challenge(e.challenge_type);
     let platform_proxy =
@@ -563,7 +584,7 @@ pub async fn destroy_container(
                 Some(inst.id),
                 cuuid,
                 &c.container_id,
-                None,
+                inst.flag_id,
                 crate::services::traffic::destroy_container_after_capture_fence(
                     &st,
                     &c.container_id,
@@ -571,16 +592,8 @@ pub async fn destroy_container(
             )
             .await?;
         } else {
-            sqlx::query(
-                r#"UPDATE "ExerciseInstances"
-                      SET container_id = NULL, is_loaded = FALSE
-                    WHERE id = $1 AND container_id = $2"#,
-            )
-            .bind(inst.id)
-            .bind(cuuid)
-            .execute(st.pg())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+            clear_exercise_container_owner(st.pg(), Some(inst.id), cuuid, None, inst.flag_id)
+                .await?;
         }
     }
     distributed.release().await?;
@@ -608,5 +621,114 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.to_string(), "injected destroy failure");
+    }
+
+    #[test]
+    fn eligible_flags_are_scoped_to_current_dynamic_or_static_rows() {
+        assert!(ELIGIBLE_EXERCISE_FLAGS_SQL.contains("exercise_id = $1"));
+        assert!(ELIGIBLE_EXERCISE_FLAGS_SQL.contains("id = $2 AND is_occupied = TRUE"));
+        assert!(ELIGIBLE_EXERCISE_FLAGS_SQL.contains("OR is_occupied = FALSE"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn exercise_flags_reject_other_owners_and_cleanup_stale_instances() {
+        use sqlx::postgres::PgPoolOptions;
+
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let schema = format!("exercise_flags_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let options = crate::migrations::test_pg_connect_options(&database_url)
+            .options([("search_path", schema.as_str())]);
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            r#"
+            CREATE TABLE "FlagContexts" (
+              id SERIAL PRIMARY KEY, flag TEXT NOT NULL,
+              is_occupied BOOLEAN NOT NULL, exercise_id INTEGER
+            );
+            CREATE TABLE "ExerciseInstances" (
+              id INTEGER PRIMARY KEY, container_id UUID,
+              is_loaded BOOLEAN NOT NULL, flag_id INTEGER
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let own_flag_id = sqlx::query_scalar::<_, i32>(
+            r#"INSERT INTO "FlagContexts" (flag, is_occupied, exercise_id)
+               VALUES ('flag{own}', TRUE, 9) RETURNING id"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "FlagContexts" (flag, is_occupied, exercise_id)
+               VALUES ('flag{other}', TRUE, 9), ('flag{static}', FALSE, 9)"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let eligible = eligible_exercise_flags(&pool, 9, Some(own_flag_id))
+            .await
+            .unwrap();
+        assert!(eligible.iter().any(|flag| flag == "flag{own}"));
+        assert!(eligible.iter().any(|flag| flag == "flag{static}"));
+        assert!(!eligible.iter().any(|flag| flag == "flag{other}"));
+        assert_eq!(
+            eligible_exercise_flags(&pool, 9, None).await.unwrap(),
+            vec!["flag{static}".to_string()]
+        );
+
+        let container_id = uuid::Uuid::new_v4();
+        sqlx::query(r#"INSERT INTO "ExerciseInstances" VALUES (41, $1, TRUE, $2)"#)
+            .bind(container_id)
+            .bind(own_flag_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        clear_exercise_container_owner(&pool, Some(41), container_id, None, Some(own_flag_id))
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_as::<_, (Option<uuid::Uuid>, bool, Option<i32>)>(
+                r#"SELECT container_id, is_loaded, flag_id
+                     FROM "ExerciseInstances" WHERE id = 41"#,
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            (None, false, None)
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "FlagContexts" WHERE id = $1"#)
+                .bind(own_flag_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+
+        pool.close().await;
+        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
     }
 }

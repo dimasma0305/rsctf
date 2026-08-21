@@ -81,5 +81,125 @@ fn exercise_queries_bind_both_sides_and_keep_legacy_links_revocable() {
     assert!(EXERCISE_LEASE_SQL.contains("container.id = instance.container_id"));
     assert!(EXERCISE_LEASE_SQL.contains("container.exercise_instance_id IS NULL"));
     assert!(EXERCISE_LEASE_SQL.contains("container.exercise_instance_id = instance.id"));
+    assert!(EXERCISE_LEASE_SQL.contains("account.security_stamp = $5"));
+    assert!(EXERCISE_LEASE_SQL.contains("account.email_confirmed = TRUE"));
+    assert!(EXERCISE_LEASE_SQL.contains("account.role <> $6"));
     assert!(LEGACY_EXERCISE_OWNER_SQL.contains("container_id = $1"));
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn exercise_lease_revokes_when_the_account_session_changes() {
+    use sqlx::postgres::PgPoolOptions;
+
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("exercise_lease_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let options = crate::migrations::test_pg_connect_options(&database_url)
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"
+        CREATE TABLE "AspNetUsers" (
+          id UUID PRIMARY KEY, security_stamp TEXT,
+          email_confirmed BOOLEAN NOT NULL, role SMALLINT NOT NULL
+        );
+        CREATE TABLE "ExerciseChallenges" (
+          id INTEGER PRIMARY KEY, is_enabled BOOLEAN NOT NULL,
+          publish_time_utc TIMESTAMPTZ NOT NULL
+        );
+        CREATE TABLE "Containers" (
+          id UUID PRIMARY KEY, is_proxy BOOLEAN NOT NULL,
+          game_instance_id INTEGER, exercise_instance_id INTEGER
+        );
+        CREATE TABLE "ExerciseInstances" (
+          id INTEGER PRIMARY KEY, exercise_id INTEGER NOT NULL,
+          user_id UUID NOT NULL, is_loaded BOOLEAN NOT NULL,
+          container_id UUID NOT NULL
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let user_id = Uuid::new_v4();
+    let container_id = Uuid::new_v4();
+    sqlx::query(r#"INSERT INTO "AspNetUsers" VALUES ($1, 'stamp', TRUE, $2)"#)
+        .bind(user_id)
+        .bind(Role::User as i16)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "ExerciseChallenges"
+             VALUES (9, TRUE, clock_timestamp() - interval '1 minute')"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO "Containers" VALUES ($1, TRUE, NULL, 41)"#)
+        .bind(container_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "ExerciseInstances" VALUES (41, 9, $1, TRUE, $2)"#)
+        .bind(user_id)
+        .bind(container_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let live = || exercise_lease_is_valid(&pool, user_id, "stamp", 41, 9, container_id);
+    assert!(live().await);
+
+    sqlx::query(r#"UPDATE "AspNetUsers" SET security_stamp = 'rotated' WHERE id = $1"#)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(!live().await);
+
+    sqlx::query(
+        r#"UPDATE "AspNetUsers"
+              SET security_stamp = 'stamp', email_confirmed = FALSE
+            WHERE id = $1"#,
+    )
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(!live().await);
+
+    sqlx::query(
+        r#"UPDATE "AspNetUsers"
+              SET email_confirmed = TRUE, role = $2
+            WHERE id = $1"#,
+    )
+    .bind(user_id)
+    .bind(Role::Banned as i16)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(!live().await);
+
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
 }
