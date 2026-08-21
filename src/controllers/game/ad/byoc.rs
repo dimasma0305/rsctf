@@ -34,7 +34,6 @@
 
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
-use base64::Engine as _;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
