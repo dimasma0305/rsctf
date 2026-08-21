@@ -264,14 +264,9 @@ const Configs: FC = () => {
       }
 
       await mutate({ ...configs, ...conf, proxyTrust }, { revalidate: false })
-      await mutateConfig(
-        {
-          ...conf.globalConfig,
-          ...conf.containerPolicy,
-          allowPasswordRegistration: conf.accountPolicy?.allowPasswordRegistration,
-        },
-        { revalidate: false }
-      )
+      // Refetch the complete public projection so effective OAuth providers and
+      // environment-backed policy defaults update together after this write.
+      await mutateConfig()
       await mutateCaptchaConfig()
       return true
     } catch (e) {

@@ -17,6 +17,22 @@ export RSCTF_AD_VPN_SERVICES_NETWORK=rsctf-compose-security-ad
 export RSCTF_DOMAIN=ctf.example
 export RSCTF_TRUSTED_PROXY_CIDRS=172.31.252.0/24
 export RSCTF_IMAGE=example.invalid/rsctf:test
+export RSCTF_ALLOW_REGISTER=false
+export RSCTF_ALLOW_PASSWORD_REGISTRATION=false
+export RSCTF_EMAIL_CONFIRM=true
+export RSCTF_ADMIN_CONFIRM=true
+export RSCTF_ACTIVE_ON_REGISTER=false
+export RSCTF_USE_CAPTCHA=true
+export RSCTF_GOOGLE_CLIENT_ID=compose-google-id
+export RSCTF_GOOGLE_CLIENT_SECRET=compose-google-secret
+export RSCTF_DISCORD_CLIENT_ID=compose-discord-id
+export RSCTF_DISCORD_CLIENT_SECRET=compose-discord-secret
+export RSCTF_GOOGLE_AUTH_URL=https://google.example/authorize
+export RSCTF_GOOGLE_TOKEN_URL=https://google.example/token
+export RSCTF_GOOGLE_USERINFO_URL=https://google.example/userinfo
+export RSCTF_DISCORD_AUTH_URL=https://discord.example/authorize
+export RSCTF_DISCORD_TOKEN_URL=https://discord.example/token
+export RSCTF_DISCORD_USERINFO_URL=https://discord.example/userinfo
 unset RSCTF_AD_SUBMIT_BURST_FLAGS
 
 compose=(docker compose --env-file /dev/null -p rsctf-compose-security)
@@ -71,6 +87,42 @@ if actual != expected:
         f"{service} A&D submit burst mismatch: expected {expected}, got {actual}"
     )
 ' "$service" "$expected"
+}
+
+assert_service_registration_oauth() {
+  local service="$1"
+  python3 -c '
+import json
+import sys
+
+document = json.load(sys.stdin)
+service = document["services"][sys.argv[1]]
+environment = service.get("environment") or {}
+expected = {
+    "RSCTF_ALLOW_REGISTER": "false",
+    "RSCTF_ALLOW_PASSWORD_REGISTRATION": "false",
+    "RSCTF_EMAIL_CONFIRM": "true",
+    "RSCTF_ADMIN_CONFIRM": "true",
+    "RSCTF_ACTIVE_ON_REGISTER": "false",
+    "RSCTF_USE_CAPTCHA": "true",
+    "RSCTF_GOOGLE_CLIENT_ID": "compose-google-id",
+    "RSCTF_GOOGLE_CLIENT_SECRET": "compose-google-secret",
+    "RSCTF_DISCORD_CLIENT_ID": "compose-discord-id",
+    "RSCTF_DISCORD_CLIENT_SECRET": "compose-discord-secret",
+    "RSCTF_GOOGLE_AUTH_URL": "https://google.example/authorize",
+    "RSCTF_GOOGLE_TOKEN_URL": "https://google.example/token",
+    "RSCTF_GOOGLE_USERINFO_URL": "https://google.example/userinfo",
+    "RSCTF_DISCORD_AUTH_URL": "https://discord.example/authorize",
+    "RSCTF_DISCORD_TOKEN_URL": "https://discord.example/token",
+    "RSCTF_DISCORD_USERINFO_URL": "https://discord.example/userinfo",
+}
+actual = {key: environment.get(key) for key in expected}
+if actual != expected:
+    raise SystemExit(
+        f"{sys.argv[1]} registration/OAuth environment mismatch: "
+        f"expected {expected}, got {actual}"
+    )
+' "$service"
 }
 
 assert_bounded_logs() {
@@ -175,6 +227,8 @@ if condition != "service_healthy":
   | assert_bounded_logs rsctf
 "${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_service_ad_submit_burst rsctf 400
+"${compose[@]}" -f deploy/compose.yml config --format json \
+  | assert_service_registration_oauth rsctf
 RSCTF_AD_SUBMIT_BURST_FLAGS=3200 \
   "${compose[@]}" -f deploy/compose.yml config --format json \
   | assert_service_ad_submit_burst rsctf 3200
@@ -199,12 +253,16 @@ split=(
 "${compose[@]}" "${split[@]}" config --format json \
   | assert_service_security rsctf no no no
 "${compose[@]}" "${split[@]}" config --format json \
+  | assert_service_registration_oauth rsctf
+"${compose[@]}" "${split[@]}" config --format json \
   | assert_service_ad_submit_burst rsctf 400
 RSCTF_AD_SUBMIT_BURST_FLAGS=3200 \
   "${compose[@]}" "${split[@]}" config --format json \
   | assert_service_ad_submit_burst rsctf 3200
 "${compose[@]}" "${split[@]}" config --format json \
   | assert_service_security rsctf-control yes yes yes
+"${compose[@]}" "${split[@]}" config --format json \
+  | assert_service_registration_oauth rsctf-control
 "${compose[@]}" "${split[@]}" config --format json \
   | assert_private_challenge_proxy rsctf-control
 "${compose[@]}" "${split[@]}" config --format json \
