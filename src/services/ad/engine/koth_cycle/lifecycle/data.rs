@@ -89,6 +89,7 @@ pub(super) struct HillSpec {
     pub(super) expose_port: i32,
     pub(super) allow_egress: bool,
     pub(super) checker_dir: Option<String>,
+    pub(super) runtime_flag: Option<String>,
 }
 
 pub(super) fn snapshot_ids(snapshot: &serde_json::Value, object_key: &str) -> Vec<i32> {
@@ -191,7 +192,12 @@ pub(super) async fn load_hill_spec(st: &SharedState, cycle: &CycleRow) -> AppRes
                   COALESCE(challenge.cpu_count, 1) AS cpu_count,
                   COALESCE(challenge.expose_port, 80) AS expose_port,
                   challenge.ad_allow_egress AS allow_egress,
-                  NULLIF(BTRIM(challenge.ad_checker_image), '') AS checker_dir
+                  NULLIF(BTRIM(challenge.ad_checker_image), '') AS checker_dir,
+                  (SELECT flag.flag
+                     FROM "FlagContexts" flag
+                    WHERE flag.challenge_id = challenge.id
+                    ORDER BY flag.id
+                    LIMIT 1) AS runtime_flag
              FROM "GameChallenges" challenge
              JOIN "KothTargets" target
                ON target.game_id = challenge.game_id

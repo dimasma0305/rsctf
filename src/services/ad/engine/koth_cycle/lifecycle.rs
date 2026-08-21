@@ -3,7 +3,7 @@ use serde_json::json;
 use std::future::Future;
 
 use crate::app_state::SharedState;
-use crate::services::container::ContainerSpec;
+use crate::services::container::{ContainerInfo, ContainerSpec};
 use crate::utils::enums::ChallengeType;
 use crate::utils::error::{AppError, AppResult};
 
@@ -378,24 +378,20 @@ async fn create_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()>
     )?;
     let info = st
         .containers
-        .create(ContainerSpec {
-            game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
-            image,
-            memory_limit: spec.memory_limit,
-            cpu_count: spec.cpu_count,
-            expose_port: spec.expose_port,
-            publish_port: true,
-            proxy_only: false,
-            env: Vec::new(),
-            flag: None,
-            ad_network: Some(crate::services::ad_vpn::services_network()),
-            allow_egress: spec.allow_egress,
-            operation_id: Some(format!(
-                "koth-cycle:{}:attempt:{}",
-                cycle.id, cycle.reset_attempt
-            )),
-        })
+        .create(replacement_container_spec(image, cycle, &spec))
         .await?;
+    if !replacement_endpoint_is_valid(&info) {
+        if let Err(error) = st.containers.destroy(&info.id).await {
+            tracing::warn!(
+                backend_id = %info.id,
+                %error,
+                "failed to destroy KotH replacement without a usable endpoint"
+            );
+        }
+        return Err(AppError::unavailable(
+            "KotH replacement did not advertise a usable internal endpoint",
+        ));
+    }
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -426,6 +422,38 @@ async fn create_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()>
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))
+}
+
+fn replacement_container_spec(
+    image: String,
+    cycle: &CycleRow,
+    spec: &data::HillSpec,
+) -> ContainerSpec {
+    ContainerSpec {
+        game_kind: rsctf_worker_protocol::GameKind::KingOfTheHill,
+        image,
+        memory_limit: spec.memory_limit,
+        cpu_count: spec.cpu_count,
+        expose_port: spec.expose_port,
+        publish_port: true,
+        proxy_only: false,
+        env: Vec::new(),
+        // Initial shared-hill provisioning injects the selected static flag.
+        // Persistent arena replacements must preserve that exact runtime
+        // contract as well; some challenge supervisors derive their internal
+        // control credential from RSCTF_FLAG and fail closed when it is absent.
+        flag: Some(spec.runtime_flag.clone().unwrap_or_default()),
+        ad_network: Some(crate::services::ad_vpn::services_network()),
+        allow_egress: spec.allow_egress,
+        operation_id: Some(format!(
+            "koth-cycle:{}:attempt:{}",
+            cycle.id, cycle.reset_attempt
+        )),
+    }
+}
+
+fn replacement_endpoint_is_valid(info: &ContainerInfo) -> bool {
+    !info.ip.trim().is_empty() && (1..=65_535).contains(&info.port)
 }
 
 async fn publish_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()> {
