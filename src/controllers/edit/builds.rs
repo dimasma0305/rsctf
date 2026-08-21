@@ -22,6 +22,8 @@ mod backfill_tests;
 mod local_image_tests;
 
 const MAX_BUILD_ARCHIVE_BLOB_BYTES: usize = crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES;
+const ARCHIVE_BUILDER_VERSION: bollard::image::BuilderVersion =
+    bollard::image::BuilderVersion::BuilderBuildKit;
 const RUNTIME_REPAIR_STATE_SQL: &str = r#"SELECT build_status,
               build_image_digest,
               last_build_log
@@ -839,6 +841,7 @@ async fn build_from_context(
         dockerfile: "Dockerfile".to_string(),
         rm: true,
         labels,
+        version: ARCHIVE_BUILDER_VERSION,
         ..Default::default()
     };
 
@@ -859,7 +862,7 @@ async fn build_from_context(
                 }
             }
             Err(e) => {
-                failed = Some(format!("build transport error: {e}"));
+                failed = Some(format!("build transport error: {e:?}"));
                 break;
             }
         }
