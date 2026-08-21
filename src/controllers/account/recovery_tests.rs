@@ -124,12 +124,14 @@ async fn email_change_rechecks_identity_after_a_registration_lock_wait() {
             update_email_serialized(
                 &pool,
                 &config,
-                changer,
-                "stamp-old",
-                "claimed@example.test",
-                "CLAIMED@EXAMPLE.TEST",
-                "stamp-new".to_string(),
-                EmailUpdateMode::Immediate,
+                EmailUpdateRequest {
+                    user_id: changer,
+                    expected_stamp: "stamp-old",
+                    email: "claimed@example.test",
+                    normalized_email: "CLAIMED@EXAMPLE.TEST",
+                    new_stamp: "stamp-new".to_string(),
+                    mode: EmailUpdateMode::Immediate,
+                },
             )
             .await
         }
@@ -181,12 +183,14 @@ async fn email_change_rechecks_identity_after_a_registration_lock_wait() {
             update_email_serialized(
                 &pool,
                 &config,
-                changer,
-                "stamp-old",
-                "fresh@example.test",
-                "FRESH@EXAMPLE.TEST",
-                "stamp-after-policy".to_string(),
-                EmailUpdateMode::Immediate,
+                EmailUpdateRequest {
+                    user_id: changer,
+                    expected_stamp: "stamp-old",
+                    email: "fresh@example.test",
+                    normalized_email: "FRESH@EXAMPLE.TEST",
+                    new_stamp: "stamp-after-policy".to_string(),
+                    mode: EmailUpdateMode::Immediate,
+                },
             )
             .await
         }
@@ -242,12 +246,14 @@ async fn email_change_rechecks_identity_after_a_registration_lock_wait() {
             update_email_serialized(
                 &pool,
                 &config,
-                changer,
-                "stamp-old",
-                "new@example.test",
-                "NEW@EXAMPLE.TEST",
-                "stamp-email-request".to_string(),
-                EmailUpdateMode::Immediate,
+                EmailUpdateRequest {
+                    user_id: changer,
+                    expected_stamp: "stamp-old",
+                    email: "new@example.test",
+                    normalized_email: "NEW@EXAMPLE.TEST",
+                    new_stamp: "stamp-email-request".to_string(),
+                    mode: EmailUpdateMode::Immediate,
+                },
             )
             .await
         }

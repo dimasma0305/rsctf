@@ -69,6 +69,12 @@ export const EDIT_OPERATIONS = Object.freeze([
   operation('edit_scoreboard_flush', 'POST', '/api/edit/games/{id}/scoreboard/flush', {
     params: game, mutation: true, responseKind: 'message',
   }),
+  operation('edit_variants_get', 'GET', '/api/edit/games/{id}/variants', {
+    params: game, responseKind: 'array',
+  }),
+  operation('edit_variants_generate', 'POST', '/api/edit/games/{id}/variants/generate', {
+    params: game, mutation: true, responseKind: 'variant-generation',
+  }),
 
   operation('edit_game_admins_get', 'GET', '/api/edit/games/{id}/admins', {
     auth: 'admin', params: game, responseKind: 'array',
@@ -442,6 +448,12 @@ export function validateEditResponse(operationOrId, response) {
     case 'toggle':
       object();
       if (typeof body.isEnabled !== 'boolean') throw new Error(`${item.id} invalid toggle state`);
+      break;
+    case 'variant-generation':
+      object();
+      if (!Number.isSafeInteger(body.generated) || body.generated < 0) {
+        throw new Error(`${item.id} invalid variant generation result`);
+      }
       break;
     case 'snapshot-changes':
       object();

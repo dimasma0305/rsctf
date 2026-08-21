@@ -1,3 +1,4 @@
+use std::net::Ipv4Addr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -318,11 +319,13 @@ struct HistoricalParticipationTarget {
 struct AuthorizedTargetRow {
     challenge_title: Option<String>,
     observed_at_utc: DateTime<Utc>,
+    vpn_access_required: bool,
 }
 
 #[derive(Debug)]
 struct ParticipantTargetAuthorization {
     grant: ProtectedAssetGrant,
+    vpn_access_required: bool,
 }
 
 /// Re-check the mutable game/challenge/division half on the transaction that
@@ -342,7 +345,8 @@ async fn load_authorized_target_on(
                    WHEN $5::integer IS NULL THEN NULL::text
                    ELSE challenge.title
                END AS challenge_title,
-               clock_timestamp() AS observed_at_utc
+               clock_timestamp() AS observed_at_utc,
+               game.vpn_access_required
           FROM "Participations" participation
           JOIN "UserParticipations" historical
             ON historical.user_id = $1
@@ -511,7 +515,7 @@ async fn authorize_participant_target(
     // authoritative. A writeup has no challenge override, so its division's
     // default permission is the effective policy.
     let row = load_authorized_target_on(
-        &mut **roster.transaction_mut(),
+        roster.transaction_mut(),
         user.id,
         target.game_id,
         historical.participation_id,
@@ -526,7 +530,7 @@ async fn authorize_participant_target(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
 
-    Ok(row.map(|_| ParticipantTargetAuthorization {
+    Ok(row.map(|row| ParticipantTargetAuthorization {
         grant: ProtectedAssetGrant {
             user_id: user.id,
             expected_security_stamp: user.security_stamp.clone(),
@@ -536,6 +540,7 @@ async fn authorize_participant_target(
             target: target.clone(),
             content_hash: content_hash.to_string(),
         },
+        vpn_access_required: row.vpn_access_required,
     }))
 }
 
@@ -581,10 +586,12 @@ pub(super) async fn finalize_grant_for_test(
             signed_delivery_allowed: false,
             final_grant: AssetFinalGrant::Protected(grant.clone()),
         },
+        None,
         token,
         record_download,
     )
     .await
+    .map(|_| ())
 }
 
 /// Authorize a download against the cached user-independent gate. The caller's
@@ -631,6 +638,11 @@ pub(super) async fn authorize_asset_download(
                 if let Some(target_authorization) =
                     authorize_participant_target(st.pg(), user, target, hash).await?
                 {
+                    if target_authorization.vpn_access_required {
+                        // A signed object-store URL is a bearer capability and
+                        // would remain usable away from the event tunnel.
+                        authorization.signed_delivery_allowed = false;
+                    }
                     authorization.final_grant =
                         AssetFinalGrant::Protected(target_authorization.grant);
                     return Ok(authorization);
@@ -789,19 +801,22 @@ pub(super) async fn finalize_monitor_grant_for_test(
 pub(super) async fn finalize_asset_download(
     pool: &sqlx::PgPool,
     authorization: &AuthorizedAsset,
+    source: Option<Ipv4Addr>,
     token: Option<&str>,
     record_download: bool,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let grant = match &authorization.final_grant {
-        AssetFinalGrant::None => return Ok(()),
+        AssetFinalGrant::None => return Ok(false),
         AssetFinalGrant::Public { content_hash } => {
-            return finalize_public_asset(pool, content_hash).await;
+            finalize_public_asset(pool, content_hash).await?;
+            return Ok(false);
         }
         AssetFinalGrant::Monitor {
             user_id,
             expected_security_stamp,
         } => {
-            return finalize_monitor_asset(pool, *user_id, expected_security_stamp).await;
+            finalize_monitor_asset(pool, *user_id, expected_security_stamp).await?;
+            return Ok(false);
         }
         AssetFinalGrant::Protected(grant) => grant,
     };
@@ -819,8 +834,17 @@ pub(super) async fn finalize_asset_download(
         return Err(AppError::Forbidden);
     };
 
+    let vpn_gate_active = crate::services::event_security::require_event_vpn_source_on(
+        roster.transaction_mut().as_mut(),
+        grant.game_id,
+        grant.user_id,
+        grant.participation_id,
+        source,
+    )
+    .await?;
+
     let row = load_authorized_target_on(
-        &mut **roster.transaction_mut(),
+        roster.transaction_mut(),
         grant.user_id,
         grant.game_id,
         grant.participation_id,
@@ -853,14 +877,15 @@ pub(super) async fn finalize_asset_download(
                 .acquire_additional(&download_event_lock_key(&event))
                 .await
                 .map_err(|error| AppError::internal(error.to_string()))?;
-            insert_download_event_on(&mut **roster.transaction_mut(), &event, token).await?;
+            insert_download_event_on(roster.transaction_mut(), &event, token).await?;
         }
     }
 
     roster
         .release()
         .await
-        .map_err(|error| AppError::internal(error.to_string()))
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(vpn_gate_active)
 }
 
 #[cfg(test)]

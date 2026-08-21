@@ -73,6 +73,7 @@ impl Harness {
               game_id INTEGER NOT NULL,
               team_id INTEGER NOT NULL,
               status SMALLINT NOT NULL,
+              competitive_admitted_at_utc TIMESTAMPTZ,
               writeup_id INTEGER
             );
             CREATE TABLE "Teams" (

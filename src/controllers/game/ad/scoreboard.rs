@@ -928,11 +928,13 @@ pub async fn download_snapshot(
         .await?;
     super::snapshot_download::finish_snapshot_response(
         st.pg(),
-        user.id,
-        &user.security_stamp,
-        id,
-        part.team_id,
-        part.id,
+        crate::services::live_roster::LiveParticipationIdentity {
+            user_id: user.id,
+            expected_security_stamp: &user.security_stamp,
+            game_id: id,
+            team_id: part.team_id,
+            participation_id: part.id,
+        },
         super::snapshot_download::SnapshotResponseGrant {
             team_service_id: svc.id,
             snapshot_id: snapshot.id,

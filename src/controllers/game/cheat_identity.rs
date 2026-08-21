@@ -193,11 +193,7 @@ pub(super) async fn build_identity_analysis(
                 "identity aggregate returned inconsistent edge arrays",
             ));
         }
-        let teams: Vec<(i32, String)> = group
-            .team_ids
-            .into_iter()
-            .zip(group.team_names.into_iter())
-            .collect();
+        let teams: Vec<(i32, String)> = group.team_ids.into_iter().zip(group.team_names).collect();
         let team_names_by_id = teams.iter().cloned().collect::<BTreeMap<_, _>>();
         let edge_pairs = group
             .edge_left_team_ids

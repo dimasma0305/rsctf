@@ -61,6 +61,7 @@ type LockedGameTiming = (
     Option<DateTime<Utc>>,
     DateTime<Utc>,
 );
+type GameTimingRow = (DateTime<Utc>, DateTime<Utc>, bool, Option<DateTime<Utc>>);
 
 /// Lock the live game policy before assigning the submission's canonical
 /// observation time. A final reconciliation pass takes the conflicting row
@@ -70,15 +71,14 @@ pub(super) async fn lock_game_timing_at_grade(
     connection: &mut sqlx::PgConnection,
     game_id: i32,
 ) -> AppResult<Option<LockedGameTiming>> {
-    let timing: Option<(DateTime<Utc>, DateTime<Utc>, bool, Option<DateTime<Utc>>)> =
-        sqlx::query_as(
-            r#"SELECT start_time_utc, end_time_utc, practice_mode, freeze_time_utc
+    let timing: Option<GameTimingRow> = sqlx::query_as(
+        r#"SELECT start_time_utc, end_time_utc, practice_mode, freeze_time_utc
                  FROM "Games" WHERE id = $1 FOR SHARE"#,
-        )
-        .bind(game_id)
-        .fetch_optional(&mut *connection)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    )
+    .bind(game_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     let Some((start, end, practice_mode, freeze)) = timing else {
         return Ok(None);
     };

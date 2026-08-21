@@ -11,6 +11,7 @@ import {
   NumberInput,
   Paper,
   Select,
+  SimpleGrid,
   Slider,
   Stack,
   Switch,
@@ -58,9 +59,11 @@ import api, {
   ChallengeCategory,
   ChallengeEditDetailModel,
   ChallengeType,
+  ChallengeVariantMode,
   ChallengeUpdateModel,
   NetworkMode,
   ScoreCurve,
+  SolveReceiptMode,
 } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
@@ -147,6 +150,7 @@ const GameChallengeEdit: FC = () => {
   const isJeopardyContainer = type === ChallengeType.StaticContainer || type === ChallengeType.DynamicContainer
   const isKoth = type === ChallengeType.KingOfTheHill
   const adScoringStarted = type === ChallengeType.AttackDefense && game?.adScoringStartRound != null
+  const eventSecurityFrozen = !!game?.start && dayjs().isAfter(dayjs(game.start))
   const [workloadEditorEnabled, setWorkloadEditorEnabled] = useState(challenge?.workloadSpec != null)
   const [workloadJson, setWorkloadJson] = useState(
     challenge?.workloadSpec ? formatWorkloadSpec(challenge.workloadSpec) : ''
@@ -821,6 +825,107 @@ const GameChallengeEdit: FC = () => {
             value={challengeInfo.fileName ?? 'attachment'}
             onChange={(e) => setChallengeInfo({ ...challengeInfo, fileName: e.target.value })}
           />
+        )}
+
+        {!isAdEngine && (
+          <Paper p="md" withBorder>
+            <Stack gap="md">
+              <Stack gap={2}>
+                <Title order={3}>{t('admin.event_security.challenge_title', 'Challenge provenance')}</Title>
+                <Text size="sm" c="dimmed">
+                  {t(
+                    'admin.event_security.challenge_description',
+                    'Optional deterministic per-team variants and one-use trusted-verifier receipts. These settings freeze when the event starts.'
+                  )}
+                </Text>
+              </Stack>
+              <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
+                <Select
+                  label={t('admin.event_security.variant_mode', 'Variant mode')}
+                  allowDeselect={false}
+                  disabled={disabled || eventSecurityFrozen}
+                  value={challengeInfo.variantMode ?? ChallengeVariantMode.Disabled}
+                  data={[
+                    { value: ChallengeVariantMode.Disabled, label: t('common.content.disabled', 'Disabled') },
+                    {
+                      value: ChallengeVariantMode.PerParticipation,
+                      label: t('admin.event_security.per_participation', 'Per participation'),
+                    },
+                  ]}
+                  onChange={(value) =>
+                    setChallengeInfo({
+                      ...challengeInfo,
+                      variantMode: (value as ChallengeVariantMode) ?? ChallengeVariantMode.Disabled,
+                    })
+                  }
+                />
+                <Select
+                  label={t('admin.event_security.receipt_mode', 'Trusted solve receipt')}
+                  allowDeselect={false}
+                  disabled={disabled || eventSecurityFrozen}
+                  value={challengeInfo.solveReceiptMode ?? SolveReceiptMode.Disabled}
+                  data={[
+                    { value: SolveReceiptMode.Disabled, label: t('common.content.disabled', 'Disabled') },
+                    { value: SolveReceiptMode.Optional, label: t('admin.event_security.optional', 'Optional') },
+                    { value: SolveReceiptMode.Required, label: t('admin.event_security.required', 'Required') },
+                  ]}
+                  onChange={(value) =>
+                    setChallengeInfo({
+                      ...challengeInfo,
+                      solveReceiptMode: (value as SolveReceiptMode) ?? SolveReceiptMode.Disabled,
+                    })
+                  }
+                />
+                {(challengeInfo.variantMode ?? ChallengeVariantMode.Disabled) !== ChallengeVariantMode.Disabled && (
+                  <>
+                    <TextInput
+                      required
+                      disabled={disabled || eventSecurityFrozen}
+                      label={t('admin.event_security.generator_image', 'Generator image@digest')}
+                      description={t(
+                        'admin.event_security.generator_image_description',
+                        'Immutable repository reference ending in the same sha256 digest below.'
+                      )}
+                      value={challengeInfo.variantGeneratorImage ?? ''}
+                      onChange={(event) =>
+                        setChallengeInfo({ ...challengeInfo, variantGeneratorImage: event.currentTarget.value })
+                      }
+                    />
+                    <TextInput
+                      required
+                      disabled={disabled || eventSecurityFrozen}
+                      label={t('admin.event_security.generator_digest', 'Generator sha256 digest')}
+                      placeholder="sha256:…"
+                      value={challengeInfo.variantGeneratorDigest ?? ''}
+                      onChange={(event) =>
+                        setChallengeInfo({ ...challengeInfo, variantGeneratorDigest: event.currentTarget.value })
+                      }
+                    />
+                  </>
+                )}
+                {(challengeInfo.solveReceiptMode ?? SolveReceiptMode.Disabled) !== SolveReceiptMode.Disabled && (
+                  <TextInput
+                    required
+                    disabled={disabled || eventSecurityFrozen}
+                    label={t('admin.event_security.verifier_identity', 'Verifier identity')}
+                    description={t(
+                      'admin.event_security.verifier_identity_description',
+                      'Exact trusted issuer name bound into every short-lived, one-use receipt.'
+                    )}
+                    value={challengeInfo.receiptVerifierIdentity ?? ''}
+                    onChange={(event) =>
+                      setChallengeInfo({ ...challengeInfo, receiptVerifierIdentity: event.currentTarget.value })
+                    }
+                  />
+                )}
+              </SimpleGrid>
+              {eventSecurityFrozen && (
+                <Text size="xs" c="dimmed">
+                  {t('admin.event_security.frozen', 'Variant and receipt policy is frozen because the event has started.')}
+                </Text>
+              )}
+            </Stack>
+          </Paper>
         )}
         {(type === ChallengeType.StaticContainer || type === ChallengeType.DynamicContainer || isAdEngine) && (
           <Grid columns={12}>

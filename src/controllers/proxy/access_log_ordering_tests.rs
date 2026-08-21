@@ -7,6 +7,8 @@ use uuid::Uuid;
 
 use super::{persist_access_audit, AccessAudit};
 
+type OrderedAccessEvidence = (Uuid, DateTime<Utc>, i32, i32, DateTime<Utc>);
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
 async fn concurrent_accesses_timestamp_in_participation_lock_order() {
@@ -47,7 +49,8 @@ async fn concurrent_accesses_timestamp_in_participation_lock_order() {
           id INTEGER PRIMARY KEY,
           game_id INTEGER NOT NULL,
           team_id INTEGER NOT NULL,
-          status SMALLINT NOT NULL
+          status SMALLINT NOT NULL,
+          competitive_admitted_at_utc TIMESTAMPTZ
         );
         CREATE TABLE "GameChallenges" (
           id INTEGER PRIMARY KEY,
@@ -165,7 +168,7 @@ async fn concurrent_accesses_timestamp_in_participation_lock_order() {
         .expect("second writer did not resume")
         .expect("persist second access");
 
-    let ordered: Vec<(Uuid, DateTime<Utc>, i32, i32, DateTime<Utc>)> = sqlx::query_as(
+    let ordered: Vec<OrderedAccessEvidence> = sqlx::query_as(
         r#"SELECT event.container_id, event.connected_at_utc, event.id,
                   job.source_id, job.observed_at_utc
              FROM "ContainerAccessEvents" event

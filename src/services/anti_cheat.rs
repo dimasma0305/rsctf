@@ -659,22 +659,56 @@ struct AdmissionDecision {
     observed_at: DateTime<Utc>,
 }
 
-async fn adjudicate_at(
-    transaction: &mut Transaction<'_, Postgres>,
+#[derive(Clone, Copy)]
+struct AdmissionContext<'a> {
     policy: PolicyFlags,
     user_id: Uuid,
-    user_name: Option<&str>,
-    identity: &PreparedIdentity,
+    user_name: Option<&'a str>,
+    identity: &'a PreparedIdentity,
     source: IdentitySource,
+}
+
+#[derive(Clone, Copy)]
+struct ExistingAccountGuard<'a> {
+    security_stamp: &'a str,
+    normalized_email: Option<&'a str>,
+}
+
+async fn adjudicate_at(
+    transaction: &mut Transaction<'_, Postgres>,
+    admission: AdmissionContext<'_>,
     now: DateTime<Utc>,
     locked_game_ids: Option<&[i32]>,
 ) -> AppResult<AdmissionOutcome> {
     let since = now - Duration::hours(IDENTITY_WINDOW_HOURS);
-    if let Some(conflict) = find_conflict(transaction, policy, user_id, identity, since).await? {
-        record_block(transaction, user_id, user_name, &conflict, now).await?;
+    if let Some(conflict) = find_conflict(
+        transaction,
+        admission.policy,
+        admission.user_id,
+        admission.identity,
+        since,
+    )
+    .await?
+    {
+        record_block(
+            transaction,
+            admission.user_id,
+            admission.user_name,
+            &conflict,
+            now,
+        )
+        .await?;
         return Ok(AdmissionOutcome::Blocked);
     }
-    record_observations(transaction, user_id, identity, source, now, locked_game_ids).await?;
+    record_observations(
+        transaction,
+        admission.user_id,
+        admission.identity,
+        admission.source,
+        now,
+        locked_game_ids,
+    )
+    .await?;
     Ok(AdmissionOutcome::Accepted)
 }
 
@@ -693,56 +727,39 @@ async fn evaluate_admission(
     // that accepts a new identity and a concurrent team-roster admission.
     lock_identity_user_scope(transaction, user_id).await?;
     lock_identity_values(transaction, identity).await?;
-    adjudicate_at(
-        transaction,
+    let admission = AdmissionContext {
         policy,
         user_id,
         user_name,
         identity,
         source,
-        now,
-        None,
-    )
-    .await
+    };
+    adjudicate_at(transaction, admission, now, None).await
 }
 
 async fn evaluate_canonical_admission(
     transaction: &mut Transaction<'_, Postgres>,
-    policy: PolicyFlags,
-    user_id: Uuid,
-    user_name: Option<&str>,
-    identity: &PreparedIdentity,
-    source: IdentitySource,
-    expected_security_stamp: Option<&str>,
-    expected_normalized_email: Option<&str>,
+    admission: AdmissionContext<'_>,
+    account_guard: Option<ExistingAccountGuard<'_>>,
 ) -> AppResult<AdmissionDecision> {
-    policy.validate()?;
-    lock_identity_user_scope(transaction, user_id).await?;
-    lock_identity_values(transaction, identity).await?;
-    let locked_game_ids = lock_observation_games(transaction, user_id, None).await?;
-    if let Some(expected_security_stamp) = expected_security_stamp {
+    admission.policy.validate()?;
+    lock_identity_user_scope(transaction, admission.user_id).await?;
+    lock_identity_values(transaction, admission.identity).await?;
+    let locked_game_ids = lock_observation_games(transaction, admission.user_id, None).await?;
+    if let Some(account_guard) = account_guard {
         account_guard::lock_live_existing_account(
             transaction,
-            user_id,
-            expected_security_stamp,
-            expected_normalized_email,
+            admission.user_id,
+            account_guard.security_stamp,
+            account_guard.normalized_email,
         )
         .await?;
     }
     // Assign the authoritative timestamp only after any finalizer wait. The
     // context query below then re-evaluates the strict [start,end) window.
     let observed_at = database_now(transaction).await?;
-    let outcome = adjudicate_at(
-        transaction,
-        policy,
-        user_id,
-        user_name,
-        identity,
-        source,
-        observed_at,
-        Some(&locked_game_ids),
-    )
-    .await?;
+    let outcome =
+        adjudicate_at(transaction, admission, observed_at, Some(&locked_game_ids)).await?;
     Ok(AdmissionDecision {
         outcome,
         observed_at,
@@ -780,13 +797,17 @@ pub async fn admit_existing_user(
     validate_required_identity(policy, &identity)?;
     let decision = evaluate_canonical_admission(
         &mut transaction,
-        policy,
-        user_id,
-        user_name,
-        &identity,
-        source,
-        Some(fallback_security_stamp),
-        expected_normalized_email,
+        AdmissionContext {
+            policy,
+            user_id,
+            user_name,
+            identity: &identity,
+            source,
+        },
+        Some(ExistingAccountGuard {
+            security_stamp: fallback_security_stamp,
+            normalized_email: expected_normalized_email,
+        }),
     )
     .await?;
     if decision.outcome == AdmissionOutcome::Blocked {
@@ -843,12 +864,13 @@ pub async fn admit_new_user_in_transaction(
     validate_required_identity(policy, &identity)?;
     Ok(evaluate_canonical_admission(
         transaction,
-        policy,
-        user_id,
-        user_name,
-        &identity,
-        source,
-        None,
+        AdmissionContext {
+            policy,
+            user_id,
+            user_name,
+            identity: &identity,
+            source,
+        },
         None,
     )
     .await?

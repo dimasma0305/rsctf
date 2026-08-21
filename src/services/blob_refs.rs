@@ -36,9 +36,10 @@ pub(crate) use challenges::{
     delete_challenge_locked, delete_game_challenges_locked, purge_deleted_challenge_artifacts,
 };
 pub(crate) use seaorm::store_and_acquire_in_seaorm_transaction;
+pub use writeups::clear_game_writeups;
 #[cfg(test)]
 use writeups::replace_writeup;
-pub use writeups::{clear_game_writeups, store_and_replace_writeup};
+pub(crate) use writeups::store_and_replace_writeup;
 
 const UPSERT_FILE_SQL: &str = r#"
     INSERT INTO "Files" (hash, upload_time_utc, file_size, name, reference_count)
@@ -431,7 +432,8 @@ mod tests {
             r#"
             CREATE TABLE "Games" (
               id INTEGER PRIMARY KEY, deletion_pending BOOLEAN NOT NULL,
-              start_time_utc TIMESTAMPTZ NOT NULL, writeup_required BOOLEAN NOT NULL,
+              start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL,
+              writeup_required BOOLEAN NOT NULL,
               writeup_deadline TIMESTAMPTZ NOT NULL
             );
             CREATE TABLE "Teams" (
@@ -476,7 +478,8 @@ mod tests {
         let user_id = uuid::Uuid::new_v4();
         sqlx::query(
             r#"INSERT INTO "Games" VALUES
-               (1, FALSE, clock_timestamp() - interval '1 hour', TRUE,
+               (1, FALSE, clock_timestamp() - interval '1 hour',
+                clock_timestamp() + interval '1 hour', TRUE,
                 clock_timestamp() + interval '1 hour')"#,
         )
         .execute(&pool)
@@ -514,6 +517,13 @@ mod tests {
         .unwrap();
 
         let storage = Arc::new(CoordinatedStorage::default());
+        let caller = crate::services::live_roster::LiveParticipationIdentity {
+            user_id,
+            expected_security_stamp: "stamp",
+            game_id: 1,
+            team_id: 2,
+            participation_id: 3,
+        };
         sqlx::query(r#"UPDATE "AspNetUsers" SET security_stamp = 'rotated' WHERE id = $1"#)
             .bind(user_id)
             .execute(&pool)
@@ -522,11 +532,7 @@ mod tests {
         assert!(store_and_replace_writeup(
             &pool,
             storage.as_ref(),
-            1,
-            3,
-            2,
-            user_id,
-            "stamp",
+            caller,
             "writeup.pdf",
             b"%PDF-1.7",
         )
@@ -544,11 +550,7 @@ mod tests {
         assert!(store_and_replace_writeup(
             &pool,
             storage.as_ref(),
-            1,
-            3,
-            2,
-            user_id,
-            "stamp",
+            caller,
             "writeup.pdf",
             b"%PDF-1.7",
         )
@@ -573,11 +575,7 @@ mod tests {
                 store_and_replace_writeup(
                     &pool,
                     storage.as_ref(),
-                    1,
-                    3,
-                    2,
-                    user_id,
-                    "stamp",
+                    caller,
                     "writeup.pdf",
                     b"%PDF-1.7",
                 )

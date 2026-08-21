@@ -218,6 +218,202 @@ pub async fn delete_anti_cheat_block(
     )))
 }
 
+// ─── Bounded event-network telemetry and evidence fusion ──────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivedFindingResult {
+    pub inserted: usize,
+}
+
+pub async fn derive_event_security_findings(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Path(game_id): Path<i32>,
+) -> AppResult<RequestResponse<DerivedFindingResult>> {
+    let inserted = crate::services::event_security::derive_context_findings(&st, game_id).await?;
+    Ok(RequestResponse::ok(DerivedFindingResult { inserted }))
+}
+
+pub async fn fused_event_security_breakdown(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Path((game_id, participation_id)): Path<(i32, i32)>,
+) -> AppResult<RequestResponse<crate::services::event_security::FusedEvidenceBreakdown>> {
+    Ok(RequestResponse::ok(
+        crate::services::event_security::fused_breakdown(&st, game_id, participation_id).await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingReviewRequest {
+    pub status: crate::services::event_security::FindingReviewStatus,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+pub async fn review_event_security_finding(
+    State(st): State<SharedState>,
+    admin: AdminUser,
+    Path((game_id, finding_id)): Path<(i32, i64)>,
+    Json(request): Json<FindingReviewRequest>,
+) -> AppResult<MessageResponse> {
+    crate::services::event_security::review_finding(
+        &st,
+        game_id,
+        finding_id,
+        admin.0.id,
+        request.status,
+        request.note.as_deref(),
+    )
+    .await?;
+    Ok(MessageResponse::ok("Finding review recorded"))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReasonRequest {
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryPurgeResult {
+    pub rows_removed: i64,
+    pub logical_bytes_removed: i64,
+}
+
+pub async fn purge_event_security_telemetry(
+    State(st): State<SharedState>,
+    admin: AdminUser,
+    Path(game_id): Path<i32>,
+    Json(request): Json<ReasonRequest>,
+) -> AppResult<RequestResponse<TelemetryPurgeResult>> {
+    let (rows_removed, logical_bytes_removed) =
+        crate::services::event_security::purge_game_telemetry(
+            &st,
+            game_id,
+            admin.0.id,
+            &request.reason,
+        )
+        .await?;
+    Ok(RequestResponse::ok(TelemetryPurgeResult {
+        rows_removed,
+        logical_bytes_removed,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VpnOverrideRequest {
+    pub reason: String,
+    pub duration_minutes: i32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VpnOverrideResult {
+    pub id: Uuid,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub expires_at_utc: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct VpnOverrideModel {
+    pub id: Uuid,
+    pub reason: String,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub created_at_utc: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub expires_at_utc: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub revoked_at_utc: Option<DateTime<Utc>>,
+    pub active: bool,
+}
+
+pub async fn list_event_vpn_overrides(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Path(game_id): Path<i32>,
+) -> AppResult<RequestResponse<Vec<VpnOverrideModel>>> {
+    let overrides = sqlx::query_as::<_, VpnOverrideModel>(
+        r#"SELECT id, reason, created_at_utc, expires_at_utc, revoked_at_utc,
+                  revoked_at_utc IS NULL
+                  AND created_at_utc <= clock_timestamp()
+                  AND expires_at_utc > clock_timestamp() AS active
+             FROM "EventVpnGateOverrides"
+            WHERE game_id = $1
+            ORDER BY created_at_utc DESC, id DESC
+            LIMIT 100"#,
+    )
+    .bind(game_id)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(RequestResponse::ok(overrides))
+}
+
+pub async fn create_event_vpn_override(
+    State(st): State<SharedState>,
+    admin: AdminUser,
+    Path(game_id): Path<i32>,
+    Json(request): Json<VpnOverrideRequest>,
+) -> AppResult<RequestResponse<VpnOverrideResult>> {
+    let reason = request.reason.trim();
+    if !(8..=512).contains(&reason.len()) || !(1..=60).contains(&request.duration_minutes) {
+        return Err(AppError::bad_request(
+            "Override requires an 8 to 512 character reason and 1 to 60 minute duration",
+        ));
+    }
+    let id = Uuid::now_v7();
+    let expires_at_utc: DateTime<Utc> = sqlx::query_scalar(
+        r#"INSERT INTO "EventVpnGateOverrides"
+             (id, game_id, created_by_user_id, reason, expires_at_utc)
+           SELECT $1, game.id, $3, $4,
+                  clock_timestamp() + make_interval(mins => $5)
+             FROM "Games" game
+            WHERE game.id = $2 AND game.deletion_pending = FALSE
+           RETURNING expires_at_utc"#,
+    )
+    .bind(id)
+    .bind(game_id)
+    .bind(admin.0.id)
+    .bind(reason)
+    .bind(request.duration_minutes)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))?;
+    crate::services::event_security::invalidate_policy(&st, game_id).await;
+    Ok(RequestResponse::ok(VpnOverrideResult {
+        id,
+        expires_at_utc,
+    }))
+}
+
+pub async fn revoke_event_vpn_override(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Path((game_id, override_id)): Path<(i32, Uuid)>,
+) -> AppResult<MessageResponse> {
+    let updated = sqlx::query(
+        r#"UPDATE "EventVpnGateOverrides"
+              SET revoked_at_utc = clock_timestamp()
+            WHERE id = $1 AND game_id = $2 AND revoked_at_utc IS NULL"#,
+    )
+    .bind(override_id)
+    .bind(game_id)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if updated.rows_affected() != 1 {
+        return Err(AppError::not_found("VPN override not found"));
+    }
+    crate::services::event_security::invalidate_policy(&st, game_id).await;
+    Ok(MessageResponse::ok("VPN override revoked"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

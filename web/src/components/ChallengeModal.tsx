@@ -52,7 +52,7 @@ import { FlagVerdictKind, FlagVerdictState } from '@Utils/FlagVerdict'
 import { useLanguage } from '@Utils/I18n'
 import { ChallengeCategoryItemProps, HunamizeSize } from '@Utils/Shared'
 import { useTicker } from '@Hooks/useTicker'
-import { ChallengeDetailModel, ChallengeType, ReviewRating, SubmissionType } from '@Api'
+import { ChallengeDetailModel, ChallengeType, ReviewRating, SolveReceiptMode, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengeModal.module.css'
 import misc from '@Styles/Misc.module.css'
 
@@ -126,6 +126,8 @@ export interface ChallengeModalProps extends ModalProps {
   practiceMode?: boolean
   flag: string
   setFlag: (value: string | React.ChangeEvent<any> | null | undefined) => void
+  receiptProof: string
+  setReceiptProof: (value: string | React.ChangeEvent<any> | null | undefined) => void
   onCreate: () => void
   onExtend: () => void
   onDestroy: () => void
@@ -155,6 +157,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     practiceMode,
     flag,
     setFlag,
+    receiptProof,
+    setReceiptProof,
     onCreate,
     onExtend,
     onDestroy,
@@ -662,20 +666,39 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
                 }
               }}
             >
-              <Group justify="space-between" gap="sm" align="flex-end">
-                <TextInput
-                  ref={flagInputRef}
-                  label={t('challenge.label.flag', 'Flag')}
-                  placeholder={placeholder}
-                  value={inputValue}
-                  disabled={inputDisabled}
-                  onChange={setFlag}
-                  classNames={{ root: misc.flexGrow, input: misc.ffmono }}
-                />
-                <Button miw="6rem" type="submit" disabled={inputDisabled} loading={submitting}>
-                  {t('challenge.button.submit_flag')}
-                </Button>
-              </Group>
+              <Stack gap="xs">
+                {(challenge?.solveReceiptMode ?? SolveReceiptMode.Disabled) !== SolveReceiptMode.Disabled && (
+                  <Textarea
+                    label={t('challenge.label.solve_receipt', 'Trusted solve receipt')}
+                    description={t('challenge.content.solve_receipt', {
+                      defaultValue: 'One-use proof from {{issuer}}. It is bound to this answer and expires after 10 minutes.',
+                      issuer: challenge?.receiptVerifierIdentity ?? t('common.label.not_available', 'the configured verifier'),
+                    })}
+                    required={challenge?.solveReceiptMode === SolveReceiptMode.Required}
+                    minRows={2}
+                    maxRows={4}
+                    autosize
+                    value={receiptProof}
+                    disabled={inputDisabled}
+                    onChange={setReceiptProof}
+                    styles={{ input: { fontFamily: 'monospace', fontSize: 'var(--mantine-font-size-xs)' } }}
+                  />
+                )}
+                <Group justify="space-between" gap="sm" align="flex-end">
+                  <TextInput
+                    ref={flagInputRef}
+                    label={t('challenge.label.flag', 'Flag')}
+                    placeholder={placeholder}
+                    value={inputValue}
+                    disabled={inputDisabled}
+                    onChange={setFlag}
+                    classNames={{ root: misc.flexGrow, input: misc.ffmono }}
+                  />
+                  <Button miw="6rem" type="submit" disabled={inputDisabled} loading={submitting}>
+                    {t('challenge.button.submit_flag')}
+                  </Button>
+                </Group>
+              </Stack>
             </form>
           </>
         )}

@@ -54,6 +54,23 @@ pub(super) struct CompetitiveWrongAttempt {
     pub submit_time_utc: chrono::DateTime<chrono::Utc>,
 }
 
+type CanonicalSolveRow = (
+    i32,
+    i32,
+    i32,
+    chrono::DateTime<chrono::Utc>,
+    Option<uuid::Uuid>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<bool>,
+);
+
+type SubmissionObservationRow = (
+    chrono::DateTime<chrono::Utc>,
+    Option<uuid::Uuid>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<bool>,
+);
+
 pub(super) fn is_common_ordering_challenge(solve_count: usize, participant_count: usize) -> bool {
     participant_count > 0 && solve_count as f64 / participant_count as f64 > COMMON_SOLVE_RATE
 }
@@ -145,15 +162,7 @@ async fn load_canonical_solves_scoped(
     window: CompetitiveGameWindow,
     participation_id: Option<i32>,
 ) -> AppResult<Vec<CanonicalSolve>> {
-    let rows: Vec<(
-        i32,
-        i32,
-        i32,
-        chrono::DateTime<chrono::Utc>,
-        Option<uuid::Uuid>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<bool>,
-    )> = sqlx::query_as(
+    let rows: Vec<CanonicalSolveRow> = sqlx::query_as(
         r#"SELECT submission.participation_id,
                   submission.team_id,
                   submission.challenge_id,
@@ -438,7 +447,7 @@ async fn persist_suspicion_event_with_weight_guarded(
             AppError::internal("HighWrongRate evidence requires a challenge identity")
         })?;
         let rechecked = high_wrong_rate_hits_connection(
-            &mut *transaction,
+            &mut transaction,
             game_id,
             window,
             Some(participation_id),
@@ -470,7 +479,7 @@ async fn persist_suspicion_event_with_weight_guarded(
     }
     if inserted {
         let new_score =
-            super::recompute_participation_suspicion_score(&mut *transaction, participation_id)
+            super::recompute_participation_suspicion_score(&mut transaction, participation_id)
                 .await?;
         tracing::info!(
             participation_id,
@@ -604,12 +613,7 @@ async fn evaluate_submission_inner(
     let window = load_competitive_game_window(pool, game_id)
         .await?
         .ok_or_else(|| AppError::not_found("game not found"))?;
-    let current: Option<(
-        chrono::DateTime<chrono::Utc>,
-        Option<uuid::Uuid>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<bool>,
-    )> = sqlx::query_as(
+    let current: Option<SubmissionObservationRow> = sqlx::query_as(
         r#"SELECT submit_time_utc,
                   container_id,
                   container_last_operation_at_submit,
@@ -749,26 +753,27 @@ async fn evaluate_submission_inner(
     // A canonical solve long after the submit-time instance's last operation,
     // when the immutable snapshot proves it was unloaded with no container.
     // Legacy NULL snapshots emit nothing; replay never reads mutable instances.
-    if challenge_type.is_container() && earliest_accept_here == Some(submission_time) {
-        if is_hoarded_submission(
+    if challenge_type.is_container()
+        && earliest_accept_here == Some(submission_time)
+        && is_hoarded_submission(
             submission_time,
             container_id.is_some(),
             container_last_operation,
             container_was_loaded,
-        ) {
-            let evidence_key = challenge_evidence_key(challenge_id);
-            record_with_dedup_at(
-                db,
-                game_id,
-                participation_id,
-                Some(challenge_id),
-                SuspicionType::Hoarding,
-                &evidence_key,
-                submission_time,
-                &mut codes,
-            )
-            .await?;
-        }
+        )
+    {
+        let evidence_key = challenge_evidence_key(challenge_id);
+        record_with_dedup_at(
+            db,
+            game_id,
+            participation_id,
+            Some(challenge_id),
+            SuspicionType::Hoarding,
+            &evidence_key,
+            submission_time,
+            &mut codes,
+        )
+        .await?;
     }
 
     Ok(codes)

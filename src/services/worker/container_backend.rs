@@ -370,8 +370,8 @@ fn next_ready_poll(current: Duration) -> Duration {
 
 fn jittered_ready_poll(base: Duration, workload_id: Uuid, attempt: u64) -> Duration {
     let mut seed = attempt.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    for chunk in workload_id.as_bytes().chunks_exact(8) {
-        seed ^= u64::from_le_bytes(chunk.try_into().expect("UUID chunk is eight bytes"));
+    for chunk in workload_id.as_bytes().as_chunks::<8>().0 {
+        seed ^= u64::from_le_bytes(*chunk);
         seed = seed.rotate_left(17).wrapping_mul(0x94d0_49bb_1331_11eb);
     }
     let percent = 80 + seed % 41;

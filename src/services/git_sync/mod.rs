@@ -57,9 +57,9 @@ use serde::Deserialize;
 
 use crate::app_state::SharedState;
 use crate::models::data::{flag_context, game, game_challenge};
-use crate::utils::enums::{
-    ChallengeBuildStatus, ChallengeReviewStatus, ChallengeType, NetworkMode, ScoreCurve,
-};
+#[cfg(test)]
+use crate::utils::enums::ChallengeReviewStatus;
+use crate::utils::enums::{ChallengeBuildStatus, ChallengeType, NetworkMode, ScoreCurve};
 use crate::utils::error::{AppError, AppResult};
 
 mod checker;
@@ -102,15 +102,11 @@ mod runtime;
 use runtime::{live_runtime_update_deferred, LiveRuntimeIntent};
 mod grading;
 use grading::{competition_scoring_started_locked, grading_fence_locked, GradingIntent};
-
-/// Whether an import may run executable preparation while ingesting its manifest.
-/// User submissions must remain inert until a separate, isolated approval worker
-/// exists; trusted manager/repository imports preserve the existing inline flow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImportPolicy {
-    PendingReview,
-    Trusted,
-}
+mod policy;
+pub use policy::ImportPolicy;
+use policy::{initialize_new_import_review, validate_pending_manifest, MAX_PENDING_MANIFEST_BYTES};
+#[cfg(test)]
+use policy::{MAX_PENDING_HINTS, MAX_PENDING_STATIC_FLAGS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManifestImportResult {
@@ -120,23 +116,6 @@ pub struct ManifestImportResult {
     pub runtime_update_deferred: bool,
     pub grading_update_deferred: bool,
     pub attachment_synced: bool,
-}
-
-impl ImportPolicy {
-    fn review_status(self) -> ChallengeReviewStatus {
-        match self {
-            Self::PendingReview => ChallengeReviewStatus::Pending,
-            Self::Trusted => ChallengeReviewStatus::Active,
-        }
-    }
-
-    fn reviewed_at(self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        matches!(self, Self::Trusted).then_some(now)
-    }
-
-    fn may_execute(self) -> bool {
-        matches!(self, Self::Trusted)
-    }
 }
 
 /// Persist a replica-independent source identity only when the manifest resolves
@@ -347,11 +326,26 @@ pub async fn import_manifest(
         return Err(AppError::conflict("Game is being deleted"));
     }
 
+    if policy.is_pending() {
+        let manifest_bytes = tokio::fs::metadata(manifest)
+            .await
+            .map_err(|e| AppError::internal(format!("git_sync: stat {}: {e}", manifest.display())))?
+            .len();
+        if manifest_bytes > MAX_PENDING_MANIFEST_BYTES {
+            return Err(AppError::bad_request(format!(
+                "user-submitted manifests may be at most {MAX_PENDING_MANIFEST_BYTES} bytes"
+            )));
+        }
+    }
+
     let raw = tokio::fs::read_to_string(manifest)
         .await
         .map_err(|e| AppError::internal(format!("git_sync: read {}: {e}", manifest.display())))?;
     let model: ChallengeYaml = serde_norway::from_str(&raw)
         .map_err(|e| AppError::bad_request(format!("invalid challenge.yaml: {e}")))?;
+    if policy.is_pending() {
+        validate_pending_manifest(&model)?;
+    }
 
     let name = model
         .name
@@ -551,7 +545,7 @@ pub async fn import_manifest(
     // package before INSERT so a later reviewer can prepare the exact immutable
     // checker they inspected. Trusted repository imports publish their checker
     // inline, then retain the same complete package when a local image is built.
-    let mut archive_package: Option<Vec<u8>> = if policy == ImportPolicy::PendingReview {
+    let mut archive_package: Option<Vec<u8>> = if policy.is_pending() {
         Some(zip_context_dir(package_dir).await?)
     } else {
         None
@@ -804,14 +798,7 @@ pub async fn import_manifest(
         am.ad_self_hosted = Set(ad_self_hosted);
     }
     if !is_update {
-        am.is_enabled = Set(false);
-        am.accepted_count = Set(0);
-        am.submission_count = Set(0);
-        // Establish review state at INSERT time. A user submission must never
-        // be transiently Active while its untrusted side effects run.
-        am.review_status = Set(policy.review_status());
-        am.reviewed_at_utc = Set(policy.reviewed_at(now));
-        am.submitted_at_utc = Set(Some(now));
+        initialize_new_import_review(&mut am, policy, now);
     }
 
     // Persist the row and its static flags together. On an update the loaded

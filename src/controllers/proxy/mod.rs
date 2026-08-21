@@ -33,10 +33,10 @@
 //! sessions are capped per user, participation and workload so one team cannot
 //! consume every trusted-worker data stream.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
@@ -51,7 +51,8 @@ use futures::{SinkExt, StreamExt};
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser, MaybeUser};
-use crate::models::data::{container, game_instance, participation, user, user_participation};
+use crate::models::data::{container, game_instance, participation, user_participation};
+use crate::services::live_roster::LiveParticipationIdentity;
 use crate::services::worker::{parse_worker_handle, WorkerHandle};
 use crate::utils::enums::{ParticipationStatus, Role};
 use rsctf_worker_protocol::{
@@ -63,13 +64,15 @@ mod authorization;
 mod egress;
 #[cfg(test)]
 mod tests;
+mod transport;
 
 use access_log::log_container_access_on;
 use authorization::{
-    game_proxy_scope_is_valid, try_acquire_game_proxy_open_fence, GameProxyOpenFence,
-    GameProxyTargetIdentity,
+    game_proxy_scope_is_valid, game_proxy_session_is_valid, try_acquire_game_proxy_open_fence,
+    GameProxyOpenFence, GameProxyTargetIdentity,
 };
 use egress::{build_egress_scan, record_flag_egress, EgressScan, RollingFlagMatcher};
+use transport::{close_cleanly, endpoint_unavailable_close, normal_close, transport_failure_close};
 
 /// Buffer size for TCP→WebSocket reads, matching RSCTF's `BufferSize`.
 const BUFFER_SIZE: usize = 4096;
@@ -116,6 +119,7 @@ async fn proxy_for_instance(
     // (best-effort forensics), never for access control.
     let remote_ip =
         crate::services::anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_default();
+    let event_vpn_source = remote_ip.parse::<Ipv4Addr>().ok();
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -150,13 +154,17 @@ async fn proxy_for_instance(
                             // suspicion advisory before row locks.
                             let Some(mut open_fence) = try_acquire_game_proxy_open_fence(
                                 st_log.pg(),
-                                a.accessing_user_id,
-                                &a.accessing_security_stamp,
-                                game.game_id,
-                                game.accessing_team_id,
-                                game.accessing_participation_id,
+                                LiveParticipationIdentity {
+                                    user_id: a.accessing_user_id,
+                                    expected_security_stamp: &a.accessing_security_stamp,
+                                    game_id: game.game_id,
+                                    team_id: game.accessing_team_id,
+                                    participation_id: game.accessing_participation_id,
+                                },
                                 game.challenge_id,
                                 &game.target_identity,
+                                event_vpn_source,
+                                game.is_monitor,
                             )
                             .await
                             else {
@@ -186,7 +194,6 @@ async fn proxy_for_instance(
                                 return;
                             }
                             let lease = InstanceLease {
-                                db: st_log.db.clone(),
                                 pool: st_log.pg().clone(),
                                 user_id: a.accessing_user_id,
                                 security_stamp: a.accessing_security_stamp.clone(),
@@ -196,6 +203,8 @@ async fn proxy_for_instance(
                                     participation_id: game.accessing_participation_id,
                                     challenge_id: game.challenge_id,
                                     target_identity: game.target_identity.clone(),
+                                    event_vpn_source,
+                                    bypass_event_vpn: game.is_monitor,
                                 },
                             };
                             (admission, scan, lease, Some(open_fence))
@@ -210,7 +219,6 @@ async fn proxy_for_instance(
                                 return;
                             };
                             let lease = InstanceLease {
-                                db: st_log.db.clone(),
                                 pool: st_log.pg().clone(),
                                 user_id: a.accessing_user_id,
                                 security_stamp: a.accessing_security_stamp.clone(),
@@ -309,7 +317,7 @@ async fn resolve_instance_target(
 
     if container.game_instance_id.is_none() {
         match resolve_exercise_instance_target(st, &user, &container).await {
-            ExerciseResolution::Granted(access) => return Some(access),
+            ExerciseResolution::Granted(access) => return Some(*access),
             ExerciseResolution::Denied => return None,
             ExerciseResolution::NotExercise => {
                 return resolve_shared_instance_target(st, &user, container).await;
@@ -342,11 +350,13 @@ async fn resolve_instance_target(
     let target_identity = game_proxy_target_identity(&container, Some(instance.id));
     if !game_proxy_scope_is_valid(
         st.pg(),
-        user.id,
-        &user.security_stamp,
-        part.game_id,
-        part.team_id,
-        part.id,
+        LiveParticipationIdentity {
+            user_id: user.id,
+            expected_security_stamp: &user.security_stamp,
+            game_id: part.game_id,
+            team_id: part.team_id,
+            participation_id: part.id,
+        },
         instance.challenge_id,
         &target_identity,
     )
@@ -402,7 +412,7 @@ struct ExerciseAccessRow {
 }
 
 enum ExerciseResolution {
-    Granted(InstanceAccess),
+    Granted(Box<InstanceAccess>),
     Denied,
     NotExercise,
 }
@@ -443,14 +453,14 @@ async fn resolve_exercise_instance_target(
     let Some(endpoint) = proxy_target(container) else {
         return ExerciseResolution::Denied;
     };
-    ExerciseResolution::Granted(InstanceAccess {
+    ExerciseResolution::Granted(Box::new(InstanceAccess {
         endpoint,
         container_id: container.id,
         accessing_user_id: user.id,
         accessing_user_name: user.name.clone(),
         accessing_security_stamp: user.security_stamp.clone(),
         owner: InstanceOwner::Exercise(exercise),
-    })
+    }))
 }
 
 fn authorize_exercise_access(
@@ -519,11 +529,13 @@ async fn resolve_shared_instance_target(
     let target_identity = game_proxy_target_identity(&container, None);
     if !game_proxy_scope_is_valid(
         st.pg(),
-        user.id,
-        &user.security_stamp,
-        row.game_id,
-        row.team_id,
-        row.participation_id,
+        LiveParticipationIdentity {
+            user_id: user.id,
+            expected_security_stamp: &user.security_stamp,
+            game_id: row.game_id,
+            team_id: row.team_id,
+            participation_id: row.participation_id,
+        },
         row.challenge_id,
         &target_identity,
     )
@@ -775,7 +787,6 @@ enum WorkerProxyOpenError {
 }
 
 struct InstanceLease {
-    db: sea_orm::DatabaseConnection,
     pool: sqlx::PgPool,
     user_id: Uuid,
     security_stamp: String,
@@ -790,6 +801,8 @@ enum LeaseOwner {
         participation_id: i32,
         challenge_id: i32,
         target_identity: GameProxyTargetIdentity,
+        event_vpn_source: Option<Ipv4Addr>,
+        bypass_event_vpn: bool,
     },
     Exercise {
         exercise_instance_id: i32,
@@ -810,16 +823,22 @@ async fn wait_for_revocation(lease: InstanceLease) {
                 participation_id,
                 challenge_id,
                 target_identity,
+                event_vpn_source,
+                bypass_event_vpn,
             } => {
-                game_proxy_scope_is_valid(
+                game_proxy_session_is_valid(
                     &lease.pool,
-                    lease.user_id,
-                    &lease.security_stamp,
-                    *game_id,
-                    *team_id,
-                    *participation_id,
+                    LiveParticipationIdentity {
+                        user_id: lease.user_id,
+                        expected_security_stamp: &lease.security_stamp,
+                        game_id: *game_id,
+                        team_id: *team_id,
+                        participation_id: *participation_id,
+                    },
                     *challenge_id,
                     target_identity,
+                    *event_vpn_source,
+                    *bypass_event_vpn,
                 )
                 .await
             }
@@ -828,21 +847,15 @@ async fn wait_for_revocation(lease: InstanceLease) {
                 exercise_id,
                 container_id,
             } => {
-                let account_valid = user::Entity::find_by_id(lease.user_id)
-                    .one(&lease.db)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|account| account.role != Role::Banned);
-                account_valid
-                    && exercise_lease_is_valid(
-                        &lease.pool,
-                        lease.user_id,
-                        *exercise_instance_id,
-                        *exercise_id,
-                        *container_id,
-                    )
-                    .await
+                exercise_lease_is_valid(
+                    &lease.pool,
+                    lease.user_id,
+                    &lease.security_stamp,
+                    *exercise_instance_id,
+                    *exercise_id,
+                    *container_id,
+                )
+                .await
             }
         };
         if !lease_valid {
@@ -856,6 +869,7 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
       FROM "ExerciseInstances" instance
       JOIN "ExerciseChallenges" exercise ON exercise.id = instance.exercise_id
       JOIN "Containers" container ON container.id = instance.container_id
+      JOIN "AspNetUsers" account ON account.id = instance.user_id
      WHERE instance.id = $1
        AND instance.exercise_id = $2
        AND instance.user_id = $3
@@ -865,6 +879,9 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
        AND exercise.publish_time_utc <= clock_timestamp()
        AND container.is_proxy = TRUE
        AND container.game_instance_id IS NULL
+       AND account.security_stamp = $5
+       AND account.email_confirmed = TRUE
+       AND account.role <> $6
        AND (
            container.exercise_instance_id IS NULL
            OR container.exercise_instance_id = instance.id
@@ -874,6 +891,7 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
 async fn exercise_lease_is_valid(
     pool: &sqlx::PgPool,
     user_id: Uuid,
+    expected_security_stamp: &str,
     exercise_instance_id: i32,
     exercise_id: i32,
     container_id: Uuid,
@@ -883,6 +901,8 @@ async fn exercise_lease_is_valid(
         .bind(exercise_id)
         .bind(user_id)
         .bind(container_id)
+        .bind(expected_security_stamp)
+        .bind(Role::Banned as i16)
         .fetch_one(pool)
         .await
         .unwrap_or(false)
@@ -966,29 +986,4 @@ where
         _ = ws_to_tcp => {}
         _ = tcp_to_ws => {}
     }
-}
-
-/// Accept the upgraded socket and close it cleanly (used when there is nothing
-/// to proxy). Send a Close frame, then drop the socket.
-async fn close_cleanly(mut socket: WebSocket) {
-    let _ = socket.send(normal_close()).await;
-}
-
-fn normal_close() -> Message {
-    close_message(close_code::NORMAL, "")
-}
-
-fn endpoint_unavailable_close() -> Message {
-    close_message(close_code::AGAIN, "proxy endpoint unavailable")
-}
-
-fn transport_failure_close() -> Message {
-    close_message(close_code::ERROR, "proxy transport failed")
-}
-
-fn close_message(code: u16, reason: &'static str) -> Message {
-    Message::Close(Some(CloseFrame {
-        code,
-        reason: reason.into(),
-    }))
 }

@@ -13,6 +13,7 @@ pub mod challenge_workloads;
 pub mod container;
 pub mod cron;
 pub mod event_bus;
+pub mod event_security;
 pub(crate) mod game_config;
 pub mod git_sync;
 pub mod health;

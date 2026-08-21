@@ -191,6 +191,15 @@ after the enforcement probe above succeeds.
 
 Managed clusters with restricted Pod Security may reject this mode. A NetworkPolicy-capable CNI is necessary but not sufficient; verify routing and isolation with two real test teams.
 
+`vpn.sensor.enabled: true` adds the bounded event sensor to the singleton VPN
+owner Pod. Helm rejects a sensor without `vpn.enabled`. Configure
+`vpn.eventProofUrl` as an HTTPS rsctf origin and put only its exact `/32` plus
+required event-service routes in `vpn.eventAllowedIps`; default routes are
+rejected. The sidecar has `NET_RAW` but no database secret or `NET_ADMIN`, and
+ships with 0.5 CPU/128 MiB limits. If `vpn.sensor.asnFile` is set, mount that
+operator-maintained `CIDR,ASN,CLASS` file with `extraVolumes` and
+`extraVolumeMounts` at the same absolute path.
+
 Kubernetes is the supported backend for A&D or KotH challenges that set
 `allowEgress: true`. rsctf installs the workload's NetworkPolicy before its Pod
 exists, permits public Internet destinations plus cluster DNS while excluding

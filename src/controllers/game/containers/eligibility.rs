@@ -2,6 +2,7 @@ use sea_orm::EntityTrait;
 
 use crate::app_state::SharedState;
 use crate::models::data::{game_challenge, game_challenge::Entity as GameChallenge};
+use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::enums::{
     ChallengeBuildStatus, ChallengeReviewStatus, ChallengeType, GamePermission,
     ParticipationStatus, Role,
@@ -23,34 +24,16 @@ pub(super) enum ContainerRequestMode {
 /// a request waits for the lock or for the backend runtime.
 pub(super) async fn player_container_request_is_eligible(
     connection: &mut sqlx::PgConnection,
-    user_id: uuid::Uuid,
-    expected_security_stamp: &str,
-    game_id: i32,
-    participation_id: i32,
-    team_id: i32,
+    caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
     mode: ContainerRequestMode,
 ) -> AppResult<bool> {
-    player_container_request_is_eligible_on(
-        connection,
-        user_id,
-        expected_security_stamp,
-        game_id,
-        participation_id,
-        team_id,
-        challenge_id,
-        mode,
-    )
-    .await
+    player_container_request_is_eligible_on(connection, caller, challenge_id, mode).await
 }
 
 async fn player_container_request_is_eligible_on(
     connection: &mut sqlx::PgConnection,
-    user_id: uuid::Uuid,
-    expected_security_stamp: &str,
-    game_id: i32,
-    participation_id: i32,
-    team_id: i32,
+    caller: LiveParticipationIdentity<'_>,
     challenge_id: i32,
     mode: ContainerRequestMode,
 ) -> AppResult<bool> {
@@ -118,9 +101,9 @@ async fn player_container_request_is_eligible_on(
                   )
            )"#,
     )
-    .bind(user_id)
-    .bind(game_id)
-    .bind(participation_id)
+    .bind(caller.user_id)
+    .bind(caller.game_id)
+    .bind(caller.participation_id)
     .bind(matches!(mode, ContainerRequestMode::Shared))
     .bind(challenge_id)
     .bind(ParticipationStatus::Accepted as i16)
@@ -141,11 +124,11 @@ async fn player_container_request_is_eligible_on(
     }
     crate::services::live_roster::participation_caller_is_live_on(
         connection,
-        user_id,
-        expected_security_stamp,
-        game_id,
-        team_id,
-        participation_id,
+        caller.user_id,
+        caller.expected_security_stamp,
+        caller.game_id,
+        caller.team_id,
+        caller.participation_id,
         true,
     )
     .await
@@ -330,13 +313,16 @@ mod tests {
         .unwrap();
 
         let mut connection = pool.acquire().await.unwrap();
+        let caller = LiveParticipationIdentity {
+            user_id,
+            expected_security_stamp: "stamp",
+            game_id: 1,
+            team_id: 3,
+            participation_id: 2,
+        };
         assert!(player_container_request_is_eligible_on(
             &mut connection,
-            user_id,
-            "stamp",
-            1,
-            2,
-            3,
+            caller,
             4,
             ContainerRequestMode::PerTeam,
         )
@@ -348,11 +334,7 @@ mod tests {
             .unwrap();
         assert!(!player_container_request_is_eligible_on(
             &mut connection,
-            user_id,
-            "stamp",
-            1,
-            2,
-            3,
+            caller,
             4,
             ContainerRequestMode::PerTeam,
         )
@@ -367,11 +349,7 @@ mod tests {
         .unwrap();
         assert!(!player_container_request_is_eligible_on(
             &mut connection,
-            user_id,
-            "stamp",
-            1,
-            2,
-            3,
+            caller,
             4,
             ContainerRequestMode::PerTeam,
         )
@@ -387,11 +365,7 @@ mod tests {
         .unwrap();
         assert!(!player_container_request_is_eligible_on(
             &mut connection,
-            user_id,
-            "stamp",
-            1,
-            2,
-            3,
+            caller,
             4,
             ContainerRequestMode::PerTeam,
         )

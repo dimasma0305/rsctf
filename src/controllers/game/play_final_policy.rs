@@ -21,6 +21,32 @@ struct LockedPlayScope {
     end_time_utc: DateTime<Utc>,
 }
 
+type LockedPlayScopeRow = (bool, DateTime<Utc>, DateTime<Utc>, Option<i32>);
+
+#[derive(Clone, Copy)]
+pub(super) struct ChallengeResponseScope {
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+}
+
+impl ChallengeResponseScope {
+    pub(super) fn new(
+        game_id: i32,
+        team_id: i32,
+        participation_id: i32,
+        challenge_id: i32,
+    ) -> Self {
+        Self {
+            game_id,
+            team_id,
+            participation_id,
+            challenge_id,
+        }
+    }
+}
+
 impl LockedPlayScope {
     /// Read the database clock only after every potentially-blocking advisory
     /// and row lock has been acquired. A request queued behind an editor or
@@ -233,7 +259,7 @@ async fn lock_play_scope_on(
     participation_id: i32,
     challenge_ids: &[i32],
 ) -> AppResult<LockedPlayScope> {
-    let scope: Option<(bool, DateTime<Utc>, DateTime<Utc>, Option<i32>)> = sqlx::query_as(
+    let scope: Option<LockedPlayScopeRow> = sqlx::query_as(
         r#"SELECT game.practice_mode, game.start_time_utc, game.end_time_utc,
                   participation.division_id
              FROM "Games" game
@@ -654,16 +680,14 @@ pub(super) async fn finish_details_response(
 
     let result = async {
         let scope = lock_play_scope_on(
-            &mut **roster.transaction_mut(),
+            roster.transaction_mut(),
             game_id,
             team_id,
             participation_id,
             &challenge_ids,
         )
         .await?;
-        scope
-            .phase_at_db_clock(&mut **roster.transaction_mut())
-            .await?;
+        scope.phase_at_db_clock(roster.transaction_mut()).await?;
         Ok(RequestResponse::ok(model).into_response())
     }
     .await;
@@ -679,13 +703,16 @@ fn strip_live_runtime_context(model: &mut ChallengeDetailModel) {
 pub(super) async fn finish_challenge_response(
     pool: &sqlx::PgPool,
     user: &CurrentUser,
-    game_id: i32,
-    team_id: i32,
-    participation_id: i32,
-    challenge_id: i32,
+    scope: ChallengeResponseScope,
     grant: PreparedChallengeGrant,
     mut model: ChallengeDetailModel,
 ) -> AppResult<Response> {
+    let ChallengeResponseScope {
+        game_id,
+        team_id,
+        participation_id,
+        challenge_id,
+    } = scope;
     if grant.challenge.id != challenge_id
         || model.id != challenge_id
         || !grant.matches_response_projection(&model)
@@ -718,30 +745,22 @@ pub(super) async fn finish_challenge_response(
 
     let result = async {
         let scope = lock_play_scope_on(
-            &mut **roster.transaction_mut(),
+            roster.transaction_mut(),
             game_id,
             team_id,
             participation_id,
             &[challenge_id],
         )
         .await?;
-        let runtime_matches = lock_challenge_payload_on(
-            &mut **roster.transaction_mut(),
-            game_id,
-            participation_id,
-            &grant,
-        )
-        .await?;
-        let mut phase = scope
-            .phase_at_db_clock(&mut **roster.transaction_mut())
-            .await?;
+        let runtime_matches =
+            lock_challenge_payload_on(roster.transaction_mut(), game_id, participation_id, &grant)
+                .await?;
+        let mut phase = scope.phase_at_db_clock(roster.transaction_mut()).await?;
         if phase == PlayAccessPhase::Live && !runtime_matches {
             // A teardown may have removed the runtime just as the game ended.
             // Re-read the database clock before denying an archive that no
             // longer contains any runtime coordinate.
-            phase = scope
-                .phase_at_db_clock(&mut **roster.transaction_mut())
-                .await?;
+            phase = scope.phase_at_db_clock(roster.transaction_mut()).await?;
             if phase == PlayAccessPhase::Live {
                 return Err(AppError::not_found("Challenge runtime changed; retry"));
             }
@@ -784,9 +803,7 @@ pub(super) async fn finish_challenge_response(
             // The insert itself has a DB-clock live predicate. Re-read once
             // more immediately before serialization so a deadline crossed in
             // that statement also strips the prepared endpoint.
-            phase = scope
-                .phase_at_db_clock(&mut **roster.transaction_mut())
-                .await?;
+            phase = scope.phase_at_db_clock(roster.transaction_mut()).await?;
             if phase == PlayAccessPhase::Archived {
                 strip_live_runtime_context(&mut model);
             }

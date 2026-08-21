@@ -87,6 +87,15 @@ enum EmailUpdateMode {
     ConfirmedTicket,
 }
 
+struct EmailUpdateRequest<'a> {
+    user_id: Uuid,
+    expected_stamp: &'a str,
+    email: &'a str,
+    normalized_email: &'a str,
+    new_stamp: String,
+    mode: EmailUpdateMode,
+}
+
 /// Commit an email identity change under the same cross-replica lock used by
 /// password registration, OAuth provisioning, and admin identity writers.
 /// `normalized_email` is not protected by a database unique constraint on
@@ -95,12 +104,7 @@ enum EmailUpdateMode {
 async fn update_email_serialized(
     pool: &sqlx::PgPool,
     config: &crate::models::internal::configs::AppConfig,
-    user_id: Uuid,
-    expected_stamp: &str,
-    email: &str,
-    normalized_email: &str,
-    new_stamp: String,
-    mode: EmailUpdateMode,
+    request: EmailUpdateRequest<'_>,
 ) -> AppResult<EmailUpdateOutcome> {
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
@@ -116,10 +120,10 @@ async fn update_email_serialized(
     // confirmation mode here, after any admin policy update we waited behind.
     let policy =
         crate::services::anti_cheat::lock_and_load_account_policy(&mut transaction, config).await?;
-    if !verify_email_domain(email, &policy.email_domain_list) {
+    if !verify_email_domain(request.email, &policy.email_domain_list) {
         return Err(AppError::bad_request("Email domain is not allowed"));
     }
-    if mode == EmailUpdateMode::Immediate && policy.email_confirmation_required {
+    if request.mode == EmailUpdateMode::Immediate && policy.email_confirmation_required {
         return Err(AppError::bad_request(
             "Email confirmation policy changed; retry the email change",
         ));
@@ -131,8 +135,8 @@ async fn update_email_serialized(
                 WHERE normalized_email = $1 AND id <> $2
            )"#,
     )
-    .bind(normalized_email)
-    .bind(user_id)
+    .bind(request.normalized_email)
+    .bind(request.user_id)
     .fetch_one(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -155,11 +159,11 @@ async fn update_email_serialized(
               AND email_confirmed = TRUE
               AND role <> $6"#,
     )
-    .bind(email)
-    .bind(normalized_email)
-    .bind(new_stamp)
-    .bind(user_id)
-    .bind(expected_stamp)
+    .bind(request.email)
+    .bind(request.normalized_email)
+    .bind(request.new_stamp)
+    .bind(request.user_id)
+    .bind(request.expected_stamp)
     .bind(Role::Banned as i16)
     .execute(&mut *transaction)
     .await
@@ -614,12 +618,14 @@ pub async fn change_email(
         match update_email_serialized(
             st.pg(),
             st.config.as_ref(),
-            user.id,
-            &expected_stamp,
-            &new_mail,
-            &norm,
-            new_stamp.clone(),
-            EmailUpdateMode::Immediate,
+            EmailUpdateRequest {
+                user_id: user.id,
+                expected_stamp: &expected_stamp,
+                email: &new_mail,
+                normalized_email: &norm,
+                new_stamp: new_stamp.clone(),
+                mode: EmailUpdateMode::Immediate,
+            },
         )
         .await?
         {
@@ -731,12 +737,14 @@ pub async fn mail_change_confirm(
     match update_email_serialized(
         st.pg(),
         st.config.as_ref(),
-        ticket.user_id,
-        &ticket.security_stamp,
-        &ticket.new_email,
-        &normalized,
-        Uuid::new_v4().to_string(),
-        EmailUpdateMode::ConfirmedTicket,
+        EmailUpdateRequest {
+            user_id: ticket.user_id,
+            expected_stamp: &ticket.security_stamp,
+            email: &ticket.new_email,
+            normalized_email: &normalized,
+            new_stamp: Uuid::new_v4().to_string(),
+            mode: EmailUpdateMode::ConfirmedTicket,
+        },
     )
     .await?
     {

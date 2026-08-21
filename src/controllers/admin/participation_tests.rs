@@ -191,6 +191,10 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
             .unwrap(),
         ParticipationStatus::Accepted as i16
     );
+    // The review lease deliberately retains the parent Game row through each
+    // decision. Model an organizer committing the scoring boundary between
+    // requests rather than waiting on a row lock held by this same test task.
+    lease.release().await.unwrap();
     sqlx::query(
         r#"UPDATE "Games"
               SET ad_scoring_start_round = 1, koth_scoring_start_round = 1
@@ -200,6 +204,9 @@ async fn active_suspension_is_reversible_and_rejection_preserves_jeopardy_eviden
     .execute(&pool)
     .await
     .unwrap();
+    let mut lease = ParticipationReviewLease::acquire(&pool, identity.team_id)
+        .await
+        .unwrap();
     persist_participation_status(&mut lease, identity, ParticipationStatus::Suspended, None)
         .await
         .expect("active roster could not be suspended");

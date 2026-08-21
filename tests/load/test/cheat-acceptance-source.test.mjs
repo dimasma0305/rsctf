@@ -4,6 +4,7 @@ import test from "node:test";
 
 const source = readFileSync(new URL("../cheat-acceptance.mjs", import.meta.url), "utf8");
 const retainedSource = readFileSync(new URL("../cheat-event.mjs", import.meta.url), "utf8");
+const ciSource = readFileSync(new URL("../../../.github/workflows/ci.yml", import.meta.url), "utf8");
 
 test("compact acceptance wires its isolated shared-network journeys", () => {
   assert.match(source, /async function exerciseSharedIpLogins\(/);
@@ -63,4 +64,15 @@ test("retained cheat drill provisions helper identities through the neutral mark
   assert.match(retainedSource, /rsctf-cheat-drill\/\$\{runId\}/);
   assert.match(retainedSource, /honeypot outbox absent/);
   assert.match(retainedSource, /honeypot suspicion absent/);
+});
+
+test("CI installs the acceptance binary at a checker-uid traversable path", () => {
+  assert.match(
+    ciSource,
+    /sudo install --owner=root --group=root --mode=0755 \\\n+\s+\.\/target\/debug\/rsctf \/usr\/local\/bin\/rsctf-cheat-acceptance/,
+  );
+  assert.match(
+    ciSource,
+    /RSCTF_STORAGE_ROOT="\$storage_root" \\\n+\s+\/usr\/local\/bin\/rsctf-cheat-acceptance >"\$server_log"/,
+  );
 });

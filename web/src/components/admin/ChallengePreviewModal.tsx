@@ -90,6 +90,8 @@ export const ChallengePreviewModal: FC<ChallengePreviewModalProps> = (props) => 
       cateData={cateData}
       flag={flag}
       setFlag={setFlag}
+      receiptProof=""
+      setReceiptProof={() => undefined}
       onCreate={onCreate}
       onDestroy={onDestroy}
       onSubmitFlag={onSubmit}

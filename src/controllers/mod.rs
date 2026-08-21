@@ -3,6 +3,7 @@ pub mod admin;
 pub mod api_token;
 pub mod assets;
 pub mod edit;
+pub mod event_security;
 pub mod exercise;
 pub mod game;
 pub mod honeypot;

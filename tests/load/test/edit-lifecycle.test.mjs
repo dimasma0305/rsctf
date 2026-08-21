@@ -198,6 +198,7 @@ function objectBody(kind) {
       };
     case 'object': return {};
     case 'error': return { title: 'Manual round advance is disabled', status: 400 };
+    case 'variant-generation': return { generated: 0 };
     default: throw new Error(`missing sample body for ${kind}`);
   }
 }
@@ -216,30 +217,30 @@ function sampleResponse(operation) {
   };
 }
 
-test('catalog has exactly all 67 edit method/path operations', () => {
-  assert.equal(EDIT_OPERATIONS.length, 67);
-  assert.equal(new Set(EDIT_OPERATION_IDS).size, 67);
-  assert.equal(new Set(EDIT_OPERATIONS.map(({ method, path }) => `${method} ${path}`)).size, 67);
+test('catalog has exactly all 69 edit method/path operations', () => {
+  assert.equal(EDIT_OPERATIONS.length, 69);
+  assert.equal(new Set(EDIT_OPERATION_IDS).size, 69);
+  assert.equal(new Set(EDIT_OPERATIONS.map(({ method, path }) => `${method} ${path}`)).size, 69);
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { POST: 29, PUT: 6, DELETE: 11, GET: 21 },
+    { POST: 30, PUT: 6, DELETE: 11, GET: 22 },
   );
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.auth] = (counts[operation.auth] || 0) + 1;
       return counts;
     }, {}),
-    { admin: 13, 'managed-list': 1, manager: 52, 'user-submit': 1 },
+    { admin: 13, 'managed-list': 1, manager: 54, 'user-submit': 1 },
   );
 });
 
 test('catalog and every production controller source have exact bidirectional coverage', () => {
   const sources = controllerSources();
-  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 67 });
-  assert.equal(parseEditRouterOperations(sources).length, 67);
+  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 69 });
+  assert.equal(parseEditRouterOperations(sources).length, 69);
 });
 
 test('source drift catches routes added outside controllers/edit and removed catalog routes', () => {
@@ -320,7 +321,7 @@ test('every declared response contract has an accepting and rejecting unit sampl
 });
 
 test('coverage accounting rejects missing, duplicate, and unknown operation ids', () => {
-  assert.deepEqual(assertCompleteEditCoverage(EDIT_OPERATION_IDS), { covered: 67, required: 67 });
+  assert.deepEqual(assertCompleteEditCoverage(EDIT_OPERATION_IDS), { covered: 69, required: 69 });
   assert.throws(() => assertCompleteEditCoverage(EDIT_OPERATION_IDS.slice(1)), /missing: edit_post_add/);
   assert.throws(() => assertCompleteEditCoverage([...EDIT_OPERATION_IDS, EDIT_OPERATION_IDS[0]]), /duplicate/);
   assert.throws(() => assertCompleteEditCoverage([...EDIT_OPERATION_IDS, 'future']), /unknown: future/);
@@ -329,7 +330,7 @@ test('coverage accounting rejects missing, duplicate, and unknown operation ids'
 test('the disposable orchestrator has one explicit positive call for every catalog id', () => {
   const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
   const invoked = positiveCallExpressions(source).map(({ id }) => id);
-  assert.equal(invoked.length, 67);
+  assert.equal(invoked.length, 69);
   assert.deepEqual(new Set(invoked), new Set(EDIT_OPERATION_IDS));
   assert.equal(new Set(invoked).size, invoked.length, 'positive calls must not hide duplicate coverage');
 });

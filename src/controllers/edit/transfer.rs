@@ -118,6 +118,18 @@ pub struct ExportGameModel {
     pub koth_champion_cooldown_ticks: i32,
     #[serde(default = "default_koth_claim_confirmation_ticks")]
     pub koth_claim_confirmation_ticks: i32,
+    #[serde(default)]
+    pub vpn_access_required: bool,
+    #[serde(default)]
+    pub vpn_behavior_telemetry_enabled: bool,
+    #[serde(default)]
+    pub vpn_flag_scan_enabled: bool,
+    #[serde(default)]
+    pub vpn_provider_dns_telemetry_enabled: bool,
+    #[serde(default)]
+    pub vpn_source_asn_telemetry_enabled: bool,
+    #[serde(default)]
+    pub vpn_device_sharing_telemetry_enabled: bool,
     // Divisions + their per-challenge permission configs. Empty for a
     // single-division game; a legacy package without this field deserializes to
     // an empty vec. Mirrors GameExportService loading Divisions with ChallengeConfigs.
@@ -212,6 +224,12 @@ impl ExportGameModel {
             koth_cycle_ticks: g.koth_cycle_ticks,
             koth_champion_cooldown_ticks: g.koth_champion_cooldown_ticks,
             koth_claim_confirmation_ticks: g.koth_claim_confirmation_ticks,
+            vpn_access_required: g.vpn_access_required,
+            vpn_behavior_telemetry_enabled: g.vpn_behavior_telemetry_enabled,
+            vpn_flag_scan_enabled: g.vpn_flag_scan_enabled,
+            vpn_provider_dns_telemetry_enabled: g.vpn_provider_dns_telemetry_enabled,
+            vpn_source_asn_telemetry_enabled: g.vpn_source_asn_telemetry_enabled,
+            vpn_device_sharing_telemetry_enabled: g.vpn_device_sharing_telemetry_enabled,
             // Populated by the export handler (needs DB access).
             divisions: Vec::new(),
         }
@@ -320,6 +338,16 @@ pub struct ExportChallengeModel {
     pub ad_self_hosted: bool,
     #[serde(default = "default_ad_scoring_weight")]
     pub ad_scoring_weight: f64,
+    #[serde(default = "default_variant_mode")]
+    pub variant_mode: ChallengeVariantMode,
+    #[serde(default)]
+    pub variant_generator_image: Option<String>,
+    #[serde(default)]
+    pub variant_generator_digest: Option<String>,
+    #[serde(default = "default_solve_receipt_mode")]
+    pub solve_receipt_mode: SolveReceiptMode,
+    #[serde(default)]
+    pub receipt_verifier_identity: Option<String>,
     // Challenge-level attachment (RSCTF `GameChallenge.Attachment` — the single
     // StaticAttachment blob). Present for any challenge type that carries one.
     #[serde(default)]
@@ -374,6 +402,11 @@ impl ExportChallengeModel {
             ad_ssh_requires_flag: c.ad_ssh_requires_flag,
             ad_self_hosted: c.ad_self_hosted,
             ad_scoring_weight: c.ad_scoring_weight,
+            variant_mode: c.variant_mode,
+            variant_generator_image: c.variant_generator_image.clone(),
+            variant_generator_digest: c.variant_generator_digest.clone(),
+            solve_receipt_mode: c.solve_receipt_mode,
+            receipt_verifier_identity: c.receipt_verifier_identity.clone(),
             attachment_type,
             attachment_file_hash,
             attachment_remote_url,
@@ -381,6 +414,14 @@ impl ExportChallengeModel {
             flags,
         }
     }
+}
+
+fn default_variant_mode() -> ChallengeVariantMode {
+    ChallengeVariantMode::Disabled
+}
+
+fn default_solve_receipt_mode() -> SolveReceiptMode {
+    SolveReceiptMode::Disabled
 }
 
 /// `POST /api/edit/games/import` — import a game ZIP package (multipart `file`);

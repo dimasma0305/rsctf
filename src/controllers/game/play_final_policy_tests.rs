@@ -28,6 +28,9 @@ fn challenge_model() -> ChallengeDetailModel {
         deadline: None,
         user_rating: ReviewRating::None,
         user_comment: None,
+        solve_receipt_mode: SolveReceiptMode::Disabled,
+        receipt_verifier_identity: None,
+        variant: None,
     }
 }
 
@@ -325,10 +328,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         finish_challenge_response(
             &pool,
             &user,
-            1,
-            2,
-            3,
-            4,
+            ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
             prepared_response(&runtime),
         ),
@@ -360,10 +360,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         finish_challenge_response(
             &pool,
             &user,
-            1,
-            2,
-            3,
-            4,
+            ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
             prepared_response(&runtime),
         )
@@ -391,10 +388,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         finish_challenge_response(
             &pool,
             &user,
-            1,
-            2,
-            3,
-            4,
+            ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
             prepared_response(&runtime),
         )
@@ -417,10 +411,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         finish_challenge_response(
             &pool,
             &user,
-            1,
-            2,
-            3,
-            4,
+            ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
             prepared_response(&runtime),
         )
@@ -446,10 +437,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         finish_challenge_response(
             &pool,
             &user,
-            1,
-            2,
-            3,
-            4,
+            ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
             prepared_response(&runtime),
         )
@@ -468,10 +456,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         finish_challenge_response(
             &pool,
             &user,
-            1,
-            2,
-            3,
-            4,
+            ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
             prepared_response(&runtime),
         )
@@ -521,10 +506,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         finish_challenge_response(
             &pending_pool,
             &pending_user,
-            1,
-            2,
-            3,
-            4,
+            ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(pending_runtime.clone()),
             prepared_response(&pending_runtime),
         )
@@ -618,10 +600,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         finish_challenge_response(
             &pool,
             &user,
-            1,
-            2,
-            3,
-            4,
+            ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
             prepared_response(&runtime),
         )
