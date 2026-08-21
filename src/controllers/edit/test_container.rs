@@ -485,6 +485,20 @@ async fn import_from_dir(
     for (challenge_id, manifest) in archive_jobs {
         persist_challenge_archive(st, challenge_id, &manifest).await;
     }
+    let container_policy = if build_jobs.is_empty() {
+        None
+    } else {
+        match crate::services::container_policy::ContainerPolicy::load(st.pg()).await {
+            Ok(policy) => Some(policy),
+            Err(error) => {
+                result.failed += build_jobs.len() as i32;
+                result
+                    .messages
+                    .push(format!("container policy read failed: {error}"));
+                return result;
+            }
+        }
+    };
     for challenge_id in build_jobs {
         let challenge = match game_challenge::Entity::find_by_id(challenge_id)
             .one(&st.db)
@@ -506,6 +520,13 @@ async fn import_from_dir(
                 continue;
             }
         };
+        if matches!(policy, crate::services::git_sync::ImportPolicy::Trusted)
+            && container_policy.as_ref().is_some_and(|policy| {
+                crate::services::image_storage::lazy_build_eligible(policy, &challenge)
+            })
+        {
+            continue;
+        }
         let (outcome, _) = run_challenge_build(st, &challenge, "Import", 1).await;
         if outcome.status != ChallengeBuildStatus::Success {
             result.failed += 1;

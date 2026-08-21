@@ -858,6 +858,91 @@ const Configs: FC = () => {
                     })
                   }
                 />
+                <Switch
+                  checked={containerPolicy?.buildImagesOnDemand ?? false}
+                  disabled={disabled}
+                  label={SwitchLabel(
+                    t('admin.content.settings.container.lazy_build.label', 'Build images on first start'),
+                    t(
+                      'admin.content.settings.container.lazy_build.description',
+                      'Recoverable Jeopardy images stay queued until a player starts the container. The first start can take several minutes.'
+                    )
+                  )}
+                  onChange={(e) =>
+                    setContainerPolicy({
+                      ...containerPolicy,
+                      buildImagesOnDemand: e.currentTarget.checked,
+                    })
+                  }
+                />
+                <Switch
+                  checked={containerPolicy?.imageCleanupEnabled ?? false}
+                  disabled={disabled}
+                  label={SwitchLabel(
+                    t('admin.content.settings.container.image_cleanup.label', 'Clean idle images and build cache'),
+                    t(
+                      'admin.content.settings.container.image_cleanup.description',
+                      'Every 15 minutes, remove only expired rebuildable images and unused Docker build cache. Running containers are never forced.'
+                    )
+                  )}
+                  onChange={(e) =>
+                    setContainerPolicy({
+                      ...containerPolicy,
+                      imageCleanupEnabled: e.currentTarget.checked,
+                    })
+                  }
+                />
+                <NumberInput
+                  label={t('admin.content.settings.container.image_retention.label', 'Image idle retention (hours)')}
+                  description={t(
+                    'admin.content.settings.container.image_retention.description',
+                    'The lease restarts whenever the image is built or a player attempts to start it.'
+                  )}
+                  min={1}
+                  max={8760}
+                  disabled={disabled}
+                  value={containerPolicy?.imageIdleRetentionHours ?? 24}
+                  onChange={(e) => {
+                    const number = getInputNumber(e)
+                    if (isNaN(number)) return
+                    setContainerPolicy({ ...containerPolicy, imageIdleRetentionHours: number })
+                  }}
+                />
+                <NumberInput
+                  label={t(
+                    'admin.content.settings.container.build_cache_retention.label',
+                    'Build cache retention (hours)'
+                  )}
+                  description={t(
+                    'admin.content.settings.container.build_cache_retention.description',
+                    'When storage is below the free-space floor, all unused build cache is eligible immediately.'
+                  )}
+                  min={1}
+                  max={8760}
+                  disabled={disabled}
+                  value={containerPolicy?.buildCacheRetentionHours ?? 24}
+                  onChange={(e) => {
+                    const number = getInputNumber(e)
+                    if (isNaN(number)) return
+                    setContainerPolicy({ ...containerPolicy, buildCacheRetentionHours: number })
+                  }}
+                />
+                <NumberInput
+                  label={t('admin.content.settings.container.minimum_free.label', 'Minimum free storage (GiB)')}
+                  description={t(
+                    'admin.content.settings.container.minimum_free.description',
+                    'Below this floor, cleanup switches to cache-first pressure mode. Set 0 to disable pressure mode while keeping time-based retention.'
+                  )}
+                  min={0}
+                  max={1024}
+                  disabled={disabled}
+                  value={containerPolicy?.minimumFreeStorageGib ?? 10}
+                  onChange={(e) => {
+                    const number = getInputNumber(e)
+                    if (isNaN(number)) return
+                    setContainerPolicy({ ...containerPolicy, minimumFreeStorageGib: number })
+                  }}
+                />
               </SimpleGrid>
             </Stack>
           )}

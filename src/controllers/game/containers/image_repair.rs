@@ -1,7 +1,7 @@
 use super::*;
 use crate::utils::enums::ChallengeBuildStatus;
 
-static RUNTIME_IMAGE_REPAIRS: std::sync::LazyLock<crate::utils::single_flight::SingleFlight<bool>> =
+static RUNTIME_IMAGE_BUILDS: std::sync::LazyLock<crate::utils::single_flight::SingleFlight<bool>> =
     std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 const RUNTIME_IMAGE_REPAIR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
@@ -28,6 +28,64 @@ fn runtime_image_repair_plan(
         RuntimeImageRepairPlan::RebuildFromArchive
     } else {
         RuntimeImageRepairPlan::Unavailable
+    }
+}
+
+/// Build an eligible queued image on the first player start. The detached
+/// single-flight leader keeps building if the initiating HTTP request times
+/// out, while the PostgreSQL image lock collapses leaders across replicas.
+pub(super) async fn prepare_queued_image(
+    st: &SharedState,
+    challenge: &game_challenge::Model,
+) -> AppResult<bool> {
+    if challenge.build_status != ChallengeBuildStatus::Queued {
+        return Ok(false);
+    }
+    let policy = crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
+    if !crate::services::image_storage::lazy_build_eligible(&policy, challenge) {
+        return Ok(false);
+    }
+    let st = st.clone();
+    let challenge = challenge.clone();
+    let flight_key = format!("runtime-image-build:{}", challenge.id);
+    let built = RUNTIME_IMAGE_BUILDS
+        .run_with_timeout(
+            &flight_key,
+            RUNTIME_IMAGE_REPAIR_TIMEOUT,
+            move || async move {
+                let outcome =
+                    crate::controllers::edit::ensure_challenge_image(&st, &challenge).await;
+                let image = outcome.image_digest.as_deref();
+                let ready = outcome.status == ChallengeBuildStatus::Success
+                    && match image {
+                        Some(image) => st.containers.image_exists(image).await,
+                        None => false,
+                    };
+                if ready {
+                    tracing::info!(
+                        game = challenge.game_id,
+                        challenge = challenge.id,
+                        image = image.unwrap_or_default(),
+                        "built challenge image on first runtime demand"
+                    );
+                } else {
+                    tracing::error!(
+                        game = challenge.game_id,
+                        challenge = challenge.id,
+                        build_log = outcome.log.as_deref().unwrap_or("<none>"),
+                        "on-demand challenge image build failed"
+                    );
+                }
+                ready
+            },
+        )
+        .await;
+    if built {
+        Ok(true)
+    } else {
+        Err(AppError::unavailable(
+            "The challenge image could not be built on demand. An administrator must inspect its build log.",
+        ))
     }
 }
 
@@ -70,7 +128,7 @@ pub(super) async fn repair_missing_legacy_image(
             let challenge = challenge.clone();
             let previous_image = immutable_image.to_string();
             let flight_key = format!("runtime-image-repair:{}", challenge.id);
-            let repaired = RUNTIME_IMAGE_REPAIRS
+            let repaired = RUNTIME_IMAGE_BUILDS
                 .run_with_timeout(
                     &flight_key,
                     RUNTIME_IMAGE_REPAIR_TIMEOUT,

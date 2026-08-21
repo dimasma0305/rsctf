@@ -39,6 +39,7 @@ export default defineConfig(({ mode }) => {
       // Allow tunneling via cloudflared/ngrok/etc for remote preview.
       allowedHosts: true,
       proxy: {
+        '/healthz': TARGET,
         '/api': TARGET,
         '/swagger': TARGET,
         '/assets': TARGET,

@@ -692,6 +692,16 @@ export interface ContainerPolicy {
    * @max 360
    */
   renewalWindow?: number;
+  /** Build recoverable Jeopardy images when the first player starts a container. */
+  buildImagesOnDemand?: boolean;
+  /** Enable scheduled image and Docker build-cache cleanup. */
+  imageCleanupEnabled?: boolean;
+  /** Image retention after its latest build/start demand, in hours. */
+  imageIdleRetentionHours?: number;
+  /** Unused Docker build-cache retention, in hours. */
+  buildCacheRetentionHours?: number;
+  /** Free-space floor that enables cache-first pressure cleanup, in GiB. */
+  minimumFreeStorageGib?: number;
 }
 
 /** List response */
@@ -2064,6 +2074,33 @@ export interface BuildImageModel {
   referencedBy: string[]
   /** True when this is an A&D/KotH checker image. */
   isChecker: boolean
+  /** Last player runtime demand, or null when the image has only been built. */
+  lastUsedUtc?: number | null
+  /** Earliest time the current retention policy permits eviction. */
+  retentionExpiresUtc: number
+  /** True when any running or stopped Docker container references this image. */
+  inUse: boolean
+}
+
+export interface ImageStorageStatus {
+  filesystemTotalBytes: number
+  filesystemAvailableBytes: number
+  buildCacheBytes: number
+  reclaimableBuildCacheBytes: number
+  minimumFreeBytes: number
+  lowStorage: boolean
+}
+
+export interface ImageCleanupReport {
+  imagesRemoved: number
+  imageBytesEvicted: number
+  cacheBytesReclaimed: number
+  danglingBytesReclaimed: number
+  availableBytesBefore: number
+  availableBytesAfter: number
+  minimumFreeBytes: number
+  pressureMode: boolean
+  messages: string[]
 }
 
 /** Challenge update information (Edit) */
@@ -5538,6 +5575,33 @@ export class Api<
         format: "json",
         ...params,
       }),
+
+    /** Run the configured safe image/build-cache retention sweep now. */
+    adminCleanupBuildStorage: (params: RequestParams = {}) =>
+      this.request<ImageCleanupReport, RequestResponse>({
+        path: `/api/admin/builds/prunestorage`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /** Inspect filesystem and Docker build-cache usage. */
+    adminBuildStorageStatus: (params: RequestParams = {}) =>
+      this.request<ImageStorageStatus, RequestResponse>({
+        path: `/api/admin/builds/storage`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useAdminBuildStorageStatus: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ImageStorageStatus, RequestResponse>(
+        doFetch ? `/api/admin/builds/storage` : null,
+        options,
+      ),
 
     /**
      * @description List rsctf/* images on the local Docker daemon (size, age, referenced-by).

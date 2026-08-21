@@ -179,6 +179,7 @@ fn missing_requirement(role: RuntimeRole, vpn_enabled: bool, presence: u8) -> Op
             Some("control or network role unavailable")
         }
         RuntimeRole::All
+        | RuntimeRole::Development
         | RuntimeRole::Web
         | RuntimeRole::Control
         | RuntimeRole::Engine
@@ -487,6 +488,7 @@ mod tests {
     fn combined_and_owner_roles_are_self_contained() {
         for role in [
             RuntimeRole::All,
+            RuntimeRole::Development,
             RuntimeRole::Control,
             RuntimeRole::Network,
             RuntimeRole::Migrate,

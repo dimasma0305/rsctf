@@ -236,6 +236,14 @@ export const ADMIN_OPERATIONS = Object.freeze([
     poll: true,
     responseKind: "build-images",
   }),
+  operation("admin_build_storage_get", "GET", "/api/admin/builds/storage", {
+    poll: true,
+    responseKind: "build-storage",
+  }),
+  operation("admin_build_storage_cleanup", "POST", "/api/admin/builds/prunestorage", {
+    mutation: true,
+    responseKind: "storage-cleanup",
+  }),
   operation("admin_build_image_delete", "DELETE", "/api/admin/builds/images", {
     mutation: true,
     responseKind: "prune",
@@ -418,9 +426,36 @@ function validBuildImage(image) {
     Array.isArray(image.tags) && image.tags.every((tag) => typeof tag === "string" && tag.length > 0) &&
     Number.isSafeInteger(image.sizeBytes) && image.sizeBytes >= 0 &&
     (image.createdUtc === null || image.createdUtc === undefined || Number.isFinite(image.createdUtc)) &&
+    (image.lastUsedUtc === null || Number.isFinite(image.lastUsedUtc)) &&
+    Number.isFinite(image.retentionExpiresUtc) && typeof image.inUse === "boolean" &&
     typeof image.referenced === "boolean" &&
     Array.isArray(image.referencedBy) && image.referencedBy.every((title) => typeof title === "string") &&
     typeof image.isChecker === "boolean";
+}
+
+function validBuildStorage(body) {
+  return object(body) && [
+    "filesystemTotalBytes",
+    "filesystemAvailableBytes",
+    "buildCacheBytes",
+    "reclaimableBuildCacheBytes",
+    "minimumFreeBytes",
+  ].every((key) => Number.isSafeInteger(body[key]) && body[key] >= 0) &&
+    typeof body.lowStorage === "boolean";
+}
+
+function validStorageCleanup(body) {
+  return object(body) && Number.isSafeInteger(body.imagesRemoved) && body.imagesRemoved >= 0 &&
+    [
+      "imageBytesEvicted",
+      "cacheBytesReclaimed",
+      "danglingBytesReclaimed",
+      "availableBytesBefore",
+      "availableBytesAfter",
+      "minimumFreeBytes",
+    ].every((key) => Number.isSafeInteger(body[key]) && body[key] >= 0) &&
+    typeof body.pressureMode === "boolean" && Array.isArray(body.messages) &&
+    body.messages.every((message) => typeof message === "string");
 }
 
 export function assertBuildImageFixtureInventory(records, fixtures, { referenced } = {}) {
@@ -890,6 +925,8 @@ export function validateAdminResponse(operationId, response) {
       return object(body) && Number.isSafeInteger(body.id) && Number.isSafeInteger(body.challengeId) &&
         typeof body.status === "string";
     case "build-images": return Array.isArray(body) && body.every(validBuildImage);
+    case "build-storage": return validBuildStorage(body);
+    case "storage-cleanup": return validStorageCleanup(body);
     case "repo-scan-result": return validRepoScan(body);
     case "repo-binding":
       return object(body) && Number.isSafeInteger(body.id) && typeof body.repoUrl === "string" &&

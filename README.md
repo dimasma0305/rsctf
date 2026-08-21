@@ -128,6 +128,19 @@ The Rust source keeps controllers, services, models, repositories, and migration
 
 Source builds are for contributors and image publishing, not normal installation.
 
+For an isolated local stack with PostgreSQL, Redis, automatic Rust rebuilds,
+and Vite hot module replacement, run:
+
+```bash
+node scripts/dev.mjs
+```
+
+Open `http://localhost:63000`. The development database, storage, and secrets
+live under a separate Compose project and ignored `.rsctf-dev/` directory; the
+workflow never uses production data or requires a GitHub push. See the
+[source-development guide](docs/reference/source-development.md) for remote SSH
+forwarding, port overrides, status, and shutdown commands.
+
 ```bash
 cargo test --locked
 

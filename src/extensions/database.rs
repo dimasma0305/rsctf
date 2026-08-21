@@ -120,8 +120,9 @@ pub async fn connect(url: &str) -> anyhow::Result<DatabaseConnection> {
 /// Provisioning can hold one advisory lock while issuing a query (2P). A
 /// network owner always retains the singleton BYOC ownership lease. When VPN
 /// is enabled it also retains a PgListener and needs room for nested kernel
-/// reconciliation. All/Control/Engine run one suspicion reconciler that retains
-/// its advisory transaction while one nested closure/detector checkout progresses.
+/// reconciliation. All/Development/Control/Engine run one suspicion reconciler
+/// that retains its advisory transaction while one nested closure/detector
+/// checkout progresses.
 /// The one-shot migration role opens none of these paths and needs only the
 /// pool's two baseline connections.
 fn required_pool_connections(
@@ -151,7 +152,10 @@ fn required_pool_connections(
     // team, and player A&D controllers that acquire these guards. The
     // control/network role's deliberately narrow stateful router must not be
     // charged for controller paths it cannot serve.
-    let serves_player_api = matches!(role, RuntimeRole::All | RuntimeRole::Web);
+    let serves_player_api = matches!(
+        role,
+        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Web
+    );
     let roster_access = serves_player_api
         .then_some(crate::utils::single_flight::ROSTER_ACCESS_CONCURRENCY.saturating_mul(3));
     // An admin account update/deletion retains one session-level lifecycle
@@ -167,7 +171,7 @@ fn required_pool_connections(
     let runtime_transition = serves_player_api.then_some(4usize);
     let suspicion_reconciler = matches!(
         role,
-        RuntimeRole::All | RuntimeRole::Control | RuntimeRole::Engine
+        RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control | RuntimeRole::Engine
     )
     .then_some(SUSPICION_RECONCILER_CONNECTIONS);
     scans
@@ -189,6 +193,10 @@ mod tests {
     #[test]
     fn connection_floor_accounts_for_nested_scan_provisioning_and_owner_work() {
         assert_eq!(required_pool_connections(1, 4, false, RuntimeRole::Web), 26);
+        assert_eq!(
+            required_pool_connections(1, 4, false, RuntimeRole::Development),
+            28
+        );
         assert_eq!(
             required_pool_connections(4, 4, false, RuntimeRole::Engine),
             31

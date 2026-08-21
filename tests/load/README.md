@@ -21,6 +21,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
       npm run redis-outage  # disposable Redis failure/recovery micro-harness
+N=8   npm run image-storage # disposable queued-image first-start burst
 N=120 npm run worst-case    # mass BYOC reconnect storm (restarts rsctf)
 FLEET=10 npm run worker      # trusted worker create/proxy/destroy + lease gate
 FLEET=5  npm run worker-local # isolated current-tree rsctf + native Linux agent
@@ -48,6 +49,31 @@ logical quota breach. It measures the bounded aggregate API/SQL path; it does
 not retain packet payloads, DNS names, public IP addresses, or flag plaintext.
 The current fixed-rate acceptance numbers and artifact hashes are retained in
 [REPORT.md](./REPORT.md#bounded-event-security-telemetry-fixed-rate-acceptance--20-august-2026).
+
+### On-demand image storage
+
+`image-storage` targets one explicitly prepared, disposable challenge that is
+live, enabled, archive-backed, `Queued`, and has no existing runtime. It selects
+one current player from each of `N` distinct participations, schedules all first
+starts at a fixed arrival rate over one second, and probes `/healthz` throughout
+the build. The run fails unless rsctf publishes exactly one `RuntimeStart` build,
+all player starts succeed, each participation receives a running container, the
+ownership lease is stamped, and there are no dropped arrivals or 5xx responses.
+It then invokes one bounded cleanup pass while resource sampling remains active;
+set `IMAGE_STORAGE_SKIP_CLEANUP=1` only when testing the build half in isolation.
+
+```sh
+IMAGE_STORAGE_STRESS_ACK=1 GAME=92001 CID=92002 N=8 \
+  SUMMARY_JSON=/tmp/image-storage.json \
+  RESOURCE_JSON=/tmp/image-storage-resources.json \
+  npm run image-storage
+```
+
+The runner does not create or rewrite the challenge and refuses an ambient
+remote target. A remote disposable target additionally requires
+`ALLOW_REMOTE_IMAGE_STORAGE_STRESS` to equal its exact origin. Use the same
+fixture, `N`, and Docker host for before/after comparisons; compare sampled CPU,
+RAM, free bytes, and `image_start_ms` percentiles at that held arrival schedule.
 
 ## Layout
 
@@ -79,6 +105,7 @@ tests/load/
   player.mjs        → runs k6/player.js         (npm run player)
   ad-submit-batch.mjs → runs k6/ad-submit-batch.js (npm run ad-submit-batch)
   redis-outage.mjs  → stops/restores one acknowledged disposable Redis + runs k6/redis-outage.js
+  image-storage.mjs → validates a queued fixture + runs k6/image-storage.js
   byoc.mjs          → runs k6/byoc-requests.js  (npm run byoc)
   worst-case.mjs    → reconnect-storm harness   (npm run worst-case)
   worker-plane.mjs  → trusted worker lifecycle  (npm run worker)
@@ -93,6 +120,7 @@ tests/load/
     player.js         A&D + KotH player: poll format/Overall boards, tokens/state, submit flags
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable
+    image-storage.js  fixed-rate first-demand build burst + continuous health probes
     byoc-requests.js  flood BYOC tunnel listeners
     worker-plane.js   fixed-rate trusted-worker TCP proxy streams + health polls
     team-event.js     one isolated, VPN-connected player process per team
@@ -187,21 +215,21 @@ name/label mismatch; it never wildcard-removes every container matching `load_ag
 ### Exhaustive admin lifecycle (`npm run admin-lifecycle`)
 
 This is the destructive privileged-admin acceptance gate. Its catalog is checked against
-the registered routers and covers all **62 HTTP method/path operations** under
+the registered routers and covers all **71 HTTP method/path operations** under
 `/api/admin`, `/api/ad/admin`, `/api/admin/workers`, and the one-time
 `/api/workers/enroll` surface, plus both admin
 SignalR surfaces (`POST /hub/admin/negotiate` and the authenticated `/hub/admin`
 WebSocket connection). It does not claim complete `/api/edit` organizer-plane coverage;
 the whole-platform lifecycle exercises that separate, broader surface. It validates the
-positive response contract for every catalogued operation, then proves that all 59
+positive response contract for every catalogued operation, then proves that all 69
 administrator-only HTTP operations reject a missing token, an ordinary User, and a
 Monitor. Participation review separately proves same-game manager success plus unrelated
 and cross-game manager rejection; enrollment separately proves invalid and replayed
 tokens return 401. SignalR negotiate and WebSocket upgrade reject missing, User, and
 Monitor credentials before an Admin handshake succeeds.
 
-Before timing begins, k6 executes the finite 74-pair read matrix exactly once: 24 web
-reads against the public origin and both direct web replicas (72 pairs), plus the worker
+Before timing begins, k6 executes the finite 77-pair read matrix exactly once: 25 web
+reads against the public origin and both direct web replicas (75 pairs), plus the worker
 inventory read against the public and direct control origins (2 pairs). Its sample-count
 threshold makes an omitted operation/origin pair fail the run. The later fixed-rate phase
 rotates the same catalogued reads while `/livez` and `/healthz` are probed on every origin.

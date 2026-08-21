@@ -620,6 +620,11 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                 // Builds acquire the definition fence and may perform
                                 // slow external work. Run them only after releasing the
                                 // per-game lock to preserve the global lock order.
+                                let container_policy =
+                                    crate::services::container_policy::ContainerPolicy::load(
+                                        st.pg(),
+                                    )
+                                    .await?;
                                 for challenge_id in build_jobs {
                                     let Some(challenge) =
                                         game_challenge::Entity::find_by_id(challenge_id)
@@ -632,6 +637,17 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                 ));
                                         continue;
                                     };
+                                    if crate::services::image_storage::lazy_build_eligible(
+                                        &container_policy,
+                                        &challenge,
+                                    ) {
+                                        tracing::info!(
+                                            game = gid,
+                                            challenge = challenge_id,
+                                            "repository image build deferred until first player start"
+                                        );
+                                        continue;
+                                    }
                                     let (outcome, _) =
                                         crate::controllers::edit::run_challenge_build(
                                             st, &challenge, "Import", 1,

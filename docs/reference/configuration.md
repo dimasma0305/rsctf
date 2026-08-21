@@ -8,7 +8,7 @@ Restart rsctf after changing a startup value. Settings changed in **Admin → Se
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `RSCTF_ROLE` | `all` | `all`, `web`, `control`, `engine`, `network`, or one-shot `migrate`; see the [scaling guide](../deploy/scaling) |
+| `RSCTF_ROLE` | `all` | `all`, `web`, `control`, `engine`, `network`, one-shot `migrate`, or loopback-only `development`; see the [scaling guide](../deploy/scaling) and [source-development guide](./source-development) |
 | `RSCTF_BIND` | `0.0.0.0:8080` | HTTP listen address inside the process/container |
 | `RSCTF_DATABASE_URL` | Local development URL | PostgreSQL connection URL; required in deployment |
 | `RSCTF_DB_MAX_CONNECTIONS` | `33` | Per-process database connection cap; computed minimum described below |
@@ -117,6 +117,34 @@ validation and must retain the same short authorization window.
 | `RSCTF_CAPTURE_DEVICE` | `any` | libpcap device used by the singleton capture owner |
 | `RSCTF_CAPTURE_RECONCILE_SECONDS` | `2` | Durable capture desired-state recovery interval (`1..60` seconds) |
 | `DOCKER_HOST` | Local socket | Docker daemon endpoint used by the Docker backend |
+
+### On-demand image builds and bounded cleanup
+
+Docker installations can enable **Admin → Settings → Container policy → Build
+images on first start**. This defers only rsctf-managed, archive-backed Jeopardy
+`StaticContainer` and `DynamicContainer` images. A&D services, KotH hills,
+checker images, external registry images, workload specifications, and any image
+without a complete immutable source archive remain eager or operator-managed.
+The first eligible player start performs the build; an in-process single-flight
+plus a PostgreSQL image lock collapses concurrent starts across replicas into
+one build. Later starts use the published immutable image ID.
+
+Enable **Clean idle images and build cache** to run a sweep every 15 minutes.
+The default image lease is 24 hours and is renewed by a successful build or an
+authorized start attempt. Cleanup refuses every image used by a running or
+stopped container and every challenge image whose exact archive, context,
+managed tag, and published digest cannot prove that it can be rebuilt. It also
+never treats A&D/checker images as disposable. Outside storage pressure, only
+unused build cache older than its configured retention is pruned. Below the
+configured free-space floor, rsctf first prunes all unused build cache and
+dangling images, then applies the same expired-and-rebuildable image rule; it
+does not force-delete recent or active images merely to satisfy the floor.
+
+The Builds page shows free storage, private/reclaimable Docker build-cache
+bytes, image leases, and container use. **Clean storage now** runs the same
+bounded sweep and returns the actual reclaimed-byte report. These controls
+require the Docker backend and a local Unix Docker socket; Kubernetes and
+remote-daemon installations must use their registry/runtime retention policy.
 
 If the selected explicit backend is unavailable, startup fails. `auto` can fall back to no container manager and is prohibited when the integrated VPN is enabled. rsctf hashes the Docker scope before writing it to labels. Set an explicit scope before rotating the JWT secret so already-running workloads remain discoverable; all replicas and the control owner must use the same scope.
 
@@ -245,11 +273,11 @@ covers its `LISTEN` connection and nested kernel/allocation reconciliation.
 Monolithic and web roles reserve eight connections for bounded roster and
 account lifecycle operations, plus four for the independently bounded runtime
 transition path; each can retain a lock while issuing nested work. The
-all/control/engine suspicion reconciler reserves one fence plus one nested
+all/development/control/engine suspicion reconciler reserves one fence plus one nested
 checkout. At the defaults (`R=1`, `P=4`), engine needs 16 connections, web
 needs 26, control needs 18 without VPN or 21 with it, network needs 16 or 19,
-and `all` needs 30 or 33. Keep additional headroom for ordinary request bursts
-where practical.
+`development` needs 28, and `all` needs 30 or 33. Keep additional headroom for
+ordinary request bursts where practical.
 
 Checker and flag work is bounded by the persisted round deadline. Evidence that
 finishes at or after that deadline is excluded, and unresolved samples become

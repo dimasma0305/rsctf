@@ -1,6 +1,7 @@
 import {
   ActionIcon,
   Badge,
+  Button,
   Center,
   Code,
   CopyButton,
@@ -16,7 +17,7 @@ import {
 } from '@mantine/core'
 import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
-import { mdiCheck, mdiContentCopy, mdiDatabaseOutline, mdiDeleteOutline, mdiRefresh } from '@mdi/js'
+import { mdiBroom, mdiCheck, mdiContentCopy, mdiDatabaseOutline, mdiDeleteOutline, mdiRefresh } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import cx from 'clsx'
 import dayjs from 'dayjs'
@@ -64,8 +65,33 @@ export const BuildImagesPanel: FC = () => {
   } = api.admin.useAdminListBuildImages({
     refreshInterval: 30000,
   })
+  const { data: storage, mutate: mutateStorage } = api.admin.useAdminBuildStorageStatus({
+    refreshInterval: 30000,
+  })
 
   const totalBytes = useMemo(() => (images ?? []).reduce((sum, img) => sum + img.sizeBytes, 0), [images])
+
+  const runStorageCleanup = async () => {
+    setBusy(true)
+    try {
+      const response = await api.admin.adminCleanupBuildStorage()
+      const result = response.data
+      showNotification({
+        color: result.pressureMode ? 'orange' : 'teal',
+        message: t('admin.content.builds.images.cleanup_result', {
+          defaultValue: 'Removed {{count}} image(s); reclaimed {{cache}} of build cache.',
+          count: result.imagesRemoved,
+          cache: formatBytes(result.cacheBytesReclaimed + result.danglingBytesReclaimed),
+        }),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+      await Promise.all([mutate(), mutateStorage()])
+    } catch (e: unknown) {
+      showErrorMsg(e, t)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   // Delete every rsctf/* tag of one image (usually one, sometimes a registry mirror
   // too). force=true overrides the daemon's "in use by a container" refusal (409).
@@ -153,17 +179,59 @@ export const BuildImagesPanel: FC = () => {
             </Badge>
           )}
         </Group>
-        <Tooltip label={t('admin.content.builds.images.refresh', 'Refresh')}>
-          <ActionIcon
-            variant="subtle"
-            aria-label={t('admin.content.builds.images.refresh', 'Refresh')}
-            onClick={() => mutate()}
-            disabled={busy}
+        <Group gap="xs">
+          <Button
+            size="xs"
+            variant="light"
+            leftSection={<Icon path={mdiBroom} size={0.75} />}
+            loading={busy}
+            onClick={runStorageCleanup}
           >
-            <Icon path={mdiRefresh} size={0.9} />
-          </ActionIcon>
-        </Tooltip>
+            {t('admin.content.builds.images.clean_now', 'Clean storage now')}
+          </Button>
+          <Tooltip label={t('admin.content.builds.images.refresh', 'Refresh')}>
+            <ActionIcon
+              variant="subtle"
+              aria-label={t('admin.content.builds.images.refresh', 'Refresh')}
+              onClick={() => Promise.all([mutate(), mutateStorage()])}
+              disabled={busy}
+            >
+              <Icon path={mdiRefresh} size={0.9} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
       </Group>
+
+      {storage && (
+        <Paper p="xs" withBorder>
+          <Group gap="xl" wrap="wrap">
+            <Stack gap={0}>
+              <Text size="xs" c="dimmed">
+                {t('admin.content.builds.images.disk_free', 'Filesystem free')}
+              </Text>
+              <Text size="sm" fw={600} c={storage.lowStorage ? 'red' : undefined}>
+                {formatBytes(storage.filesystemAvailableBytes)} / {formatBytes(storage.filesystemTotalBytes)}
+              </Text>
+            </Stack>
+            <Stack gap={0}>
+              <Text size="xs" c="dimmed">
+                {t('admin.content.builds.images.build_cache', 'Docker build cache')}
+              </Text>
+              <Text size="sm" fw={600}>
+                {formatBytes(storage.buildCacheBytes)} ({formatBytes(storage.reclaimableBuildCacheBytes)}{' '}
+                {t('admin.content.builds.images.reclaimable', 'reclaimable')})
+              </Text>
+            </Stack>
+            {storage.minimumFreeBytes > 0 && (
+              <Badge color={storage.lowStorage ? 'red' : 'teal'} variant="light">
+                {storage.lowStorage
+                  ? t('admin.content.builds.images.pressure', 'pressure cleanup active')
+                  : t('admin.content.builds.images.floor_ok', 'free-space floor satisfied')}
+              </Badge>
+            )}
+          </Group>
+        </Paper>
+      )}
 
       {isLoading && !images ? (
         <Center py="sm">
@@ -181,7 +249,7 @@ export const BuildImagesPanel: FC = () => {
               striped
               highlightOnHover
               w="100%"
-              miw={760}
+              miw={900}
               className={cx(tableClasses.table, tableClasses.fixed)}
             >
               <Table.Caption>{t('admin.content.builds.images.title', 'Build images')}</Table.Caption>
@@ -201,6 +269,9 @@ export const BuildImagesPanel: FC = () => {
                   </Table.Th>
                   <Table.Th scope="col" w="9rem">
                     {t('admin.content.builds.images.column.usage', 'Usage')}
+                  </Table.Th>
+                  <Table.Th scope="col" w="10rem">
+                    {t('admin.content.builds.images.column.retention', 'Retention')}
                   </Table.Th>
                   <Table.Th scope="col" w="4rem" aria-label={t('common.label.action', 'Actions')} />
                 </Table.Tr>
@@ -276,7 +347,11 @@ export const BuildImagesPanel: FC = () => {
                       )}
                     </Table.Td>
                     <Table.Td>
-                      {img.referenced ? (
+                      {img.inUse ? (
+                        <Badge size="sm" color="teal" variant="light">
+                          {t('admin.content.builds.images.container_in_use', 'container active')}
+                        </Badge>
+                      ) : img.referenced ? (
                         <Tooltip label={img.referencedBy.join(', ')} multiline w={300}>
                           <Badge size="sm" color="blue" variant="light" style={{ cursor: 'default' }}>
                             {t('admin.content.builds.images.in_use', {
@@ -290,6 +365,28 @@ export const BuildImagesPanel: FC = () => {
                           {t('admin.content.builds.images.orphan', 'orphan')}
                         </Badge>
                       )}
+                    </Table.Td>
+                    <Table.Td>
+                      <Tooltip
+                        label={
+                          img.lastUsedUtc
+                            ? `${t('admin.content.builds.images.last_used', 'Last used')}: ${dayjs(img.lastUsedUtc).format('YYYY-MM-DD HH:mm')}`
+                            : t('admin.content.builds.images.never_started', 'Built but never started')
+                        }
+                      >
+                        <Badge
+                          size="sm"
+                          variant="outline"
+                          color={dayjs(img.retentionExpiresUtc).isBefore(dayjs()) ? 'orange' : 'gray'}
+                        >
+                          {dayjs(img.retentionExpiresUtc).isBefore(dayjs())
+                            ? t('admin.content.builds.images.expired', 'expired')
+                            : t('admin.content.builds.images.expires', {
+                                defaultValue: 'expires {{time}}',
+                                time: dayjs(img.retentionExpiresUtc).fromNow(),
+                              })}
+                        </Badge>
+                      </Tooltip>
                     </Table.Td>
                     <Table.Td>
                       <Group justify="flex-end">

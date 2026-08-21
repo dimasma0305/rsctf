@@ -1637,6 +1637,57 @@ async function observabilityAndRuntime() {
 
 async function buildLifecycle() {
   console.log('\nbuild history and installation-owned image lifecycle…');
+  const storagePolicyKeys = [
+    'ContainerPolicy:ImageIdleRetentionHours',
+    'ContainerPolicy:BuildCacheRetentionHours',
+    'ContainerPolicy:MinimumFreeStorageGiB',
+  ];
+  const storagePolicySnapshot = JSON.parse(
+    sql(
+      `SELECT COALESCE(json_agg(json_build_object('key',config_key,'value',value) ` +
+        `ORDER BY config_key),'[]'::json)::text FROM "Configs" ` +
+        `WHERE config_key IN (${storagePolicyKeys.map(sqlLiteral).join(',')})`,
+    ),
+  );
+  try {
+    sql(
+      `INSERT INTO "Configs"(config_key,value,cache_keys) VALUES ` +
+        `('ContainerPolicy:ImageIdleRetentionHours','8760',NULL),` +
+        `('ContainerPolicy:BuildCacheRetentionHours','8760',NULL),` +
+        `('ContainerPolicy:MinimumFreeStorageGiB','0',NULL) ` +
+        `ON CONFLICT (config_key) DO UPDATE SET value=EXCLUDED.value`,
+    );
+    const storage = await call(
+      'GET',
+      '/api/admin/builds/storage',
+      '/api/admin/builds/storage',
+    );
+    requireCondition(
+      storage.json?.filesystemTotalBytes >= storage.json?.filesystemAvailableBytes &&
+        storage.json?.minimumFreeBytes === 0 && storage.json?.lowStorage === false,
+      `build storage status is inconsistent: ${storage.text}`,
+    );
+    const cleanup = await call(
+      'POST',
+      '/api/admin/builds/prunestorage',
+      '/api/admin/builds/prunestorage',
+      { timeoutMs: 180_000 },
+    );
+    requireCondition(
+      cleanup.json?.pressureMode === false && cleanup.json?.minimumFreeBytes === 0,
+      `bounded storage cleanup ignored its safe fixture policy: ${cleanup.text}`,
+    );
+  } finally {
+    sql(
+      `BEGIN; DELETE FROM "Configs" WHERE config_key IN (` +
+        `${storagePolicyKeys.map(sqlLiteral).join(',')}); ` +
+        storagePolicySnapshot.map((row) =>
+          `INSERT INTO "Configs"(config_key,value,cache_keys) VALUES (` +
+            `${sqlLiteral(row.key)},${row.value === null ? 'NULL' : sqlLiteral(row.value)},NULL);`,
+        ).join(' ') +
+        ` COMMIT;`,
+    );
+  }
   // Bulk rebuild is a retry action, not a rebuild-all action. Force the exact
   // disposable challenge into Failed and require a real new attempt.
   const beforeBulk = Number(

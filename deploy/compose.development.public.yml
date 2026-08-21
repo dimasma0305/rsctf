@@ -1,0 +1,36 @@
+services:
+  source-dev-gateway:
+    image: caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: "no"
+    command:
+      - caddy
+      - reverse-proxy
+      - --from
+      - :8080
+      - --to
+      - http://${RSCTF_DEV_FRONTEND_HOST:?Set the Docker bridge host address}:${RSCTF_DEV_FRONTEND_PORT:-63000}
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /config
+      - /data
+    networks:
+      - traefik
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik
+      traefik.http.routers.rsctf-source-dev.rule: Host(`${RSCTF_DEV_DOMAIN:?Set RSCTF_DEV_DOMAIN}`)
+      traefik.http.routers.rsctf-source-dev.entrypoints: websecure
+      traefik.http.routers.rsctf-source-dev.tls: "true"
+      traefik.http.routers.rsctf-source-dev.tls.certresolver: letsencrypt
+      traefik.http.services.rsctf-source-dev.loadbalancer.server.port: "8080"
+
+networks:
+  traefik:
+    external: true
+    name: traefik

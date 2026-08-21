@@ -106,6 +106,7 @@ fn terminal_publish_is_compare_and_swap_on_the_complete_definition() {
     assert!(PUBLISH_BUILD_OUTCOME_SQL.contains("build_context_subdir IS NOT DISTINCT FROM $7"));
     assert!(UPSERT_IMAGE_OWNERSHIP_SQL
         .contains("ON CONFLICT (installation_scope, canonical_ref) DO UPDATE"));
+    assert!(UPSERT_IMAGE_OWNERSHIP_SQL.contains("last_used_at_utc=CASE"));
 }
 
 #[test]

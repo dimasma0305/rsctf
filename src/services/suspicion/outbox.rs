@@ -719,8 +719,9 @@ pub async fn reconcile_games(state: &SharedState) -> AppResult<usize> {
 }
 
 /// Start the durable evaluator. Wire this as a required worker only for
-/// `RuntimeRole::All | RuntimeRole::Control | RuntimeRole::Engine`; every
-/// other role enqueues but does not compete to run historical sweeps.
+/// `RuntimeRole::All | RuntimeRole::Development | RuntimeRole::Control |
+/// RuntimeRole::Engine`; every other role enqueues but does not compete to run
+/// historical sweeps.
 pub fn start_evaluation_reconciler(
     state: SharedState,
     mut shutdown: tokio::sync::watch::Receiver<bool>,

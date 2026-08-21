@@ -117,6 +117,7 @@ mod m0094_challenge_variants_and_receipts;
 mod m0095_player_field_bounds;
 mod m0096_container_storage_bounds;
 mod m0097_container_network_modes;
+mod m0098_build_image_retention;
 
 pub struct Migrator;
 
@@ -227,6 +228,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0095_player_field_bounds::Migration),
             Box::new(m0096_container_storage_bounds::Migration),
             Box::new(m0097_container_network_modes::Migration),
+            Box::new(m0098_build_image_retention::Migration),
         ]
     }
 }
@@ -357,7 +359,7 @@ fn migration_ledger_diff(expected: &[String], applied: &[String]) -> (Vec<String
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{str::FromStr, time::Duration};
 
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     use sqlx::{ConnectOptions as _, Connection as _};
@@ -467,6 +469,21 @@ mod tests {
             .expect("disconnecting the old client clears the cutover fence");
 
         process_pool.close().await;
+        let mut remaining_sessions = 1_i64;
+        for _ in 0..40 {
+            remaining_sessions = sqlx::query_scalar(
+                "SELECT COUNT(*)::bigint FROM pg_stat_activity WHERE datname = $1",
+            )
+            .bind(&database_name)
+            .fetch_one(&admin)
+            .await
+            .unwrap();
+            if remaining_sessions == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(remaining_sessions, 0);
         sqlx::query(&format!(r#"DROP DATABASE "{database_name}""#))
             .execute(&admin)
             .await

@@ -15,6 +15,7 @@ use std::str::FromStr;
 pub enum RuntimeRole {
     #[default]
     All,
+    Development,
     Web,
     Control,
     Engine,
@@ -39,6 +40,7 @@ impl RuntimeRole {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::All => "all",
+            Self::Development => "development",
             Self::Web => "web",
             Self::Control => "control",
             Self::Engine => "engine",
@@ -55,6 +57,14 @@ impl RuntimeRole {
                 maintenance: true,
                 round_engine: true,
                 network: true,
+                migrations: true,
+            },
+            Self::Development => RuntimeCapabilities {
+                api: true,
+                health: true,
+                maintenance: false,
+                round_engine: false,
+                network: false,
                 migrations: true,
             },
             Self::Web => RuntimeCapabilities {
@@ -110,6 +120,7 @@ impl RuntimeRole {
     pub const fn capability_header(self) -> &'static str {
         match self {
             Self::All => "api,health,maintenance,round-engine,network,migrations",
+            Self::Development => "api,health,migrations,suspicion-reconciliation,development",
             Self::Web => "api,health",
             Self::Control => "api,health,maintenance,round-engine,network",
             Self::Engine => "health,maintenance,round-engine",
@@ -131,13 +142,14 @@ impl FromStr for RuntimeRole {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
             "all" => Ok(Self::All),
+            "development" => Ok(Self::Development),
             "web" => Ok(Self::Web),
             "control" => Ok(Self::Control),
             "engine" => Ok(Self::Engine),
             "network" => Ok(Self::Network),
             "migrate" => Ok(Self::Migrate),
             _ => anyhow::bail!(
-                "invalid RSCTF_ROLE {value:?}; expected all, web, control, engine, network, or migrate"
+                "invalid RSCTF_ROLE {value:?}; expected all, development, web, control, engine, network, or migrate"
             ),
         }
     }
@@ -289,6 +301,7 @@ impl AppConfig {
     /// run with a repository-known signing key.
     pub fn validate(&self) -> anyhow::Result<()> {
         self.validate_runtime_role()?;
+        validate_development_bind(self.runtime_role, &self.bind_addr)?;
         validate_jwt_secret(&self.jwt_secret)?;
         self.validate_identity_hash_key()?;
         if let Some(error) = self.jwt_ttl_error.as_deref() {
@@ -368,6 +381,19 @@ fn validate_public_url(value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_development_bind(role: RuntimeRole, value: &str) -> anyhow::Result<()> {
+    if role != RuntimeRole::Development {
+        return Ok(());
+    }
+    let address = value.parse::<std::net::SocketAddr>().map_err(|_| {
+        anyhow::anyhow!("RSCTF_ROLE=development requires an explicit loopback socket address")
+    })?;
+    if !address.ip().is_loopback() {
+        anyhow::bail!("RSCTF_ROLE=development may bind only to a loopback address");
+    }
+    Ok(())
+}
+
 fn validate_jwt_secret(secret: &str) -> anyhow::Result<()> {
     let secret = secret.trim();
     const KNOWN_INSECURE: &[&str] = &["insecure-dev-secret-change-me", "change-me-in-production"];
@@ -410,8 +436,8 @@ impl Default for AppConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_asset_signed_url_ttl, parse_jwt_ttl, validate_identity_hash_key, validate_jwt_secret,
-        validate_public_url, RuntimeRole,
+        parse_asset_signed_url_ttl, parse_jwt_ttl, validate_development_bind,
+        validate_identity_hash_key, validate_jwt_secret, validate_public_url, RuntimeRole,
     };
 
     #[test]
@@ -473,6 +499,7 @@ mod tests {
     fn runtime_roles_parse_case_insensitively() {
         for (value, expected) in [
             ("all", RuntimeRole::All),
+            ("Development", RuntimeRole::Development),
             (" WEB ", RuntimeRole::Web),
             ("control", RuntimeRole::Control),
             ("Engine", RuntimeRole::Engine),
@@ -490,6 +517,10 @@ mod tests {
         let all = RuntimeRole::All.capabilities();
         assert!(all.api && all.health && all.maintenance);
         assert!(all.round_engine && all.network && all.migrations);
+
+        let development = RuntimeRole::Development.capabilities();
+        assert!(development.api && development.health && development.migrations);
+        assert!(!development.maintenance && !development.round_engine && !development.network);
 
         let web = RuntimeRole::Web.capabilities();
         assert!(web.api && web.health);
@@ -510,5 +541,14 @@ mod tests {
         let migrate = RuntimeRole::Migrate.capabilities();
         assert!(!migrate.api && !migrate.health && !migrate.maintenance);
         assert!(!migrate.round_engine && !migrate.network && migrate.migrations);
+    }
+
+    #[test]
+    fn development_role_is_loopback_only() {
+        assert!(validate_development_bind(RuntimeRole::Development, "127.0.0.1:18080").is_ok());
+        assert!(validate_development_bind(RuntimeRole::Development, "[::1]:18080").is_ok());
+        assert!(validate_development_bind(RuntimeRole::Development, "0.0.0.0:18080").is_err());
+        assert!(validate_development_bind(RuntimeRole::Development, "dev.example:18080").is_err());
+        assert!(validate_development_bind(RuntimeRole::All, "0.0.0.0:8080").is_ok());
     }
 }

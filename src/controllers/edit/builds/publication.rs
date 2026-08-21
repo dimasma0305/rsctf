@@ -25,10 +25,16 @@ pub(super) const PUBLISH_BUILD_OUTCOME_SQL: &str = r#"UPDATE "GameChallenges" ch
       AND challenge.build_context_subdir IS NOT DISTINCT FROM $7"#;
 
 pub(super) const UPSERT_IMAGE_OWNERSHIP_SQL: &str = r#"INSERT INTO "BuildImageOwnerships"
- (installation_scope, canonical_ref, image_id, updated_at_utc)
- VALUES ($1, $2, $3, clock_timestamp())
+ (installation_scope, canonical_ref, image_id, updated_at_utc, last_used_at_utc)
+ VALUES ($1, $2, $3, clock_timestamp(), NULL)
  ON CONFLICT (installation_scope, canonical_ref) DO UPDATE
- SET image_id=EXCLUDED.image_id, updated_at_utc=clock_timestamp()"#;
+ SET image_id=EXCLUDED.image_id,
+     updated_at_utc=clock_timestamp(),
+     last_used_at_utc=CASE
+       WHEN "BuildImageOwnerships".image_id=EXCLUDED.image_id
+       THEN "BuildImageOwnerships".last_used_at_utc
+       ELSE NULL
+     END"#;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BuildFingerprint {

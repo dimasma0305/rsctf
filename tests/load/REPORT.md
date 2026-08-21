@@ -14,6 +14,54 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## On-demand challenge-image storage acceptance — 21 August 2026
+
+The new local-Docker retention path was exercised against the source-development
+server and its disposable PostgreSQL 18.4 database. The fixture was one enabled,
+archive-backed Jeopardy container challenge in `Queued` state with no image and
+eight distinct accepted participations. At a fixed arrival rate of eight first
+starts per second, all eight requests completed, exactly one `RuntimeStart` build
+was recorded, one immutable image digest was published, and eight containers were
+created from that digest. There were no dropped arrivals, failed checks, HTTP
+failures, or 5xx responses.
+
+| Metric | Result |
+| --- | ---: |
+| First-start requests / successes | 8 / 8 |
+| Runtime builds / successful builds | 1 / 1 |
+| Start latency average | 1,361.351 ms |
+| Start latency p50 / p90 | 1,381.855 / 1,534.794 ms |
+| Start latency p95 / p99 / maximum | 1,602.950 / 1,657.475 / 1,671.106 ms |
+| Concurrent containers after start | 8 |
+| Health requests / exact `ok` responses | 121 / 121 |
+| Health latency p50 / p95 / p99 / maximum | 0.928 / 6.276 / 19.833 / 28.064 ms |
+| rsctf CPU average / maximum | 0.553% / 0.600% |
+| rsctf RSS maximum | 91.367 MiB |
+| PostgreSQL CPU average / maximum | 3.592% / 7.970% |
+| PostgreSQL RSS maximum | 102.300 MiB |
+| Minimum filesystem free space | 10,521,853,952 bytes |
+
+Health was held at two requests/s for 60 seconds while the first-start burst
+ran. Resource sampling used 32 two-second samples. The start requests all shared
+one challenge deliberately: this is the worst single-flight contention shape and
+proves that eight callers do not trigger eight image builds. It is not a peak
+throughput claim.
+
+The bounded cleanup API was separately exercised under configured storage
+pressure. It reclaimed 3,263,552,874 bytes of unused build cache and
+1,197,246,099 bytes of dangling images, increasing available space from
+5,712,740,352 to 13,280,854,016 bytes and clearing the 10 GiB low-storage
+condition. Managed challenge images were retained because they had not reached
+their 24-hour idle deadline. The first-start run skipped cleanup so its latency
+and CPU sample did not mix image construction with garbage collection.
+
+The host's Docker `overlay2` backing filesystem does not support the writable
+layer quota required by the production container policy. This acceptance run
+therefore used the explicit debug-build-only unbounded-storage switch; release
+builds reject that switch. Production dynamic-container rollout remains gated on
+a quota-capable Docker data root or bounded worker backend. This is new behavior,
+not an optimization comparison, so it adds no before/after ledger row.
+
 ## Bounded event-security telemetry fixed-rate acceptance — 20 August 2026
 
 The event-security release candidate was measured locally against a disposable
@@ -2118,8 +2166,8 @@ a causal performance claim.
 `npm run admin-lifecycle` is the destructive, disposable-stack acceptance gate for the
 privileged namespaces `/api/admin`, `/api/ad/admin`, `/api/admin/workers`, and
 `/api/workers/enroll`; it does not claim complete `/api/edit` organizer coverage. The
-pure catalog is source-checked against those registered routers and requires **62/62 HTTP
-method/path operations** plus both admin SignalR surfaces. All 60 Admin-only operations
+pure catalog is source-checked against those registered routers and requires **71/71 HTTP
+method/path operations** plus both admin SignalR surfaces. All 69 Admin-only operations
 must reject anonymous, User, and Monitor principals; participation and enrollment use
 their separate manager/token matrices. A passing execution must also retain zero unauthorized successes, server 5xx,
 invalid response models, HTTP 429 responses, dropped iterations, failed public/direct
@@ -2136,9 +2184,9 @@ accepted execution is recorded here with all of the following evidence:
    identity.
 2. Isolated topology: public origin, two direct web replicas, singleton control replica,
    PostgreSQL, Redis, Docker backend, worker issuer, repository fixture, and SMTP mode.
-3. One-shot route coverage count and latency p50/p95/max; the 59-operation Admin
+3. One-shot route coverage count and latency p50/p95/max; the 70-operation non-enrollment
    authorization matrix; manager/enrollment matrices; SignalR negotiate/connect result;
-   all 74 read/origin preflight pairs; replica-projection result; fatal-log count; and both
+   all 77 read/origin preflight pairs; replica-projection result; fatal-log count; and both
    stable cleanup/leak snapshots.
 4. The retained `SUMMARY_JSON` distribution: scheduled/achieved rate, VUs, duration,
    request/check counts, 5xx/429/unexpected/invalid/dropped counts, and admin/health plus

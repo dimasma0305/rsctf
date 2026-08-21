@@ -20,7 +20,7 @@ mod backfill_tests;
 mod local_image_tests;
 
 const MAX_BUILD_ARCHIVE_BLOB_BYTES: usize = crate::utils::upload::SOURCE_ARCHIVE_BLOB_BYTES;
-const RUNTIME_REPAIR_STATE_SQL: &str = r#"SELECT build_status = $2 AS successful,
+const RUNTIME_REPAIR_STATE_SQL: &str = r#"SELECT build_status,
               build_image_digest,
               last_build_log
          FROM "GameChallenges"
@@ -72,6 +72,7 @@ SELECT COUNT(*)::BIGINT FROM inserted
 enum BuildIntent {
     Requested,
     RepairMissingRuntime,
+    EnsureRuntime,
 }
 
 pub(super) fn invalidated_build_status(
@@ -130,6 +131,18 @@ pub(crate) async fn repair_missing_challenge_image(
     )
     .await
     .0
+}
+
+/// Materialize a recoverable queued image for a player's first start. The
+/// build lock makes this an idempotent cross-replica ensure operation rather
+/// than one build per waiting request.
+pub(crate) async fn ensure_challenge_image(
+    st: &SharedState,
+    challenge: &game_challenge::Model,
+) -> BuildOutcome {
+    run_challenge_build_with_intent(st, challenge, "RuntimeStart", 1, BuildIntent::EnsureRuntime)
+        .await
+        .0
 }
 
 async fn run_challenge_build_with_intent(
@@ -231,23 +244,20 @@ async fn run_challenge_build_with_intent(
         return (outcome, record);
     }
 
-    if intent == BuildIntent::RepairMissingRuntime {
+    if intent != BuildIntent::Requested {
         let repair_state =
-            sqlx::query_as::<_, (bool, Option<String>, Option<String>)>(RUNTIME_REPAIR_STATE_SQL)
+            sqlx::query_as::<_, (i16, Option<String>, Option<String>)>(RUNTIME_REPAIR_STATE_SQL)
                 .bind(challenge.id)
-                .bind(ChallengeBuildStatus::Success as i16)
                 .fetch_optional(build_lock.connection_mut())
                 .await;
         match repair_state {
-            Ok(Some((true, Some(current_image), _)))
-                if st.containers.image_exists(current_image.trim()).await =>
+            Ok(Some((status, Some(current_image), _)))
+                if status == ChallengeBuildStatus::Success as i16
+                    && st.containers.image_exists(current_image.trim()).await =>
             {
                 let outcome = BuildOutcome {
                     status: ChallengeBuildStatus::Success,
-                    log: Some(
-                        "The immutable runtime image was already restored by another request."
-                            .to_string(),
-                    ),
+                    log: Some("The immutable runtime image is already available.".to_string()),
                     image_digest: Some(current_image),
                 };
                 if let Err(error) = build_lock.release().await {
@@ -259,13 +269,16 @@ async fn run_challenge_build_with_intent(
                 }
                 return (outcome, None);
             }
-            Ok(Some((true, _, _))) => {}
-            Ok(Some((false, _, current_log))) => {
+            Ok(Some((status, _, _))) if status == ChallengeBuildStatus::Success as i16 => {}
+            Ok(Some((status, _, _)))
+                if intent == BuildIntent::EnsureRuntime
+                    && status == ChallengeBuildStatus::Queued as i16 => {}
+            Ok(Some((_, _, current_log))) => {
                 let outcome = BuildOutcome {
                     status: ChallengeBuildStatus::Failed,
                     log: current_log.or_else(|| {
                         Some(
-                            "Automatic runtime repair stopped because the current build is no longer successful."
+                            "Automatic runtime preparation stopped because the current build is not queued or successful."
                                 .to_string(),
                         )
                     }),
@@ -282,7 +295,7 @@ async fn run_challenge_build_with_intent(
             }
             Ok(None) => {
                 let outcome = superseded_build_outcome(
-                    "Automatic runtime repair stopped because the challenge was deleted.",
+                    "Automatic runtime preparation stopped because the challenge was deleted.",
                 );
                 let _ = build_lock.release().await;
                 return (outcome, None);
@@ -291,12 +304,12 @@ async fn run_challenge_build_with_intent(
                 tracing::warn!(
                     challenge = challenge.id,
                     %error,
-                    "runtime image repair state read failed"
+                    "runtime image preparation state read failed"
                 );
                 let outcome = BuildOutcome {
                     status: ChallengeBuildStatus::Failed,
                     log: Some(
-                        "Automatic runtime repair could not verify the current build state."
+                        "Automatic runtime preparation could not verify the current build state."
                             .to_string(),
                     ),
                     image_digest: None,

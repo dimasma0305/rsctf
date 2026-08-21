@@ -5,7 +5,8 @@ mod eligibility;
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::enums::NetworkMode;
 use eligibility::{
-    load_eligible_shared_challenge, player_container_request_is_eligible, ContainerRequestMode,
+    authorize_on_demand_build, load_eligible_shared_challenge,
+    player_container_request_is_eligible, ContainerRequestMode,
 };
 mod image_repair;
 mod publication;
@@ -61,6 +62,9 @@ pub async fn create_container(
         return Err(AppError::bad_request(
             "Container creation is not allowed for this challenge",
         ));
+    }
+    if authorize_on_demand_build(&st, caller, &challenge).await? {
+        image_repair::prepare_queued_image(&st, &challenge).await?;
     }
 
     // Shared container: one challenge-owned container serves every team. Get-or-create

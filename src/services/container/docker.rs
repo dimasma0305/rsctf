@@ -26,6 +26,54 @@ pub(super) const RESTRICTED_TMPFS_OPTIONS: &str = "rw,nosuid,nodev,noexec,size=2
 const COMPETITIVE_EGRESS_ERROR: &str =
     "Docker does not safely support allowEgress=true for A&D or KotH workloads; \
      set allowEgress=false or use the Kubernetes backend with per-workload NetworkPolicy isolation";
+const DEV_UNBOUNDED_STORAGE_ENV: &str = "RSCTF_DEV_ALLOW_UNBOUNDED_CONTAINER_STORAGE";
+const MAX_CONCURRENT_SNAPSHOT_EXPORTS: usize = 1;
+pub(super) const MAX_SNAPSHOT_EXPORT_BYTES: usize = 512 * 1024 * 1024;
+pub(super) const SNAPSHOT_EXPORT_MAX_DURATION: std::time::Duration =
+    std::time::Duration::from_secs(120);
+pub(super) const SNAPSHOT_EXPORT_ADMISSION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
+/// Export + compression temporarily holds the raw TAR and compressed archive.
+/// One capture at a time keeps the control replica inside its memory budget.
+pub(super) fn snapshot_export_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(MAX_CONCURRENT_SNAPSHOT_EXPORTS))
+}
+
+/// Bound an untrusted Docker export before compression allocates another copy.
+pub(super) fn append_snapshot_chunk(
+    out: &mut Vec<u8>,
+    chunk: &[u8],
+    limit: usize,
+) -> AppResult<()> {
+    let next_len = out
+        .len()
+        .checked_add(chunk.len())
+        .ok_or_else(|| AppError::bad_request("snapshot export size overflow"))?;
+    if next_len > limit {
+        return Err(AppError::payload_too_large(format!(
+            "snapshot export exceeds the {} MiB safety limit",
+            limit / (1024 * 1024)
+        )));
+    }
+    out.try_reserve(chunk.len())
+        .map_err(|_| AppError::internal("failed to reserve snapshot export buffer"))?;
+    out.extend_from_slice(chunk);
+    Ok(())
+}
+
+pub(super) fn development_unbounded_storage() -> AppResult<bool> {
+    let requested = std::env::var(DEV_UNBOUNDED_STORAGE_ENV)
+        .ok()
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+    if requested && !cfg!(debug_assertions) {
+        return Err(AppError::internal(format!(
+            "{DEV_UNBOUNDED_STORAGE_ENV}=true is available only in debug builds"
+        )));
+    }
+    Ok(requested)
+}
 
 pub(super) fn validate_docker_container_spec(spec: &ContainerSpec) -> AppResult<()> {
     if spec.allow_egress
@@ -225,6 +273,25 @@ pub(super) fn writable_layer_storage_opt(
     storage_limit: i32,
 ) -> std::collections::HashMap<String, String> {
     std::collections::HashMap::from([("size".to_string(), format!("{storage_limit}M"))])
+}
+
+pub(super) fn writable_layer_storage_option(
+    info: &SystemInfo,
+    allow_unbounded: bool,
+    storage_limit: i32,
+) -> AppResult<Option<std::collections::HashMap<String, String>>> {
+    if writable_layer_quota_supported(info) {
+        return Ok(Some(writable_layer_storage_opt(storage_limit)));
+    }
+    if !allow_unbounded {
+        return Err(AppError::unavailable(
+            "Docker writable-layer quotas require btrfs, devicemapper, zfs, windowsfilter, or overlay2 on XFS with project quotas",
+        ));
+    }
+    tracing::warn!(
+        "Docker writable-layer quotas are unavailable; unbounded storage was explicitly allowed for this debug build"
+    );
+    Ok(None)
 }
 
 /// Hash every launch-affecting caller input into a non-secret identity label.
