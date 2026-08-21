@@ -409,6 +409,7 @@ mod tests {
                  build_image_digest TEXT,
                  memory_limit INTEGER,
                  cpu_count INTEGER,
+                 storage_limit INTEGER,
                  expose_port INTEGER,
                  workload_spec JSONB,
                  deletion_pending BOOLEAN NOT NULL,
@@ -433,7 +434,7 @@ mod tests {
                INSERT INTO "GameChallenges" VALUES
                  (4, 1, 5, FALSE, 2,
                   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-                  64, 1, 8080, NULL, FALSE, TRUE, 0);
+                  64, 1, 512, 8080, NULL, FALSE, TRUE, 0);
                INSERT INTO "AdTeamServices" VALUES (5, 1, 4, 3);"#,
         )
         .execute(&pool)
