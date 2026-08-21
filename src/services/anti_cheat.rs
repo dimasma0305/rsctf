@@ -44,11 +44,12 @@ pub use network::{
     validate_trusted_proxy_config,
 };
 mod policy;
-pub use policy::load_policy_flags;
 pub(crate) use policy::{
     authorize_captcha_admission, load_account_policy_after_lock, lock_and_load_account_policy,
     lock_and_load_admission_policy, lock_policy_update, preflight_password_registration,
+    validate_oauth_only_registration,
 };
+pub use policy::{load_policy_flags, validate_registration_startup};
 mod roster;
 pub use roster::admit_team_member_in_transaction;
 #[cfg(test)]

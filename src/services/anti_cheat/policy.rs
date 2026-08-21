@@ -5,6 +5,7 @@ use sqlx::{Postgres, Transaction};
 use super::{database_error, PolicyFlags};
 use crate::models::internal::configs::AppConfig;
 use crate::services::captcha::{CaptchaAdmission, CaptchaSettings};
+use crate::services::oauth_config::OAuthSettings;
 use crate::utils::error::AppResult;
 
 const IDENTITY_POLICY_LOCK_ID: i64 = 0x4944_504F_4C49_4359; // "IDPOLICY"
@@ -52,6 +53,48 @@ fn authorize_password_registration(
             "Password registration is disabled; continue with OAuth",
         ));
     }
+    Ok(())
+}
+
+pub(crate) fn validate_oauth_only_registration(
+    account: &AccountPolicySnapshot,
+    config: &AppConfig,
+    oauth_configured: bool,
+) -> AppResult<()> {
+    if !account.allow_register || account.allow_password_registration {
+        return Ok(());
+    }
+    if account.identity.fingerprint_required() {
+        return Err(crate::utils::error::AppError::bad_request(
+            "OAuth-only registration is incompatible with browser fingerprinting",
+        ));
+    }
+    if config.public_url.is_none() {
+        return Err(crate::utils::error::AppError::bad_request(
+            "OAuth-only registration requires a canonical RSCTF_PUBLIC_URL",
+        ));
+    }
+    if !oauth_configured {
+        return Err(crate::utils::error::AppError::bad_request(
+            "OAuth-only registration requires a configured Google or Discord provider",
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse to serve a deployment whose effective environment/database policy
+/// leaves OAuth as the only registration path without a usable OAuth flow.
+pub async fn validate_registration_startup(
+    pool: &sqlx::PgPool,
+    config: &AppConfig,
+) -> AppResult<()> {
+    let mut transaction = pool.begin().await.map_err(database_error)?;
+    let account = lock_and_load_account_policy(&mut transaction, config).await?;
+    let oauth_configured = OAuthSettings::load_in_transaction(&mut transaction)
+        .await?
+        .any_configured();
+    validate_oauth_only_registration(&account, config, oauth_configured)?;
+    transaction.commit().await.map_err(database_error)?;
     Ok(())
 }
 

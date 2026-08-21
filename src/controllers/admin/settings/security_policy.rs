@@ -50,26 +50,11 @@ pub(super) async fn save_security_policy(
     // enabling Turnstile with no effective secret rolls the whole update back.
     CaptchaSettings::load_in_transaction(&mut transaction, config.account.use_captcha).await?;
     let account = anti_cheat::load_account_policy_after_lock(&mut transaction, config).await?;
-    if account.allow_register && !account.allow_password_registration {
-        if account.identity.fingerprint_required() {
-            return Err(AppError::bad_request(
-                "OAuth-only registration is incompatible with browser fingerprinting",
-            ));
-        }
-        if config.public_url.is_none() {
-            return Err(AppError::bad_request(
-                "OAuth-only registration requires a canonical RSCTF_PUBLIC_URL",
-            ));
-        }
-        if !crate::services::oauth_config::OAuthSettings::load_in_transaction(&mut transaction)
+    let oauth_configured =
+        crate::services::oauth_config::OAuthSettings::load_in_transaction(&mut transaction)
             .await?
-            .any_configured()
-        {
-            return Err(AppError::bad_request(
-                "OAuth-only registration requires a configured Google or Discord provider",
-            ));
-        }
-    }
+            .any_configured();
+    anti_cheat::validate_oauth_only_registration(&account, config, oauth_configured)?;
     transaction.commit().await.map_err(database_error)?;
     Ok(())
 }
@@ -468,6 +453,35 @@ mod tests {
         crate::services::anti_cheat::preflight_password_registration(&pool, &config, true)
             .await
             .expect("first-administrator bootstrap must bypass the fast policy rejection");
+        config.public_url = None;
+        let persisted_startup =
+            crate::services::anti_cheat::validate_registration_startup(&pool, &config)
+                .await
+                .expect_err("persisted OAuth-only policy started without a public origin");
+        assert_eq!(
+            persisted_startup.status(),
+            axum::http::StatusCode::BAD_REQUEST
+        );
+        sqlx::query(
+            r#"DELETE FROM "Configs"
+                WHERE config_key='AccountPolicy:AllowPasswordRegistration'"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        config.account.allow_password_registration = false;
+        let fallback_startup =
+            crate::services::anti_cheat::validate_registration_startup(&pool, &config)
+                .await
+                .expect_err("environment OAuth-only policy started without a public origin");
+        assert_eq!(
+            fallback_startup.status(),
+            axum::http::StatusCode::BAD_REQUEST
+        );
+        config.public_url = Some("https://ctf.example".to_string());
+        crate::services::anti_cheat::validate_registration_startup(&pool, &config)
+            .await
+            .expect("usable OAuth-only policy must pass startup validation");
 
         let fingerprint_conflict = save_security_policy(
             &pool,
