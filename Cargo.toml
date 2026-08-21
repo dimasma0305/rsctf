@@ -1,6 +1,6 @@
 [package]
 name = "rsctf"
-version = "0.1.55"
+version = "0.1.56"
 edition = "2021"
 license = "MIT"
 authors = ["rsctf contributors"]
@@ -80,7 +80,7 @@ lettre = { version = "0.11", default-features = false, features = ["smtp-transpo
 ed25519-dalek = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 rust_xlsxwriter = "0.96"
-bollard = "0.17"
+bollard = { version = "0.17", features = ["buildkit"] }
 # Upstream 0.14.0 plus its quick-xml >=0.41 security bump, pending the next
 # crates.io patch release (RUSTSEC-2026-0194 / RUSTSEC-2026-0195).
 object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "18102f35d2c81dfbc9aefbb5797c33b39f2641d5", features = ["aws"] }

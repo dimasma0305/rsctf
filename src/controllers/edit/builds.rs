@@ -13,6 +13,7 @@ pub(crate) use identity::{
 mod publication;
 use publication::*;
 mod generator;
+mod progress;
 pub(crate) use generator::run_import_variant_generator_build;
 #[cfg(test)]
 mod archive_tests;
@@ -842,6 +843,7 @@ async fn build_from_context(
         rm: true,
         labels,
         version: ARCHIVE_BUILDER_VERSION,
+        session: Some(uuid::Uuid::new_v4().to_string()),
         ..Default::default()
     };
 
@@ -849,24 +851,17 @@ async fn build_from_context(
     // `.into()` resolves `From<Vec<u8>>` without naming the transitive crate.
     let mut stream = docker.build_image(options, None, Some(tar.into()));
 
-    let mut log = String::new();
-    let mut failed: Option<String> = None;
+    let mut progress = progress::BuildProgress::default();
     while let Some(item) = stream.next().await {
         match item {
-            Ok(info) => {
-                if let Some(s) = info.stream {
-                    log.push_str(&s);
-                }
-                if let Some(err) = info.error {
-                    failed = Some(err);
-                }
-            }
+            Ok(info) => progress.record(info),
             Err(e) => {
-                failed = Some(format!("build transport error: {e:?}"));
+                progress.fail(format!("build transport error: {e:?}"));
                 break;
             }
         }
     }
+    let (mut log, failed) = progress.into_parts();
 
     match failed {
         Some(err) => {
