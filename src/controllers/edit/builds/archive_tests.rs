@@ -2,6 +2,14 @@ use super::*;
 use crate::models::internal::configs::RuntimeRole;
 use crate::services::container::ContainerBackendKind;
 
+#[test]
+fn archive_builds_use_buildkit_dockerfiles() {
+    assert_eq!(
+        ARCHIVE_BUILDER_VERSION,
+        bollard::image::BuilderVersion::BuilderBuildKit
+    );
+}
+
 fn zip_entry(name: &str, data: &[u8]) -> Vec<u8> {
     zip_entries(&[(name, data)], zip::CompressionMethod::Deflated)
 }
