@@ -330,7 +330,26 @@ pub async fn import_users(
         // for the unique username on success).
         let preview_name = base_username(&real_name, row.user_name_override.as_deref());
 
-        if !email.contains('@') {
+        let field_validation = crate::controllers::account::validate_profile_fields(
+            None,
+            row.phone.as_deref(),
+            Some(&real_name),
+            row.std_number.as_deref(),
+        )
+        .and_then(|()| crate::controllers::team::validate_team_profile(team_name.as_deref(), None));
+        if let Err(error) = field_validation {
+            skipped += 1;
+            out.push(skipped_row(
+                &email,
+                &real_name,
+                &preview_name,
+                team_name,
+                &error.to_string(),
+            ));
+            continue;
+        }
+
+        if !email.contains('@') || email.len() > crate::controllers::account::MAX_EMAIL_BYTES {
             skipped += 1;
             out.push(skipped_row(
                 &email,
@@ -545,8 +564,27 @@ pub async fn add_users(
         if m.password.is_empty() {
             return Err(AppError::bad_request("Password is required"));
         }
+        if user_name.len() > crate::controllers::account::MAX_USER_NAME_BYTES {
+            return Err(AppError::bad_request("Username is too long"));
+        }
+        if m.password.len() > crate::controllers::account::MAX_PASSWORD_BYTES {
+            return Err(AppError::bad_request("Password is too long"));
+        }
+        crate::controllers::account::validate_profile_fields(
+            None,
+            m.phone.as_deref(),
+            m.real_name.as_deref(),
+            m.std_number.as_deref(),
+        )?;
+        crate::controllers::team::validate_team_profile(
+            m.team_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty()),
+            None,
+        )?;
         let email = m.email.trim().to_lowercase();
-        if !email.contains('@') {
+        if !email.contains('@') || email.len() > crate::controllers::account::MAX_EMAIL_BYTES {
             return Err(AppError::bad_request("Invalid email address"));
         }
         let norm_name = user_name.to_uppercase();

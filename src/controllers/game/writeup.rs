@@ -43,7 +43,21 @@ pub async fn submit_writeup(
     Path(id): Path<i32>,
     mut multipart: Multipart,
 ) -> AppResult<StatusCode> {
-    let now = Utc::now();
+    // Resolve participation and policy before accepting a large body. Multipart
+    // construction is lazy, so this does not buffer the upload while the checks
+    // run and prevents an arbitrary authenticated account from consuming the
+    // writeup budget for a game it cannot play.
+    let ctx = context_info(&st, &user, id, false).await?;
+    if !ctx.game.writeup_required {
+        return Err(AppError::bad_request(
+            "Writeup is not required for this game",
+        ));
+    }
+    if Utc::now() > ctx.game.writeup_deadline {
+        return Err(AppError::bad_request("Writeup deadline has passed"));
+    }
+    let _upload_reservation =
+        crate::utils::upload::reserve_buffered(crate::utils::upload::WRITEUP_BODY_BYTES)?;
 
     // Pull the `file` field; capture metadata before `bytes()` consumes it.
     let mut file_name: Option<String> = None;
@@ -83,12 +97,7 @@ pub async fn submit_writeup(
         return Err(AppError::bad_request("Only PDF files are accepted"));
     }
 
-    let ctx = context_info(&st, &user, id, false).await?;
-    if !ctx.game.writeup_required {
-        return Err(AppError::bad_request(
-            "Writeup is not required for this game",
-        ));
-    }
+    let now = Utc::now();
     if now > ctx.game.writeup_deadline {
         return Err(AppError::bad_request("Writeup deadline has passed"));
     }

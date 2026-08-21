@@ -224,11 +224,21 @@ pub async fn update_user(
         );
     let mut credential_email_to_invalidate = None;
 
+    crate::controllers::account::validate_profile_fields(
+        model.bio.as_deref(),
+        model.phone.as_deref(),
+        model.real_name.as_deref(),
+        model.std_number.as_deref(),
+    )?;
+
     let mut am: user::ActiveModel = target.into();
 
     if let Some(name) = model.user_name {
         let name = name.trim().to_string();
         if !name.is_empty() {
+            if name.len() > crate::controllers::account::MAX_USER_NAME_BYTES {
+                return Err(AppError::bad_request("Username is too long"));
+            }
             let norm = name.to_uppercase();
             if user::Entity::find()
                 .filter(user::Column::NormalizedUserName.eq(norm.clone()))
@@ -246,6 +256,9 @@ pub async fn update_user(
     if let Some(email) = model.email {
         let email = email.trim().to_lowercase();
         if !email.is_empty() {
+            if email.len() > crate::controllers::account::MAX_EMAIL_BYTES {
+                return Err(AppError::bad_request("Email is too long"));
+            }
             let norm = email.to_uppercase();
             if user::Entity::find()
                 .filter(user::Column::NormalizedEmail.eq(norm.clone()))

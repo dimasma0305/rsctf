@@ -3,6 +3,7 @@ use super::*;
 
 mod eligibility;
 use crate::services::live_roster::LiveParticipationIdentity;
+use crate::utils::enums::NetworkMode;
 use eligibility::{
     load_eligible_shared_challenge, player_container_request_is_eligible, ContainerRequestMode,
 };
@@ -14,9 +15,7 @@ use publication::{
     revoke_published_team_container,
 };
 mod policy;
-use policy::{
-    allows_practice_container, container_op_too_frequent, CONTAINER_RENEWAL_WINDOW_MINUTES,
-};
+use policy::{allows_practice_container, container_op_too_frequent};
 mod reaping;
 pub(crate) use reaping::destroy_managed_container_row;
 mod workload_fence;
@@ -24,8 +23,6 @@ use workload_fence::{
     acquire_playable_publication_lock, acquire_shared_publication_lock,
     load_playable_definition_snapshot, load_shared_definition_snapshot,
 };
-
-const CONTAINER_LIFETIME_HOURS: i64 = 2;
 
 /// `POST /api/game/{id}/container/{challengeId}` — provision a per-team dynamic
 /// container (mirrors RSCTF `GameInstanceRepository.CreateContainer`).
@@ -153,6 +150,8 @@ pub async fn create_container(
         .ok_or_else(|| AppError::not_found("Game not found"))?;
     let (challenge, workload, identity, publication_fence, legacy_image) =
         load_playable_definition_snapshot(&st, id, cid).await?;
+    let container_policy =
+        crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
 
     // Look up any prior instance for this challenge. A live (Running) container is a
     // hard error — RSCTF returns 400 Game_ContainerAlreadyCreated rather than handing
@@ -266,13 +265,18 @@ pub async fn create_container(
                         .expect("a legacy definition has an immutable launch image"),
                     memory_limit: challenge.memory_limit.unwrap_or(64),
                     cpu_count: challenge.cpu_count.unwrap_or(1),
+                    storage_limit: crate::services::container::storage_limit_or_default(
+                        challenge.storage_limit,
+                    ),
                     expose_port: challenge.expose_port.unwrap_or(80),
                     publish_port: true,
                     proxy_only: is_proxy,
                     env: vec![("RSCTF_TEAM_ID".into(), participation.team_id.to_string())],
                     flag: Some(flag.clone()),
                     ad_network: None,
-                    allow_egress: true,
+                    allow_egress: challenge.network_mode.unwrap_or(NetworkMode::Open)
+                        == NetworkMode::Open,
+                    network_mode: challenge.network_mode.unwrap_or(NetworkMode::Open),
                     operation_id,
                 })
                 .await?
@@ -332,7 +336,7 @@ pub async fn create_container(
     let existing_instance_id = existing.as_ref().map(|instance| instance.id);
     let persisted: AppResult<(container::Model, chrono::DateTime<Utc>)> = async {
         let now = Utc::now();
-        let stop_at = now + chrono::Duration::hours(CONTAINER_LIFETIME_HOURS);
+        let stop_at = now + chrono::Duration::minutes(i64::from(container_policy.default_lifetime));
 
         // Only a DynamicContainer needs a per-team FlagContext + an instance flag_id;
         // static containers use the challenge's shared static flag row.
@@ -640,6 +644,8 @@ pub async fn extend_container(
         participation_id: ctx.participation.id,
     };
     let guard_challenge = load_playable_challenge(&st, id, cid).await?;
+    let container_policy =
+        crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
 
     let perm = effective_permission(&st, &ctx.participation, cid).await?;
     if !perm.contains(GamePermission::VIEW_CHALLENGE) {
@@ -686,13 +692,14 @@ pub async fn extend_container(
                 .await?
                 .ok_or_else(|| AppError::bad_request("No running container"))?;
             if shared.expect_stop_at - Utc::now()
-                > chrono::Duration::minutes(CONTAINER_RENEWAL_WINDOW_MINUTES)
+                > chrono::Duration::minutes(i64::from(container_policy.renewal_window))
             {
                 return Err(AppError::bad_request(
                     "The container is not yet eligible for extension",
                 ));
             }
-            let stop_at = shared.expect_stop_at + chrono::Duration::hours(CONTAINER_LIFETIME_HOURS);
+            let stop_at = shared.expect_stop_at
+                + chrono::Duration::minutes(i64::from(container_policy.extension_duration));
             let mut am: container::ActiveModel = shared.into();
             am.expect_stop_at = Set(stop_at);
             let shared = am.update(&st.db).await?;
@@ -754,14 +761,15 @@ pub async fn extend_container(
         // container is within the RenewalWindow (10 min) of its expiry — otherwise it
         // returns 400 Game_ContainerExtensionNotAvailable.
         if c.expect_stop_at - Utc::now()
-            > chrono::Duration::minutes(CONTAINER_RENEWAL_WINDOW_MINUTES)
+            > chrono::Duration::minutes(i64::from(container_policy.renewal_window))
         {
             return Err(AppError::bad_request(
                 "The container is not yet eligible for extension",
             ));
         }
 
-        let stop_at = c.expect_stop_at + chrono::Duration::hours(CONTAINER_LIFETIME_HOURS);
+        let stop_at = c.expect_stop_at
+            + chrono::Duration::minutes(i64::from(container_policy.extension_duration));
         let mut am: container::ActiveModel = c.into();
         am.expect_stop_at = Set(stop_at);
         let c = am.update(&st.db).await?;
@@ -780,6 +788,8 @@ pub(crate) async fn get_or_create_shared_container_locked(
     st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> AppResult<container::Model> {
+    let container_policy =
+        crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
     let game_id = challenge.game_id;
     let (challenge, workload, identity, publication_fence, legacy_image) =
         load_shared_definition_snapshot(st, game_id, challenge.id).await?;
@@ -804,7 +814,8 @@ pub(crate) async fn get_or_create_shared_container_locked(
                         "Shared container ownership changed during provisioning",
                     ));
                 }
-                let stop_at = Utc::now() + chrono::Duration::hours(CONTAINER_LIFETIME_HOURS);
+                let stop_at = Utc::now()
+                    + chrono::Duration::minutes(i64::from(container_policy.default_lifetime));
                 let mut am: container::ActiveModel = existing.into();
                 am.expect_stop_at = Set(stop_at);
                 let existing = am.update(&st.db).await?;
@@ -866,6 +877,9 @@ pub(crate) async fn get_or_create_shared_container_locked(
                         .expect("a legacy definition has an immutable launch image"),
                     memory_limit: challenge.memory_limit.unwrap_or(64),
                     cpu_count: challenge.cpu_count.unwrap_or(1),
+                    storage_limit: crate::services::container::storage_limit_or_default(
+                        challenge.storage_limit,
+                    ),
                     expose_port: challenge.expose_port.unwrap_or(80),
                     publish_port: true,
                     proxy_only: is_proxy,
@@ -873,6 +887,7 @@ pub(crate) async fn get_or_create_shared_container_locked(
                     flag: Some(flag),
                     ad_network,
                     allow_egress: challenge.ad_allow_egress,
+                    network_mode: challenge.network_mode.unwrap_or(NetworkMode::Open),
                     operation_id,
                 })
                 .await?
@@ -898,7 +913,7 @@ pub(crate) async fn get_or_create_shared_container_locked(
         }
     };
     let now = Utc::now();
-    let stop_at = now + chrono::Duration::hours(CONTAINER_LIFETIME_HOURS);
+    let stop_at = now + chrono::Duration::minutes(i64::from(container_policy.default_lifetime));
     let persisted: AppResult<container::Model> = async {
         // Publish the bookkeeping row and its challenge owner atomically. The
         // destroy path discovers its lock key through this relationship, so exposing

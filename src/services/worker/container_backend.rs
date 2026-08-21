@@ -413,6 +413,9 @@ impl ContainerManager for WorkerContainerManager {
         let cpu_millis = u32::try_from(spec.cpu_count)
             .unwrap_or_default()
             .saturating_mul(1_000);
+        let storage_bytes = u64::try_from(spec.storage_limit)
+            .unwrap_or_default()
+            .saturating_mul(1024 * 1024);
         let workload = ValidatedWorkloadSpec::try_from(WorkloadSpec {
             game_kind: GameKind::Jeopardy,
             platform,
@@ -422,6 +425,7 @@ impl ContainerManager for WorkerContainerManager {
                 resources: ResourceLimits {
                     cpu_millis,
                     memory_bytes,
+                    storage_bytes,
                 },
                 replicas: 1,
                 stateless: false,
@@ -718,6 +722,7 @@ mod tests {
                 resources: ResourceLimits {
                     cpu_millis: 500,
                     memory_bytes: 128 * 1024 * 1024,
+                    storage_bytes: rsctf_worker_protocol::DEFAULT_STORAGE_BYTES,
                 },
                 replicas: 3,
                 stateless: true,
@@ -737,6 +742,7 @@ mod tests {
                 resources: ResourceLimits {
                     cpu_millis: 250,
                     memory_bytes: 64 * 1024 * 1024,
+                    storage_bytes: rsctf_worker_protocol::DEFAULT_STORAGE_BYTES,
                 },
                 replicas: 1,
                 stateless: false,

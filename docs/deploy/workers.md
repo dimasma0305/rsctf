@@ -332,6 +332,11 @@ xfs`. `--allow-unbounded-storage` is only for trusted disposable development
 fixtures; the free-space watchdog cannot make an unbounded hostile workload
 safe.
 
+The agent applies the smaller of that worker-wide ceiling and each service's
+`resources.storageBytes` request. Legacy stored workload definitions receive a
+512 MiB default when revalidated. This field is part of worker protocol revision
+2, so control servers and agents must be rolled to the same release.
+
 Give Docker an explicit, bounded address pool sized for the event. For example,
 `/etc/docker/daemon.json` can reserve 256 isolated `/24` workload networks:
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bollard::models::{
     ContainerConfig, ContainerInspectResponse, ContainerState, ContainerStateStatusEnum,
-    HostConfig, ImageInspect, Ipam, IpamConfig, Network,
+    HostConfig, ImageInspect, Ipam, IpamConfig, Network, SystemInfo,
 };
 
 use super::docker::{
@@ -10,7 +10,8 @@ use super::docker::{
     image_requests_restricted_profile, launch_spec_fingerprint, launch_spec_matches,
     parse_proxy_bind, published_bind_ip, restricted_profile_matches, restricted_tmpfs_mounts,
     stamp_restricted_profile, validate_docker_container_spec, verify_container_scope,
-    FailedStartAction, LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
+    writable_layer_quota_supported, writable_layer_storage_opt, FailedStartAction,
+    LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
     RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
 };
 use super::{
@@ -18,7 +19,7 @@ use super::{
     docker_workload_scope, game_kind_for_challenge, labels_match_scope, managed_container_filters,
     network_scope_matches, scoped_managed_labels, scoped_operation_id, should_use_platform_proxy,
     validate_container_spec, ContainerLiveness, ContainerManager, ContainerSpec,
-    DockerContainerManager,
+    DockerContainerManager, DEFAULT_CONTAINER_STORAGE_MB,
 };
 
 #[test]
@@ -153,6 +154,7 @@ fn fingerprint_spec() -> ContainerSpec {
         image: format!("registry.example/hill@sha256:{}", "a".repeat(64)),
         memory_limit: 256,
         cpu_count: 1,
+        storage_limit: DEFAULT_CONTAINER_STORAGE_MB,
         expose_port: 8080,
         publish_port: true,
         proxy_only: false,
@@ -160,6 +162,7 @@ fn fingerprint_spec() -> ContainerSpec {
         flag: Some("flag-secret".to_string()),
         ad_network: Some("rsctf-ad".to_string()),
         allow_egress: false,
+        network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some("cycle:9".to_string()),
     }
 }
@@ -170,18 +173,62 @@ fn existing_ad_network_must_match_exact_ipv4_subnet() {
     assert!(bridge_network_matches(
         &expected,
         Some("10.13.40.0/24"),
-        true
+        true,
+        false,
     ));
 
     let stale = inspected_network(&["10.13.41.0/24"], true);
-    assert!(!bridge_network_matches(&stale, Some("10.13.40.0/24"), true));
+    assert!(!bridge_network_matches(
+        &stale,
+        Some("10.13.40.0/24"),
+        true,
+        false,
+    ));
 
     let ambiguous = inspected_network(&["10.13.40.0/24", "10.13.41.0/24"], true);
     assert!(!bridge_network_matches(
         &ambiguous,
         Some("10.13.40.0/24"),
-        true
+        true,
+        false,
     ));
+}
+
+#[test]
+fn isolated_bridge_requires_inter_container_communication_to_be_disabled() {
+    let mut isolated = inspected_network(&[], true);
+    assert!(!bridge_network_matches(&isolated, None, true, true));
+    isolated.options = Some(HashMap::from([(
+        "com.docker.network.bridge.enable_icc".to_string(),
+        "false".to_string(),
+    )]));
+    assert!(bridge_network_matches(&isolated, None, true, true));
+}
+
+#[test]
+fn docker_storage_quota_support_is_detected_fail_closed() {
+    let xfs = SystemInfo {
+        driver: Some("overlay2".to_string()),
+        driver_status: Some(vec![vec![
+            "Backing Filesystem".to_string(),
+            "xfs".to_string(),
+        ]]),
+        ..Default::default()
+    };
+    assert!(writable_layer_quota_supported(&xfs));
+
+    let mut ext4 = xfs;
+    ext4.driver_status = Some(vec![vec![
+        "Backing Filesystem".to_string(),
+        "extfs".to_string(),
+    ]]);
+    assert!(!writable_layer_quota_supported(&ext4));
+    assert_eq!(
+        writable_layer_storage_opt(768)
+            .get("size")
+            .map(String::as_str),
+        Some("768M")
+    );
 }
 
 #[test]
@@ -266,6 +313,9 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
     changed.cpu_count += 1;
     assert_ne!(launch_spec_fingerprint(&changed), expected);
     changed = spec.clone();
+    changed.storage_limit += 1;
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
     changed.image = format!("registry.example/hill@sha256:{}", "b".repeat(64));
     assert_ne!(launch_spec_fingerprint(&changed), expected);
     changed = spec.clone();
@@ -282,6 +332,9 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
     assert_ne!(launch_spec_fingerprint(&changed), expected);
     changed = spec.clone();
     changed.allow_egress = true;
+    assert_ne!(launch_spec_fingerprint(&changed), expected);
+    changed = spec.clone();
+    changed.network_mode = crate::utils::enums::NetworkMode::Isolated;
     assert_ne!(launch_spec_fingerprint(&changed), expected);
     changed = spec.clone();
     changed.publish_port = false;
@@ -310,7 +363,7 @@ fn launch_fingerprint_rejects_stale_runtime_configuration() {
 }
 
 #[test]
-fn publish_control_preserves_legacy_identity_and_isolates_inspectors() {
+fn storage_and_network_policy_fence_legacy_launch_identities() {
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
     struct LegacyDockerLaunchSpec<'a> {
@@ -342,16 +395,17 @@ fn publish_control_preserves_legacy_identity_and_isolates_inspectors() {
     let legacy_fingerprint = crate::utils::codec::sha256_hex(
         &serde_json::to_vec(&legacy).expect("legacy launch spec serializes"),
     );
-    assert_eq!(
+    assert_ne!(
         launch_spec_fingerprint(&published),
         legacy_fingerprint,
-        "adding inspector port policy must not break adoption of existing workloads"
+        "legacy workloads do not prove storage or network enforcement"
     );
     assert_eq!(docker_network_mode(&published), None);
 
     let mut inspector = published.clone();
     inspector.publish_port = false;
     inspector.ad_network = None;
+    inspector.network_mode = crate::utils::enums::NetworkMode::Isolated;
     assert_eq!(docker_network_mode(&inspector).as_deref(), Some("none"));
     assert_ne!(
         launch_spec_fingerprint(&inspector),
@@ -413,6 +467,7 @@ fn docker_publication_keeps_proxy_private_and_direct_mode_public() {
             .into(),
         256,
         1,
+        DEFAULT_CONTAINER_STORAGE_MB,
         8080,
         7,
         false,
@@ -520,7 +575,16 @@ fn jwt_secret_is_the_replica_safe_scope_fallback() {
 
 #[test]
 fn ad_service_specs_are_internal_only() {
-    let spec = ContainerSpec::ad_service("image".into(), 256, 1, 8080, 7, false, "flag".into());
+    let spec = ContainerSpec::ad_service(
+        "image".into(),
+        256,
+        1,
+        DEFAULT_CONTAINER_STORAGE_MB,
+        8080,
+        7,
+        false,
+        "flag".into(),
+    );
     assert_eq!(
         spec.game_kind,
         rsctf_worker_protocol::GameKind::AttackDefense
@@ -555,7 +619,16 @@ fn challenge_game_kind_preserves_competitive_modes() {
 #[test]
 fn docker_competitive_egress_fails_closed_for_both_game_modes() {
     let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let mut spec = ContainerSpec::ad_service(image.into(), 256, 1, 8080, 7, true, "flag".into());
+    let mut spec = ContainerSpec::ad_service(
+        image.into(),
+        256,
+        1,
+        DEFAULT_CONTAINER_STORAGE_MB,
+        8080,
+        7,
+        true,
+        "flag".into(),
+    );
 
     // Generic validation remains backend-neutral so Kubernetes can enforce
     // allowed egress with its per-workload NetworkPolicy.
@@ -580,7 +653,16 @@ fn docker_competitive_egress_fails_closed_for_both_game_modes() {
 #[test]
 fn docker_competitive_default_deny_egress_remains_supported() {
     let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let mut spec = ContainerSpec::ad_service(image.into(), 256, 1, 8080, 7, false, "flag".into());
+    let mut spec = ContainerSpec::ad_service(
+        image.into(),
+        256,
+        1,
+        DEFAULT_CONTAINER_STORAGE_MB,
+        8080,
+        7,
+        false,
+        "flag".into(),
+    );
     assert!(validate_docker_container_spec(&spec).is_ok());
 
     spec.game_kind = rsctf_worker_protocol::GameKind::KingOfTheHill;
@@ -590,7 +672,16 @@ fn docker_competitive_default_deny_egress_remains_supported() {
 #[tokio::test]
 async fn docker_create_rejects_competitive_egress_before_daemon_access() {
     let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let spec = ContainerSpec::ad_service(image.into(), 256, 1, 8080, 7, true, "flag".into());
+    let spec = ContainerSpec::ad_service(
+        image.into(),
+        256,
+        1,
+        DEFAULT_CONTAINER_STORAGE_MB,
+        8080,
+        7,
+        true,
+        "flag".into(),
+    );
     let error = DockerContainerManager::default()
         .create(spec)
         .await
@@ -606,7 +697,16 @@ async fn docker_create_rejects_competitive_egress_before_daemon_access() {
 #[test]
 fn container_resource_limits_reject_invalid_values() {
     let image = "registry.example/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let mut spec = ContainerSpec::ad_service(image.into(), 256, 1, 8080, 7, false, "flag".into());
+    let mut spec = ContainerSpec::ad_service(
+        image.into(),
+        256,
+        1,
+        DEFAULT_CONTAINER_STORAGE_MB,
+        8080,
+        7,
+        false,
+        "flag".into(),
+    );
     assert!(validate_container_spec(&spec).is_ok());
     spec.memory_limit = -1;
     assert!(validate_container_spec(&spec).is_err());
@@ -614,10 +714,19 @@ fn container_resource_limits_reject_invalid_values() {
     spec.cpu_count = 0;
     assert!(validate_container_spec(&spec).is_err());
     spec.cpu_count = 1;
+    spec.storage_limit = 0;
+    assert!(validate_container_spec(&spec).is_err());
+    spec.storage_limit = DEFAULT_CONTAINER_STORAGE_MB;
     spec.expose_port = 65_536;
     assert!(validate_container_spec(&spec).is_err());
     spec.expose_port = 8080;
     spec.image = "registry.example/service:latest".to_string();
+    assert!(validate_container_spec(&spec).is_err());
+
+    spec.image = image.to_string();
+    spec.network_mode = crate::utils::enums::NetworkMode::Custom;
+    assert!(validate_container_spec(&spec).is_err());
+    spec.network_mode = crate::utils::enums::NetworkMode::Isolated;
     assert!(validate_container_spec(&spec).is_err());
 }
 

@@ -190,6 +190,7 @@ mod tests {
             image: "sha256:test".into(),
             memory_limit: 64,
             cpu_count: 1,
+            storage_limit: crate::services::container::DEFAULT_CONTAINER_STORAGE_MB,
             expose_port: 8080,
             publish_port: true,
             proxy_only: false,
@@ -197,6 +198,7 @@ mod tests {
             flag: None,
             ad_network: None,
             allow_egress: false,
+            network_mode: crate::utils::enums::NetworkMode::Open,
             operation_id: None,
         }
     }

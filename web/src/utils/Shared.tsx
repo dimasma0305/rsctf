@@ -100,8 +100,10 @@ export const useChallengeTypeLabelMap = () => {
         // Inline defaults so a locale lacking this key never surfaces the raw key
         // string (matches the en-US copy; other types rely on locale entries only).
         name: t('challenge.type.king_of_the_hill.label', 'King of the Hill'),
-        desrc: t('challenge.type.king_of_the_hill.desrc',
-          'One shared hill — race to plant your token in /koth/king and hold it.'),
+        desrc: t(
+          'challenge.type.king_of_the_hill.desrc',
+          'One shared hill — race to plant your token in /koth/king and hold it.'
+        ),
       },
     ],
   ])
@@ -431,7 +433,7 @@ export const useNetworkModeMap = () => {
   return map
 }
 
-export const NetworkModeList = Object.values(NetworkMode)
+export const NetworkModeList = [NetworkMode.Open, NetworkMode.Isolated]
 
 type SelectNetworkModeItemProps = NetworkModeItem & ComboboxItem
 
@@ -607,7 +609,7 @@ export class ClientError {
   constructor(
     public title: string,
     public message: string
-  ) { }
+  ) {}
 }
 
 /** 系统错误信息 */

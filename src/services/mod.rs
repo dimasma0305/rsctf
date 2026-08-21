@@ -11,6 +11,7 @@ pub(crate) mod capture_safety;
 pub mod challenge_images;
 pub mod challenge_workloads;
 pub mod container;
+pub mod container_policy;
 pub mod cron;
 pub mod event_bus;
 pub mod event_security;

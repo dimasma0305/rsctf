@@ -17,7 +17,7 @@ use crate::services::worker_store::{
     WorkerAdministrativeState, WorkerStoreError, WorkloadDefinition,
 };
 
-pub(super) fn v1_capabilities() -> WorkerCapabilities {
+pub(super) fn complete_capabilities() -> WorkerCapabilities {
     WorkerCapabilities {
         ensure_workload: true,
         write_flag: true,
@@ -93,9 +93,9 @@ fn placement(worker_id: Uuid, owner_key: String) -> PlaceWorkload {
 }
 
 #[test]
-fn revision_one_requires_every_lifecycle_and_route_capability() {
-    let complete = v1_capabilities();
-    assert!(validate_v1_capabilities(&complete).is_ok());
+fn current_protocol_requires_every_lifecycle_and_route_capability() {
+    let complete = complete_capabilities();
+    assert!(validate_required_capabilities(&complete).is_ok());
 
     for missing in [
         "ensureWorkload",
@@ -116,16 +116,16 @@ fn revision_one_requires_every_lifecycle_and_route_capability() {
             _ => unreachable!(),
         }
         assert!(matches!(
-            validate_v1_capabilities(&capabilities),
+            validate_required_capabilities(&capabilities),
             Err(WorkerError::Protocol(
-                "worker is missing required revision 1 capabilities"
+                "worker is missing required protocol capabilities"
             ))
         ));
     }
 
     let mut oversized = complete;
     oversized.max_workload_replicas = 513;
-    assert!(validate_v1_capabilities(&oversized).is_err());
+    assert!(validate_required_capabilities(&oversized).is_err());
 }
 
 #[tokio::test]
@@ -224,7 +224,7 @@ async fn missing_capability_cannot_replace_or_schedule_a_durable_session() {
     let session = fixture.insert_current_session().await;
     let store = WorkerStore::new(fixture.pool.clone());
     let authority = PostgresWorkerAuthority::new(store.clone(), Duration::from_secs(30));
-    let mut incomplete = v1_capabilities();
+    let mut incomplete = complete_capabilities();
     incomplete.inventory = false;
 
     assert!(matches!(
@@ -238,7 +238,7 @@ async fn missing_capability_cannot_replace_or_schedule_a_durable_session() {
             )
             .await,
         Err(WorkerError::Protocol(
-            "worker is missing required revision 1 capabilities"
+            "worker is missing required protocol capabilities"
         ))
     ));
     let durable: (Option<Uuid>, i64) =
@@ -249,7 +249,7 @@ async fn missing_capability_cannot_replace_or_schedule_a_durable_session() {
             .unwrap();
     assert_eq!(durable, (Some(session.fence.session_id), 1));
 
-    let mut stored_incomplete = v1_capabilities();
+    let mut stored_incomplete = complete_capabilities();
     stored_incomplete.write_flag = false;
     sqlx::query(r#"UPDATE "WorkerNodes" SET capabilities = $2 WHERE id = $1"#)
         .bind(session.worker_id)

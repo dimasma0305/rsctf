@@ -23,7 +23,7 @@ mimalloc = "0.1"
 # web / async
 axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.7", features = ["cors", "trace", "fs", "limit", "compression-gzip"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "fs", "limit", "timeout", "compression-gzip"] }
 futures = "0.3"
 flate2 = "1"
 brotli = "8"

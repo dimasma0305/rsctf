@@ -57,6 +57,9 @@ async fn persist_game_import_locked(
     let mut challenge_id_map = BTreeMap::new();
 
     for src in export_challenges {
+        if let Some(storage_limit) = src.storage_limit {
+            crate::services::container::validate_storage_limit_value(storage_limit)?;
+        }
         let challenge_attachment_id = import_attachment(
             st,
             transaction,
@@ -207,6 +210,7 @@ fn imported_challenge_model(
         flag_template: Set(source.flag_template.clone()),
         file_name: Set(source.file_name.clone()),
         container_image: Set(source.container_image.clone()),
+        network_mode: Set(Some(source.network_mode.unwrap_or(NetworkMode::Open))),
         memory_limit: Set(source.memory_limit),
         storage_limit: Set(source.storage_limit),
         cpu_count: Set(source.cpu_count),
@@ -333,11 +337,17 @@ mod tests {
         assert_eq!(imported_game.poster_hash, Set(None));
 
         let challenge: ExportChallengeModel = serde_json::from_value(serde_json::json!({
+            "type": "DynamicContainer",
+            "networkMode": "Isolated",
             "adCheckerImage": "/data/files/checkers/other-game/checker"
         }))
         .unwrap();
         let imported_challenge = imported_challenge_model(&challenge, 7, None, None);
         assert_eq!(imported_challenge.ad_checker_image, Set(None));
+        assert_eq!(
+            imported_challenge.network_mode,
+            Set(Some(NetworkMode::Isolated))
+        );
     }
 
     #[test]

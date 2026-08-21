@@ -375,6 +375,7 @@ pub(crate) async fn ensure_ad_containers(
                     image,
                     c.memory_limit.unwrap_or(256),
                     c.cpu_count.unwrap_or(1),
+                    crate::services::container::storage_limit_or_default(c.storage_limit),
                     c.expose_port.unwrap_or(80),
                     p.team_id,
                     c.ad_allow_egress,

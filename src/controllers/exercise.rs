@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
+use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::{container, exercise_challenge, exercise_instance, flag_context};
 use crate::services::container::ContainerSpec;
 use crate::utils::crypto_utils::ct_eq;
@@ -45,7 +46,10 @@ pub fn router() -> Router<SharedState> {
         .route("/api/exercise/{id}", get(detail).post(submit))
         .route(
             "/api/exercise/{id}/container",
-            axum::routing::post(create_container).delete(destroy_container),
+            limited(
+                Policy::Container,
+                axum::routing::post(create_container).delete(destroy_container),
+            ),
         )
 }
 
@@ -79,8 +83,41 @@ pub struct FlagSubmit {
     pub flag: String,
 }
 
-fn instance_lock_key(user_id: uuid::Uuid, exercise_id: i32) -> String {
-    format!("exercise-container:{user_id}:{exercise_id}")
+fn user_container_lock_key(user_id: uuid::Uuid) -> String {
+    format!("exercise-container-user:{user_id}")
+}
+
+#[derive(sqlx::FromRow)]
+struct OwnedExerciseContainer {
+    instance_id: i32,
+    container_uuid: uuid::Uuid,
+    backend_id: String,
+    flag_id: Option<i32>,
+}
+
+async fn other_owned_containers(
+    pool: &sqlx::PgPool,
+    user_id: uuid::Uuid,
+    exercise_id: i32,
+) -> AppResult<Vec<OwnedExerciseContainer>> {
+    sqlx::query_as::<_, OwnedExerciseContainer>(
+        r#"SELECT instance.id AS instance_id,
+                  container.id AS container_uuid,
+                  container.container_id AS backend_id,
+                  instance.flag_id
+             FROM "ExerciseInstances" instance
+             JOIN "Containers" container ON container.id = instance.container_id
+            WHERE instance.user_id = $1
+              AND instance.exercise_id <> $2
+              AND instance.is_loaded = TRUE
+              AND instance.container_id IS NOT NULL
+            ORDER BY container.started_at ASC, instance.id ASC"#,
+    )
+    .bind(user_id)
+    .bind(exercise_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
 }
 
 async fn solved_ids(
@@ -266,7 +303,7 @@ pub async fn submit(
         return Err(AppError::bad_request("A flag is required"));
     }
 
-    let lock_key = instance_lock_key(user.id, id);
+    let lock_key = user_container_lock_key(user.id);
     let _instance_guard = crate::utils::single_flight::coalesce(&lock_key).await;
     let distributed =
         crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &lock_key).await?;
@@ -354,7 +391,7 @@ pub async fn create_container(
     // Serialize get-or-create for this user/exercise. Without the in-lock re-read,
     // concurrent or repeated POSTs overwrite the instance pointer and orphan every
     // previously created backend container.
-    let flight_key = instance_lock_key(user.id, id);
+    let flight_key = user_container_lock_key(user.id);
     let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
     let distributed =
         crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), &flight_key)
@@ -400,6 +437,36 @@ pub async fn create_container(
         }
     }
 
+    let container_policy =
+        crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
+    let owned = other_owned_containers(st.pg(), user.id, id).await?;
+    let maximum = usize::try_from(container_policy.max_exercise_container_count_per_user)
+        .map_err(|_| AppError::internal("invalid exercise container limit"))?;
+    if owned.len() >= maximum {
+        if !container_policy.auto_destroy_on_limit_reached {
+            distributed.release().await?;
+            return Err(AppError::bad_request(format!(
+                "The number of exercise containers cannot exceed {}",
+                container_policy.max_exercise_container_count_per_user
+            )));
+        }
+        let remove_count = owned.len() - maximum + 1;
+        for old in owned.into_iter().take(remove_count) {
+            destroy_owned_exercise_container_with(
+                st.pg(),
+                Some(old.instance_id),
+                old.container_uuid,
+                &old.backend_id,
+                old.flag_id,
+                crate::services::traffic::destroy_container_after_capture_fence(
+                    &st,
+                    &old.backend_id,
+                ),
+            )
+            .await?;
+        }
+    }
+
     let flag = flag_generator::generate_flag(
         e.flag_template.as_deref(),
         &flag_generator::exercise_user_hash(st.config.identity_hash_key.as_bytes(), id, user.id),
@@ -420,6 +487,7 @@ pub async fn create_container(
             image: image.clone(),
             memory_limit: e.memory_limit.unwrap_or(64),
             cpu_count: e.cpu_count.unwrap_or(1),
+            storage_limit: crate::services::container::DEFAULT_CONTAINER_STORAGE_MB,
             expose_port: e.expose_port.unwrap_or(80),
             publish_port: true,
             proxy_only: is_proxy,
@@ -427,6 +495,7 @@ pub async fn create_container(
             flag: Some(flag.clone()),
             ad_network: None,
             allow_egress: true,
+            network_mode: crate::utils::enums::NetworkMode::Open,
             operation_id: Some(format!("container:{cuuid}")),
         })
         .await?;
@@ -455,7 +524,9 @@ pub async fn create_container(
             container_id: Set(info.id),
             status: Set(ContainerStatus::Running),
             started_at: Set(now),
-            expect_stop_at: Set(now + chrono::Duration::hours(2)),
+            expect_stop_at: Set(
+                now + chrono::Duration::minutes(i64::from(container_policy.default_lifetime))
+            ),
             is_proxy: Set(is_proxy),
             ip: Set(info.ip),
             port: Set(info.port),
@@ -570,7 +641,7 @@ pub async fn destroy_container(
     user: CurrentUser,
     Path(id): Path<i32>,
 ) -> AppResult<MessageResponse> {
-    let lock_key = instance_lock_key(user.id, id);
+    let lock_key = user_container_lock_key(user.id);
     let _instance_guard = crate::utils::single_flight::coalesce(&lock_key).await;
     let distributed =
         crate::utils::single_flight::PgAdvisoryLock::acquire(st.pg(), &lock_key).await?;

@@ -7,7 +7,7 @@ use serde_json::Value as JsonValue;
 
 use crate::app_state::SharedState;
 use crate::models::data::game_challenge;
-use crate::utils::enums::ChallengeType;
+use crate::utils::enums::{ChallengeType, NetworkMode};
 use crate::utils::error::{AppError, AppResult};
 
 /// Validate an API value before it crosses the database boundary. Aggregate
@@ -103,10 +103,12 @@ struct LegacyRuntimeIdentity {
     image: String,
     memory_limit_mb: i32,
     cpu_count: i32,
+    storage_limit_mb: i32,
     expose_port: i32,
     challenge_type: ChallengeType,
     topology: &'static str,
     ad_allow_egress: Option<bool>,
+    network_mode: NetworkMode,
     flag_template: Option<String>,
 }
 
@@ -154,10 +156,13 @@ fn legacy_runtime_identity_value(value: &LegacyRuntimeIdentity) -> AppResult<Str
 
 fn legacy_runtime_identity(challenge: &game_challenge::Model, image: String) -> AppResult<String> {
     legacy_runtime_identity_value(&LegacyRuntimeIdentity {
-        schema: 1,
+        schema: 2,
         image,
         memory_limit_mb: challenge.memory_limit.unwrap_or(64),
         cpu_count: challenge.cpu_count.unwrap_or(1),
+        storage_limit_mb: crate::services::container::storage_limit_or_default(
+            challenge.storage_limit,
+        ),
         expose_port: challenge.expose_port.unwrap_or(80),
         challenge_type: challenge.challenge_type,
         topology: legacy_topology(
@@ -167,6 +172,7 @@ fn legacy_runtime_identity(challenge: &game_challenge::Model, image: String) -> 
         ),
         ad_allow_egress: (challenge.challenge_type == ChallengeType::KingOfTheHill)
             .then_some(challenge.ad_allow_egress),
+        network_mode: challenge.network_mode.unwrap_or(NetworkMode::Open),
         flag_template: legacy_flag_template(challenge.challenge_type, &challenge.flag_template),
     })
 }
@@ -638,6 +644,7 @@ mod tests {
                 resources: ResourceLimits {
                     cpu_millis: 500,
                     memory_bytes: 128 * 1024 * 1024,
+                    storage_bytes: rsctf_worker_protocol::DEFAULT_STORAGE_BYTES,
                 },
                 replicas,
                 stateless,
@@ -661,14 +668,16 @@ mod tests {
 
     fn legacy_runtime_fixture() -> LegacyRuntimeIdentity {
         LegacyRuntimeIdentity {
-            schema: 1,
+            schema: 2,
             image: "registry.example/ctf/app@sha256:deadbeef".into(),
             memory_limit_mb: 64,
             cpu_count: 1,
+            storage_limit_mb: crate::services::container::DEFAULT_CONTAINER_STORAGE_MB,
             expose_port: 80,
             challenge_type: ChallengeType::DynamicContainer,
             topology: "per-team",
             ad_allow_egress: None,
+            network_mode: NetworkMode::Open,
             flag_template: Some("flag{%s}".into()),
         }
     }

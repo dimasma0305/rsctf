@@ -22,6 +22,11 @@ const MAX_FLAG_PATH_BYTES: usize = 1_024;
 pub const MAX_WORKLOAD_REPLICAS: usize = 512;
 /// Leaves framing room for command identifiers, fences, and future metadata.
 pub const MAX_WORKLOAD_SPEC_BYTES: usize = 192 * 1024;
+pub const DEFAULT_STORAGE_BYTES: u64 = 512 * 1024 * 1024;
+
+const fn default_storage_bytes() -> u64 {
+    DEFAULT_STORAGE_BYTES
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +69,10 @@ pub enum ImageIdentity {
 pub struct ResourceLimits {
     pub cpu_millis: u32,
     pub memory_bytes: u64,
+    /// Maximum writable container layer. Older stored workload JSON receives
+    /// the secure platform default when it is revalidated after an upgrade.
+    #[serde(default = "default_storage_bytes")]
+    pub storage_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -226,7 +235,10 @@ fn validate_workload(spec: &WorkloadSpec) -> Result<(), WorkloadValidationError>
         validate_image(&service.image).map_err(|()| WorkloadValidationError::InvalidImage {
             service: service.name.clone(),
         })?;
-        if service.resources.cpu_millis == 0 || service.resources.memory_bytes == 0 {
+        if service.resources.cpu_millis == 0
+            || service.resources.memory_bytes == 0
+            || service.resources.storage_bytes == 0
+        {
             return Err(WorkloadValidationError::InvalidResources {
                 service: service.name.clone(),
             });
@@ -536,6 +548,7 @@ mod tests {
                 resources: ResourceLimits {
                     cpu_millis: 500,
                     memory_bytes: 256 * 1024 * 1024,
+                    storage_bytes: DEFAULT_STORAGE_BYTES,
                 },
                 replicas: 1,
                 stateless: false,
@@ -593,6 +606,21 @@ mod tests {
         spec.services[0].replicas = 2;
         let wire = serde_json::to_string(&spec).unwrap();
         assert!(serde_json::from_str::<ValidatedWorkloadSpec>(&wire).is_err());
+    }
+
+    #[test]
+    fn legacy_workloads_receive_a_bounded_storage_default() {
+        let mut wire = serde_json::to_value(valid_spec(GameKind::Jeopardy)).unwrap();
+        wire["services"][0]["resources"]
+            .as_object_mut()
+            .unwrap()
+            .remove("storageBytes");
+
+        let parsed = serde_json::from_value::<ValidatedWorkloadSpec>(wire).unwrap();
+        assert_eq!(
+            parsed.services[0].resources.storage_bytes,
+            DEFAULT_STORAGE_BYTES
+        );
     }
 
     #[test]

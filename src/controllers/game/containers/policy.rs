@@ -2,10 +2,6 @@
 
 use super::*;
 
-/// RSCTF `ContainerPolicy.RenewalWindow` — a container may only be extended once it
-/// is within this many minutes of its expiry.
-pub(super) const CONTAINER_RENEWAL_WINDOW_MINUTES: i64 = 10;
-
 /// Two per-instance container operations inside this window are throttled.
 const CONTAINER_OPERATION_COOLDOWN_SECONDS: i64 = 10;
 

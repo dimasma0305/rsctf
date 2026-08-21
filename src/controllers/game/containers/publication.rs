@@ -8,7 +8,9 @@ pub(crate) async fn refresh_shared_container_lease_locked(
     st: &SharedState,
     backend_id: &str,
 ) -> AppResult<bool> {
-    let stop_at = chrono::Utc::now() + chrono::Duration::hours(super::CONTAINER_LIFETIME_HOURS);
+    let policy = crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
+    let stop_at =
+        chrono::Utc::now() + chrono::Duration::minutes(i64::from(policy.default_lifetime));
     let result = sqlx::query(
         r#"UPDATE "Containers" SET expect_stop_at = $2
             WHERE container_id = $1"#,

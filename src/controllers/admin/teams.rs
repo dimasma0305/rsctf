@@ -115,11 +115,11 @@ pub async fn update_team(
     let old_name = t.name.clone();
 
     let mut am: team::ActiveModel = t.into();
+    let normalized_name = model.name.as_deref().map(str::trim);
+    crate::controllers::team::validate_team_profile(normalized_name, model.bio.as_deref())?;
     if let Some(name) = model.name {
         let name = name.trim().to_string();
-        if !name.is_empty() {
-            am.name = Set(name);
-        }
+        am.name = Set(name);
     }
     if let Some(bio) = model.bio {
         am.bio = Set(Some(bio));

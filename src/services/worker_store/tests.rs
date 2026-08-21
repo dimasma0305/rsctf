@@ -22,6 +22,7 @@ fn workload_spec(replicas: u16) -> serde_json::Value {
             resources: ResourceLimits {
                 cpu_millis: 100,
                 memory_bytes: 1_048_576,
+                storage_bytes: rsctf_worker_protocol::DEFAULT_STORAGE_BYTES,
             },
             replicas,
             stateless: replicas > 1,

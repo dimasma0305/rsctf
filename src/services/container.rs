@@ -56,23 +56,28 @@ use futures::StreamExt;
 use ipnet::Ipv4Net;
 use rsctf_worker_protocol::GameKind;
 
-use crate::utils::enums::ChallengeType;
+use crate::utils::enums::{ChallengeType, NetworkMode};
 use crate::utils::error::{AppError, AppResult};
 
 mod backend;
 mod docker;
 mod logging;
 mod naming;
+mod policy;
 #[cfg(test)]
 mod tests;
 use self::docker::{
     docker_network_mode, image_requests_restricted_profile, is_conflict, is_not_found,
     launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
     restricted_tmpfs_mounts, stamp_restricted_profile, validate_docker_container_spec,
-    LAUNCH_SPEC_LABEL,
+    writable_layer_quota_supported, writable_layer_storage_opt, LAUNCH_SPEC_LABEL,
 };
 use logging::bounded_log_config;
 use naming::{container_name, map_status};
+pub(crate) use policy::validate_container_spec;
+pub use policy::{
+    storage_limit_or_default, validate_network_mode_value, validate_storage_limit_value,
+};
 
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
@@ -102,6 +107,8 @@ const FLAG_FILE_PATH: &str = "/flag";
 const TEAM_ENV: &str = "RSCTF_TEAM_ID";
 const DEFAULT_MAX_MEMORY_MB: i32 = 4_096;
 const DEFAULT_MAX_CPU_COUNT: i32 = 8;
+pub const DEFAULT_CONTAINER_STORAGE_MB: i32 = 512;
+const DEFAULT_MAX_STORAGE_MB: i32 = 1_048_576;
 pub(super) const MAX_EXEC_OUTPUT_BYTES: usize = 1024 * 1024;
 /// Raw Docker filesystem exports are bounded before compression. This must
 /// accommodate ordinary A&D images (which commonly export to 150-300 MiB)
@@ -202,7 +209,12 @@ fn network_scope_matches(existing: &Network, scope: &str) -> bool {
         .is_none_or(|actual| actual == scope)
 }
 
-fn bridge_network_matches(existing: &Network, subnet: Option<&str>, internal: bool) -> bool {
+fn bridge_network_matches(
+    existing: &Network,
+    subnet: Option<&str>,
+    internal: bool,
+    disable_icc: bool,
+) -> bool {
     let managed = existing
         .labels
         .as_ref()
@@ -222,10 +234,17 @@ fn bridge_network_matches(existing: &Network, subnet: Option<&str>, internal: bo
             .collect();
         actual.len() == 1 && actual[0] == expected
     });
+    let icc_matches = !disable_icc
+        || existing.options.as_ref().is_some_and(|options| {
+            options
+                .get("com.docker.network.bridge.enable_icc")
+                .is_some_and(|value| value.eq_ignore_ascii_case("false"))
+        });
     existing.driver.as_deref() == Some("bridge")
         && existing.internal == Some(internal)
         && (internal || managed)
         && subnet_matches
+        && icc_matches
 }
 
 /// Requested container configuration.
@@ -246,6 +265,8 @@ pub struct ContainerSpec {
     pub memory_limit: i32,
     /// CPU quota expressed as a whole CPU count (0.1 CPU units in RSCTF).
     pub cpu_count: i32,
+    /// Hard writable-layer limit in mebibytes.
+    pub storage_limit: i32,
     /// Port the challenge process listens on inside the container.
     pub expose_port: i32,
     /// Whether the backend may publish the exposed port outside the workload.
@@ -270,6 +291,8 @@ pub struct ContainerSpec {
     /// rejects it because a shared external bridge cannot prevent east-west,
     /// private-network, or metadata access.
     pub allow_egress: bool,
+    /// Author-selected network isolation for legacy container definitions.
+    pub network_mode: NetworkMode,
     /// Stable lifecycle identity for crash-recoverable create operations. When
     /// present, a backend must adopt the matching existing workload instead of
     /// launching a second one after a retry.
@@ -294,6 +317,7 @@ impl ContainerSpec {
         image: String,
         memory_limit: i32,
         cpu_count: i32,
+        storage_limit: i32,
         expose_port: i32,
         team_id: i32,
         allow_egress: bool,
@@ -304,6 +328,7 @@ impl ContainerSpec {
             image,
             memory_limit,
             cpu_count,
+            storage_limit,
             expose_port,
             publish_port: true,
             proxy_only: false,
@@ -311,57 +336,10 @@ impl ContainerSpec {
             flag: Some(flag),
             ad_network: Some(crate::services::ad_vpn::services_network()),
             allow_egress,
+            network_mode: NetworkMode::Open,
             operation_id: None,
         }
     }
-}
-
-fn configured_positive_limit(name: &str, default: i32) -> i32 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<i32>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
-}
-
-pub(crate) fn validate_container_spec(spec: &ContainerSpec) -> AppResult<()> {
-    let max_memory =
-        configured_positive_limit("RSCTF_CONTAINER_MAX_MEMORY_MB", DEFAULT_MAX_MEMORY_MB);
-    let max_cpu = configured_positive_limit("RSCTF_CONTAINER_MAX_CPU_COUNT", DEFAULT_MAX_CPU_COUNT);
-    if spec.image.trim().is_empty() {
-        return Err(AppError::bad_request("container image is required"));
-    }
-    if !crate::services::challenge_images::is_repository_digest(&spec.image)
-        && !crate::services::challenge_images::is_local_image_id(&spec.image)
-        && crate::services::challenge_images::worker_local_image(&spec.image).is_none()
-    {
-        return Err(AppError::bad_request(
-            "container image must be an immutable repository digest, Docker image id, or worker-scoped image id",
-        ));
-    }
-    if !(1..=max_memory).contains(&spec.memory_limit) {
-        return Err(AppError::bad_request(format!(
-            "container memory must be between 1 and {max_memory} MB"
-        )));
-    }
-    if !(1..=max_cpu).contains(&spec.cpu_count) {
-        return Err(AppError::bad_request(format!(
-            "container CPU count must be between 1 and {max_cpu}"
-        )));
-    }
-    if !(1..=65_535).contains(&spec.expose_port) {
-        return Err(AppError::bad_request(
-            "container expose port must be between 1 and 65535",
-        ));
-    }
-    if spec.proxy_only
-        && (!spec.publish_port || spec.ad_network.is_some() || spec.game_kind != GameKind::Jeopardy)
-    {
-        return Err(AppError::bad_request(
-            "proxy-only publication is valid only for published Jeopardy containers",
-        ));
-    }
-    Ok(())
 }
 
 /// Runtime information about a created / running container.
@@ -462,6 +440,7 @@ impl DockerContainerManager {
         name: &str,
         subnet: Option<&str>,
         internal: bool,
+        disable_icc: bool,
     ) -> AppResult<()> {
         let docker = self.client()?;
         if let Ok(existing) = docker
@@ -471,7 +450,7 @@ impl DockerContainerManager {
             )
             .await
         {
-            if bridge_network_matches(&existing, subnet, internal)
+            if bridge_network_matches(&existing, subnet, internal, disable_icc)
                 && network_scope_matches(&existing, &self.scope)
             {
                 return Ok(());
@@ -498,6 +477,14 @@ impl DockerContainerManager {
             internal,
             ipam,
             labels: scoped_managed_labels(&self.scope),
+            options: disable_icc
+                .then(|| {
+                    HashMap::from([(
+                        "com.docker.network.bridge.enable_icc".to_string(),
+                        "false".to_string(),
+                    )])
+                })
+                .unwrap_or_default(),
             ..Default::default()
         };
         match docker.create_network(opts).await {
@@ -512,7 +499,7 @@ impl DockerContainerManager {
                     .await
                 {
                     Ok(existing)
-                        if bridge_network_matches(&existing, subnet, internal)
+                        if bridge_network_matches(&existing, subnet, internal, disable_icc)
                             && network_scope_matches(&existing, &self.scope) =>
                     {
                         Ok(())
@@ -560,6 +547,16 @@ impl ContainerManager for DockerContainerManager {
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
         validate_docker_container_spec(&spec)?;
         let docker = self.client()?;
+        let daemon_info = docker.info().await.map_err(|error| {
+            AppError::unavailable(format!(
+                "could not verify Docker writable-layer quota support: {error}"
+            ))
+        })?;
+        if !writable_layer_quota_supported(&daemon_info) {
+            return Err(AppError::unavailable(
+                "Docker writable-layer quotas require btrfs, devicemapper, zfs, windowsfilter, or overlay2 on XFS with project quotas",
+            ));
+        }
         let launch_fingerprint = launch_spec_fingerprint(&spec);
 
         // 1. Pull an absent repository digest without changing identity. A
@@ -630,6 +627,7 @@ impl ContainerManager for DockerContainerManager {
             memory: Some(i64::from(spec.memory_limit) * 1024 * 1024),
             nano_cpus: Some(i64::from(spec.cpu_count) * 1_000_000_000),
             pids_limit: Some(512),
+            storage_opt: Some(writable_layer_storage_opt(spec.storage_limit)),
             cap_drop: restricted_profile.then(|| vec!["ALL".to_string()]),
             readonly_rootfs: restricted_profile.then_some(true),
             security_opt: restricted_profile.then(|| vec!["no-new-privileges:true".to_string()]),
@@ -652,10 +650,17 @@ impl ContainerManager for DockerContainerManager {
         // would permit cross-workload, private-network, and metadata access.
         let networking_config = if let Some(net) = spec.ad_network.as_ref() {
             let services_cidr = crate::services::ad_vpn::services_cidr();
-            self.ensure_bridge_network(net, Some(services_cidr.as_str()), true)
+            self.ensure_bridge_network(net, Some(services_cidr.as_str()), true, false)
                 .await?;
             Some(NetworkingConfig {
                 endpoints_config: HashMap::from([(net.clone(), EndpointSettings::default())]),
+            })
+        } else if spec.network_mode == NetworkMode::Isolated && spec.publish_port {
+            let network = format!("rsctf-isolated-{}", &self.scope[..12]);
+            self.ensure_bridge_network(&network, None, true, true)
+                .await?;
+            Some(NetworkingConfig {
+                endpoints_config: HashMap::from([(network, EndpointSettings::default())]),
             })
         } else {
             None
@@ -845,7 +850,8 @@ impl ContainerManager for DockerContainerManager {
     }
 
     async fn ensure_network(&self, name: &str, subnet: &str) -> AppResult<()> {
-        self.ensure_bridge_network(name, Some(subnet), true).await
+        self.ensure_bridge_network(name, Some(subnet), true, false)
+            .await
     }
 
     async fn query(&self, id: &str) -> AppResult<ContainerStatus> {

@@ -1695,6 +1695,8 @@ export interface WorkerResourceLimits {
   cpuMillis: number;
   /** Memory reservation in bytes. */
   memoryBytes: number;
+  /** Maximum writable container layer in bytes. */
+  storageBytes?: number;
 }
 
 export interface WorkerServicePort {

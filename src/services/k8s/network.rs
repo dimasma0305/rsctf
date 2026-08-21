@@ -281,6 +281,49 @@ pub(super) fn proxy_network_policy(
     ))
 }
 
+pub(super) fn isolated_network_policy(
+    name: &str,
+    labels: &BTreeMap<String, String>,
+    expose_port: i32,
+) -> NetworkPolicy {
+    NetworkPolicy {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            labels: Some(labels.clone()),
+            ..Default::default()
+        },
+        spec: Some(NetworkPolicySpec {
+            egress: Some(Vec::new()),
+            ingress: Some(vec![NetworkPolicyIngressRule {
+                // A directly published challenge remains reachable through its
+                // Service, but no other pod port is exposed.
+                from: None,
+                ports: Some(vec![network_port(expose_port, "TCP")]),
+            }]),
+            pod_selector: LabelSelector {
+                match_labels: Some(labels.clone()),
+                ..Default::default()
+            },
+            policy_types: Some(vec!["Ingress".to_string(), "Egress".to_string()]),
+        }),
+    }
+}
+
+pub(super) fn isolated_proxy_network_policy(
+    name: &str,
+    labels: &BTreeMap<String, String>,
+    expose_port: i32,
+) -> AppResult<NetworkPolicy> {
+    let mut policy = proxy_network_policy(name, labels, expose_port)?;
+    let spec = policy
+        .spec
+        .as_mut()
+        .expect("proxy policies always carry a policy spec");
+    spec.egress = Some(Vec::new());
+    spec.policy_types = Some(vec!["Ingress".to_string(), "Egress".to_string()]);
+    Ok(policy)
+}
+
 pub(super) fn proxy_network_policy_for_control(
     name: &str,
     labels: &BTreeMap<String, String>,
@@ -312,8 +355,8 @@ pub(super) fn proxy_network_policy_for_control(
     }
 }
 
-pub(super) fn network_policy_required(ad_internal: bool, proxy_only: bool) -> bool {
-    ad_internal || proxy_only
+pub(super) fn network_policy_required(ad_internal: bool, proxy_only: bool, isolated: bool) -> bool {
+    ad_internal || proxy_only || isolated
 }
 
 pub(super) fn rollback_created_policy(policy_created: bool, pod_adopted: bool) -> bool {

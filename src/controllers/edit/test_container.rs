@@ -1,6 +1,9 @@
 //! edit: test containers + imports (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
 
+mod path;
+use path::{resolve_subpath, validate_subpath};
+
 const MAX_ARCHIVE_ENTRIES: usize = 2_048;
 const MAX_ARCHIVE_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARCHIVE_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
@@ -142,13 +145,22 @@ pub async fn create_test_container(
                         .expect("a legacy definition has an immutable launch image"),
                     memory_limit: challenge.memory_limit.unwrap_or(64),
                     cpu_count: challenge.cpu_count.unwrap_or(1),
+                    storage_limit: crate::services::container::storage_limit_or_default(
+                        challenge.storage_limit,
+                    ),
                     expose_port: challenge.expose_port.unwrap_or(80),
                     publish_port: true,
                     proxy_only: is_proxy,
                     env: Vec::new(),
                     flag: flag.clone(),
                     ad_network: None,
-                    allow_egress: true,
+                    allow_egress: challenge
+                        .network_mode
+                        .unwrap_or(crate::utils::enums::NetworkMode::Open)
+                        == crate::utils::enums::NetworkMode::Open,
+                    network_mode: challenge
+                        .network_mode
+                        .unwrap_or(crate::utils::enums::NetworkMode::Open),
                     operation_id,
                 })
                 .await?
@@ -838,41 +850,6 @@ async fn import_archive_bytes(
 
 /// Validate the lexical shape of an optional repository subpath before cloning.
 /// Canonical containment is checked separately after the checkout exists.
-fn validate_subpath(subpath: Option<&str>) -> AppResult<Option<std::path::PathBuf>> {
-    let Some(sp) = subpath.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Ok(None);
-    };
-    let rel = std::path::Path::new(sp);
-    for comp in rel.components() {
-        match comp {
-            std::path::Component::Normal(_) | std::path::Component::CurDir => {}
-            _ => return Err(AppError::bad_request("invalid subpath")),
-        }
-    }
-    Ok(Some(rel.to_path_buf()))
-}
-
-/// Resolve a validated subpath after clone, following repository symlinks and
-/// requiring the resulting directory to remain under the canonical checkout.
-fn resolve_subpath(
-    base: &std::path::Path,
-    subpath: Option<&std::path::Path>,
-) -> AppResult<std::path::PathBuf> {
-    let root = std::fs::canonicalize(base)
-        .map_err(|e| AppError::internal(format!("canonicalize checkout: {e}")))?;
-    let candidate = match subpath {
-        Some(rel) => std::fs::canonicalize(base.join(rel))
-            .map_err(|_| AppError::bad_request("repository subpath does not exist"))?,
-        None => root.clone(),
-    };
-    if !candidate.starts_with(&root) {
-        return Err(AppError::bad_request(
-            "repository subpath escapes the checkout",
-        ));
-    }
-    Ok(candidate)
-}
-
 /// `POST /api/edit/games/{id}/challenges/submit` — user-submitted challenge
 /// archive. Mirrors RSCTF `EditController.SubmitChallenge` ([RequireUser] +
 /// `game.AllowUserSubmissions`): ANY logged-in user may submit, so this is gated
@@ -898,6 +875,8 @@ pub async fn submit_challenge(
             title: "User submissions are disabled for this game.".into(),
         });
     }
+    let _upload_reservation =
+        crate::utils::upload::reserve_buffered(crate::utils::upload::ARCHIVE_BODY_BYTES)?;
     // Buffer and validate the bounded upload before occupying the scarce import
     // worker; a slow client must not monopolize submission capacity.
     let bytes = read_first_archive_field(&mut multipart).await?;
@@ -927,6 +906,8 @@ pub async fn import_challenge(
     mut multipart: Multipart,
 ) -> AppResult<RequestResponse<ChallengeImportResult>> {
     manager_or_admin(&st, &user, id).await?;
+    let _upload_reservation =
+        crate::utils::upload::reserve_buffered(crate::utils::upload::ARCHIVE_BODY_BYTES)?;
     let _permit = TRUSTED_CHALLENGE_IMPORT_SLOTS
         .try_acquire()
         .map_err(|_| AppError::unavailable("Challenge import capacity is busy; retry shortly"))?;

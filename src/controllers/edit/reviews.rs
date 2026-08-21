@@ -11,6 +11,8 @@ pub async fn update_poster(
 ) -> AppResult<RequestResponse<String>> {
     manager_or_admin(&st, &user, id).await?;
     let game = load_game(&st, id).await?;
+    let _upload_reservation =
+        crate::utils::upload::reserve_buffered(crate::utils::upload::IMAGE_BODY_BYTES)?;
 
     let mut data: Option<Vec<u8>> = None;
     while let Some(field) = multipart

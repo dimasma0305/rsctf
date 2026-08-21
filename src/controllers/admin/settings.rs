@@ -4,6 +4,8 @@ use super::*;
 
 mod security_policy;
 
+pub use crate::services::container_policy::ContainerPolicy;
+
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 /// RSCTF `GlobalConfig`.
@@ -59,29 +61,6 @@ impl Default for AccountPolicy {
             require_unique_fingerprint_per_team_user: false,
             require_unique_ip_global: false,
             require_unique_fingerprint_global: false,
-        }
-    }
-}
-
-/// RSCTF `ContainerPolicy`.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ContainerPolicy {
-    pub auto_destroy_on_limit_reached: bool,
-    pub max_exercise_container_count_per_user: i32,
-    pub default_lifetime: i32,
-    pub extension_duration: i32,
-    pub renewal_window: i32,
-}
-
-impl Default for ContainerPolicy {
-    fn default() -> Self {
-        Self {
-            auto_destroy_on_limit_reached: false,
-            max_exercise_container_count_per_user: 1,
-            default_lifetime: 120,
-            extension_duration: 120,
-            renewal_window: 10,
         }
     }
 }
@@ -531,6 +510,7 @@ pub async fn update_config(
     }
 
     if let Some(c) = model.container_policy {
+        c.validate()?;
         upsert_config(
             &st,
             "ContainerPolicy:AutoDestroyOnLimitReached",
@@ -696,6 +676,8 @@ pub async fn logo_upload(
     _admin: AdminUser,
     mut multipart: Multipart,
 ) -> AppResult<MessageResponse> {
+    let _upload_reservation =
+        crate::utils::upload::reserve_buffered(crate::utils::upload::IMAGE_BODY_BYTES)?;
     let mut data: Option<(String, Vec<u8>)> = None;
     while let Some(field) = multipart
         .next_field()

@@ -58,6 +58,8 @@ pub async fn upload(
     AdminUser(_user): AdminUser,
     mut multipart: Multipart,
 ) -> AppResult<Json<Vec<LocalFileResult>>> {
+    let _upload_reservation =
+        crate::utils::upload::reserve_buffered(crate::utils::upload::ASSET_BODY_BYTES)?;
     let mut uploads = Vec::new();
     let mut total_bytes = 0usize;
 

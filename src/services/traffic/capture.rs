@@ -24,16 +24,18 @@ mod config;
 mod failures;
 mod health;
 mod owner;
+mod retention;
 mod shutdown;
 mod spec;
 mod teardown;
 
+pub(crate) use retention::purge_expired_captures;
 pub(crate) use teardown::destroy_container_after_capture_fence;
 pub use teardown::stop_container_capture;
 
 use config::{
-    capture_device, capture_enabled, capture_filename, join_capture_thread, reconcile_interval,
-    unexpected_exit_error,
+    capture_device, capture_enabled, capture_filename, capture_limits, join_capture_thread,
+    reconcile_interval, unexpected_exit_error,
 };
 use health::{OwnerHeartbeat, OwnerToken};
 use owner::{release as release_owner, try_acquire as try_acquire_owner, OwnerLease};
@@ -270,6 +272,7 @@ impl CaptureRegistry {
                     Some(&filter),
                     &out,
                     capture_stop,
+                    capture_limits(),
                     startup_tx,
                 )
                 .map_err(|error| {

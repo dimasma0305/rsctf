@@ -11,7 +11,7 @@ use bollard::{Docker, API_DEFAULT_VERSION};
 use bytes::Bytes;
 use rsctf_worker_protocol::{
     CommandErrorCode, ImageIdentity, OperatingSystem, Platform, ReplicaStatus, RuntimeEndpointKind,
-    WorkerCapacity, WorkloadFence, MAX_WORKER_SLOTS, MAX_WORKLOAD_REPLICAS,
+    ServiceSpec, WorkerCapacity, WorkloadFence, MAX_WORKER_SLOTS, MAX_WORKLOAD_REPLICAS,
 };
 use uuid::Uuid;
 
@@ -24,6 +24,20 @@ use super::{
     LABEL_ASSIGNMENT, LABEL_GENERATION, LABEL_MANAGED, LABEL_REPLICA, LABEL_SERVICE,
     LABEL_SPEC_HASH, LABEL_WORKER, LABEL_WORKLOAD,
 };
+
+mod storage;
+pub(super) use storage::{
+    effective_writable_layer_limit, storage_quota_supported, writable_layer_storage_opt,
+};
+
+pub(super) struct ContainerReplicaPlan<'a> {
+    pub(super) fence: WorkloadFence,
+    pub(super) spec_hash: &'a str,
+    pub(super) network: &'a str,
+    pub(super) service: &'a ServiceSpec,
+    pub(super) expected_replicas: usize,
+    pub(super) operating_system: OperatingSystem,
+}
 
 pub(super) const MAX_FLAG_ARCHIVE_BYTES: usize = 1024 * 1024;
 const MAX_FLAG_ARCHIVE_ENTRIES: usize = 64;
@@ -141,29 +155,6 @@ pub(super) fn daemon_capacity(info: &SystemInfo, network_slots: u32) -> WorkerCa
 pub(super) fn workload_replica_capacity(max_network_endpoints: usize) -> u16 {
     u16::try_from(max_network_endpoints.min(MAX_WORKLOAD_REPLICAS))
         .expect("protocol workload replica limit fits in u16")
-}
-
-pub(super) fn storage_quota_supported(info: &SystemInfo) -> bool {
-    match info.driver.as_deref() {
-        Some("btrfs" | "zfs" | "windowsfilter") => true,
-        Some("overlay2") => info
-            .driver_status
-            .as_ref()
-            .into_iter()
-            .flatten()
-            .any(|entry| {
-                entry.first().map(String::as_str) == Some("Backing Filesystem")
-                    && entry
-                        .get(1)
-                        .is_some_and(|value| value.eq_ignore_ascii_case("xfs"))
-            }),
-        _ => false,
-    }
-}
-
-pub(super) fn writable_layer_storage_opt(bytes: u64) -> HashMap<String, String> {
-    const MIB: u64 = 1024 * 1024;
-    HashMap::from([("size".to_string(), format!("{}M", bytes.div_ceil(MIB)))])
 }
 
 pub(super) async fn docker_network_capacity(
@@ -692,15 +683,6 @@ mod tests {
     }
 
     #[test]
-    fn windowsfilter_supports_per_container_writable_layer_limits() {
-        let info = SystemInfo {
-            driver: Some("windowsfilter".to_string()),
-            ..Default::default()
-        };
-        assert!(storage_quota_supported(&info));
-    }
-
-    #[test]
     fn linux_workloads_replace_defaults_with_only_bind_service() {
         let config = workload_host_config(
             OperatingSystem::Linux,
@@ -798,33 +780,6 @@ mod tests {
             size: Some(31),
         };
         assert_eq!(address_pool_geometry(&too_small), None);
-    }
-
-    #[test]
-    fn storage_quota_preflight_is_fail_closed() {
-        let xfs = SystemInfo {
-            driver: Some("overlay2".to_string()),
-            driver_status: Some(vec![vec![
-                "Backing Filesystem".to_string(),
-                "xfs".to_string(),
-            ]]),
-            ..Default::default()
-        };
-        assert!(storage_quota_supported(&xfs));
-
-        let ext = SystemInfo {
-            driver: Some("overlay2".to_string()),
-            driver_status: Some(vec![vec![
-                "Backing Filesystem".to_string(),
-                "extfs".to_string(),
-            ]]),
-            ..Default::default()
-        };
-        assert!(!storage_quota_supported(&ext));
-        assert_eq!(
-            writable_layer_storage_opt(512 * 1024 * 1024),
-            HashMap::from([("size".to_string(), "512M".to_string())])
-        );
     }
 
     #[test]

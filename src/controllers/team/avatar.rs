@@ -19,6 +19,8 @@ pub async fn avatar(
 ) -> AppResult<RequestResponse<String>> {
     let team = load_team(&st, id).await?;
     require_captain(&team, &user)?;
+    let _upload_reservation =
+        crate::utils::upload::reserve_buffered(crate::utils::upload::IMAGE_BODY_BYTES)?;
 
     let mut data: Option<Vec<u8>> = None;
     let mut content_type: Option<String> = None;

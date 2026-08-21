@@ -237,6 +237,7 @@ async fn exercise_lifecycle(
     let resources = ResourceLimits {
         cpu_millis: 100,
         memory_bytes: 64 * 1024 * 1024,
+        storage_bytes: rsctf_worker_protocol::DEFAULT_STORAGE_BYTES,
     };
     let service_port = || ServicePort {
         name: "service".to_string(),
