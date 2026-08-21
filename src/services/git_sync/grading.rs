@@ -22,6 +22,29 @@ pub(super) struct GradingFence {
     pub update_deferred: bool,
 }
 
+/// Recheck the wall-clock policy boundary inside the same SeaORM transaction
+/// that persists the loaded ActiveModel. Repository imports retain SeaORM for
+/// that merge, so using its transaction here avoids a separate sqlx connection
+/// racing the final write when the event starts.
+pub(super) async fn event_started_locked(
+    transaction: &DatabaseTransaction,
+    game_id: i32,
+) -> AppResult<bool> {
+    let row = transaction
+        .query_one(Statement::from_sql_and_values(
+            DatabaseBackend::Postgres,
+            r#"SELECT clock_timestamp() >= start_time_utc AS event_started
+                 FROM "Games"
+                WHERE id = $1"#,
+            [game_id.into()],
+        ))
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::not_found("Game not found"))?;
+    row.try_get::<bool>("", "event_started")
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
 /// Evaluate the event-wide immutable scoring boundary while the repository
 /// caller owns the engine's exclusive per-game advisory lock. Normal
 /// submissions take that same lock in shared mode, so no row lock is needed to

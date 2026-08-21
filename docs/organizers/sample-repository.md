@@ -1,12 +1,13 @@
 # Import the sample challenge repository
 
-The public [`dimasma0305/rsctf-challenges`](https://github.com/dimasma0305/rsctf-challenges) repository contains a hidden demonstration event with eight manifests covering every challenge type, including both A&D hosting modes and both KotH formats. It is also pinned in the rsctf source tree as the `examples/challenge-repository` Git submodule. Repository Bindings can scan the challenge repository directly and build its six container challenges locally from the checked-in `src/Dockerfile` contexts.
+The public [`dimasma0305/rsctf-challenges`](https://github.com/dimasma0305/rsctf-challenges) repository contains a hidden demonstration event with nine manifests covering every challenge type, both A&D hosting modes, both KotH formats, and a deterministic challenge-provenance policy. It is also pinned in the rsctf source tree as the `examples/challenge-repository` Git submodule. Repository Bindings can scan the challenge repository directly and build its six service containers locally from the checked-in `src/Dockerfile` contexts.
 
 ## What the sample contains
 
 | Example | Type | Current status |
 | --- | --- | --- |
 | Welcome file | `StaticAttachment` | Runnable after you review/replace the public demo flag |
+| Deterministic team sum | `StaticAttachment` + provenance | Digest-pinned generator derives one statement and flag per participation before the event |
 | Per-team bundle | `DynamicAttachment` | Schema example only; keep disabled because imported per-team assignment is incomplete |
 | Shared flag service | `StaticContainer` | Built during import and runnable on the Docker backend |
 | Personal flag service | `DynamicContainer` | Runnable on the Docker backend; reads the injected `RSCTF_FLAG` |
@@ -32,7 +33,7 @@ The event manifest is `.gzevent` at the challenge repository root. Challenges us
 6. Select the run-immediately option or save and choose **Scan now**.
 7. Open the newest scan result.
 
-A successful first scan reports one created game and eight imported challenges with zero manifest failures. It also runs six local service-image builds and prepares four checkers.
+A successful first scan reports one created game and nine imported challenges with zero manifest failures. It also runs six local service-image builds and prepares four checkers.
 
 ## Safe result after import
 
@@ -40,13 +41,20 @@ A successful first scan reports one created game and eight imported challenges w
 - Every imported challenge is **disabled**.
 - The public flags are documentation values, not secrets.
 - Container manifests omit `containerImage`; rsctf builds their `src/Dockerfile` contexts.
+- The provenance manifest pins its separately published generator by an exact public OCI digest and leaves solve receipts disabled.
 - The two A&D checkers and the KotH checker use protocol-neutral `lib.py` + `run.py` templates with cryptographically shuffled registered checks; Pwn and Web add pinned `requirements.txt` files, while KotH needs none.
 
 These defaults prevent the demo from silently becoming a public competition. They do not replace review: inspect every challenge, image, build/checker result, network rule, and flag before enabling anything.
 
 ## Required deployment features
 
-The attachment examples work in platform-only mode. Import-time source builds require the Docker challenge backend and a reachable daemon. Split-role installations may enable them only when every builder and container owner uses the same daemon; acknowledge that verified topology with `RSCTF_SHARED_DOCKER_DAEMON=true`. Kubernetes and independent node-local daemons require prebuilt registry images instead.
+The ordinary attachment examples work in platform-only mode. Import-time source builds require the Docker challenge backend and a reachable daemon. Split-role installations may enable them only when every builder and container owner uses the same daemon; acknowledge that verified topology with `RSCTF_SHARED_DOCKER_DAEMON=true`. Kubernetes and independent node-local daemons require prebuilt registry images instead.
+
+The provenance example additionally requires a stable 32+ character
+`RSCTF_EVENT_VPN_CREDENTIAL_KEY` and a trusted Docker daemon containing the
+exact generator digest. Accept test teams and generate/freeze variants before
+the event starts. The generator cannot create attachment files; it derives only
+the participant's content, hints, and server-side flag.
 
 Platform-hosted A&D also needs an isolated service network, scheduler, checker sandbox, accepted test teams, and optionally WireGuard. Self-hosted A&D builds the challenge service locally but sends it to each authorized team to run behind the BYOC relay; platform resource and egress settings do not constrain that team-owned container. The separately configured relay-agent image is still a platform dependency and must be mirrored when the deployment cannot pull from Docker Hub. The marker KotH sample requires backend exec access to read `/koth/king`. The separate proof arena uses a [signed API referee](./koth-api-observer), supports concurrent team scoring, and does not use marker-holder scoring. Both local checkers verify service health without changing scoring state. Preparing the sample Pwn and Web A&D checkers also requires outbound access from the scanning rsctf process to PyPI and its package file hosts; checker runtime egress remains restricted to the supplied challenge target.
 
@@ -59,6 +67,28 @@ The current importer creates one challenge-level attachment and unassigned flag 
 Each of the six container challenges keeps a small Dockerfile and Python service in `src/`. Its manifest intentionally omits `containerImage`, which tells Repository Bindings to archive the challenge package and build `src/Dockerfile` during a trusted scan. The generated image remains local to the shared Docker daemon and is pinned to the immutable build result before the challenge can run. The self-hosted A&D service is then made available through rsctf's authenticated BYOC image endpoint rather than being pulled as a prebuilt challenge image.
 
 The Dockerfiles currently use `python:3.12-alpine`, so Docker may still pull that base image when it is not cached. Mirror or replace the base if the build host must not contact Docker Hub at all. For a production event, review and pin every base image, inspect the import build logs, test the resulting services, and replace every public demo flag.
+
+## Exercise provenance automation
+
+Repository Bindings imports the policy from
+`Jeopardy/Misc/deterministic-variant/challenge.yaml`; it does not generate rows
+as part of a scan. An administrator's pre-event automation performs that
+separate, idempotent step:
+
+```sh
+RSCTF_URL=https://ctf.example \
+RSCTF_GAME_ID=42 \
+RSCTF_EXPECTED_VARIANTS=24 \
+RSCTF_ADMIN_TOKEN='ADMIN_JWT' \
+node scripts/generate-variants.mjs
+```
+
+The sample also includes `issue-solve-receipt.mjs` for an independently
+operated trusted verifier. That adapter belongs on a protected control network
+and uses `RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN`; it is not a player-facing exploit
+uploader. Players upload neither a solver nor an exploit to rsctf. They submit
+a flag and, only when the challenge requires it, the short-lived platform proof
+returned after the external verifier confirms their action.
 
 ## Understand rescans
 
@@ -77,6 +107,10 @@ Removing a manifest does not silently erase played history. rsctf retains the ch
 - `checker/requirements.txt` — optional exact PyPI pins; Pwn uses `pwntools==4.15.0` and Web uses `httpx==0.28.1`
 - `scripts/validate.mjs` — strict example validation used by GitHub Actions
 - `scripts/test-checkers.py` — live checker smoke tests for all four verdict classes
+- `generator/generate.py` — deterministic `RSCTF_VARIANT_INPUT` to manifest contract
+- `scripts/generate-variants.mjs` — administrator pre-event generation and inventory call
+- `scripts/issue-solve-receipt.mjs` — protected verifier-to-control receipt adapter
+- `PROVENANCE.md` — complete publication, configuration, API, and trust-boundary guide
 
 Copy the complete checker directory when adapting a template. `run.py` imports
 its sibling `lib.py`. When dependencies are necessary, every requirements entry
@@ -85,4 +119,4 @@ version ranges, and source builds are rejected. rsctf installs accepted packages
 wheel-only while preparing an immutable checker revision. Treat the repository
 commit and all dependency pins as trusted, administrator-approved inputs.
 
-The challenge repository's [README](https://github.com/dimasma0305/rsctf-challenges), [manifest reference](https://github.com/dimasma0305/rsctf-challenges/blob/main/CONFIGURATION.md), and [checker guide](https://github.com/dimasma0305/rsctf-challenges/blob/main/CHECKERS.md) document every file and current runtime caveat.
+The challenge repository's [README](https://github.com/dimasma0305/rsctf-challenges), [manifest reference](https://github.com/dimasma0305/rsctf-challenges/blob/main/CONFIGURATION.md), [provenance guide](https://github.com/dimasma0305/rsctf-challenges/blob/main/PROVENANCE.md), and [checker guide](https://github.com/dimasma0305/rsctf-challenges/blob/main/CHECKERS.md) document every file and current runtime caveat.

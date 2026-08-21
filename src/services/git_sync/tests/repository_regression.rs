@@ -44,11 +44,11 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     crate::migrations::Migrator::up(&database, None)
         .await
         .expect("migrate isolated schema");
-
     let root = std::env::temp_dir().join(format!("rsctf-repo-rescan-{}", uuid::Uuid::new_v4()));
     let mut config = AppConfig::default();
     config.storage_root = root.to_string_lossy().into_owned();
     config.jwt_secret = "0123456789abcdef0123456789abcdef".to_string();
+    config.event_vpn_credential_key = "0123456789abcdef0123456789abcdef".into();
     let state = AppState::new(
         database,
         Arc::new(config),
@@ -57,7 +57,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         TokenService::new("0123456789abcdef0123456789abcdef", 60),
         Arc::new(NoopContainerManager),
     );
-
     let binding = repo_binding::ActiveModel {
         repo_url: Set("https://github.com/example/challenges.git".to_string()),
         git_ref: Set(Some("main".to_string())),
@@ -125,7 +124,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .expect("write first handout");
     tokio::fs::write(
         &manifest,
-        "name: Original\ndescription: before sync\ntype: StaticAttachment\ncategory: Misc\nprovide: handout.txt\nflags:\n  - flag{old}\n",
+        "name: Original\ndescription: before sync\ntype: StaticAttachment\ncategory: Misc\nprovide: handout.txt\nvariantMode: PerParticipation\nvariantGeneratorImage: ghcr.io/example/generator@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nvariantGeneratorDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nflags:\n  - flag{old}\n",
     )
     .await
     .expect("write first manifest");
@@ -355,6 +354,9 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
     assert_eq!(row.original_score, 777);
     assert_eq!(row.min_score_rate, 0.4);
     assert_eq!(row.difficulty, 9.0);
+    assert_eq!(row.variant_mode as i16, 1);
+    assert!(row.variant_generator_image.is_some());
+    assert!(row.variant_generator_digest.is_some());
     assert_eq!(
         row.source_yaml_path,
         Some(format!("binding/{}/event/web/challenge.yaml", binding.id))

@@ -4,6 +4,7 @@
 //! `[start_time_utc, end_time_utc)`; practice and archived views keep their
 //! existing public behavior.
 
+mod challenge_policy;
 mod fusion;
 mod peer;
 mod policy;
@@ -13,6 +14,7 @@ mod sensor_contract;
 mod telemetry;
 mod variants;
 
+pub use challenge_policy::*;
 pub use fusion::*;
 pub use peer::*;
 pub use policy::*;
