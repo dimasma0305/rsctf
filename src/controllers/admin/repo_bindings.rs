@@ -5,7 +5,8 @@ use crate::utils::enums::ChallengeBuildStatus;
 
 mod mutations;
 pub(crate) use mutations::{
-    delete_repo_binding_record, record_scan_completion, update_repo_binding_record,
+    commit_already_applied, delete_repo_binding_record, record_scan_completion,
+    update_bound_game_manifest_path, update_repo_binding_record,
 };
 
 /// RSCTF `RepoBindingScanResultModel`.
@@ -105,32 +106,6 @@ impl ChallengeSyncCounts {
             self.updated += 1;
         }
     }
-}
-
-async fn commit_already_applied(
-    st: &SharedState,
-    binding: &repo_binding::Model,
-    commit_sha: Option<&str>,
-) -> AppResult<bool> {
-    let Some(commit_sha) = commit_sha else {
-        return Ok(false);
-    };
-    if binding.last_commit_sha.as_deref() != Some(commit_sha) {
-        return Ok(false);
-    }
-    sqlx::query_scalar::<_, bool>(
-        r#"SELECT failures = 0
-             FROM "RepoBindingScans"
-            WHERE binding_id = $1 AND commit_sha = $2
-            ORDER BY id DESC
-            LIMIT 1"#,
-    )
-    .bind(binding.id)
-    .bind(commit_sha)
-    .fetch_optional(st.pg())
-    .await
-    .map(|result| result.unwrap_or(false))
-    .map_err(|error| AppError::internal(error.to_string()))
 }
 
 fn validate_event_preflight(discovered: &[String], existing: &[String]) -> AppResult<()> {
@@ -563,6 +538,7 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                 let mut seen_challenge_ids =
                                     Vec::with_capacity(chal_manifests.len());
                                 let mut build_jobs = Vec::new();
+                                let mut generator_build_jobs = Vec::new();
                                 for m in &chal_manifests {
                                     match crate::services::git_sync::import_manifest(
                                         st,
@@ -578,6 +554,9 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                             seen_challenge_ids.push(imported.challenge_id);
                                             if imported.build_queued {
                                                 build_jobs.push(imported.challenge_id);
+                                            }
+                                            if imported.generator_build_queued {
+                                                generator_build_jobs.push(imported.challenge_id);
                                             }
                                             if imported.runtime_update_deferred {
                                                 failures += 1;
@@ -660,6 +639,20 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                             outcome
                                                 .log
                                                 .unwrap_or_else(|| format!("{:?}", outcome.status))
+                                        ));
+                                    }
+                                }
+                                for challenge_id in generator_build_jobs {
+                                    if let Err(error) =
+                                        crate::controllers::edit::run_import_variant_generator_build(
+                                            st,
+                                            challenge_id,
+                                        )
+                                        .await
+                                    {
+                                        failures += 1;
+                                        messages.push(format!(
+                                            "challenge #{challenge_id}: import generator build failed: {error}"
                                         ));
                                     }
                                 }
@@ -952,45 +945,6 @@ async fn upsert_event_game(
         ..Default::default()
     };
     Ok((am.insert(&st.db).await?.id, true))
-}
-
-/// Refresh repository identity without allowing a scan to mutate a game whose
-/// multi-stage hard deletion has already committed. The game advisory lock is
-/// acquired before the raw row lock, matching every other game mutation.
-async fn update_bound_game_manifest_path(
-    db: &sea_orm::DatabaseConnection,
-    game_id: i32,
-    manifest_rel: &str,
-) -> AppResult<()> {
-    let mut control = crate::services::ad_engine::acquire_ad_game_lock(db, game_id).await?;
-    let result = async {
-        let deletion_pending: Option<bool> =
-            sqlx::query_scalar(r#"SELECT deletion_pending FROM "Games" WHERE id = $1 FOR UPDATE"#)
-                .bind(game_id)
-                .fetch_optional(&mut **control.transaction_mut())
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-        match deletion_pending {
-            Some(false) => {}
-            Some(true) => return Err(AppError::conflict("Game is being deleted")),
-            None => return Err(AppError::not_found("Game not found")),
-        }
-        sqlx::query(r#"UPDATE "Games" SET event_manifest_path = $2 WHERE id = $1"#)
-            .bind(game_id)
-            .bind(manifest_rel)
-            .execute(&mut **control.transaction_mut())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        Ok(())
-    }
-    .await;
-    if result.is_ok() {
-        control
-            .release()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-    }
-    result
 }
 
 #[cfg(test)]

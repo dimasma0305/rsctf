@@ -1886,6 +1886,10 @@ export interface ChallengeEditDetailModel {
   variantMode: ChallengeVariantMode;
   variantGeneratorImage?: string | null;
   variantGeneratorDigest?: string | null;
+  variantGeneratorManaged: boolean;
+  variantGeneratorResolvedDigest?: string | null;
+  variantGeneratorBuildStatus: ChallengeBuildStatus;
+  variantGeneratorLastBuildLog?: string | null;
   solveReceiptMode: SolveReceiptMode;
   receiptVerifierIdentity?: string | null;
 }

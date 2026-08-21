@@ -89,10 +89,8 @@ pub(super) fn zip_bytes_to_tar(
         if !source_names.insert(source_name) {
             return Err("duplicate entry path".to_string());
         }
-        if entry
-            .unix_mode()
-            .is_some_and(|mode| mode & 0o170000 == 0o120000)
-        {
+        let unix_mode = entry.unix_mode();
+        if unix_mode.is_some_and(|mode| mode & 0o170000 == 0o120000) {
             return Err("archive contains a symbolic link".to_string());
         }
         if is_directory {
@@ -137,7 +135,12 @@ pub(super) fn zip_bytes_to_tar(
             return Err("entry compression ratio is too high".to_string());
         }
         total = total.saturating_add(actual_size);
-        write_tar_entry(&mut out, &name, &data)?;
+        let mode = if unix_mode.unwrap_or_default() & 0o111 != 0 {
+            0o755
+        } else {
+            0o644
+        };
+        write_tar_entry(&mut out, &name, mode, &data)?;
     }
     if !has_dockerfile {
         return Err("selected build context is missing Dockerfile".to_string());
@@ -146,7 +149,7 @@ pub(super) fn zip_bytes_to_tar(
     Ok(out)
 }
 
-fn write_tar_entry(out: &mut Vec<u8>, name: &str, data: &[u8]) -> Result<(), String> {
+fn write_tar_entry(out: &mut Vec<u8>, name: &str, mode: u32, data: &[u8]) -> Result<(), String> {
     let mut header = [0u8; 512];
     let put = |header: &mut [u8; 512], offset: usize, value: &str| {
         let bytes = value.as_bytes();
@@ -158,7 +161,7 @@ fn write_tar_entry(out: &mut Vec<u8>, name: &str, data: &[u8]) -> Result<(), Str
     if let Some(prefix) = prefix_field {
         header[345..345 + prefix.len()].copy_from_slice(prefix);
     }
-    put(&mut header, 100, "0000644\0");
+    put(&mut header, 100, &format!("{mode:07o}\0"));
     put(&mut header, 108, "0000000\0");
     put(&mut header, 116, "0000000\0");
     put(&mut header, 124, &format!("{:011o}\0", data.len()));

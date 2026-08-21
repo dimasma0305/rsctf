@@ -118,6 +118,7 @@ mod m0095_player_field_bounds;
 mod m0096_container_storage_bounds;
 mod m0097_container_network_modes;
 mod m0098_build_image_retention;
+mod m0099_variant_generator_builds;
 
 pub struct Migrator;
 
@@ -229,6 +230,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0096_container_storage_bounds::Migration),
             Box::new(m0097_container_network_modes::Migration),
             Box::new(m0098_build_image_retention::Migration),
+            Box::new(m0099_variant_generator_builds::Migration),
         ]
     }
 }

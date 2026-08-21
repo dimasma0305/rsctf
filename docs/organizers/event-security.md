@@ -15,7 +15,7 @@ of the new network signals automatically proves that a player cheated.
 | Peer network profile | A keyed endpoint hash plus an optional operator-supplied ASN/network class | Context only; zero points |
 | VPN profile sharing | More than one keyed endpoint observed for one peer | Context only; zero points |
 | Real flag transport | A keyed hash when the exact bytes of a currently issued flag cross another team's VPN flow | Context until joined to canonical stolen-flag submission evidence |
-| Per-participation variant | An immutable generator image digest, seed commitment, artifact hash, and frozen manifest | Makes answer sharing less reusable |
+| Per-participation variant | An auto-built or explicitly pinned immutable generator image, seed commitment, artifact hash, and frozen manifest | Makes answer sharing less reusable |
 | Solve receipt | A one-use, expiring proof from a named trusted verifier, bound to the user, participation, challenge, answer, and variant | Required only for challenges configured to require it |
 | Evidence graph | Links telemetry to its source row and to independently verified incidents | Explains corroboration; relationships do not add points |
 
@@ -122,9 +122,21 @@ compare CPU at the held rate, not noisy peak requests per second.
 ## Challenge variants and solve receipts
 
 Per-participation variants are available only for Jeopardy challenges. Configure
-an immutable `image@sha256` generator and generate/freeze variants before the
-event starts. The generator output is size- and time-bounded and its manifest is
-frozen. Variant policy cannot be changed after the game starts.
+`variantMode: PerParticipation` and place a `Dockerfile` in the challenge's
+`generator/` directory. A trusted Repository Binding scan archives that source,
+builds it, runs its contract twice with identical input, and records the local
+immutable image ID. An unchanged rescan reuses that build; changing a generator
+file queues another build. Deployments whose builders and control process do not
+share a trusted Docker daemon can instead configure a matching
+`image@sha256`/`sha256` pair explicitly. Generate and freeze variants before the
+event starts. Generator output is size- and time-bounded, and the resulting
+manifest is frozen. Variant policy and generator source cannot change after the
+game starts.
+
+If the same package owns an enabled container runtime, disable that challenge
+before changing its generator source, rescan/build, and then re-enable it. This
+keeps the published runtime archive and the generator build on one package
+revision.
 
 Solve receipts are also opt-in per Jeopardy challenge. A trusted verifier calls
 the machine endpoint with its dedicated issuer token and returns the short-lived

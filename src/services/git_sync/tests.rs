@@ -2,6 +2,7 @@ use super::*;
 
 mod repository_concurrency;
 mod repository_regression;
+mod variant_generator_regression;
 
 async fn import_with_game_lock(
     state: &SharedState,

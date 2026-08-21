@@ -10,6 +10,14 @@ pub(super) fn apply_clone_challenge_defaults(clone: &mut game_challenge::ActiveM
     clone.ad_allow_self_reset = Set(false);
     clone.ad_ssh_requires_flag = Set(false);
     clone.ad_self_hosted = Set(false);
+    if matches!(&clone.variant_generator_build_context_subdir, Set(Some(_))) {
+        clone.variant_mode = Set(ChallengeVariantMode::Disabled);
+        clone.variant_generator_image = Set(None);
+        clone.variant_generator_digest = Set(None);
+        clone.variant_generator_build_context_subdir = Set(None);
+        clone.variant_generator_build_status = Set(ChallengeBuildStatus::None);
+        clone.variant_generator_last_build_log = Set(None);
+    }
 }
 
 pub async fn clone_game(
@@ -118,6 +126,11 @@ pub async fn clone_game(
             variant_mode: Set(src.variant_mode),
             variant_generator_image: Set(src.variant_generator_image.clone()),
             variant_generator_digest: Set(src.variant_generator_digest.clone()),
+            variant_generator_build_context_subdir: Set(src
+                .variant_generator_build_context_subdir
+                .clone()),
+            variant_generator_build_status: Set(src.variant_generator_build_status),
+            variant_generator_last_build_log: Set(src.variant_generator_last_build_log.clone()),
             solve_receipt_mode: Set(src.solve_receipt_mode),
             receipt_verifier_identity: Set(src.receipt_verifier_identity.clone()),
             ..Default::default()

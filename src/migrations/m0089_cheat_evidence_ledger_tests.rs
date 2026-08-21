@@ -141,11 +141,11 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            enable_shared_container, disable_blood_bonus, original_score,
            min_score_rate, difficulty, score_curve, ad_allow_egress,
            ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted,
-           variant_mode, solve_receipt_mode)
+           variant_mode, variant_generator_build_status, solve_receipt_mode)
         VALUES
           (930, 9, 'repair-challenge', '', 0, 2, TRUE, 0, 0, 0, 0, 0,
            FALSE, FALSE, FALSE, 100, 0.2, 1.0, 0, FALSE, FALSE,
-           FALSE, FALSE, 0, 0);
+           FALSE, FALSE, 0, 0, 0);
         INSERT INTO "Submissions"
           (id, answer, status, submit_time_utc, user_id, team_id,
            participation_id, game_id, challenge_id)
@@ -447,11 +447,11 @@ async fn upgrades_the_real_schema_and_is_idempotent() {
            enable_shared_container, disable_blood_bonus, original_score,
            min_score_rate, difficulty, score_curve, ad_allow_egress,
            ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted,
-           variant_mode, solve_receipt_mode)
+           variant_mode, variant_generator_build_status, solve_receipt_mode)
         VALUES
           (30, 1, 'challenge', '', 0, 2, TRUE, 0, 0, 0, 0, 0,
            FALSE, FALSE, FALSE, 100, 0.2, 1.0, 0, FALSE, FALSE,
-           FALSE, FALSE, 0, 0);
+           FALSE, FALSE, 0, 0, 0);
         INSERT INTO "Submissions"
           (id, answer, status, submit_time_utc, user_id, team_id,
            participation_id, game_id, challenge_id)

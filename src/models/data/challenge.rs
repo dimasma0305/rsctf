@@ -75,6 +75,11 @@ pub mod game_challenge {
         pub variant_mode: ChallengeVariantMode,
         pub variant_generator_image: Option<String>,
         pub variant_generator_digest: Option<String>,
+        /// Conventional repository build context (`generator`) when rsctf owns
+        /// the generator build. Registry-pinned generators leave this unset.
+        pub variant_generator_build_context_subdir: Option<String>,
+        pub variant_generator_build_status: ChallengeBuildStatus,
+        pub variant_generator_last_build_log: Option<String>,
         pub solve_receipt_mode: SolveReceiptMode,
         pub receipt_verifier_identity: Option<String>,
 

@@ -13,35 +13,29 @@ pub fn validate_challenge_provenance_policy(
     verifier_identity: Option<&str>,
     config: &AppConfig,
 ) -> AppResult<()> {
+    validate_challenge_provenance_modes(
+        challenge_type,
+        variant_mode,
+        receipt_mode,
+        verifier_identity,
+        config,
+    )?;
+    validate_generator_reference(variant_mode, generator_image, generator_digest)
+}
+
+pub(crate) fn validate_challenge_provenance_modes(
+    challenge_type: ChallengeType,
+    variant_mode: ChallengeVariantMode,
+    receipt_mode: SolveReceiptMode,
+    verifier_identity: Option<&str>,
+    config: &AppConfig,
+) -> AppResult<()> {
     if challenge_type.uses_ad_engine()
         && (variant_mode != ChallengeVariantMode::Disabled
             || receipt_mode != SolveReceiptMode::Disabled)
     {
         return Err(AppError::bad_request(
             "Challenge variants and solve receipts apply only to Jeopardy challenges",
-        ));
-    }
-    match (generator_image, generator_digest) {
-        (None, None) if variant_mode == ChallengeVariantMode::Disabled => {}
-        (Some(image), Some(digest))
-            if crate::services::challenge_images::is_repository_digest(image)
-                && image.ends_with(digest)
-                && digest.starts_with("sha256:")
-                && digest.len() == 71
-                && digest[7..]
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) => {}
-        _ => {
-            return Err(AppError::bad_request(
-                "Variant generation requires one matching immutable image@sha256 digest and digest field",
-            ));
-        }
-    }
-    if variant_mode == ChallengeVariantMode::PerParticipation
-        && (generator_image.is_none() || generator_digest.is_none())
-    {
-        return Err(AppError::bad_request(
-            "Per-participation variants require a generator image",
         ));
     }
     if variant_mode == ChallengeVariantMode::PerParticipation {
@@ -63,6 +57,37 @@ pub fn validate_challenge_provenance_policy(
     {
         return Err(AppError::bad_request(
             "Solve receipts require RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_generator_reference(
+    variant_mode: ChallengeVariantMode,
+    generator_image: Option<&str>,
+    generator_digest: Option<&str>,
+) -> AppResult<()> {
+    match (generator_image, generator_digest) {
+        (None, None) if variant_mode == ChallengeVariantMode::Disabled => {}
+        (Some(image), Some(digest))
+            if crate::services::challenge_images::is_repository_digest(image)
+                && image.ends_with(digest)
+                && digest.starts_with("sha256:")
+                && digest.len() == 71
+                && digest[7..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) => {}
+        _ => {
+            return Err(AppError::bad_request(
+                "Variant generation requires one matching immutable image@sha256 digest and digest field",
+            ));
+        }
+    }
+    if variant_mode == ChallengeVariantMode::PerParticipation
+        && (generator_image.is_none() || generator_digest.is_none())
+    {
+        return Err(AppError::bad_request(
+            "Per-participation variants require a generator image",
         ));
     }
     Ok(())

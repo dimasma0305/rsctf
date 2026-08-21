@@ -332,6 +332,7 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
             challenge_id,
             created: false,
             build_queued: false,
+            generator_build_queued: false,
             runtime_update_deferred: false,
             grading_update_deferred: true,
             attachment_synced: true,
@@ -413,7 +414,6 @@ async fn repository_update_preserves_challenge_solves_and_refreshes_content() {
         .unwrap(),
         vec!["flag{old}".to_string()]
     );
-
     tokio::fs::write(
         &manifest,
         "name: Renamed\ndescription: transient artifact failure\ntype: StaticAttachment\ncategory: Misc\nprovide: missing.txt\nflags:\n  - flag{new}\n",

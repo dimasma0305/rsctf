@@ -94,6 +94,9 @@ pub use git::{
 use git::{url_without_credentials, validate_checkout_tree, validate_sync_repo_url};
 mod package;
 use package::{find_dockerfile_context, image_tag, parse_enum, resolve_category, zip_context_dir};
+mod generator;
+pub(crate) use generator::GENERATOR_CONTEXT_SUBDIR;
+use generator::{ensure_source_archive_refresh_allowed, resolve_generator_import_intent};
 mod manifest;
 pub use manifest::{
     parse_event_manifest, AdSection, ChallengeYaml, ContainerSection, GzEventAd, GzEventModel,
@@ -120,6 +123,7 @@ pub struct ManifestImportResult {
     pub challenge_id: i32,
     pub created: bool,
     pub build_queued: bool,
+    pub generator_build_queued: bool,
     pub runtime_update_deferred: bool,
     pub grading_update_deferred: bool,
     pub attachment_synced: bool,
@@ -258,22 +262,14 @@ pub async fn import_manifest(
             "repository sync cannot change an existing challenge type; create a new manifest path instead",
         ));
     }
-    let provenance_fields_present = model.variant_mode.is_some()
-        || model.variant_generator_image.is_some()
-        || model.variant_generator_digest.is_some()
-        || model.solve_receipt_mode.is_some()
-        || model.receipt_verifier_identity.is_some();
+    // The package directory owns conventional `src/`, `checker/`, and
+    // `generator/` build contexts as well as the player attachment.
+    let package_dir = manifest.parent().unwrap_or_else(|| Path::new("."));
     let current_variant_mode = existing
         .as_ref()
         .map_or(ChallengeVariantMode::Disabled, |challenge| {
             challenge.variant_mode
         });
-    let current_generator_image = existing
-        .as_ref()
-        .and_then(|challenge| challenge.variant_generator_image.clone());
-    let current_generator_digest = existing
-        .as_ref()
-        .and_then(|challenge| challenge.variant_generator_digest.clone());
     let current_receipt_mode = existing
         .as_ref()
         .map_or(SolveReceiptMode::Disabled, |challenge| {
@@ -283,34 +279,62 @@ pub async fn import_manifest(
         .as_ref()
         .and_then(|challenge| challenge.receipt_verifier_identity.clone());
     let variant_mode = model.variant_mode.unwrap_or(current_variant_mode);
-    let generator_image = match model.variant_generator_image.as_deref() {
-        Some(value) => (!value.trim().is_empty()).then(|| value.trim().to_string()),
-        None => current_generator_image.clone(),
-    };
-    let generator_digest = match model.variant_generator_digest.as_deref() {
-        Some(value) => (!value.trim().is_empty()).then(|| value.trim().to_string()),
-        None => current_generator_digest.clone(),
-    };
+    let generator_intent = resolve_generator_import_intent(
+        st,
+        &model,
+        existing.as_ref(),
+        package_dir,
+        variant_mode,
+        policy,
+    )
+    .await?;
     let receipt_mode = model.solve_receipt_mode.unwrap_or(current_receipt_mode);
     let verifier_identity = match model.receipt_verifier_identity.as_deref() {
         Some(value) => (!value.trim().is_empty()).then(|| value.trim().to_string()),
         None => current_verifier_identity.clone(),
     };
+    let provenance_fields_present = model.variant_mode.is_some()
+        || model.variant_generator_image.is_some()
+        || model.variant_generator_digest.is_some()
+        || model.solve_receipt_mode.is_some()
+        || model.receipt_verifier_identity.is_some()
+        || generator_intent.automatic;
     if provenance_fields_present {
-        crate::services::event_security::validate_challenge_provenance_policy(
-            challenge_type,
-            variant_mode,
-            generator_image.as_deref(),
-            generator_digest.as_deref(),
-            receipt_mode,
-            verifier_identity.as_deref(),
-            st.config.as_ref(),
-        )?;
+        if generator_intent.automatic {
+            crate::services::event_security::validate_challenge_provenance_modes(
+                challenge_type,
+                variant_mode,
+                receipt_mode,
+                verifier_identity.as_deref(),
+                st.config.as_ref(),
+            )?;
+        } else {
+            crate::services::event_security::validate_challenge_provenance_policy(
+                challenge_type,
+                variant_mode,
+                generator_intent.image.as_deref(),
+                generator_intent.digest.as_deref(),
+                receipt_mode,
+                verifier_identity.as_deref(),
+                st.config.as_ref(),
+            )?;
+        }
     }
     let provenance_policy_changed = provenance_fields_present
         && (variant_mode != current_variant_mode
-            || generator_image != current_generator_image
-            || generator_digest != current_generator_digest
+            || generator_intent.image
+                != existing
+                    .as_ref()
+                    .and_then(|challenge| challenge.variant_generator_image.clone())
+            || generator_intent.digest
+                != existing
+                    .as_ref()
+                    .and_then(|challenge| challenge.variant_generator_digest.clone())
+            || generator_intent.build_context_subdir
+                != existing.as_ref().and_then(|challenge| {
+                    challenge.variant_generator_build_context_subdir.clone()
+                })
+            || generator_intent.build_queued
             || receipt_mode != current_receipt_mode
             || verifier_identity != current_verifier_identity);
     if challenge_type == ChallengeType::KingOfTheHill {
@@ -323,9 +347,7 @@ pub async fn import_manifest(
         .map_err(|_| AppError::bad_request("Invalid KotH crown-cycle settings."))?;
     }
 
-    // The package directory is the manifest's parent; category is inferred from
-    // the enclosing directory names when not stated explicitly.
-    let package_dir = manifest.parent().unwrap_or_else(|| Path::new("."));
+    // Category is inferred from the enclosing directories when it is absent.
     let category = resolve_category(model.category.as_deref(), package_dir);
 
     // Author is folded into the content body ("Author: **X**\n\n...") exactly as
@@ -379,6 +401,10 @@ pub async fn import_manifest(
     let preserve_live_runtime = existing
         .as_ref()
         .is_some_and(|challenge| challenge.is_enabled && challenge.challenge_type.is_container());
+    ensure_source_archive_refresh_allowed(
+        preserve_live_runtime,
+        generator_intent.source_archive_refresh_required,
+    )?;
     let declared_container_image = if is_container {
         container
             .and_then(|c| c.container_image.clone())
@@ -482,11 +508,12 @@ pub async fn import_manifest(
     // package before INSERT so a later reviewer can prepare the exact immutable
     // checker they inspected. Trusted repository imports publish their checker
     // inline, then retain the same complete package when a local image is built.
-    let mut archive_package: Option<Vec<u8>> = if policy.is_pending() {
-        Some(zip_context_dir(package_dir).await?)
-    } else {
-        None
-    };
+    let mut archive_package: Option<Vec<u8>> =
+        if policy.is_pending() || generator_intent.retain_source_archive {
+            Some(zip_context_dir(package_dir).await?)
+        } else {
+            None
+        };
     let mut queue_challenge_build = false;
     let mut build_context_subdir = None;
     // Build locally when the operator named no registry image, or used a gzcli-style
@@ -739,8 +766,12 @@ pub async fn import_manifest(
     }
     if provenance_fields_present {
         am.variant_mode = Set(variant_mode);
-        am.variant_generator_image = Set(generator_image);
-        am.variant_generator_digest = Set(generator_digest);
+        am.variant_generator_image = Set(generator_intent.image.clone());
+        am.variant_generator_digest = Set(generator_intent.digest.clone());
+        am.variant_generator_build_context_subdir =
+            Set(generator_intent.build_context_subdir.clone());
+        am.variant_generator_build_status = Set(generator_intent.build_status);
+        am.variant_generator_last_build_log = Set(generator_intent.last_build_log.clone());
         am.solve_receipt_mode = Set(receipt_mode);
         am.receipt_verifier_identity = Set(verifier_identity);
     }
@@ -909,6 +940,7 @@ pub async fn import_manifest(
         challenge_id: challenge.id,
         created: !is_update,
         build_queued: policy.may_execute() && queue_challenge_build,
+        generator_build_queued: policy.may_execute() && generator_intent.build_queued,
         runtime_update_deferred,
         grading_update_deferred,
         attachment_synced,

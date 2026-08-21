@@ -11,6 +11,16 @@ use super::{MAX_REPO_DEPTH, MAX_REPO_FILES, MAX_REPO_FILE_BYTES, MAX_REPO_TOTAL_
 use crate::utils::enums::ChallengeCategory;
 use crate::utils::error::{AppError, AppResult};
 
+type ContextFile = (String, u32, Vec<u8>);
+
+fn canonical_regular_mode(mode: Option<u32>) -> u32 {
+    if mode.unwrap_or_default() & 0o111 != 0 {
+        0o755
+    } else {
+        0o644
+    }
+}
+
 /// Case-insensitively resolve a string to a `sea-orm` DB enum variant, mirroring
 /// C# `Enum.TryParse<T>(raw, ignoreCase: true)`.
 pub(super) fn parse_enum<T>(raw: &str) -> Option<T>
@@ -79,7 +89,7 @@ pub(super) fn slugify(name: &str) -> String {
 /// Package every regular file under `dir` into a bounded ZIP with paths relative
 /// to `dir`. Symlinks are skipped so a repository cannot archive host files.
 pub(super) async fn zip_context_dir(dir: &Path) -> AppResult<Vec<u8>> {
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut files: Vec<ContextFile> = Vec::new();
     let mut total_bytes = 0u64;
     let mut stack = vec![(dir.to_path_buf(), 0usize)];
     while let Some((current, depth)) = stack.pop() {
@@ -112,13 +122,10 @@ pub(super) async fn zip_context_dir(dir: &Path) -> AppResult<Vec<u8>> {
             if files.len() >= MAX_REPO_FILES {
                 return Err(AppError::bad_request("build context has too many files"));
             }
-            let declared = entry
-                .metadata()
-                .await
-                .map_err(|error| {
-                    AppError::internal(format!("git_sync: stat {}: {error}", path.display()))
-                })?
-                .len();
+            let metadata = entry.metadata().await.map_err(|error| {
+                AppError::internal(format!("git_sync: stat {}: {error}", path.display()))
+            })?;
+            let declared = metadata.len();
             if declared > MAX_REPO_FILE_BYTES
                 || total_bytes.saturating_add(declared) > MAX_REPO_TOTAL_BYTES
             {
@@ -143,7 +150,14 @@ pub(super) async fn zip_context_dir(dir: &Path) -> AppResult<Vec<u8>> {
                 ));
             }
             total_bytes = total_bytes.saturating_add(actual);
-            files.push((relative, data));
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                canonical_regular_mode(Some(metadata.permissions().mode()))
+            };
+            #[cfg(not(unix))]
+            let mode = canonical_regular_mode(None);
+            files.push((relative, mode, data));
         }
     }
 
@@ -151,11 +165,12 @@ pub(super) async fn zip_context_dir(dir: &Path) -> AppResult<Vec<u8>> {
     encode_context_files(files)
 }
 
-fn encode_context_files(files: Vec<(String, Vec<u8>)>) -> AppResult<Vec<u8>> {
+fn encode_context_files(files: Vec<ContextFile>) -> AppResult<Vec<u8>> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::<u8>::new()));
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    for (name, data) in files {
+    for (name, mode, data) in files {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(mode);
         writer
             .start_file(name.clone(), options)
             .map_err(|error| AppError::internal(format!("git_sync: zip write {name}: {error}")))?;
@@ -220,11 +235,51 @@ pub(super) async fn archived_context_fingerprint(
             entry.read_to_end(&mut bytes).map_err(|error| {
                 AppError::internal(format!("git_sync: extract source archive entry: {error}"))
             })?;
-            files.push((name, bytes));
+            let mode = canonical_regular_mode(entry.unix_mode());
+            files.push((name, mode, bytes));
         }
         files.sort_by(|left, right| left.0.cmp(&right.0));
         encode_context_files(files).map(|bytes| crate::utils::codec::sha256_hex(&bytes))
     })
     .await
     .map_err(|error| AppError::internal(format!("git_sync: source fingerprint task: {error}")))?
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn context_fingerprint_includes_the_executable_bit() {
+        let root = std::env::temp_dir().join(format!(
+            "rsctf-generator-mode-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        tokio::fs::write(root.join("Dockerfile"), b"FROM scratch\n")
+            .await
+            .unwrap();
+        let executable = root.join("generate");
+        tokio::fs::write(&executable, b"#!/bin/sh\n").await.unwrap();
+        tokio::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+
+        let executable_fingerprint = context_fingerprint(&root).await.unwrap();
+        let archive = zip_context_dir(&root).await.unwrap();
+        assert_eq!(
+            archived_context_fingerprint(archive, ".").await.unwrap(),
+            executable_fingerprint
+        );
+
+        tokio::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o644))
+            .await
+            .unwrap();
+        let regular_fingerprint = context_fingerprint(&root).await.unwrap();
+        assert_ne!(regular_fingerprint, executable_fingerprint);
+
+        tokio::fs::remove_dir_all(&root).await.unwrap();
+    }
 }

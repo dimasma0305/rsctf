@@ -1,14 +1,15 @@
 //! edit: test containers + imports (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
 
+mod archive;
+mod import_policy;
 mod path;
+use archive::{extract_zip, persist_challenge_archive};
+#[cfg(test)]
+use archive::{extract_zip_with_limits, ArchiveLimits};
+use import_policy::validate_import_batch;
 use path::{resolve_subpath, validate_subpath};
 
-const MAX_ARCHIVE_ENTRIES: usize = 2_048;
-const MAX_ARCHIVE_FILE_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_ARCHIVE_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_ARCHIVE_COMPRESSION_RATIO: u64 = 200;
-const MAX_ARCHIVE_PATH_COMPONENTS: usize = 32;
 const MAX_PENDING_CHALLENGES_PER_USER_GAME: i64 = 10;
 static TRUSTED_CHALLENGE_IMPORT_SLOTS: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(2);
@@ -20,22 +21,6 @@ const PENDING_CHALLENGE_COUNT_SQL: &str = r#"SELECT COUNT(*)
      WHERE game_id = $1
        AND submitted_by_user_id = $2
        AND review_status = $3"#;
-
-fn validate_import_batch(
-    policy: crate::services::git_sync::ImportPolicy,
-    manifest_count: usize,
-) -> AppResult<()> {
-    if matches!(
-        policy,
-        crate::services::git_sync::ImportPolicy::PendingReview { .. }
-    ) && manifest_count != 1
-    {
-        return Err(AppError::bad_request(
-            "A user submission must contain exactly one challenge manifest.",
-        ));
-    }
-    Ok(())
-}
 
 /// Spawn and persist the challenge's throwaway test container.
 pub async fn create_test_container(
@@ -426,6 +411,7 @@ async fn import_from_dir(
         }
     }
     let mut build_jobs = Vec::new();
+    let mut generator_build_jobs = Vec::new();
     let mut archive_jobs = Vec::new();
     for manifest in manifests {
         match crate::services::git_sync::import_manifest(st, game_id, &manifest, policy).await {
@@ -443,6 +429,9 @@ async fn import_from_dir(
                 }
                 if imported.build_queued {
                     build_jobs.push(imported.challenge_id);
+                }
+                if imported.generator_build_queued {
+                    generator_build_jobs.push(imported.challenge_id);
                 }
                 if imported.runtime_update_deferred {
                     result.failed += 1;
@@ -538,284 +527,18 @@ async fn import_from_dir(
             ));
         }
     }
+    for challenge_id in generator_build_jobs {
+        if let Err(error) = run_import_variant_generator_build(st, challenge_id).await {
+            result.failed += 1;
+            result.messages.push(format!(
+                "challenge #{challenge_id}: import generator build failed: {error}"
+            ));
+        }
+    }
     if result.imported > 0 || result.updated > 0 {
         flush_game_scoreboards(st, game_id).await;
     }
     result
-}
-
-/// Extract every ZIP entry from `bytes` into `dest`. Zip-slip safe: an entry with
-/// a noncanonical path or a path that would escape `dest` rejects the archive.
-/// A malformed archive is a client error (400).
-fn extract_zip(bytes: &[u8], dest: &std::path::Path) -> AppResult<()> {
-    extract_zip_with_limits(
-        bytes,
-        dest,
-        ArchiveLimits {
-            entries: MAX_ARCHIVE_ENTRIES,
-            file_bytes: MAX_ARCHIVE_FILE_BYTES,
-            total_bytes: MAX_ARCHIVE_TOTAL_BYTES,
-            compression_ratio: MAX_ARCHIVE_COMPRESSION_RATIO,
-            path_components: MAX_ARCHIVE_PATH_COMPONENTS,
-        },
-    )
-}
-
-#[derive(Clone, Copy)]
-struct ArchiveLimits {
-    entries: usize,
-    file_bytes: u64,
-    total_bytes: u64,
-    compression_ratio: u64,
-    path_components: usize,
-}
-
-fn extract_zip_with_limits(
-    bytes: &[u8],
-    dest: &std::path::Path,
-    limits: ArchiveLimits,
-) -> AppResult<()> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-        .map_err(|e| AppError::bad_request(format!("Invalid or corrupted ZIP file: {e}")))?;
-    if archive.len() > limits.entries {
-        return Err(AppError::bad_request("ZIP contains too many entries"));
-    }
-
-    let mut total_written = 0u64;
-    for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(|e| AppError::bad_request(format!("ZIP read error: {e}")))?;
-        let rel = crate::utils::archive::canonical_zip_entry_path(&entry)
-            .ok_or_else(|| AppError::bad_request("ZIP entry path is not canonical"))?;
-        if rel.components().count() > limits.path_components {
-            return Err(AppError::bad_request("ZIP entry path is too deep"));
-        }
-        if !entry.is_dir() {
-            if entry.size() > limits.file_bytes {
-                return Err(AppError::bad_request("ZIP entry is too large"));
-            }
-            let compressed = entry.compressed_size().max(1);
-            if entry.size() > compressed.saturating_mul(limits.compression_ratio) {
-                return Err(AppError::bad_request(
-                    "ZIP entry compression ratio is too high",
-                ));
-            }
-            if total_written.saturating_add(entry.size()) > limits.total_bytes {
-                return Err(AppError::bad_request("ZIP expands beyond the size limit"));
-            }
-        }
-        let out = dest.join(rel);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out)
-                .map_err(|e| AppError::internal(format!("create dir {}: {e}", out.display())))?;
-        } else {
-            if let Some(parent) = out.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    AppError::internal(format!("create dir {}: {e}", parent.display()))
-                })?;
-            }
-            let mut f = std::fs::File::create(&out)
-                .map_err(|e| AppError::internal(format!("create file {}: {e}", out.display())))?;
-            // Enforce the actual decompressed byte count too; do not trust only the
-            // central-directory size fields from an attacker-controlled archive.
-            let remaining_total = limits.total_bytes.saturating_sub(total_written);
-            let max_write = limits.file_bytes.min(remaining_total);
-            let written =
-                std::io::copy(&mut std::io::Read::take(&mut entry, max_write + 1), &mut f)
-                    .map_err(|e| {
-                        AppError::internal(format!("write file {}: {e}", out.display()))
-                    })?;
-            if written > max_write {
-                return Err(AppError::bad_request("ZIP expands beyond the size limit"));
-            }
-            total_written = total_written.saturating_add(written);
-        }
-    }
-    Ok(())
-}
-
-/// Re-zip `dir` (recursively) into an in-memory ZIP, each file added under its
-/// path relative to `dir`. Deflate-compressed to match the upload format the
-/// audit modal re-opens.
-fn zip_dir_to_bytes(dir: &std::path::Path) -> AppResult<Vec<u8>> {
-    let mut zw = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    // Iterative walk (explicit stack) mirrors git_sync::discover_challenges.
-    let mut files_seen = 0usize;
-    let mut total_bytes = 0u64;
-    let mut stack = vec![(dir.to_path_buf(), 0usize)];
-    while let Some((current, depth)) = stack.pop() {
-        if depth > MAX_ARCHIVE_PATH_COMPONENTS {
-            return Err(AppError::bad_request("challenge archive is too deep"));
-        }
-        let entries = std::fs::read_dir(&current)
-            .map_err(|e| AppError::internal(format!("zip read_dir {}: {e}", current.display())))?;
-        for entry in entries {
-            let entry =
-                entry.map_err(|e| AppError::internal(format!("zip read dir entry: {e}")))?;
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .map_err(|e| AppError::internal(format!("zip stat {}: {e}", path.display())))?;
-            if file_type.is_dir() {
-                stack.push((path, depth + 1));
-            } else if file_type.is_file() {
-                files_seen += 1;
-                if files_seen > MAX_ARCHIVE_ENTRIES {
-                    return Err(AppError::bad_request(
-                        "challenge archive has too many files",
-                    ));
-                }
-                let declared = entry
-                    .metadata()
-                    .map_err(|e| AppError::internal(format!("zip stat {}: {e}", path.display())))?
-                    .len();
-                if declared > MAX_ARCHIVE_FILE_BYTES
-                    || total_bytes.saturating_add(declared) > MAX_ARCHIVE_TOTAL_BYTES
-                {
-                    return Err(AppError::bad_request(
-                        "challenge archive exceeds the size limit",
-                    ));
-                }
-                // Path relative to `dir`, forward-slash normalized for the archive.
-                let Ok(rel) = path.strip_prefix(dir) else {
-                    continue;
-                };
-                let name = rel.to_string_lossy().replace('\\', "/");
-                let data = std::fs::read(&path)
-                    .map_err(|e| AppError::internal(format!("zip read {}: {e}", path.display())))?;
-                let actual = data.len() as u64;
-                if actual > MAX_ARCHIVE_FILE_BYTES
-                    || total_bytes.saturating_add(actual) > MAX_ARCHIVE_TOTAL_BYTES
-                {
-                    return Err(AppError::bad_request(
-                        "challenge archive exceeds the size limit",
-                    ));
-                }
-                total_bytes = total_bytes.saturating_add(actual);
-                zw.start_file(name, opts)
-                    .map_err(|e| AppError::internal(format!("zip start_file: {e}")))?;
-                zw.write_all(&data)
-                    .map_err(|e| AppError::internal(format!("zip write: {e}")))?;
-            }
-        }
-    }
-    let cursor = zw
-        .finish()
-        .map_err(|e| AppError::internal(format!("zip finish: {e}")))?;
-    Ok(cursor.into_inner())
-}
-
-/// Best-effort: re-zip the imported challenge's directory (the manifest's parent),
-/// store it as a blob, and record the hash on a challenge that does not already
-/// have an authoritative archive. Local image imports publish their exact Docker
-/// build context before building; never replace that fingerprint with a later
-/// audit ZIP, because an existing Success status belongs to that exact context.
-/// Never fails the caller — a zip/store/update error is logged and swallowed (the
-/// challenge is already created).
-async fn persist_challenge_archive(
-    st: &SharedState,
-    challenge_id: i32,
-    manifest: &std::path::Path,
-) {
-    let Some(dir) = manifest.parent() else {
-        return;
-    };
-    let dir_name = dir
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("challenge");
-    let already_has_archive = match sqlx::query_scalar::<_, bool>(
-        r#"SELECT original_archive_blob_path IS NOT NULL
-             FROM "GameChallenges"
-            WHERE id = $1"#,
-    )
-    .bind(challenge_id)
-    .fetch_optional(st.pg())
-    .await
-    {
-        Ok(Some(value)) => value,
-        Ok(None) => return,
-        Err(error) => {
-            tracing::warn!(%error, "audit archive: preflight {dir_name} failed");
-            return;
-        }
-    };
-    if already_has_archive {
-        tracing::debug!(
-            challenge_id,
-            "audit archive: retained authoritative build/source fingerprint"
-        );
-        return;
-    }
-    let bytes = match zip_dir_to_bytes(dir) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!("audit archive: zip {dir_name} failed: {e}");
-            return;
-        }
-    };
-    let persisted: AppResult<Option<String>> = async {
-        let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        let current_hash = sqlx::query_as::<_, (Option<String>,)>(
-            r#"SELECT original_archive_blob_path
-                 FROM "GameChallenges"
-                WHERE id = $1
-                FOR UPDATE"#,
-        )
-        .bind(challenge_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-        .ok_or_else(|| AppError::not_found("Challenge not found"))?
-        .0;
-        if current_hash.is_some() {
-            transaction
-                .commit()
-                .await
-                .map_err(|error| AppError::internal(error.to_string()))?;
-            return Ok(None);
-        }
-        let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-            st.storage.as_ref(),
-            &mut transaction,
-            &format!("{dir_name}.zip"),
-            &bytes,
-        )
-        .await?;
-        sqlx::query(
-            r#"UPDATE "GameChallenges"
-                  SET original_archive_blob_path = $2
-                WHERE id = $1"#,
-        )
-        .bind(challenge_id)
-        .bind(&blob.hash)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        Ok(Some(blob.hash))
-    }
-    .await;
-    match persisted {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            tracing::debug!(
-                challenge_id,
-                "audit archive: retained authoritative build/source fingerprint"
-            );
-        }
-        Err(error) => {
-            tracing::warn!(%error, "audit archive: persist {dir_name} failed");
-        }
-    }
 }
 
 /// Read the first non-empty multipart field into memory. The client posts the ZIP

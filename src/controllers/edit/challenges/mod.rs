@@ -477,18 +477,36 @@ pub async fn update_challenge(
         update_base.receipt_verifier_identity.clone(),
     );
     let next_variant_mode = model.variant_mode.unwrap_or(current_variant_policy.0);
+    let current_generator_is_managed = update_base
+        .variant_generator_build_context_subdir
+        .as_deref()
+        == Some(crate::services::git_sync::GENERATOR_CONTEXT_SUBDIR);
+    let generator_identity_supplied =
+        model.variant_generator_image.is_some() || model.variant_generator_digest.is_some();
+    let retain_managed_generator = current_generator_is_managed
+        && !generator_identity_supplied
+        && next_variant_mode == ChallengeVariantMode::PerParticipation;
+    let leaving_managed_generator = current_generator_is_managed && !retain_managed_generator;
     let next_generator_image = model
         .variant_generator_image
         .as_ref()
         .map(|value| value.trim())
-        .map(|value| (!value.is_empty()).then_some(value))
-        .unwrap_or(current_variant_policy.1.as_deref());
+        .and_then(|value| (!value.is_empty()).then_some(value))
+        .or_else(|| {
+            (!leaving_managed_generator)
+                .then_some(current_variant_policy.1.as_deref())
+                .flatten()
+        });
     let next_generator_digest = model
         .variant_generator_digest
         .as_ref()
         .map(|value| value.trim())
-        .map(|value| (!value.is_empty()).then_some(value))
-        .unwrap_or(current_variant_policy.2.as_deref());
+        .and_then(|value| (!value.is_empty()).then_some(value))
+        .or_else(|| {
+            (!leaving_managed_generator)
+                .then_some(current_variant_policy.2.as_deref())
+                .flatten()
+        });
     let next_receipt_mode = model.solve_receipt_mode.unwrap_or(current_variant_policy.3);
     let next_verifier_identity = model
         .receipt_verifier_identity
@@ -496,15 +514,25 @@ pub async fn update_challenge(
         .map(|value| value.trim())
         .map(|value| (!value.is_empty()).then_some(value))
         .unwrap_or(current_variant_policy.4.as_deref());
-    crate::services::event_security::validate_challenge_provenance_policy(
-        ch_type,
-        next_variant_mode,
-        next_generator_image,
-        next_generator_digest,
-        next_receipt_mode,
-        next_verifier_identity,
-        st.config.as_ref(),
-    )?;
+    if retain_managed_generator {
+        crate::services::event_security::validate_challenge_provenance_modes(
+            ch_type,
+            next_variant_mode,
+            next_receipt_mode,
+            next_verifier_identity,
+            st.config.as_ref(),
+        )?;
+    } else {
+        crate::services::event_security::validate_challenge_provenance_policy(
+            ch_type,
+            next_variant_mode,
+            next_generator_image,
+            next_generator_digest,
+            next_receipt_mode,
+            next_verifier_identity,
+            st.config.as_ref(),
+        )?;
+    }
     let mut am: game_challenge::ActiveModel = update_base.into();
     if let Some(v) = model.title {
         am.title = Set(v);
@@ -654,6 +682,17 @@ pub async fn update_challenge(
     }
     if let Some(v) = model.variant_mode {
         am.variant_mode = Set(v);
+    }
+    if leaving_managed_generator {
+        am.variant_generator_build_context_subdir = Set(None);
+        am.variant_generator_build_status = Set(ChallengeBuildStatus::None);
+        am.variant_generator_last_build_log = Set(None);
+        if model.variant_generator_image.is_none() {
+            am.variant_generator_image = Set(None);
+        }
+        if model.variant_generator_digest.is_none() {
+            am.variant_generator_digest = Set(None);
+        }
     }
     if let Some(v) = model.variant_generator_image {
         let value = v.trim();
