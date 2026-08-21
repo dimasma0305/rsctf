@@ -130,6 +130,17 @@ async fn async_main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Only `all` and `web` expose the public account/OAuth routes. Validate the
+    // effective database + environment policy before either role can listen so
+    // a legacy or environment-provided OAuth-only policy cannot lock out users.
+    if matches!(role, RuntimeRole::All | RuntimeRole::Web) {
+        rsctf::services::anti_cheat::validate_registration_startup(
+            db.get_postgres_connection_pool(),
+            config.as_ref(),
+        )
+        .await?;
+    }
+
     let worker_store =
         rsctf::services::worker_store::WorkerStore::new(db.get_postgres_connection_pool().clone());
     let worker_plane = if capabilities.network {

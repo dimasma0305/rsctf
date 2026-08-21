@@ -5,6 +5,7 @@ use sqlx::{Postgres, Transaction};
 use super::{database_error, PolicyFlags};
 use crate::models::internal::configs::AppConfig;
 use crate::services::captcha::{CaptchaAdmission, CaptchaSettings};
+use crate::services::oauth_config::OAuthSettings;
 use crate::utils::error::AppResult;
 
 const IDENTITY_POLICY_LOCK_ID: i64 = 0x4944_504F_4C49_4359; // "IDPOLICY"
@@ -26,21 +27,117 @@ impl AccountPolicySnapshot {
     }
 
     pub fn authorize_password_registration(&self, is_first: bool) -> AppResult<()> {
-        if is_first {
-            return Ok(());
-        }
-        if !self.allow_register {
-            return Err(crate::utils::error::AppError::bad_request(
-                "Registration is disabled",
-            ));
-        }
-        if !self.allow_password_registration {
-            return Err(crate::utils::error::AppError::bad_request(
-                "Password registration is disabled; continue with OAuth",
-            ));
-        }
-        Ok(())
+        authorize_password_registration(
+            self.allow_register,
+            self.allow_password_registration,
+            is_first,
+        )
     }
+}
+
+fn authorize_password_registration(
+    allow_register: bool,
+    allow_password_registration: bool,
+    is_first: bool,
+) -> AppResult<()> {
+    if is_first {
+        return Ok(());
+    }
+    if !allow_register {
+        return Err(crate::utils::error::AppError::bad_request(
+            "Registration is disabled",
+        ));
+    }
+    if !allow_password_registration {
+        return Err(crate::utils::error::AppError::bad_request(
+            "Password registration is disabled; continue with OAuth",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_oauth_only_registration(
+    account: &AccountPolicySnapshot,
+    config: &AppConfig,
+    oauth_configured: bool,
+) -> AppResult<()> {
+    if !account.allow_register || account.allow_password_registration {
+        return Ok(());
+    }
+    if account.identity.fingerprint_required() {
+        return Err(crate::utils::error::AppError::bad_request(
+            "OAuth-only registration is incompatible with browser fingerprinting",
+        ));
+    }
+    if config.public_url.is_none() {
+        return Err(crate::utils::error::AppError::bad_request(
+            "OAuth-only registration requires a canonical RSCTF_PUBLIC_URL",
+        ));
+    }
+    if !oauth_configured {
+        return Err(crate::utils::error::AppError::bad_request(
+            "OAuth-only registration requires a configured Google or Discord provider",
+        ));
+    }
+    Ok(())
+}
+
+/// Refuse to serve a deployment whose effective environment/database policy
+/// leaves OAuth as the only registration path without a usable OAuth flow.
+pub async fn validate_registration_startup(
+    pool: &sqlx::PgPool,
+    config: &AppConfig,
+) -> AppResult<()> {
+    let mut transaction = pool.begin().await.map_err(database_error)?;
+    let account = lock_and_load_account_policy(&mut transaction, config).await?;
+    let oauth_configured = OAuthSettings::load_in_transaction(&mut transaction)
+        .await?
+        .any_configured();
+    validate_oauth_only_registration(&account, config, oauth_configured)?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(())
+}
+
+/// Reject a fresh password registration before fingerprint work and Argon2.
+/// The transaction-locked check remains authoritative; this deliberately cheap
+/// snapshot only avoids expensive work for a policy that is already disabled.
+pub(crate) async fn preflight_password_registration(
+    pool: &sqlx::PgPool,
+    config: &AppConfig,
+    is_first: bool,
+) -> AppResult<()> {
+    if is_first {
+        return Ok(());
+    }
+    let keys = [
+        "AccountPolicy:AllowRegister",
+        "AccountPolicy:AllowPasswordRegistration",
+    ];
+    let rows = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"SELECT config_key, value
+             FROM "Configs"
+            WHERE config_key = ANY($1)"#,
+    )
+    .bind(&keys[..])
+    .fetch_all(pool)
+    .await
+    .map_err(database_error)?;
+    let values: BTreeMap<_, _> = rows.into_iter().collect();
+    let bool_value = |key: &str, fallback: bool| {
+        values
+            .get(key)
+            .and_then(|value| value.as_deref())
+            .map(|value| value == "true")
+            .unwrap_or(fallback)
+    };
+    authorize_password_registration(
+        bool_value("AccountPolicy:AllowRegister", config.account.allow_register),
+        bool_value(
+            "AccountPolicy:AllowPasswordRegistration",
+            config.account.allow_password_registration,
+        ),
+        false,
+    )
 }
 
 /// Establish a linearization point for captcha-bearing flows that do not run

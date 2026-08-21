@@ -258,7 +258,7 @@ pub async fn register(
     Json(model): Json<RegisterModel>,
 ) -> AppResult<Response> {
     // Fail fast before policy loading, captcha verification, and Argon2.
-    bootstrap::preflight(&st, model.bootstrap_token.as_deref()).await?;
+    let is_first_preflight = bootstrap::preflight(&st, model.bootstrap_token.as_deref()).await?;
     // Load the live AccountPolicy from the `Configs` key/value table so the
     // /admin/config toggles take effect per-request (RSCTF reads AccountPolicy
     // from an IOptionsSnapshot backed by the DB). Each key falls back to the
@@ -376,6 +376,9 @@ pub async fn register(
         }
         return Err(AppError::conflict("Email already registered"));
     }
+
+    anti_cheat::preflight_password_registration(st.pg(), st.config.as_ref(), is_first_preflight)
+        .await?;
 
     let identity_policy = anti_cheat::load_policy_flags(st.pg()).await?;
     let fingerprint = anti_cheat::validate_fingerprint_submission(
