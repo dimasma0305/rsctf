@@ -45,6 +45,10 @@ fn router_with_domains(
         .route("/api/game/{id}/cheatinfo", get(cheat_info))
         .route("/api/game/{id}/cheatreport", get(cheat_report))
         .route(
+            "/api/game/{id}/cheatreport/events/{eventId}",
+            limited(Policy::Query, get(suspicion_event_evidence)),
+        )
+        .route(
             "/api/game/{id}/cheatreport/compare",
             get(cheat_report_compare),
         )

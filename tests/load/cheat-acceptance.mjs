@@ -2024,8 +2024,9 @@ async function main() {
   if (afterReport !== beforeReport || honeypotAfterReport !== honeypotBeforeReport) {
     throw new Error("GET /cheatreport mutated sources, evidence, scores, or outbox state");
   }
+  const report = unwrap(reportResponse);
   assertReport(
-    unwrap(reportResponse),
+    report,
     gameId,
     offenders,
     weights,
@@ -2034,6 +2035,59 @@ async function main() {
     victim,
     honeypot,
   );
+
+  // The frequently-polled report stays compact. Prove that an administrator
+  // can lazily review the immutable sources behind real hard/strong incidents
+  // without mutating the evidence ledger or receiving raw secret material.
+  const reviewCandidates = (report.suspicionList || [])
+    .flatMap((record) => record.events || [])
+    .filter((event) => ["StolenFlag", "HighWrongRate", "AutomatedPattern"].includes(event.type))
+    .slice(0, 4);
+  if (!reviewCandidates.some((event) => event.type === "StolenFlag")) {
+    throw new Error("anti-cheat report did not expose a reviewable hard event");
+  }
+  const beforeEvidenceReview = ledgerSnapshot(gameId);
+  for (const event of reviewCandidates) {
+    if (!Number.isInteger(event.eventId) || event.eventId <= 0) {
+      throw new Error(`review candidate ${event.type} is missing its stable event id`);
+    }
+    const response = await A.api(
+      "GET",
+      `/api/game/${gameId}/cheatreport/events/${event.eventId}`,
+      { jwt: A.adminJwt(), ip: "192.0.2.45" },
+    );
+    if (response.status !== 200) {
+      throw new Error(
+        `evidence review ${event.eventId} failed: ${response.status} ${response.text}`,
+      );
+    }
+    const review = unwrap(response);
+    if (review.eventId !== event.eventId || !Array.isArray(review.sources)) {
+      throw new Error(`evidence review ${event.eventId} returned the wrong source identity`);
+    }
+    if (event.type === "StolenFlag") {
+      if (
+        review.assessment !== "directEvidence" ||
+        review.sourceStatus !== "verified" ||
+        review.isDirectProof !== true ||
+        !review.sources.some((source) => source.sourceType === "cheatInfo")
+      ) {
+        throw new Error("stolen-flag review did not verify its canonical CheatInfo source");
+      }
+    } else if (review.isDirectProof || review.sourceStatus !== "supporting") {
+      throw new Error(`${event.type} was incorrectly presented as direct proof`);
+    }
+    const serialized = JSON.stringify(review);
+    if (
+      serialized.includes(flags.get(victim.participationId)) ||
+      serialized.includes('"answer"')
+    ) {
+      throw new Error(`evidence review ${event.eventId} leaked raw flag material`);
+    }
+  }
+  if (ledgerSnapshot(gameId) !== beforeEvidenceReview) {
+    throw new Error("GET /cheatreport/events/{eventId} mutated the evidence ledger");
+  }
 
   console.log(
     `isolated anti-cheat acceptance passed: game ${gameId}, ` +
