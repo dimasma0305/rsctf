@@ -10,6 +10,14 @@ pub(super) fn apply_clone_challenge_defaults(clone: &mut game_challenge::ActiveM
     clone.ad_allow_self_reset = Set(false);
     clone.ad_ssh_requires_flag = Set(false);
     clone.ad_self_hosted = Set(false);
+    if matches!(&clone.variant_generator_build_context_subdir, Set(Some(_))) {
+        clone.variant_mode = Set(ChallengeVariantMode::Disabled);
+        clone.variant_generator_image = Set(None);
+        clone.variant_generator_digest = Set(None);
+        clone.variant_generator_build_context_subdir = Set(None);
+        clone.variant_generator_build_status = Set(ChallengeBuildStatus::None);
+        clone.variant_generator_last_build_log = Set(None);
+    }
 }
 
 pub async fn clone_game(

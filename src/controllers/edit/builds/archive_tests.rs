@@ -49,6 +49,10 @@ fn tar_path(tar: &[u8], offset: usize) -> String {
     }
 }
 
+fn tar_mode(tar: &[u8], offset: usize) -> u32 {
+    u32::from_str_radix(tar_field(&tar[offset + 100..offset + 108]), 8).unwrap()
+}
+
 #[test]
 fn image_lock_identity_normalizes_implicit_latest_and_docker_hub_aliases() {
     let expected = "docker.io/library/alpine:latest";
@@ -208,18 +212,25 @@ fn build_archive_accepts_a_small_safe_zip() {
 
 #[test]
 fn build_archive_selects_reviewed_context_subdirectory() {
-    let archive = zip_entries(
-        &[
-            ("challenge.yml", b"name: reviewed\n"),
-            ("checker/run.py", b"print('check')\n"),
-            ("src/Dockerfile", b"FROM scratch\n"),
-            ("src/app", b"payload\n"),
-        ],
-        zip::CompressionMethod::Stored,
-    );
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, data, mode) in [
+        ("challenge.yml", b"name: reviewed\n".as_slice(), 0o644),
+        ("checker/run.py", b"print('check')\n".as_slice(), 0o755),
+        ("src/Dockerfile", b"FROM scratch\n".as_slice(), 0o644),
+        ("src/app", b"payload\n".as_slice(), 0o755),
+    ] {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .unix_permissions(mode);
+        writer.start_file(name, options).unwrap();
+        writer.write_all(data).unwrap();
+    }
+    let archive = writer.finish().unwrap().into_inner();
     let tar = zip_bytes_to_tar(&archive, Some("src")).unwrap();
     assert_eq!(tar_path(&tar, 0), "Dockerfile");
     assert_eq!(tar_path(&tar, 1024), "app");
+    assert_eq!(tar_mode(&tar, 0), 0o644);
+    assert_eq!(tar_mode(&tar, 1024), 0o755);
 }
 
 #[test]

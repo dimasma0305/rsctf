@@ -36,9 +36,17 @@ fn game_creation_keeps_every_supplied_ad_timing_field() {
 #[test]
 fn clone_challenge_defaults_match_non_nullable_schema_defaults() {
     use crate::models::data::game_challenge;
-    use crate::utils::enums::{NetworkMode, ScoreCurve};
+    use crate::utils::enums::{
+        ChallengeBuildStatus, ChallengeVariantMode, NetworkMode, ScoreCurve,
+    };
 
-    let mut active = game_challenge::ActiveModel::default();
+    let mut active = game_challenge::ActiveModel {
+        variant_mode: Set(ChallengeVariantMode::PerParticipation),
+        variant_generator_build_context_subdir: Set(Some("generator".to_string())),
+        variant_generator_build_status: Set(ChallengeBuildStatus::Failed),
+        variant_generator_last_build_log: Set(Some("failed".to_string())),
+        ..Default::default()
+    };
     apply_clone_challenge_defaults(&mut active);
 
     assert_eq!(active.enable_shared_container, Set(false));
@@ -48,6 +56,15 @@ fn clone_challenge_defaults_match_non_nullable_schema_defaults() {
     assert_eq!(active.ad_allow_self_reset, Set(false));
     assert_eq!(active.ad_ssh_requires_flag, Set(false));
     assert_eq!(active.ad_self_hosted, Set(false));
+    assert_eq!(active.variant_mode, Set(ChallengeVariantMode::Disabled));
+    assert_eq!(active.variant_generator_image, Set(None));
+    assert_eq!(active.variant_generator_digest, Set(None));
+    assert_eq!(active.variant_generator_build_context_subdir, Set(None));
+    assert_eq!(
+        active.variant_generator_build_status,
+        Set(ChallengeBuildStatus::None)
+    );
+    assert_eq!(active.variant_generator_last_build_log, Set(None));
 }
 
 #[test]
