@@ -23,7 +23,15 @@ const REFERENCES_SQL: &str = r#"
  WHERE container_image IS NOT NULL AND BTRIM(container_image)<>''
  UNION ALL
  SELECT title, ad_checker_image AS image_ref FROM "GameChallenges"
- WHERE ad_checker_image IS NOT NULL AND BTRIM(ad_checker_image)<>''"#;
+ WHERE ad_checker_image IS NOT NULL AND BTRIM(ad_checker_image)<>''
+ UNION ALL
+ SELECT title,
+        'rsctf/' || game_id::TEXT || '/variant-generator-' || id::TEXT || ':latest' AS image_ref
+ FROM "GameChallenges"
+ WHERE variant_generator_build_context_subdir = 'generator'
+   AND variant_generator_build_status = 1
+   AND variant_generator_image IS NOT NULL
+   AND variant_generator_image = variant_generator_digest"#;
 
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
 struct OwnershipRow {
@@ -563,9 +571,14 @@ mod tests {
         sqlx::query(
             r#"CREATE TABLE "GameChallenges" (
                  id INTEGER PRIMARY KEY,
+                 game_id INTEGER NOT NULL DEFAULT 1,
                  title TEXT NOT NULL,
                  container_image TEXT,
-                 ad_checker_image TEXT
+                 ad_checker_image TEXT,
+                 variant_generator_build_context_subdir TEXT,
+                 variant_generator_build_status SMALLINT NOT NULL DEFAULT 0,
+                 variant_generator_image TEXT,
+                 variant_generator_digest TEXT
                )"#,
         )
         .execute(&pool)
@@ -602,6 +615,17 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "GameChallenges"
+                 (id, game_id, title, variant_generator_build_context_subdir,
+                  variant_generator_build_status, variant_generator_image,
+                  variant_generator_digest)
+               VALUES (2, 9, 'managed generator', 'generator', 1, $1, $1)"#,
+        )
+        .bind(ID)
+        .execute(&pool)
+        .await
+        .unwrap();
         first.release().await.unwrap();
 
         let mut second = tokio::time::timeout(std::time::Duration::from_secs(2), &mut waiter)
@@ -614,6 +638,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reference_titles(&rows, CANONICAL), vec!["late reference"]);
+        assert_eq!(
+            reference_titles(
+                &rows,
+                "docker.io/rsctf/9/variant-generator-2:latest"
+            ),
+            vec!["managed generator"]
+        );
         second.release().await.unwrap();
 
         pool.close().await;
