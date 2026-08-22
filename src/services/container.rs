@@ -64,12 +64,12 @@ mod policy;
 #[cfg(test)]
 mod tests;
 use self::docker::{
-    append_snapshot_chunk, development_unbounded_storage, docker_network_mode,
-    image_requests_restricted_profile, is_conflict, is_not_found, launch_spec_fingerprint,
-    launch_spec_matches, restricted_profile_matches, restricted_tmpfs_mounts,
-    snapshot_export_slots, stamp_restricted_profile, validate_docker_container_spec,
-    writable_layer_storage_option, LAUNCH_SPEC_LABEL, MAX_SNAPSHOT_EXPORT_BYTES,
-    SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
+    append_snapshot_chunk, docker_network_mode, image_requests_restricted_profile, is_conflict,
+    is_not_found, launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
+    restricted_tmpfs_mounts, snapshot_export_slots, stamp_restricted_profile,
+    stamp_storage_quota_policy, storage_quota_policy_matches, validate_docker_container_spec,
+    writable_layer_quota_supported, writable_layer_storage_option, LAUNCH_SPEC_LABEL,
+    MAX_SNAPSHOT_EXPORT_BYTES, SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
 };
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
@@ -348,8 +348,8 @@ pub struct DockerContainerManager {
     /// daemon. It prevents one deployment's orphan sweep or operation adoption
     /// from touching another deployment's workloads.
     scope: String,
-    /// Debug-only escape hatch for a disposable, quota-less Docker daemon.
-    allow_unbounded_storage: bool,
+    /// Cached daemon capability used by both the create path and admin warning.
+    storage_quota_enforced: std::sync::Arc<std::sync::OnceLock<bool>>,
     /// Live Docker client handle populated by [`Self::connect`].
     docker: Option<Docker>,
 }
@@ -368,7 +368,7 @@ impl DockerContainerManager {
             public_entry: std::env::var("RSCTF_DOCKER_PUBLIC_ENTRY").ok(),
             proxy_bind: docker::configured_proxy_bind()?,
             scope: docker_installation_scope(),
-            allow_unbounded_storage: development_unbounded_storage()?,
+            storage_quota_enforced: Default::default(),
             docker: Some(docker),
         })
     }
@@ -405,6 +405,38 @@ impl DockerContainerManager {
         })
         .join()
         .unwrap_or(false)
+    }
+
+    async fn detect_storage_quota_enforcement(&self) -> AppResult<bool> {
+        if let Some(enforced) = self.storage_quota_enforced.get() {
+            return Ok(*enforced);
+        }
+        let daemon_info = self.client()?.info().await.map_err(|error| {
+            AppError::unavailable(format!(
+                "could not inspect Docker writable-layer quota support: {error}"
+            ))
+        })?;
+        let enforced = writable_layer_quota_supported(&daemon_info);
+        if self.storage_quota_enforced.set(enforced).is_ok() && !enforced {
+            let backing_filesystem = daemon_info
+                .driver_status
+                .as_ref()
+                .and_then(|rows| {
+                    rows.iter().find(|row| {
+                        row.first()
+                            .is_some_and(|key| key.eq_ignore_ascii_case("Backing Filesystem"))
+                    })
+                })
+                .and_then(|row| row.get(1))
+                .map(String::as_str)
+                .unwrap_or("unknown");
+            tracing::warn!(
+                driver = daemon_info.driver.as_deref().unwrap_or("unknown"),
+                backing_filesystem,
+                "Docker cannot enforce writable-layer quotas; configured storage limits will be retained but instances will use unbounded writable layers"
+            );
+        }
+        Ok(*self.storage_quota_enforced.get().unwrap_or(&enforced))
     }
 
     async fn ensure_bridge_network(
@@ -492,6 +524,10 @@ impl ContainerManager for DockerContainerManager {
         ContainerBackendKind::Docker
     }
 
+    async fn storage_quota_enforced(&self) -> Option<bool> {
+        self.detect_storage_quota_enforcement().await.ok()
+    }
+
     async fn image_exists(&self, image: &str) -> bool {
         match self.client() {
             Ok(docker) => docker.inspect_image(image).await.is_ok(),
@@ -520,16 +556,8 @@ impl ContainerManager for DockerContainerManager {
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
         validate_docker_container_spec(&spec)?;
         let docker = self.client()?;
-        let daemon_info = docker.info().await.map_err(|error| {
-            AppError::unavailable(format!(
-                "could not verify Docker writable-layer quota support: {error}"
-            ))
-        })?;
-        let storage_opt = writable_layer_storage_option(
-            &daemon_info,
-            self.allow_unbounded_storage,
-            spec.storage_limit,
-        )?;
+        let storage_quota_enforced = self.detect_storage_quota_enforcement().await?;
+        let storage_opt = writable_layer_storage_option(storage_quota_enforced, spec.storage_limit);
         let launch_fingerprint = launch_spec_fingerprint(&spec);
 
         // 1. Pull an absent repository digest without changing identity. A
@@ -614,6 +642,7 @@ impl ContainerManager for DockerContainerManager {
         let mut labels = scoped_managed_labels(&self.scope);
         labels.insert(LAUNCH_SPEC_LABEL.to_string(), launch_fingerprint.clone());
         stamp_restricted_profile(&mut labels, restricted_profile);
+        stamp_storage_quota_policy(&mut labels, storage_quota_enforced);
         if let Some(operation_id) = spec.operation_id.as_ref() {
             labels.insert(OPERATION_LABEL.to_string(), operation_id.clone());
         }
@@ -694,6 +723,7 @@ impl ContainerManager for DockerContainerManager {
                     || actual_image != Some(spec.image.as_str())
                     || !launch_spec_matches(&existing, &launch_fingerprint)
                     || !restricted_profile_matches(&existing, restricted_profile)
+                    || !storage_quota_policy_matches(&existing, storage_quota_enforced)
                 {
                     return Err(AppError::conflict(
                         "container operation identity is owned by a different workload",

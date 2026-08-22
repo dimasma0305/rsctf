@@ -172,7 +172,9 @@
         "solve_count": "Solves",
         "storage_limit": {
           "description": "Termasuk gambar",
-          "label": "Penyimpanan (MB)"
+          "label": "Penyimpanan (MB)",
+          "unbounded_title": "Kuota lapisan tulis tidak tersedia",
+          "unbounded_warning": "Host Docker ini tidak dapat menerapkan kuota lapisan tulis. Batas yang dikonfigurasi tetap disimpan, tetapi tidak diterapkan pada instance di lingkungan ini. Pantau ruang disk kosong dan pindahkan Docker ke penyimpanan yang mendukung kuota bila memungkinkan."
         },
         "submission_limit": {
           "description": "0 = tidak terbatas",

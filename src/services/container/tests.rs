@@ -9,9 +9,10 @@ use super::docker::{
     advertised_endpoint_ip, docker_liveness, docker_network_mode, failed_start_action,
     image_requests_restricted_profile, launch_spec_fingerprint, launch_spec_matches,
     parse_proxy_bind, published_bind_ip, restricted_profile_matches, restricted_tmpfs_mounts,
-    stamp_restricted_profile, validate_docker_container_spec, verify_container_scope,
-    writable_layer_quota_supported, writable_layer_storage_opt, writable_layer_storage_option,
-    FailedStartAction, LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
+    stamp_restricted_profile, stamp_storage_quota_policy, storage_quota_policy_matches,
+    validate_docker_container_spec, verify_container_scope, writable_layer_quota_supported,
+    writable_layer_storage_opt, writable_layer_storage_option, FailedStartAction,
+    LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
     RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
 };
 use super::{
@@ -206,7 +207,7 @@ fn isolated_bridge_requires_inter_container_communication_to_be_disabled() {
 }
 
 #[test]
-fn docker_storage_quota_support_is_detected_fail_closed() {
+fn docker_storage_quota_support_uses_an_unbounded_fallback() {
     let xfs = SystemInfo {
         driver: Some("overlay2".to_string()),
         driver_status: Some(vec![vec![
@@ -230,24 +231,51 @@ fn docker_storage_quota_support_is_detected_fail_closed() {
         Some("768M")
     );
 
-    assert!(writable_layer_storage_option(&ext4, false, 768).is_err());
-    assert_eq!(
-        writable_layer_storage_option(&ext4, true, 768).unwrap(),
-        None
-    );
+    assert_eq!(writable_layer_storage_option(false, 768), None);
     assert_eq!(
         writable_layer_storage_option(
-            &SystemInfo {
+            writable_layer_quota_supported(&SystemInfo {
                 driver: Some("btrfs".to_string()),
                 ..Default::default()
-            },
-            false,
+            }),
             768,
         )
-        .unwrap()
         .and_then(|options| options.get("size").cloned()),
         Some("768M".to_string())
     );
+}
+
+#[test]
+fn adopted_container_must_match_the_storage_quota_policy() {
+    let mut labels = HashMap::new();
+    stamp_storage_quota_policy(&mut labels, false);
+    let mut inspected = ContainerInspectResponse {
+        config: Some(ContainerConfig {
+            labels: Some(labels),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(storage_quota_policy_matches(&inspected, false));
+    assert!(!storage_quota_policy_matches(&inspected, true));
+
+    let labels = inspected
+        .config
+        .as_mut()
+        .and_then(|config| config.labels.as_mut())
+        .expect("test labels");
+    stamp_storage_quota_policy(labels, true);
+    assert!(storage_quota_policy_matches(&inspected, true));
+    assert!(!storage_quota_policy_matches(&inspected, false));
+
+    assert!(storage_quota_policy_matches(
+        &ContainerInspectResponse::default(),
+        true
+    ));
+    assert!(!storage_quota_policy_matches(
+        &ContainerInspectResponse::default(),
+        false
+    ));
 }
 
 #[test]

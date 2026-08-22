@@ -85,12 +85,14 @@ The gateway publishes no host port; Traefik is the only public entry point.
 Use the actual address assigned to the `traefik` bridge on the development
 host. Never use `0.0.0.0` or point this stack at production secrets/services.
 
-The standard source runner intentionally disables container provisioning. For
-an explicitly disposable Docker-backed test, a debug binary may set
-`RSCTF_DEV_ALLOW_UNBOUNDED_CONTAINER_STORAGE=true` when the Docker data root
-cannot enforce writable-layer quotas. Release binaries reject this escape
-hatch. Production must use overlay2 on XFS with project quotas (or another
-supported driver) or a quota-capable worker.
+The standard source runner intentionally disables container provisioning. A
+Docker backend applies the configured writable-layer limit when the daemon and
+backing filesystem support it. On an incompatible host (for example overlay2
+on ext4), rsctf keeps the configured value but starts the workload without a
+writable-layer quota and displays a persistent warning in the challenge
+editor. CPU, memory, PID, network, log, and lifecycle limits remain active.
+Monitor free disk space closely; production should use overlay2 on XFS with
+project quotas (or another supported driver) or a quota-capable worker.
 
 This stack is for debugging and review. A production deployment must still be
 built by the release workflow and rolled out by immutable image digest.

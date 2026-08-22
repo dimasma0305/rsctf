@@ -1,4 +1,5 @@
 import {
+  Alert,
   Badge,
   Button,
   Code,
@@ -24,6 +25,7 @@ import { DateTimePicker } from '@mantine/dates'
 import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import {
+  mdiAlertCircleOutline,
   mdiCheck,
   mdiContentSaveOutline,
   mdiDatabaseEditOutline,
@@ -151,6 +153,7 @@ const GameChallengeEdit: FC = () => {
   // scoring, the A&D config card for the checker image + egress).
   const isAdEngine = type === ChallengeType.AttackDefense || type === ChallengeType.KingOfTheHill
   const isJeopardyContainer = type === ChallengeType.StaticContainer || type === ChallengeType.DynamicContainer
+  const isContainerType = isAdEngine || isJeopardyContainer
   const isKoth = type === ChallengeType.KingOfTheHill
   const adScoringStarted = type === ChallengeType.AttackDefense && game?.adScoringStartRound != null
   const eventSecurityFrozen = !!game?.start && dayjs().isAfter(dayjs(game.start))
@@ -1089,6 +1092,18 @@ const GameChallengeEdit: FC = () => {
                 }}
               />
             </Grid.Col>
+            {isContainerType && challenge?.storageQuotaEnforced === false && (
+              <Grid.Col span={12}>
+                <Alert
+                  color="orange"
+                  variant="light"
+                  title={t('admin.content.games.challenges.storage_limit.unbounded_title')}
+                  icon={<Icon path={mdiAlertCircleOutline} size={1} aria-hidden />}
+                >
+                  {t('admin.content.games.challenges.storage_limit.unbounded_warning')}
+                </Alert>
+              </Grid.Col>
+            )}
             <Grid.Col span={{ base: 12, lg: 4 }} display="flex" className={misc.alignCenter}>
               <Switch
                 disabled={disabled}
