@@ -419,17 +419,85 @@ fn validate_scoring_transition(
     Ok(())
 }
 
-fn validate_start_time_transition(
-    current: DateTime<Utc>,
-    requested: DateTime<Utc>,
-    scoring_started: bool,
+fn validate_schedule_transition(
+    current_start: DateTime<Utc>,
+    current_end: DateTime<Utc>,
+    requested_start: DateTime<Utc>,
+    requested_end: DateTime<Utc>,
+    activity_started: bool,
+    evidence_closed: bool,
+    koth_config_snapshotted: bool,
 ) -> AppResult<()> {
-    if scoring_started && requested != current {
+    let start_changed = requested_start != current_start;
+    let end_changed = requested_end != current_end;
+    if !start_changed && !end_changed {
+        return Ok(());
+    }
+    if evidence_closed {
         return Err(AppError::bad_request(
-            "The event start is locked after competition scoring starts.",
+            "The event schedule is locked after competitive evidence has closed.",
+        ));
+    }
+    if koth_config_snapshotted {
+        return Err(AppError::bad_request(
+            "The event schedule is locked after KotH crown scoring starts.",
+        ));
+    }
+    if start_changed && activity_started {
+        return Err(AppError::bad_request(
+            "The event start is locked after competitive activity has been recorded.",
+        ));
+    }
+    if end_changed && activity_started && requested_end < current_end {
+        return Err(AppError::bad_request(
+            "The event end cannot be shortened after competitive activity has been recorded.",
         ));
     }
     Ok(())
+}
+
+/// A wall-clock crossing is reversible when an event has remained idle: an
+/// organizer may have opened the event with the wrong time zone and need to
+/// move it back into the future. Once any gameplay, audit, or engine evidence
+/// exists, changing the start would reinterpret its competition window.
+async fn schedule_activity_locked(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+) -> AppResult<(bool, bool)> {
+    sqlx::query_as::<_, (bool, bool)>(
+        r#"SELECT (
+                    game.ad_scoring_start_round IS NOT NULL
+                    OR game.koth_scoring_start_round IS NOT NULL
+                    OR EXISTS (SELECT 1 FROM "Submissions" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "GameEvents" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "AdRounds" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "KothCrownCycles" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "KothControlResults" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "KothAcquisitions" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "IdentityObservations" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "SuspicionEvents" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "AntiCheatFindings" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "SuspicionEvaluationOutbox" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "ContainerAccessEvents" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "FlagEgressEvents" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "VpnFlowTelemetryBuckets" WHERE game_id = game.id)
+                    OR EXISTS (SELECT 1 FROM "VpnFlagTransportEvents" WHERE game_id = game.id)
+                ),
+                EXISTS (
+                    SELECT 1
+                      FROM "SuspicionReconciliationState" state
+                     WHERE state.game_id = game.id
+                       AND (state.evidence_closed_at_utc IS NOT NULL
+                            OR state.sealed_at_utc IS NOT NULL)
+                )
+           FROM "Games" game
+          WHERE game.id = $1"#,
+    )
+    .bind(game_id)
+    .fetch_optional(connection)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))
 }
 
 /// `PUT /api/edit/games/{id}`
@@ -582,9 +650,7 @@ pub async fn update_game(
     let requested_koth_claim_confirmation_ticks = model
         .koth_claim_confirmation_ticks
         .unwrap_or(current_koth_claim_confirmation_ticks);
-    let constant_scoring_settings_changed = model.start_time_utc != current_start_time
-        || model.end_time_utc != current_end_time
-        || model.practice_mode != current_practice_mode
+    let constant_scoring_settings_changed = model.practice_mode != current_practice_mode
         || super::blood_bonus_from_value(model.blood_bonus_value) != current_blood_bonus_value
         || requested_epoch_ticks != current_epoch_ticks
         || model.ad_flag_lifetime_ticks != current_lifetime
@@ -616,19 +682,23 @@ pub async fn update_game(
         .fetch_one(&mut **tx)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        if model.end_time_utc != current_end_time && config_snapshotted {
-            return Err(AppError::bad_request(
-                "The event deadline is locked after KotH crown scoring starts.",
-            ));
-        }
         config_snapshotted
     } else {
         false
     };
-    validate_start_time_transition(
+    let (schedule_activity_started, evidence_closed) = if schedule_changed {
+        schedule_activity_locked(&mut *tx, id).await?
+    } else {
+        (false, false)
+    };
+    validate_schedule_transition(
         current_start_time,
+        current_end_time,
         model.start_time_utc,
-        competition_scoring_started || config_snapshotted,
+        model.end_time_utc,
+        schedule_activity_started,
+        evidence_closed,
+        config_snapshotted,
     )?;
     if current_koth_start_round.is_some()
         && (requested_koth_epoch_ticks != current_koth_epoch_ticks
