@@ -478,6 +478,7 @@ pub async fn create_container(
         game_kind,
         st.containers.requires_proxy(),
         platform_proxy,
+        false,
     );
     let cuuid = uuid::Uuid::new_v4();
     let info = st

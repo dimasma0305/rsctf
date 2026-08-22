@@ -39,6 +39,16 @@ fn sparse_game_exports_receive_crown_cycle_defaults() {
 }
 
 #[test]
+fn sparse_challenge_imports_disable_blood_bonus() {
+    let model: ExportChallengeModel = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(model.disable_blood_bonus);
+
+    let enabled: ExportChallengeModel =
+        serde_json::from_value(serde_json::json!({ "disableBloodBonus": false })).unwrap();
+    assert!(!enabled.disable_blood_bonus);
+}
+
+#[test]
 fn game_import_archive_rejects_traversal_and_zip_bombs() {
     let traversal = archive_with("../game.json", b"{}");
     assert!(read_game_import_archive(&traversal).is_err());

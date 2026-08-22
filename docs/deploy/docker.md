@@ -66,10 +66,11 @@ compromise of the public application can become a host compromise. Run it on a
 dedicated VM/server and keep the host free of unrelated sensitive workloads.
 :::
 
-Normal dynamic challenges in `Default` port-mapping mode publish daemon-selected
-TCP ports on the host. Allow the intended port range through the firewall and set
+Jeopardy challenges use `PlatformProxy` by default. Selecting direct port mapping,
+or enabling `VPN access required` for an event, publishes daemon-selected TCP ports
+instead; restrict those ports to the intended audience and set
 `RSCTF_DOCKER_PUBLIC_ENTRY` to the hostname or address players can actually reach.
-In `PlatformProxy` mode, the maintained Compose files instead bind each port to
+In `PlatformProxy` mode, the maintained Compose files bind each port to
 the gateway of a dedicated private `challenge-proxy` bridge. The authenticated
 proxy stores this private address as its target. Docker routes host-bound ports
 between bridges by default, so bridge membership alone is not the security

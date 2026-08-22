@@ -66,6 +66,8 @@ import api, {
   CaptchaProvider,
   ConfigEditModel,
   ContainerPolicy,
+  ContainerPortMappingType,
+  ContainerProviderInfoModel,
   EmailConfig,
   GlobalConfig,
   MyIpInfoModel,
@@ -86,6 +88,7 @@ const Configs: FC = () => {
   const [globalConfig, setGlobalConfig] = useState<GlobalConfig | null>()
   const [accountPolicy, setAccountPolicy] = useState<AccountPolicy | null>()
   const [containerPolicy, setContainerPolicy] = useState<ContainerPolicy | null>()
+  const [containerProvider, setContainerProvider] = useState<ContainerProviderInfoModel | null>()
   const [buildRegistry, setBuildRegistry] = useState<BuildRegistryConfig | null>()
   const [email, setEmail] = useState<EmailConfig | null>()
   const [captcha, setCaptcha] = useState<CaptchaConfig | null>()
@@ -127,6 +130,7 @@ const Configs: FC = () => {
   useEffect(() => {
     if (configs) {
       setContainerPolicy(configs.containerPolicy)
+      setContainerProvider(configs.containerProvider)
       setGlobalConfig(configs.globalConfig)
       setAccountPolicy(configs.accountPolicy)
       setBuildRegistry(configs.buildRegistry)
@@ -144,6 +148,7 @@ const Configs: FC = () => {
         globalConfig: configs.globalConfig,
         accountPolicy: configs.accountPolicy,
         containerPolicy: configs.containerPolicy,
+        containerProvider: configs.containerProvider,
         buildRegistry: configs.buildRegistry,
         email: configs.email,
         captcha: configs.captcha,
@@ -160,6 +165,7 @@ const Configs: FC = () => {
     globalConfig: { ...globalConfig, customTheme: color ?? globalConfig?.customTheme },
     accountPolicy,
     containerPolicy,
+    containerProvider,
     buildRegistry,
     email,
     captcha,
@@ -351,6 +357,7 @@ const Configs: FC = () => {
       },
       accountPolicy,
       containerPolicy,
+      containerProvider,
       buildRegistry,
       email,
       captcha,
@@ -727,11 +734,10 @@ const Configs: FC = () => {
                 <SectionHelp description={t('admin.content.settings.container.default_lifetime.description')} />
               </Group>
               <Divider />
-              {/* Read-only: which backend challenges run on. Comes from startup
-              config (ContainerProvider:Type), not editable here. */}
-              {configs?.containerProvider &&
+              {/* Backend type is read-only; Jeopardy port mapping is editable. */}
+              {containerProvider &&
                 (() => {
-                  const cp = configs.containerProvider!
+                  const cp = containerProvider
                   const isK8s = cp.type === 'Kubernetes'
                   return (
                     <Paper withBorder radius="md" p="sm">
@@ -763,6 +769,39 @@ const Configs: FC = () => {
                           )}
                         </Group>
                       </Group>
+                      <Select
+                        mt="sm"
+                        label={t('admin.content.settings.container.provider.port_mapping_label', {
+                          defaultValue: 'Jeopardy connection mode',
+                        })}
+                        description={t('admin.content.settings.container.provider.port_mapping_description', {
+                          defaultValue:
+                            'Platform Proxy avoids public challenge ports. Events that require the platform VPN always use their direct VPN IP and port.',
+                        })}
+                        disabled={disabled}
+                        value={cp.portMappingType ?? ContainerPortMappingType.PlatformProxy}
+                        data={[
+                          {
+                            value: ContainerPortMappingType.PlatformProxy,
+                            label: t('admin.content.settings.container.provider.platform_proxy', {
+                              defaultValue: 'Platform Proxy (recommended)',
+                            }),
+                          },
+                          {
+                            value: ContainerPortMappingType.Default,
+                            label: t('admin.content.settings.container.provider.direct_port', {
+                              defaultValue: 'Direct public port',
+                            }),
+                          },
+                        ]}
+                        onChange={(value) =>
+                          value &&
+                          setContainerProvider({
+                            ...cp,
+                            portMappingType: value as ContainerPortMappingType,
+                          })
+                        }
+                      />
                       {isK8s && (
                         <Group gap="lg" mt="xs" pl={2}>
                           {cp.kubernetesNamespace && (

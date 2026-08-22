@@ -120,7 +120,7 @@ pub async fn get_client_config(
     // Container port-mapping mode advertised to the client (`ContainerPortMappingType`):
     // `Default` = direct host:port, `PlatformProxy` = wsrx-proxied. The client gates
     // wsrx on `config.portMapping === PlatformProxy` (InstanceEntry.tsx).
-    let mut port_mapping = "Default".to_string();
+    let mut port_mapping = crate::controllers::admin::DEFAULT_CONTAINER_PORT_MAPPING.to_string();
     // Container lifetime trio the client reads for the instance UI
     // (ContainerPolicy). Defaults mirror RSCTF's ContainerPolicy defaults
     // (120 / 120 / 10 minutes); the stored keys override them at runtime.
@@ -137,7 +137,11 @@ pub async fn get_client_config(
             "GlobalConfig:FooterInfo" => footer_info = Some(value),
             "GlobalConfig:CustomTheme" => custom_theme = Some(value),
             "GlobalConfig:LogoHash" => logo_hash = Some(value),
-            "ContainerProvider:PortMappingType" if !value.is_empty() => port_mapping = value,
+            "ContainerProvider:PortMappingType" => {
+                port_mapping =
+                    crate::controllers::admin::normalized_container_port_mapping(Some(&value))
+                        .to_string()
+            }
             "ContainerPolicy:DefaultLifetime" => {
                 if let Ok(v) = value.parse() {
                     default_lifetime = v;

@@ -449,8 +449,8 @@ export interface ConfigEditModel {
   registry?: RegistryConfig | null;
   /** Read-only view of RSCTF_TRUSTED_PROXY_CIDRS. Ignored on update. */
   proxyTrust?: ProxyTrustConfig | null;
-  /** Read-only view of the active container backend (Docker / Kubernetes).
-   *  Set at startup; populated on GET, ignored on PUT. */
+  /** Active container backend summary. The backend type is read-only; the
+   *  Jeopardy port-mapping preference is editable. */
   containerProvider?: ContainerProviderInfoModel | null;
 }
 
@@ -478,8 +478,7 @@ export enum ContainerProviderType {
   Kubernetes = "Kubernetes",
 }
 
-/** Read-only summary of the configured container provider, so an admin can
- *  tell at a glance whether challenges run on Docker or Kubernetes. */
+/** Configured container provider and mutable Jeopardy port-mapping preference. */
 export interface ContainerProviderInfoModel {
   /** The active backend: Docker or Kubernetes. */
   type?: ContainerProviderType;

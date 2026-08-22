@@ -10,6 +10,8 @@ const roleCompose = read('../../../deploy/compose.roles.yml');
 const localCompose = read('../../../docker-compose.yml');
 const firewall = read('../../../scripts/docker-proxy-firewall.sh');
 const gameContainers = read('../../../src/controllers/game/containers.rs');
+const sharedGameContainers = read('../../../src/controllers/game/containers/shared.rs');
+const gameContainerSources = `${gameContainers}\n${sharedGameContainers}`;
 
 test('Compose gives rsctf a private bridge target for PlatformProxy ports', () => {
   for (const compose of [baseCompose, localCompose]) {
@@ -50,9 +52,9 @@ test('firewall covers userland-proxy and kernel-DNAT paths and supports cleanup'
 });
 
 test('legacy and aggregate Jeopardy creation both carry the proxy decision', () => {
-  assert.equal((gameContainers.match(/proxy_only: is_proxy/g) ?? []).length, 2);
+  assert.equal((gameContainerSources.match(/proxy_only: is_proxy/g) ?? []).length, 2);
   assert.equal(
-    (gameContainers.match(/\.create_workload\([^\n]+is_proxy\)/g) ?? []).length,
+    (gameContainerSources.match(/\.create_workload\([^\n]+is_proxy\)/g) ?? []).length,
     2,
   );
 });

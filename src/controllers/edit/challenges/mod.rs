@@ -118,7 +118,7 @@ pub async fn add_challenge(
         network_mode: Set(Some(NetworkMode::Open)),
         enable_traffic_capture: Set(false),
         enable_shared_container: Set(false),
-        disable_blood_bonus: Set(false),
+        disable_blood_bonus: Set(true),
         ad_allow_egress: Set(false),
         ad_allow_self_reset: Set(false),
         ad_ssh_requires_flag: Set(false),

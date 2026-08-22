@@ -6,6 +6,16 @@ mod security_policy;
 
 pub use crate::services::container_policy::ContainerPolicy;
 
+pub(crate) const DEFAULT_CONTAINER_PORT_MAPPING: &str = "PlatformProxy";
+
+pub(crate) fn normalized_container_port_mapping(value: Option<&str>) -> &'static str {
+    match value {
+        Some("Default") => "Default",
+        Some("PlatformProxy") => "PlatformProxy",
+        _ => DEFAULT_CONTAINER_PORT_MAPPING,
+    }
+}
+
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 /// RSCTF `GlobalConfig`.
@@ -235,9 +245,8 @@ pub struct BuildRegistryConfig {
 
 /// RSCTF `ConfigEditModel`. All editable sections are strongly typed so GET
 /// round-trips exactly what PUT persisted (secrets excepted — see below). The
-/// `container_provider` view is mostly read-only (sourced from startup config in
-/// RSCTF); rsctf surfaces the current provider summary on GET and persists just
-/// its mutable `portMappingType` on PUT (see `get_config` / `update_config`).
+/// `container_provider` exposes a read-only backend summary plus the mutable
+/// `portMappingType` preference persisted by `get_config` / `update_config`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigEditModel {
@@ -451,9 +460,9 @@ pub async fn get_config(
     // Read-only container-provider summary (mirrors RSCTF `ContainerProviderInfoModel`).
     // rsctf only persists the port-mapping mode; `type`/`trafficCapture` are best-effort
     // (Docker backend, no global traffic-capture toggle — that lives per-challenge).
-    let port_mapping_type = get("ContainerProvider:PortMappingType")
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "Default".to_string());
+    let stored_port_mapping = get("ContainerProvider:PortMappingType");
+    let port_mapping_type =
+        normalized_container_port_mapping(stored_port_mapping.as_deref()).to_string();
     let container_provider = serde_json::json!({
         "type": "Docker",
         "portMappingType": port_mapping_type,
@@ -673,8 +682,8 @@ pub async fn update_config(
 /// Reads the admin-set container port-mapping mode
 /// (`ContainerProvider:PortMappingType`), returning one of the
 /// `ContainerPortMappingType` wire strings — `"Default"` (direct host:port) or
-/// `"PlatformProxy"` (wsrx-proxied) — and defaulting to `"Default"` when the key
-/// is absent or empty. Container creation calls this to decide whether a fresh
+/// `"PlatformProxy"` (wsrx-proxied) — and defaulting to `"PlatformProxy"` when
+/// the key is absent or invalid. Container creation calls this to decide whether a fresh
 /// instance is marked `is_proxy` (so `Container::entry()` hands the client a
 /// proxy guid instead of a host:port); `GET /api/info` advertises the same mode.
 pub(crate) async fn container_port_mapping(st: &SharedState) -> String {
@@ -683,13 +692,8 @@ pub(crate) async fn container_port_mapping(st: &SharedState) -> String {
         .await
         .ok()
         .flatten()
-        .and_then(|c| c.value)
-        .unwrap_or_default();
-    if value.is_empty() {
-        "Default".to_string()
-    } else {
-        value
-    }
+        .and_then(|c| c.value);
+    normalized_container_port_mapping(value.as_deref()).to_string()
 }
 
 async fn upsert_config(st: &SharedState, key: &str, value: Option<String>) -> AppResult<()> {
@@ -885,7 +889,33 @@ mod branding_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::ConfigEditModel;
+    use super::{normalized_container_port_mapping, ConfigEditModel};
+
+    #[test]
+    fn platform_proxy_is_the_safe_default() {
+        assert_eq!(normalized_container_port_mapping(None), "PlatformProxy");
+        assert_eq!(normalized_container_port_mapping(Some("")), "PlatformProxy");
+        assert_eq!(
+            normalized_container_port_mapping(Some("invalid")),
+            "PlatformProxy"
+        );
+        assert_eq!(
+            normalized_container_port_mapping(Some("Default")),
+            "Default"
+        );
+    }
+
+    #[test]
+    fn port_mapping_preference_is_admin_editable() {
+        let model: ConfigEditModel = serde_json::from_value(serde_json::json!({
+            "containerProvider": { "portMappingType": "Default" }
+        }))
+        .unwrap();
+        assert_eq!(
+            model.container_provider.unwrap()["portMappingType"],
+            "Default"
+        );
+    }
 
     #[test]
     fn proxy_trust_is_read_only_on_settings_input() {

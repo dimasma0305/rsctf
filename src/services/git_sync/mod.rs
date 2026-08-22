@@ -96,6 +96,10 @@ mod package;
 use package::{find_dockerfile_context, image_tag, parse_enum, resolve_category, zip_context_dir};
 mod generator;
 pub(crate) use generator::GENERATOR_CONTEXT_SUBDIR;
+
+fn disable_blood_bonus_or_default(value: Option<bool>) -> bool {
+    value.unwrap_or(true)
+}
 use generator::{ensure_source_archive_refresh_allowed, resolve_generator_import_intent};
 mod manifest;
 pub use manifest::{
@@ -470,7 +474,7 @@ pub async fn import_manifest(
     };
     requested_static_flags.sort();
     requested_static_flags.dedup();
-    let disable_blood_bonus = model.disable_blood_bonus.unwrap_or(false);
+    let disable_blood_bonus = disable_blood_bonus_or_default(model.disable_blood_bonus);
     let declared_checker_image = if uses_ad {
         ad.and_then(|a| a.checker_image.clone())
             .map(|s| s.trim().to_string())

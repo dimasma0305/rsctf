@@ -683,10 +683,14 @@
         },
         "provider": {
           "label": "Container backend",
-          "description": "Where challenge containers run. Set at startup (ContainerProvider:Type) — not editable here.",
+          "description": "Where challenge containers run. The backend type is set at startup; Jeopardy connection mode is editable below.",
           "traffic_capture": "Traffic capture",
           "namespace": "Namespace",
-          "pull_policy": "Image pull policy"
+          "pull_policy": "Image pull policy",
+          "port_mapping_label": "Jeopardy connection mode",
+          "port_mapping_description": "Platform Proxy avoids public challenge ports. Events that require the platform VPN always use their direct VPN IP and port.",
+          "platform_proxy": "Platform Proxy (recommended)",
+          "direct_port": "Direct public port"
         },
         "title": "Container Policy"
       },

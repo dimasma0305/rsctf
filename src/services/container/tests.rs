@@ -543,22 +543,31 @@ fn platform_proxy_selection_never_changes_competitive_direct_modes() {
         rsctf_worker_protocol::GameKind::AttackDefense,
         rsctf_worker_protocol::GameKind::KingOfTheHill,
     ] {
-        assert!(!should_use_platform_proxy(game_kind, true, true));
+        assert!(!should_use_platform_proxy(game_kind, true, true, false));
     }
     assert!(should_use_platform_proxy(
         rsctf_worker_protocol::GameKind::Jeopardy,
         false,
         true,
+        false,
     ));
     assert!(should_use_platform_proxy(
         rsctf_worker_protocol::GameKind::Jeopardy,
         true,
+        false,
         false,
     ));
     assert!(!should_use_platform_proxy(
         rsctf_worker_protocol::GameKind::Jeopardy,
         false,
         false,
+        false,
+    ));
+    assert!(!should_use_platform_proxy(
+        rsctf_worker_protocol::GameKind::Jeopardy,
+        false,
+        true,
+        true,
     ));
 }
 

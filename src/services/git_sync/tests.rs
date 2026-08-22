@@ -4,6 +4,13 @@ mod repository_concurrency;
 mod repository_regression;
 mod variant_generator_regression;
 
+#[test]
+fn repository_challenges_disable_blood_bonus_unless_explicitly_enabled() {
+    assert!(disable_blood_bonus_or_default(None));
+    assert!(disable_blood_bonus_or_default(Some(true)));
+    assert!(!disable_blood_bonus_or_default(Some(false)));
+}
+
 async fn import_with_game_lock(
     state: &SharedState,
     game_id: i32,
