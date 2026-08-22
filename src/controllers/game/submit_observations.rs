@@ -1,10 +1,23 @@
 use super::*;
 
-/// Acquire the same cross-replica team-roster fence as membership mutations,
-/// then lock and revalidate the exact interactive caller on the grading
-/// transaction. Cached participation context remains an early optimization;
-/// these rows are the authorization decision that survives through commit.
-pub(super) async fn lock_submit_caller_at_grade(
+/// Acquire the same cross-replica team-roster fence as membership mutations.
+/// This outer advisory must precede the game, suspicion, and row locks used by
+/// grading so membership removal and detector persistence share one lock order.
+async fn lock_submit_roster_at_grade(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    team_id: i32,
+) -> AppResult<()> {
+    let roster_key = crate::services::live_roster::lock_key(team_id);
+    crate::utils::single_flight::acquire_transaction_advisory_lock_shared(transaction, &roster_key)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
+/// Acquire every outer grading fence before any participation/account row.
+/// Detector persistence owns the suspicion advisory before its audit rows, so
+/// keeping this sequence in one helper prevents future call-site drift.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn lock_submit_scope_at_grade(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
     expected_security_stamp: &str,
@@ -12,11 +25,39 @@ pub(super) async fn lock_submit_caller_at_grade(
     team_id: i32,
     participation_id: i32,
 ) -> AppResult<bool> {
-    let roster_key = crate::services::live_roster::lock_key(team_id);
-    crate::utils::single_flight::acquire_transaction_advisory_lock_shared(transaction, &roster_key)
+    lock_submit_roster_at_grade(transaction, team_id).await?;
+    crate::utils::single_flight::acquire_transaction_advisory_lock_shared(
+        transaction,
+        &crate::services::ad_engine::game_lock_key(game_id),
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    crate::services::suspicion::lock_participation_suspicion_writes(transaction, participation_id)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    lock_submit_caller_at_grade(
+        transaction,
+        user_id,
+        expected_security_stamp,
+        game_id,
+        team_id,
+        participation_id,
+    )
+    .await
+}
 
+/// Lock and revalidate the exact interactive caller after the grading
+/// transaction already owns its roster, game, and suspicion advisory fences.
+/// Cached participation context remains an early optimization; these rows are
+/// the authorization decision that survives through commit.
+async fn lock_submit_caller_at_grade(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    expected_security_stamp: &str,
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+) -> AppResult<bool> {
     let exact_link: Option<Uuid> = sqlx::query_scalar(
         r#"SELECT membership.user_id
               FROM "UserParticipations" membership

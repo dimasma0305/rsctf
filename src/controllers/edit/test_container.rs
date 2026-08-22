@@ -29,6 +29,19 @@ pub async fn create_test_container(
     Path((id, c_id)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<ContainerInfoModel>> {
     manager_or_admin(&st, &user, id).await?;
+
+    // Trusted repository imports may deliberately leave recoverable images
+    // queued until their first runtime demand. Materialize that image before
+    // retaining the provisioning/definition connections: Docker builds can be
+    // slow, and the build publication path needs the definition lock itself.
+    let candidate = load_challenge(&st, id, c_id).await?;
+    if !candidate.challenge_type.is_container() {
+        return Err(AppError::bad_request(
+            "Container creation is not allowed for this challenge",
+        ));
+    }
+    crate::controllers::game::prepare_queued_image(&st, &candidate).await?;
+
     let lock_key = format!("test-containers-game:{id}");
     let _local = crate::utils::single_flight::coalesce(&lock_key).await;
     let distributed =
@@ -38,6 +51,8 @@ pub async fn create_test_container(
         crate::services::challenge_workloads::acquire_definition_lock(st.pg(), id, c_id).await?;
     super::challenges::reject_pending_mutation(st.pg(), id, c_id).await?;
     let mut challenge = load_challenge(&st, id, c_id).await?;
+    // Revalidate the type after the build and definition-lock wait; an editor
+    // may have replaced the candidate while the slow image work was running.
     if !challenge.challenge_type.is_container() {
         return Err(AppError::bad_request(
             "Container creation is not allowed for this challenge",

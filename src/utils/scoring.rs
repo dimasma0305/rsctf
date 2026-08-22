@@ -16,6 +16,13 @@ use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 // exact `GameInstances` + `FlagContexts` pair.
 const JEOPARDY_FLAG_LOCK_NAMESPACE: i32 = 0x4a46_4c47;
 
+/// New jeopardy challenges start at 1,000 points and decay to a 10-point floor.
+/// The persisted model stores that floor as a rate rather than an absolute score.
+pub const DEFAULT_JEOPARDY_ORIGINAL_SCORE: i32 = 1_000;
+pub const DEFAULT_JEOPARDY_MIN_SCORE_POINTS: i32 = 10;
+pub const DEFAULT_JEOPARDY_MIN_SCORE_RATE: f64 =
+    DEFAULT_JEOPARDY_MIN_SCORE_POINTS as f64 / DEFAULT_JEOPARDY_ORIGINAL_SCORE as f64;
+
 /// Whether a public scoreboard is currently hiding post-freeze evidence.
 /// Event end is still an immutable evidence cutoff, but it is not a "frozen
 /// view": once the event ends the final public result is revealed.
@@ -111,7 +118,19 @@ pub fn validate_challenge_scoring(
 
 #[cfg(test)]
 mod tests {
-    use super::{public_scoreboard_frozen, validate_challenge_scoring};
+    use super::{
+        public_scoreboard_frozen, validate_challenge_scoring, DEFAULT_JEOPARDY_MIN_SCORE_POINTS,
+        DEFAULT_JEOPARDY_MIN_SCORE_RATE, DEFAULT_JEOPARDY_ORIGINAL_SCORE,
+    };
+
+    #[test]
+    fn default_jeopardy_floor_is_ten_points() {
+        assert_eq!(
+            (DEFAULT_JEOPARDY_ORIGINAL_SCORE as f64 * DEFAULT_JEOPARDY_MIN_SCORE_RATE).floor()
+                as i32,
+            DEFAULT_JEOPARDY_MIN_SCORE_POINTS
+        );
+    }
 
     #[test]
     fn valid_scoring_boundaries_are_accepted() {

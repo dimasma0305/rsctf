@@ -102,6 +102,28 @@ fn public_batches_are_single_manifest_and_quota_is_identity_scoped() {
     assert!(PENDING_CHALLENGE_COUNT_SQL.contains("review_status = $3"));
 }
 
+#[test]
+fn admin_test_container_materializes_lazy_image_before_holding_runtime_locks() {
+    let source = include_str!("../test_container.rs");
+    let start = source.find("pub async fn create_test_container").unwrap();
+    let end = source.find("pub async fn destroy_test_container").unwrap();
+    let create = &source[start..end];
+
+    let prepare = create
+        .find("crate::controllers::game::prepare_queued_image")
+        .expect("admin test start must prepare a queued lazy image");
+    let provisioning = create
+        .find("PgAdvisoryLock::acquire_provisioning")
+        .expect("admin test start must retain its provisioning fence");
+    let definition = create
+        .find("acquire_definition_lock")
+        .expect("admin test start must retain its definition fence");
+
+    assert!(prepare < provisioning);
+    assert!(prepare < definition);
+    assert!(create[definition..].contains("let mut challenge = load_challenge"));
+}
+
 #[cfg(unix)]
 #[test]
 fn repository_subpaths_reject_symlink_escapes() {

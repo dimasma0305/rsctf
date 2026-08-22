@@ -5,6 +5,16 @@ use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseTransaction, Statement};
 use crate::models::data::game_challenge;
 use crate::utils::enums::ScoreCurve;
 use crate::utils::error::{AppError, AppResult};
+use crate::utils::scoring::DEFAULT_JEOPARDY_MIN_SCORE_RATE;
+
+pub(super) fn normalize_min_score_rate(configured: Option<f64>) -> f64 {
+    let requested = configured.unwrap_or(DEFAULT_JEOPARDY_MIN_SCORE_RATE);
+    if requested.is_finite() {
+        requested.clamp(0.0, 1.0)
+    } else {
+        DEFAULT_JEOPARDY_MIN_SCORE_RATE
+    }
+}
 
 pub(super) struct GradingIntent<'a> {
     pub submission_limit: i32,
@@ -153,4 +163,23 @@ pub(super) async fn grading_fence_locked(
         protected,
         update_deferred,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_min_score_rate;
+    use crate::utils::scoring::DEFAULT_JEOPARDY_MIN_SCORE_RATE;
+
+    #[test]
+    fn omitted_or_non_finite_repository_floor_uses_ten_point_default() {
+        assert_eq!(
+            normalize_min_score_rate(None),
+            DEFAULT_JEOPARDY_MIN_SCORE_RATE
+        );
+        assert_eq!(
+            normalize_min_score_rate(Some(f64::NAN)),
+            DEFAULT_JEOPARDY_MIN_SCORE_RATE
+        );
+        assert_eq!(normalize_min_score_rate(Some(0.25)), 0.25);
+    }
 }

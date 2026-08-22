@@ -977,6 +977,7 @@ mod writeup;
 pub use cheat::*;
 pub use cheat_evidence::*;
 pub use combined_scoreboard::*;
+pub(crate) use containers::prepare_queued_image;
 pub use containers::*;
 use lookups::*;
 pub use play::*;

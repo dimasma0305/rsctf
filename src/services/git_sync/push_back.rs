@@ -15,6 +15,7 @@ use super::GitCredentials;
 use crate::models::data::game_challenge;
 use crate::utils::enums::{ChallengeVariantMode, NetworkMode, SolveReceiptMode};
 use crate::utils::error::{AppError, AppResult};
+use crate::utils::scoring::DEFAULT_JEOPARDY_MIN_SCORE_RATE;
 
 /// Serializable mirror of [`ChallengeYaml`](super::ChallengeYaml) used to
 /// REGENERATE a `challenge.yml` from the DB row (the inverse of
@@ -129,7 +130,8 @@ struct AdOut {
 /// `ChallengeYamlSerializer.Serialize`.
 ///
 /// Round-trip-safe: only NON-default fields are emitted (defaults match the
-/// importer — `minScoreRate 0.25`, `difficulty 5`, egress false, self-reset true), so
+/// importer — a 10-point minimum from the default 1,000, `difficulty 5`, egress
+/// false, self-reset true), so
 /// a freshly-imported challenge serializes back to a minimal file with no diff
 /// churn. Platform-managed state (build status/log, original score, archive path)
 /// is never written. An AUTO-BUILT image tag (`rsctf/<game>/…`, see the parent
@@ -190,7 +192,8 @@ fn serialize_challenge_inner(
         provide: provide
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
-        min_score_rate: (ch.min_score_rate != 0.25).then_some(ch.min_score_rate),
+        min_score_rate: (ch.min_score_rate != DEFAULT_JEOPARDY_MIN_SCORE_RATE)
+            .then_some(ch.min_score_rate),
         difficulty: (ch.difficulty != 5.0).then_some(ch.difficulty),
         submission_limit: (ch.submission_limit != 0).then_some(ch.submission_limit),
         disable_blood_bonus: ch.disable_blood_bonus.then_some(true),
@@ -389,7 +392,7 @@ pub async fn push_file(
 mod tests {
     use super::{
         is_auto_built_tag, is_managed_checker_revision, serialize_challenge,
-        serialize_challenge_preserving_source,
+        serialize_challenge_preserving_source, DEFAULT_JEOPARDY_MIN_SCORE_RATE,
     };
     use crate::models::data::game_challenge;
     use crate::services::git_sync::ChallengeYaml;
@@ -437,7 +440,7 @@ mod tests {
             enable_shared_container: false,
             disable_blood_bonus: false,
             original_score: 1000,
-            min_score_rate: 0.25,
+            min_score_rate: DEFAULT_JEOPARDY_MIN_SCORE_RATE,
             difficulty: 5.0,
             score_curve: ScoreCurve::Standard,
             shared_container_id: None,
@@ -522,7 +525,17 @@ mod tests {
         let container = parsed.container.expect("container block");
         assert_eq!(container.container_image, None);
         assert_eq!(container.network_mode, None);
+        assert_eq!(parsed.min_score_rate, None);
         assert!(parsed.ad.is_none());
+    }
+
+    #[test]
+    fn authored_non_default_minimum_score_rate_is_preserved() {
+        let mut challenge = challenge(ChallengeType::StaticAttachment);
+        challenge.min_score_rate = 0.25;
+
+        let parsed = parse(&serialize_challenge(&challenge, &[]).unwrap());
+        assert_eq!(parsed.min_score_rate, Some(0.25));
     }
 
     #[test]

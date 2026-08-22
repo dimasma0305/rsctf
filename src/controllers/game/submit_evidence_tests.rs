@@ -3,9 +3,122 @@ use std::str::FromStr;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use super::{
-    claim_first_solve, grade_dynamic_answer, lock_game_timing_at_grade,
-    lock_submit_caller_at_grade, AnswerResult, FINALIZE_SUBMISSION_SQL,
+    claim_first_solve, grade_dynamic_answer, lock_game_timing_at_grade, lock_submit_scope_at_grade,
+    AnswerResult, FINALIZE_SUBMISSION_SQL,
 };
+
+#[test]
+fn grading_takes_suspicion_advisory_before_participation_rows() {
+    let source = include_str!("submit_observations.rs");
+    let transaction = source
+        .split_once("pub(super) async fn lock_submit_scope_at_grade")
+        .expect("submit grading scope")
+        .1;
+    let roster = transaction
+        .find("lock_submit_roster_at_grade")
+        .expect("roster fence");
+    let suspicion = transaction
+        .find("lock_participation_suspicion_writes")
+        .expect("suspicion fence");
+    let row_revalidation = transaction
+        .find("lock_submit_caller_at_grade")
+        .expect("caller row revalidation");
+    assert!(roster < suspicion && suspicion < row_revalidation);
+}
+
+async fn seed_submit_scope_fixture(pool: &sqlx::PgPool) -> uuid::Uuid {
+    let captain = uuid::Uuid::from_u128(1);
+    let caller = uuid::Uuid::from_u128(2);
+    sqlx::raw_sql(
+        r#"
+        CREATE TABLE "AspNetUsers" (
+          id UUID PRIMARY KEY, role SMALLINT NOT NULL,
+          email_confirmed BOOLEAN NOT NULL, security_stamp TEXT
+        );
+        CREATE TABLE "Teams" (
+          id INTEGER PRIMARY KEY,
+          captain_id UUID NOT NULL,
+          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        CREATE TABLE "TeamMembers" (
+          team_id INTEGER NOT NULL,
+          user_id UUID NOT NULL,
+          PRIMARY KEY (team_id, user_id)
+        );
+        CREATE TABLE "Games" (
+          id INTEGER PRIMARY KEY, deletion_pending BOOLEAN NOT NULL,
+          start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
+        );
+        CREATE TABLE "Participations" (
+          id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL,
+          team_id INTEGER NOT NULL,
+          status SMALLINT NOT NULL
+        );
+        CREATE TABLE "UserParticipations" (
+          user_id UUID NOT NULL,
+          game_id INTEGER NOT NULL,
+          team_id INTEGER NOT NULL,
+          participation_id INTEGER NOT NULL,
+          PRIMARY KEY (user_id, game_id)
+        );
+        CREATE TABLE "IdentityObservations" (
+          user_id UUID NOT NULL, game_id INTEGER,
+          team_id INTEGER, participation_id INTEGER,
+          observed_at_utc TIMESTAMPTZ NOT NULL
+        );
+        CREATE TABLE "Submissions" (id INTEGER PRIMARY KEY);
+        CREATE TABLE "SuspicionEvaluationOutbox" (id BIGINT PRIMARY KEY);
+        "#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "AspNetUsers" (id, role, email_confirmed, security_stamp)
+           VALUES ($1, 1, TRUE, 'captain-stamp'), ($2, 1, TRUE, 'caller-stamp')"#,
+    )
+    .bind(captain)
+    .bind(caller)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO "Teams" (id, captain_id) VALUES (7, $1)"#)
+        .bind(captain)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "Games" VALUES
+           (11, FALSE, clock_timestamp() + interval '1 hour',
+            clock_timestamp() + interval '2 hours')"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES (7, $1)"#)
+        .bind(caller)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "Participations" (id, game_id, team_id, status)
+           VALUES (13, 11, 7, 1)"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "UserParticipations"
+             (user_id, game_id, team_id, participation_id)
+           VALUES ($1, 11, 7, 13)"#,
+    )
+    .bind(caller)
+    .execute(pool)
+    .await
+    .unwrap();
+    caller
+}
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
@@ -363,96 +476,7 @@ async fn committed_membership_removal_wins_over_a_queued_submit() {
         .connect_with(options)
         .await
         .unwrap();
-    let captain = uuid::Uuid::from_u128(1);
-    let caller = uuid::Uuid::from_u128(2);
-    sqlx::raw_sql(
-        r#"
-        CREATE TABLE "AspNetUsers" (
-          id UUID PRIMARY KEY, role SMALLINT NOT NULL,
-          email_confirmed BOOLEAN NOT NULL, security_stamp TEXT
-        );
-        CREATE TABLE "Teams" (
-          id INTEGER PRIMARY KEY,
-          captain_id UUID NOT NULL,
-          deletion_pending BOOLEAN NOT NULL DEFAULT FALSE
-        );
-        CREATE TABLE "TeamMembers" (
-          team_id INTEGER NOT NULL,
-          user_id UUID NOT NULL,
-          PRIMARY KEY (team_id, user_id)
-        );
-        CREATE TABLE "Games" (
-          id INTEGER PRIMARY KEY, deletion_pending BOOLEAN NOT NULL,
-          start_time_utc TIMESTAMPTZ NOT NULL, end_time_utc TIMESTAMPTZ NOT NULL
-        );
-        CREATE TABLE "Participations" (
-          id INTEGER PRIMARY KEY,
-          game_id INTEGER NOT NULL,
-          team_id INTEGER NOT NULL,
-          status SMALLINT NOT NULL
-        );
-        CREATE TABLE "UserParticipations" (
-          user_id UUID NOT NULL,
-          game_id INTEGER NOT NULL,
-          team_id INTEGER NOT NULL,
-          participation_id INTEGER NOT NULL,
-          PRIMARY KEY (user_id, game_id)
-        );
-        CREATE TABLE "IdentityObservations" (
-          user_id UUID NOT NULL, game_id INTEGER,
-          team_id INTEGER, participation_id INTEGER,
-          observed_at_utc TIMESTAMPTZ NOT NULL
-        );
-        CREATE TABLE "Submissions" (id INTEGER PRIMARY KEY);
-        CREATE TABLE "SuspicionEvaluationOutbox" (id BIGINT PRIMARY KEY);
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        r#"INSERT INTO "AspNetUsers" (id, role, email_confirmed, security_stamp)
-           VALUES ($1, 0, TRUE, 'captain-stamp'), ($2, 0, TRUE, 'caller-stamp')"#,
-    )
-    .bind(captain)
-    .bind(caller)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(r#"INSERT INTO "Teams" (id, captain_id) VALUES (7, $1)"#)
-        .bind(captain)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        r#"INSERT INTO "Games" VALUES
-           (11, FALSE, clock_timestamp() + interval '1 hour',
-            clock_timestamp() + interval '2 hours')"#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES (7, $1)"#)
-        .bind(caller)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        r#"INSERT INTO "Participations" (id, game_id, team_id, status)
-           VALUES (13, 11, 7, 1)"#,
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        r#"INSERT INTO "UserParticipations"
-             (user_id, game_id, team_id, participation_id)
-           VALUES ($1, 11, 7, 13)"#,
-    )
-    .bind(caller)
-    .execute(&pool)
-    .await
-    .unwrap();
+    let caller = seed_submit_scope_fixture(&pool).await;
 
     let mut removal = pool.begin().await.unwrap();
     crate::utils::single_flight::acquire_transaction_advisory_lock(&mut removal, "team-roster:7")
@@ -475,7 +499,7 @@ async fn committed_membership_removal_wins_over_a_queued_submit() {
         let mut transaction = submit_pool.begin().await.unwrap();
         started_tx.send(()).unwrap();
         let allowed =
-            lock_submit_caller_at_grade(&mut transaction, caller, "caller-stamp", 11, 7, 13)
+            lock_submit_scope_at_grade(&mut transaction, caller, "caller-stamp", 11, 7, 13)
                 .await
                 .unwrap();
         if allowed {
@@ -510,6 +534,94 @@ async fn committed_membership_removal_wins_over_a_queued_submit() {
     .await
     .unwrap();
     assert_eq!(durable_rows, (0, 0));
+
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn detector_can_lock_participation_while_submit_waits_on_suspicion_scope() {
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("rsctf_submit_detector_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let options = PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(3)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let caller = seed_submit_scope_fixture(&pool).await;
+
+    let mut detector = pool.begin().await.unwrap();
+    crate::services::suspicion::lock_participation_suspicion_writes(&mut detector, 13)
+        .await
+        .unwrap();
+    let detector_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *detector)
+        .await
+        .unwrap();
+
+    let submit_pool = pool.clone();
+    let detector_poll_pool = pool.clone();
+    let (submit_pid_tx, submit_pid_rx) = tokio::sync::oneshot::channel();
+    let queued_submit = async move {
+        let mut transaction = submit_pool.begin().await.unwrap();
+        let submit_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+        submit_pid_tx.send(submit_pid).unwrap();
+        let allowed =
+            lock_submit_scope_at_grade(&mut transaction, caller, "caller-stamp", 11, 7, 13)
+                .await
+                .unwrap();
+        transaction.commit().await.unwrap();
+        allowed
+    };
+    let finish_detector = async move {
+        let submit_pid = submit_pid_rx.await.unwrap();
+        let mut blocked_on_detector = false;
+        for _ in 0..100 {
+            blocked_on_detector =
+                sqlx::query_scalar::<_, bool>("SELECT $1 = ANY(pg_blocking_pids($2))")
+                    .bind(detector_pid)
+                    .bind(submit_pid)
+                    .fetch_one(&detector_poll_pool)
+                    .await
+                    .unwrap();
+            if blocked_on_detector {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(blocked_on_detector, "submit never reached suspicion fence");
+        sqlx::query(r#"SELECT id FROM "Participations" WHERE id = 13 FOR UPDATE"#)
+            .execute(&mut *detector)
+            .await
+            .expect("detector row lock must not deadlock with queued submit");
+        detector.commit().await.unwrap();
+    };
+    let (allowed, ()) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::join!(queued_submit, finish_detector)
+    })
+    .await
+    .expect("detector and submit complete without a lock cycle");
+    assert!(allowed);
 
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

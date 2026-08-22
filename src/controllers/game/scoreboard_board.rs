@@ -48,7 +48,7 @@ pub(crate) fn calculate_challenge_score(
     let min_rate = if min_rate.is_finite() {
         min_rate.clamp(0.0, 1.0)
     } else {
-        0.25
+        crate::utils::scoring::DEFAULT_JEOPARDY_MIN_SCORE_RATE
     };
     let difficulty = if difficulty.is_finite() && difficulty > 0.0 {
         difficulty
