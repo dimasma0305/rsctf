@@ -41,3 +41,13 @@ fn explicit_local_image_adoption_requires_one_shared_docker_daemon() {
     )
     .is_err());
 }
+
+#[test]
+fn build_log_caps_advance_past_multibyte_utf8_boundaries() {
+    let log = format!("■{}", "x".repeat(16 * 1024 - 2));
+    let capped = cap_build_log(log).expect("non-empty build log is retained");
+
+    assert!(capped.starts_with("…(truncated)…\n"));
+    assert!(capped.ends_with('x'));
+    assert!(!capped.contains('■'));
+}
