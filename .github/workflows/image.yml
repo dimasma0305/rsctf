@@ -353,12 +353,31 @@ jobs:
 
           server_index="$(docker buildx imagetools inspect --raw "$server_ref")"
           while IFS= read -r digest; do
-            embedded="$(
+            config="$(
               docker buildx imagetools inspect "${SERVER_IMAGE}@${digest}" \
-                --format '{{ index .Image.Config.Labels "org.opencontainers.image.rsctf.byoc-agent" }}'
+                --format '{{ json .Image.Config }}'
             )"
+            embedded="$(jq -er '.Labels["org.opencontainers.image.rsctf.byoc-agent"]' <<< "$config")"
             if [[ "$embedded" != "$agent_ref" ]]; then
               echo "::error::Server platform ${digest} embeds '${embedded}', expected '${agent_ref}'."
+              exit 1
+            fi
+            runtime_agent="$(
+              jq -er '.Env[]
+                | select(startswith("RSCTF_DEFAULT_BYOC_AGENT_IMAGE="))
+                | sub("^RSCTF_DEFAULT_BYOC_AGENT_IMAGE="; "")' <<< "$config"
+            )"
+            if [[ "$runtime_agent" != "$agent_ref" ]]; then
+              echo "::error::Server platform ${digest} configures runtime companion '${runtime_agent}', expected '${agent_ref}'."
+              exit 1
+            fi
+            runtime_multiarch="$(
+              jq -er '.Env[]
+                | select(startswith("RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="))
+                | sub("^RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="; "")' <<< "$config"
+            )"
+            if [[ "$runtime_multiarch" != "true" ]]; then
+              echo "::error::Server platform ${digest} does not mark its companion image as multi-architecture."
               exit 1
             fi
           done < <(

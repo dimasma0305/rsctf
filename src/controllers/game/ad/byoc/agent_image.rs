@@ -1,17 +1,24 @@
 //! Immutable BYOC agent image selection.
 
-/// Official server images compile in the agent digest built by the same
-/// workflow. A direct source build has no safe fallback: silently emitting an
-/// older digest would pair an ACK-requiring server with an ACK-less agent.
-pub(super) fn default_byoc_agent_image() -> Option<(&'static str, bool)> {
-    let image = option_env!("RSCTF_DEFAULT_BYOC_AGENT_IMAGE")
-        .unwrap_or("")
-        .trim();
+/// Official server images receive the agent digest built by the same workflow
+/// as immutable runtime metadata. Keeping it out of Rust compilation lets an
+/// identical source tree reuse the expensive release-build layer when only the
+/// companion image digest changes.
+pub(super) fn default_byoc_agent_image() -> Option<(String, bool)> {
+    let configured = std::env::var("RSCTF_DEFAULT_BYOC_AGENT_IMAGE").ok();
+    let multiarch = std::env::var("RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH").ok();
+    default_byoc_agent_image_from(configured.as_deref(), multiarch.as_deref())
+}
+
+pub(super) fn default_byoc_agent_image_from(
+    configured: Option<&str>,
+    multiarch: Option<&str>,
+) -> Option<(String, bool)> {
+    let image = configured?.trim();
     if image.is_empty() {
         return None;
     }
-    let multiarch = option_env!("RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH") == Some("true");
-    Some((image, !multiarch))
+    Some((image.to_owned(), multiarch != Some("true")))
 }
 
 pub(super) fn immutable_agent_image(value: &str) -> Option<String> {

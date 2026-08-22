@@ -58,13 +58,6 @@ jobs:
             fi
           done <<< "$releases"
 
-  verify:
-    name: Verify release commit
-    needs: [validate-release-state]
-    uses: ./.github/workflows/ci.yml
-    permissions:
-      contents: read
-
   build-linux:
     name: Build ${{ matrix.name }} (static)
     needs: [validate-release-state]
@@ -182,8 +175,12 @@ jobs:
           retention-days: 7
 
   publish:
+    # The pinned server image resolved below is accepted only with an image.yml
+    # attestation for this exact main commit. finalize-main creates that
+    # attestation only after the reusable CI suite succeeds, so rerunning the
+    # same suite on the tag adds latency without adding a distinct trust gate.
     name: Publish verified rsctf release assets
-    needs: [verify, build-linux, build-windows]
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 250
     permissions:
