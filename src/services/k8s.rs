@@ -333,6 +333,10 @@ impl ContainerManager for KubernetesContainerManager {
         ContainerBackendKind::Kubernetes
     }
 
+    async fn storage_quota_enforced(&self) -> Option<bool> {
+        Some(true)
+    }
+
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo> {
         crate::services::container::validate_container_spec(&spec)?;
         if !crate::services::challenge_images::is_repository_digest(&spec.image) {

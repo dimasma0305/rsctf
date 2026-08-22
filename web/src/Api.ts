@@ -1815,6 +1815,8 @@ export interface ChallengeEditDetailModel {
    * @format int32
    */
   storageLimit?: number | null;
+  /** Whether the active container backend enforces the configured writable-layer storage limit. */
+  storageQuotaEnforced?: boolean | null;
   /**
    * Container exposed port
    * @format int32

@@ -14,6 +14,9 @@ use super::{
 use crate::utils::error::{AppError, AppResult};
 
 pub(super) const LAUNCH_SPEC_LABEL: &str = "rsctf.launch-spec";
+pub(super) const STORAGE_QUOTA_LABEL: &str = "rsctf.storage-quota";
+const STORAGE_QUOTA_ENFORCED: &str = "enforced";
+const STORAGE_QUOTA_FALLBACK: &str = "unbounded-fallback";
 /// Organizer-controlled image opt-in for workloads that are known to work
 /// with an immutable root filesystem and no Linux capabilities. Keeping this
 /// explicit preserves pwn/KotH images whose intended gameplay needs setuid or
@@ -26,7 +29,6 @@ pub(super) const RESTRICTED_TMPFS_OPTIONS: &str = "rw,nosuid,nodev,noexec,size=2
 const COMPETITIVE_EGRESS_ERROR: &str =
     "Docker does not safely support allowEgress=true for A&D or KotH workloads; \
      set allowEgress=false or use the Kubernetes backend with per-workload NetworkPolicy isolation";
-const DEV_UNBOUNDED_STORAGE_ENV: &str = "RSCTF_DEV_ALLOW_UNBOUNDED_CONTAINER_STORAGE";
 const MAX_CONCURRENT_SNAPSHOT_EXPORTS: usize = 1;
 pub(super) const MAX_SNAPSHOT_EXPORT_BYTES: usize = 512 * 1024 * 1024;
 pub(super) const SNAPSHOT_EXPORT_MAX_DURATION: std::time::Duration =
@@ -61,18 +63,6 @@ pub(super) fn append_snapshot_chunk(
         .map_err(|_| AppError::internal("failed to reserve snapshot export buffer"))?;
     out.extend_from_slice(chunk);
     Ok(())
-}
-
-pub(super) fn development_unbounded_storage() -> AppResult<bool> {
-    let requested = std::env::var(DEV_UNBOUNDED_STORAGE_ENV)
-        .ok()
-        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
-    if requested && !cfg!(debug_assertions) {
-        return Err(AppError::internal(format!(
-            "{DEV_UNBOUNDED_STORAGE_ENV}=true is available only in debug builds"
-        )));
-    }
-    Ok(requested)
 }
 
 pub(super) fn validate_docker_container_spec(spec: &ContainerSpec) -> AppResult<()> {
@@ -276,22 +266,45 @@ pub(super) fn writable_layer_storage_opt(
 }
 
 pub(super) fn writable_layer_storage_option(
-    info: &SystemInfo,
-    allow_unbounded: bool,
+    enforced: bool,
     storage_limit: i32,
-) -> AppResult<Option<std::collections::HashMap<String, String>>> {
-    if writable_layer_quota_supported(info) {
-        return Ok(Some(writable_layer_storage_opt(storage_limit)));
-    }
-    if !allow_unbounded {
-        return Err(AppError::unavailable(
-            "Docker writable-layer quotas require btrfs, devicemapper, zfs, windowsfilter, or overlay2 on XFS with project quotas",
-        ));
-    }
-    tracing::warn!(
-        "Docker writable-layer quotas are unavailable; unbounded storage was explicitly allowed for this debug build"
+) -> Option<std::collections::HashMap<String, String>> {
+    enforced.then(|| writable_layer_storage_opt(storage_limit))
+}
+
+pub(super) fn stamp_storage_quota_policy(
+    labels: &mut std::collections::HashMap<String, String>,
+    enforced: bool,
+) {
+    labels.insert(
+        STORAGE_QUOTA_LABEL.to_string(),
+        if enforced {
+            STORAGE_QUOTA_ENFORCED
+        } else {
+            STORAGE_QUOTA_FALLBACK
+        }
+        .to_string(),
     );
-    Ok(None)
+}
+
+pub(super) fn storage_quota_policy_matches(
+    container: &ContainerInspectResponse,
+    enforced: bool,
+) -> bool {
+    let expected = if enforced {
+        STORAGE_QUOTA_ENFORCED
+    } else {
+        STORAGE_QUOTA_FALLBACK
+    };
+    // Before this label existed, Docker creation failed closed unless a quota
+    // was enforced. Those legacy containers are safe to adopt only when the
+    // current daemon also enforces the limit.
+    container
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+        .and_then(|labels| labels.get(STORAGE_QUOTA_LABEL))
+        .map_or(enforced, |actual| actual == expected)
 }
 
 /// Hash every launch-affecting caller input into a non-secret identity label.

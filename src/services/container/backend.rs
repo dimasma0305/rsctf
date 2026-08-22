@@ -92,6 +92,12 @@ pub trait ContainerManager: Send + Sync {
         self.backend_kind() == ContainerBackendKind::Worker
     }
 
+    /// Whether this backend can enforce the configured writable-layer storage
+    /// limit. `None` means the backend cannot report the capability.
+    async fn storage_quota_enforced(&self) -> Option<bool> {
+        None
+    }
+
     async fn create(&self, spec: ContainerSpec) -> AppResult<ContainerInfo>;
 
     async fn create_workload(

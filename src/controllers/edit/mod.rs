@@ -309,6 +309,9 @@ pub struct ChallengeEditDetailModel {
     pub container_image: Option<String>,
     pub memory_limit: Option<i32>,
     pub storage_limit: Option<i32>,
+    /// Runtime capability of the active container backend. `None` means the
+    /// backend cannot report whether it enforces writable-layer quotas.
+    pub storage_quota_enforced: Option<bool>,
     #[serde(rename = "cpuCount")]
     pub cpu_count: Option<i32>,
     pub expose_port: Option<i32>,
@@ -399,6 +402,7 @@ impl ChallengeEditDetailModel {
         let workload_identity = crate::services::challenge_workloads::from_challenge(c)?
             .map(|spec| crate::services::challenge_workloads::workload_identity(&spec))
             .transpose()?;
+        let storage_quota_enforced = st.containers.storage_quota_enforced().await;
         Ok(Self {
             id: c.id,
             title: c.title.clone(),
@@ -414,6 +418,7 @@ impl ChallengeEditDetailModel {
             container_image: c.container_image.clone(),
             memory_limit: c.memory_limit,
             storage_limit: c.storage_limit,
+            storage_quota_enforced,
             cpu_count: c.cpu_count,
             expose_port: c.expose_port,
             workload_spec: c.workload_spec.clone(),
