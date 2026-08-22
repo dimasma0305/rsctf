@@ -121,6 +121,9 @@ export interface ChallengeModalProps extends ModalProps {
   /** True while a flag submission is in-flight (network or server-side
    *  check) — renders a spinner inside the submit button. */
   submitting?: boolean
+  /** Route the instance through the administrator test-container proxy while
+   * keeping the player-facing lifecycle controls available in the preview. */
+  testInstance?: boolean
   gameTitle?: string
   gameEnded?: boolean
   practiceMode?: boolean
@@ -129,7 +132,7 @@ export interface ChallengeModalProps extends ModalProps {
   receiptProof: string
   setReceiptProof: (value: string | React.ChangeEvent<any> | null | undefined) => void
   onCreate: () => void
-  onExtend: () => void
+  onExtend?: () => void
   onDestroy: () => void
   onSubmitFlag: () => void
   onDownload?: () => void
@@ -152,6 +155,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     justSolved,
     disabled,
     submitting,
+    testInstance,
     gameTitle,
     gameEnded,
     practiceMode,
@@ -477,6 +481,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
 
   const instance = withInstance && (
     <InstanceEntry
+      test={testInstance}
+      lifecycleControls={testInstance}
       label={`${challenge.title} @ ${gameTitle}`}
       context={challenge.context!}
       onCreate={onCreate}
@@ -671,8 +677,11 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
                   <Textarea
                     label={t('challenge.label.solve_receipt', 'Trusted solve receipt')}
                     description={t('challenge.content.solve_receipt', {
-                      defaultValue: 'One-use proof from {{issuer}}. It is bound to this answer and expires after 10 minutes.',
-                      issuer: challenge?.receiptVerifierIdentity ?? t('common.label.not_available', 'the configured verifier'),
+                      defaultValue:
+                        'One-use proof from {{issuer}}. It is bound to this answer and expires after 10 minutes.',
+                      issuer:
+                        challenge?.receiptVerifierIdentity ??
+                        t('common.label.not_available', 'the configured verifier'),
                     })}
                     required={challenge?.solveReceiptMode === SolveReceiptMode.Required}
                     minRows={2}
