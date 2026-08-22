@@ -109,7 +109,10 @@ pub(crate) use repository::{manifest_candidate_in_checkout, tombstone_missing_ch
 mod runtime;
 use runtime::{live_runtime_update_deferred, LiveRuntimeIntent};
 mod grading;
-use grading::{competition_scoring_started_locked, grading_fence_locked, GradingIntent};
+use grading::{
+    competition_scoring_started_locked, grading_fence_locked, normalize_min_score_rate,
+    GradingIntent,
+};
 mod policy;
 pub use policy::ImportPolicy;
 use policy::{initialize_new_import_review, validate_pending_manifest, MAX_PENDING_MANIFEST_BYTES};
@@ -373,13 +376,8 @@ pub async fn import_manifest(
 
     // Scoring: clamp to the same bounds the API PUT enforces so an out-of-range
     // manifest can't invert the dynamic-score decay curve. Defaults match the
-    // GameChallenge entity init (0.25 / 5).
-    let requested_min_score_rate = model.min_score_rate.unwrap_or(0.25);
-    let min_score_rate = if requested_min_score_rate.is_finite() {
-        requested_min_score_rate.clamp(0.0, 1.0)
-    } else {
-        0.25
-    };
+    // GameChallenge entity init (10 points from the default 1,000 / difficulty 5).
+    let min_score_rate = normalize_min_score_rate(model.min_score_rate);
     let requested_difficulty = model.difficulty.unwrap_or(5.0);
     let difficulty = if requested_difficulty.is_finite() && requested_difficulty > 0.0 {
         requested_difficulty
@@ -798,7 +796,7 @@ pub async fn import_manifest(
     let grading_intent = GradingIntent {
         submission_limit,
         disable_blood_bonus,
-        original_score: 1000,
+        original_score: crate::utils::scoring::DEFAULT_JEOPARDY_ORIGINAL_SCORE,
         min_score_rate,
         difficulty,
         score_curve: ScoreCurve::Standard,
@@ -833,7 +831,7 @@ pub async fn import_manifest(
         if !grading_fence.protected {
             am.submission_limit = Set(submission_limit);
             am.disable_blood_bonus = Set(disable_blood_bonus);
-            am.original_score = Set(1000);
+            am.original_score = Set(crate::utils::scoring::DEFAULT_JEOPARDY_ORIGINAL_SCORE);
             am.min_score_rate = Set(min_score_rate);
             am.difficulty = Set(difficulty);
             am.score_curve = Set(ScoreCurve::Standard);

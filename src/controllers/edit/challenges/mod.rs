@@ -110,8 +110,8 @@ pub async fn add_challenge(
         submission_count: Set(0),
         review_status: Set(ChallengeReviewStatus::Active),
         build_status: Set(ChallengeBuildStatus::None),
-        original_score: Set(1000),
-        min_score_rate: Set(0.25),
+        original_score: Set(crate::utils::scoring::DEFAULT_JEOPARDY_ORIGINAL_SCORE),
+        min_score_rate: Set(crate::utils::scoring::DEFAULT_JEOPARDY_MIN_SCORE_RATE),
         difficulty: Set(5.0),
         score_curve: Set(ScoreCurve::Standard),
         // RSCTF `Challenge.NetworkMode` defaults to `Open`.

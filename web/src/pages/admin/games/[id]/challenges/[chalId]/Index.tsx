@@ -71,6 +71,7 @@ const WORKLOAD_SPEC_SECTION_HELP_ID = 'challenge-workload-spec-section-help'
 const WORKLOAD_SPEC_EDITOR_HELP_ID = 'challenge-workload-spec-editor-help'
 const WORKLOAD_SPEC_ERROR_ID = 'challenge-workload-spec-error'
 const WORKLOAD_SPEC_ROLLOUT_HELP_ID = 'challenge-workload-spec-rollout-help'
+const DEFAULT_JEOPARDY_MIN_SCORE_RATE = 0.01
 
 /**
  * Inline live build-log surface for the challenge edit page.
@@ -140,7 +141,9 @@ const GameChallengeEdit: FC = () => {
 
   const [disabled, setDisabled] = useState(false)
 
-  const [minRate, setMinRate] = useState((challenge?.minScoreRate ?? 0.25) * 100)
+  const [minRate, setMinRate] = useState(
+    (challenge?.minScoreRate ?? DEFAULT_JEOPARDY_MIN_SCORE_RATE) * 100
+  )
   const [category, setCategory] = useState<string | null>(challenge?.category ?? ChallengeCategory.Misc)
   const [networkMode, setNetworkMode] = useState<string | null>(challenge?.networkMode ?? NetworkMode.Open)
   const [type, setType] = useState<string | null>(challenge?.type ?? ChallengeType.StaticAttachment)
@@ -207,7 +210,7 @@ const GameChallengeEdit: FC = () => {
       // reserves a missing property for "preserve" and null for "clear".
       delete info.workloadSpec
       const dl = challenge.deadlineUtc ? dayjs(challenge.deadlineUtc) : null
-      const mr = (challenge?.minScoreRate ?? 0.25) * 100
+      const mr = (challenge?.minScoreRate ?? DEFAULT_JEOPARDY_MIN_SCORE_RATE) * 100
       setChallengeInfo(info)
       setCategory(challenge.category)
       setType(challenge.type)
