@@ -31,10 +31,10 @@ fn runtime_image_repair_plan(
     }
 }
 
-/// Build an eligible queued image on the first player start. The detached
+/// Build an eligible queued image on the first runtime demand. The detached
 /// single-flight leader keeps building if the initiating HTTP request times
 /// out, while the PostgreSQL image lock collapses leaders across replicas.
-pub(super) async fn prepare_queued_image(
+pub(crate) async fn prepare_queued_image(
     st: &SharedState,
     challenge: &game_challenge::Model,
 ) -> AppResult<bool> {
