@@ -56,6 +56,7 @@ import { useUser } from '@Hooks/useUser'
 import api, { EventVpnOverrideModel, GameInfoModel, Role } from '@Api'
 import classes from '@Styles/AdminGameInfo.module.css'
 import misc from '@Styles/Misc.module.css'
+import { buildGameInfoUpdatePayload, gameInfoDraftChanged } from './gameInfoDraft'
 
 dayjs.extend(localizedFormat)
 
@@ -126,7 +127,34 @@ const GameInfoEdit: FC = () => {
       game.vpnDeviceSharingTelemetryEnabled !== gameSource.vpnDeviceSharingTelemetryEnabled)
   const vpnPolicyReasonInvalid =
     vpnPolicyChanged &&
-    !((game?.vpnPolicyChangeReason?.trim().length ?? 0) >= 8 && (game?.vpnPolicyChangeReason?.trim().length ?? 0) <= 512)
+    !(
+      (game?.vpnPolicyChangeReason?.trim().length ?? 0) >= 8 && (game?.vpnPolicyChangeReason?.trim().length ?? 0) <= 512
+    )
+  const updatePayload = game
+    ? buildGameInfoUpdatePayload(
+        game,
+        {
+          start: start.valueOf(),
+          end: end.valueOf(),
+          freeze: freeze ? freeze.valueOf() : null,
+          writeupDeadline: end.add(wpddl, 'h').valueOf(),
+        },
+        vpnPolicyChanged
+      )
+    : undefined
+  const savedPayload = gameSource
+    ? buildGameInfoUpdatePayload(
+        gameSource,
+        {
+          start: gameSource.start,
+          end: gameSource.end,
+          freeze: gameSource.freeze ?? null,
+          writeupDeadline: gameSource.writeupDeadline ?? gameSource.end,
+        },
+        false
+      )
+    : undefined
+  const dirty = !!updatePayload && !!savedPayload && gameInfoDraftChanged(updatePayload, savedPayload)
 
   useEffect(() => {
     if (numId < 0) {
@@ -209,6 +237,7 @@ const GameInfoEdit: FC = () => {
   }
 
   const onUpdateInfo = async () => {
+    if (!dirty || !updatePayload) return
     if (!game?.title) {
       showNotification({
         color: 'orange',
@@ -244,20 +273,13 @@ const GameInfoEdit: FC = () => {
     setDisabled(true)
 
     try {
-      await api.edit.editUpdateGame(game.id!, {
-        ...game,
-        inviteCode: (game.inviteCode?.length ?? 0) > 6 ? game.inviteCode : null,
-        start: start.valueOf(),
-        end: end.valueOf(),
-        freeze: freeze ? freeze.valueOf() : null,
-        writeupDeadline: end.add(wpddl, 'h').valueOf(),
-      })
+      await api.edit.editUpdateGame(game.id!, updatePayload)
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.info.info_updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      mutate()
+      await mutate()
       api.game.mutateGameGames()
     } catch (e) {
       showErrorMsg(e, t)
@@ -339,7 +361,13 @@ const GameInfoEdit: FC = () => {
     if (!game?.id) return
     const reason = overrideReason.trim()
     const durationMinutes = Number(overrideMinutes)
-    if (reason.length < 8 || reason.length > 512 || !Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 60) {
+    if (
+      reason.length < 8 ||
+      reason.length > 512 ||
+      !Number.isInteger(durationMinutes) ||
+      durationMinutes < 1 ||
+      durationMinutes > 60
+    ) {
       showNotification({
         color: 'orange',
         message: t(
@@ -1030,9 +1058,7 @@ const GameInfoEdit: FC = () => {
                     'admin.event_security.flag_scan_description',
                     'Matches only real platform-issued flags in bounded memory and persists an HMAC, never the flag text.'
                   )}
-                  onChange={(event) =>
-                    game && setGame({ ...game, vpnFlagScanEnabled: event.currentTarget.checked })
-                  }
+                  onChange={(event) => game && setGame({ ...game, vpnFlagScanEnabled: event.currentTarget.checked })}
                 />
                 <Switch
                   disabled={disabled || !game?.vpnAccessRequired}
@@ -1082,9 +1108,7 @@ const GameInfoEdit: FC = () => {
                     'Required for the append-only policy audit (8–512 characters).'
                   )}
                   value={game?.vpnPolicyChangeReason ?? ''}
-                  onChange={(event) =>
-                    game && setGame({ ...game, vpnPolicyChangeReason: event.currentTarget.value })
-                  }
+                  onChange={(event) => game && setGame({ ...game, vpnPolicyChangeReason: event.currentTarget.value })}
                 />
               )}
               <Paper withBorder p="md" radius="md">
@@ -1155,30 +1179,32 @@ const GameInfoEdit: FC = () => {
                     >
                       {t('admin.event_security.create_override', 'Create temporary VPN bypass')}
                     </Button>
-                    {vpnOverrides.filter((item) => item.active).map((item) => (
-                      <Group key={item.id} justify="space-between" align="flex-start" wrap="wrap">
-                        <Stack gap={0} style={{ flex: '1 1 20rem' }}>
-                          <Text size="sm" fw={600}>
-                            {t('admin.event_security.active_override', 'Active until {{time}}', {
-                              time: dayjs(item.expiresAtUtc).format('L LT'),
-                            })}
-                          </Text>
-                          <Text size="xs" c="dimmed">
-                            {item.reason}
-                          </Text>
-                        </Stack>
-                        <Button
-                          size="xs"
-                          color="red"
-                          variant="outline"
-                          loading={eventSecurityAction === `revoke:${item.id}`}
-                          disabled={disabled || eventSecurityAction !== null}
-                          onClick={() => onRevokeVpnOverride(item.id)}
-                        >
-                          {t('admin.event_security.revoke_override', 'Revoke bypass')}
-                        </Button>
-                      </Group>
-                    ))}
+                    {vpnOverrides
+                      .filter((item) => item.active)
+                      .map((item) => (
+                        <Group key={item.id} justify="space-between" align="flex-start" wrap="wrap">
+                          <Stack gap={0} style={{ flex: '1 1 20rem' }}>
+                            <Text size="sm" fw={600}>
+                              {t('admin.event_security.active_override', 'Active until {{time}}', {
+                                time: dayjs(item.expiresAtUtc).format('L LT'),
+                              })}
+                            </Text>
+                            <Text size="xs" c="dimmed">
+                              {item.reason}
+                            </Text>
+                          </Stack>
+                          <Button
+                            size="xs"
+                            color="red"
+                            variant="outline"
+                            loading={eventSecurityAction === `revoke:${item.id}`}
+                            disabled={disabled || eventSecurityAction !== null}
+                            onClick={() => onRevokeVpnOverride(item.id)}
+                          >
+                            {t('admin.event_security.revoke_override', 'Revoke bypass')}
+                          </Button>
+                        </Group>
+                      ))}
                   </Stack>
                 </Paper>
               )}
@@ -1301,16 +1327,25 @@ const GameInfoEdit: FC = () => {
         <Paper shadow="md" radius="md" p="sm" withBorder className={classes.saveBar}>
           <Group gap="md" align="center">
             <Group gap={6}>
-              <Box w={8} h={8} style={{ borderRadius: '50%', background: 'var(--mantine-color-teal-5)' }} />
+              <Box
+                w={8}
+                h={8}
+                style={{
+                  borderRadius: '50%',
+                  background: dirty ? 'var(--mantine-color-orange-5)' : 'var(--mantine-color-teal-5)',
+                }}
+              />
               <Text size="sm" c="dimmed">
-                {t('admin.content.games.info.save_hint', 'Save changes')}
+                {dirty
+                  ? t('admin.content.settings.save_bar.unsaved', 'Unsaved changes')
+                  : t('admin.content.settings.save_bar.saved', 'All changes saved')}
               </Text>
             </Group>
             <Button
               size="md"
               variant="filled"
               leftSection={<Icon path={disabled ? mdiDotsHorizontal : mdiContentSaveOutline} size={0.9} />}
-              disabled={disabled || timeRangeInvalid || vpnPolicyReasonInvalid}
+              disabled={disabled || !dirty || timeRangeInvalid || vpnPolicyReasonInvalid}
               onClick={onUpdateInfo}
             >
               {t('admin.button.save')}

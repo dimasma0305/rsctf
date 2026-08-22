@@ -1,8 +1,8 @@
 use sea_orm::ActiveValue::Set;
 
 use super::{
-    apply_ad_creation_settings, apply_clone_challenge_defaults, validate_scoring_transition,
-    validate_start_time_transition, GameInfoModel,
+    apply_ad_creation_settings, apply_clone_challenge_defaults, validate_schedule_transition,
+    validate_scoring_transition, GameInfoModel,
 };
 
 #[test]
@@ -212,7 +212,7 @@ fn game_info_rejects_out_of_range_epoch_timing() {
 }
 
 #[test]
-fn game_window_requires_positive_duration_and_live_start_is_immutable() {
+fn game_window_requires_positive_duration_and_idle_started_event_is_reschedulable() {
     let start = chrono::Utc::now();
     let mut model: GameInfoModel = serde_json::from_value(serde_json::json!({
         "start": start.timestamp_millis(),
@@ -223,11 +223,71 @@ fn game_window_requires_positive_duration_and_live_start_is_immutable() {
     model.end_time_utc = start + chrono::Duration::seconds(1);
     assert!(model.validate().is_ok());
 
-    assert!(validate_start_time_transition(start, start, true).is_ok());
-    assert!(
-        validate_start_time_transition(start, start + chrono::Duration::seconds(1), true).is_err()
-    );
-    assert!(
-        validate_start_time_transition(start, start + chrono::Duration::seconds(1), false).is_ok()
-    );
+    let later_start = start + chrono::Duration::hours(1);
+    let later_end = start + chrono::Duration::hours(2);
+    assert!(validate_schedule_transition(
+        start,
+        later_start,
+        later_start,
+        later_end,
+        false,
+        false,
+        false,
+    )
+    .is_ok());
+}
+
+#[test]
+fn schedule_preserves_recorded_activity_but_allows_end_extension() {
+    let start = chrono::Utc::now();
+    let end = start + chrono::Duration::hours(1);
+
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start + chrono::Duration::minutes(1),
+        end,
+        true,
+        false,
+        false,
+    )
+    .is_err());
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start,
+        end - chrono::Duration::minutes(1),
+        true,
+        false,
+        false,
+    )
+    .is_err());
+    assert!(validate_schedule_transition(
+        start,
+        end,
+        start,
+        end + chrono::Duration::minutes(1),
+        true,
+        false,
+        false,
+    )
+    .is_ok());
+}
+
+#[test]
+fn finalized_or_koth_snapshotted_schedule_is_immutable() {
+    let start = chrono::Utc::now();
+    let end = start + chrono::Duration::hours(1);
+    for (evidence_closed, koth_snapshotted) in [(true, false), (false, true)] {
+        assert!(validate_schedule_transition(
+            start,
+            end,
+            start,
+            end + chrono::Duration::minutes(1),
+            false,
+            evidence_closed,
+            koth_snapshotted,
+        )
+        .is_err());
+    }
 }
