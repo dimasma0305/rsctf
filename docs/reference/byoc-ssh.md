@@ -63,13 +63,13 @@ server does not accept an old ACK-less agent. Roll out in this exact order:
    producing ambiguous delivery evidence. Regenerate its team's bundle with the
    current agent digest.
 
-Official server images receive the matching digest through the image workflow's
-`RSCTF_DEFAULT_BYOC_AGENT_IMAGE` build argument. A direct source/local server
-build intentionally has no baked-in fallback. Set
+Official server images receive the matching digest through immutable runtime
+metadata set by the image workflow. Keeping that value out of Rust compilation
+allows the release-build layer to be reused when only the companion digest
+changes. A direct source/local server build intentionally has no fallback. Set
 `RSCTF_AD_BYOC_AGENT_IMAGE=registry.example/rsctf-byoc-agent@sha256:<digest>` at
-runtime or compile with the same immutable build argument; otherwise the BYOC
-setup/Compose endpoints fail closed instead of emitting an older incompatible
-agent.
+runtime; otherwise the BYOC setup/Compose endpoints fail closed instead of
+emitting an older incompatible agent.
 
 The exec stream uses:
 

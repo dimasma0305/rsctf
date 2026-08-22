@@ -1,8 +1,6 @@
 name: Continuous integration
 
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
   workflow_call:
@@ -750,12 +748,16 @@ jobs:
 
           server = File.read("Dockerfile")
           builder_cook = server.index("cargo chef cook --release --locked --recipe-path recipe.json")
-          builder_arg = server.index("ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE", builder_cook)
           runtime = server.index("FROM debian:bookworm-slim")
           runtime_packages = server.index("apt-get install", runtime)
           runtime_arg = server.index("ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE", runtime)
-          abort "server dependency cook must not depend on the changing agent digest" unless builder_arg && builder_arg > builder_cook
+          runtime_multiarch_arg = server.index("ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH", runtime)
+          runtime_env = server.index("ENV RSCTF_DEFAULT_BYOC_AGENT_IMAGE=", runtime)
+          builder = server[builder_cook...runtime]
+          abort "server compilation must not depend on the changing agent digest" if builder.include?("RSCTF_DEFAULT_BYOC_AGENT")
           abort "runtime package layer must not depend on the changing agent digest" unless runtime_arg && runtime_arg > runtime_packages
+          abort "runtime image must retain companion multiarch metadata" unless runtime_multiarch_arg && runtime_multiarch_arg > runtime_packages
+          abort "runtime image must expose the immutable companion metadata" unless runtime_env && runtime_env > runtime_arg
           RUBY
 
       - name: Validate publication critical-path gates
@@ -769,8 +771,14 @@ jobs:
           abort "server build must overlap quality checks" unless image_jobs.fetch("build-server").fetch("needs") == ["prepare", "build-agent"]
           abort "image publication must remain quality-gated" unless image_jobs.fetch("finalize-main").fetch("needs") == ["prepare", "quality", "build-agent", "build-server"]
 
+          ci_source = File.read(".github/workflows/ci.yml")
+          abort "standalone CI must not duplicate the reusable main-image quality gate" if ci_source.match?(/^  push:\s*$/)
+          abort "CI must remain available to pull requests" unless ci_source.match?(/^  pull_request:\s*$/)
+          abort "CI must remain reusable by the image workflow" unless ci_source.match?(/^  workflow_call:\s*$/)
+
           release_jobs = YAML.load_file(".github/workflows/worker-agent-release.yml", aliases: true).fetch("jobs")
-          abort "Linux release builds must overlap verification" unless release_jobs.fetch("build-linux").fetch("needs") == ["validate-release-state"]
-          abort "Windows release builds must overlap verification" unless release_jobs.fetch("build-windows").fetch("needs") == ["validate-release-state"]
-          abort "release publication must remain verification-gated" unless release_jobs.fetch("publish").fetch("needs") == ["verify", "build-linux", "build-windows"]
+          abort "tag publication must rely on the attested main image instead of rerunning full CI" if release_jobs.key?("verify")
+          abort "Linux release builds must start after source validation" unless release_jobs.fetch("build-linux").fetch("needs") == ["validate-release-state"]
+          abort "Windows release builds must start after source validation" unless release_jobs.fetch("build-windows").fetch("needs") == ["validate-release-state"]
+          abort "release publication must wait for every worker artifact" unless release_jobs.fetch("publish").fetch("needs") == ["build-linux", "build-windows"]
           RUBY

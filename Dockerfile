@@ -43,14 +43,12 @@ FROM dependency-builder AS builder
 COPY Cargo.toml Cargo.lock* build.rs ./
 COPY scripts/bootstrap-worker.sh scripts/bootstrap-worker.ps1 ./scripts/
 COPY src ./src
-ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
-ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH
 # Keep release cache export bounded: dependencies remain in the immutable
-# parent layer, while version-specific Cargo outputs are transient.
+# parent layer, while version-specific Cargo outputs are transient. Companion
+# image metadata belongs to the runtime layer and must not invalidate this
+# expensive compilation step.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    RSCTF_DEFAULT_BYOC_AGENT_IMAGE="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}" \
-    RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="${RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH}" \
     cargo build --release --locked \
     && cp /app/target/release/rsctf /tmp/rsctf \
     && cp /app/target/release/rsctf-event-sensor /tmp/rsctf-event-sensor \
@@ -74,7 +72,10 @@ RUN apt-get update \
        python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
 ARG RSCTF_DEFAULT_BYOC_AGENT_IMAGE
+ARG RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH
 LABEL org.opencontainers.image.rsctf.byoc-agent="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}"
+ENV RSCTF_DEFAULT_BYOC_AGENT_IMAGE="${RSCTF_DEFAULT_BYOC_AGENT_IMAGE}" \
+    RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH="${RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH}"
 WORKDIR /app
 COPY --from=builder /tmp/rsctf /usr/local/bin/rsctf
 COPY --from=builder /tmp/rsctf-event-sensor /usr/local/bin/rsctf-event-sensor

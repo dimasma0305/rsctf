@@ -354,10 +354,10 @@ async fn resolve_byoc(
         None => {
             let (image, requires_amd64) = default_byoc_agent_image().ok_or_else(|| {
                 AppError::unavailable(
-                    "this server build has no matching BYOC agent digest; set RSCTF_AD_BYOC_AGENT_IMAGE to the immutable digest built from this release",
+                    "this server image has no matching BYOC agent digest; set RSCTF_AD_BYOC_AGENT_IMAGE to the immutable digest built from this release",
                 )
             })?;
-            (image.to_string(), requires_amd64)
+            (image, requires_amd64)
         }
     };
     let agent_image = immutable_agent_image(&configured_agent_image).ok_or_else(|| {

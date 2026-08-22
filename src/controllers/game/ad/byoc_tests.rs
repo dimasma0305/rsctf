@@ -1,3 +1,4 @@
+use super::agent_image::default_byoc_agent_image_from;
 use super::*;
 
 fn context_with_hostile_values(marker: &std::path::Path) -> ByocContext {
@@ -19,19 +20,41 @@ fn context_with_hostile_values(marker: &std::path::Path) -> ByocContext {
 }
 
 #[test]
-fn only_a_same_build_agent_digest_can_be_the_compiled_default() {
-    let compiled = option_env!("RSCTF_DEFAULT_BYOC_AGENT_IMAGE")
-        .unwrap_or("")
-        .trim();
-    let compiled_multiarch = option_env!("RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH") == Some("true");
-    if compiled.is_empty() {
+fn only_a_same_image_agent_digest_can_be_the_runtime_default() {
+    let configured = std::env::var("RSCTF_DEFAULT_BYOC_AGENT_IMAGE").unwrap_or_default();
+    let configured = configured.trim();
+    let configured_multiarch =
+        std::env::var("RSCTF_DEFAULT_BYOC_AGENT_MULTIARCH").is_ok_and(|value| value == "true");
+    if configured.is_empty() {
         assert_eq!(default_byoc_agent_image(), None);
     } else {
         let (image, requires_amd64) = default_byoc_agent_image().unwrap();
-        assert_eq!(image, compiled);
-        assert_eq!(immutable_agent_image(image).as_deref(), Some(image));
-        assert_eq!(requires_amd64, !compiled_multiarch);
+        assert_eq!(image, configured);
+        assert_eq!(
+            immutable_agent_image(&image).as_deref(),
+            Some(image.as_str())
+        );
+        assert_eq!(requires_amd64, !configured_multiarch);
     }
+}
+
+#[test]
+fn runtime_companion_metadata_preserves_architecture_contract() {
+    assert_eq!(default_byoc_agent_image_from(None, None), None);
+    assert_eq!(
+        default_byoc_agent_image_from(Some("  "), Some("true")),
+        None
+    );
+
+    let image = format!("registry.example/agent@sha256:{}", "a".repeat(64));
+    assert_eq!(
+        default_byoc_agent_image_from(Some(&format!(" {image} ")), Some("true")),
+        Some((image.clone(), false))
+    );
+    assert_eq!(
+        default_byoc_agent_image_from(Some(&image), Some("false")),
+        Some((image, true))
+    );
 }
 
 #[test]
