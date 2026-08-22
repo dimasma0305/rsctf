@@ -332,7 +332,8 @@ pub async fn ensure_koth_hills(st: &SharedState, game_id: i32) -> AppResult<u64>
                 continue;
             }
             HillRuntimeAvailability::Ready => {
-                match super::super::containers::get_or_create_shared_container_locked(st, &c).await
+                match super::super::containers::get_or_create_shared_container_locked(st, &c, true)
+                    .await
                 {
                     Ok(container) => Some(container),
                     Err(e) => {

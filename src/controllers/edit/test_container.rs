@@ -127,6 +127,7 @@ pub async fn create_test_container(
         game_kind,
         st.containers.requires_proxy(),
         platform_proxy,
+        false,
     );
     let container_uuid = Uuid::new_v4();
     let operation_id = Some(format!("container:{container_uuid}"));

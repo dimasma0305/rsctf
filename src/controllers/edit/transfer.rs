@@ -326,7 +326,7 @@ pub struct ExportChallengeModel {
     pub enable_traffic_capture: bool,
     #[serde(default)]
     pub enable_shared_container: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub disable_blood_bonus: bool,
     #[serde(default)]
     pub ad_checker_image: Option<String>,

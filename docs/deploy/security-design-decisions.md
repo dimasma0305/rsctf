@@ -13,16 +13,17 @@ this note deliberately.
 
 ## 1. Direct dynamic-challenge ports
 
-`ContainerPortMappingType=Default` intentionally publishes dynamic Jeopardy
-challenge ports directly. Docker may bind a daemon-selected port to the public
-entry, while Kubernetes may expose a NodePort. Per-connection rsctf authorization
-and traffic capture are features of the optional `PlatformProxy` mode, not promises
-made by direct mode.
+`PlatformProxy` is the default for Jeopardy containers. An operator can explicitly
+select `ContainerPortMappingType=Default` to publish challenge ports directly, and
+an event with `VPN access required` always uses its VPN-reachable IP and port.
+Docker may bind a daemon-selected direct port while Kubernetes may expose a
+NodePort. Per-connection rsctf authorization and traffic capture are features of
+`PlatformProxy`, not promises made by direct mode.
 
 Operators choosing direct mode are responsible for limiting the published port
-range to the intended event audience. The existence of a reachable challenge port,
-or the fact that it does not pass through `PlatformProxy`, is therefore not a
-vulnerability.
+range to the intended event audience. For VPN-required events that audience is the
+event VPN. The existence of a deliberately reachable challenge port, or the fact
+that it does not pass through `PlatformProxy`, is therefore not a vulnerability.
 
 Reopen this decision if a backend publishes a port when proxy-only mode was
 selected, advertises an unintended interface, or discloses another participation's

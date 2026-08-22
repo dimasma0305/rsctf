@@ -44,8 +44,11 @@ pub fn should_use_platform_proxy(
     game_kind: GameKind,
     backend_requires_proxy: bool,
     platform_proxy_configured: bool,
+    vpn_access_required: bool,
 ) -> bool {
-    game_kind == GameKind::Jeopardy && (backend_requires_proxy || platform_proxy_configured)
+    game_kind == GameKind::Jeopardy
+        && !vpn_access_required
+        && (backend_requires_proxy || platform_proxy_configured)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

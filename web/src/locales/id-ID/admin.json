@@ -410,6 +410,17 @@
           "description": "Jendela waktu sebelum kontainer kedaluwarsa untuk memperpanjang",
           "label": "Jendela Perpanjangan (menit)"
         },
+        "provider": {
+          "label": "Backend container",
+          "description": "Tempat container challenge berjalan. Jenis backend ditetapkan saat startup; mode koneksi Jeopardy dapat diubah di bawah.",
+          "traffic_capture": "Perekaman traffic",
+          "namespace": "Namespace",
+          "pull_policy": "Kebijakan pull image",
+          "port_mapping_label": "Mode koneksi Jeopardy",
+          "port_mapping_description": "Platform Proxy menghindari port challenge publik. Event yang mewajibkan VPN platform selalu memakai IP dan port VPN secara langsung.",
+          "platform_proxy": "Platform Proxy (disarankan)",
+          "direct_port": "Port publik langsung"
+        },
         "title": "Kebijakan container"
       },
       "platform": {

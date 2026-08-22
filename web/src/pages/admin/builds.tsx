@@ -44,6 +44,7 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 import { FC, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
+import { useSWRConfig } from 'swr'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { BuildImagesPanel } from '@Components/admin/BuildImagesPanel'
 import { BuildHistoryCard } from '@Components/admin/builds/BuildHistoryCard'
@@ -52,6 +53,7 @@ import {
   BUILD_STATUS_VARIANT,
   formatBuildDuration,
 } from '@Components/admin/builds/buildPresentation'
+import { refreshAdminBuildImageViews } from '@Utils/AdminBuildImages'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import api, { ChallengeBuildAuditModel, ChallengeBuildStatus } from '@Api'
@@ -87,6 +89,7 @@ const Builds: FC = () => {
   const isMobile = useIsMobile()
   const modals = useModals()
   const clipboard = useClipboard({ timeout: 1500 })
+  const { mutate: mutateCache } = useSWRConfig()
   const [statusFilter, setStatusFilterRaw] = useState<ChallengeBuildStatus | ''>('')
   const [page, setPage] = useState(1)
   const [busy, setBusy] = useState(false)
@@ -294,6 +297,7 @@ const Builds: FC = () => {
         setBusy(true)
         try {
           const resp = await api.admin.adminPruneOrphanBuildImages()
+          await refreshAdminBuildImageViews(mutateCache)
           showNotification({
             color: 'teal',
             message: t('admin.notification.builds.images_pruned', { count: resp.data.removed }),
