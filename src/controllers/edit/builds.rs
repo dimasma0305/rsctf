@@ -524,17 +524,23 @@ pub(crate) async fn admin_reenqueue_build(
 
 /// Compact the (already 16 KiB-capped) build log to a ~4 KiB tail for the audit
 /// row — the failing step and final error live at the end.
-fn build_log_tail(log: &str) -> String {
-    const MAX: usize = 4 * 1024;
-    if log.len() <= MAX {
-        return log.to_string();
+fn truncated_tail_start(log: &str, max: usize) -> Option<usize> {
+    if log.len() <= max {
+        return None;
     }
-    // Advance to a char boundary so multi-byte UTF-8 isn't split mid-codepoint.
-    let mut start = log.len() - MAX;
+    let mut start = log.len() - max;
     while start < log.len() && !log.is_char_boundary(start) {
         start += 1;
     }
-    format!("…(truncated)…\n{}", &log[start..])
+    Some(start)
+}
+
+fn build_log_tail(log: &str) -> String {
+    const MAX: usize = 4 * 1024;
+    truncated_tail_start(log, MAX).map_or_else(
+        || log.to_string(),
+        |start| format!("…(truncated)…\n{}", &log[start..]),
+    )
 }
 
 /// Docker daemon liveness probe — a short-timeout `ping` (mirrors the
@@ -577,9 +583,8 @@ fn archive_build_rejection(
 /// Cap a captured build/pull log so a chatty build doesn't bloat the row.
 fn cap_build_log(mut log: String) -> Option<String> {
     const MAX: usize = 16 * 1024;
-    if log.len() > MAX {
+    if let Some(start) = truncated_tail_start(&log, MAX) {
         // Keep the tail — the failing step and final error live at the end.
-        let start = log.len() - MAX;
         log = format!("…(truncated)…\n{}", &log[start..]);
     }
     if log.is_empty() {
