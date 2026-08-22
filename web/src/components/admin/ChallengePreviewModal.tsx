@@ -3,60 +3,29 @@ import { useInputState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import dayjs from 'dayjs'
 import { FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChallengeModal } from '@Components/ChallengeModal'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
-import { ChallengeDetailModel } from '@Api'
+import { ChallengeDetailModel, ClientFlagContext } from '@Api'
 
 interface ChallengePreviewModalProps extends ModalProps {
   challenge: ChallengeDetailModel
   cateData: ChallengeCategoryItemProps
-}
-
-interface FakeContext {
-  closeTime: number | null
-  instanceEntry: string | null
-  url: string
+  context: ClientFlagContext
+  disabled?: boolean
+  gameTitle?: string
+  onCreateInstance: () => void | Promise<void>
+  onDestroyInstance: () => void | Promise<void>
 }
 
 export const ChallengePreviewModal: FC<ChallengePreviewModalProps> = (props) => {
-  const { challenge, cateData, ...modalProps } = props
-
-  const [context, setContext] = useState<FakeContext>({
-    closeTime: null,
-    instanceEntry: null,
-    url: '/assets/attachment.zip',
-  })
+  const { challenge, cateData, context, disabled, gameTitle, onCreateInstance, onDestroyInstance, ...modalProps } =
+    props
 
   const { t } = useTranslation()
   const [flag, setFlag] = useInputState('')
   const [attempts, setAttempts] = useState(0)
-
-  const onCreate = () => {
-    setContext({
-      ...context,
-      closeTime: dayjs().add(10, 'm').add(10, 's').valueOf(),
-      instanceEntry: 'localhost:2333',
-    })
-  }
-
-  const onDestroy = () => {
-    setContext({
-      ...context,
-      closeTime: null,
-      instanceEntry: null,
-    })
-  }
-
-  const onExtend = () => {
-    setContext({
-      ...context,
-      closeTime: dayjs(context.closeTime).add(10, 'm').valueOf(),
-      instanceEntry: context.instanceEntry,
-    })
-  }
 
   const onSubmit = () => {
     showNotification({
@@ -75,28 +44,21 @@ export const ChallengePreviewModal: FC<ChallengePreviewModalProps> = (props) => 
     }
   }
 
-  const onDownload = () => {
-    showNotification({
-      color: 'teal',
-      message: t('admin.notification.games.challenges.preview.attachment_downloaded'),
-      icon: <Icon path={mdiCheck} size={1} />,
-    })
-  }
-
   return (
     <ChallengeModal
       {...modalProps}
       challenge={{ ...challenge, attempts, context: context }}
       cateData={cateData}
+      disabled={disabled}
+      gameTitle={gameTitle}
+      testInstance
       flag={flag}
       setFlag={setFlag}
       receiptProof=""
       setReceiptProof={() => undefined}
-      onCreate={onCreate}
-      onDestroy={onDestroy}
+      onCreate={onCreateInstance}
+      onDestroy={onDestroyInstance}
       onSubmitFlag={onSubmit}
-      onExtend={onExtend}
-      onDownload={onDownload}
     />
   )
 }

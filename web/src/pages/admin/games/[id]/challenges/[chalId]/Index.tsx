@@ -143,9 +143,7 @@ const GameChallengeEdit: FC = () => {
 
   const [disabled, setDisabled] = useState(false)
 
-  const [minRate, setMinRate] = useState(
-    (challenge?.minScoreRate ?? DEFAULT_JEOPARDY_MIN_SCORE_RATE) * 100
-  )
+  const [minRate, setMinRate] = useState((challenge?.minScoreRate ?? DEFAULT_JEOPARDY_MIN_SCORE_RATE) * 100)
   const [category, setCategory] = useState<string | null>(challenge?.category ?? ChallengeCategory.Misc)
   const [networkMode, setNetworkMode] = useState<string | null>(challenge?.networkMode ?? NetworkMode.Open)
   const [type, setType] = useState<string | null>(challenge?.type ?? ChallengeType.StaticAttachment)
@@ -1388,8 +1386,24 @@ const GameChallengeEdit: FC = () => {
           limit: tryDefault([challengeInfo?.submissionLimit, challenge?.submissionLimit], 0),
           category: category as ChallengeCategory,
           deadline: deadline ? deadline.valueOf() : undefined,
-          type: challenge?.type ?? ChallengeType.StaticAttachment,
+          type: (type as ChallengeType) ?? ChallengeType.StaticAttachment,
         }}
+        context={{
+          closeTime: challenge?.testContainer?.expectStopAt ?? null,
+          instanceEntry: challenge?.testContainer?.entry ?? null,
+          url:
+            challenge?.attachment?.url ??
+            challenge?.flags.find((flag) => !!flag.attachment?.url)?.attachment?.url ??
+            null,
+          fileSize:
+            challenge?.attachment?.fileSize ??
+            challenge?.flags.find((flag) => !!flag.attachment?.url)?.attachment?.fileSize ??
+            null,
+        }}
+        disabled={disabled}
+        gameTitle={game?.title}
+        onCreateInstance={onToggleTestContainer}
+        onDestroyInstance={onToggleTestContainer}
         opened={previewOpened}
         onClose={() => setPreviewOpened(false)}
         cateData={challengeCategoryLabelMap.get(

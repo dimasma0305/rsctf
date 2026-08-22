@@ -9,8 +9,9 @@
 //!     game containers must belong to the caller's participation; exercise
 //!     containers must belong to the caller's exact per-user exercise instance.
 //!   * `GET /api/proxy/noinst/{id}`  — an admin "no instance" test container.
-//!     Requires `AdminUser` and the container must NOT be linked to any game or
-//!     exercise instance (throwaway test container only).
+//!     Requires a live admin session or an exact short-lived WSRX capability,
+//!     and the container must NOT be linked to any game or exercise instance
+//!     (throwaway test container only).
 //!
 //! On a WebSocket upgrade we resolve the container GUID to its `Containers` row,
 //! derive its reachable `ip:port` (game.rs stores the host-published address
@@ -37,10 +38,10 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Path, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use sea_orm::EntityTrait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -50,10 +51,10 @@ use uuid::Uuid;
 use futures::{SinkExt, StreamExt};
 
 use crate::app_state::SharedState;
-use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser, MaybeUser};
+use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};
 use crate::models::data::{container, game_instance, participation, user_participation};
 use crate::services::live_roster::LiveParticipationIdentity;
-use crate::services::worker::{parse_worker_handle, WorkerHandle};
+use crate::services::worker::WorkerHandle;
 use crate::utils::enums::{ParticipationStatus, Role};
 use rsctf_worker_protocol::{
     DataStreamRequest, TcpProxyRequest, ValidatedWorkloadSpec, WorkloadFence,
@@ -61,7 +62,9 @@ use rsctf_worker_protocol::{
 
 mod access_log;
 mod authorization;
+mod capability;
 mod egress;
+mod target;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -71,7 +74,12 @@ use authorization::{
     game_proxy_scope_is_valid, game_proxy_session_is_valid, try_acquire_game_proxy_open_fence,
     GameProxyOpenFence, GameProxyTargetIdentity,
 };
+use capability::{
+    issue_instance_capability, issue_noinstance_capability, proxy_latency_probe, proxy_user,
+    ProxyCapabilityQuery,
+};
 use egress::{build_egress_scan, record_flag_egress, EgressScan, RollingFlagMatcher};
+use target::{game_proxy_target_identity, proxy_target, resolve_noinstance_target, ProxyTarget};
 use transport::{close_cleanly, endpoint_unavailable_close, normal_close, transport_failure_close};
 
 /// Buffer size for TCP→WebSocket reads, matching RSCTF's `BufferSize`.
@@ -91,9 +99,23 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub fn router() -> Router<SharedState> {
     Router::new()
         // GET /api/proxy/{id} — proxy TCP over websocket for a live instance.
-        .route("/api/proxy/{id}", get(proxy_for_instance))
+        .route(
+            "/api/proxy/{id}",
+            get(proxy_for_instance).options(proxy_latency_probe),
+        )
+        .route(
+            "/api/proxy/{id}/capability",
+            post(issue_instance_capability),
+        )
         // GET /api/proxy/noinst/{id} — proxy TCP over websocket for admin test containers.
-        .route("/api/proxy/noinst/{id}", get(proxy_for_noinstance))
+        .route(
+            "/api/proxy/noinst/{id}",
+            get(proxy_for_noinstance).options(proxy_latency_probe),
+        )
+        .route(
+            "/api/proxy/noinst/{id}/capability",
+            post(issue_noinstance_capability),
+        )
 }
 
 /// `GET /api/proxy/{id}` — TCP-over-WebSocket proxy to a player's container.
@@ -105,14 +127,16 @@ pub fn router() -> Router<SharedState> {
 async fn proxy_for_instance(
     State(st): State<SharedState>,
     user: MaybeUser,
+    Query(capability): Query<ProxyCapabilityQuery>,
     headers: HeaderMap,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    let user = proxy_user(&st, user, capability, id, false).await;
     // Resolve the target BEFORE accepting the upgrade so a rejected/absent
     // container just closes cleanly (never 500).
-    let access = resolve_instance_target(&st, user, id).await;
+    let access = resolve_instance_target(&st, MaybeUser(user), id).await;
 
     // Capture the connecting IP + User-Agent the same way the rest of rsctf does,
     // BEFORE the upgrade consumes the request. Used only for the access-event row
@@ -246,15 +270,21 @@ async fn proxy_for_instance(
 }
 
 /// `GET /api/proxy/noinst/{id}` — TCP-over-WebSocket proxy to an admin test
-/// (NoInstance) container. `AdminUser` gates the route; the container must be a
-/// proxy container that is not linked to any game or exercise instance.
+/// (NoInstance) container. A live admin browser session or an exact
+/// admin-minted WSRX capability gates the route; the container must be a proxy
+/// container that is not linked to any game or exercise instance.
 async fn proxy_for_noinstance(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    user: MaybeUser,
+    Query(capability): Query<ProxyCapabilityQuery>,
     ws: WebSocketUpgrade,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let target = resolve_noinstance_target(&st, id).await;
+    let target = if proxy_user(&st, user, capability, id, true).await.is_some() {
+        resolve_noinstance_target(&st, id).await
+    } else {
+        None
+    };
     ws.max_frame_size(MAX_CLIENT_MESSAGE_SIZE)
         .max_message_size(MAX_CLIENT_MESSAGE_SIZE)
         .on_upgrade(move |socket| run_or_close(st, socket, target, None, None, None, None))
@@ -560,64 +590,6 @@ async fn resolve_shared_instance_target(
             is_monitor: user.is_monitor(),
         }),
     })
-}
-
-/// Resolve the reachable `ip:port` for an admin test container. The route is
-/// already gated to `AdminUser`; here we require a proxy container that is not
-/// linked to a game or exercise instance (a throwaway test container).
-async fn resolve_noinstance_target(st: &SharedState, id: Uuid) -> Option<ProxyTarget> {
-    let container = container::Entity::find_by_id(id).one(&st.db).await.ok()??;
-    if !container.is_proxy
-        || container.game_instance_id.is_some()
-        || container.exercise_instance_id.is_some()
-    {
-        return None;
-    }
-    let legacy_exercise_owner = sqlx::query_scalar::<_, bool>(LEGACY_EXERCISE_OWNER_SQL)
-        .bind(container.id)
-        .fetch_one(st.pg())
-        .await
-        .ok()?;
-    if legacy_exercise_owner {
-        return None;
-    }
-    proxy_target(&container)
-}
-
-#[derive(Clone)]
-enum ProxyTarget {
-    Tcp(String),
-    Worker(WorkerHandle),
-}
-
-fn proxy_target(container: &container::Model) -> Option<ProxyTarget> {
-    if let Some(handle) = parse_worker_handle(&container.container_id) {
-        return Some(ProxyTarget::Worker(handle));
-    }
-    target_endpoint(container).map(ProxyTarget::Tcp)
-}
-
-fn game_proxy_target_identity(
-    container: &container::Model,
-    game_instance_id: Option<i32>,
-) -> GameProxyTargetIdentity {
-    GameProxyTargetIdentity {
-        container_id: container.id,
-        runtime_id: container.container_id.clone(),
-        ip: container.ip.clone(),
-        port: container.port,
-        game_instance_id,
-    }
-}
-
-/// Build the `ip:port` the proxy should dial. RSCTF connects to the container's
-/// `IP:Port`; game.rs stores the host-reachable published address into those
-/// columns for the Docker backend. Returns `None` when the address is unusable.
-fn target_endpoint(container: &container::Model) -> Option<String> {
-    if container.ip.trim().is_empty() || container.port <= 0 {
-        return None;
-    }
-    Some(format!("{}:{}", container.ip, container.port))
 }
 
 /// Given a resolved target (or `None`), either proxy the connection or close the

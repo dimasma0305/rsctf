@@ -3558,6 +3558,11 @@ export interface ClientFlagContext {
   sha256?: string | null;
 }
 
+/** Short-lived native-WSRX credential bound to one user session and container. */
+export interface ProxyCapabilityModel {
+  token: string;
+}
+
 export interface ChallengeReviewModel {
   rating: ReviewRating;
   /** @maxLength 1000 */
@@ -9455,6 +9460,42 @@ export class Api<
     ) => mutate<HashPowChallenge>(`/api/captcha/powchallenge`, data, options),
   };
   proxy = {
+    /**
+     * @description Mint a narrow WSRX credential for one authorized player container.
+     *
+     * @tags Proxy
+     * @name ProxyIssueInstanceCapability
+     * @request POST:/api/proxy/{id}/capability
+     */
+    proxyIssueInstanceCapability: (
+      id: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ProxyCapabilityModel, RequestResponse>({
+        path: `/api/proxy/${id}/capability`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Mint a narrow WSRX credential for one administrator test container.
+     *
+     * @tags Proxy
+     * @name ProxyIssueNoInstanceCapability
+     * @request POST:/api/proxy/noinst/{id}/capability
+     */
+    proxyIssueNoInstanceCapability: (
+      id: string,
+      params: RequestParams = {},
+    ) =>
+      this.request<ProxyCapabilityModel, RequestResponse>({
+        path: `/api/proxy/noinst/${id}/capability`,
+        method: "POST",
+        format: "json",
+        ...params,
+      }),
+
     /**
      * No description
      *

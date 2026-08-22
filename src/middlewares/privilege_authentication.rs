@@ -249,10 +249,21 @@ pub async fn authenticate_token(app: &SharedState, token: &str) -> Result<Curren
     authenticate_claims(app, claims).await
 }
 
+/// Resolve an already signature-verified narrow credential against the live
+/// account row. Proxy capabilities use this instead of exposing or replaying
+/// the browser's full session JWT to a native helper process.
+pub(crate) async fn authenticate_live_identity(
+    app: &SharedState,
+    id: Uuid,
+    expected_stamp: &str,
+) -> Result<CurrentUser, AppError> {
+    let entry = load_cached_authorization(app, id).await?;
+    authorize_cached_entry(entry, id, expected_stamp)
+}
+
 async fn authenticate_claims(app: &SharedState, claims: Claims) -> Result<CurrentUser, AppError> {
     let id = Uuid::parse_str(&claims.sub).map_err(|_| AppError::Unauthorized)?;
-    let entry = load_cached_authorization(app, id).await?;
-    authorize_cached_entry(entry, id, &claims.stamp)
+    authenticate_live_identity(app, id, &claims.stamp).await
 }
 
 /// Resolve the live principal for a request: verify the session JWT, then re-load

@@ -20,7 +20,7 @@ import { HandleWsrxError, useWsrx } from '@Components/WsrxProvider'
 import { getProxyUrl as getProxyEntry } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
 import { useTicker } from '@Hooks/useTicker'
-import { ClientFlagContext, ContainerPortMappingType } from '@Api'
+import api, { ClientFlagContext, ContainerPortMappingType } from '@Api'
 import classes from '@Styles/InstanceEntry.module.css'
 import misc from '@Styles/Misc.module.css'
 
@@ -28,6 +28,10 @@ dayjs.extend(duration)
 
 interface InstanceEntryProps {
   test?: boolean
+  /** Show real lifecycle controls even when the entry belongs to an admin test
+   * container. The challenge editor normally owns these controls, while its
+   * player-view preview delegates them to this component. */
+  lifecycleControls?: boolean
   label?: string
   context: ClientFlagContext
   disabled?: boolean
@@ -75,6 +79,8 @@ const Countdown: FC<CountdownProps> = (props) => {
 
 export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const { test: isPreview, label, context, disabled, onCreate, onDestroy } = props
+  const showLifecycle = props.lifecycleControls ?? !isPreview
+  const supportsExtend = !!props.onExtend
   const { wsrx, wsrxState, wsrxOptions } = useWsrx()
 
   const { config } = useConfig()
@@ -138,16 +144,40 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     }
   }
 
-  const localTraffic = wsrx.list().find((traffic) => traffic.remote === originalEntry)
-  const [localEntry, setLocalEntry] = useState(localTraffic?.local ?? '')
-
   // is wsrx is ready to use
   const isWsrxUsable = isPlatformProxy && wsrxState === WsrxState.Usable
-  // to show original entry
-  const useOriginal = !!localTraffic && forceShowOriginal
+  const [wsrxRemoteEntry, setWsrxRemoteEntry] = useState('')
 
   useEffect(() => {
-    if (!originalEntry || !isWsrxUsable) return
+    setWsrxRemoteEntry('')
+    if (!isWsrxUsable || !instanceEntry) return
+
+    let active = true
+    const requestCapability = async () => {
+      try {
+        const response = isPreview
+          ? await api.proxy.proxyIssueNoInstanceCapability(instanceEntry)
+          : await api.proxy.proxyIssueInstanceCapability(instanceEntry)
+        if (active) setWsrxRemoteEntry(getProxyEntry(instanceEntry, isPreview, response.data.token))
+      } catch (err) {
+        if (active) HandleWsrxError(err, t)
+      }
+    }
+
+    requestCapability()
+    return () => {
+      active = false
+    }
+  }, [instanceEntry, isPreview, isWsrxUsable, t])
+
+  const localTraffic = wsrx.list().find((traffic) => traffic.remote === wsrxRemoteEntry)
+  const [localEntry, setLocalEntry] = useState(localTraffic?.local ?? '')
+  const hasWsrxTunnel = !!localTraffic && !!localEntry
+  // to show original entry
+  const useOriginal = hasWsrxTunnel && forceShowOriginal
+
+  useEffect(() => {
+    if (!wsrxRemoteEntry || !isWsrxUsable) return
 
     const localAddr = wsrxOptions.allowLan ? '0.0.0.0:0' : '127.0.0.1:0'
 
@@ -155,7 +185,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
       try {
         const traffic = await wsrx.add({
           label,
-          remote: originalEntry,
+          remote: wsrxRemoteEntry,
           local: localAddr,
         })
         setLocalEntry(traffic.local)
@@ -165,9 +195,9 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     }
 
     requestProxy()
-  }, [originalEntry, isWsrxUsable, label, wsrxOptions.allowLan])
+  }, [wsrxRemoteEntry, isWsrxUsable, label, wsrxOptions.allowLan])
 
-  const useLocal = isWsrxUsable && !useOriginal
+  const useLocal = isWsrxUsable && hasWsrxTunnel && !useOriginal
   const entry = useLocal ? localEntry : originalEntry
   const entryIsWss = isPlatformProxy && !useLocal
 
@@ -185,7 +215,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   }
 
   if (!withContainer) {
-    return isPreview ? (
+    return !showLifecycle ? (
       <Text size="md" c="dimmed" fw="bold" pt={30}>
         {t('challenge.content.instance.test.no_container')}
       </Text>
@@ -241,9 +271,9 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
         readOnly
         classNames={{ input: misc.ffmono }}
         rightSection={
-          <Group gap={2}>
+          <Group gap={2} wrap="nowrap">
             <Divider orientation="vertical" pr={4} />
-            {isWsrxUsable && (
+            {hasWsrxTunnel && (
               <Tooltip
                 label={
                   forceShowOriginal
@@ -287,16 +317,16 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
             </Tooltip>
           </Group>
         }
-        rightSectionWidth={isWsrxUsable ? '6.5rem' : '5rem'}
+        rightSectionWidth={hasWsrxTunnel ? '7.75rem' : '5rem'}
       />
-      {!isPreview && (
+      {showLifecycle && (
         <Group justify="space-between" wrap="nowrap">
           <Stack align="left" gap={0}>
             <Text size="sm" fw={600}>
               {t('challenge.content.instance.actions.count_down')}
               <Countdown
                 time={context.closeTime}
-                extendEnabled={canExtend}
+                extendEnabled={!supportsExtend || canExtend}
                 enableExtend={enableExtend}
                 onTimeout={isShared ? () => setWithContainer(false) : onDestroy}
               />
@@ -308,9 +338,11 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
             </Text>
           </Stack>
           <Group justify="right" wrap="nowrap" gap="xs">
-            <Button color="orange" onClick={onExtend} disabled={!canExtend || disabled} loading={disabled}>
-              {t('challenge.button.instance.extend')}
-            </Button>
+            {supportsExtend && (
+              <Button color="orange" onClick={onExtend} disabled={!canExtend || disabled} loading={disabled}>
+                {t('challenge.button.instance.extend')}
+              </Button>
+            )}
             {!isShared && (
               <Button color="red" onClick={onDestroy} disabled={disabled} loading={disabled}>
                 {t('challenge.button.instance.destroy')}
