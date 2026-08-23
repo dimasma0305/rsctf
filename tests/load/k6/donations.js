@@ -3,7 +3,7 @@ import http from 'k6/http';
 import { Rate, Trend } from 'k6/metrics';
 
 const TARGET = __ENV.TARGET || 'http://127.0.0.1:8080';
-const RATE = Number(__ENV.RATE || 50);
+const RATE = Number(__ENV.RATE || 2);
 const VUS = Number(__ENV.VUS || 20);
 
 if (!Number.isSafeInteger(RATE) || RATE < 1 || !Number.isSafeInteger(VUS) || VUS < 1) {

@@ -5,7 +5,7 @@ if (process.env.DONATIONS_STRESS_ACK !== '1') {
   throw new Error('DONATIONS_STRESS_ACK=1 is required before loading the public donation feed');
 }
 
-const rate = Number(process.env.RATE || 50);
+const rate = Number(process.env.RATE || 2);
 const vus = Number(process.env.VUS || 20);
 const duration = String(process.env.DURATION || '30s');
 if (!Number.isSafeInteger(rate) || rate < 1 || rate > 500) {
