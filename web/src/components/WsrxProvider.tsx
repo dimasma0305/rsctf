@@ -2,7 +2,7 @@ import { useDebouncedCallback, useLocalStorage } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { Wsrx, WsrxError, WsrxErrorKind, WsrxFeature, WsrxOptions, WsrxState } from '@xdsec/wsrx'
+import { Wsrx, WsrxError, WsrxErrorKind, WsrxFeature, WsrxInstance, WsrxOptions, WsrxState } from '@xdsec/wsrx'
 import { t } from 'i18next'
 import { createContext, useCallback, use, useEffect, useMemo, useState } from 'react'
 import { showErrorMsg } from '@Utils/Shared'
@@ -68,6 +68,7 @@ export const HandleWsrxError = (err: unknown, t: (key: string) => string) => {
 interface WsrxContextType {
   wsrx: Wsrx
   wsrxState: WsrxState
+  wsrxInstances: WsrxInstance[]
   wsrxOptions: CustomWsrxOptions
   doWsrxConnect: () => void
   setWsrxOptions: (options: CustomWsrxOptions | ((prev: CustomWsrxOptions) => CustomWsrxOptions)) => void
@@ -93,6 +94,7 @@ const getWsrxConfig = (options: CustomWsrxOptions) => {
 
 export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [wsrxState, setWsrxState] = useState<WsrxState>(WsrxState.Invalid)
+  const [wsrxInstances, setWsrxInstances] = useState<WsrxInstance[]>([])
   const platformConfig = useConfig()
 
   const [wsrxOptions, setWsrxOptions] = useLocalStorage<CustomWsrxOptions>({
@@ -109,6 +111,7 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       // unavailable. Await it so a normal "daemon not installed" state does
       // not become an unhandled rejection on every route.
       await wsrx.connect()
+      if (wsrx.getState() === WsrxState.Usable) await wsrx.sync()
     } catch (err) {
       if (err instanceof WsrxError && err.kind !== WsrxErrorKind.DaemonUnavailable) HandleWsrxError(err, t)
     }
@@ -154,15 +157,23 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     return () => wsrx.offStateChange(id)
   }, [wsrx, updateState])
 
+  useEffect(() => {
+    const updateInstances = (instances: WsrxInstance[]) => setWsrxInstances([...instances])
+    updateInstances(wsrx.list())
+    const id = wsrx.onInstancesChange(updateInstances)
+    return () => wsrx.offInstancesChange(id)
+  }, [wsrx])
+
   const contextValue = useMemo(
     () => ({
       wsrx,
       wsrxState,
+      wsrxInstances,
       wsrxOptions,
       doWsrxConnect,
       setWsrxOptions,
     }),
-    [wsrx, wsrxState, wsrxOptions, doWsrxConnect, setWsrxOptions]
+    [wsrx, wsrxState, wsrxInstances, wsrxOptions, doWsrxConnect, setWsrxOptions]
   )
 
   return <WsrxContext.Provider value={contextValue}>{children}</WsrxContext.Provider>

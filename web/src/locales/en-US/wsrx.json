@@ -1,6 +1,7 @@
 {
   "button": {
-    "config": "WSRX Settings"
+    "config": "WSRX Settings",
+    "retry_tunnel": "Rebuild local tunnel"
   },
   "config": {
     "allow_lan": "Allow LAN Access",
@@ -29,5 +30,16 @@
     "invalid": "WSRX Disconnected",
     "pending": "Awaiting Local Authorization",
     "usable": "WSRX Connected"
+  },
+  "tunnel": {
+    "authorization": "Approve this platform in WSRX, then retry.",
+    "checking": "WSRX is checking the local tunnel. The address will unlock when it is usable.",
+    "connecting": "Creating the local WSRX tunnel…",
+    "description": "Use the local WSRX address shown below with netcat. Keep WSRX running while you play.",
+    "disconnected": "Start WSRX and approve this platform to create a netcat address.",
+    "placeholder": "Waiting for a usable local WSRX tunnel",
+    "ready": "Local tunnel ready for netcat.",
+    "requesting": "Requesting a short-lived tunnel capability…",
+    "unhealthy": "The local tunnel failed its health check. Rebuild it before connecting."
   }
 }

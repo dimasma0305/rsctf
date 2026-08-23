@@ -2,14 +2,7 @@ import { ActionIcon, Anchor, Button, Divider, Group, Stack, Text, TextInput, Too
 import { useClipboard } from '@mantine/hooks'
 import { useDebouncedCallback, useDebouncedState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
-import {
-  mdiCheck,
-  mdiContentCopy,
-  mdiExclamation,
-  mdiOpenInNew,
-  mdiServerNetwork,
-  mdiTransitConnectionVariant,
-} from '@mdi/js'
+import { mdiCheck, mdiContentCopy, mdiExclamation, mdiOpenInNew, mdiRefresh, mdiServerNetwork } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { WsrxState } from '@xdsec/wsrx'
 import dayjs from 'dayjs'
@@ -18,6 +11,7 @@ import { FC, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HandleWsrxError, useWsrx } from '@Components/WsrxProvider'
 import { getProxyUrl as getProxyEntry } from '@Utils/Shared'
+import { getWsrxTunnelPhase } from '@Utils/WsrxTunnel'
 import { useConfig } from '@Hooks/useConfig'
 import { useTicker } from '@Hooks/useTicker'
 import api, { ClientFlagContext, ContainerPortMappingType } from '@Api'
@@ -81,12 +75,11 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const { test: isPreview, label, context, disabled, onCreate, onDestroy } = props
   const showLifecycle = props.lifecycleControls ?? !isPreview
   const supportsExtend = !!props.onExtend
-  const { wsrx, wsrxState, wsrxOptions } = useWsrx()
+  const { wsrx, wsrxState, wsrxInstances, wsrxOptions, doWsrxConnect } = useWsrx()
 
   const { config } = useConfig()
   const clipBoard = useClipboard()
 
-  const [forceShowOriginal, setForceShowOriginal] = useState(false)
   const [withContainer, setWithContainer] = useState(!!context.instanceEntry)
 
   // Shared container: one container serves every team. Players can start/extend it but not
@@ -98,7 +91,6 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     config.portMapping === ContainerPortMappingType.PlatformProxy &&
     instanceEntry.length === 36 &&
     !instanceEntry.includes(':')
-  const originalEntry = isPlatformProxy ? getProxyEntry(instanceEntry, isPreview) : instanceEntry
 
   const [canExtend, setCanExtend] = useDebouncedState(false, 500)
 
@@ -144,12 +136,22 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     }
   }
 
-  // is wsrx is ready to use
+  // Platform-proxied instances only become usable after the local daemon has
+  // verified its tunnel. Never present the raw WebSocket capability as a
+  // netcat address.
   const isWsrxUsable = isPlatformProxy && wsrxState === WsrxState.Usable
   const [wsrxRemoteEntry, setWsrxRemoteEntry] = useState('')
+  const [capabilityAttempt, setCapabilityAttempt] = useState(0)
+  const [tunnelRequestComplete, setTunnelRequestComplete] = useState(false)
+  const [tunnelRequestFailed, setTunnelRequestFailed] = useState(false)
+  const [tunnelCheckExpired, setTunnelCheckExpired] = useState(false)
+  const [tunnelRetrying, setTunnelRetrying] = useState(false)
 
   useEffect(() => {
     setWsrxRemoteEntry('')
+    setTunnelRequestComplete(false)
+    setTunnelRequestFailed(false)
+    setTunnelCheckExpired(false)
     if (!isWsrxUsable || !instanceEntry) return
 
     let active = true
@@ -160,7 +162,10 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
           : await api.proxy.proxyIssueInstanceCapability(instanceEntry)
         if (active) setWsrxRemoteEntry(getProxyEntry(instanceEntry, isPreview, response.data.token))
       } catch (err) {
-        if (active) HandleWsrxError(err, t)
+        if (active) {
+          setTunnelRequestFailed(true)
+          HandleWsrxError(err, t)
+        }
       }
     }
 
@@ -168,48 +173,98 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     return () => {
       active = false
     }
-  }, [instanceEntry, isPreview, isWsrxUsable, t])
+  }, [capabilityAttempt, instanceEntry, isPreview, isWsrxUsable, t])
 
-  const localTraffic = wsrx.list().find((traffic) => traffic.remote === wsrxRemoteEntry)
-  const [localEntry, setLocalEntry] = useState(localTraffic?.local ?? '')
-  const hasWsrxTunnel = !!localTraffic && !!localEntry
-  // to show original entry
-  const useOriginal = hasWsrxTunnel && forceShowOriginal
+  const localTraffic = wsrxInstances.find((traffic) => traffic.remote === wsrxRemoteEntry)
 
   useEffect(() => {
     if (!wsrxRemoteEntry || !isWsrxUsable) return
 
     const localAddr = wsrxOptions.allowLan ? '0.0.0.0:0' : '127.0.0.1:0'
+    let active = true
 
     const requestProxy = async () => {
       try {
-        const traffic = await wsrx.add({
+        await wsrx.add({
           label,
           remote: wsrxRemoteEntry,
           local: localAddr,
         })
-        setLocalEntry(traffic.local)
+        if (active) setTunnelRequestComplete(true)
+      } catch (err) {
+        if (active) {
+          setTunnelRequestComplete(true)
+          setTunnelRequestFailed(true)
+          HandleWsrxError(err, t)
+        }
+      }
+    }
+
+    requestProxy()
+    return () => {
+      active = false
+    }
+  }, [wsrx, wsrxRemoteEntry, isWsrxUsable, label, t, wsrxOptions.allowLan])
+
+  useEffect(() => {
+    setTunnelCheckExpired(false)
+    if (!localTraffic || localTraffic.latency !== -1) return
+
+    // The desktop daemon calculates latency after returning from POST /pool.
+    // Pull the result promptly instead of waiting for the client's 15-second
+    // background refresh before deciding whether the local address is usable.
+    const refresh = window.setInterval(() => void wsrx.sync().catch(() => undefined), 1500)
+    const timeout = window.setTimeout(() => setTunnelCheckExpired(true), 8000)
+    return () => {
+      window.clearInterval(refresh)
+      window.clearTimeout(timeout)
+    }
+  }, [localTraffic?.latency, localTraffic?.local, wsrx, wsrxRemoteEntry])
+
+  const phase = getWsrxTunnelPhase({
+    isPlatformProxy,
+    wsrxState,
+    remoteEntry: wsrxRemoteEntry,
+    traffic: localTraffic,
+    requestComplete: tunnelRequestComplete,
+    checkExpired: tunnelCheckExpired,
+    requestFailed: tunnelRequestFailed,
+  })
+
+  const entry = isPlatformProxy ? (phase === 'ready' ? (localTraffic?.local ?? '') : '') : instanceEntry
+  const canUseEntry = !!entry
+
+  const onRetryTunnel = async () => {
+    if (!isPlatformProxy || tunnelRetrying) return
+
+    setTunnelRetrying(true)
+    setWsrxRemoteEntry('')
+    setTunnelRequestComplete(false)
+    setTunnelRequestFailed(false)
+    setTunnelCheckExpired(false)
+
+    if (wsrxState === WsrxState.Usable && localTraffic?.local) {
+      try {
+        await wsrx.delete(localTraffic.local)
       } catch (err) {
         HandleWsrxError(err, t)
       }
     }
 
-    requestProxy()
-  }, [wsrxRemoteEntry, isWsrxUsable, label, wsrxOptions.allowLan])
+    if (wsrxState !== WsrxState.Usable) doWsrxConnect()
+    setCapabilityAttempt((attempt) => attempt + 1)
+    setTunnelRetrying(false)
+  }
 
-  const useLocal = isWsrxUsable && hasWsrxTunnel && !useOriginal
-  const entry = useLocal ? localEntry : originalEntry
-  const entryIsWss = isPlatformProxy && !useLocal
+  const tunnelStatusColor = phase === 'ready' ? 'green' : phase === 'unhealthy' ? 'red' : 'orange'
 
   const onCopyEntry = () => {
+    if (!canUseEntry) return
     clipBoard.copy(entry)
 
     showNotification({
       color: 'teal',
-      title: entryIsWss ? t('challenge.notification.instance.copied.url.title') : undefined,
-      message: entryIsWss
-        ? t('challenge.notification.instance.copied.url.message')
-        : t('challenge.notification.instance.copied.entry'),
+      message: t('challenge.notification.instance.copied.entry'),
       icon: <Icon path={mdiCheck} size={1} />,
     })
   }
@@ -248,68 +303,58 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
           </Text>
         }
         description={
-          isPlatformProxy &&
-          !isPreview && (
-            <Text span size="sm">
-              {t('challenge.content.instance.entry.description.proxy')}
-              &nbsp;
-              <Anchor href="https://github.com/XDSEC/WebSocketReflectorX/releases" target="_blank" rel="noreferrer">
-                {t('challenge.content.instance.entry.description.anchor')}
-              </Anchor>
-            </Text>
+          isPlatformProxy && (
+            <Stack gap={2}>
+              <Text span size="sm">
+                {t('wsrx.tunnel.description')}&nbsp;
+                <Anchor href="https://github.com/XDSEC/WebSocketReflectorX/releases" target="_blank" rel="noreferrer">
+                  {t('challenge.content.instance.entry.description.anchor')}
+                </Anchor>
+              </Text>
+              <Text size="xs" c={tunnelStatusColor} role="status" aria-live="polite">
+                {t(`wsrx.tunnel.${phase}`)}
+              </Text>
+            </Stack>
           )
         }
         leftSection={
           <Icon
             path={mdiServerNetwork}
             size={1}
-            data-proxied={(isWsrxUsable && !useOriginal) || undefined}
+            data-proxied={phase === 'ready' || undefined}
             className={classes.icon}
           />
         }
         value={entry}
+        placeholder={isPlatformProxy ? t('wsrx.tunnel.placeholder') : undefined}
         readOnly
         classNames={{ input: misc.ffmono }}
         rightSection={
           <Group gap={2} wrap="nowrap">
             <Divider orientation="vertical" pr={4} />
-            {hasWsrxTunnel && (
-              <Tooltip
-                label={
-                  forceShowOriginal
-                    ? t('challenge.button.instance.show.proxied')
-                    : t('challenge.button.instance.show.original')
-                }
-                withArrow
-              >
-                <ActionIcon
-                  aria-label={
-                    forceShowOriginal
-                      ? t('challenge.button.instance.show.proxied')
-                      : t('challenge.button.instance.show.original')
-                  }
-                  onClick={() => setForceShowOriginal((prev) => !prev)}
-                >
-                  <Icon path={mdiTransitConnectionVariant} size={1} />
+            {isPlatformProxy && (
+              <Tooltip label={t('wsrx.button.retry_tunnel')} withArrow>
+                <ActionIcon aria-label={t('wsrx.button.retry_tunnel')} onClick={onRetryTunnel} loading={tunnelRetrying}>
+                  <Icon path={mdiRefresh} size={1} />
                 </ActionIcon>
               </Tooltip>
             )}
             <Tooltip label={t('common.button.copy')} withArrow>
-              <ActionIcon aria-label={t('common.button.copy')} onClick={onCopyEntry}>
+              <ActionIcon aria-label={t('common.button.copy')} onClick={onCopyEntry} disabled={!canUseEntry}>
                 <Icon path={mdiContentCopy} size={1} />
               </ActionIcon>
             </Tooltip>
             <Tooltip label={t('challenge.content.instance.open.web')} withArrow>
               <ActionIcon
                 aria-label={t('challenge.content.instance.open.web')}
-                disabled={entryIsWss}
+                disabled={!canUseEntry}
                 component="a"
                 href={
-                  entryIsWss
-                    ? '#'
-                    : `http://${useLocal && wsrxOptions.allowLan ? entry.replace('0.0.0.0', '127.0.0.1') : entry}`
+                  canUseEntry
+                    ? `http://${isPlatformProxy && wsrxOptions.allowLan ? entry.replace('0.0.0.0', '127.0.0.1') : entry}`
+                    : undefined
                 }
-                target={entryIsWss ? undefined : '_blank'}
+                target={canUseEntry ? '_blank' : undefined}
                 rel="noreferrer"
               >
                 <Icon path={mdiOpenInNew} size={1} />
@@ -317,7 +362,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
             </Tooltip>
           </Group>
         }
-        rightSectionWidth={hasWsrxTunnel ? '7.75rem' : '5rem'}
+        rightSectionWidth={isPlatformProxy ? '7.75rem' : '5rem'}
       />
       {showLifecycle && (
         <Group justify="space-between" wrap="nowrap">
