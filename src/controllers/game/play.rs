@@ -42,25 +42,6 @@ fn normalized_game_search(search: Option<&str>) -> AppResult<Option<String>> {
     Ok(Some(search.to_owned()))
 }
 
-#[cfg(test)]
-mod game_list_tests {
-    use super::*;
-
-    #[test]
-    fn event_search_is_trimmed_bounded_and_optional() {
-        assert_eq!(normalized_game_search(None).unwrap(), None);
-        assert_eq!(normalized_game_search(Some("   ")).unwrap(), None);
-        assert_eq!(
-            normalized_game_search(Some("  TECHCOMFEST  ")).unwrap(),
-            Some("TECHCOMFEST".to_owned())
-        );
-        assert!(matches!(
-            normalized_game_search(Some(&"x".repeat(101))),
-            Err(AppError::BadRequest(message)) if message.contains("100 characters")
-        ));
-    }
-}
-
 pub async fn games(
     State(st): State<SharedState>,
     Query(query): Query<GameListQuery>,
@@ -903,4 +884,23 @@ pub async fn get_challenge(
         model,
     )
     .await
+}
+
+#[cfg(test)]
+mod game_list_tests {
+    use super::*;
+
+    #[test]
+    fn event_search_is_trimmed_bounded_and_optional() {
+        assert_eq!(normalized_game_search(None).unwrap(), None);
+        assert_eq!(normalized_game_search(Some("   ")).unwrap(), None);
+        assert_eq!(
+            normalized_game_search(Some("  TECHCOMFEST  ")).unwrap(),
+            Some("TECHCOMFEST".to_owned())
+        );
+        assert!(matches!(
+            normalized_game_search(Some(&"x".repeat(101))),
+            Err(AppError::BadRequest(message)) if message.contains("100 characters")
+        ));
+    }
 }
