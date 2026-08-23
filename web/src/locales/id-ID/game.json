@@ -24,6 +24,12 @@
     "find_my_team": "Cari Tim Saya"
   },
   "content": {
+    "clear_search": "Hapus pencarian event",
+    "no_search_results": "Tidak ada event yang cocok dengan “{{query}}”.",
+    "search_description": "Cari semua event berdasarkan nama, ringkasan, atau ID event yang tepat.",
+    "search_label": "Cari event",
+    "search_placeholder": "Masukkan nama event",
+    "search_results": "{{count}} event yang cocok untuk “{{query}}”",
     "all_solved": {
       "comment": "Mungkin tantangan yang lebih sulit menunggu kamu...",
       "title": "Semua challenge telah diselesaikan!"

@@ -7893,6 +7893,8 @@ export class Api<
          * @default 0
          */
         skip?: number;
+        /** Case-insensitive event title, summary, or exact ID search. */
+        search?: string;
       },
       params: RequestParams = {},
     ) =>
@@ -7925,6 +7927,8 @@ export class Api<
          * @default 0
          */
         skip?: number;
+        /** Case-insensitive event title, summary, or exact ID search. */
+        search?: string;
       },
       options?: SWRConfiguration,
       doFetch: boolean = true,
@@ -7956,6 +7960,8 @@ export class Api<
          * @default 0
          */
         skip?: number;
+        /** Case-insensitive event title, summary, or exact ID search. */
+        search?: string;
       },
       data?:
         | ArrayResponseOfBasicGameInfoModel

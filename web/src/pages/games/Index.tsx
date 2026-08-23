@@ -1,4 +1,5 @@
 import {
+  ActionIcon,
   Anchor,
   Badge,
   Group,
@@ -7,11 +8,15 @@ import {
   Skeleton,
   Stack,
   Text,
+  TextInput,
   Title,
   useMantineColorScheme,
   useMantineTheme,
 } from '@mantine/core'
-import { FC, useState } from 'react'
+import { useDebouncedValue } from '@mantine/hooks'
+import { mdiClose, mdiMagnify } from '@mdi/js'
+import { Icon } from '@mdi/react'
+import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { Empty } from '@Components/Empty'
@@ -32,16 +37,29 @@ const Games: FC = () => {
   const { t } = useTranslation()
   const { recentGames } = useRecentGames()
   const [activePage, setPage] = useState(1)
+  const [search, setSearch] = useState('')
+  const [debouncedSearch] = useDebouncedValue(search.trim(), 300)
+  const searchInput = useRef<HTMLInputElement>(null)
   const isMobile = useIsMobile()
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
 
-  const { data: games } = api.game.useGameGames(
-    { count: ITEM_PER_PAGE, skip: (activePage - 1) * ITEM_PER_PAGE },
+  const { data: games, isLoading } = api.game.useGameGames(
+    {
+      count: ITEM_PER_PAGE,
+      skip: (activePage - 1) * ITEM_PER_PAGE,
+      search: debouncedSearch || undefined,
+    },
     {
       refreshInterval: 5 * 60 * 1000,
     }
   )
+
+  const clearSearch = () => {
+    setSearch('')
+    setPage(1)
+    searchInput.current?.focus()
+  }
 
   usePageTitle(t('game.title.index'))
 
@@ -153,7 +171,57 @@ const Games: FC = () => {
           )}
         </Group>
 
-        <div aria-live="polite" aria-busy={games === undefined || undefined}>
+        <form role="search" className={classes.searchForm} onSubmit={(event) => event.preventDefault()}>
+          <TextInput
+            ref={searchInput}
+            className={classes.searchInput}
+            label={t('game.content.search_label', 'Search events')}
+            description={t(
+              'game.content.search_description',
+              'Search every event by name, summary, or exact event ID.'
+            )}
+            placeholder={t('game.content.search_placeholder', 'Enter an event name')}
+            value={search}
+            maxLength={100}
+            enterKeyHint="search"
+            leftSection={<Icon path={mdiMagnify} size={0.82} aria-hidden="true" />}
+            rightSection={
+              search ? (
+                <ActionIcon
+                  type="button"
+                  variant="subtle"
+                  color="gray"
+                  aria-label={t('game.content.clear_search', 'Clear event search')}
+                  onClick={clearSearch}
+                >
+                  <Icon path={mdiClose} size={0.82} aria-hidden="true" />
+                </ActionIcon>
+              ) : undefined
+            }
+            rightSectionPointerEvents="all"
+            aria-controls="event-catalog-results"
+            onChange={(event) => {
+              setSearch(event.currentTarget.value)
+              setPage(1)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && search) clearSearch()
+            }}
+          />
+          {debouncedSearch && games && (
+            <Text role="status" aria-live="polite" size="sm" c="dimmed">
+              {t('game.content.search_results', '{{count}} matching events for “{{query}}”', {
+                count: games.total,
+                query: debouncedSearch,
+              })}
+            </Text>
+          )}
+        </form>
+
+        <div
+          id="event-catalog-results"
+          aria-busy={games === undefined || isLoading ? true : undefined}
+        >
           {games === undefined ? (
             <SimpleGrid cols={{ base: 1, md: 2, xl: 3, w24: 4 }} spacing="lg" verticalSpacing="lg">
               {Array.from({ length: ITEM_PER_PAGE }).map((_, index) => (
@@ -161,7 +229,15 @@ const Games: FC = () => {
               ))}
             </SimpleGrid>
           ) : games.data.length === 0 ? (
-            <Empty description={t('game.content.no_game', 'No games available')} />
+            <Empty
+              description={
+                debouncedSearch
+                  ? t('game.content.no_search_results', 'No events match “{{query}}”.', {
+                      query: debouncedSearch,
+                    })
+                  : t('game.content.no_game', 'No games available')
+              }
+            />
           ) : (
             <Stack gap="xl">
               {lifecycleSections
