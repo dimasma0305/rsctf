@@ -103,15 +103,15 @@ fn public_batches_are_single_manifest_and_quota_is_identity_scoped() {
 }
 
 #[test]
-fn admin_test_container_materializes_lazy_image_before_holding_runtime_locks() {
+fn admin_test_container_materializes_or_repairs_image_before_holding_runtime_locks() {
     let source = include_str!("../test_container.rs");
     let start = source.find("pub async fn create_test_container").unwrap();
     let end = source.find("pub async fn destroy_test_container").unwrap();
     let create = &source[start..end];
 
     let prepare = create
-        .find("crate::controllers::game::prepare_queued_image")
-        .expect("admin test start must prepare a queued lazy image");
+        .find("prepare_test_container_image")
+        .expect("admin test start must prepare or repair its runtime image");
     let provisioning = create
         .find("PgAdvisoryLock::acquire_provisioning")
         .expect("admin test start must retain its provisioning fence");
@@ -122,6 +122,15 @@ fn admin_test_container_materializes_lazy_image_before_holding_runtime_locks() {
     assert!(prepare < provisioning);
     assert!(prepare < definition);
     assert!(create[definition..].contains("let mut challenge = load_challenge"));
+
+    let helper_start = source
+        .find("async fn prepare_test_container_image")
+        .unwrap();
+    let helper = &source[helper_start..start];
+    assert!(helper.contains("prepare_queued_image"));
+    assert!(helper.contains("repair_missing_legacy_image"));
+    assert!(helper.contains("reserve_runtime_image"));
+    assert!(helper.contains("TEST_IMAGE_PREPARE_ATTEMPTS"));
 }
 
 #[cfg(unix)]

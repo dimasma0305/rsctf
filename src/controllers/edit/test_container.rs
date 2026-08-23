@@ -11,6 +11,7 @@ use import_policy::validate_import_batch;
 use path::{resolve_subpath, validate_subpath};
 
 const MAX_PENDING_CHALLENGES_PER_USER_GAME: i64 = 10;
+const TEST_IMAGE_PREPARE_ATTEMPTS: usize = 3;
 static TRUSTED_CHALLENGE_IMPORT_SLOTS: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(2);
 static PUBLIC_CHALLENGE_SUBMISSION_SLOTS: tokio::sync::Semaphore =
@@ -22,6 +23,70 @@ const PENDING_CHALLENGE_COUNT_SQL: &str = r#"SELECT COUNT(*)
        AND submitted_by_user_id = $2
        AND review_status = $3"#;
 
+/// Materialize or repair the exact immutable image before the admin preview
+/// takes its provisioning lock. Safe image cleanup deliberately leaves the
+/// authoritative source archive behind, so a successful-but-pruned local
+/// image follows the same first-demand repair path as a player container.
+async fn prepare_test_container_image(
+    st: &SharedState,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<()> {
+    for _ in 0..TEST_IMAGE_PREPARE_ATTEMPTS {
+        let candidate = load_challenge(st, game_id, challenge_id).await?;
+        if !candidate.challenge_type.is_container() {
+            return Err(AppError::bad_request(
+                "Container creation is not allowed for this challenge",
+            ));
+        }
+        if crate::controllers::game::prepare_queued_image(st, &candidate).await? {
+            continue;
+        }
+
+        // Snapshot the published immutable identity under the definition
+        // fence, then release it before a potentially slow Docker rebuild.
+        let definition_lock = crate::services::challenge_workloads::acquire_definition_lock(
+            st.pg(),
+            game_id,
+            challenge_id,
+        )
+        .await?;
+        let snapshot: AppResult<_> = async {
+            let challenge = load_challenge(st, game_id, challenge_id).await?;
+            if !challenge.challenge_type.is_container() {
+                return Err(AppError::bad_request(
+                    "Container creation is not allowed for this challenge",
+                ));
+            }
+            let runtime = crate::services::challenge_workloads::resolve_runtime(st, &challenge)?;
+            Ok((challenge, runtime.legacy_image))
+        }
+        .await;
+        let released = definition_lock.release().await;
+        let (challenge, legacy_image) = snapshot?;
+        released?;
+
+        let Some(image) = legacy_image.as_deref() else {
+            return Ok(());
+        };
+        if crate::controllers::game::repair_missing_legacy_image(st, &challenge, image).await? {
+            // Repair can publish a new immutable ID. Reload rather than
+            // launching the stale ID captured above.
+            continue;
+        }
+        if crate::services::image_storage::reserve_runtime_image(st, &challenge, image).await?
+            == crate::services::image_storage::RuntimeImageReservation::Missing
+        {
+            // Cleanup won the image lock just before this reservation.
+            continue;
+        }
+        return Ok(());
+    }
+    Err(AppError::unavailable(
+        "The repaired challenge image could not be verified on this container host.",
+    ))
+}
+
 /// Spawn and persist the challenge's throwaway test container.
 pub async fn create_test_container(
     State(st): State<SharedState>,
@@ -30,17 +95,11 @@ pub async fn create_test_container(
 ) -> AppResult<RequestResponse<ContainerInfoModel>> {
     manager_or_admin(&st, &user, id).await?;
 
-    // Trusted repository imports may deliberately leave recoverable images
-    // queued until their first runtime demand. Materialize that image before
+    // Trusted repository imports may leave recoverable images queued or later
+    // prune a successful daemon-local image. Materialize/repair it before
     // retaining the provisioning/definition connections: Docker builds can be
     // slow, and the build publication path needs the definition lock itself.
-    let candidate = load_challenge(&st, id, c_id).await?;
-    if !candidate.challenge_type.is_container() {
-        return Err(AppError::bad_request(
-            "Container creation is not allowed for this challenge",
-        ));
-    }
-    crate::controllers::game::prepare_queued_image(&st, &candidate).await?;
+    prepare_test_container_image(&st, id, c_id).await?;
 
     let lock_key = format!("test-containers-game:{id}");
     let _local = crate::utils::single_flight::coalesce(&lock_key).await;

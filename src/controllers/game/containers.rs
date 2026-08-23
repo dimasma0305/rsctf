@@ -9,7 +9,7 @@ use eligibility::{
     player_container_request_is_eligible, ContainerRequestMode,
 };
 mod image_repair;
-pub(crate) use image_repair::prepare_queued_image;
+pub(crate) use image_repair::{prepare_queued_image, repair_missing_legacy_image};
 mod publication;
 pub(crate) use publication::refresh_shared_container_lease_locked;
 use publication::{
