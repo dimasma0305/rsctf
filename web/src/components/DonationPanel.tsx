@@ -1,7 +1,6 @@
 import { Alert, Badge, Button, Group, Paper, SimpleGrid, Skeleton, Stack, Text, ThemeIcon, Title } from '@mantine/core'
 import {
   mdiAccountMultipleOutline,
-  mdiCashMultiple,
   mdiHandHeart,
   mdiMessageTextOutline,
   mdiOpenInNew,
@@ -90,25 +89,7 @@ const DonationPanel: FC<DonationPanelProps> = ({ donateUrl }) => {
         </SimpleGrid>
       ) : (
         <Stack gap="lg">
-          <SimpleGrid
-            component="section"
-            cols={{ base: 1, xs: 2 }}
-            spacing="sm"
-            aria-label={t('common.content.donations.summary')}
-          >
-            <Paper withBorder p="md" className={classes.summaryCard}>
-              <Group gap="sm" wrap="nowrap">
-                <ThemeIcon variant="light" color="pink" radius="md">
-                  <Icon path={mdiCashMultiple} size={0.82} aria-hidden="true" />
-                </ThemeIcon>
-                <div>
-                  <Text size="xs" c="dimmed">
-                    {t('common.content.donations.total_received', 'Successful support total')}
-                  </Text>
-                  <Text fw={750}>{currency.format(data.totalAmount)}</Text>
-                </div>
-              </Group>
-            </Paper>
+          <section aria-label={t('common.content.donations.summary')}>
             <Paper withBorder p="md" className={classes.summaryCard}>
               <Group gap="sm" wrap="nowrap">
                 <ThemeIcon variant="light" color="pink" radius="md">
@@ -131,14 +112,7 @@ const DonationPanel: FC<DonationPanelProps> = ({ donateUrl }) => {
                 </div>
               </Group>
             </Paper>
-          </SimpleGrid>
-
-          <Text size="xs" c="dimmed">
-            {t(
-              'common.content.donations.balance_note',
-              'This is the gross successful-support total. The current Trakteer balance can differ after fees and withdrawals.'
-            )}
-          </Text>
+          </section>
 
           <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
             <section aria-labelledby="donation-leaderboard-title">

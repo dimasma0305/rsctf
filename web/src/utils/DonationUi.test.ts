@@ -30,7 +30,7 @@ test('donations use a feature-gated page instead of the home feed', () => {
   assert.match(navbar, /canAccessNavigationItem\(item, user, config\.donationsEnabled\)/)
   assert.match(mobileHeader, /canAccessNavigationItem\(item, user, config\.donationsEnabled\)/)
   assert.match(panel, /useInfoGetDonations/)
-  assert.match(panel, /data\.totalAmount/)
+  assert.doesNotMatch(panel, /data\.totalAmount|total_received|balance_note/)
   assert.match(panel, /data\.supportCount/)
   assert.match(panel, /data\.supporterCount/)
   assert.match(panel, /href=\{donateUrl\}/)
