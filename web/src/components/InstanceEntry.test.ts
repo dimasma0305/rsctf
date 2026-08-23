@@ -25,3 +25,10 @@ test('admin previews explain the WSRX requirement and block unusable entries', (
   assert.match(entry, /phase === 'ready'/)
   assert.match(entry, /role="status" aria-live="polite"/)
 })
+
+test('the disabled open-web action remains a valid button', () => {
+  assert.match(entry, /onClick=\{onOpenEntry\}/)
+  assert.match(entry, /if \(!canUseEntry\) return/)
+  assert.match(entry, /window\.open\(`http:\/\/\$\{webEntry\}`, '_blank', 'noopener,noreferrer'\)/)
+  assert.doesNotMatch(entry, /component="a"/)
+})
