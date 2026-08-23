@@ -1,0 +1,37 @@
+.modal {
+  border: 1px solid color-mix(in srgb, var(--mantine-primary-color-filled) 28%, var(--mantine-color-dark-4));
+  border-radius: var(--mantine-radius-lg);
+  box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 45%);
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 3.75rem;
+  padding: var(--mantine-spacing-md);
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+.modalBody {
+  padding-top: var(--mantine-spacing-lg);
+}
+
+.note {
+  padding-inline-start: var(--mantine-spacing-sm);
+  border-inline-start: 3px solid var(--mantine-primary-color-light-color);
+}
+
+.featureList {
+  padding-inline-start: var(--mantine-spacing-md);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal,
+  .modal * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

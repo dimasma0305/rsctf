@@ -71,6 +71,8 @@ pub struct BasicGameInfoModel {
     pub user_count: i32,
     pub average_rating: f64,
     pub review_count: i32,
+    pub joined: bool,
+    pub participation_status: Option<ParticipationStatus>,
     #[serde(with = "crate::utils::datetime::millis")]
     pub start: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
@@ -89,6 +91,8 @@ impl From<&game::Model> for BasicGameInfoModel {
             user_count: 0,
             average_rating: 0.0,
             review_count: 0,
+            joined: false,
+            participation_status: None,
             start: g.start_time_utc,
             end: g.end_time_utc,
         }
@@ -959,6 +963,7 @@ fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
     Ok(format!("{team_id}:{signature}"))
 }
 
+mod catalog;
 pub(crate) mod cheat;
 mod cheat_evidence;
 mod combined_scoreboard;
@@ -974,6 +979,7 @@ mod traffic;
 mod vpn_access;
 mod writeup;
 
+pub use catalog::*;
 pub use cheat::*;
 pub use cheat_evidence::*;
 pub use combined_scoreboard::*;

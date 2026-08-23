@@ -7,6 +7,7 @@ import { FC, useEffect, useMemo, useReducer, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
+import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { encryptApiData } from '@Utils/Crypto'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
 import { showErrorMsg } from '@Utils/Shared'
@@ -31,6 +32,7 @@ interface GameChallengeModalProps extends ModalProps {
   gameTitle: string
   gameEnded: boolean
   practiceMode?: boolean
+  eventVpnRequired?: boolean
   cateData: ChallengeCategoryItemProps
   title: string
   score: number
@@ -39,8 +41,19 @@ interface GameChallengeModalProps extends ModalProps {
 }
 
 export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
-  const { gameId, gameTitle, gameEnded, practiceMode, challengeId, cateData, status, title, score, ...modalProps } =
-    props
+  const {
+    gameId,
+    gameTitle,
+    gameEnded,
+    practiceMode,
+    eventVpnRequired,
+    challengeId,
+    cateData,
+    status,
+    title,
+    score,
+    ...modalProps
+  } = props
 
   const { data: challenge, mutate } = api.game.useGameGetChallenge(gameId, challengeId, {
     refreshInterval: 120 * 1000,
@@ -75,6 +88,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
   const isDynamic =
     challenge?.type === ChallengeType.StaticContainer || challenge?.type === ChallengeType.DynamicContainer
+  useFeatureGuide('dynamic-container', Boolean(modalProps.opened && isDynamic), { eventVpnRequired })
 
   const [disabled, setDisabled] = useState(false)
   const [submitId, setSubmitId] = useState(0)

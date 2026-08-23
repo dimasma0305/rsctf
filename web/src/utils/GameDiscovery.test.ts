@@ -16,10 +16,29 @@ test('event discovery searches the complete server-side catalog accessibly', () 
   assert.match(page, /role="status" aria-live="polite"/)
   assert.match(page, /setPage\(1\)/)
   assert.match(api, /Case-insensitive event title, summary, or exact ID search/)
+  assert.match(page, /GameMembershipFilter\.Joined/)
+  assert.match(page, /GameMembershipFilter\.NotJoined/)
+  assert.match(card, /participationStatus/)
+  assert.match(card, /showMembership/)
+})
+
+test('global challenge discovery remains authenticated and event-membership scoped in its copy and API', () => {
+  const challengePage = readFileSync('src/pages/challenges/Index.tsx', 'utf8')
+  const navigation = readFileSync('src/components/navigation.ts', 'utf8')
+  assert.match(challengePage, /Navigate to="\/account\/login\?from=%2Fchallenges"/)
+  assert.match(challengePage, /useGameChallengeCatalog/)
+  assert.match(challengePage, /category: category \?\? undefined/)
+  assert.match(challengePage, /type: challengeType \?\? undefined/)
+  assert.match(challengePage, /solved: solveFilter/)
+  assert.match(challengePage, /Upcoming, hidden, and unauthorized event content stays private/)
+  assert.match(navigation, /link: '\/challenges',[\s\S]*requiresAuth: true/)
 })
 
 test('event cards remain whole-card links without a redundant view-event footer', () => {
-  assert.match(card, /<Link to=\{`\/games\/\$\{game\.id\}`\} className=\{classes\.link\}>/)
+  assert.match(
+    card,
+    /<Link to=\{`\/games\/\$\{game\.id\}`\} className=\{classes\.link\} data-guide="event-card">/
+  )
   assert.doesNotMatch(card, /view_event|mdiArrowRight|classes\.action/)
   assert.doesNotMatch(cardStyles, /\.action/)
 })

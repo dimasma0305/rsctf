@@ -33,13 +33,14 @@ import { GameJoinModal } from '@Components/GameJoinModal'
 import { GameProgress } from '@Components/GameProgress'
 import { Markdown } from '@Components/MarkdownRenderer'
 import { WithNavBar } from '@Components/WithNavbar'
-import { useLanguage } from '@Utils/I18n'
+import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { encryptApiData } from '@Utils/Crypto'
+import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { useConfig } from '@Hooks/useConfig'
 import { getGameStatus, useGame } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
-import { useConfig } from '@Hooks/useConfig'
 import { useTeams, useUser } from '@Hooks/useUser'
 import api, { GameJoinModel, ParticipationStatus } from '@Api'
 import classes from '@Styles/GameDetail.module.css'
@@ -200,6 +201,7 @@ const GameDetail: FC = () => {
 
   // Allow join if game is not finished OR practice mode is enabled
   const isGameOpenForJoin = !finished || game?.practiceMode
+  useFeatureGuide('event-vpn', Boolean(status === ParticipationStatus.Accepted && game?.vpnAccessRequired && !finished))
 
   const canSubmit =
     (status === ParticipationStatus.Unsubmitted || status === ParticipationStatus.Rejected) &&
@@ -292,7 +294,7 @@ const GameDetail: FC = () => {
         </Button>
       )}
       {status === ParticipationStatus.Accepted && game?.vpnAccessRequired && !finished && (
-        <Button variant="outline" onClick={onDownloadVpnConfig}>
+        <Button variant="outline" onClick={onDownloadVpnConfig} data-guide="event-vpn-download">
           {t('game.button.event_vpn', 'Download event VPN')}
         </Button>
       )}

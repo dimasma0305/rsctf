@@ -157,8 +157,10 @@
       "profile": "Profile"
     },
     "admin": "Admin",
+    "challenge_catalog": "My challenges",
     "donations": "Donations",
     "game": "Games",
+    "guide": "Guide",
     "home": "Home",
     "post": "Posts",
     "team": "Team",

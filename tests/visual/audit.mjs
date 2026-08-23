@@ -705,7 +705,11 @@ async function main() {
   let routes = discoverPageRoutes(context)
   if (options.pageFilters.length) {
     routes = routes.filter((route) =>
-      options.pageFilters.some((filter) => route.name.includes(filter) || route.path.includes(filter))
+      options.pageFilters.some((filter) => {
+        if (!filter.startsWith('=')) return route.name.includes(filter) || route.path.includes(filter)
+        const exact = filter.slice(1)
+        return route.name === exact || route.path === exact
+      })
     )
   }
   routes = selectRouteShard(routes, options.shard)
@@ -763,6 +767,11 @@ async function main() {
   await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
     source: axeSource,
   })
+  if (process.env.RSCTF_VISUAL_DISABLE_GUIDE === '1') {
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `localStorage.setItem('rsctf-player-guide:guest', JSON.stringify({ interactiveEnabled: false, completedVersion: 1, seenFeatures: [] }))`,
+    })
+  }
 
   let server5xx = []
   let runtimeExceptions = []

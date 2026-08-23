@@ -71,7 +71,9 @@ pub struct ClientConfig {
     pub extension_duration: i32,
     pub renewal_window: i32,
     pub enable_browser_fingerprint: bool,
+    pub allow_register: bool,
     pub allow_password_registration: bool,
+    pub email_confirmation_required: bool,
     pub enable_google_auth: bool,
     pub enable_discord_auth: bool,
     pub donations_enabled: bool,
@@ -119,7 +121,9 @@ pub async fn get_client_config(
     let mut custom_theme: Option<String> = None;
     let mut logo_hash: Option<String> = None;
     let mut enable_browser_fingerprint = false;
+    let mut allow_register = st.config.account.allow_register;
     let mut allow_password_registration = st.config.account.allow_password_registration;
+    let mut email_confirmation_required = st.config.account.email_confirmation_required;
     // Container port-mapping mode advertised to the client (`ContainerPortMappingType`):
     // `Default` = direct host:port, `PlatformProxy` = wsrx-proxied. The client gates
     // wsrx on `config.portMapping === PlatformProxy` (InstanceEntry.tsx).
@@ -170,8 +174,14 @@ pub async fn get_client_config(
             "AccountPolicy:EnableBrowserFingerprint" => {
                 enable_browser_fingerprint = value == "true";
             }
+            "AccountPolicy:AllowRegister" => {
+                allow_register = value == "true";
+            }
             "AccountPolicy:AllowPasswordRegistration" => {
                 allow_password_registration = value == "true";
+            }
+            "AccountPolicy:EmailConfirmationRequired" => {
+                email_confirmation_required = value == "true";
             }
             _ => {}
         }
@@ -201,7 +211,9 @@ pub async fn get_client_config(
         extension_duration,
         renewal_window,
         enable_browser_fingerprint,
+        allow_register,
         allow_password_registration,
+        email_confirmation_required,
         enable_google_auth: oauth.google_configured(),
         enable_discord_auth: oauth.discord_configured(),
         donations_enabled,

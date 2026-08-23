@@ -232,7 +232,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
           </Text>
         </Stack>
 
-        <Button onClick={onCreate} disabled={disabled} loading={disabled}>
+        <Button onClick={onCreate} disabled={disabled} loading={disabled} data-guide="instance-start">
           {t('challenge.button.instance.create')}
         </Button>
       </Group>

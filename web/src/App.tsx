@@ -12,6 +12,7 @@ import { SWRConfig } from 'swr'
 import routes from '~react-pages'
 import { ErrorFallback } from '@Components/ErrorFallback'
 import { WsrxProvider } from '@Components/WsrxProvider'
+import { PlayerGuideProvider } from '@Components/guide/PlayerGuide'
 import { shouldRedirectOnUnauthorized } from '@Utils/AuthState'
 import { localCacheProvider } from '@Utils/Cache'
 import { useLanguage } from '@Utils/I18n'
@@ -124,16 +125,18 @@ const ThemedApp: FC = () => {
           <DatesProvider settings={{ locale }}>
             <ModalsProvider labels={{ confirm: t('common.modal.confirm'), cancel: t('common.modal.cancel') }}>
               <WsrxProvider>
-                <RouteAccessibility />
-                <Suspense
-                  fallback={
-                    <Center h="100vh" w="100vw" role="status" aria-live="polite">
-                      <Loader aria-label={t('common.content.loading', 'Loading')} />
-                    </Center>
-                  }
-                >
-                  {useRoutes(routes)}
-                </Suspense>
+                <PlayerGuideProvider>
+                  <RouteAccessibility />
+                  <Suspense
+                    fallback={
+                      <Center h="100vh" w="100vw" role="status" aria-live="polite">
+                        <Loader aria-label={t('common.content.loading', 'Loading')} />
+                      </Center>
+                    }
+                  >
+                    {useRoutes(routes)}
+                  </Suspense>
+                </PlayerGuideProvider>
               </WsrxProvider>
             </ModalsProvider>
           </DatesProvider>
