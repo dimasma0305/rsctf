@@ -13,10 +13,25 @@ mod final_policy;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameListQuery {
-    #[serde(flatten)]
-    page: PageParams,
+    #[serde(default = "default_game_list_count")]
+    count: u64,
+    #[serde(default)]
+    skip: u64,
     #[serde(default)]
     search: Option<String>,
+}
+
+fn default_game_list_count() -> u64 {
+    PageParams::default().count
+}
+
+impl GameListQuery {
+    fn page(&self) -> PageParams {
+        PageParams {
+            count: self.count,
+            skip: self.skip,
+        }
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -47,6 +62,7 @@ pub async fn games(
     Query(query): Query<GameListQuery>,
 ) -> AppResult<ArrayResponse<BasicGameInfoModel>> {
     let search = normalized_game_search(query.search.as_deref())?;
+    let page = query.page();
     let total = sqlx::query_scalar::<_, i64>(
         r#"SELECT COUNT(*)
              FROM "Games"
@@ -72,8 +88,8 @@ pub async fn games(
             OFFSET $2 LIMIT $3"#,
     )
     .bind(search.as_deref())
-    .bind(query.page.skip.min(i64::MAX as u64) as i64)
-    .bind(query.page.limit() as i64)
+    .bind(page.skip.min(i64::MAX as u64) as i64)
+    .bind(page.limit() as i64)
     .fetch_all(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -889,6 +905,38 @@ pub async fn get_challenge(
 #[cfg(test)]
 mod game_list_tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn game_list_query_accepts_numeric_pagination_strings() {
+        let app = Router::new().route(
+            "/",
+            get(|Query(query): Query<GameListQuery>| async move {
+                if query.count == 12
+                    && query.skip == 3
+                    && query.search.as_deref() == Some("TECHCOMFEST")
+                {
+                    StatusCode::NO_CONTENT
+                } else {
+                    StatusCode::BAD_REQUEST
+                }
+            }),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/?count=12&skip=3&search=TECHCOMFEST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
 
     #[test]
     fn event_search_is_trimmed_bounded_and_optional() {
