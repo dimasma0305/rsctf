@@ -36,7 +36,12 @@ export const useConfig = () => {
     refreshWhenOffline: false,
   })
 
-  return { config: query.data ?? fallbackConfig, error: query.error, mutate: query.mutate }
+  return {
+    config: query.data ?? fallbackConfig,
+    error: query.error,
+    loading: query.data === undefined && query.error === undefined,
+    mutate: query.mutate,
+  }
 }
 
 export const useCaptchaConfig = () => {

@@ -8,6 +8,11 @@
   letter-spacing: 0.08em;
 }
 
+.summaryCard {
+  min-width: 0;
+  background: color-mix(in srgb, var(--app-shell-surface) 86%, transparent);
+}
+
 .leaderboard {
   margin: 0;
   padding: 0;

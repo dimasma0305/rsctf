@@ -111,14 +111,16 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
   const { t } = useTranslation()
   const { language, setLanguage, supportedLanguages } = useLanguage()
 
-  const links = PRIMARY_NAVIGATION.filter((item) => canAccessNavigationItem(item, user)).map((item) => (
-    <NavbarLink
-      key={item.label}
-      {...item}
-      compact={compact}
-      isActive={isNavigationItemActive(item, location.pathname)}
-    />
-  ))
+  const links = PRIMARY_NAVIGATION.filter((item) => canAccessNavigationItem(item, user, config.donationsEnabled)).map(
+    (item) => (
+      <NavbarLink
+        key={item.label}
+        {...item}
+        compact={compact}
+        isActive={isNavigationItemActive(item, location.pathname)}
+      />
+    )
+  )
   const loggedIn = Boolean(user && !error)
   const toggleLabel = compact
     ? t('common.button.expand_navigation', 'Expand navigation')

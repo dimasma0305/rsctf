@@ -59,13 +59,19 @@
       "recent_games": "Game Terbaru"
     },
     "donations": {
+      "balance_note": "Ini adalah total bruto dukungan yang berhasil. Saldo Trakteer saat ini dapat berbeda setelah biaya dan penarikan.",
+      "description": "Rayakan semua orang yang mendukung platform dan baca pesan publik mereka.",
       "eyebrow": "Dukungan komunitas",
+      "history_counts": "{{supports}} dukungan dari {{supporters}} pendukung",
+      "history_coverage": "Riwayat dukungan lengkap",
       "title": "Dinding pendukung",
       "leaderboard": "Pendukung teratas",
       "messages": "Pesan pendukung",
       "rank": "Peringkat {{rank}}",
       "support_count": "{{count}} dukungan",
       "reply": "Balasan",
+      "summary": "Ringkasan dukungan",
+      "total_received": "Total dukungan berhasil",
       "empty": "Belum ada dukungan berhasil yang dapat ditampilkan.",
       "no_messages": "Belum ada pesan publik.",
       "unavailable_title": "Dinding pendukung tidak tersedia",
@@ -147,6 +153,7 @@
       "profile": "Profil"
     },
     "admin": "Admin",
+    "donations": "Donasi",
     "game": "Games",
     "home": "Beranda",
     "post": "Postingan",

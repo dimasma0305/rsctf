@@ -8,11 +8,14 @@ use serde::Deserialize;
 
 use super::{DonationFeed, DonationLeaderboardEntry, DonationMessage, DonationProvider};
 
-const SUPPORTS_URL: &str = "https://api.trakteer.id/v1/public/supports?include=reply_message";
+const SUPPORTS_URL: &str = "https://api.trakteer.id/v1/public/supports";
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
-const MAX_SUPPORTS: usize = 200;
+const PAGE_LIMIT: usize = 25;
+const MAX_SUPPORTS: usize = 5_000;
+const MAX_PAGES: usize = MAX_SUPPORTS.div_ceil(PAGE_LIMIT);
 const MAX_LEADERBOARD: usize = 10;
 const MAX_MESSAGES: usize = 20;
+const SWEEP_TIMEOUT: Duration = Duration::from_secs(20);
 
 static CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -35,6 +38,21 @@ struct Envelope {
 struct ResultBody {
     #[serde(default)]
     data: Vec<Support>,
+    meta: ResultMeta,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResultMeta {
+    pagination: Pagination,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+struct Pagination {
+    total: usize,
+    count: usize,
+    per_page: usize,
+    current_page: usize,
+    total_pages: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,7 +60,7 @@ struct Support {
     #[serde(default, alias = "creator_name")]
     supporter_name: String,
     #[serde(default)]
-    support_message: String,
+    support_message: Option<String>,
     #[serde(default)]
     quantity: i64,
     #[serde(default)]
@@ -69,9 +87,42 @@ pub(super) async fn fetch(api_key: &str) -> Result<DonationFeed, String> {
         .as_ref()
         .map_err(|error| format!("HTTP client unavailable: {error}"))?;
     let key = HeaderValue::from_str(api_key).map_err(|_| "invalid API key header".to_owned())?;
+    let supports = tokio::time::timeout(SWEEP_TIMEOUT, fetch_all_pages(client, &key))
+        .await
+        .map_err(|_| "provider history sweep timed out".to_owned())??;
+    Ok(build_feed(supports))
+}
+
+async fn fetch_all_pages(
+    client: &reqwest::Client,
+    key: &HeaderValue,
+) -> Result<Vec<Support>, String> {
+    let first = fetch_page(client, key, 1).await?;
+    let (mut supports, snapshot) = checked_page(first, 1, None)?;
+    for page in 2..=snapshot.total_pages {
+        let envelope = fetch_page(client, key, page).await?;
+        let (mut page_supports, _) = checked_page(envelope, page, Some(snapshot))?;
+        supports.append(&mut page_supports);
+    }
+    if supports.len() != snapshot.total {
+        return Err("provider history changed during pagination".to_owned());
+    }
+    Ok(supports)
+}
+
+async fn fetch_page(
+    client: &reqwest::Client,
+    key: &HeaderValue,
+    page: usize,
+) -> Result<Envelope, String> {
     let response = client
         .get(SUPPORTS_URL)
-        .header("key", key)
+        .query(&[
+            ("include", "reply_message".to_owned()),
+            ("limit", PAGE_LIMIT.to_string()),
+            ("page", page.to_string()),
+        ])
+        .header("key", key.clone())
         .header(ACCEPT, "application/json")
         .header("X-Requested-With", "XMLHttpRequest")
         .send()
@@ -80,8 +131,7 @@ pub(super) async fn fetch(api_key: &str) -> Result<DonationFeed, String> {
     if !response.status().is_success() {
         return Err(format!("provider returned HTTP {}", response.status()));
     }
-    let envelope: Envelope = bounded_json(response).await?;
-    build_feed(envelope)
+    bounded_json(response).await
 }
 
 async fn bounded_json(mut response: reqwest::Response) -> Result<Envelope, String> {
@@ -110,22 +160,47 @@ async fn bounded_json(mut response: reqwest::Response) -> Result<Envelope, Strin
     serde_json::from_slice(&body).map_err(|error| format!("provider response was invalid: {error}"))
 }
 
-fn build_feed(envelope: Envelope) -> Result<DonationFeed, String> {
+fn checked_page(
+    envelope: Envelope,
+    requested_page: usize,
+    expected: Option<Pagination>,
+) -> Result<(Vec<Support>, Pagination), String> {
     if envelope.status_code != 200 || !envelope.status.eq_ignore_ascii_case("success") {
         return Err("provider rejected the request".to_owned());
     }
+    let pagination = envelope.result.meta.pagination;
+    let data = envelope.result.data;
+    let expected_pages = pagination.total.div_ceil(pagination.per_page.max(1)).max(1);
+    if pagination.current_page != requested_page
+        || pagination.per_page == 0
+        || pagination.per_page > PAGE_LIMIT
+        || pagination.total_pages != expected_pages
+        || pagination.total_pages > MAX_PAGES
+        || pagination.total > MAX_SUPPORTS
+        || pagination.count != data.len()
+        || data.len() > pagination.per_page
+    {
+        return Err("provider returned invalid pagination metadata".to_owned());
+    }
+    if expected.is_some_and(|expected| {
+        expected.total != pagination.total
+            || expected.per_page != pagination.per_page
+            || expected.total_pages != pagination.total_pages
+    }) {
+        return Err("provider history changed during pagination".to_owned());
+    }
+    Ok((data, pagination))
+}
 
+fn build_feed(supports: Vec<Support>) -> DonationFeed {
     let mut aggregates: BTreeMap<String, Aggregate> = BTreeMap::new();
     let mut messages = Vec::new();
-    for support in envelope
-        .result
-        .data
-        .into_iter()
-        .take(MAX_SUPPORTS)
-        .filter(|support| {
-            support.status.is_empty() || support.status.eq_ignore_ascii_case("success")
-        })
-    {
+    let mut total_amount = 0_i64;
+    let mut total_quantity = 0_i64;
+    let mut support_count = 0_usize;
+    for support in supports.into_iter().filter(|support| {
+        support.status.is_empty() || support.status.eq_ignore_ascii_case("success")
+    }) {
         if !(0..=1_000_000_000_000).contains(&support.amount)
             || !(0..=1_000_000).contains(&support.quantity)
         {
@@ -147,8 +222,15 @@ fn build_feed(envelope: Envelope) -> Result<DonationFeed, String> {
         aggregate.amount = aggregate.amount.saturating_add(support.amount);
         aggregate.quantity = aggregate.quantity.saturating_add(support.quantity);
         aggregate.count += 1;
+        total_amount = total_amount.saturating_add(support.amount);
+        total_quantity = total_quantity.saturating_add(support.quantity);
+        support_count = support_count.saturating_add(1);
 
-        let message = clean_text(&support.support_message, 500, true);
+        let message = clean_text(
+            support.support_message.as_deref().unwrap_or_default(),
+            500,
+            true,
+        );
         if message.is_empty() {
             continue;
         }
@@ -169,6 +251,7 @@ fn build_feed(envelope: Envelope) -> Result<DonationFeed, String> {
         });
     }
 
+    let supporter_count = aggregates.len();
     let mut rows: Vec<_> = aggregates.into_values().collect();
     rows.sort_by(|left, right| {
         right
@@ -191,13 +274,17 @@ fn build_feed(envelope: Envelope) -> Result<DonationFeed, String> {
     messages.sort_by_key(|message| std::cmp::Reverse(message.updated_at));
     messages.truncate(MAX_MESSAGES);
 
-    Ok(DonationFeed {
+    DonationFeed {
         provider: DonationProvider::Trakteer,
         currency: "IDR",
         fetched_at: Utc::now(),
+        total_amount,
+        total_quantity,
+        support_count,
+        supporter_count,
         leaderboard,
         messages,
-    })
+    }
 }
 
 fn parse_trakteer_time(value: &str) -> Option<chrono::DateTime<Utc>> {
@@ -227,7 +314,8 @@ mod tests {
         let envelope: Envelope = serde_json::from_value(serde_json::json!({
             "status": "success",
             "status_code": 200,
-            "result": { "data": [
+            "result": {
+              "data": [
                 {
                     "creator_name": " Alice\u{0000} ",
                     "support_message": "Keep going!",
@@ -255,14 +343,27 @@ mod tests {
                     "status": "refund",
                     "updated_at": "2025-03-12 10:00:00"
                 }
-            ]}
+              ],
+              "meta": { "pagination": {
+                "total": 3,
+                "count": 3,
+                "per_page": 25,
+                "current_page": 1,
+                "total_pages": 1
+              }}
+            }
         }))
         .unwrap();
-        let feed = build_feed(envelope).unwrap();
+        let (supports, _) = checked_page(envelope, 1, None).unwrap();
+        let feed = build_feed(supports);
         assert_eq!(feed.leaderboard.len(), 1);
         assert_eq!(feed.leaderboard[0].supporter_name, "Alice");
         assert_eq!(feed.leaderboard[0].total_amount, 45000);
         assert_eq!(feed.leaderboard[0].support_count, 2);
+        assert_eq!(feed.total_amount, 45000);
+        assert_eq!(feed.total_quantity, 3);
+        assert_eq!(feed.support_count, 2);
+        assert_eq!(feed.supporter_count, 1);
         assert_eq!(feed.messages.len(), 2);
         assert_eq!(feed.messages[0].message, "Again");
         assert_eq!(
@@ -275,5 +376,49 @@ mod tests {
     fn text_limits_chars_and_removes_controls() {
         assert_eq!(clean_text(" a\u{0000}b\ncd ", 4, true), "ab\nc");
         assert_eq!(clean_text(" a\u{0000}b\ncd ", 4, false), "abcd");
+    }
+
+    #[test]
+    fn pagination_requires_a_complete_stable_history() {
+        let page = |current_page, total, count, total_pages| {
+            serde_json::from_value::<Envelope>(serde_json::json!({
+                "status": "success",
+                "status_code": 200,
+                "result": {
+                    "data": (0..count).map(|_| serde_json::json!({
+                        "supporter_name": "Supporter",
+                        "updated_at": "2025-03-11 13:44:07"
+                    })).collect::<Vec<_>>(),
+                    "meta": { "pagination": {
+                        "total": total,
+                        "count": count,
+                        "per_page": 25,
+                        "current_page": current_page,
+                        "total_pages": total_pages
+                    }}
+                }
+            }))
+            .unwrap()
+        };
+
+        let (_, first) = checked_page(page(1, 39, 25, 2), 1, None).unwrap();
+        assert!(checked_page(page(2, 39, 14, 2), 2, Some(first)).is_ok());
+        assert!(checked_page(page(2, 40, 15, 2), 2, Some(first)).is_err());
+        assert!(checked_page(page(1, MAX_SUPPORTS + 1, 25, MAX_PAGES + 1), 1, None).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires RSCTF_TEST_TRAKTEER_API_KEY and provider network access"]
+    async fn configured_provider_history_spans_every_declared_page() {
+        let key = std::env::var("RSCTF_TEST_TRAKTEER_API_KEY")
+            .expect("RSCTF_TEST_TRAKTEER_API_KEY is required");
+        let feed = fetch(&key).await.unwrap();
+        assert!(feed.support_count > PAGE_LIMIT);
+        assert!(feed.supporter_count >= feed.leaderboard.len());
+        assert_eq!(
+            feed.leaderboard.len(),
+            MAX_LEADERBOARD.min(feed.supporter_count)
+        );
+        assert!(feed.total_amount > 0);
     }
 }

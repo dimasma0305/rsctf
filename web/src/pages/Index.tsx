@@ -4,7 +4,6 @@ import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
-import DonationPanel from '@Components/DonationPanel'
 import { Empty } from '@Components/Empty'
 import { GameStatus } from '@Components/GameCard'
 import { PageHeader } from '@Components/PageHeader'
@@ -15,7 +14,6 @@ import { MobilePostCard } from '@Components/mobile/PostCard'
 import { RecentGameCarousel } from '@Components/mobile/RecentGameCarousel'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { useConfig } from '@Hooks/useConfig'
 import { getGameStatus, useRecentGames } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import api, { PostInfoModel } from '@Api'
@@ -23,7 +21,6 @@ import classes from '@Styles/Index.module.css'
 
 const Home: FC = () => {
   const { t } = useTranslation()
-  const { config } = useConfig()
   const { data: posts, mutate } = api.info.useInfoGetLatestPosts({ refreshInterval: 5 * 60 * 1000 })
   const { recentGames } = useRecentGames()
   const isMobile = useIsMobile(900)
@@ -222,7 +219,6 @@ const Home: FC = () => {
             </Paper>
           )}
         </div>
-        {config.donationsEnabled && <DonationPanel />}
       </Stack>
     </WithNavBar>
   )

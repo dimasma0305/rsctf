@@ -60,7 +60,11 @@
       "recent_games": "Recent Games"
     },
     "donations": {
+      "balance_note": "This is the gross successful-support total. The current Trakteer balance can differ after fees and withdrawals.",
+      "description": "Celebrate everyone who supports the platform and read their public messages.",
       "eyebrow": "Community support",
+      "history_counts": "{{supports}} supports from {{supporters}} supporters",
+      "history_coverage": "Complete support history",
       "title": "Supporter wall",
       "leaderboard": "Top supporters",
       "messages": "Supporter messages",
@@ -68,6 +72,8 @@
       "support_count_one": "{{count}} support",
       "support_count_other": "{{count}} supports",
       "reply": "Reply",
+      "summary": "Support summary",
+      "total_received": "Successful support total",
       "empty": "No successful support is available yet.",
       "no_messages": "No public messages yet.",
       "unavailable_title": "Supporter wall unavailable",
@@ -151,6 +157,7 @@
       "profile": "Profile"
     },
     "admin": "Admin",
+    "donations": "Donations",
     "game": "Games",
     "home": "Home",
     "post": "Posts",

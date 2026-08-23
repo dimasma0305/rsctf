@@ -3758,6 +3758,10 @@ export interface DonationFeed {
   currency: string;
   /** @format uint64 */
   fetchedAt: number;
+  totalAmount: number;
+  totalQuantity: number;
+  supportCount: number;
+  supporterCount: number;
   leaderboard: DonationLeaderboardEntry[];
   messages: DonationMessage[];
 }
@@ -3795,7 +3799,7 @@ export interface ClientConfig {
   renewalWindow?: number;
   /** Enable browser fingerprinting in Login/Register */
   enableBrowserFingerprint?: boolean;
-  /** Whether the optional public donation panel is active and configured. */
+  /** Whether the optional public donation page is active and configured. */
   donationsEnabled?: boolean;
   donationProvider?: DonationProvider | null;
   /** Whether public username/password account creation is enabled */

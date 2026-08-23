@@ -12,8 +12,13 @@ test('donation load is fixed-rate, read-only, bounded, and privacy-aware', () =>
   assert.doesNotMatch(scenario, /http\.(?:post|put|patch|del|delete)\(/);
   assert.match(scenario, /\/api\/donations/);
   assert.match(scenario, /leaderboard\.length > 10/);
+  assert.match(scenario, /leaderboard\.length !== Math\.min\(10, feed\.supporterCount\)/);
+  assert.match(scenario, /row\.rank !== index \+ 1/);
+  assert.match(scenario, /feed\.totalAmount/);
   assert.match(scenario, /messages\.length > 20/);
   assert.match(scenario, /supporteremail/);
+  assert.match(scenario, /netamount/);
+  assert.match(scenario, /currentbalance/);
   assert.match(scenario, /dropped_iterations:\s*\['count==0'\]/);
   assert.match(scenario, /server_5xx:\s*\['rate==0'\]/);
 });
