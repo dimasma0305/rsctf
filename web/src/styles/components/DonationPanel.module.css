@@ -1,0 +1,70 @@
+.panel {
+  min-width: 0;
+  border-radius: var(--mantine-radius-lg);
+  background: color-mix(in srgb, var(--app-raised-surface) 94%, transparent);
+}
+
+.eyebrow {
+  letter-spacing: 0.08em;
+}
+
+.leaderboard {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.leaderboardRow {
+  min-height: 3.6rem;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+  padding: 0.55rem 0;
+}
+
+.leaderboardRow:last-child {
+  border-bottom: 0;
+}
+
+.supporterIdentity,
+.supporterText {
+  min-width: 0;
+}
+
+.rank {
+  display: inline-grid;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 2rem;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--mantine-color-pink-light);
+  color: var(--mantine-color-pink-light-color);
+  font-weight: 750;
+}
+
+.amount {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.messages {
+  max-height: 24rem;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.message {
+  background: color-mix(in srgb, var(--app-shell-surface) 86%, transparent);
+}
+
+.messageText,
+.reply {
+  margin-block: 0.35rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+@media (max-width: $mantine-breakpoint-xs) {
+  .amount {
+    font-size: var(--mantine-font-size-xs);
+  }
+}

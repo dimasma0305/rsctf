@@ -56,6 +56,7 @@ fn common_api_router(game_router: Router<SharedState>) -> Router<SharedState> {
         .merge(controllers::edit::router())
         .merge(controllers::admin::router())
         .merge(controllers::info::router())
+        .merge(controllers::donations::router())
         .merge(controllers::assets::router())
         .merge(controllers::api_token::router())
         .merge(controllers::exercise::router())

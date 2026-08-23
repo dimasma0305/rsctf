@@ -38,6 +38,7 @@ import {
   mdiDotsHorizontal,
   mdiEmailOutline,
   mdiHammerWrench,
+  mdiHandHeart,
   mdiHeartPulse,
   mdiInformationOutline,
   mdiKeyChainVariant,
@@ -68,6 +69,8 @@ import api, {
   ContainerPolicy,
   ContainerPortMappingType,
   ContainerProviderInfoModel,
+  DonationConfig,
+  DonationProvider,
   EmailConfig,
   GlobalConfig,
   MyIpInfoModel,
@@ -95,6 +98,7 @@ const Configs: FC = () => {
   const [oauth, setOAuth] = useState<OAuthConfig | null>()
   const [registry, setRegistry] = useState<RegistryConfig | null>()
   const [proxyTrust, setProxyTrust] = useState<ProxyTrustConfig | null>()
+  const [donations, setDonations] = useState<DonationConfig | null>()
   // Local-only state for the "Send test email" button — never
   // persisted, never round-tripped through the Save flow.
   const [testRecipient, setTestRecipient] = useState('')
@@ -115,6 +119,7 @@ const Configs: FC = () => {
     | 'captcha'
     | 'oauth'
     | 'registry_pull'
+    | 'donations'
     | 'diagnostics'
   const [activeSection, setActiveSection] = useState<SectionKey>('platform')
   const initialSnapshotRef = useRef<string | null>(null)
@@ -139,6 +144,7 @@ const Configs: FC = () => {
       setOAuth(configs.oAuth)
       setRegistry(configs.registry)
       setProxyTrust(configs.proxyTrust)
+      setDonations(configs.donations)
       setColor(configs.globalConfig?.customTheme)
       // Stash baseline for dirty tracking. Identity (referential
       // equality) isn't enough — the SWR cache may return the same
@@ -155,6 +161,7 @@ const Configs: FC = () => {
         oauth: configs.oAuth,
         registry: configs.registry,
         proxyTrust: configs.proxyTrust,
+        donations: configs.donations,
       })
     }
   }, [configs])
@@ -172,6 +179,7 @@ const Configs: FC = () => {
     oauth,
     registry,
     proxyTrust,
+    donations,
   })
   const dirty =
     logoFile !== null || (initialSnapshotRef.current !== null && currentSnapshot !== initialSnapshotRef.current)
@@ -223,9 +231,23 @@ const Configs: FC = () => {
           : 'configured'
         : 'inactive',
       registry_pull: registry?.isConfigured ? 'configured' : 'inactive',
+      donations: donations?.enabled
+        ? donations.hasApiKey || donations.apiKey
+          ? 'configured'
+          : 'attention'
+        : 'inactive',
       diagnostics: 'configured',
     }
-  }, [accountUniqueness, buildRegistry, email, captcha, oauthConfigured, oauthOnlyRegistrationNeedsAttention, registry])
+  }, [
+    accountUniqueness,
+    buildRegistry,
+    email,
+    captcha,
+    oauthConfigured,
+    oauthOnlyRegistrationNeedsAttention,
+    registry,
+    donations,
+  ])
 
   const navItems: { key: SectionKey; icon: string }[] = [
     { key: 'platform', icon: mdiViewDashboardOutline },
@@ -236,6 +258,7 @@ const Configs: FC = () => {
     { key: 'oauth', icon: mdiKeyChainVariant },
     { key: 'registry_pull', icon: mdiPackageVariantClosed },
     { key: 'build_registry', icon: mdiHammerWrench },
+    { key: 'donations', icon: mdiHandHeart },
     { key: 'diagnostics', icon: mdiHeartPulse },
   ]
 
@@ -363,6 +386,7 @@ const Configs: FC = () => {
       captcha,
       oAuth: oauth,
       registry,
+      donations,
     })
     if (success) setLogoFile(null)
     setSaved(true)
@@ -1320,6 +1344,77 @@ const Configs: FC = () => {
                   onChange={(e) => setRegistry({ ...registry, password: e.currentTarget.value })}
                 />
               </SimpleGrid>
+            </Stack>
+          )}
+          {activeSection === 'donations' && (
+            <Stack gap="sm">
+              <Group justify="space-between">
+                <Title order={2}>{t('admin.content.settings.donations.title', 'Donations')}</Title>
+                <SectionHelp
+                  description={t(
+                    'admin.content.settings.donations.description',
+                    'Optional public supporter leaderboard and messages. Provider credentials stay on the server.'
+                  )}
+                />
+              </Group>
+              <Text size="sm" c="dimmed">
+                {t(
+                  'admin.content.settings.donations.description',
+                  'Optional public supporter leaderboard and messages. Provider credentials stay on the server.'
+                )}
+              </Text>
+              <Divider />
+              <Switch
+                label={t('admin.content.settings.donations.enabled.label', 'Show donations on the home page')}
+                description={t(
+                  'admin.content.settings.donations.enabled.description',
+                  'Disabled by default. When enabled, only successful support history, public names, and messages are shown.'
+                )}
+                checked={donations?.enabled ?? false}
+                disabled={disabled}
+                onChange={(event) => setDonations({ ...donations, enabled: event.currentTarget.checked })}
+              />
+              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                <Select
+                  label={t('admin.content.settings.donations.provider.label', 'Provider')}
+                  description={t(
+                    'admin.content.settings.donations.provider.description',
+                    'More providers can be added without changing the public donation feed.'
+                  )}
+                  data={[{ value: DonationProvider.Trakteer, label: 'Trakteer' }]}
+                  value={donations?.provider ?? DonationProvider.Trakteer}
+                  disabled={disabled}
+                  allowDeselect={false}
+                  onChange={(value) =>
+                    setDonations({
+                      ...donations,
+                      provider: (value as DonationProvider | null) ?? DonationProvider.Trakteer,
+                    })
+                  }
+                />
+                <PasswordInput
+                  label={t('admin.content.settings.donations.api_key.label', 'Trakteer API key')}
+                  description={t(
+                    'admin.content.settings.donations.api_key.description',
+                    'Write-only server credential. Leave blank to keep the current key.'
+                  )}
+                  placeholder={
+                    donations?.hasApiKey
+                      ? t('admin.content.settings.donations.api_key.configured', '(configured — leave blank to keep)')
+                      : ''
+                  }
+                  value={donations?.apiKey ?? ''}
+                  disabled={disabled}
+                  autoComplete="new-password"
+                  onChange={(event) => setDonations({ ...donations, apiKey: event.currentTarget.value })}
+                />
+              </SimpleGrid>
+              <Alert color="blue" icon={<Icon path={mdiShieldCheckOutline} size={1} />}>
+                {t(
+                  'admin.content.settings.donations.privacy',
+                  'The browser never receives the API key, supporter emails, order IDs, or payment methods. Results are cached to protect both the provider and this VPS.'
+                )}
+              </Alert>
             </Stack>
           )}
           {activeSection === 'diagnostics' && (

@@ -15,6 +15,7 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      npm run donations     # fixed-rate, read-only cached donation-feed smoke
       npm run asset-download # fixed-rate authenticated 1 MiB attachment ranges
       npm run event-security # destructive fixed-rate bounded telemetry/resource comparison
       npm run scoreboard-evidence # isolated fixed-rate canonical FirstSolve query benchmark
@@ -49,6 +50,22 @@ logical quota breach. It measures the bounded aggregate API/SQL path; it does
 not retain packet payloads, DNS names, public IP addresses, or flag plaintext.
 The current fixed-rate acceptance numbers and artifact hashes are retained in
 [REPORT.md](./REPORT.md#bounded-event-security-telemetry-fixed-rate-acceptance--20-august-2026).
+
+### Donation feed
+
+The public donation feed is deliberately small and cached. This read-only
+scenario holds a fixed request rate, verifies the 10-row leaderboard and
+20-message bounds, rejects sensitive provider fields, and checks exact health
+before and after the run:
+
+```sh
+DONATIONS_STRESS_ACK=1 TARGET=https://ctf.example RATE=50 DURATION=30s \
+  SUMMARY_JSON=/tmp/donations.json npm run donations
+```
+
+Use the same rate and duration when comparing releases. Sample the application
+and PostgreSQL containers with `docker stats --no-stream` during both runs;
+compare CPU at the held rate, never peak requests per second.
 
 ### On-demand image storage
 
