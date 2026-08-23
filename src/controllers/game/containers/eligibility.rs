@@ -11,6 +11,23 @@ use crate::utils::error::{AppError, AppResult};
 
 use super::uses_shared_container;
 
+fn runtime_error_or_forbidden(runtime_error: Option<AppError>) -> AppError {
+    runtime_error.unwrap_or(AppError::Forbidden)
+}
+
+/// Eligibility deliberately fails closed for every mutable game/roster gate.
+/// If the caller already passed the play and visibility checks, prefer a
+/// concrete runtime-definition error over a generic 403 so a failed immutable
+/// image build is not misreported as an authorization problem.
+pub(super) fn ineligible_container_start_error(
+    st: &SharedState,
+    challenge: &game_challenge::Model,
+) -> AppError {
+    runtime_error_or_forbidden(
+        crate::services::challenge_workloads::resolve_runtime(st, challenge).err(),
+    )
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum ContainerRequestMode {
     PerTeam,
@@ -247,6 +264,20 @@ mod tests {
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
     use super::*;
+
+    #[test]
+    fn runtime_configuration_error_precedes_generic_forbidden() {
+        let runtime_error = runtime_error_or_forbidden(Some(AppError::bad_request(
+            "The challenge image has not completed a successful immutable build/pull.",
+        )));
+        assert!(
+            matches!(runtime_error, AppError::BadRequest(message) if message.contains("immutable build/pull"))
+        );
+        assert!(matches!(
+            runtime_error_or_forbidden(None),
+            AppError::Forbidden
+        ));
+    }
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]

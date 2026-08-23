@@ -384,7 +384,7 @@
         "title": "Donasi",
         "description": "Leaderboard pendukung dan pesan publik yang opsional. Kredensial penyedia tetap berada di server.",
         "enabled": {
-          "label": "Tampilkan donasi di beranda",
+          "label": "Aktifkan halaman donasi publik",
           "description": "Nonaktif secara default. Saat aktif, hanya riwayat dukungan berhasil, nama publik, dan pesan yang ditampilkan."
         },
         "provider": {
@@ -395,6 +395,10 @@
           "label": "API key Trakteer",
           "description": "Kredensial server yang hanya dapat ditulis. Kosongkan untuk mempertahankan key saat ini.",
           "configured": "(sudah dikonfigurasi — kosongkan untuk mempertahankan)"
+        },
+        "donate_url": {
+          "label": "URL halaman donasi publik",
+          "description": "Digunakan sebagai tujuan tombol donasi. Masukkan halaman Trakteer publik Anda."
         },
         "privacy": "Browser tidak pernah menerima API key, email pendukung, ID pesanan, atau metode pembayaran. Hasil disimpan dalam cache untuk melindungi penyedia dan VPS ini."
       },

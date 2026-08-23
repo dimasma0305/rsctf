@@ -76,6 +76,7 @@ pub struct ClientConfig {
     pub enable_discord_auth: bool,
     pub donations_enabled: bool,
     pub donation_provider: Option<crate::services::donations::DonationProvider>,
+    pub donation_url: Option<String>,
 }
 
 /// Mirrors RSCTF `ClientCaptchaInfoModel`.
@@ -135,7 +136,7 @@ pub async fn get_client_config(
         .iter()
         .map(|row| (row.config_key.clone(), row.value.clone()))
         .collect();
-    let (donations_enabled, donation_provider) =
+    let (donations_enabled, donation_provider, donation_url) =
         crate::services::donations::public_config(&donation_values);
     for row in rows {
         let Some(value) = row.value else { continue };
@@ -205,6 +206,7 @@ pub async fn get_client_config(
         enable_discord_auth: oauth.discord_configured(),
         donations_enabled,
         donation_provider: donations_enabled.then_some(donation_provider),
+        donation_url: donations_enabled.then_some(donation_url).flatten(),
     }))
 }
 

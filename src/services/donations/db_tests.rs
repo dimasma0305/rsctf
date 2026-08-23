@@ -50,6 +50,7 @@ async fn config_is_default_off_atomic_and_secret_preserving() {
     let missing_key = DonationConfig {
         enabled: true,
         provider: DonationProvider::Trakteer,
+        donate_url: Some("https://trakteer.id/tcp1p/tip".to_owned()),
         api_key: None,
         has_api_key: false,
     };
@@ -63,6 +64,7 @@ async fn config_is_default_off_atomic_and_secret_preserving() {
         DonationConfig {
             enabled: true,
             provider: DonationProvider::Trakteer,
+            donate_url: Some("https://trakteer.id/tcp1p/tip".to_owned()),
             api_key: Some("first-secret".to_owned()),
             has_api_key: false,
         },
@@ -74,6 +76,7 @@ async fn config_is_default_off_atomic_and_secret_preserving() {
         &DonationConfig {
             enabled: true,
             provider: DonationProvider::Trakteer,
+            donate_url: Some("https://trakteer.id/tcp1p/tip".to_owned()),
             api_key: Some(String::new()),
             has_api_key: true,
         },
@@ -86,6 +89,7 @@ async fn config_is_default_off_atomic_and_secret_preserving() {
         DonationConfig {
             enabled: true,
             provider: DonationProvider::Trakteer,
+            donate_url: Some("https://trakteer.id/tcp1p/tip".to_owned()),
             api_key: Some(String::new()),
             has_api_key: true,
         },
@@ -109,6 +113,10 @@ async fn config_is_default_off_atomic_and_secret_preserving() {
     assert!(projection.enabled);
     assert!(projection.has_api_key);
     assert!(projection.api_key.is_none());
+    assert_eq!(
+        projection.donate_url.as_deref(),
+        Some("https://trakteer.id/tcp1p/tip")
+    );
 
     let invalid = save_config(
         &pool,
@@ -116,6 +124,7 @@ async fn config_is_default_off_atomic_and_secret_preserving() {
         DonationConfig {
             enabled: true,
             provider: DonationProvider::Trakteer,
+            donate_url: Some("https://example.com/not-trakteer".to_owned()),
             api_key: Some("header\ninjection".to_owned()),
             has_api_key: true,
         },

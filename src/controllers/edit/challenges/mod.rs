@@ -11,6 +11,8 @@ mod lifecycle;
 mod repo_push;
 mod review;
 mod scoring;
+#[cfg(test)]
+mod scoring_lock_tests;
 mod workload;
 
 pub use attachments::update_attachment;
@@ -179,10 +181,7 @@ fn challenge_scoring_fields_changed(
         let requested = (!template.trim().is_empty()).then_some(template.as_str());
         requested != challenge.flag_template.as_deref()
     });
-    model
-        .is_enabled
-        .is_some_and(|value| value != challenge.is_enabled)
-        || deadline_changed
+    deadline_changed
         || flag_template_changed
         || model
             .submission_limit

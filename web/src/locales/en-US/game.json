@@ -41,6 +41,12 @@
     "find_my_team": "Find My Team"
   },
   "content": {
+    "clear_search": "Clear event search",
+    "no_search_results": "No events match “{{query}}”.",
+    "search_description": "Search every event by name, summary, or exact event ID.",
+    "search_label": "Search events",
+    "search_placeholder": "Enter an event name",
+    "search_results": "{{count}} matching events for “{{query}}”",
     "scoreboard": {
       "tab": {
         "jeopardy": "Jeopardy",

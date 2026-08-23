@@ -1,11 +1,5 @@
 import { Badge, Card, Group, Image, Stack, Text, Title } from '@mantine/core'
-import {
-  mdiAccountGroupOutline,
-  mdiArrowRight,
-  mdiCalendarBlankOutline,
-  mdiClockOutline,
-  mdiFlagOutline,
-} from '@mdi/js'
+import { mdiAccountGroupOutline, mdiCalendarBlankOutline, mdiClockOutline, mdiFlagOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { TFunction } from 'i18next'
 import { CSSProperties, FC } from 'react'
@@ -153,11 +147,6 @@ export const GameCard: FC<GameCardProps> = ({ game, ...others }) => {
               </Badge>
             )}
           </Group>
-
-          <span className={classes.action} aria-hidden="true">
-            {t('game.content.view_event', 'View event')}
-            <Icon path={mdiArrowRight} size={0.72} />
-          </span>
         </div>
       </Link>
     </Card>

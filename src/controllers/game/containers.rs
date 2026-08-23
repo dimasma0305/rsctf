@@ -5,7 +5,7 @@ mod eligibility;
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::enums::NetworkMode;
 use eligibility::{
-    authorize_on_demand_build, load_eligible_shared_challenge,
+    authorize_on_demand_build, ineligible_container_start_error, load_eligible_shared_challenge,
     player_container_request_is_eligible, ContainerRequestMode,
 };
 mod image_repair;
@@ -94,7 +94,7 @@ pub async fn create_container(
             )
             .await?
             {
-                return Err(AppError::Forbidden);
+                return Err(ineligible_container_start_error(&st, &challenge));
             }
             let c = get_or_create_shared_container_locked(
                 &st,
@@ -143,8 +143,9 @@ pub async fn create_container(
     )
     .await?
     {
+        let error = ineligible_container_start_error(&st, &challenge);
         distributed.release().await?;
-        return Err(AppError::Forbidden);
+        return Err(error);
     }
 
     // Everything below uses a post-lock snapshot. In particular, do not launch an

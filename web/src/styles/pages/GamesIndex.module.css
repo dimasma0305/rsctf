@@ -24,6 +24,17 @@
   letter-spacing: -0.025em;
 }
 
+.searchForm {
+  display: flex;
+  width: min(100%, 34rem);
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.searchInput :global(.mantine-TextInput-input) {
+  min-height: 2.75rem;
+}
+
 .lifecycleOverview {
   display: flex;
   max-width: 100%;

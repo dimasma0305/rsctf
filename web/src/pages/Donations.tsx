@@ -28,7 +28,7 @@ const Donations: FC = () => {
             'Celebrate everyone who supports the platform and read their public messages.'
           )}
         />
-        <DonationPanel />
+        <DonationPanel donateUrl={config.donationUrl} />
       </Stack>
     </WithNavBar>
   )

@@ -10,24 +10,90 @@ mod final_policy;
 // ---------------------------------------------------------------------------
 
 /// `GET /api/game` — paginated list of visible (non-hidden) games.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameListQuery {
+    #[serde(flatten)]
+    page: PageParams,
+    #[serde(default)]
+    search: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct GameListRow {
+    id: i32,
+    title: String,
+    summary: String,
+    poster_hash: Option<String>,
+    team_member_count_limit: i32,
+    start_time_utc: DateTime<Utc>,
+    end_time_utc: DateTime<Utc>,
+}
+
+fn normalized_game_search(search: Option<&str>) -> AppResult<Option<String>> {
+    let Some(search) = search.map(str::trim).filter(|search| !search.is_empty()) else {
+        return Ok(None);
+    };
+    if search.chars().count() > 100 {
+        return Err(AppError::bad_request(
+            "Event search must be at most 100 characters",
+        ));
+    }
+    Ok(Some(search.to_owned()))
+}
+
 pub async fn games(
     State(st): State<SharedState>,
-    Query(page): Query<PageParams>,
+    Query(query): Query<GameListQuery>,
 ) -> AppResult<ArrayResponse<BasicGameInfoModel>> {
-    let total = game::Entity::find()
-        .filter(game::Column::Hidden.eq(false))
-        .count(&st.db)
-        .await? as i64;
+    let search = normalized_game_search(query.search.as_deref())?;
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*)
+             FROM "Games"
+            WHERE hidden = FALSE
+              AND ($1::text IS NULL
+                   OR STRPOS(LOWER(CONCAT_WS(' ', title, summary)), LOWER($1)) > 0
+                   OR id::text = $1)"#,
+    )
+    .bind(search.as_deref())
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
 
-    let rows = game::Entity::find()
-        .filter(game::Column::Hidden.eq(false))
-        .order_by_desc(game::Column::StartTimeUtc)
-        .offset(page.skip)
-        .limit(page.limit())
-        .all(&st.db)
-        .await?;
+    let rows = sqlx::query_as::<_, GameListRow>(
+        r#"SELECT id, title, summary, poster_hash, team_member_count_limit,
+                  start_time_utc, end_time_utc
+             FROM "Games"
+            WHERE hidden = FALSE
+              AND ($1::text IS NULL
+                   OR STRPOS(LOWER(CONCAT_WS(' ', title, summary)), LOWER($1)) > 0
+                   OR id::text = $1)
+            ORDER BY start_time_utc DESC, id DESC
+            OFFSET $2 LIMIT $3"#,
+    )
+    .bind(search.as_deref())
+    .bind(query.page.skip.min(i64::MAX as u64) as i64)
+    .bind(query.page.limit() as i64)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
 
-    let data = rows.iter().map(BasicGameInfoModel::from).collect();
+    let data = rows
+        .into_iter()
+        .map(|row| BasicGameInfoModel {
+            id: row.id,
+            title: row.title,
+            summary: row.summary,
+            poster: row.poster_hash.map(|hash| format!("/assets/{hash}/poster")),
+            limit: row.team_member_count_limit,
+            team_count: 0,
+            user_count: 0,
+            average_rating: 0.0,
+            review_count: 0,
+            start: row.start_time_utc,
+            end: row.end_time_utc,
+        })
+        .collect();
     Ok(ArrayResponse::new(data, total))
 }
 
@@ -818,4 +884,23 @@ pub async fn get_challenge(
         model,
     )
     .await
+}
+
+#[cfg(test)]
+mod game_list_tests {
+    use super::*;
+
+    #[test]
+    fn event_search_is_trimmed_bounded_and_optional() {
+        assert_eq!(normalized_game_search(None).unwrap(), None);
+        assert_eq!(normalized_game_search(Some("   ")).unwrap(), None);
+        assert_eq!(
+            normalized_game_search(Some("  TECHCOMFEST  ")).unwrap(),
+            Some("TECHCOMFEST".to_owned())
+        );
+        assert!(matches!(
+            normalized_game_search(Some(&"x".repeat(101))),
+            Err(AppError::BadRequest(message)) if message.contains("100 characters")
+        ));
+    }
 }
