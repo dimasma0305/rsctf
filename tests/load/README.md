@@ -53,10 +53,12 @@ The current fixed-rate acceptance numbers and artifact hashes are retained in
 
 ### Donation feed
 
-The public donation feed is deliberately small and cached. This read-only
-scenario holds a fixed request rate, verifies the 10-row leaderboard and
-20-message bounds, rejects sensitive provider fields, and checks exact health
-before and after the run:
+The public donation feed is deliberately small and cached. The provider adapter
+walks every declared support-history page with a 25-row provider limit, then
+publishes only the aggregate summary, 10-row leaderboard, and 20 latest public
+messages. This read-only scenario holds a fixed request rate, verifies the
+complete-history summary and ranking bounds, rejects sensitive provider fields,
+and checks exact health before and after the run:
 
 ```sh
 DONATIONS_STRESS_ACK=1 TARGET=https://ctf.example RATE=2 DURATION=30s \

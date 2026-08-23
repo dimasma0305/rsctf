@@ -28,12 +28,12 @@ const ENABLED_KEY: &str = "DonationConfig:Enabled";
 const PROVIDER_KEY: &str = "DonationConfig:Provider";
 const API_KEY: &str = "DonationConfig:ApiKey";
 const SETTINGS_CACHE_KEY: &str = "donations:settings:v1";
-const FRESH_CACHE_KEY: &str = "donations:feed:fresh:v1";
-const STALE_CACHE_KEY: &str = "donations:feed:stale:v1";
+const FRESH_CACHE_KEY: &str = "donations:feed:fresh:v2";
+const STALE_CACHE_KEY: &str = "donations:feed:stale:v2";
 const SETTINGS_TTL: Duration = Duration::from_secs(60);
 const FRESH_TTL: Duration = Duration::from_secs(5 * 60);
 const STALE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
-const FILL_LOCK_TTL: Duration = Duration::from_secs(10);
+const FILL_LOCK_TTL: Duration = Duration::from_secs(25);
 const FINGERPRINT_LEN: usize = 64;
 
 static FEED_FLIGHT: LazyLock<SingleFlight<Option<Bytes>>> = LazyLock::new(SingleFlight::new);
@@ -139,6 +139,10 @@ pub struct DonationFeed {
     pub currency: &'static str,
     #[serde(with = "crate::utils::datetime::millis")]
     pub fetched_at: DateTime<Utc>,
+    pub total_amount: i64,
+    pub total_quantity: i64,
+    pub support_count: usize,
+    pub supporter_count: usize,
     pub leaderboard: Vec<DonationLeaderboardEntry>,
     pub messages: Vec<DonationMessage>,
 }

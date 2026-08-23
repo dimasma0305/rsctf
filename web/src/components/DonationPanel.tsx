@@ -1,5 +1,5 @@
 import { Alert, Badge, Group, Paper, SimpleGrid, Skeleton, Stack, Text, ThemeIcon, Title } from '@mantine/core'
-import { mdiHandHeart, mdiMessageTextOutline, mdiPodium } from '@mdi/js'
+import { mdiAccountMultipleOutline, mdiCashMultiple, mdiHandHeart, mdiMessageTextOutline, mdiPodium } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -62,106 +62,158 @@ const DonationPanel: FC = () => {
           <Skeleton h={180} radius="md" />
         </SimpleGrid>
       ) : (
-        <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
-          <section aria-labelledby="donation-leaderboard-title">
-            <Group gap="xs" mb="sm">
-              <Icon path={mdiPodium} size={0.85} aria-hidden="true" />
-              <Text id="donation-leaderboard-title" fw={700}>
-                {t('common.content.donations.leaderboard', 'Top supporters')}
-              </Text>
-            </Group>
-            {data.leaderboard.length === 0 ? (
-              <Text size="sm" c="dimmed">
-                {t('common.content.donations.empty', 'No successful support is available yet.')}
-              </Text>
-            ) : (
-              <Stack
-                component="ol"
-                gap={0}
-                className={classes.leaderboard}
-                aria-label={t('common.content.donations.leaderboard', 'Top supporters')}
-              >
-                {data.leaderboard.map((supporter) => (
-                  <Group
-                    component="li"
-                    key={`${supporter.rank}-${supporter.supporterName}`}
-                    justify="space-between"
-                    wrap="nowrap"
-                    className={classes.leaderboardRow}
-                  >
-                    <Group gap="sm" wrap="nowrap" className={classes.supporterIdentity}>
-                      <Text
-                        span
-                        className={classes.rank}
-                        aria-label={t('common.content.donations.rank', 'Rank {{rank}}', { rank: supporter.rank })}
-                      >
-                        {supporter.rank}
+        <Stack gap="lg">
+          <SimpleGrid
+            component="section"
+            cols={{ base: 1, xs: 2 }}
+            spacing="sm"
+            aria-label={t('common.content.donations.summary')}
+          >
+            <Paper withBorder p="md" className={classes.summaryCard}>
+              <Group gap="sm" wrap="nowrap">
+                <ThemeIcon variant="light" color="pink" radius="md">
+                  <Icon path={mdiCashMultiple} size={0.82} aria-hidden="true" />
+                </ThemeIcon>
+                <div>
+                  <Text size="xs" c="dimmed">
+                    {t('common.content.donations.total_received', 'Successful support total')}
+                  </Text>
+                  <Text fw={750}>{currency.format(data.totalAmount)}</Text>
+                </div>
+              </Group>
+            </Paper>
+            <Paper withBorder p="md" className={classes.summaryCard}>
+              <Group gap="sm" wrap="nowrap">
+                <ThemeIcon variant="light" color="pink" radius="md">
+                  <Icon path={mdiAccountMultipleOutline} size={0.82} aria-hidden="true" />
+                </ThemeIcon>
+                <div>
+                  <Text size="xs" c="dimmed">
+                    {t('common.content.donations.history_coverage', 'Complete support history')}
+                  </Text>
+                  <Text fw={750}>
+                    {t(
+                      'common.content.donations.history_counts',
+                      '{{supports}} supports from {{supporters}} supporters',
+                      {
+                        supports: data.supportCount,
+                        supporters: data.supporterCount,
+                      }
+                    )}
+                  </Text>
+                </div>
+              </Group>
+            </Paper>
+          </SimpleGrid>
+
+          <Text size="xs" c="dimmed">
+            {t(
+              'common.content.donations.balance_note',
+              'This is the gross successful-support total. The current Trakteer balance can differ after fees and withdrawals.'
+            )}
+          </Text>
+
+          <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
+            <section aria-labelledby="donation-leaderboard-title">
+              <Group gap="xs" mb="sm">
+                <Icon path={mdiPodium} size={0.85} aria-hidden="true" />
+                <Text id="donation-leaderboard-title" fw={700}>
+                  {t('common.content.donations.leaderboard', 'Top supporters')}
+                </Text>
+              </Group>
+              {data.leaderboard.length === 0 ? (
+                <Text size="sm" c="dimmed">
+                  {t('common.content.donations.empty', 'No successful support is available yet.')}
+                </Text>
+              ) : (
+                <Stack
+                  component="ol"
+                  gap={0}
+                  className={classes.leaderboard}
+                  aria-label={t('common.content.donations.leaderboard', 'Top supporters')}
+                >
+                  {data.leaderboard.map((supporter) => (
+                    <Group
+                      component="li"
+                      key={`${supporter.rank}-${supporter.supporterName}`}
+                      justify="space-between"
+                      wrap="nowrap"
+                      className={classes.leaderboardRow}
+                    >
+                      <Group gap="sm" wrap="nowrap" className={classes.supporterIdentity}>
+                        <Text
+                          span
+                          className={classes.rank}
+                          aria-label={t('common.content.donations.rank', 'Rank {{rank}}', { rank: supporter.rank })}
+                        >
+                          {supporter.rank}
+                        </Text>
+                        <div className={classes.supporterText}>
+                          <Text fw={650} truncate>
+                            {supporter.supporterName}
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            {t('common.content.donations.support_count', '{{count}} support', {
+                              count: supporter.supportCount,
+                            })}
+                          </Text>
+                        </div>
+                      </Group>
+                      <Text size="sm" fw={700} c="pink" className={classes.amount}>
+                        {currency.format(supporter.totalAmount)}
                       </Text>
-                      <div className={classes.supporterText}>
-                        <Text fw={650} truncate>
-                          {supporter.supporterName}
+                    </Group>
+                  ))}
+                </Stack>
+              )}
+            </section>
+
+            <section aria-labelledby="donation-messages-title">
+              <Group gap="xs" mb="sm">
+                <Icon path={mdiMessageTextOutline} size={0.85} aria-hidden="true" />
+                <Text id="donation-messages-title" fw={700}>
+                  {t('common.content.donations.messages', 'Supporter messages')}
+                </Text>
+              </Group>
+              {data.messages.length === 0 ? (
+                <Text size="sm" c="dimmed">
+                  {t('common.content.donations.no_messages', 'No public messages yet.')}
+                </Text>
+              ) : (
+                <Stack gap="sm" className={classes.messages}>
+                  {data.messages.map((message, index) => (
+                    <Paper
+                      key={`${message.supporterName}-${message.updatedAt}-${index}`}
+                      withBorder
+                      p="sm"
+                      className={classes.message}
+                    >
+                      <Group justify="space-between" gap="xs" align="baseline">
+                        <Text fw={650} size="sm">
+                          {message.supporterName}
                         </Text>
                         <Text size="xs" c="dimmed">
-                          {t('common.content.donations.support_count', '{{count}} support', {
-                            count: supporter.supportCount,
-                          })}
+                          {currency.format(message.amount)}
                         </Text>
-                      </div>
-                    </Group>
-                    <Text size="sm" fw={700} c="pink" className={classes.amount}>
-                      {currency.format(supporter.totalAmount)}
-                    </Text>
-                  </Group>
-                ))}
-              </Stack>
-            )}
-          </section>
-
-          <section aria-labelledby="donation-messages-title">
-            <Group gap="xs" mb="sm">
-              <Icon path={mdiMessageTextOutline} size={0.85} aria-hidden="true" />
-              <Text id="donation-messages-title" fw={700}>
-                {t('common.content.donations.messages', 'Supporter messages')}
-              </Text>
-            </Group>
-            {data.messages.length === 0 ? (
-              <Text size="sm" c="dimmed">
-                {t('common.content.donations.no_messages', 'No public messages yet.')}
-              </Text>
-            ) : (
-              <Stack gap="sm" className={classes.messages}>
-                {data.messages.map((message, index) => (
-                  <Paper
-                    key={`${message.supporterName}-${message.updatedAt}-${index}`}
-                    withBorder
-                    p="sm"
-                    className={classes.message}
-                  >
-                    <Group justify="space-between" gap="xs" align="baseline">
-                      <Text fw={650} size="sm">
-                        {message.supporterName}
+                      </Group>
+                      <Text size="sm" className={classes.messageText}>
+                        {message.message}
                       </Text>
-                      <Text size="xs" c="dimmed">
-                        {currency.format(message.amount)}
+                      {message.replyMessage && (
+                        <Text size="xs" c="dimmed" className={classes.reply}>
+                          {t('common.content.donations.reply', 'Reply')}: {message.replyMessage}
+                        </Text>
+                      )}
+                      <Text component="time" dateTime={new Date(message.updatedAt).toISOString()} size="xs" c="dimmed">
+                        {date.format(message.updatedAt)}
                       </Text>
-                    </Group>
-                    <Text size="sm" className={classes.messageText}>
-                      {message.message}
-                    </Text>
-                    {message.replyMessage && (
-                      <Text size="xs" c="dimmed" className={classes.reply}>
-                        {t('common.content.donations.reply', 'Reply')}: {message.replyMessage}
-                      </Text>
-                    )}
-                    <Text component="time" dateTime={new Date(message.updatedAt).toISOString()} size="xs" c="dimmed">
-                      {date.format(message.updatedAt)}
-                    </Text>
-                  </Paper>
-                ))}
-              </Stack>
-            )}
-          </section>
-        </SimpleGrid>
+                    </Paper>
+                  ))}
+                </Stack>
+              )}
+            </section>
+          </SimpleGrid>
+        </Stack>
       )}
     </Paper>
   )

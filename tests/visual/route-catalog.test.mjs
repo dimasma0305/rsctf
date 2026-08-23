@@ -16,7 +16,7 @@ const context = { gameId: 67, challengeId: 326, postId: 'ffac23df' }
 const routes = discoverPageRoutes(context)
 
 test('visual route catalog covers every React page component exactly once', () => {
-  assert.equal(routes.length, 50)
+  assert.equal(routes.length, 51)
   assert.deepEqual(validatePageRoutes(routes), [])
   assert.ok(routes.every((route) => route.sourceFile.endsWith('.tsx')))
   assert.ok(routes.some((route) => route.sourceFile === '[...all].tsx'))
@@ -30,6 +30,7 @@ test('visual routes select the least privileged useful browser identity', () => 
     assert.equal(route.auth, 'admin', route.path)
   }
   assert.equal(routes.find((route) => route.path === '/account/login')?.auth, 'anonymous')
+  assert.equal(routes.find((route) => route.path === '/donations')?.auth, 'anonymous')
   assert.equal(routes.find((route) => route.path === '/account/profile')?.auth, 'player')
   assert.equal(routes.find((route) => route.path === '/teams')?.auth, 'player')
   assert.equal(routes.find((route) => route.path === '/games/67/submit')?.auth, 'player')
@@ -110,7 +111,7 @@ test('visual route shards cover every route exactly once', () => {
   const first = selectRouteShard(routes, parseRouteShard('1/2'))
   const second = selectRouteShard(routes, parseRouteShard('2/2'))
   assert.equal(first.length, 25)
-  assert.equal(second.length, 25)
+  assert.equal(second.length, 26)
   assert.deepEqual([...first, ...second], routes)
   assert.throws(() => parseRouteShard('0/2'), /INDEX\/TOTAL/)
   assert.throws(() => parseRouteShard('3/2'), /cannot exceed/)

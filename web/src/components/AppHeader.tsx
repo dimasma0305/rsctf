@@ -31,6 +31,7 @@ import { AppControlProps } from '@Components/WithNavbar'
 import { PRIMARY_NAVIGATION, canAccessNavigationItem, isNavigationItemActive } from '@Components/navigation'
 import { clearLocalCache } from '@Utils/Cache'
 import { LanguageMap, SupportedLanguages, useLanguage } from '@Utils/I18n'
+import { useConfig } from '@Hooks/useConfig'
 import { useLogOut, useUser } from '@Hooks/useUser'
 import classes from '@Styles/AppHeader.module.css'
 
@@ -39,13 +40,14 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
   const location = useLocation()
   const { colorScheme, toggleColorScheme } = useMantineColorScheme()
   const { user, error } = useUser()
+  const { config } = useConfig()
   const logout = useLogOut()
   const { t } = useTranslation()
   const { language, setLanguage, supportedLanguages } = useLanguage()
   const loggedIn = Boolean(user && !error)
 
   const close = () => setOpened(false)
-  const navItems = PRIMARY_NAVIGATION.filter((item) => canAccessNavigationItem(item, user))
+  const navItems = PRIMARY_NAVIGATION.filter((item) => canAccessNavigationItem(item, user, config.donationsEnabled))
   const dockItems = navItems.filter((item) => !item.admin).slice(0, 4)
 
   return (

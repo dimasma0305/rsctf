@@ -55,8 +55,28 @@ export default function () {
       !feed ||
       feed.provider !== 'Trakteer' ||
       feed.currency !== 'IDR' ||
+      !Number.isSafeInteger(feed.totalAmount) ||
+      feed.totalAmount < 0 ||
+      !Number.isSafeInteger(feed.totalQuantity) ||
+      feed.totalQuantity < 0 ||
+      !Number.isSafeInteger(feed.supportCount) ||
+      feed.supportCount < 0 ||
+      !Number.isSafeInteger(feed.supporterCount) ||
+      feed.supporterCount < 0 ||
+      feed.supportCount < feed.supporterCount ||
       !Array.isArray(feed.leaderboard) ||
       feed.leaderboard.length > 10 ||
+      feed.leaderboard.length !== Math.min(10, feed.supporterCount) ||
+      feed.leaderboard.some(
+        (row, index) =>
+          row.rank !== index + 1 ||
+          !Number.isSafeInteger(row.totalAmount) ||
+          row.totalAmount < 0 ||
+          !Number.isSafeInteger(row.supportCount) ||
+          row.supportCount < 1 ||
+          (index > 0 && feed.leaderboard[index - 1].totalAmount < row.totalAmount),
+      ) ||
+      feed.leaderboard.reduce((sum, row) => sum + row.totalAmount, 0) > feed.totalAmount ||
       !Array.isArray(feed.messages) ||
       feed.messages.length > 20,
   );
@@ -66,6 +86,8 @@ export default function () {
     body.includes('apikey') ||
       body.includes('supporteremail') ||
       body.includes('orderid') ||
-      body.includes('paymentmethod'),
+      body.includes('paymentmethod') ||
+      body.includes('netamount') ||
+      body.includes('currentbalance'),
   );
 }
