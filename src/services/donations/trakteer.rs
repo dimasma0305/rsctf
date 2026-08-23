@@ -188,7 +188,7 @@ fn build_feed(envelope: Envelope) -> Result<DonationFeed, String> {
             support_count: row.count,
         })
         .collect();
-    messages.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    messages.sort_by_key(|message| std::cmp::Reverse(message.updated_at));
     messages.truncate(MAX_MESSAGES);
 
     Ok(DonationFeed {
