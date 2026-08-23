@@ -1,6 +1,7 @@
 {
   "button": {
-    "config": "Konfigurasi WSRX"
+    "config": "Konfigurasi WSRX",
+    "retry_tunnel": "Buat ulang tunnel lokal"
   },
   "config": {
     "allow_lan": "Izinkan akses LAN",
@@ -29,5 +30,16 @@
     "invalid": "WSRX disconnected",
     "pending": "Waiting for local authorization",
     "usable": "WSRX terkoneksi"
+  },
+  "tunnel": {
+    "authorization": "Setujui platform ini di WSRX, lalu coba lagi.",
+    "checking": "WSRX sedang memeriksa tunnel lokal. Alamat akan aktif setelah tunnel dapat digunakan.",
+    "connecting": "Membuat tunnel WSRX lokal…",
+    "description": "Gunakan alamat WSRX lokal di bawah dengan netcat. Biarkan WSRX tetap berjalan selama bermain.",
+    "disconnected": "Jalankan WSRX dan setujui platform ini untuk membuat alamat netcat.",
+    "placeholder": "Menunggu tunnel WSRX lokal yang dapat digunakan",
+    "ready": "Tunnel lokal siap digunakan dengan netcat.",
+    "requesting": "Meminta capability tunnel sementara…",
+    "unhealthy": "Pemeriksaan kesehatan tunnel lokal gagal. Buat ulang tunnel sebelum menghubungkan."
   }
 }

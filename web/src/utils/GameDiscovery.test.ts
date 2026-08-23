@@ -25,6 +25,8 @@ test('event discovery searches the complete server-side catalog accessibly', () 
 test('global challenge discovery remains authenticated and event-membership scoped in its copy and API', () => {
   const challengePage = readFileSync('src/pages/challenges/Index.tsx', 'utf8')
   const navigation = readFileSync('src/components/navigation.ts', 'utf8')
+  const mobileHeader = readFileSync('src/components/AppHeader.tsx', 'utf8')
+  const mobileHeaderStyles = readFileSync('src/styles/components/AppHeader.module.css', 'utf8')
   assert.match(challengePage, /Navigate to="\/account\/login\?from=%2Fchallenges"/)
   assert.match(challengePage, /useGameChallengeCatalog/)
   assert.match(challengePage, /category: category \?\? undefined/)
@@ -32,6 +34,9 @@ test('global challenge discovery remains authenticated and event-membership scop
   assert.match(challengePage, /solved: solveFilter/)
   assert.match(challengePage, /Upcoming, hidden, and unauthorized event content stays private/)
   assert.match(navigation, /link: '\/challenges',[\s\S]*requiresAuth: true/)
+  assert.match(navigation, /dockLabel: 'common\.tab\.challenge_catalog_short'/)
+  assert.match(mobileHeader, /t\(item\.dockLabel \?\? item\.label\)/)
+  assert.match(mobileHeaderStyles, /\.dockItem > :global\(\.mantine-Text-root\)[\s\S]*text-overflow: ellipsis/)
 })
 
 test('event cards remain whole-card links without a redundant view-event footer', () => {

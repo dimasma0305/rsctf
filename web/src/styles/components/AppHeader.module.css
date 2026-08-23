@@ -155,6 +155,15 @@
   place-items: center;
 }
 
+.dockItem > :global(.mantine-Text-root) {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (min-width: calc($mantine-breakpoint-sm + 0.01em)) {
   .header,
   .dock {

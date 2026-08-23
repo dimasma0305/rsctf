@@ -5,9 +5,10 @@ import test from 'node:test'
 const entry = readFileSync('src/components/InstanceEntry.tsx', 'utf8')
 const shared = readFileSync('src/utils/Shared.tsx', 'utf8')
 
-test('the optional WSRX action row remains single-line and has room for all three actions', () => {
+test('the WSRX action row remains single-line and has room for retry, copy, and open', () => {
   assert.match(entry, /<Group gap=\{2\} wrap="nowrap">/)
-  assert.match(entry, /rightSectionWidth=\{hasWsrxTunnel \? '7\.75rem' : '5rem'\}/)
+  assert.match(entry, /rightSectionWidth=\{isPlatformProxy \? '7\.75rem' : '5rem'\}/)
+  assert.match(entry, /wsrx\.button\.retry_tunnel/)
 })
 
 test('WSRX receives an authenticated narrow capability without exposing the browser session', () => {
@@ -16,4 +17,11 @@ test('WSRX receives an authenticated narrow capability without exposing the brow
   assert.match(entry, /getProxyEntry\(instanceEntry, isPreview, response\.data\.token\)/)
   assert.match(shared, /capability \? `\$\{url\}\?capability=\$\{encodeURIComponent\(capability\)\}` : url/)
   assert.doesNotMatch(entry, /RSCTF_Token|document\.cookie|Authorization/)
+})
+
+test('admin previews explain the WSRX requirement and block unusable entries', () => {
+  assert.doesNotMatch(entry, /isPlatformProxy &&\s*!isPreview/)
+  assert.match(entry, /disabled=\{!canUseEntry\}/)
+  assert.match(entry, /phase === 'ready'/)
+  assert.match(entry, /role="status" aria-live="polite"/)
 })

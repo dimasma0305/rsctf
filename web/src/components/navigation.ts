@@ -14,6 +14,7 @@ import { ProfileUserInfoModel, Role } from '@Api'
 export interface PrimaryNavigationItem {
   icon: string
   label: string
+  dockLabel?: string
   link: string
   admin?: boolean
   requiresDonations?: boolean
@@ -27,6 +28,7 @@ export const PRIMARY_NAVIGATION: PrimaryNavigationItem[] = [
   {
     icon: mdiFormatListChecks,
     label: 'common.tab.challenge_catalog',
+    dockLabel: 'common.tab.challenge_catalog_short',
     link: '/challenges',
     requiresAuth: true,
   },

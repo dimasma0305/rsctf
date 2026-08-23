@@ -246,7 +246,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
                 <Icon path={item.icon} size={0.88} />
               </span>
               <Text component="span" size="xs" fw={650} truncate>
-                {t(item.label)}
+                {t(item.dockLabel ?? item.label)}
               </Text>
             </UnstyledButton>
           )
