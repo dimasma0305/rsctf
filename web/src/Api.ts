@@ -463,6 +463,8 @@ export interface ConfigEditModel {
 export interface DonationConfig {
   enabled?: boolean;
   provider?: DonationProvider;
+  /** Public provider page used by the donation call to action. */
+  donateUrl?: string | null;
   /** Write-only. Leave blank to preserve the configured credential. */
   apiKey?: string | null;
   hasApiKey?: boolean;
@@ -3802,6 +3804,8 @@ export interface ClientConfig {
   /** Whether the optional public donation page is active and configured. */
   donationsEnabled?: boolean;
   donationProvider?: DonationProvider | null;
+  /** Public provider page used by the donation call to action. */
+  donationUrl?: string | null;
   /** Whether public username/password account creation is enabled */
   allowPasswordRegistration?: boolean;
   /** Whether Google OAuth sign-in is configured and available */

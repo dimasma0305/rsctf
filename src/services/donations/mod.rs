@@ -27,6 +27,7 @@ use crate::utils::single_flight::SingleFlight;
 const ENABLED_KEY: &str = "DonationConfig:Enabled";
 const PROVIDER_KEY: &str = "DonationConfig:Provider";
 const API_KEY: &str = "DonationConfig:ApiKey";
+const DONATE_URL_KEY: &str = "DonationConfig:DonateUrl";
 const SETTINGS_CACHE_KEY: &str = "donations:settings:v1";
 const FRESH_CACHE_KEY: &str = "donations:feed:fresh:v2";
 const STALE_CACHE_KEY: &str = "donations:feed:stale:v2";
@@ -72,6 +73,7 @@ impl std::fmt::Display for DonationProvider {
 pub struct DonationConfig {
     pub enabled: bool,
     pub provider: DonationProvider,
+    pub donate_url: Option<String>,
     pub api_key: Option<String>,
     pub has_api_key: bool,
 }
@@ -80,15 +82,20 @@ pub struct DonationConfig {
 struct DonationSettings {
     enabled: bool,
     provider: DonationProvider,
+    donate_url: Option<String>,
     api_key: Option<String>,
 }
 
 impl DonationSettings {
     fn from_map(values: &BTreeMap<String, Option<String>>) -> Self {
         let value = |key: &str| values.get(key).and_then(|value| value.as_deref());
+        let provider = DonationProvider::parse(value(PROVIDER_KEY));
         Self {
             enabled: value(ENABLED_KEY) == Some("true"),
-            provider: DonationProvider::parse(value(PROVIDER_KEY)),
+            provider,
+            donate_url: normalize_donate_url(provider, value(DONATE_URL_KEY))
+                .ok()
+                .flatten(),
             api_key: value(API_KEY)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -116,7 +123,7 @@ impl DonationSettings {
                  FROM "Configs"
                 WHERE config_key = ANY($1)"#,
         )
-        .bind(vec![ENABLED_KEY, PROVIDER_KEY, API_KEY])
+        .bind(vec![ENABLED_KEY, PROVIDER_KEY, API_KEY, DONATE_URL_KEY])
         .fetch_all(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -175,14 +182,45 @@ pub fn admin_config(values: &BTreeMap<String, Option<String>>) -> DonationConfig
     DonationConfig {
         enabled: settings.enabled,
         provider: settings.provider,
+        donate_url: settings.donate_url,
         api_key: None,
         has_api_key: settings.api_key.is_some(),
     }
 }
 
-pub fn public_config(values: &BTreeMap<String, Option<String>>) -> (bool, DonationProvider) {
+pub fn public_config(
+    values: &BTreeMap<String, Option<String>>,
+) -> (bool, DonationProvider, Option<String>) {
     let settings = DonationSettings::from_map(values);
-    (settings.active(), settings.provider)
+    (settings.active(), settings.provider, settings.donate_url)
+}
+
+fn normalize_donate_url(
+    provider: DonationProvider,
+    input: Option<&str>,
+) -> AppResult<Option<String>> {
+    let Some(raw) = input.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let parsed = reqwest::Url::parse(raw)
+        .map_err(|_| AppError::bad_request("Donation page URL is invalid"))?;
+    let host_is_allowed = match provider {
+        DonationProvider::Trakteer => parsed
+            .host_str()
+            .is_some_and(|host| matches!(host, "trakteer.id" | "www.trakteer.id")),
+    };
+    if parsed.scheme() != "https"
+        || !host_is_allowed
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+        || parsed.path().trim_matches('/').is_empty()
+    {
+        return Err(AppError::bad_request(
+            "Donation page URL must be a public HTTPS page on the selected provider",
+        ));
+    }
+    Ok(Some(parsed.to_string()))
 }
 
 fn supplied_api_key(input: &DonationConfig) -> AppResult<Option<&str>> {
@@ -201,6 +239,7 @@ fn supplied_api_key(input: &DonationConfig) -> AppResult<Option<&str>> {
 /// can change. `save_config` repeats the effective-key check under a row lock.
 pub async fn validate_config(pool: &PgPool, input: &DonationConfig) -> AppResult<()> {
     let supplied = supplied_api_key(input)?;
+    normalize_donate_url(input.provider, input.donate_url.as_deref())?;
     if input.enabled && supplied.is_none() {
         let configured = sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS (
@@ -225,6 +264,7 @@ pub async fn validate_config(pool: &PgPool, input: &DonationConfig) -> AppResult
 /// Persist an admin update atomically. A blank API key preserves the configured
 /// value, while enabling without any effective key fails before the write.
 pub async fn save_config(pool: &PgPool, cache: &dyn Cache, input: DonationConfig) -> AppResult<()> {
+    let donate_url = normalize_donate_url(input.provider, input.donate_url.as_deref())?;
     let mut transaction = pool
         .begin()
         .await
@@ -248,14 +288,15 @@ pub async fn save_config(pool: &PgPool, cache: &dyn Cache, input: DonationConfig
         ));
     }
 
-    let keys = vec![ENABLED_KEY, PROVIDER_KEY];
+    let keys = vec![ENABLED_KEY, PROVIDER_KEY, DONATE_URL_KEY];
     let values = vec![
-        input.enabled.to_string(),
-        input.provider.as_str().to_owned(),
+        Some(input.enabled.to_string()),
+        Some(input.provider.as_str().to_owned()),
+        donate_url,
     ];
     sqlx::query(
         r#"INSERT INTO "Configs" (config_key, value, cache_keys)
-           SELECT * FROM UNNEST($1::text[], $2::text[], ARRAY_FILL(NULL::jsonb, ARRAY[2]))
+           SELECT * FROM UNNEST($1::text[], $2::text[], ARRAY_FILL(NULL::jsonb, ARRAY[3]))
            ON CONFLICT (config_key) DO UPDATE SET value = EXCLUDED.value"#,
     )
     .bind(keys)
@@ -419,14 +460,37 @@ mod tests {
             (ENABLED_KEY.to_owned(), Some("true".to_owned())),
             (PROVIDER_KEY.to_owned(), Some("Trakteer".to_owned())),
             (API_KEY.to_owned(), Some("top-secret".to_owned())),
+            (
+                DONATE_URL_KEY.to_owned(),
+                Some("https://trakteer.id/tcp1p/tip".to_owned()),
+            ),
         ]);
         let config = admin_config(&values);
         assert!(config.enabled);
         assert!(config.has_api_key);
+        assert_eq!(
+            config.donate_url.as_deref(),
+            Some("https://trakteer.id/tcp1p/tip")
+        );
         assert_eq!(config.api_key, None);
         assert!(!serde_json::to_string(&config)
             .unwrap()
             .contains("top-secret"));
+    }
+
+    #[test]
+    fn donation_url_is_restricted_to_the_selected_provider() {
+        let provider = DonationProvider::Trakteer;
+        assert_eq!(
+            normalize_donate_url(provider, Some(" https://trakteer.id/tcp1p/tip "))
+                .unwrap()
+                .as_deref(),
+            Some("https://trakteer.id/tcp1p/tip")
+        );
+        assert!(normalize_donate_url(provider, Some("http://trakteer.id/tcp1p/tip")).is_err());
+        assert!(normalize_donate_url(provider, Some("https://example.com/tcp1p/tip")).is_err());
+        assert!(normalize_donate_url(provider, Some("https://trakteer.id")).is_err());
+        assert!(normalize_donate_url(provider, Some("javascript:alert(1)")).is_err());
     }
 
     #[test]

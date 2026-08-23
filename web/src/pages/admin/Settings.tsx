@@ -1365,7 +1365,7 @@ const Configs: FC = () => {
               </Text>
               <Divider />
               <Switch
-                label={t('admin.content.settings.donations.enabled.label', 'Show donations on the home page')}
+                label={t('admin.content.settings.donations.enabled.label', 'Enable the public donation page')}
                 description={t(
                   'admin.content.settings.donations.enabled.description',
                   'Disabled by default. When enabled, only successful support history, public names, and messages are shown.'
@@ -1407,6 +1407,19 @@ const Configs: FC = () => {
                   disabled={disabled}
                   autoComplete="new-password"
                   onChange={(event) => setDonations({ ...donations, apiKey: event.currentTarget.value })}
+                />
+                <TextInput
+                  label={t('admin.content.settings.donations.donate_url.label', 'Public donation page URL')}
+                  description={t(
+                    'admin.content.settings.donations.donate_url.description',
+                    'Shown as the donation button destination. Use your public Trakteer page.'
+                  )}
+                  placeholder="https://trakteer.id/your-name/tip"
+                  value={donations?.donateUrl ?? ''}
+                  disabled={disabled}
+                  inputMode="url"
+                  autoComplete="url"
+                  onChange={(event) => setDonations({ ...donations, donateUrl: event.currentTarget.value })}
                 />
               </SimpleGrid>
               <Alert color="blue" icon={<Icon path={mdiShieldCheckOutline} size={1} />}>

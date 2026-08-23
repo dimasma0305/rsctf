@@ -850,7 +850,7 @@
         "title": "Donations",
         "description": "Optional public supporter leaderboard and messages. Provider credentials stay on the server.",
         "enabled": {
-          "label": "Show donations on the home page",
+          "label": "Enable the public donation page",
           "description": "Disabled by default. When enabled, only successful support history, public names, and messages are shown."
         },
         "provider": {
@@ -861,6 +861,10 @@
           "label": "Trakteer API key",
           "description": "Write-only server credential. Leave blank to keep the current key.",
           "configured": "(configured — leave blank to keep)"
+        },
+        "donate_url": {
+          "label": "Public donation page URL",
+          "description": "Shown as the donation button destination. Use your public Trakteer page."
         },
         "privacy": "The browser never receives the API key, supporter emails, order IDs, or payment methods. Results are cached to protect both the provider and this VPS."
       },

@@ -24,6 +24,7 @@ const fallbackConfig: ClientConfig = {
   allowPasswordRegistration: true,
   donationsEnabled: false,
   donationProvider: null,
+  donationUrl: null,
 }
 
 export const useConfig = () => {

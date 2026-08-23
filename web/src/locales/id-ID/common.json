@@ -61,6 +61,8 @@
     "donations": {
       "balance_note": "Ini adalah total bruto dukungan yang berhasil. Saldo Trakteer saat ini dapat berbeda setelah biaya dan penarikan.",
       "description": "Rayakan semua orang yang mendukung platform dan baca pesan publik mereka.",
+      "donate": "Donasi melalui Trakteer",
+      "donate_external": "Donasi melalui Trakteer (dibuka di tab baru)",
       "eyebrow": "Dukungan komunitas",
       "history_counts": "{{supports}} dukungan dari {{supporters}} pendukung",
       "history_coverage": "Riwayat dukungan lengkap",

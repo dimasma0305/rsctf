@@ -1,12 +1,23 @@
-import { Alert, Badge, Group, Paper, SimpleGrid, Skeleton, Stack, Text, ThemeIcon, Title } from '@mantine/core'
-import { mdiAccountMultipleOutline, mdiCashMultiple, mdiHandHeart, mdiMessageTextOutline, mdiPodium } from '@mdi/js'
+import { Alert, Badge, Button, Group, Paper, SimpleGrid, Skeleton, Stack, Text, ThemeIcon, Title } from '@mantine/core'
+import {
+  mdiAccountMultipleOutline,
+  mdiCashMultiple,
+  mdiHandHeart,
+  mdiMessageTextOutline,
+  mdiOpenInNew,
+  mdiPodium,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import api from '@Api'
 import classes from '@Styles/DonationPanel.module.css'
 
-const DonationPanel: FC = () => {
+interface DonationPanelProps {
+  donateUrl?: string | null
+}
+
+const DonationPanel: FC<DonationPanelProps> = ({ donateUrl }) => {
   const { t } = useTranslation()
   const { data, error } = api.info.useInfoGetDonations({
     refreshInterval: 5 * 60 * 1000,
@@ -47,9 +58,25 @@ const DonationPanel: FC = () => {
             </Title>
           </div>
         </Group>
-        <Badge variant="light" color="pink">
-          {data?.provider ?? 'Trakteer'}
-        </Badge>
+        <Group gap="xs">
+          {donateUrl && (
+            <Button
+              component="a"
+              href={donateUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              color="pink"
+              size="sm"
+              rightSection={<Icon path={mdiOpenInNew} size={0.7} aria-hidden="true" />}
+              aria-label={t('common.content.donations.donate_external', 'Donate on Trakteer (opens in a new tab)')}
+            >
+              {t('common.content.donations.donate', 'Donate on Trakteer')}
+            </Button>
+          )}
+          <Badge variant="light" color="pink">
+            {data?.provider ?? 'Trakteer'}
+          </Badge>
+        </Group>
       </Group>
 
       {error ? (
