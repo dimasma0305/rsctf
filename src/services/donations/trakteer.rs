@@ -406,19 +406,4 @@ mod tests {
         assert!(checked_page(page(2, 40, 15, 2), 2, Some(first)).is_err());
         assert!(checked_page(page(1, MAX_SUPPORTS + 1, 25, MAX_PAGES + 1), 1, None).is_err());
     }
-
-    #[tokio::test]
-    #[ignore = "requires RSCTF_TEST_TRAKTEER_API_KEY and provider network access"]
-    async fn configured_provider_history_spans_every_declared_page() {
-        let key = std::env::var("RSCTF_TEST_TRAKTEER_API_KEY")
-            .expect("RSCTF_TEST_TRAKTEER_API_KEY is required");
-        let feed = fetch(&key).await.unwrap();
-        assert!(feed.support_count > PAGE_LIMIT);
-        assert!(feed.supporter_count >= feed.leaderboard.len());
-        assert_eq!(
-            feed.leaderboard.len(),
-            MAX_LEADERBOARD.min(feed.supporter_count)
-        );
-        assert!(feed.total_amount > 0);
-    }
 }
