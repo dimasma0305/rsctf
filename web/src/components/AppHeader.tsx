@@ -104,6 +104,13 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
                   onClick={close}
                   aria-current={isNavigationItemActive(item, location.pathname) ? 'page' : undefined}
                   data-active={isNavigationItemActive(item, location.pathname) || undefined}
+                  data-guide={
+                    item.link === '/games'
+                      ? 'games-navigation'
+                      : item.link === '/challenges'
+                        ? 'challenge-navigation'
+                        : undefined
+                  }
                   className={classes.navLink}
                 >
                   <span className={classes.navIcon} aria-hidden="true">
@@ -155,6 +162,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
                 to={`/account/login?from=${encodeURIComponent(location.pathname + location.search)}`}
                 onClick={close}
                 className={classes.navLink}
+                data-guide="account-menu"
               >
                 <span className={classes.navIcon} aria-hidden="true">
                   <Icon path={mdiLogin} size={0.95} />
@@ -225,6 +233,13 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
               to={item.link}
               aria-current={active ? 'page' : undefined}
               data-active={active || undefined}
+              data-guide={
+                item.link === '/games'
+                  ? 'games-navigation'
+                  : item.link === '/challenges'
+                    ? 'challenge-navigation'
+                    : undefined
+              }
               className={classes.dockItem}
             >
               <span className={classes.dockIcon} aria-hidden="true">

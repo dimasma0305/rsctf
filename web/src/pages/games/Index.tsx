@@ -4,12 +4,14 @@ import {
   Badge,
   Group,
   Pagination,
+  SegmentedControl,
   SimpleGrid,
   Skeleton,
   Stack,
   Text,
   TextInput,
   Title,
+  VisuallyHidden,
   useMantineColorScheme,
   useMantineTheme,
 } from '@mantine/core'
@@ -27,7 +29,8 @@ import { GanttTimeLine } from '@Components/charts/GanttTimeline'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { getGameStatus, toLimitTag, useRecentGames } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
-import api from '@Api'
+import { useUser } from '@Hooks/useUser'
+import api, { GameMembershipFilter } from '@Api'
 import classes from '@Styles/GamesIndex.module.css'
 import ganttClasses from '@Styles/GanttTimeline.module.css'
 
@@ -38,17 +41,20 @@ const Games: FC = () => {
   const { recentGames } = useRecentGames()
   const [activePage, setPage] = useState(1)
   const [search, setSearch] = useState('')
+  const [membership, setMembership] = useState<GameMembershipFilter>(GameMembershipFilter.All)
   const [debouncedSearch] = useDebouncedValue(search.trim(), 300)
   const searchInput = useRef<HTMLInputElement>(null)
   const isMobile = useIsMobile()
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
+  const { user } = useUser()
 
   const { data: games, isLoading } = api.game.useGameGames(
     {
       count: ITEM_PER_PAGE,
       skip: (activePage - 1) * ITEM_PER_PAGE,
       search: debouncedSearch || undefined,
+      membership: user ? membership : GameMembershipFilter.All,
     },
     {
       refreshInterval: 5 * 60 * 1000,
@@ -171,30 +177,33 @@ const Games: FC = () => {
           )}
         </Group>
 
-        <form role="search" className={classes.searchForm} onSubmit={(event) => event.preventDefault()}>
+        <form
+          role="search"
+          className={classes.searchForm}
+          data-guide="games-search"
+          onSubmit={(event) => event.preventDefault()}
+        >
           <TextInput
             ref={searchInput}
             className={classes.searchInput}
+            size="sm"
             label={t('game.content.search_label', 'Search events')}
-            description={t(
-              'game.content.search_description',
-              'Search every event by name, summary, or exact event ID.'
-            )}
-            placeholder={t('game.content.search_placeholder', 'Enter an event name')}
+            placeholder={t('game.content.search_placeholder_compact', 'Title, summary, or event ID')}
             value={search}
             maxLength={100}
             enterKeyHint="search"
-            leftSection={<Icon path={mdiMagnify} size={0.82} aria-hidden="true" />}
+            leftSection={<Icon path={mdiMagnify} size={0.78} aria-hidden="true" />}
             rightSection={
               search ? (
                 <ActionIcon
                   type="button"
+                  size="sm"
                   variant="subtle"
                   color="gray"
                   aria-label={t('game.content.clear_search', 'Clear event search')}
                   onClick={clearSearch}
                 >
-                  <Icon path={mdiClose} size={0.82} aria-hidden="true" />
+                  <Icon path={mdiClose} size={0.74} aria-hidden="true" />
                 </ActionIcon>
               ) : undefined
             }
@@ -208,20 +217,42 @@ const Games: FC = () => {
               if (event.key === 'Escape' && search) clearSearch()
             }}
           />
-          {debouncedSearch && games && (
-            <Text role="status" aria-live="polite" size="sm" c="dimmed">
-              {t('game.content.search_results', '{{count}} matching events for “{{query}}”', {
-                count: games.total,
-                query: debouncedSearch,
-              })}
-            </Text>
+          {user && (
+            <Stack gap={5} className={classes.membershipFilter}>
+              <Text component="span" size="sm" fw={500} id="event-membership-filter-label">
+                {t('game.content.membership_filter', 'Participation')}
+              </Text>
+              <SegmentedControl
+                size="sm"
+                value={membership}
+                aria-labelledby="event-membership-filter-label"
+                data={[
+                  { value: GameMembershipFilter.All, label: t('game.content.membership_all', 'All') },
+                  { value: GameMembershipFilter.Joined, label: t('game.content.membership_joined', 'Joined') },
+                  {
+                    value: GameMembershipFilter.NotJoined,
+                    label: t('game.content.membership_not_joined', 'Not joined'),
+                  },
+                ]}
+                onChange={(value) => {
+                  setMembership(value as GameMembershipFilter)
+                  setPage(1)
+                }}
+              />
+            </Stack>
           )}
+          <VisuallyHidden role="status" aria-live="polite" aria-atomic="true">
+            {games &&
+              (debouncedSearch
+                ? t('game.content.search_results', '{{count}} matching events for “{{query}}”', {
+                    count: games.total,
+                    query: debouncedSearch,
+                  })
+                : t('game.content.filtered_event_results', '{{count}} events shown', { count: games.total }))}
+          </VisuallyHidden>
         </form>
 
-        <div
-          id="event-catalog-results"
-          aria-busy={games === undefined || isLoading ? true : undefined}
-        >
+        <div id="event-catalog-results" aria-busy={games === undefined || isLoading ? true : undefined}>
           {games === undefined ? (
             <SimpleGrid cols={{ base: 1, md: 2, xl: 3, w24: 4 }} spacing="lg" verticalSpacing="lg">
               {Array.from({ length: ITEM_PER_PAGE }).map((_, index) => (
@@ -274,7 +305,7 @@ const Games: FC = () => {
 
                     <SimpleGrid cols={{ base: 1, md: 2, xl: 3, w24: 4 }} spacing="lg" verticalSpacing="lg">
                       {section.events.map((game) => (
-                        <GameCard key={game.id} game={game} />
+                        <GameCard key={game.id} game={game} showMembership={Boolean(user)} />
                       ))}
                     </SimpleGrid>
                   </section>

@@ -192,6 +192,43 @@
   box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.2);
 }
 
+.membership {
+  position: absolute;
+  z-index: 2;
+  bottom: 0.75rem;
+  left: 0.75rem;
+  display: inline-flex;
+  min-height: 1.7rem;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: calc(100% - 1.5rem);
+  padding: 0.28rem 0.52rem;
+  overflow: hidden;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(6, 12, 23, 0.82);
+  font-size: 0.66rem;
+  font-weight: 740;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  backdrop-filter: blur(8px);
+}
+
+.membership[data-membership='accepted'] {
+  background: color-mix(in srgb, var(--mantine-color-green-8) 88%, transparent);
+}
+
+.membership[data-membership='pending'] {
+  background: color-mix(in srgb, var(--mantine-color-yellow-9) 88%, transparent);
+}
+
+.membership[data-membership='rejected'],
+.membership[data-membership='suspended'] {
+  background: color-mix(in srgb, var(--mantine-color-red-9) 88%, transparent);
+}
+
 .content {
   position: relative;
   display: flex;
@@ -282,6 +319,12 @@
 
   .status {
     top: 0.6rem;
+    left: 0.6rem;
+    max-width: calc(100% - 1.2rem);
+  }
+
+  .membership {
+    bottom: 0.6rem;
     left: 0.6rem;
     max-width: calc(100% - 1.2rem);
   }

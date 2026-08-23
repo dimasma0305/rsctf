@@ -74,6 +74,7 @@ const NavbarLink: FC<NavbarLinkProps> = ({ icon, label, link, onClick, isActive,
       aria-label={compact ? translatedLabel : undefined}
       aria-current={isActive ? 'page' : undefined}
       data-active={isActive || undefined}
+      data-guide={link === '/games' ? 'games-navigation' : link === '/challenges' ? 'challenge-navigation' : undefined}
       className={classes.link}
     >
       {content}
@@ -274,6 +275,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
             <Menu.Target>
               <UnstyledButton
                 className={classes.accountButton}
+                data-guide="account-menu"
                 aria-label={t('common.tab.account.title', 'Account')}
                 title={compact ? t('common.tab.account.title', 'Account') : undefined}
               >

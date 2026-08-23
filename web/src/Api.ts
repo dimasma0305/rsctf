@@ -165,6 +165,13 @@ export enum ParticipationStatus {
   Unsubmitted = "Unsubmitted",
 }
 
+/** Membership scope for the public event catalog. */
+export enum GameMembershipFilter {
+  All = "all",
+  Joined = "joined",
+  NotJoined = "notJoined",
+}
+
 /** Task execution status */
 export enum TaskStatus {
   Success = "Success",
@@ -2724,6 +2731,10 @@ export interface BasicGameInfoModel {
   averageRating?: number;
   /** @format int32 */
   reviewCount?: number;
+  /** True for accepted, pending, or suspended event memberships. */
+  joined: boolean;
+  /** Current registration state when the signed-in user has one. */
+  participationStatus?: ParticipationStatus | null;
   /**
    * Start time
    * @format uint64
@@ -2750,6 +2761,48 @@ export interface ArrayResponseOfBasicGameInfoModel {
    * @format int32
    */
   total?: number;
+}
+
+/** A challenge visible through one of the caller's accepted, started events. */
+export interface ChallengeCatalogItem {
+  /** @format int32 */
+  id: number;
+  title: string;
+  category: ChallengeCategory;
+  type: ChallengeType;
+  /** Current Jeopardy value; zero for live A&D/KotH scoring. */
+  score: number;
+  /** @format int32 */
+  solveCount: number;
+  solved: boolean;
+  /** @format int32 */
+  gameId: number;
+  gameTitle: string;
+  /** @format uint64 */
+  gameStart: number;
+  /** @format uint64 */
+  gameEnd: number;
+}
+
+export interface ArrayResponseOfChallengeCatalogItem {
+  data: ChallengeCatalogItem[];
+  /** @format int32 */
+  length: number;
+  /** @format int64 */
+  total: number;
+}
+
+export interface ChallengeCatalogQuery {
+  /** @default 24 */
+  count?: number;
+  /** @default 0 */
+  skip?: number;
+  search?: string;
+  /** @format int32 */
+  gameId?: number;
+  category?: ChallengeCategory;
+  type?: ChallengeType;
+  solved?: boolean;
 }
 
 /** Detailed game information, including detailed introduction and current team registration status */
@@ -3801,6 +3854,8 @@ export interface ClientConfig {
   renewalWindow?: number;
   /** Enable browser fingerprinting in Login/Register */
   enableBrowserFingerprint?: boolean;
+  /** Whether public account registration is open */
+  allowRegister?: boolean;
   /** Whether the optional public donation page is active and configured. */
   donationsEnabled?: boolean;
   donationProvider?: DonationProvider | null;
@@ -3808,6 +3863,8 @@ export interface ClientConfig {
   donationUrl?: string | null;
   /** Whether public username/password account creation is enabled */
   allowPasswordRegistration?: boolean;
+  /** Whether newly registered accounts must confirm their email */
+  emailConfirmationRequired?: boolean;
   /** Whether Google OAuth sign-in is configured and available */
   enableGoogleAuth?: boolean;
   /** Whether Discord OAuth sign-in is configured and available */
@@ -7811,6 +7868,52 @@ export class Api<
       }),
 
     /**
+     * @description Lists challenges from the signed-in player's accepted, started events.
+     *
+     * @tags Game
+     * @name GameChallengeCatalog
+     * @request GET:/api/game/challenges
+     */
+    gameChallengeCatalog: (query?: ChallengeCatalogQuery, params: RequestParams = {}) =>
+      this.request<ArrayResponseOfChallengeCatalogItem, RequestResponse>({
+        path: `/api/game/challenges`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Lists challenges from the signed-in player's accepted, started events.
+     *
+     * @tags Game
+     * @name GameChallengeCatalog
+     * @request GET:/api/game/challenges
+     */
+    useGameChallengeCatalog: (
+      query?: ChallengeCatalogQuery,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfChallengeCatalogItem, RequestResponse>(
+        doFetch ? [`/api/game/challenges`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Lists challenges from the signed-in player's accepted, started events.
+     *
+     * @tags Game
+     * @name GameChallengeCatalog
+     * @request GET:/api/game/challenges
+     */
+    mutateGameChallengeCatalog: (
+      query?: ChallengeCatalogQuery,
+      data?: ArrayResponseOfChallengeCatalogItem | Promise<ArrayResponseOfChallengeCatalogItem>,
+      options?: MutatorOptions,
+    ) => mutate<ArrayResponseOfChallengeCatalogItem>([`/api/game/challenges`, query], data, options),
+
+    /**
      * @description Retrieves detailed information about the game
      *
      * @tags Game
@@ -7895,6 +7998,8 @@ export class Api<
         skip?: number;
         /** Case-insensitive event title, summary, or exact ID search. */
         search?: string;
+        /** Signed-in user's event membership scope. */
+        membership?: GameMembershipFilter;
       },
       params: RequestParams = {},
     ) =>
@@ -7929,6 +8034,8 @@ export class Api<
         skip?: number;
         /** Case-insensitive event title, summary, or exact ID search. */
         search?: string;
+        /** Signed-in user's event membership scope. */
+        membership?: GameMembershipFilter;
       },
       options?: SWRConfiguration,
       doFetch: boolean = true,
@@ -7962,6 +8069,8 @@ export class Api<
         skip?: number;
         /** Case-insensitive event title, summary, or exact ID search. */
         search?: string;
+        /** Signed-in user's event membership scope. */
+        membership?: GameMembershipFilter;
       },
       data?:
         | ArrayResponseOfBasicGameInfoModel

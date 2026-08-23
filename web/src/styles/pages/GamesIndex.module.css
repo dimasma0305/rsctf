@@ -26,13 +26,29 @@
 
 .searchForm {
   display: flex;
-  width: min(100%, 34rem);
-  flex-direction: column;
-  gap: 0.5rem;
+  width: 100%;
+  align-items: flex-end;
+  gap: 0.75rem;
+  padding: 0.7rem;
+  border: 1px solid var(--app-surface-border);
+  border-radius: var(--mantine-radius-lg);
+  background: var(--app-subtle-surface);
+}
+
+.searchInput {
+  width: min(100%, 22rem);
 }
 
 .searchInput :global(.mantine-TextInput-input) {
-  min-height: 2.75rem;
+  min-height: 2.25rem;
+}
+
+.membershipFilter {
+  min-width: min(100%, 20rem);
+}
+
+.membershipFilter :global(.mantine-SegmentedControl-root) {
+  min-height: 2.25rem;
 }
 
 .lifecycleOverview {
@@ -170,6 +186,16 @@
 }
 
 @media (max-width: $mantine-breakpoint-xs) {
+  .searchForm {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .searchInput,
+  .membershipFilter {
+    width: 100%;
+  }
+
   .lifecycleOverview {
     width: 100%;
     border-radius: var(--mantine-radius-lg);

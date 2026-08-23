@@ -555,6 +555,7 @@ export const ChallengePanel: FC = () => {
           }}
           gameEnded={dayjs(game?.end) < dayjs()}
           practiceMode={game?.practiceMode}
+          eventVpnRequired={game?.vpnAccessRequired}
           status={teamInfo?.rank?.solvedChallenges?.find((c) => c.id === challenge?.id)?.type}
           cateData={challengeCategoryLabelMap.get(
             (challenge?.category as ChallengeCategory) ?? ChallengeCategory.Misc

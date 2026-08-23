@@ -1,5 +1,14 @@
 import { Badge, Card, Group, Image, Stack, Text, Title } from '@mantine/core'
-import { mdiAccountGroupOutline, mdiCalendarBlankOutline, mdiClockOutline, mdiFlagOutline } from '@mdi/js'
+import {
+  mdiAccountCheckOutline,
+  mdiAccountClockOutline,
+  mdiAccountGroupOutline,
+  mdiAccountOffOutline,
+  mdiAccountOutline,
+  mdiCalendarBlankOutline,
+  mdiClockOutline,
+  mdiFlagOutline,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { TFunction } from 'i18next'
 import { CSSProperties, FC } from 'react'
@@ -7,7 +16,7 @@ import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { useLanguage } from '@Utils/I18n'
 import { getGameStatus, toLimitTag } from '@Hooks/useGame'
-import { BasicGameInfoModel } from '@Api'
+import { BasicGameInfoModel, ParticipationStatus } from '@Api'
 import classes from '@Styles/GameCard.module.css'
 
 export enum GameStatus {
@@ -35,9 +44,10 @@ export const getGameStatusLabel = (t: TFunction, status: GameStatus) => {
 
 interface GameCardProps {
   game: BasicGameInfoModel
+  showMembership?: boolean
 }
 
-export const GameCard: FC<GameCardProps> = ({ game, ...others }) => {
+export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...others }) => {
   const { t } = useTranslation()
   const { locale } = useLanguage()
 
@@ -60,10 +70,24 @@ export const GameCard: FC<GameCardProps> = ({ game, ...others }) => {
   const statusLabel = getGameStatusLabel(t, status)
   const eventTitle = title || t('game.content.untitled', 'Untitled event')
   const eventHue = (game.id * 47 + 186) % 360
+  const membership = (() => {
+    switch (game.participationStatus) {
+      case ParticipationStatus.Accepted:
+        return { status: 'accepted', icon: mdiAccountCheckOutline, label: t('game.content.joined', 'Joined') }
+      case ParticipationStatus.Pending:
+        return { status: 'pending', icon: mdiAccountClockOutline, label: t('game.content.join_pending', 'Pending') }
+      case ParticipationStatus.Suspended:
+        return { status: 'suspended', icon: mdiAccountOffOutline, label: t('game.content.join_suspended', 'Suspended') }
+      case ParticipationStatus.Rejected:
+        return { status: 'rejected', icon: mdiAccountOffOutline, label: t('game.content.join_rejected', 'Rejected') }
+      default:
+        return { status: 'none', icon: mdiAccountOutline, label: t('game.content.not_joined', 'Not joined') }
+    }
+  })()
 
   return (
     <Card {...others} component="article" className={classes.root}>
-      <Link to={`/games/${game.id}`} className={classes.link}>
+      <Link to={`/games/${game.id}`} className={classes.link} data-guide="event-card">
         <div className={classes.visual} style={{ '--event-hue': `${eventHue}deg` } as CSSProperties}>
           {poster ? (
             <Image src={poster} alt="" />
@@ -80,6 +104,12 @@ export const GameCard: FC<GameCardProps> = ({ game, ...others }) => {
             <span className={classes.statusDot} aria-hidden="true" />
             {statusLabel}
           </span>
+          {showMembership && (
+            <span className={classes.membership} data-membership={membership.status}>
+              <Icon path={membership.icon} size={0.62} aria-hidden="true" />
+              {membership.label}
+            </span>
+          )}
         </div>
 
         <div className={classes.content}>

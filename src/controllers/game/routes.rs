@@ -15,6 +15,10 @@ fn router_with_domains(
     Router::new()
         .route("/api/game", limited(Policy::Query, get(games)))
         .route(
+            "/api/game/challenges",
+            limited(Policy::Query, get(challenge_catalog)),
+        )
+        .route(
             "/api/game/recent",
             limited(Policy::Query, get(recent_games)),
         )
