@@ -28,7 +28,24 @@ test('admin previews explain the WSRX requirement and block unusable entries', (
 
 test('the disabled open-web action remains a valid button', () => {
   assert.match(entry, /onClick=\{onOpenEntry\}/)
-  assert.match(entry, /if \(!canUseEntry\) return/)
+  assert.match(entry, /if \(!canOpenEntry\) return/)
   assert.match(entry, /window\.open\(`http:\/\/\$\{webEntry\}`, '_blank', 'noopener,noreferrer'\)/)
   assert.doesNotMatch(entry, /component="a"/)
+})
+
+test('players can explicitly switch between a local netcat address and the scoped WSS URL', () => {
+  assert.match(entry, /if \(!isPlatformProxy \|\| !instanceEntry\) return/)
+  assert.doesNotMatch(entry, /if \(!isWsrxUsable \|\| !instanceEntry\) return/)
+  assert.match(entry, /<SegmentedControl/)
+  assert.match(entry, /value: 'wsrx'/)
+  assert.match(entry, /value: 'wss'/)
+  assert.match(entry, /isWssMode \? wsrxRemoteEntry : localEntry/)
+  assert.match(entry, /clipBoard\.copy\(entry\)/)
+  assert.match(entry, /disabled=\{!canOpenEntry\}/)
+})
+
+test('the scoped WSS capability is renewed before it can leave a stale local listener', () => {
+  assert.match(entry, /setCapabilityExpiresAt\(response\.data\.expiresAt\)/)
+  assert.match(entry, /CAPABILITY_REFRESH_SAFETY_MS/)
+  assert.match(entry, /setTimeout\(\(\) => void onRefreshProxyEntry\(\), refreshIn\)/)
 })

@@ -23,6 +23,7 @@ import {
 import { showNotification } from '@mantine/notifications'
 import {
   mdiAlertCircleOutline,
+  mdiArrowRight,
   mdiCheck,
   mdiContentCopy,
   mdiDownload,
@@ -125,6 +126,9 @@ export interface ChallengeModalProps extends ModalProps {
    * keeping the player-facing lifecycle controls available in the preview. */
   testInstance?: boolean
   gameTitle?: string
+  /** Optional event route shown only when the modal was opened from a global
+   * challenge catalog rather than from inside the event. */
+  eventHref?: string
   gameEnded?: boolean
   practiceMode?: boolean
   flag: string
@@ -157,6 +161,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     submitting,
     testInstance,
     gameTitle,
+    eventHref,
     gameEnded,
     practiceMode,
     flag,
@@ -278,7 +283,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       <Group wrap="nowrap" w="100%" justify="space-between" gap="sm">
         <Group wrap="nowrap" gap="sm" w="calc(100% - 6.75rem)">
           {cateData && <Icon path={cateData.icon} size={1.2} color={theme.colors[cateData.color][5]} />}
-          <Title order={4} lineClamp={1} title={challenge?.title ?? ''}>
+          <Title order={2} size="h4" lineClamp={1} title={challenge?.title ?? ''}>
             {challenge?.title ?? ''}
           </Title>
         </Group>
@@ -629,6 +634,26 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     </Stack>
   )
 
+  const eventAction = eventHref && (
+    <>
+      <Divider />
+      <Group justify="space-between" gap="sm" wrap="wrap">
+        <Text size="sm" c="dimmed" fw={600} lineClamp={1} style={{ flex: '1 1 12rem' }}>
+          {gameTitle}
+        </Text>
+        <Button
+          component="a"
+          href={eventHref}
+          variant="light"
+          size="compact-sm"
+          rightSection={<Icon path={mdiArrowRight} size={0.75} />}
+        >
+          {t('challenge.button.go_to_event', 'Go to event')}
+        </Button>
+      </Group>
+    </>
+  )
+
   const footer =
     isAd && gameId && !isPracticeContainer && !readOnlyArchive ? (
       <Stack gap="xs" className={classes.footer}>
@@ -645,6 +670,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         ) : (
           <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} />
         )}
+        {eventAction}
       </Stack>
     ) : (
       <Stack gap="xs" className={classes.footer}>
@@ -665,6 +691,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           <>
             <Divider label={attemptsInfo} my={attemptsInfo ? '-0.4rem' : undefined} />
             <form
+              data-guide="flag-submit"
               onSubmit={(e) => {
                 e.preventDefault()
                 if (!solved && canSubmitDespiteDeadline) {
@@ -712,6 +739,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           </>
         )}
         {reviewSection}
+        {eventAction}
       </Stack>
     )
 
@@ -738,10 +766,10 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           />
         ) : (
           <>
-            <Modal.Header>
+            <div className={classes.header}>
               <Modal.Title>{title}</Modal.Title>
               <Modal.CloseButton ref={closeButtonRef} aria-label={t('common.button.close', 'Close')} />
-            </Modal.Header>
+            </div>
             <Modal.Body>{content}</Modal.Body>
             {footer}
           </>

@@ -2,7 +2,6 @@ import {
   ActionIcon,
   Badge,
   Button,
-  Card,
   Group,
   Pagination,
   SegmentedControl,
@@ -12,29 +11,83 @@ import {
   Stack,
   Text,
   TextInput,
-  Title,
   VisuallyHidden,
 } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
-import { mdiCheckCircleOutline, mdiClose, mdiFlagOutline, mdiMagnify, mdiOpenInNew } from '@mdi/js'
+import { mdiClose, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
+import dayjs from 'dayjs'
 import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, Navigate } from 'react-router'
+import { Navigate } from 'react-router'
+import { ChallengeCard } from '@Components/ChallengeCard'
 import { Empty } from '@Components/Empty'
+import { GameChallengeModal } from '@Components/GameChallengeModal'
 import { PageHeader } from '@Components/PageHeader'
 import { WithNavBar } from '@Components/WithNavbar'
-import { ChallengeCategoryList, useChallengeCategoryLabelMap, useChallengeTypeLabelMap } from '@Utils/Shared'
+import {
+  ChallengeCategoryList,
+  SubmissionTypeIconMap,
+  useChallengeCategoryLabelMap,
+  useChallengeTypeLabelMap,
+} from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { useGame } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUser } from '@Hooks/useUser'
-import api, { ChallengeCategory, ChallengeType } from '@Api'
+import api, {
+  ChallengeCatalogItem,
+  ChallengeCategory,
+  ChallengeInfo,
+  ChallengeType,
+  SubmissionType,
+} from '@Api'
 import classes from '@Styles/ChallengeCatalog.module.css'
 
 const ITEMS_PER_PAGE = 24
 type SolveFilter = 'all' | 'solved' | 'unsolved'
 
 const challengeHash = (id: number, title: string) => `#${id}-${encodeURIComponent(title.replace(/ /g, '-'))}`
+
+const catalogChallengeInfo = (challenge: ChallengeCatalogItem): ChallengeInfo => ({
+  id: challenge.id,
+  title: challenge.title,
+  category: challenge.category,
+  type: challenge.type,
+  score: challenge.score,
+  solved: challenge.solveCount,
+  bloods: [],
+  disableBloodBonus: true,
+})
+
+interface CatalogChallengeModalProps {
+  challenge: ChallengeCatalogItem
+  onClose: () => void
+}
+
+const CatalogChallengeModal: FC<CatalogChallengeModalProps> = ({ challenge, onClose }) => {
+  const { game } = useGame(challenge.gameId)
+  const categoryMap = useChallengeCategoryLabelMap()
+  const eventHref = `/games/${challenge.gameId}/challenges${challengeHash(challenge.id, challenge.title)}`
+
+  return (
+    <GameChallengeModal
+      gameId={challenge.gameId}
+      gameTitle={game?.title ?? challenge.gameTitle}
+      opened
+      onClose={onClose}
+      gameEnded={dayjs().isAfter(dayjs(game?.end ?? challenge.gameEnd))}
+      practiceMode={game?.practiceMode}
+      eventVpnRequired={game?.vpnAccessRequired}
+      eventHref={eventHref}
+      status={challenge.solved ? SubmissionType.Normal : SubmissionType.Unaccepted}
+      cateData={categoryMap.get(challenge.category)!}
+      title={challenge.title}
+      score={challenge.score}
+      challengeId={challenge.id}
+    />
+  )
+}
 
 const ChallengeCatalog: FC = () => {
   const { t } = useTranslation()
@@ -49,6 +102,8 @@ const ChallengeCatalog: FC = () => {
   const [category, setCategory] = useState<ChallengeCategory | null>(null)
   const [challengeType, setChallengeType] = useState<ChallengeType | null>(null)
   const [solveFilter, setSolveFilter] = useState<SolveFilter>('all')
+  const [selectedChallenge, setSelectedChallenge] = useState<ChallengeCatalogItem | null>(null)
+  const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
 
   const { data: catalog, isLoading } = api.game.useGameChallengeCatalog(
     {
@@ -222,69 +277,21 @@ const ChallengeCatalog: FC = () => {
               }
             />
           ) : (
-            <SimpleGrid cols={{ base: 1, sm: 2, lg: 3, xl: 4 }} spacing="lg">
+            <div className={classes.challengeGrid}>
               {catalog.data.map((challenge) => {
-                const category = categoryMap.get(challenge.category)
-                const isLiveScoring =
-                  challenge.type === ChallengeType.AttackDefense || challenge.type === ChallengeType.KingOfTheHill
                 return (
-                  <Card component="article" key={`${challenge.gameId}:${challenge.id}`} className={classes.card}>
-                    <Link
-                      className={classes.cardLink}
-                      to={`/games/${challenge.gameId}/challenges${challengeHash(challenge.id, challenge.title)}`}
-                      aria-label={t('challenge.catalog.open', 'Open {{challenge}} in {{event}}', {
-                        challenge: challenge.title,
-                        event: challenge.gameTitle,
-                      })}
-                    >
-                      <Group justify="space-between" align="flex-start" wrap="nowrap" gap="sm">
-                        <span
-                          className={classes.categoryIcon}
-                          data-color={category?.color ?? 'gray'}
-                          aria-hidden="true"
-                        >
-                          <Icon path={category?.icon ?? mdiFlagOutline} size={0.92} />
-                        </span>
-                        {challenge.solved && (
-                          <Badge
-                            color="green"
-                            variant="light"
-                            leftSection={<Icon path={mdiCheckCircleOutline} size={0.58} />}
-                          >
-                            {t('challenge.catalog.solved', 'Solved')}
-                          </Badge>
-                        )}
-                      </Group>
-                      <Stack gap={5} className={classes.copy}>
-                        <Title order={2} size="h4" lineClamp={2} title={challenge.title}>
-                          {challenge.title}
-                        </Title>
-                        <Text size="sm" c="dimmed" lineClamp={1} title={challenge.gameTitle}>
-                          {challenge.gameTitle}
-                        </Text>
-                      </Stack>
-                      <Group gap={6} className={classes.metadata}>
-                        <Badge color={category?.color ?? 'gray'} variant="light">
-                          {category?.name ?? challenge.category}
-                        </Badge>
-                        <Badge color="gray" variant="light">
-                          {isLiveScoring
-                            ? t('challenge.catalog.live_scoring', 'Live scoring')
-                            : t('challenge.catalog.points', '{{count}} pts', { count: challenge.score })}
-                        </Badge>
-                        <Badge color="gray" variant="outline">
-                          {t('challenge.catalog.solves', '{{count}} solves', { count: challenge.solveCount })}
-                        </Badge>
-                      </Group>
-                      <span className={classes.openHint} aria-hidden="true">
-                        {t('challenge.catalog.open_short', 'Open')}
-                        <Icon path={mdiOpenInNew} size={0.62} />
-                      </span>
-                    </Link>
-                  </Card>
+                  <ChallengeCard
+                    key={`${challenge.gameId}:${challenge.id}`}
+                    challenge={catalogChallengeInfo(challenge)}
+                    contextLabel={challenge.gameTitle}
+                    iconMap={iconMap}
+                    colorMap={colorMap}
+                    solved={challenge.solved}
+                    onClick={() => setSelectedChallenge(challenge)}
+                  />
                 )
               })}
-            </SimpleGrid>
+            </div>
           )}
         </div>
 
@@ -300,6 +307,9 @@ const ChallengeCatalog: FC = () => {
           </nav>
         )}
       </Stack>
+      {selectedChallenge && (
+        <CatalogChallengeModal challenge={selectedChallenge} onClose={() => setSelectedChallenge(null)} />
+      )}
     </WithNavBar>
   )
 }

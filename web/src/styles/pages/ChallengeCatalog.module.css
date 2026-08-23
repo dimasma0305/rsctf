@@ -29,87 +29,11 @@
   min-height: 2.25rem;
 }
 
-.card {
-  min-width: 0;
-  min-height: 11.5rem;
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--app-surface-border);
-  border-radius: var(--mantine-radius-lg);
-  background: var(--app-raised-surface);
-  transition:
-    transform 150ms ease,
-    border-color 150ms ease,
-    box-shadow 150ms ease;
-
-  @mixin hover {
-    transform: translateY(-2px);
-    border-color: var(--app-accent-border);
-    box-shadow: 0 14px 34px rgba(8, 15, 30, 0.12);
-  }
-}
-
-.card:has(.cardLink:focus-visible) {
-  outline: 3px solid var(--app-focus-ring);
-  outline-offset: 3px;
-}
-
-.cardLink {
-  position: relative;
-  display: flex;
-  min-height: 11.5rem;
-  flex-direction: column;
-  padding: 1rem;
-  color: inherit;
-  text-decoration: none;
-}
-
-.cardLink:focus-visible {
-  outline: none;
-}
-
-.categoryIcon {
+.challengeGrid {
   display: grid;
-  width: 2.4rem;
-  height: 2.4rem;
-  flex: 0 0 auto;
-  place-items: center;
-  color: var(--app-accent-text);
-  border: 1px solid var(--app-accent-border);
-  border-radius: 0.8rem;
-  background: var(--app-accent-soft);
-}
-
-.copy {
-  min-width: 0;
-  margin-top: 0.8rem;
-}
-
-.copy h2 {
-  color: var(--app-text-primary);
-  line-height: 1.25;
-  letter-spacing: -0.02em;
-}
-
-.metadata {
-  margin-top: auto;
-  padding-top: 0.85rem;
-}
-
-.metadata :global(.mantine-Badge-root) {
-  max-width: 100%;
-  text-transform: none;
-}
-
-.openHint {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  align-self: flex-end;
-  margin-top: 0.7rem;
-  color: var(--app-accent-text);
-  font-size: 0.72rem;
-  font-weight: 700;
+  grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
+  width: 100%;
+  gap: var(--mantine-spacing-sm);
 }
 
 .pagination :global(.mantine-Pagination-control) {
@@ -138,11 +62,5 @@
 
   .solveFilter :global(.mantine-SegmentedControl-root) {
     width: 100%;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .card {
-    transition: none;
   }
 }

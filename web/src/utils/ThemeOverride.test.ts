@@ -139,10 +139,13 @@ test('active tabs and notification controls retain accessible defaults', () => {
 
 test('decorative surfaces are borderless and semantic accent variables resolve', () => {
   const css = readFileSync('src/styles/App.css', 'utf8')
+  const typographyCss = readFileSync('src/styles/shared/Typography.module.css', 'utf8')
 
   assert.equal((css.match(/--app-surface-border:\s*transparent;/g) ?? []).length, 2)
   assert.match(css, /\.mantine-Card-root,[\s\S]*?border-color:\s*var\(--app-surface-border\);/)
   assert.match(css, /\.mantine-Modal-content,[\s\S]*?border:\s*1px solid var\(--app-surface-border\);/)
   assert.match(css, /--app-accent-text:\s*var\(--mantine-color-semanticAccent-[01]\)/)
+  assert.equal((typographyCss.match(/color:\s*var\(--app-accent-text\);/g) ?? []).length, 2)
+  assert.doesNotMatch(typographyCss, /:where\((?:a, )?strong\)[\s\S]*?mantine-primary-color-[56]/)
   assert.doesNotMatch(css, /--mantine-color-semantic-accent-/)
 })

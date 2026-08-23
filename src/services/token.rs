@@ -1,6 +1,6 @@
 //! Ported from RSCTF `Services/Token/TokenService.cs` — JWT issuing/verifying.
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use sea_orm::ActiveEnum;
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,12 @@ struct ProxyCapabilityClaims {
 pub(crate) struct ProxyCapabilityIdentity {
     pub user_id: Uuid,
     pub security_stamp: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IssuedProxyCapability {
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 pub struct TokenService {
@@ -107,7 +113,7 @@ impl TokenService {
         security_stamp: &str,
         container_id: Uuid,
         preview: bool,
-    ) -> Result<String, AppError> {
+    ) -> Result<IssuedProxyCapability, AppError> {
         let now = Utc::now().timestamp();
         let exp = now.checked_add(PROXY_CAPABILITY_TTL_SECS).ok_or_else(|| {
             AppError::internal("proxy capability expiry is outside the supported range")
@@ -121,8 +127,11 @@ impl TokenService {
             iat: now,
             exp,
         };
-        encode(&Header::default(), &claims, &self.proxy_encoding)
-            .map_err(|error| AppError::internal(format!("proxy capability encode: {error}")))
+        let token = encode(&Header::default(), &claims, &self.proxy_encoding)
+            .map_err(|error| AppError::internal(format!("proxy capability encode: {error}")))?;
+        let expires_at = DateTime::from_timestamp(exp, 0)
+            .ok_or_else(|| AppError::internal("proxy capability expiry is invalid"))?;
+        Ok(IssuedProxyCapability { token, expires_at })
     }
 
     pub(crate) fn verify_proxy_capability(
@@ -182,9 +191,12 @@ mod tests {
         let service = TokenService::new("0123456789abcdef0123456789abcdef", 60);
         let user_id = Uuid::new_v4();
         let container_id = Uuid::new_v4();
-        let token = service
+        let capability = service
             .issue_proxy_capability(user_id, "stamp-1", container_id, false)
             .unwrap();
+        let token = capability.token;
+
+        assert!(capability.expires_at > Utc::now());
 
         assert_eq!(
             service

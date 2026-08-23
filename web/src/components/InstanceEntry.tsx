@@ -1,4 +1,4 @@
-import { ActionIcon, Anchor, Button, Divider, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core'
+import { ActionIcon, Anchor, Button, Divider, Group, SegmentedControl, Stack, Text, TextInput, Tooltip } from '@mantine/core'
 import { useClipboard } from '@mantine/hooks'
 import { useDebouncedCallback, useDebouncedState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
@@ -7,7 +7,7 @@ import { Icon } from '@mdi/react'
 import { WsrxState } from '@xdsec/wsrx'
 import dayjs from 'dayjs'
 import duration from 'dayjs/plugin/duration'
-import { FC, useEffect, useState } from 'react'
+import { FC, useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HandleWsrxError, useWsrx } from '@Components/WsrxProvider'
 import { getProxyUrl as getProxyEntry } from '@Utils/Shared'
@@ -19,6 +19,10 @@ import classes from '@Styles/InstanceEntry.module.css'
 import misc from '@Styles/Misc.module.css'
 
 dayjs.extend(duration)
+
+type ProxyEntryMode = 'wsrx' | 'wss'
+
+const CAPABILITY_REFRESH_SAFETY_MS = 5 * 60 * 1000
 
 interface InstanceEntryProps {
   test?: boolean
@@ -136,11 +140,13 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     }
   }
 
-  // Platform-proxied instances only become usable after the local daemon has
-  // verified its tunnel. Never present the raw WebSocket capability as a
-  // netcat address.
+  // Platform-proxied instances can be used through the managed local WSRX
+  // listener or by explicitly copying the short-lived WSS URL. Never present
+  // the latter as though it were a netcat address.
   const isWsrxUsable = isPlatformProxy && wsrxState === WsrxState.Usable
+  const [proxyEntryMode, setProxyEntryMode] = useState<ProxyEntryMode>('wsrx')
   const [wsrxRemoteEntry, setWsrxRemoteEntry] = useState('')
+  const [capabilityExpiresAt, setCapabilityExpiresAt] = useState<number | null>(null)
   const [capabilityAttempt, setCapabilityAttempt] = useState(0)
   const [tunnelRequestComplete, setTunnelRequestComplete] = useState(false)
   const [tunnelRequestFailed, setTunnelRequestFailed] = useState(false)
@@ -149,10 +155,11 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
 
   useEffect(() => {
     setWsrxRemoteEntry('')
+    setCapabilityExpiresAt(null)
     setTunnelRequestComplete(false)
     setTunnelRequestFailed(false)
     setTunnelCheckExpired(false)
-    if (!isWsrxUsable || !instanceEntry) return
+    if (!isPlatformProxy || !instanceEntry) return
 
     let active = true
     const requestCapability = async () => {
@@ -160,7 +167,10 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
         const response = isPreview
           ? await api.proxy.proxyIssueNoInstanceCapability(instanceEntry)
           : await api.proxy.proxyIssueInstanceCapability(instanceEntry)
-        if (active) setWsrxRemoteEntry(getProxyEntry(instanceEntry, isPreview, response.data.token))
+        if (active) {
+          setWsrxRemoteEntry(getProxyEntry(instanceEntry, isPreview, response.data.token))
+          setCapabilityExpiresAt(response.data.expiresAt)
+        }
       } catch (err) {
         if (active) {
           setTunnelRequestFailed(true)
@@ -173,7 +183,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     return () => {
       active = false
     }
-  }, [capabilityAttempt, instanceEntry, isPreview, isWsrxUsable, t])
+  }, [capabilityAttempt, instanceEntry, isPlatformProxy, isPreview, t])
 
   const localTraffic = wsrxInstances.find((traffic) => traffic.remote === wsrxRemoteEntry)
 
@@ -231,14 +241,18 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     requestFailed: tunnelRequestFailed,
   })
 
-  const entry = isPlatformProxy ? (phase === 'ready' ? (localTraffic?.local ?? '') : '') : instanceEntry
+  const localEntry = phase === 'ready' ? (localTraffic?.local ?? '') : ''
+  const isWssMode = isPlatformProxy && proxyEntryMode === 'wss'
+  const entry = isPlatformProxy ? (isWssMode ? wsrxRemoteEntry : localEntry) : instanceEntry
   const canUseEntry = !!entry
+  const canOpenEntry = canUseEntry && !isWssMode
 
-  const onRetryTunnel = async () => {
+  const onRefreshProxyEntry = useCallback(async () => {
     if (!isPlatformProxy || tunnelRetrying) return
 
     setTunnelRetrying(true)
     setWsrxRemoteEntry('')
+    setCapabilityExpiresAt(null)
     setTunnelRequestComplete(false)
     setTunnelRequestFailed(false)
     setTunnelCheckExpired(false)
@@ -251,10 +265,18 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
       }
     }
 
-    if (wsrxState !== WsrxState.Usable) doWsrxConnect()
+    if (proxyEntryMode === 'wsrx' && wsrxState !== WsrxState.Usable) doWsrxConnect()
     setCapabilityAttempt((attempt) => attempt + 1)
     setTunnelRetrying(false)
-  }
+  }, [doWsrxConnect, isPlatformProxy, localTraffic?.local, proxyEntryMode, t, tunnelRetrying, wsrx, wsrxState])
+
+  useEffect(() => {
+    if (!isPlatformProxy || !capabilityExpiresAt) return
+
+    const refreshIn = Math.max(capabilityExpiresAt - Date.now() - CAPABILITY_REFRESH_SAFETY_MS, 1000)
+    const refresh = window.setTimeout(() => void onRefreshProxyEntry(), refreshIn)
+    return () => window.clearTimeout(refresh)
+  }, [capabilityExpiresAt, isPlatformProxy, onRefreshProxyEntry])
 
   const tunnelStatusColor = phase === 'ready' ? 'green' : phase === 'unhealthy' ? 'red' : 'orange'
 
@@ -264,13 +286,13 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
 
     showNotification({
       color: 'teal',
-      message: t('challenge.notification.instance.copied.entry'),
+      message: isWssMode ? t('wsrx.notification.url_copied') : t('challenge.notification.instance.copied.entry'),
       icon: <Icon path={mdiCheck} size={1} />,
     })
   }
 
   const onOpenEntry = () => {
-    if (!canUseEntry) return
+    if (!canOpenEntry) return
 
     const webEntry = isPlatformProxy && wsrxOptions.allowLan ? entry.replace('0.0.0.0', '127.0.0.1') : entry
     window.open(`http://${webEntry}`, '_blank', 'noopener,noreferrer')
@@ -304,6 +326,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   return (
     <Stack gap="sm" w="100%">
       <TextInput
+        data-guide="instance-entry"
         label={
           <Text size="sm" fw="bold">
             {t('challenge.content.instance.entry.label')}
@@ -311,16 +334,35 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
         }
         description={
           isPlatformProxy && (
-            <Stack gap={2}>
-              <Text span size="sm">
-                {t('wsrx.tunnel.description')}&nbsp;
-                <Anchor href="https://github.com/XDSEC/WebSocketReflectorX/releases" target="_blank" rel="noreferrer">
-                  {t('challenge.content.instance.entry.description.anchor')}
-                </Anchor>
-              </Text>
-              <Text size="xs" c={tunnelStatusColor} role="status" aria-live="polite">
-                {t(`wsrx.tunnel.${phase}`)}
-              </Text>
+            <Stack gap="xs">
+              <SegmentedControl
+                value={proxyEntryMode}
+                onChange={(value) => setProxyEntryMode(value as ProxyEntryMode)}
+                data={[
+                  { label: t('wsrx.mode.local'), value: 'wsrx' },
+                  { label: t('wsrx.mode.wss'), value: 'wss' },
+                ]}
+                aria-label={t('wsrx.mode.label')}
+                size="xs"
+                fullWidth
+              />
+              {proxyEntryMode === 'wsrx' ? (
+                <>
+                  <Text span size="sm">
+                    {t('wsrx.tunnel.description')}&nbsp;
+                    <Anchor href="https://github.com/XDSEC/WebSocketReflectorX/releases" target="_blank" rel="noreferrer">
+                      {t('challenge.content.instance.entry.description.anchor')}
+                    </Anchor>
+                  </Text>
+                </>
+              ) : (
+                <Text size="sm">{t('wsrx.mode.wss_description')}</Text>
+              )}
+              {proxyEntryMode === 'wsrx' && (
+                <Text size="xs" c={tunnelStatusColor} role="status" aria-live="polite">
+                  {t(`wsrx.tunnel.${phase}`)}
+                </Text>
+              )}
             </Stack>
           )
         }
@@ -328,20 +370,33 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
           <Icon
             path={mdiServerNetwork}
             size={1}
-            data-proxied={phase === 'ready' || undefined}
+            data-proxied={canUseEntry || undefined}
             className={classes.icon}
           />
         }
         value={entry}
-        placeholder={isPlatformProxy ? t('wsrx.tunnel.placeholder') : undefined}
+        placeholder={
+          isPlatformProxy
+            ? proxyEntryMode === 'wss'
+              ? t('wsrx.mode.wss_placeholder')
+              : t('wsrx.tunnel.placeholder')
+            : undefined
+        }
         readOnly
         classNames={{ input: misc.ffmono }}
         rightSection={
           <Group gap={2} wrap="nowrap">
             <Divider orientation="vertical" pr={4} />
             {isPlatformProxy && (
-              <Tooltip label={t('wsrx.button.retry_tunnel')} withArrow>
-                <ActionIcon aria-label={t('wsrx.button.retry_tunnel')} onClick={onRetryTunnel} loading={tunnelRetrying}>
+              <Tooltip
+                label={proxyEntryMode === 'wsrx' ? t('wsrx.button.retry_tunnel') : t('wsrx.button.refresh_url')}
+                withArrow
+              >
+                <ActionIcon
+                  aria-label={proxyEntryMode === 'wsrx' ? t('wsrx.button.retry_tunnel') : t('wsrx.button.refresh_url')}
+                  onClick={onRefreshProxyEntry}
+                  loading={tunnelRetrying}
+                >
                   <Icon path={mdiRefresh} size={1} />
                 </ActionIcon>
               </Tooltip>
@@ -354,7 +409,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
             <Tooltip label={t('challenge.content.instance.open.web')} withArrow>
               <ActionIcon
                 aria-label={t('challenge.content.instance.open.web')}
-                disabled={!canUseEntry}
+                disabled={!canOpenEntry}
                 onClick={onOpenEntry}
               >
                 <Icon path={mdiOpenInNew} size={1} />

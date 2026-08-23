@@ -4,6 +4,11 @@
 }
 
 .header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-sm);
+  padding: var(--modal-padding, var(--mantine-spacing-md));
   padding-bottom: var(--mantine-spacing-xs);
 }
 

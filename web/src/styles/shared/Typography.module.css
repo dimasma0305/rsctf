@@ -63,7 +63,7 @@
   }
 
   & :where(strong) {
-    color: light-dark(var(--mantine-primary-color-6), var(--mantine-primary-color-5));
+    color: var(--app-accent-text);
 
     & :where(code) {
       color: inherit;
@@ -129,7 +129,7 @@
   }
 
   & :where(a, strong) {
-    color: light-dark(var(--mantine-primary-color-6), var(--mantine-primary-color-5));
+    color: var(--app-accent-text);
   }
 
   & :where(a) {

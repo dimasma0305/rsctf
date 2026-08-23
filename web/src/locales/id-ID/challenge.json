@@ -8,6 +8,7 @@
     "download": {
       "attachment": "Download Lampiran"
     },
+    "go_to_event": "Buka event",
     "instance": {
       "create": "Buat baru",
       "destroy": "Hapus",

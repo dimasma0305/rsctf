@@ -75,8 +75,8 @@ use authorization::{
     GameProxyOpenFence, GameProxyTargetIdentity,
 };
 use capability::{
-    issue_instance_capability, issue_noinstance_capability, proxy_latency_probe, proxy_user,
-    ProxyCapabilityQuery,
+    issue_instance_capability, issue_noinstance_capability, proxy_instance_latency_probe,
+    proxy_noinstance_latency_probe, proxy_user, ProxyCapabilityQuery,
 };
 use egress::{build_egress_scan, record_flag_egress, EgressScan, RollingFlagMatcher};
 use target::{game_proxy_target_identity, proxy_target, resolve_noinstance_target, ProxyTarget};
@@ -101,7 +101,7 @@ pub fn router() -> Router<SharedState> {
         // GET /api/proxy/{id} — proxy TCP over websocket for a live instance.
         .route(
             "/api/proxy/{id}",
-            get(proxy_for_instance).options(proxy_latency_probe),
+            get(proxy_for_instance).options(proxy_instance_latency_probe),
         )
         .route(
             "/api/proxy/{id}/capability",
@@ -110,7 +110,7 @@ pub fn router() -> Router<SharedState> {
         // GET /api/proxy/noinst/{id} — proxy TCP over websocket for admin test containers.
         .route(
             "/api/proxy/noinst/{id}",
-            get(proxy_for_noinstance).options(proxy_latency_probe),
+            get(proxy_for_noinstance).options(proxy_noinstance_latency_probe),
         )
         .route(
             "/api/proxy/noinst/{id}/capability",

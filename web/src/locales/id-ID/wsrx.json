@@ -1,6 +1,7 @@
 {
   "button": {
     "config": "Konfigurasi WSRX",
+    "refresh_url": "Perbarui URL WSS",
     "retry_tunnel": "Buat ulang tunnel lokal"
   },
   "config": {
@@ -25,6 +26,16 @@
       "message": "WSRX version is too low, please update to the latest version before using platform integration.",
       "title": "Version mismatch"
     }
+  },
+  "notification": {
+    "url_copied": "URL WSS sementara telah disalin. Gunakan di WSRX atau klien TCP-over-WebSocket lain; URL ini bukan alamat netcat."
+  },
+  "mode": {
+    "label": "Metode koneksi",
+    "local": "WSRX Lokal",
+    "wss": "URL WSS",
+    "wss_description": "Salin URL WSS sementara ini untuk WSRX atau klien TCP-over-WebSocket lain. Beralih kembali ke WSRX Lokal untuk mendapatkan alamat netcat.",
+    "wss_placeholder": "Meminta URL WSS sementara"
   },
   "state": {
     "invalid": "WSRX disconnected",

@@ -33,6 +33,7 @@ interface GameChallengeModalProps extends ModalProps {
   gameEnded: boolean
   practiceMode?: boolean
   eventVpnRequired?: boolean
+  eventHref?: string
   cateData: ChallengeCategoryItemProps
   title: string
   score: number
@@ -47,6 +48,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     gameEnded,
     practiceMode,
     eventVpnRequired,
+    eventHref,
     challengeId,
     cateData,
     status,
@@ -357,6 +359,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     <ChallengeModal
       {...modalProps}
       gameTitle={gameTitle}
+      eventHref={eventHref}
       challenge={{
         ...(challenge ?? {}),
         title: challenge?.title ?? title,

@@ -3,11 +3,15 @@ import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const provider = readFileSync('src/components/guide/PlayerGuide.tsx', 'utf8')
+const spotlight = readFileSync('src/components/guide/GuideSpotlightModal.tsx', 'utf8')
+const spotlightStyles = readFileSync('src/styles/components/PlayerGuide.module.css', 'utf8')
 const page = readFileSync('src/pages/guide/Index.tsx', 'utf8')
 const app = readFileSync('src/App.tsx', 'utf8')
 const navigation = readFileSync('src/components/navigation.ts', 'utf8')
 const challengeModal = readFileSync('src/components/GameChallengeModal.tsx', 'utf8')
+const instanceEntry = readFileSync('src/components/InstanceEntry.tsx', 'utf8')
 const eventPage = readFileSync('src/pages/games/[id]/Index.tsx', 'utf8')
+const appHeader = readFileSync('src/components/AppHeader.tsx', 'utf8')
 const config = readFileSync('src/hooks/useConfig.ts', 'utf8')
 const pageStyles = readFileSync('src/styles/pages/PlayerGuidePage.module.css', 'utf8')
 
@@ -18,10 +22,36 @@ test('interactive guide is account-scoped, restartable, dismissible, and storage
   assert.match(provider, /resetGuideProgress/)
   assert.match(provider, /Turn off interactive guide/)
   assert.match(provider, /try \{[\s\S]*localStorage\.setItem[\s\S]*\} catch/)
-  assert.match(provider, /<Modal\.Root[\s\S]*returnFocus trapFocus/)
-  assert.match(provider, /<Modal\.Title>/)
-  assert.doesNotMatch(provider, /<Modal\.Header/)
+  assert.match(spotlight, /<Modal\.Root[\s\S]*returnFocus[\s\S]*trapFocus/)
+  assert.match(spotlight, /<Modal\.Title>/)
+  assert.doesNotMatch(spotlight, /<Modal\.Header/)
   assert.match(app, /<PlayerGuideProvider>/)
+})
+
+test('interactive guide spotlights real controls and provides a reduced-motion game cursor', () => {
+  assert.match(provider, /targetSelector:/)
+  assert.match(instanceEntry, /data-guide="instance-start"/)
+  assert.match(instanceEntry, /data-guide="instance-entry"/)
+  assert.match(appHeader, /data-guide="more-navigation"/)
+  assert.match(provider, /guide-navigation[\s\S]*more-navigation/)
+  assert.match(spotlight, /querySelectorAll<HTMLElement>\(selector\)/)
+  assert.match(spotlight, /scrollIntoView\(/)
+  assert.match(spotlight, /prefers-reduced-motion: reduce/)
+  assert.match(spotlight, /mdiCursorDefaultClickOutline/)
+  assert.match(spotlight, /data-guide-layer="spotlight"/)
+  assert.match(spotlight, /data-guide-layer="cursor"/)
+  assert.match(spotlight, /<Modal\.Body[\s\S]*tabIndex=\{0\}[\s\S]*aria-label=\{title\}/)
+  assert.match(spotlight, /fillRule="evenodd"/)
+  assert.match(spotlightStyles, /\.tutorialSpotlight/)
+  assert.match(spotlightStyles, /\.tutorialCursor/)
+  assert.match(spotlightStyles, /prefers-reduced-motion[\s\S]*\.tutorialSpotlight/)
+  assert.match(spotlightStyles, /max-height: 54dvh/)
+
+  const zIndex = (className: string) =>
+    Number(spotlightStyles.match(new RegExp(`\\.${className} \\{[\\s\\S]*?z-index: (\\d+);`))?.[1])
+  assert.ok(zIndex('tutorialShade') < zIndex('tutorialSpotlight'))
+  assert.ok(zIndex('tutorialSpotlight') < zIndex('tutorialCursor'))
+  assert.ok(zIndex('tutorialCursor') < zIndex('modal'))
 })
 
 test('guide content follows the effective platform and event connection settings', () => {

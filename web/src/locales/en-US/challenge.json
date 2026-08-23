@@ -8,6 +8,7 @@
     "download": {
       "attachment": "Download Attachment"
     },
+    "go_to_event": "Go to event",
     "instance": {
       "create": "Create",
       "destroy": "Destroy",

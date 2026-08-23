@@ -30,6 +30,9 @@ interface ChallengeCardProps {
   challenge: ChallengeInfo
   solved?: boolean
   onClick?: () => void
+  /** Optional event context when this shared card is rendered outside an
+   * event page, such as the joined-event challenge catalog. */
+  contextLabel?: string
   iconMap: Map<SubmissionType, PartialIconProps | undefined>
   colorMap: Map<SubmissionType, string | undefined>
   teamId?: number
@@ -37,7 +40,7 @@ interface ChallengeCardProps {
 }
 
 export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps) => {
-  const { challenge, solved, onClick, iconMap, teamId, colorMap, rating } = props
+  const { challenge, solved, onClick, contextLabel, iconMap, teamId, colorMap, rating } = props
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
   const cateData = challengeCategoryLabelMap.get(challenge.category!)
   const theme = useMantineTheme()
@@ -91,7 +94,7 @@ export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps)
         {t('challenge.button.open', 'Open challenge: {{title}}', { title: challenge.title })}
       </button>
       <Stack gap="xs" pos="relative" style={{ zIndex: 99 }}>
-        <Group h="30px" wrap="nowrap" justify="space-between" gap={2}>
+        <Group mih="30px" wrap="nowrap" justify="space-between" gap={2}>
           <Group gap={6} wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
             {/* Category icon at the top-left, matching the ChallengeModal header
                 pattern (`[category icon] [title] [pts/LIVE]`). For jeopardy this
@@ -108,7 +111,10 @@ export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps)
                 style={{ flexShrink: 0 }}
               />
             )}
-            <ScrollingText text={challenge.title || ''} size="lg" />
+            <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
+              <ScrollingText text={challenge.title || ''} size="lg" />
+              {contextLabel && <ScrollingText text={contextLabel} size="xs" c="dimmed" />}
+            </Stack>
           </Group>
           <Group gap={4} wrap="nowrap">
             {/* Engine badge — same slot for all three so the icon position is
