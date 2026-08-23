@@ -14,6 +14,65 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Complete donation-history production acceptance — 23 August 2026
+
+The complete-history donation fix was measured immediately before and after the
+production rollout of rsctf `0.1.68`
+(`8010487fc0942481bf11ad6ef7f35047361224f5`) at immutable image index
+`sha256:06d168f1f51a466a194e1a423d95a919a5d7c991e0050aa48ebb2c26b5ca6fa3`.
+Both runs used the same public `tests/load/donations.mjs` harness at two
+requests/s for 30 seconds against the same production topology with two web
+replicas and one control replica.
+
+The deployed adapter fetched both Trakteer pages and reconciled all 39
+successful support records into 19 case-normalized supporters. The public gross
+successful-support total was Rp 1,157,842. A credential-bearing, count-only
+provider reconciliation proved that the public support count, supporter count,
+gross amount, gross quantity, and top-10 numeric ordering exactly matched the
+provider history. No supporter name, message, email, order ID, payment method,
+or API credential was written into this report or the reconciliation output.
+
+The gross history total is deliberately distinct from Trakteer's current
+withdrawable balance, which can change after fees and withdrawals. rsctf does
+not call or serialize the current-balance endpoint. The public JSON also
+contained no API key, supporter email, order ID, payment method, net amount, or
+current-balance field.
+
+| Metric | Before (`0.1.67`) | After (`0.1.68`) |
+| --- | ---: | ---: |
+| Requests / observed rate | 61 / 2.033011 s⁻¹ | 61 / 2.032953 s⁻¹ |
+| Latency average | 9.418 ms | 3.414 ms |
+| Latency p50 | 3.534 ms | 3.154 ms |
+| Latency p90 | 6.802 ms | 4.630 ms |
+| Latency p95 | 7.961 ms | 5.529 ms |
+| Latency p99 | 139.232 ms | 7.012 ms |
+| Latency maximum | 314.084 ms | 7.732 ms |
+| Invalid feed / privacy leak / 5xx / dropped | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+
+Six roughly seven-second operational samples bracketed the accepted after run.
+They include unrelated live event and control-plane work, so they are resource
+guardrails rather than isolated endpoint cost.
+
+| After-rollout resource | Average | Maximum |
+| --- | ---: | ---: |
+| Three rsctf processes, aggregate CPU | 4.512% | 12.210% |
+| Three rsctf processes, aggregate RSS | — | 117.250 MiB |
+| PostgreSQL CPU | 7.622% | 23.780% |
+| PostgreSQL RSS | — | 199.700 MiB |
+
+Live browser smoke tests proved that Home no longer renders the donation panel,
+the feature-gated Donation link is visible in the left navigation, and
+`/donations` renders the complete-history summary, balance explanation, and ten
+leaderboard rows without a runtime exception. Both web replicas, control, and
+the firewall sidecar remained healthy at the expected digest with zero
+restarts. Recent logs contained no panic, error-level event, migration failure,
+or observed 5xx response.
+
+This is a correctness and completeness acceptance comparison, not an isolated
+optimization experiment. Cache phase and unrelated live-host work can explain
+the latency-tail difference, and there is no same-bracket before CPU sample.
+It therefore adds no optimization-ledger row.
+
 ## Optional donation feed production acceptance — 23 August 2026
 
 The optional Trakteer supporter wall was measured after the production rollout
