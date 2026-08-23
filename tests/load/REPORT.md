@@ -14,6 +14,51 @@
 > offenders plus 95 clean controls; older six/94 and honeypot-score figures are
 > historical results, not acceptance expectations.
 
+## Optional donation feed production acceptance — 23 August 2026
+
+The optional Trakteer supporter wall was measured after the production rollout
+of rsctf `0.1.67` (`77829c922bd4fc75efba2e5c661e3bdc06c573f5`) at immutable
+image index
+`sha256:45772cb6198dc122044e38a4ebaced79ef1e3b068680920ca67953d2ffef32c4`.
+The topology was two web replicas plus one control replica and PostgreSQL 18.4.
+The public feed contained five bounded leaderboard rows and five messages. Its
+JSON exposed no API key, supporter email, order ID, payment method, or net
+amount.
+
+The accepted public-safe run held two requests/s for 30 seconds. It completed
+61 requests at 2.032926 requests/s with zero invalid feeds, privacy leaks, 5xx
+responses, failed requests, or dropped arrivals. All values below are from the
+accepted run's 12 production samples; they include ordinary control-plane work
+on the live host rather than claiming isolated process cost.
+
+| Metric | Result |
+| --- | ---: |
+| Donation requests / observed rate | 61 / 2.032926 s⁻¹ |
+| Latency average / p50 | 9.943 / 3.572 ms |
+| Latency p90 / p95 | 6.775 / 8.567 ms |
+| Latency p99 / maximum | 152.064 / 365.638 ms |
+| Invalid / privacy leak / 5xx / dropped | 0 / 0 / 0 / 0 |
+| Application CPU average / maximum | 4.521% / 16.340% |
+| Application aggregate RSS maximum | 115.780 MiB |
+| PostgreSQL CPU average / maximum | 3.232% / 19.300% |
+| PostgreSQL RSS maximum | 193.100 MiB |
+
+A separate single-source saturation diagnostic held 50 requests/s for 30
+seconds. The endpoint returned exactly 150 successful feeds before the
+anonymous-IP admission budget rejected the remaining 1,351 requests with HTTP
+429. Across all 1,501 scheduled requests there were zero 5xx responses, privacy
+leaks, or dropped arrivals; p95 was 13.344 ms. Application CPU averaged 4.921%
+and peaked at 11.300%, aggregate RSS peaked at 106.380 MiB, PostgreSQL CPU
+averaged 3.946% and peaked at 16.590%, and PostgreSQL RSS peaked at 178.900 MiB.
+This is evidence that the public limiter absorbs one-source excess traffic, not
+an accepted feed-throughput result.
+
+The harness default was consequently corrected from 50 to the production-safe
+two requests/s and its public runner no longer requires a JWT signing secret.
+Higher cache-throughput measurements belong on an isolated stack with an
+explicitly raised admission budget. This is a new feature baseline, not a
+before/after optimization comparison, so it adds no optimization-ledger row.
+
 ## On-demand challenge-image storage acceptance — 21 August 2026
 
 The new local-Docker retention path was exercised against the source-development

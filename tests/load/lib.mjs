@@ -32,7 +32,6 @@ export function byocAgentImage() {
 }
 
 export const JWT_SECRET = process.env.RSCTF_JWT_SECRET;
-if (!JWT_SECRET) throw new Error('RSCTF_JWT_SECRET is required for load-test token minting');
 
 const b64url = (b) => Buffer.from(b).toString('base64url');
 
@@ -170,6 +169,7 @@ export function stat() {
 
 /** HS256 JWT bound to the live security stamp. Role defaults to Admin for setup helpers. */
 export function mintJwt(userId, securityStamp, role = 3) {
+  if (!JWT_SECRET) throw new Error('RSCTF_JWT_SECRET is required for load-test token minting');
   if (!Number.isSafeInteger(role) || role < 0 || role > 3) {
     throw new Error(`invalid load-test JWT role ${role}`);
   }

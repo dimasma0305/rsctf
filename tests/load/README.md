@@ -59,13 +59,17 @@ scenario holds a fixed request rate, verifies the 10-row leaderboard and
 before and after the run:
 
 ```sh
-DONATIONS_STRESS_ACK=1 TARGET=https://ctf.example RATE=50 DURATION=30s \
+DONATIONS_STRESS_ACK=1 TARGET=https://ctf.example RATE=2 DURATION=30s \
   SUMMARY_JSON=/tmp/donations.json npm run donations
 ```
 
-Use the same rate and duration when comparing releases. Sample the application
-and PostgreSQL containers with `docker stats --no-stream` during both runs;
-compare CPU at the held rate, never peak requests per second.
+The public-safe default stays below the anonymous-IP admission budget. A higher
+single-source rate is expected to receive HTTP 429 after that budget is spent;
+use an isolated stack with an explicitly raised admission limit when measuring
+the cache above 2 requests/s. Use the same rate and duration when comparing
+releases. Sample the application and PostgreSQL containers with
+`docker stats --no-stream` during both runs; compare CPU at the held rate, never
+peak requests per second.
 
 ### On-demand image storage
 
