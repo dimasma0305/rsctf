@@ -269,6 +269,13 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     })
   }
 
+  const onOpenEntry = () => {
+    if (!canUseEntry) return
+
+    const webEntry = isPlatformProxy && wsrxOptions.allowLan ? entry.replace('0.0.0.0', '127.0.0.1') : entry
+    window.open(`http://${webEntry}`, '_blank', 'noopener,noreferrer')
+  }
+
   if (!withContainer) {
     return !showLifecycle ? (
       <Text size="md" c="dimmed" fw="bold" pt={30}>
@@ -348,14 +355,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
               <ActionIcon
                 aria-label={t('challenge.content.instance.open.web')}
                 disabled={!canUseEntry}
-                component="a"
-                href={
-                  canUseEntry
-                    ? `http://${isPlatformProxy && wsrxOptions.allowLan ? entry.replace('0.0.0.0', '127.0.0.1') : entry}`
-                    : undefined
-                }
-                target={canUseEntry ? '_blank' : undefined}
-                rel="noreferrer"
+                onClick={onOpenEntry}
               >
                 <Icon path={mdiOpenInNew} size={1} />
               </ActionIcon>
