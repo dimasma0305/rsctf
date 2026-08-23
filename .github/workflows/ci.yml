@@ -706,6 +706,11 @@ jobs:
             exit 1
           fi
           test "$(grep -c 'docker/github-builder/.github/workflows/build.yml@a492c6d04fd3315f67230809b44d60cc0acd50b3' "$workflow")" -eq 2
+          grep -q '^  workflow_dispatch:$' "$workflow"
+          if grep -q '^    branches:' "$workflow" || grep -q '^  pull_request:' "$workflow"; then
+            echo "::error::Native container builds must remain manual; normal pushes and pull requests use application CI only."
+            exit 1
+          fi
           grep -q 'platforms: linux/amd64,linux/arm64' "$workflow"
           grep -q 'linux/arm64=ubuntu-24.04-arm' "$workflow"
           grep -q 'cache-scope: rsctf-byoc-agent' "$workflow"
@@ -718,8 +723,6 @@ jobs:
           grep -q 'docker logout "$GHCR_REGISTRY"' "$workflow"
           grep -q 'after four authenticated attempts' "$workflow"
           grep -q 'Promote verified commit images' "$workflow"
-          test "$(grep -Fc -- '- "build.rs"' "$workflow")" -eq 2
-          test "$(grep -Fc -- '- "scripts/docker-proxy-firewall.sh"' "$workflow")" -eq 2
 
       - name: Validate layer-backed Rust dependency caches
         shell: bash

@@ -2,47 +2,8 @@ name: Container image
 
 on:
   push:
-    branches: [main]
     tags:
       - "v*"
-    paths:
-      - ".dockerignore"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "build.rs"
-      - "Dockerfile"
-      - "agents/byoc-agent/**"
-      - "lib/worker-protocol/**"
-      - "LICENSE.txt"
-      - "LICENSING.md"
-      - "NOTICE"
-      - "rust-toolchain.toml"
-      - "scripts/bootstrap-worker.sh"
-      - "scripts/bootstrap-worker.ps1"
-      - "scripts/docker-proxy-firewall.sh"
-      - "src/**"
-      - "web/**"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/image.yml"
-  pull_request:
-    paths:
-      - ".dockerignore"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "build.rs"
-      - "Dockerfile"
-      - "agents/byoc-agent/**"
-      - "lib/worker-protocol/**"
-      - "LICENSE.txt"
-      - "LICENSING.md"
-      - "NOTICE"
-      - "rust-toolchain.toml"
-      - "scripts/bootstrap-worker.sh"
-      - "scripts/bootstrap-worker.ps1"
-      - "scripts/docker-proxy-firewall.sh"
-      - "src/**"
-      - "web/**"
-      - ".github/workflows/image.yml"
   workflow_dispatch:
 
 permissions:
@@ -50,7 +11,7 @@ permissions:
 
 concurrency:
   group: image-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 env:
   DOCKERHUB_IMAGE: docker.io/dimasmaualana/rsctf
@@ -66,64 +27,12 @@ jobs:
 
   quality:
     name: Test before publishing
-    if: github.event_name != 'pull_request' && github.ref_type != 'tag'
+    if: github.ref_type != 'tag'
     needs: [validate-release]
     uses: ./.github/workflows/ci.yml
 
-  pull-request:
-    name: Build pull request (amd64)
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-
-      - name: Build image without pushing
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64
-          load: true
-          push: false
-          cache-from: type=gha,scope=rsctf-image-linux-amd64
-          cache-to: type=gha,mode=max,scope=rsctf-image-linux-amd64,ignore-error=true
-
-      - name: Build BYOC agent image without pushing
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: ./agents/byoc-agent
-          file: ./agents/byoc-agent/Dockerfile
-          platforms: linux/amd64
-          load: true
-          push: false
-          tags: rsctf-byoc-agent:ci
-          cache-from: type=gha,scope=rsctf-byoc-agent-linux-amd64
-          cache-to: type=gha,mode=max,scope=rsctf-byoc-agent-linux-amd64,ignore-error=true
-
-      - name: Smoke test BYOC agent image
-        shell: bash
-        run: |
-          set +e
-          docker run --rm \
-            --env RSCTF_BYOC_MODE=invalid \
-            rsctf-byoc-agent:ci
-          status=$?
-          set -e
-          if [[ "$status" -ne 2 ]]; then
-            echo "::error::Expected the BYOC agent to reject an invalid mode with exit code 2; got $status"
-            exit 1
-          fi
-
   prepare:
     name: Prepare publication
-    if: github.event_name != 'pull_request'
     needs: [validate-release]
     runs-on: ubuntu-24.04
     timeout-minutes: 5

@@ -32,9 +32,10 @@ Publishing behavior is intentionally predictable:
 
 | Git event | Platforms | Published tags |
 | --- | --- | --- |
-| Pull request | amd64 | Build only; never pushed |
-| Push to `main` | amd64 | `main` and a commit-SHA tag |
-| Stable tag such as `v1.2.3` | amd64 + arm64 | `1.2.3`, `1.2`, `1`, and `latest` |
+| Pull request | None | Application CI only; no container build |
+| Push to `main` | None | No container build |
+| Manual **Container image** run on `main` | amd64 + arm64 | `main` and a commit-SHA tag |
+| Stable tag such as `v1.2.3` | No rebuild | Promotes the verified commit image to `1.2.3`, `1.2`, `1`, and `latest` |
 
 Release tags use strict `vX.Y.Z` syntax and must match the application, worker,
 BYOC agent, and Helm chart versions in the tagged commit.
@@ -43,9 +44,12 @@ Release images include OCI metadata, BuildKit provenance, and an SBOM. GHCR
 publication uses `GITHUB_TOKEN`. Optional Docker Hub publication uses the
 repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
-If the optional Docker Hub secrets are added later, open **Actions → Container
-image → Run workflow**. A manual run on `main` republishes the `main` and
-commit-SHA tags without requiring an empty source commit.
+Container builds are deliberately manual because both native architectures are
+expensive. Open **Actions → Container image → Run workflow**, select `main`,
+and run it only when preparing a deployment or release. The run executes the
+full quality gate, builds both architectures, verifies the combined manifests,
+and publishes the `main` and commit-SHA tags. It also publishes the optional
+Docker Hub mirror when its credentials are configured.
 
 Keep the GHCR package public so anonymous Docker and Kubernetes installations
 can pull it without registry credentials. Keep the optional Docker Hub mirror
@@ -71,14 +75,22 @@ This lets Kubernetes operators install a versioned chart without cloning the rep
 
 ## Create a release image
 
-Run application CI first, then create and push a semantic version tag:
+Run application CI first. Then open **Actions → Container image → Run
+workflow**, select `main`, and wait for the complete manual run to succeed.
+Create the semantic version tag on that same commit only after its commit-SHA
+images and attestations have been verified:
 
 ```bash
 git tag -s v1.2.3 -m "rsctf v1.2.3"
 git push origin v1.2.3
 ```
 
-Review the Actions run and the generated multi-architecture manifest before announcing the version. Pin that release tag in production instead of tracking `main`.
+The tag workflow promotes the already-built commit images instead of compiling
+them again. If `main` advanced after the manual build, build the newer commit
+manually before tagging it; publication fails closed when the tagged commit has
+no matching verified images. Review the tag Actions runs and generated
+multi-architecture manifest before announcing the version. Pin that release
+tag in production instead of tracking `main`.
 
 ## Challenge repository bindings
 
