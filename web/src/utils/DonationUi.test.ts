@@ -6,8 +6,11 @@ const source = (path: string) => readFileSync(path, 'utf8')
 
 test('global notifications use the unobtrusive bottom-right anchor', () => {
   const app = source('src/App.tsx')
+  const css = source('src/styles/App.css')
   assert.match(app, /<Notifications position="bottom-right"/)
   assert.doesNotMatch(app, /<Notifications position="top-right"/)
+  assert.match(css, /\.app-notifications\[data-position\^='bottom-'\]\s*\{/)
+  assert.doesNotMatch(css, /\n\s*\.app-notifications\s*\{\s*\n\s*bottom:/)
 })
 
 test('donations use a feature-gated page instead of the home feed', () => {

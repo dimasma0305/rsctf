@@ -111,7 +111,7 @@ body {
 }
 
 @media (max-width: 48em) {
-  .app-notifications {
+  .app-notifications[data-position^='bottom-'] {
     bottom: var(--app-mobile-dock-clearance) !important;
   }
 }
