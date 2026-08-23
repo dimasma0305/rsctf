@@ -21,6 +21,10 @@ export enum ContainerPortMappingType {
   PlatformProxy = "PlatformProxy",
 }
 
+export enum DonationProvider {
+  Trakteer = "Trakteer",
+}
+
 /** Judgement result */
 export enum AnswerResult {
   FlagSubmitted = "FlagSubmitted",
@@ -447,11 +451,21 @@ export interface ConfigEditModel {
   oAuth?: OAuthConfig | null;
   /** Pull credentials for a private image registry. */
   registry?: RegistryConfig | null;
+  /** Optional server-side donation provider. API credentials are write-only. */
+  donations?: DonationConfig | null;
   /** Read-only view of RSCTF_TRUSTED_PROXY_CIDRS. Ignored on update. */
   proxyTrust?: ProxyTrustConfig | null;
   /** Active container backend summary. The backend type is read-only; the
    *  Jeopardy port-mapping preference is editable. */
   containerProvider?: ContainerProviderInfoModel | null;
+}
+
+export interface DonationConfig {
+  enabled?: boolean;
+  provider?: DonationProvider;
+  /** Write-only. Leave blank to preserve the configured credential. */
+  apiKey?: string | null;
+  hasApiKey?: boolean;
 }
 
 /** External OAuth login providers (Google, Discord). Admin-editable; client
@@ -3720,6 +3734,34 @@ export interface PostInfoModel {
   time: number;
 }
 
+export interface DonationLeaderboardEntry {
+  rank: number;
+  supporterName: string;
+  totalAmount: number;
+  totalQuantity: number;
+  supportCount: number;
+}
+
+export interface DonationMessage {
+  supporterName: string;
+  message: string;
+  amount: number;
+  quantity: number;
+  unitName: string;
+  /** @format uint64 */
+  updatedAt: number;
+  replyMessage?: string | null;
+}
+
+export interface DonationFeed {
+  provider: DonationProvider;
+  currency: string;
+  /** @format uint64 */
+  fetchedAt: number;
+  leaderboard: DonationLeaderboardEntry[];
+  messages: DonationMessage[];
+}
+
 /** Client configuration */
 export interface ClientConfig {
   /** Platform prefix name */
@@ -3753,6 +3795,9 @@ export interface ClientConfig {
   renewalWindow?: number;
   /** Enable browser fingerprinting in Login/Register */
   enableBrowserFingerprint?: boolean;
+  /** Whether the optional public donation panel is active and configured. */
+  donationsEnabled?: boolean;
+  donationProvider?: DonationProvider | null;
   /** Whether public username/password account creation is enabled */
   allowPasswordRegistration?: boolean;
   /** Whether Google OAuth sign-in is configured and available */
@@ -9197,6 +9242,30 @@ export class Api<
       }),
   };
   info = {
+    /**
+     * @description Get the cached public donation leaderboard and messages
+     *
+     * @tags Info
+     * @name InfoGetDonations
+     * @summary Get donation history
+     * @request GET:/api/donations
+     */
+    infoGetDonations: (params: RequestParams = {}) =>
+      this.request<DonationFeed, any>({
+        path: `/api/donations`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    useInfoGetDonations: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) => useSWR<DonationFeed, any>(doFetch ? `/api/donations` : null, options),
+    mutateInfoGetDonations: (
+      data?: DonationFeed | Promise<DonationFeed>,
+      options?: MutatorOptions,
+    ) => mutate<DonationFeed>(`/api/donations`, data, options),
+
     /**
      * @description Get Captcha configuration
      *

@@ -120,7 +120,7 @@ const ThemedApp: FC = () => {
     <MantineProvider theme={theme} defaultColorScheme="dark" deduplicateInlineStyles stylesTransform={emotionTransform}>
       <MantineEmotionProvider>
         <ErrorBoundary FallbackComponent={ErrorFallback}>
-          <Notifications position="top-right" limit={5} zIndex={5000} />
+          <Notifications position="bottom-right" limit={5} zIndex={5000} className="app-notifications" />
           <DatesProvider settings={{ locale }}>
             <ModalsProvider labels={{ confirm: t('common.modal.confirm'), cancel: t('common.modal.cancel') }}>
               <WsrxProvider>

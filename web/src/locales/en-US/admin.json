@@ -603,6 +603,7 @@
         "oauth": "OAuth",
         "registry_pull": "Pull creds",
         "build_registry": "Build push",
+        "donations": "Donations",
         "diagnostics": "Diagnostics"
       },
       "account": {
@@ -844,6 +845,24 @@
         "proxy_trusted_no": "Connection peer is not trusted; forwarded IP headers are ignored. Check RSCTF_TRUSTED_PROXY_CIDRS.",
         "trusted_networks": "Currently trusted networks",
         "no_header": "(no X-Forwarded-For header sent)"
+      },
+      "donations": {
+        "title": "Donations",
+        "description": "Optional public supporter leaderboard and messages. Provider credentials stay on the server.",
+        "enabled": {
+          "label": "Show donations on the home page",
+          "description": "Disabled by default. When enabled, only successful support history, public names, and messages are shown."
+        },
+        "provider": {
+          "label": "Provider",
+          "description": "More providers can be added without changing the public donation feed."
+        },
+        "api_key": {
+          "label": "Trakteer API key",
+          "description": "Write-only server credential. Leave blank to keep the current key.",
+          "configured": "(configured — leave blank to keep)"
+        },
+        "privacy": "The browser never receives the API key, supporter emails, order IDs, or payment methods. Results are cached to protect both the provider and this VPS."
       },
       "platform": {
         "api_encryption": {

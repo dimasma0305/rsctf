@@ -7,7 +7,7 @@ use axum::routing::get;
 use axum::Router;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use uuid::Uuid;
 
 use crate::app_state::SharedState;
@@ -74,6 +74,8 @@ pub struct ClientConfig {
     pub allow_password_registration: bool,
     pub enable_google_auth: bool,
     pub enable_discord_auth: bool,
+    pub donations_enabled: bool,
+    pub donation_provider: Option<crate::services::donations::DonationProvider>,
 }
 
 /// Mirrors RSCTF `ClientCaptchaInfoModel`.
@@ -129,6 +131,12 @@ pub async fn get_client_config(
     let mut renewal_window = 10;
 
     let rows = config::Entity::find().all(&st.db).await?;
+    let donation_values: BTreeMap<String, Option<String>> = rows
+        .iter()
+        .map(|row| (row.config_key.clone(), row.value.clone()))
+        .collect();
+    let (donations_enabled, donation_provider) =
+        crate::services::donations::public_config(&donation_values);
     for row in rows {
         let Some(value) = row.value else { continue };
         match row.config_key.as_str() {
@@ -195,6 +203,8 @@ pub async fn get_client_config(
         allow_password_registration,
         enable_google_auth: oauth.google_configured(),
         enable_discord_auth: oauth.discord_configured(),
+        donations_enabled,
+        donation_provider: donations_enabled.then_some(donation_provider),
     }))
 }
 

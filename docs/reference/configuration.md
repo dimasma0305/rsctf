@@ -344,6 +344,23 @@ Use the Helm chart for the maintained ServiceAccount, Role, and network-policy c
 
 Recovery and bulk credential-delivery paths construct mail from these environment variables. Test mail from the deployed environment; similarly named values saved in Admin settings do not replace this startup configuration everywhere.
 
+## Donations
+
+The public supporter wall is optional and disabled by default. Configure it in
+**Admin → Settings → Donations**. Trakteer is the first supported provider; the
+provider selection is stored separately so later integrations do not change the
+public API. Enabling the feature requires a provider API key. The key is write-only:
+the admin API reports only whether one is configured, and it is never returned to
+the browser.
+
+The public `/api/donations` response contains only bounded, successful support
+history: up to 10 aggregated leaderboard entries and 20 recent public messages.
+Supporter email addresses, payment methods, order IDs, and the provider credential
+are neither requested nor exposed. Provider responses are capped at 256 KiB and
+200 rows. Successful projections are cached for five minutes, with a bounded stale
+copy for provider outages, so public traffic does not fan out into one Trakteer
+request per page view.
+
 ## OAuth
 
 Set a client ID and secret for each enabled provider:

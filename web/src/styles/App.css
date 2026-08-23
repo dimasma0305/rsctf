@@ -110,6 +110,12 @@ body {
   isolation: isolate;
 }
 
+@media (max-width: 48em) {
+  .app-notifications {
+    bottom: var(--app-mobile-dock-clearance) !important;
+  }
+}
+
 ::selection {
   color: var(--app-text-primary);
   background: color-mix(in srgb, var(--mantine-primary-color-4) 38%, transparent);

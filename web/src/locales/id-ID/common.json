@@ -58,6 +58,19 @@
     "home": {
       "recent_games": "Game Terbaru"
     },
+    "donations": {
+      "eyebrow": "Dukungan komunitas",
+      "title": "Dinding pendukung",
+      "leaderboard": "Pendukung teratas",
+      "messages": "Pesan pendukung",
+      "rank": "Peringkat {{rank}}",
+      "support_count": "{{count}} dukungan",
+      "reply": "Balasan",
+      "empty": "Belum ada dukungan berhasil yang dapat ditampilkan.",
+      "no_messages": "Belum ada pesan publik.",
+      "unavailable_title": "Dinding pendukung tidak tersedia",
+      "unavailable": "Silakan coba lagi nanti."
+    },
     "no_data": "Tidak ada data",
     "report_error": "Harap laporkan kesalahan ini kepada admin jika kamu merasa ini adalah bug",
     "wider": {

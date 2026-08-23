@@ -22,6 +22,8 @@ const fallbackConfig: ClientConfig = {
   renewalWindow: 10,
   enableBrowserFingerprint: false,
   allowPasswordRegistration: true,
+  donationsEnabled: false,
+  donationProvider: null,
 }
 
 export const useConfig = () => {

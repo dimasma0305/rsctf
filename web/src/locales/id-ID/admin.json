@@ -359,6 +359,45 @@
     "markdown_support": "Support dengan markdown styling",
     "nothing_found": "Tidak ada yang ditemukan",
     "settings": {
+      "status": {
+        "configured": "aktif",
+        "inactive": "nonaktif",
+        "attention": "perlu diperiksa"
+      },
+      "save_bar": {
+        "unsaved": "Perubahan belum disimpan",
+        "saved": "Semua perubahan tersimpan"
+      },
+      "nav": {
+        "platform": "Platform",
+        "account": "Pengguna",
+        "container": "Container",
+        "email": "Email",
+        "captcha": "Captcha",
+        "oauth": "OAuth",
+        "registry_pull": "Kredensial pull",
+        "build_registry": "Push build",
+        "donations": "Donasi",
+        "diagnostics": "Diagnostik"
+      },
+      "donations": {
+        "title": "Donasi",
+        "description": "Leaderboard pendukung dan pesan publik yang opsional. Kredensial penyedia tetap berada di server.",
+        "enabled": {
+          "label": "Tampilkan donasi di beranda",
+          "description": "Nonaktif secara default. Saat aktif, hanya riwayat dukungan berhasil, nama publik, dan pesan yang ditampilkan."
+        },
+        "provider": {
+          "label": "Penyedia",
+          "description": "Penyedia lain dapat ditambahkan tanpa mengubah API feed donasi publik."
+        },
+        "api_key": {
+          "label": "API key Trakteer",
+          "description": "Kredensial server yang hanya dapat ditulis. Kosongkan untuk mempertahankan key saat ini.",
+          "configured": "(sudah dikonfigurasi — kosongkan untuk mempertahankan)"
+        },
+        "privacy": "Browser tidak pernah menerima API key, email pendukung, ID pesanan, atau metode pembayaran. Hasil disimpan dalam cache untuk melindungi penyedia dan VPS ini."
+      },
       "account": {
         "allow_register": {
           "description": "Izinkan user untuk mendaftar akun baru",

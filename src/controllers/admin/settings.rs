@@ -5,6 +5,7 @@ use super::*;
 mod security_policy;
 
 pub use crate::services::container_policy::ContainerPolicy;
+pub use crate::services::donations::{DonationConfig, DonationProvider};
 
 pub(crate) const DEFAULT_CONTAINER_PORT_MAPPING: &str = "PlatformProxy";
 
@@ -266,6 +267,8 @@ pub struct ConfigEditModel {
     pub o_auth: Option<OAuthConfig>,
     #[serde(default)]
     pub registry: Option<RegistryConfig>,
+    #[serde(default)]
+    pub donations: Option<DonationConfig>,
     /// Runtime-derived from `RSCTF_TRUSTED_PROXY_CIDRS`; incoming values are
     /// ignored so older clients can still round-trip the full settings model.
     #[serde(default, skip_deserializing)]
@@ -456,6 +459,7 @@ pub async fn get_config(
         has_password: has("BuildRegistryConfig:Password"),
         is_configured: br_push && br_server.map(|s| !s.is_empty()).unwrap_or(false),
     };
+    let donations = crate::services::donations::admin_config(&map);
 
     // Read-only container-provider summary (mirrors RSCTF `ContainerProviderInfoModel`).
     // rsctf only persists the port-mapping mode; `type`/`trafficCapture` are best-effort
@@ -480,6 +484,7 @@ pub async fn get_config(
         captcha: Some(captcha),
         o_auth: Some(o_auth),
         registry: Some(registry),
+        donations: Some(donations),
         proxy_trust: Some(proxy_trust),
         container_provider: Some(container_provider),
     }))
@@ -510,9 +515,13 @@ pub async fn update_config(
     if let Some(policy) = model.container_policy.as_ref() {
         policy.validate()?;
     }
+    if let Some(donations) = model.donations.as_ref() {
+        crate::services::donations::validate_config(st.pg(), donations).await?;
+    }
     let account_policy = model.account_policy.take();
     let captcha = model.captcha.take();
     let o_auth = model.o_auth.take();
+    let donations = model.donations.take();
     if account_policy.is_some() || captcha.is_some() || o_auth.is_some() {
         security_policy::save_security_policy(
             st.pg(),
@@ -657,6 +666,10 @@ pub async fn update_config(
         write_opt(&st, "BuildRegistryConfig:Namespace", b.namespace).await?;
         write_opt(&st, "BuildRegistryConfig:Username", b.username).await?;
         write_secret(&st, "BuildRegistryConfig:Password", b.password).await?;
+    }
+
+    if let Some(donations) = donations {
+        crate::services::donations::save_config(st.pg(), st.cache.as_ref(), donations).await?;
     }
 
     // Container-provider port-mapping mode (Default = direct host:port,

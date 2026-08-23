@@ -59,6 +59,20 @@
     "home": {
       "recent_games": "Recent Games"
     },
+    "donations": {
+      "eyebrow": "Community support",
+      "title": "Supporter wall",
+      "leaderboard": "Top supporters",
+      "messages": "Supporter messages",
+      "rank": "Rank {{rank}}",
+      "support_count_one": "{{count}} support",
+      "support_count_other": "{{count}} supports",
+      "reply": "Reply",
+      "empty": "No successful support is available yet.",
+      "no_messages": "No public messages yet.",
+      "unavailable_title": "Supporter wall unavailable",
+      "unavailable": "Please check back later."
+    },
     "no_data": "No data",
     "report_error": "Please report this error to the administrator if you think this is a bug",
     "wider": {
