@@ -27,12 +27,16 @@ test('the companion digest cannot invalidate Rust release compilation', () => {
   assert.doesNotMatch(agentImage, /option_env!\("RSCTF_DEFAULT_BYOC_AGENT_IMAGE"\)/)
 })
 
-test('main and tag publication reuse one attested quality decision', () => {
+test('manual and tag publication reuse one attested quality decision', () => {
   const triggers = ciWorkflow.slice(0, ciWorkflow.indexOf('permissions:'))
   assert.doesNotMatch(triggers, /^  push:\s*$/m)
   assert.match(triggers, /^  pull_request:\s*$/m)
   assert.match(triggers, /^  workflow_call:\s*$/m)
 
+  const imageTriggers = imageWorkflow.slice(0, imageWorkflow.indexOf('permissions:'))
+  assert.match(imageTriggers, /^  workflow_dispatch:\s*$/m)
+  assert.doesNotMatch(imageTriggers, /^    branches:/m)
+  assert.doesNotMatch(imageTriggers, /^  pull_request:\s*$/m)
   assert.match(
     imageWorkflow,
     /quality:[\s\S]*uses: \.\/\.github\/workflows\/ci\.yml[\s\S]*finalize-main:/,
