@@ -93,7 +93,7 @@ pub(crate) async fn prepare_queued_image(
 /// Repository digests remain the backend's responsibility because Docker can
 /// pull them without changing identity. A local ID is repaired only from the
 /// persisted trusted archive; the mutable configured tag is never a fallback.
-pub(super) async fn repair_missing_legacy_image(
+pub(crate) async fn repair_missing_legacy_image(
     st: &SharedState,
     challenge: &game_challenge::Model,
     immutable_image: &str,
