@@ -109,7 +109,9 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
                       ? 'games-navigation'
                       : item.link === '/challenges'
                         ? 'challenge-navigation'
-                        : undefined
+                        : item.link === '/guide'
+                          ? 'guide-navigation'
+                          : undefined
                   }
                   className={classes.navLink}
                 >
@@ -238,7 +240,9 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
                   ? 'games-navigation'
                   : item.link === '/challenges'
                     ? 'challenge-navigation'
-                    : undefined
+                    : item.link === '/guide'
+                      ? 'guide-navigation'
+                      : undefined
               }
               className={classes.dockItem}
             >
@@ -256,6 +260,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
           aria-label={t('common.button.more_navigation', 'More navigation options')}
           aria-expanded={opened}
           aria-haspopup="dialog"
+          data-guide="more-navigation"
           data-active={
             opened || location.pathname.startsWith('/admin') || location.pathname.startsWith('/about') || undefined
           }

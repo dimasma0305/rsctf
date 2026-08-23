@@ -3630,6 +3630,8 @@ export interface ClientFlagContext {
 /** Short-lived native-WSRX credential bound to one user session and container. */
 export interface ProxyCapabilityModel {
   token: string;
+  /** @format uint64 */
+  expiresAt: number;
 }
 
 export interface ChallengeReviewModel {

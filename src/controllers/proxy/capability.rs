@@ -6,10 +6,11 @@
 //! route class. The WebSocket still runs the ordinary live authorization and
 //! exact target fences before opening the backend stream.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -18,6 +19,7 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{
     authenticate_live_identity, AdminUser, CurrentUser, MaybeUser,
 };
+use crate::services::token::{IssuedProxyCapability, TokenService};
 use crate::utils::error::{AppError, AppResult};
 
 #[derive(Debug, Default, Deserialize)]
@@ -29,20 +31,56 @@ pub(super) struct ProxyCapabilityQuery {
 #[serde(rename_all = "camelCase")]
 struct ProxyCapabilityModel {
     token: String,
+    #[serde(with = "crate::utils::datetime::millis")]
+    expires_at: DateTime<Utc>,
 }
 
-fn no_store_capability(token: String) -> impl IntoResponse {
+fn no_store_capability(capability: IssuedProxyCapability) -> impl IntoResponse {
     (
         [(header::CACHE_CONTROL, "no-store")],
-        Json(ProxyCapabilityModel { token }),
+        Json(ProxyCapabilityModel {
+            token: capability.token,
+            expires_at: capability.expires_at,
+        }),
     )
 }
 
-/// WSRX measures a tunnel with an unauthenticated HTTP OPTIONS request before
-/// it opens the WebSocket. This probe reveals no target data and never opens a
-/// connection, so a uniform 204 is both safe and compatible with Pingfall.
-pub(super) async fn proxy_latency_probe() -> StatusCode {
-    StatusCode::NO_CONTENT
+/// WSRX measures a tunnel with an HTTP OPTIONS request before it opens the
+/// WebSocket. Verify the signed query capability without touching the database,
+/// so an expired or mismatched tunnel is not advertised as netcat-ready.
+fn proxy_latency_status(
+    token_service: &TokenService,
+    query: ProxyCapabilityQuery,
+    container_id: Uuid,
+    preview: bool,
+) -> StatusCode {
+    let Some(token) = query.capability.as_deref() else {
+        return StatusCode::NOT_FOUND;
+    };
+    if token_service
+        .verify_proxy_capability(token, container_id, preview)
+        .is_ok()
+    {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+pub(super) async fn proxy_instance_latency_probe(
+    State(st): State<SharedState>,
+    Query(query): Query<ProxyCapabilityQuery>,
+    Path(id): Path<Uuid>,
+) -> StatusCode {
+    proxy_latency_status(&st.token, query, id, false)
+}
+
+pub(super) async fn proxy_noinstance_latency_probe(
+    State(st): State<SharedState>,
+    Query(query): Query<ProxyCapabilityQuery>,
+    Path(id): Path<Uuid>,
+) -> StatusCode {
+    proxy_latency_status(&st.token, query, id, true)
 }
 
 pub(super) async fn issue_instance_capability(
@@ -107,14 +145,56 @@ pub(super) async fn proxy_user(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn wsrx_latency_probe_is_a_success_without_opening_a_target() {
-        assert_eq!(proxy_latency_probe().await, StatusCode::NO_CONTENT);
+    #[test]
+    fn proxy_capability_expiry_is_a_unix_millisecond_number() {
+        let expires_at = DateTime::from_timestamp(1_725_000_000, 123_000_000).unwrap();
+        let value = serde_json::to_value(ProxyCapabilityModel {
+            token: "scoped-token".to_owned(),
+            expires_at,
+        })
+        .unwrap();
+
+        assert_eq!(value["expiresAt"], 1_725_000_000_123_i64);
+    }
+
+    #[test]
+    fn wsrx_latency_probe_requires_an_exact_live_capability() {
+        let service = TokenService::new("0123456789abcdef0123456789abcdef", 60);
+        let container_id = Uuid::new_v4();
+        let capability = service
+            .issue_proxy_capability(Uuid::new_v4(), "stamp-1", container_id, false)
+            .unwrap();
+
         assert_eq!(
-            include_str!("mod.rs")
-                .matches(".options(proxy_latency_probe)")
-                .count(),
-            2
+            proxy_latency_status(
+                &service,
+                ProxyCapabilityQuery {
+                    capability: Some(capability.token.clone()),
+                },
+                container_id,
+                false,
+            ),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            proxy_latency_status(
+                &service,
+                ProxyCapabilityQuery {
+                    capability: Some(capability.token),
+                },
+                container_id,
+                true,
+            ),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            proxy_latency_status(
+                &service,
+                ProxyCapabilityQuery::default(),
+                container_id,
+                false,
+            ),
+            StatusCode::NOT_FOUND
         );
     }
 }

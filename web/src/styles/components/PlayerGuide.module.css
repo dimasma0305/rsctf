@@ -1,7 +1,84 @@
 .modal {
+  position: relative;
+  z-index: 7004;
   border: 1px solid color-mix(in srgb, var(--mantine-primary-color-filled) 28%, var(--mantine-color-dark-4));
   border-radius: var(--mantine-radius-lg);
   box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 45%);
+}
+
+.tutorialShade {
+  position: fixed;
+  inset: 0;
+  z-index: 6997;
+  width: 100vw;
+  height: 100dvh;
+  pointer-events: none;
+}
+
+.tutorialSpotlight {
+  position: fixed;
+  z-index: 6998;
+  pointer-events: none;
+  border: 3px solid var(--mantine-primary-color-filled);
+  border-radius: var(--mantine-radius-md);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--mantine-primary-color-filled) 30%, transparent),
+    0 0 2rem color-mix(in srgb, var(--mantine-primary-color-filled) 55%, transparent);
+  animation: tutorial-spotlight 1.8s ease-in-out infinite;
+}
+
+.tutorialCursor {
+  position: fixed;
+  z-index: 6999;
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  color: white;
+  pointer-events: none;
+  filter:
+    drop-shadow(0 2px 1px rgb(0 0 0 / 95%))
+    drop-shadow(0 0 8px var(--mantine-primary-color-filled));
+  animation: tutorial-cursor 1.8s cubic-bezier(0.22, 0.8, 0.25, 1) infinite;
+}
+
+@keyframes tutorial-spotlight {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--mantine-primary-color-filled) 25%, transparent),
+      0 0 1.4rem color-mix(in srgb, var(--mantine-primary-color-filled) 42%, transparent);
+  }
+
+  50% {
+    box-shadow:
+      0 0 0 6px color-mix(in srgb, var(--mantine-primary-color-filled) 14%, transparent),
+      0 0 2.4rem color-mix(in srgb, var(--mantine-primary-color-filled) 68%, transparent);
+  }
+}
+
+@keyframes tutorial-cursor {
+  0% {
+    opacity: 0;
+    transform: translate(3.5rem, 3.5rem) scale(0.82);
+  }
+
+  32% {
+    opacity: 1;
+  }
+
+  66% {
+    transform: translate(-0.3rem, -0.3rem) scale(1);
+  }
+
+  78% {
+    transform: translate(-0.3rem, -0.3rem) scale(0.82);
+  }
+
+  100% {
+    opacity: 0.9;
+    transform: translate(-0.3rem, -0.3rem) scale(1);
+  }
 }
 
 .modalHeader {
@@ -14,6 +91,8 @@
 }
 
 .modalBody {
+  min-height: 0;
+  overflow-y: auto;
   padding-top: var(--mantine-spacing-lg);
 }
 
@@ -26,6 +105,12 @@
   padding-inline-start: var(--mantine-spacing-md);
 }
 
+@media (max-width: 48em) {
+  .modal.modal {
+    max-height: 54dvh;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .modal,
   .modal * {
@@ -33,5 +118,10 @@
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .tutorialSpotlight,
+  .tutorialCursor {
+    animation: none !important;
   }
 }

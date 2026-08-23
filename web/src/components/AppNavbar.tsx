@@ -74,7 +74,15 @@ const NavbarLink: FC<NavbarLinkProps> = ({ icon, label, link, onClick, isActive,
       aria-label={compact ? translatedLabel : undefined}
       aria-current={isActive ? 'page' : undefined}
       data-active={isActive || undefined}
-      data-guide={link === '/games' ? 'games-navigation' : link === '/challenges' ? 'challenge-navigation' : undefined}
+      data-guide={
+        link === '/games'
+          ? 'games-navigation'
+          : link === '/challenges'
+            ? 'challenge-navigation'
+            : link === '/guide'
+              ? 'guide-navigation'
+              : undefined
+      }
       className={classes.link}
     >
       {content}
@@ -192,6 +200,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
               <Popover.Target>
                 <UnstyledButton
                   className={classes.link}
+                  data-guide="connection-tools"
                   aria-label={compact ? t('common.tab.wsrx', 'Connection tools') : undefined}
                   title={compact ? t('common.tab.wsrx', 'Connection tools') : undefined}
                 >

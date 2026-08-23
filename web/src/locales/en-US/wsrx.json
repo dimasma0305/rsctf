@@ -1,6 +1,7 @@
 {
   "button": {
     "config": "WSRX Settings",
+    "refresh_url": "Refresh WSS URL",
     "retry_tunnel": "Rebuild local tunnel"
   },
   "config": {
@@ -25,6 +26,16 @@
       "message": "WSRX version is outdated. Please update before using platform integration.",
       "title": "Version Mismatch"
     }
+  },
+  "notification": {
+    "url_copied": "The short-lived WSS URL was copied. Use it in WSRX or another TCP-over-WebSocket client; it is not a netcat address."
+  },
+  "mode": {
+    "label": "Connection method",
+    "local": "Local WSRX",
+    "wss": "WSS URL",
+    "wss_description": "Copy this short-lived WSS URL for WSRX or another TCP-over-WebSocket client. Switch back to Local WSRX for a netcat address.",
+    "wss_placeholder": "Requesting a short-lived WSS URL"
   },
   "state": {
     "invalid": "WSRX Disconnected",

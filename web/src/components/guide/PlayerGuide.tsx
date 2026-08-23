@@ -1,4 +1,4 @@
-import { Badge, Button, Group, List, Modal, Progress, Stack, Text, ThemeIcon, Title } from '@mantine/core'
+import { Badge, Button, Group, List, Progress, Stack, Text, ThemeIcon, Title } from '@mantine/core'
 import { mdiArrowLeft, mdiArrowRight, mdiCheck, mdiFlagVariantOutline, mdiOpenInNew } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import {
@@ -16,6 +16,7 @@ import {
 } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
+import { GuideSpotlightModal } from '@Components/guide/GuideSpotlightModal'
 import {
   GUIDE_VERSION,
   GuideFeature,
@@ -73,6 +74,7 @@ interface TourStep {
   note: string
   path?: string
   pathLabel?: string
+  targetSelector?: string
 }
 
 interface AccessibleGuideModalProps extends PropsWithChildren {
@@ -82,7 +84,7 @@ interface AccessibleGuideModalProps extends PropsWithChildren {
   closeLabel: string
   size: string
   overlayOpacity: number
-  overlayBlur: number
+  targetSelector?: string
 }
 
 const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
@@ -92,19 +94,20 @@ const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
   closeLabel,
   size,
   overlayOpacity,
-  overlayBlur,
+  targetSelector,
   children,
 }) => (
-  <Modal.Root opened={opened} onClose={onClose} size={size} returnFocus trapFocus>
-    <Modal.Overlay backgroundOpacity={overlayOpacity} blur={overlayBlur} />
-    <Modal.Content className={classes.modal}>
-      <div className={classes.modalHeader}>
-        <Modal.Title>{title}</Modal.Title>
-        <Modal.CloseButton aria-label={closeLabel} />
-      </div>
-      <Modal.Body className={classes.modalBody}>{children}</Modal.Body>
-    </Modal.Content>
-  </Modal.Root>
+  <GuideSpotlightModal
+    opened={opened}
+    onClose={onClose}
+    size={size}
+    title={title}
+    closeLabel={closeLabel}
+    overlayOpacity={overlayOpacity}
+    targetSelector={targetSelector}
+  >
+    {children}
+  </GuideSpotlightModal>
 )
 
 const preferenceUpdater = (
@@ -269,6 +272,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           'This short, interactive walkthrough follows the same path as a real player. You can pause it now and restart it from Guide at any time.'
         ),
         note: t('guide.tour.welcome.note', 'Nothing is submitted or changed while you view this guide.'),
+        targetSelector: '[data-guide="guide-navigation"], [data-guide="more-navigation"]',
       },
       {
         id: 'account',
@@ -281,6 +285,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         pathLabel: user
           ? t('guide.tour.account.open_profile', 'Open profile')
           : t('guide.tour.account.open_login', 'Open login'),
+        targetSelector: '[data-guide="account-menu"], [data-guide="more-navigation"]',
       },
       {
         id: 'events',
@@ -295,6 +300,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         ),
         path: '/games',
         pathLabel: t('guide.tour.events.open', 'Open games'),
+        targetSelector:
+          location.pathname === '/games' ? '[data-guide="games-search"]' : '[data-guide="games-navigation"]',
       },
       {
         id: 'challenges',
@@ -311,6 +318,12 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         pathLabel: user
           ? t('guide.tour.challenges.open', 'Open my challenges')
           : t('guide.tour.challenges.login_first', 'Browse events first'),
+        targetSelector:
+          user && location.pathname === '/challenges'
+            ? '[data-guide="challenge-filters"]'
+            : user
+              ? '[data-guide="challenge-navigation"]'
+              : '[data-guide="games-navigation"]',
       },
       {
         id: 'connection',
@@ -320,6 +333,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           'guide.tour.connection.note',
           'VPN-only events override the platform default: download that event’s VPN profile and use the event-provided port instructions.'
         ),
+        targetSelector:
+          '[data-guide="connection-tools"], [data-guide="instance-start"], [data-guide="instance-entry"], [data-guide="games-navigation"]',
       },
       {
         id: 'submit',
@@ -334,9 +349,11 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         ),
         path: '/guide',
         pathLabel: t('guide.tour.submit.full_guide', 'Read the full guide'),
+        targetSelector:
+          '[data-guide="challenge-navigation"], [data-guide="flag-submit"], [data-guide="games-navigation"]',
       },
     ],
-    [accountBody, config.emailConfirmationRequired, config.title, connectionBody, t, user]
+    [accountBody, config.emailConfirmationRequired, config.title, connectionBody, location.pathname, t, user]
   )
   const step = steps[Math.min(stepIndex, steps.length - 1)]
   const completeTour = () => {
@@ -366,7 +383,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         size="min(36rem, calc(100vw - 1.5rem))"
         closeLabel={t('guide.tour.pause', 'Pause guide')}
         overlayOpacity={0.72}
-        overlayBlur={2}
+        targetSelector={step.targetSelector}
       >
         <Stack gap="lg">
           <Group justify="space-between" align="center" wrap="nowrap">
@@ -387,7 +404,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
               total: steps.length,
             })}
           />
-          <Stack gap="xs">
+          <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
             <ThemeIcon size={46} radius="xl" variant="light" aria-hidden="true">
               <Icon path={stepIndex === steps.length - 1 ? mdiCheck : mdiFlagVariantOutline} size={1.05} />
             </ThemeIcon>
@@ -449,7 +466,11 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         size="min(34rem, calc(100vw - 1.5rem))"
         closeLabel={t('guide.feature.dismiss', 'Dismiss this tip')}
         overlayOpacity={0.65}
-        overlayBlur={1}
+        targetSelector={
+          pendingFeature?.feature === 'event-vpn'
+            ? '[data-guide="event-vpn-download"]'
+            : '[data-guide="instance-start"], [data-guide="instance-entry"]'
+        }
       >
         {pendingFeature && (
           <Stack gap="lg">
