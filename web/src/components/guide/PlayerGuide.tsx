@@ -1,5 +1,5 @@
 import { Badge, Button, Group, Progress, Stack, Text } from '@mantine/core'
-import { mdiArrowLeft, mdiArrowRight, mdiCheck, mdiOpenInNew } from '@mdi/js'
+import { mdiArrowLeft, mdiArrowRight, mdiCheck, mdiCursorDefaultClickOutline, mdiOpenInNew } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import {
   Dispatch,
@@ -25,6 +25,7 @@ import {
   GuideTourStep,
   completeGuide,
   guideStorageKey,
+  guideTourTargetSelector,
   markGuideFeatureSeen,
   nextGuideStepForTarget,
   openGuide,
@@ -95,6 +96,7 @@ interface TourStep {
   path?: string
   pathLabel?: string
   targetSelector?: string
+  requiresTargetActivation?: boolean
 }
 
 interface AccessibleGuideModalProps extends PropsWithChildren {
@@ -303,6 +305,17 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   const isGameDetailPage = /^\/games\/\d+$/.test(location.pathname)
   const isTeamPage = location.pathname === '/teams'
   const isChallengePage = location.pathname === '/challenges' || /^\/games\/\d+\/challenges$/.test(location.pathname)
+  const tourTarget = useCallback(
+    (step: GuideTourStep) =>
+      guideTourTargetSelector({
+        step,
+        pathname: location.pathname,
+        signedIn: Boolean(user),
+        challengeFeature: pendingFeature?.feature,
+        instanceActive: pendingFeature?.context.instanceActive,
+      }),
+    [location.pathname, pendingFeature?.context.instanceActive, pendingFeature?.feature, user]
+  )
 
   const steps = useMemo<TourStep[]>(
     () => [
@@ -311,10 +324,10 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         title: t('guide.tour.welcome.title', 'Learn the playground'),
         body: t(
           'guide.tour.welcome.body',
-          'Follow the highlighted control and do one task at a time. The guide stays with you when the page changes.'
+          'Follow the cursor and complete one task at a time. The guide stays open across pages.'
         ),
-        note: t('guide.tour.welcome.note', 'It never joins, starts, or submits anything for you.'),
-        targetSelector: '[data-guide="guide-navigation"], [data-guide="more-navigation"]',
+        note: t('guide.tour.welcome.note', 'You control every join, start, and submission.'),
+        targetSelector: tourTarget('welcome'),
       },
       {
         id: 'account',
@@ -327,7 +340,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         pathLabel: user
           ? t('guide.tour.account.open_profile', 'Open profile')
           : t('guide.tour.account.open_login', 'Open login'),
-        targetSelector: location.pathname.startsWith('/account/') ? '[data-guide="account-access"]' : undefined,
+        targetSelector: tourTarget('account'),
+        requiresTargetActivation: !user && location.pathname.startsWith('/account/'),
       },
       {
         id: 'team',
@@ -343,7 +357,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         note: t('guide.tour.team.note', 'One person creates the team; everyone else joins with its invite code.'),
         path: user && !isTeamPage ? '/teams' : !user ? '/account/login' : undefined,
         pathLabel: user ? t('guide.tour.team.open', 'Open teams') : t('guide.tour.team.login_first', 'Sign in first'),
-        targetSelector: isTeamPage ? '[data-guide="team-create"], [data-guide="team-join"]' : undefined,
+        targetSelector: tourTarget('team'),
+        requiresTargetActivation: !user,
       },
       {
         id: 'events',
@@ -362,12 +377,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           : t('guide.tour.events.note', 'Some organizers review a team before approving it.'),
         path: isGameDetailPage ? undefined : '/games',
         pathLabel: t('guide.tour.events.open', 'Open games'),
-        targetSelector:
-          location.pathname === '/games'
-            ? '[data-guide="event-card"], [data-guide="games-search"]'
-            : isGameDetailPage
-              ? '[data-guide="event-join"]:not(:disabled), [data-guide="event-challenges"]'
-              : undefined,
+        targetSelector: tourTarget('events'),
+        requiresTargetActivation: location.pathname === '/games',
       },
       {
         id: 'challenges',
@@ -381,14 +392,25 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         pathLabel: user
           ? t('guide.tour.challenges.open', 'Open my challenges')
           : t('guide.tour.challenges.login_first', 'Browse events first'),
-        targetSelector: user && isChallengePage ? '[data-guide="challenge-card"]' : undefined,
+        targetSelector: tourTarget('challenges'),
+        requiresTargetActivation: isChallengePage,
       },
       {
         id: 'connection',
-        title: t('guide.tour.connection.title', 'Start and connect'),
-        body: connectionBody,
-        note: t('guide.tour.connection.note', 'Static challenges skip this step. VPN-only events use their event VPN.'),
-        targetSelector: '[data-guide="instance-start"], [data-guide="instance-entry"], [data-guide="challenge-card"]',
+        title:
+          pendingFeature?.feature === 'static-challenge'
+            ? t('guide.tour.connection.static_title', 'Static challenge: no connection needed')
+            : t('guide.tour.connection.title', 'Start and connect'),
+        body:
+          pendingFeature?.feature === 'static-challenge'
+            ? t(
+                'guide.tour.connection.static_body',
+                'This challenge has no service to start. Read its material, then select the highlighted flag field.'
+              )
+            : connectionBody,
+        note: t('guide.tour.connection.note', 'VPN-only events use their event VPN instead of the platform proxy.'),
+        targetSelector: tourTarget('connection'),
+        requiresTargetActivation: true,
       },
       {
         id: 'submit',
@@ -402,7 +424,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         pathLabel: user
           ? t('guide.tour.submit.open_challenges', 'Open my challenges')
           : t('guide.tour.submit.browse_events', 'Browse events'),
-        targetSelector: '[data-guide="flag-submit"], [data-guide="challenge-card"]',
+        targetSelector: tourTarget('submit'),
       },
     ],
     [
@@ -413,7 +435,10 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
       isGameDetailPage,
       isTeamPage,
       location.pathname,
+      pendingFeature?.context.instanceActive,
+      pendingFeature?.feature,
       t,
+      tourTarget,
       user,
     ]
   )
@@ -639,6 +664,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   const tourOpen = ready && preferences.activeTourStep !== null && !preferences.tourPaused
   const destinationPath = step.path?.split(/[?#]/, 1)[0]
   const atStepDestination = Boolean(destinationPath && location.pathname === destinationPath)
+  const needsNavigation = Boolean(step.path && !atStepDestination)
+  const needsTargetActivation = Boolean(step.requiresTargetActivation && !needsNavigation)
   const completeTour = () => {
     updatePreferences(completeGuide)
   }
@@ -650,6 +677,12 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
     },
     [steps, updatePreferences]
   )
+
+  const moveToNextStep = useCallback(() => {
+    const next = steps[Math.min(steps.length - 1, stepIndex + 1)]
+    updatePreferences((current) => setGuideTourStep(current, next.id))
+    if (next.path) navigate(next.path)
+  }, [navigate, stepIndex, steps, updatePreferences])
 
   const onTourTargetActivate = useCallback(
     (target: string | undefined) => {
@@ -708,47 +741,63 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         onTargetActivate={onTourTargetActivate}
       >
         <Stack gap="sm" className={classes.tourBody}>
-          <Badge variant="light" size="sm" className={classes.stepBadge}>
-            {t('guide.tour.progress', 'Step {{current}} of {{total}}', {
-              current: stepIndex + 1,
-              total: steps.length,
-            })}
-          </Badge>
-          <Progress
-            size="xs"
-            value={((stepIndex + 1) / steps.length) * 100}
-            aria-label={t('guide.tour.progress', 'Step {{current}} of {{total}}', {
-              current: stepIndex + 1,
-              total: steps.length,
-            })}
-          />
-          <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
-            <Text size="sm">{step.body}</Text>
-            <Text size="sm" c="dimmed" className={classes.note}>
-              {step.note}
+          <Stack
+            gap="sm"
+            className={classes.tourContent}
+            role="region"
+            tabIndex={0}
+            aria-label={t('guide.tour.instructions', 'Guide instructions')}
+          >
+            <Badge variant="light" size="sm" className={classes.stepBadge}>
+              {t('guide.tour.progress', 'Step {{current}} of {{total}}', {
+                current: stepIndex + 1,
+                total: steps.length,
+              })}
+            </Badge>
+            <Progress
+              size="xs"
+              value={((stepIndex + 1) / steps.length) * 100}
+              aria-label={t('guide.tour.progress', 'Step {{current}} of {{total}}', {
+                current: stepIndex + 1,
+                total: steps.length,
+              })}
+            />
+            <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
+              <Text size="sm">{step.body}</Text>
+              <Text size="sm" c="dimmed" className={classes.note}>
+                {step.note}
+              </Text>
+            </Stack>
+            {needsNavigation && (
+              <Button
+                variant="light"
+                leftSection={<Icon path={mdiOpenInNew} size={0.72} aria-hidden="true" />}
+                onClick={() => navigate(step.path!)}
+                className={classes.guideAction}
+              >
+                {step.pathLabel}
+              </Button>
+            )}
+            <Text size="sm" c="dimmed" role="status" aria-live="polite" className={classes.destinationNote}>
+              {needsNavigation
+                ? t(
+                    'guide.tour.open_destination',
+                    'Follow the cursor or use the button above. This step stays open on the next screen.'
+                  )
+                : t(
+                    'guide.tour.destination_ready',
+                    'Select the control under the cursor. The guide continues on the next screen.'
+                  )}
             </Text>
           </Stack>
-          {step.path && !atStepDestination && (
-            <Button
-              variant="light"
-              leftSection={<Icon path={mdiOpenInNew} size={0.72} aria-hidden="true" />}
-              onClick={() => navigate(step.path!)}
-              className={classes.guideAction}
-            >
-              {step.pathLabel}
-            </Button>
-          )}
-          {atStepDestination && (
-            <Text size="sm" c="dimmed" role="status" aria-live="polite" className={classes.destinationNote}>
-              {t(
-                'guide.tour.destination_ready',
-                'Use the highlighted control. When you finish that action, select Next.'
-              )}
-            </Text>
-          )}
           <Group justify="space-between" gap="xs" wrap="nowrap" className={classes.tourFooter}>
-            <Button variant="subtle" color="gray" onClick={() => setInteractiveEnabled(false)}>
-              {t('guide.tour.disable', 'Stop guide')}
+            <Button
+              variant="subtle"
+              color="gray"
+              aria-label={t('guide.tour.disable', 'Stop guide')}
+              onClick={() => setInteractiveEnabled(false)}
+            >
+              {t('guide.tour.stop_short', 'Stop')}
             </Button>
             <Group gap={4} wrap="nowrap">
               <Button
@@ -765,10 +814,21 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
                 </Button>
               ) : (
                 <Button
-                  rightSection={<Icon path={mdiArrowRight} size={0.7} aria-hidden="true" />}
-                  onClick={() => moveToStep(stepIndex + 1)}
+                  disabled={needsNavigation || needsTargetActivation}
+                  rightSection={
+                    <Icon
+                      path={needsTargetActivation ? mdiCursorDefaultClickOutline : mdiArrowRight}
+                      size={0.7}
+                      aria-hidden="true"
+                    />
+                  }
+                  onClick={moveToNextStep}
                 >
-                  {t('common.pagination.next', 'Next')}
+                  {needsTargetActivation
+                    ? t('guide.tour.use_cursor', 'Use cursor')
+                    : needsNavigation
+                      ? t('guide.tour.open_first', 'Open first')
+                      : t('common.pagination.next', 'Next')}
                 </Button>
               )}
             </Group>
@@ -788,45 +848,58 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
       >
         {pendingFeature && featureStep && (
           <Stack gap="sm" className={classes.tourBody}>
-            <Badge variant="light" size="sm" className={classes.stepBadge}>
-              {t('guide.feature.progress', 'Step {{current}} of {{total}}', {
-                current: boundedFeatureStepIndex + 1,
-                total: featureSteps.length,
-              })}
-            </Badge>
-            <Progress
-              size="xs"
-              value={((boundedFeatureStepIndex + 1) / featureSteps.length) * 100}
-              aria-label={t('guide.feature.progress', 'Step {{current}} of {{total}}', {
-                current: boundedFeatureStepIndex + 1,
-                total: featureSteps.length,
-              })}
-            />
-            <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
-              <Text size="sm">{featureStep.body}</Text>
-              {featureStep.command && (
-                <Text component="code" size="sm" className={classes.command}>
-                  {featureStep.command}
-                </Text>
-              )}
-              {featureStep.note && (
-                <Text size="sm" c="dimmed" className={classes.note}>
-                  {featureStep.note}
-                </Text>
-              )}
-            </Stack>
-            <Button
-              variant="default"
-              onClick={() => {
-                dismissFeature()
-                navigate('/guide#play-challenge')
-              }}
+            <Stack
+              gap="sm"
+              className={classes.tourContent}
+              role="region"
+              tabIndex={0}
+              aria-label={t('guide.feature.instructions', 'Challenge guide instructions')}
             >
-              {t('guide.feature.full_guide', 'Open the full guide')}
-            </Button>
+              <Badge variant="light" size="sm" className={classes.stepBadge}>
+                {t('guide.feature.progress', 'Step {{current}} of {{total}}', {
+                  current: boundedFeatureStepIndex + 1,
+                  total: featureSteps.length,
+                })}
+              </Badge>
+              <Progress
+                size="xs"
+                value={((boundedFeatureStepIndex + 1) / featureSteps.length) * 100}
+                aria-label={t('guide.feature.progress', 'Step {{current}} of {{total}}', {
+                  current: boundedFeatureStepIndex + 1,
+                  total: featureSteps.length,
+                })}
+              />
+              <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
+                <Text size="sm">{featureStep.body}</Text>
+                {featureStep.command && (
+                  <Text component="code" size="sm" className={classes.command}>
+                    {featureStep.command}
+                  </Text>
+                )}
+                {featureStep.note && (
+                  <Text size="sm" c="dimmed" className={classes.note}>
+                    {featureStep.note}
+                  </Text>
+                )}
+              </Stack>
+              <Button
+                variant="default"
+                onClick={() => {
+                  dismissFeature()
+                  navigate('/guide#play-challenge')
+                }}
+              >
+                {t('guide.feature.full_guide', 'Open the full guide')}
+              </Button>
+            </Stack>
             <Group justify="space-between" gap="xs" wrap="nowrap" className={classes.tourFooter}>
-              <Button variant="subtle" color="gray" onClick={() => setInteractiveEnabled(false)}>
-                {t('guide.feature.disable', 'Stop tips')}
+              <Button
+                variant="subtle"
+                color="gray"
+                aria-label={t('guide.feature.disable', 'Stop tips')}
+                onClick={() => setInteractiveEnabled(false)}
+              >
+                {t('guide.feature.stop_short', 'Stop')}
               </Button>
               <Group gap={4} wrap="nowrap">
                 <Button

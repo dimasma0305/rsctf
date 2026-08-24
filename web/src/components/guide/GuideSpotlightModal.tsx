@@ -29,7 +29,8 @@ const sameRect = (left: GuideTargetRect | null, right: GuideTargetRect | null) =
     Math.abs(left.height - right.height) < 0.5 &&
     left.viewportWidth === right.viewportWidth &&
     left.viewportHeight === right.viewportHeight &&
-    left.elevated === right.elevated
+    left.elevated === right.elevated &&
+    left.guideTarget === right.guideTarget
   )
 }
 
@@ -79,8 +80,7 @@ const targetCenterIsUsable = (element: HTMLElement) => {
 const isUsableTarget = (element: HTMLElement) => targetVisibleRatio(element) >= 0.6 && targetCenterIsUsable(element)
 
 const visibleTarget = (selector?: string) => {
-  const preferred = renderedTargets(selector)?.[0]
-  return preferred && isUsableTarget(preferred) ? preferred : null
+  return renderedTargets(selector)?.find(isUsableTarget) ?? null
 }
 
 const measureTarget = (selector?: string): GuideTargetRect | null => {
@@ -105,6 +105,7 @@ const measureTarget = (selector?: string): GuideTargetRect | null => {
     viewportWidth,
     viewportHeight,
     elevated: Boolean(element.closest(APPLICATION_SURFACE_SELECTOR)),
+    guideTarget: element.dataset.guide,
   }
 }
 
@@ -146,11 +147,14 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
 
     update()
     const refresh = window.setInterval(update, 300)
+    const observer = new MutationObserver(update)
+    observer.observe(document.body, { childList: true, subtree: true })
     window.addEventListener('resize', update)
     window.addEventListener('scroll', update, true)
     return () => {
       window.cancelAnimationFrame(frame)
       window.clearInterval(refresh)
+      observer.disconnect()
       window.removeEventListener('resize', update)
       window.removeEventListener('scroll', update, true)
     }
@@ -248,8 +252,8 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
     : undefined
   const cursorStyle = target
     ? ({
-        left: target.left + target.width / 2,
-        top: target.top + target.height / 2,
+        left: Math.min(target.viewportWidth - 60, Math.max(8, target.left + target.width / 2)),
+        top: Math.min(target.viewportHeight - 60, Math.max(8, target.top + target.height / 2)),
       } satisfies CSSProperties)
     : undefined
   const blockerStyles = target
@@ -308,15 +312,16 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
               clipRule="evenodd"
             />
           </svg>
-          {blockerStyles.map((style, index) => (
-            <div
-              key={index}
-              className={classes.tutorialBlocker}
-              data-guide-layer="interaction-blocker"
-              style={{ ...style, zIndex: guideZIndex }}
-              aria-hidden="true"
-            />
-          ))}
+          {!target.elevated &&
+            blockerStyles.map((style, index) => (
+              <div
+                key={index}
+                className={classes.tutorialBlocker}
+                data-guide-layer="interaction-blocker"
+                style={{ ...style, zIndex: guideZIndex }}
+                aria-hidden="true"
+              />
+            ))}
           <div
             className={classes.tutorialSpotlight}
             data-guide-layer="spotlight"
@@ -339,6 +344,7 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
         className={classes.modal}
         data-guide-surface="coachmark"
         data-guide-placement={coachmark.placement}
+        data-guide-target={target?.guideTarget}
         data-guide-yielding={yielding || undefined}
         aria-hidden={yielding || undefined}
         style={{

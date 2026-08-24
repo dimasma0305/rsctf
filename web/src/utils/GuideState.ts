@@ -13,6 +13,14 @@ export const GUIDE_TOUR_STEPS = ['welcome', 'account', 'team', 'events', 'challe
 export type GuideFeature = (typeof GUIDE_FEATURES)[number]
 export type GuideTourStep = (typeof GUIDE_TOUR_STEPS)[number]
 
+interface GuideTourTargetContext {
+  step: GuideTourStep
+  pathname: string
+  signedIn: boolean
+  challengeFeature?: GuideFeature | null
+  instanceActive?: boolean
+}
+
 interface ChallengeDeliveryGuideContext {
   staticChallenge: boolean
   containerChallenge: boolean
@@ -32,11 +40,81 @@ export const resolveChallengeDeliveryGuide = ({
   return platformProxy ? 'container-wsrx' : 'container-direct'
 }
 
-const GUIDE_TARGET_ADVANCE: Partial<Record<GuideTourStep, string>> = {
-  welcome: 'guide-navigation',
-  events: 'event-challenges',
-  challenges: 'challenge-card',
-  connection: 'instance-entry',
+const ACCOUNT_NAVIGATION_TARGETS =
+  '[data-guide="account-profile"], [data-guide="account-login"], [data-guide="account-menu"], [data-guide="more-navigation"]'
+const TEAM_NAVIGATION_TARGETS = '[data-guide="team-navigation"], [data-guide="more-navigation"]'
+const GAMES_NAVIGATION_TARGETS = '[data-guide="games-navigation"], [data-guide="more-navigation"]'
+const CHALLENGE_NAVIGATION_TARGETS = '[data-guide="challenge-navigation"], [data-guide="more-navigation"]'
+
+/**
+ * Resolve a real, reachable page control for every tour checkpoint. Selector
+ * order represents the action nearest to completion: an open dialog comes
+ * before its launcher, and a page control comes before a navigation fallback.
+ */
+export const guideTourTargetSelector = ({
+  step,
+  pathname,
+  signedIn,
+  challengeFeature,
+  instanceActive,
+}: GuideTourTargetContext) => {
+  const isAccountPage = pathname.startsWith('/account/')
+  const isTeamPage = pathname === '/teams'
+  const isGamesPage = pathname === '/games'
+  const isGameDetailPage = /^\/games\/\d+$/.test(pathname)
+  const isChallengePage = pathname === '/challenges' || /^\/games\/\d+\/challenges$/.test(pathname)
+
+  switch (step) {
+    case 'welcome':
+      return '[data-guide="guide-navigation"], [data-guide="more-navigation"]'
+    case 'account':
+      return isAccountPage ? `[data-guide="account-access"], ${ACCOUNT_NAVIGATION_TARGETS}` : ACCOUNT_NAVIGATION_TARGETS
+    case 'team':
+      if (!signedIn)
+        return isAccountPage
+          ? `[data-guide="account-access"], ${ACCOUNT_NAVIGATION_TARGETS}`
+          : ACCOUNT_NAVIGATION_TARGETS
+      return isTeamPage
+        ? '[data-guide="team-create-form"], [data-guide="team-join-form"], [data-guide="team-create"], [data-guide="team-join"], [data-guide="team-navigation"]'
+        : TEAM_NAVIGATION_TARGETS
+    case 'events':
+      if (isGameDetailPage) {
+        return '[data-guide="event-join-confirm"], [data-guide="event-join-team"], [data-guide="event-join-division"], [data-guide="event-join-code"], [data-guide="event-join-submit"], [data-guide="event-challenges"], [data-guide="event-join"], [data-guide="event-briefing"]'
+      }
+      return isGamesPage
+        ? '[data-guide="event-card"], [data-guide="games-search"], [data-guide="games-navigation"]'
+        : GAMES_NAVIGATION_TARGETS
+    case 'challenges':
+      if (isChallengePage) {
+        return '[data-guide="challenge-card"], [data-guide="challenge-navigation"], [data-guide="more-navigation"]'
+      }
+      return signedIn ? CHALLENGE_NAVIGATION_TARGETS : `[data-guide="event-card"], ${GAMES_NAVIGATION_TARGETS}`
+    case 'connection':
+      if (challengeFeature === 'static-challenge') {
+        return '[data-guide="flag-submit"], [data-guide="challenge-material"]'
+      }
+      if (challengeFeature?.startsWith('container-')) {
+        return instanceActive
+          ? '[data-guide="instance-entry"], [data-guide="instance-copy"], [data-guide="flag-submit"]'
+          : '[data-guide="instance-start"], [data-guide="instance-entry"], [data-guide="flag-submit"]'
+      }
+      if (isChallengePage) {
+        return '[data-guide="instance-start"], [data-guide="instance-entry"], [data-guide="flag-submit"], [data-guide="challenge-material"], [data-guide="challenge-card"]'
+      }
+      return signedIn ? CHALLENGE_NAVIGATION_TARGETS : GAMES_NAVIGATION_TARGETS
+    case 'submit':
+      if (challengeFeature || isChallengePage) {
+        return '[data-guide="flag-submit"], [data-guide="challenge-material"], [data-guide="challenge-card"], [data-guide="challenge-navigation"]'
+      }
+      return signedIn ? CHALLENGE_NAVIGATION_TARGETS : GAMES_NAVIGATION_TARGETS
+  }
+}
+
+const GUIDE_TARGET_ADVANCE: Partial<Record<GuideTourStep, readonly string[]>> = {
+  welcome: ['guide-navigation'],
+  events: ['event-challenges'],
+  challenges: ['challenge-card'],
+  connection: ['instance-entry', 'instance-copy', 'flag-submit', 'challenge-material'],
 }
 
 export interface GuidePreferences {
@@ -117,7 +195,7 @@ export const setGuideTourStep = (preferences: GuidePreferences, activeTourStep: 
 })
 
 export const nextGuideStepForTarget = (currentStep: GuideTourStep, target: string | undefined) => {
-  if (!target || GUIDE_TARGET_ADVANCE[currentStep] !== target) return null
+  if (!target || !GUIDE_TARGET_ADVANCE[currentStep]?.includes(target)) return null
   const currentIndex = GUIDE_TOUR_STEPS.indexOf(currentStep)
   return GUIDE_TOUR_STEPS[currentIndex + 1] ?? null
 }

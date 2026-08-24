@@ -1,10 +1,11 @@
-import { Button, Center, Group, Loader, Modal, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core'
+import { Button, Center, Group, Loader, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiAccountMultiplePlus, mdiCheck, mdiClose, mdiHumanGreetingVariant } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router'
+import { AccessibleModal } from '@Components/AccessibleModal'
 import { Empty } from '@Components/Empty'
 import { PageHeader } from '@Components/PageHeader'
 import { TeamCard } from '@Components/TeamCard'
@@ -12,10 +13,10 @@ import { TeamCreateModal } from '@Components/TeamCreateModal'
 import { TeamEditModal } from '@Components/TeamEditModal'
 import { WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
-import { showErrorMsg } from '@Utils/Shared'
 import { encryptApiData } from '@Utils/Crypto'
-import { useConfig } from '@Hooks/useConfig'
+import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useTeams, useUser } from '@Hooks/useUser'
 import api, { Role, TeamInfoModel } from '@Api'
@@ -208,10 +209,11 @@ const Teams: FC = () => {
           )}
         </Stack>
 
-        <Modal opened={joinOpened} title={t('team.button.join')} onClose={() => setJoinOpened(false)}>
+        <AccessibleModal opened={joinOpened} title={t('team.button.join')} onClose={() => setJoinOpened(false)}>
           <Stack>
             <Text size="sm">{t('team.content.join')}</Text>
             <TextInput
+              data-guide="team-join-form"
               label={t('team.label.invite_code')}
               type="text"
               placeholder="team:0:01234567890123456789012345678901"
@@ -223,7 +225,7 @@ const Teams: FC = () => {
               {t('team.button.join')}
             </Button>
           </Stack>
-        </Modal>
+        </AccessibleModal>
 
         <TeamCreateModal
           opened={createOpened}

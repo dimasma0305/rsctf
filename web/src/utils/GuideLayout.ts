@@ -10,6 +10,7 @@ export interface GuideTargetRect {
   viewportWidth: number
   viewportHeight: number
   elevated: boolean
+  guideTarget?: string
 }
 
 export const GUIDE_PAGE_Z_INDEX = 150
@@ -46,7 +47,7 @@ export const coachmarkPlacement = (target: GuideTargetRect | null) => {
   const placeAbove = spaceAbove >= spaceBelow
   const targetOnRight = target.left + target.width / 2 > target.viewportWidth / 2
   const availableHeight = Math.max(96, placeAbove ? spaceAbove : spaceBelow)
-  const viewportHeightBudget = mobile ? target.viewportHeight * 0.44 : 352
+  const viewportHeightBudget = mobile ? Math.min(304, target.viewportHeight * 0.44) : 352
   const style: CSSProperties = {
     position: 'fixed',
     margin: 0,

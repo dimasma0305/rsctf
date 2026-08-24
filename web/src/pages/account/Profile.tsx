@@ -187,6 +187,7 @@ const Profile: FC = () => {
     <Paper withBorder radius="md" p="lg" maw={640} mx="auto" w="100%">
       <Stack gap="md">
         <TextInput
+          data-guide="account-access"
           label={t('account.label.username')}
           type="text"
           w="100%"
