@@ -19,13 +19,18 @@ import { useLocation, useNavigate } from 'react-router'
 import { GuideSpotlightModal } from '@Components/guide/GuideSpotlightModal'
 import {
   GUIDE_VERSION,
+  GUIDE_TOUR_STEPS,
   GuideFeature,
   GuidePreferences,
+  GuideTourStep,
   completeGuide,
   guideStorageKey,
   markGuideFeatureSeen,
+  openGuide,
   parseGuidePreferences,
+  pauseGuide,
   resetGuideProgress,
+  setGuideTourStep,
 } from '@Utils/GuideState'
 import { useConfig } from '@Hooks/useConfig'
 import { useUser } from '@Hooks/useUser'
@@ -68,7 +73,7 @@ export const useFeatureGuide = (feature: GuideFeature, active: boolean, context:
 }
 
 interface TourStep {
-  id: string
+  id: GuideTourStep
   title: string
   body: string
   note: string
@@ -145,8 +150,6 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   const storageKey = guideStorageKey(identity)
   const [loadedKey, setLoadedKey] = useState<string | null>(null)
   const [preferences, setPreferences] = useState<GuidePreferences>(() => parseGuidePreferences(null))
-  const [tourOpen, setTourOpen] = useState(false)
-  const [stepIndex, setStepIndex] = useState(0)
   const [pendingFeature, setPendingFeature] = useState<PendingFeature | null>(null)
   const autoStartedKeys = useRef(new Set<string>())
   const ready = identity !== null && loadedKey === storageKey
@@ -155,9 +158,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
     if (identity === null) return
     setPreferences(loadPreferences(storageKey))
     setLoadedKey(storageKey)
-    setTourOpen(false)
     setPendingFeature(null)
-    setStepIndex(0)
   }, [identity, storageKey])
 
   const updatePreferences = useCallback(
@@ -170,9 +171,13 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
 
   const setInteractiveEnabled = useCallback(
     (enabled: boolean) => {
-      updatePreferences((current) => ({ ...current, interactiveEnabled: enabled }))
+      updatePreferences((current) => ({
+        ...current,
+        interactiveEnabled: enabled,
+        activeTourStep: enabled ? current.activeTourStep : null,
+        tourPaused: enabled ? current.tourPaused : false,
+      }))
       if (!enabled) {
-        setTourOpen(false)
         setPendingFeature(null)
       }
     },
@@ -180,16 +185,12 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   )
 
   const startGuide = useCallback(() => {
-    setInteractiveEnabled(true)
-    setStepIndex(0)
-    setTourOpen(true)
-  }, [setInteractiveEnabled])
+    updatePreferences(openGuide)
+  }, [updatePreferences])
 
   const resetGuide = useCallback(() => {
     updatePreferences(resetGuideProgress)
     setPendingFeature(null)
-    setStepIndex(0)
-    setTourOpen(true)
   }, [updatePreferences])
 
   const introduceFeature = useCallback(
@@ -207,13 +208,22 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
       !isSafeEntryPage ||
       !preferences.interactiveEnabled ||
       preferences.completedVersion >= GUIDE_VERSION ||
+      preferences.activeTourStep !== null ||
       autoStartedKeys.current.has(storageKey)
     ) {
       return
     }
     autoStartedKeys.current.add(storageKey)
-    setTourOpen(true)
-  }, [location.pathname, preferences.completedVersion, preferences.interactiveEnabled, ready, storageKey])
+    updatePreferences(openGuide)
+  }, [
+    location.pathname,
+    preferences.activeTourStep,
+    preferences.completedVersion,
+    preferences.interactiveEnabled,
+    ready,
+    storageKey,
+    updatePreferences,
+  ])
 
   const providerNames = [config.enableGoogleAuth ? 'Google' : null, config.enableDiscordAuth ? 'Discord' : null].filter(
     (provider): provider is string => Boolean(provider)
@@ -261,6 +271,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           'guide.tour.connection.direct',
           'Container challenges expose a host and port directly. Start the instance, wait until it is ready, then connect to the displayed address.'
         )
+  const isGameDetailPage = /^\/games\/\d+$/.test(location.pathname)
 
   const steps = useMemo<TourStep[]>(
     () => [
@@ -285,23 +296,39 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         pathLabel: user
           ? t('guide.tour.account.open_profile', 'Open profile')
           : t('guide.tour.account.open_login', 'Open login'),
-        targetSelector: '[data-guide="account-menu"], [data-guide="more-navigation"]',
+        targetSelector: location.pathname.startsWith('/account/')
+          ? '[data-guide="account-access"]'
+          : '[data-guide="account-menu"], [data-guide="more-navigation"]',
       },
       {
         id: 'events',
         title: t('guide.tour.events.title', 'Find and join an event'),
-        body: t(
-          'guide.tour.events.body',
-          'Games shows every visible event. Search by title or ID, then use the participation filter to separate joined and not-yet-joined events.'
-        ),
-        note: t(
-          'guide.tour.events.note',
-          'Open an event, choose your team, and submit the join request. Some organizers review requests before accepting them.'
-        ),
-        path: '/games',
+        body: isGameDetailPage
+          ? t(
+              'guide.tour.events.detail_body',
+              'You opened an event without losing the tutorial. Review the highlighted briefing, schedule, eligibility, VPN, and team rules before joining.'
+            )
+          : t(
+              'guide.tour.events.body',
+              'Games shows every visible event. Search by title or ID, then use the participation filter to separate joined and not-yet-joined events.'
+            ),
+        note: isGameDetailPage
+          ? t(
+              'guide.tour.events.detail_note',
+              'The event page shows Join, Pending, or Approved for your team. Select Next when you understand this event’s rules.'
+            )
+          : t(
+              'guide.tour.events.note',
+              'Open an event, choose your team, and submit the join request. Some organizers review requests before accepting them.'
+            ),
+        path: isGameDetailPage ? undefined : '/games',
         pathLabel: t('guide.tour.events.open', 'Open games'),
         targetSelector:
-          location.pathname === '/games' ? '[data-guide="games-search"]' : '[data-guide="games-navigation"]',
+          location.pathname === '/games'
+            ? '[data-guide="event-card"], [data-guide="games-search"]'
+            : isGameDetailPage
+              ? '[data-guide="event-briefing"]'
+              : '[data-guide="games-navigation"]',
       },
       {
         id: 'challenges',
@@ -350,16 +377,37 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         path: '/guide',
         pathLabel: t('guide.tour.submit.full_guide', 'Read the full guide'),
         targetSelector:
-          '[data-guide="challenge-navigation"], [data-guide="flag-submit"], [data-guide="games-navigation"]',
+          location.pathname === '/guide'
+            ? '#submit-flag'
+            : '[data-guide="challenge-navigation"], [data-guide="flag-submit"], [data-guide="games-navigation"]',
       },
     ],
-    [accountBody, config.emailConfirmationRequired, config.title, connectionBody, location.pathname, t, user]
+    [
+      accountBody,
+      config.emailConfirmationRequired,
+      config.title,
+      connectionBody,
+      isGameDetailPage,
+      location.pathname,
+      t,
+      user,
+    ]
   )
-  const step = steps[Math.min(stepIndex, steps.length - 1)]
+  const activeStepIndex = preferences.activeTourStep
+    ? GUIDE_TOUR_STEPS.indexOf(preferences.activeTourStep)
+    : -1
+  const stepIndex = activeStepIndex >= 0 ? activeStepIndex : 0
+  const step = steps[stepIndex]
+  const tourOpen = ready && preferences.activeTourStep !== null && !preferences.tourPaused
+  const destinationPath = step.path?.split(/[?#]/, 1)[0]
+  const atStepDestination = Boolean(destinationPath && location.pathname === destinationPath)
   const completeTour = () => {
     updatePreferences(completeGuide)
-    setTourOpen(false)
-    setStepIndex(0)
+  }
+
+  const moveToStep = (index: number) => {
+    const next = steps[Math.min(steps.length - 1, Math.max(0, index))]
+    updatePreferences((current) => setGuideTourStep(current, next.id))
   }
 
   const dismissFeature = () => {
@@ -377,8 +425,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
       {children}
 
       <AccessibleGuideModal
-        opened={tourOpen && ready}
-        onClose={() => setTourOpen(false)}
+        opened={tourOpen}
+        onClose={() => updatePreferences(pauseGuide)}
         title={t('guide.tour.dialog_title', 'Interactive player guide')}
         size="min(36rem, calc(100vw - 1.5rem))"
         closeLabel={t('guide.tour.pause', 'Pause guide')}
@@ -416,7 +464,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
               {step.note}
             </Text>
           </Stack>
-          {step.path && (
+          {step.path && !atStepDestination && (
             <Button
               variant="light"
               leftSection={<Icon path={mdiOpenInNew} size={0.72} aria-hidden="true" />}
@@ -424,6 +472,14 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
             >
               {step.pathLabel}
             </Button>
+          )}
+          {atStepDestination && (
+            <Text size="sm" c="dimmed" role="status" aria-live="polite" className={classes.destinationNote}>
+              {t(
+                'guide.tour.destination_ready',
+                'You are on the right page. Follow the highlighted control, then select Next when you are ready.'
+              )}
+            </Text>
           )}
           <Group justify="space-between" gap="sm" wrap="wrap-reverse">
             <Button variant="subtle" color="gray" onClick={() => setInteractiveEnabled(false)}>
@@ -434,7 +490,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
                 variant="default"
                 disabled={stepIndex === 0}
                 leftSection={<Icon path={mdiArrowLeft} size={0.7} aria-hidden="true" />}
-                onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
+                onClick={() => moveToStep(stepIndex - 1)}
               >
                 {t('common.pagination.previous', 'Previous')}
               </Button>
@@ -445,7 +501,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
               ) : (
                 <Button
                   rightSection={<Icon path={mdiArrowRight} size={0.7} aria-hidden="true" />}
-                  onClick={() => setStepIndex((current) => Math.min(steps.length - 1, current + 1))}
+                  onClick={() => moveToStep(stepIndex + 1)}
                 >
                   {t('common.pagination.next', 'Next')}
                 </Button>
