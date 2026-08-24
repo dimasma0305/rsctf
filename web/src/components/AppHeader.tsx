@@ -132,7 +132,13 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
           <Stack gap={4}>
             {loggedIn ? (
               <>
-                <UnstyledButton component={Link} to="/account/profile" onClick={close} className={classes.accountCard}>
+                <UnstyledButton
+                  component={Link}
+                  to="/account/profile"
+                  onClick={close}
+                  className={classes.accountCard}
+                  data-guide="account-profile"
+                >
                   <Avatar src={user?.avatar} radius="md" size={42}>
                     {user?.userName?.slice(0, 1) ?? 'U'}
                   </Avatar>
@@ -166,7 +172,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
                 to={`/account/login?from=${encodeURIComponent(location.pathname + location.search)}`}
                 onClick={close}
                 className={classes.navLink}
-                data-guide="account-menu"
+                data-guide="account-login"
               >
                 <span className={classes.navIcon} aria-hidden="true">
                   <Icon path={mdiLogin} size={0.95} />

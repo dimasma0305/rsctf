@@ -233,7 +233,7 @@ const GameDetail: FC = () => {
         </Stack>
       ),
       onConfirm: () => setJoinModalOpen(true),
-      confirmProps: { color: theme.primaryColor },
+      confirmProps: { color: theme.primaryColor, 'data-guide': 'event-join-confirm' },
     })
 
   const onLeave = () =>

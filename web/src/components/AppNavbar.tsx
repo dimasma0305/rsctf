@@ -315,6 +315,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
                     component={Link}
                     to="/account/profile"
                     leftSection={<Icon path={mdiAccountCircleOutline} size={0.9} />}
+                    data-guide="account-profile"
                   >
                     {t('common.tab.account.profile')}
                   </Menu.Item>
@@ -336,6 +337,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
                   component={Link}
                   to={`/account/login?from=${encodeURIComponent(location.pathname + location.search)}`}
                   leftSection={<Icon path={mdiLogin} size={0.9} />}
+                  data-guide="account-login"
                 >
                   {t('common.tab.account.login')}
                 </Menu.Item>

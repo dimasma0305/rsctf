@@ -1,24 +1,14 @@
-import {
-  Button,
-  Center,
-  Modal,
-  ModalProps,
-  Stack,
-  Text,
-  Textarea,
-  TextInput,
-  Title,
-  useMantineTheme,
-} from '@mantine/core'
+import { Button, Center, Stack, Text, Textarea, TextInput, Title, useMantineTheme } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiCloseCircle } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
+import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
 import { showErrorMsg } from '@Utils/Shared'
 import api, { TeamUpdateModel } from '@Api'
 
-interface TeamEditModalProps extends ModalProps {
+interface TeamEditModalProps extends AccessibleModalProps {
   disallowCreate: boolean
   mutate: () => void
 }
@@ -53,7 +43,7 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
   }
 
   return (
-    <Modal {...modalProps}>
+    <AccessibleModal {...modalProps}>
       {disallowCreate ? (
         <Stack gap="lg" p={40} ta="center">
           <Center>
@@ -68,6 +58,7 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
         <Stack>
           <Text>{t('team.content.create')}</Text>
           <TextInput
+            data-guide="team-create-form"
             label={t('team.label.name')}
             type="text"
             placeholder="team"
@@ -94,6 +85,6 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
           </Button>
         </Stack>
       )}
-    </Modal>
+    </AccessibleModal>
   )
 }

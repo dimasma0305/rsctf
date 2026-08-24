@@ -1,16 +1,17 @@
-import { Button, Modal, ModalProps, Select, Stack, TextInput } from '@mantine/core'
+import { Button, Select, Stack, TextInput } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
+import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import { useGame } from '@Hooks/useGame'
 import { useTeams } from '@Hooks/useUser'
 import api, { GameJoinModel } from '@Api'
 
-interface GameJoinModalProps extends ModalProps {
+interface GameJoinModalProps extends AccessibleModalProps {
   onSubmitJoin: (info: GameJoinModel) => Promise<void>
 }
 
@@ -83,6 +84,13 @@ export const GameJoinModal: FC<GameJoinModalProps> = (props) => {
   const shouldRequireInviteCode = hasDivision
     ? Boolean(selectedDivision?.inviteCodeRequired)
     : Boolean(game?.inviteCodeRequired)
+  const guideTarget = !team
+    ? 'team'
+    : canSelectDivision && hasDivision && !divisionId
+      ? 'division'
+      : shouldRequireInviteCode && !inviteCode
+        ? 'code'
+        : 'submit'
 
   useEffect(() => {
     if (!shouldRequireInviteCode) {
@@ -143,9 +151,10 @@ export const GameJoinModal: FC<GameJoinModalProps> = (props) => {
   }
 
   return (
-    <Modal {...modalProps}>
+    <AccessibleModal {...modalProps}>
       <Stack>
         <Select
+          data-guide={guideTarget === 'team' ? 'event-join-team' : undefined}
           required
           label={t('game.content.join.team.label')}
           description={t('game.content.join.team.description')}
@@ -156,6 +165,7 @@ export const GameJoinModal: FC<GameJoinModalProps> = (props) => {
         />
         {canSelectDivision && hasDivision && (
           <Select
+            data-guide={guideTarget === 'division' ? 'event-join-division' : undefined}
             required
             label={t('game.content.join.division.label')}
             description={t('game.content.join.division.description')}
@@ -184,6 +194,7 @@ export const GameJoinModal: FC<GameJoinModalProps> = (props) => {
         )}
         {shouldRequireInviteCode && (
           <TextInput
+            data-guide={guideTarget === 'code' ? 'event-join-code' : undefined}
             required
             label={t('game.content.join.invite_code.label')}
             description={t('game.content.join.invite_code.description')}
@@ -192,10 +203,14 @@ export const GameJoinModal: FC<GameJoinModalProps> = (props) => {
             disabled={disabled}
           />
         )}
-        <Button disabled={disabled} onClick={onJoinGame}>
+        <Button
+          data-guide={guideTarget === 'submit' ? 'event-join-submit' : undefined}
+          disabled={disabled}
+          onClick={onJoinGame}
+        >
           {t('game.button.join')}
         </Button>
       </Stack>
-    </Modal>
+    </AccessibleModal>
   )
 }
