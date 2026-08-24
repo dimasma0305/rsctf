@@ -1,7 +1,7 @@
 import { Modal } from '@mantine/core'
 import { mdiCursorDefaultClickOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { CSSProperties, FC, PropsWithChildren, useEffect, useLayoutEffect, useState } from 'react'
+import { CSSProperties, FC, PropsWithChildren, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import classes from '@Styles/PlayerGuide.module.css'
 
 interface GuideTargetRect {
@@ -47,21 +47,38 @@ const renderedTargets = (selector?: string) => {
   return [...new Set(elements)].filter((element) => {
     const rect = element.getBoundingClientRect()
     const style = window.getComputedStyle(element)
-    return (
-      rect.width > 0 &&
-      rect.height > 0 &&
-      style.display !== 'none' &&
-      style.visibility !== 'hidden'
-    )
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'
   })
 }
 
-const isInViewport = (element: HTMLElement) => {
+const targetVisibleRatio = (element: HTMLElement) => {
   const rect = element.getBoundingClientRect()
-  return rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth
+  const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0))
+  const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0))
+  return rect.width > 0 && rect.height > 0 ? (visibleWidth * visibleHeight) / (rect.width * rect.height) : 0
 }
 
-const visibleTarget = (selector?: string) => renderedTargets(selector)?.find(isInViewport) ?? null
+const targetCenterIsUsable = (element: HTMLElement) => {
+  const rect = element.getBoundingClientRect()
+  const left = Math.max(0, rect.left)
+  const right = Math.min(window.innerWidth, rect.right)
+  const top = Math.max(0, rect.top)
+  const bottom = Math.min(window.innerHeight, rect.bottom)
+  if (right <= left || bottom <= top) return false
+
+  const elements = document.elementsFromPoint((left + right) / 2, (top + bottom) / 2)
+  const topPageElement = elements.find(
+    (candidate) => !candidate.closest('[data-guide-surface="coachmark"]') && !candidate.closest('[data-guide-layer]')
+  )
+  return Boolean(topPageElement && (topPageElement === element || element.contains(topPageElement)))
+}
+
+const isUsableTarget = (element: HTMLElement) => targetVisibleRatio(element) >= 0.6 && targetCenterIsUsable(element)
+
+const visibleTarget = (selector?: string) => {
+  const preferred = renderedTargets(selector)?.[0]
+  return preferred && isUsableTarget(preferred) ? preferred : null
+}
 
 const measureTarget = (selector?: string): GuideTargetRect | null => {
   const element = visibleTarget(selector)
@@ -97,7 +114,25 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
     }
 
     let frame = 0
+    let scrolledTarget: HTMLElement | null = null
+    const scrollPreferredTarget = () => {
+      const preferredTarget = renderedTargets(selector)?.[0]
+      if (!preferredTarget || isUsableTarget(preferredTarget) || preferredTarget === scrolledTarget) return
+
+      scrolledTarget = preferredTarget
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const targetHeight = Math.min(preferredTarget.getBoundingClientRect().height, window.innerHeight)
+      const coachmarkBudget = Math.min(352, window.innerHeight * 0.44)
+      const bottomNavigationAllowance = window.innerWidth <= 768 ? 70 : 0
+      const canCenterBoth = targetHeight + coachmarkBudget + 12 <= window.innerHeight - bottomNavigationAllowance
+      preferredTarget.scrollIntoView({
+        behavior: reducedMotion ? 'auto' : 'smooth',
+        block: canCenterBoth ? 'center' : 'end',
+        inline: 'nearest',
+      })
+    }
     const update = () => {
+      scrollPreferredTarget()
       window.cancelAnimationFrame(frame)
       frame = window.requestAnimationFrame(() => {
         const next = measureTarget(selector)
@@ -105,16 +140,6 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
       })
     }
 
-    const candidates = renderedTargets(selector)
-    const offscreenTarget = candidates?.some(isInViewport) ? undefined : candidates?.[0]
-    if (offscreenTarget) {
-      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      offscreenTarget.scrollIntoView({
-        behavior: reducedMotion ? 'auto' : 'smooth',
-        block: 'center',
-        inline: 'nearest',
-      })
-    }
     update()
     const refresh = window.setInterval(update, 300)
     window.addEventListener('resize', update)
@@ -136,6 +161,30 @@ const shadePath = (target: GuideTargetRect) =>
     `M${target.left} ${target.top}V${target.bottom}H${target.right}V${target.top}Z`,
   ].join(' ')
 
+const coachmarkPlacement = (target: GuideTargetRect | null) => {
+  if (!target) return { placement: 'center', style: undefined }
+
+  const spaceAbove = target.top
+  const spaceBelow = target.viewportHeight - target.bottom
+  const placeAbove = spaceAbove >= spaceBelow
+  const mobile = target.viewportWidth <= 768
+  const targetOnRight = target.left + target.width / 2 > target.viewportWidth / 2
+  const availableHeight = Math.max(96, (placeAbove ? spaceAbove : spaceBelow) - 12)
+  const viewportHeightBudget = mobile ? target.viewportHeight * 0.44 : 352
+  const style: CSSProperties = {
+    position: 'fixed',
+    margin: 0,
+    maxHeight: Math.min(352, availableHeight, viewportHeightBudget),
+    top: placeAbove ? 'auto' : target.bottom + 12,
+    bottom: placeAbove ? target.viewportHeight - target.top + 12 : 'auto',
+    left: mobile ? '0.5rem' : targetOnRight ? '0.75rem' : 'auto',
+    right: mobile || targetOnRight ? 'auto' : '0.75rem',
+    width: 'var(--modal-size)',
+  }
+
+  return { placement: placeAbove ? 'above' : 'below', style }
+}
+
 export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   opened,
   onClose,
@@ -148,10 +197,23 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
 }) => {
   const target = useGuideTarget(opened, targetSelector)
   const [animationKey, setAnimationKey] = useState(0)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const coachmark = coachmarkPlacement(target)
 
   useEffect(() => {
     if (opened) setAnimationKey((current) => current + 1)
   }, [opened, targetSelector])
+
+  useEffect(() => {
+    if (!opened) return
+    const frame = window.requestAnimationFrame(() => bodyRef.current?.focus({ preventScroll: true }))
+    return () => window.cancelAnimationFrame(frame)
+  }, [opened, target, targetSelector])
+
+  useEffect(() => {
+    contentRef.current?.setAttribute('aria-modal', target ? 'false' : 'true')
+  }, [target])
 
   const targetStyle = target
     ? ({
@@ -192,12 +254,14 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
       onClose={onClose}
       size={size}
       returnFocus
-      trapFocus
+      trapFocus={!target}
       closeOnEscape
       closeOnClickOutside={false}
+      onEnterTransitionEnd={() => bodyRef.current?.focus({ preventScroll: true })}
       zIndex={7000}
     >
       <Modal.Overlay
+        data-guide-layer="fallback-overlay"
         backgroundOpacity={target ? 0 : overlayOpacity}
         blur={0}
         style={{ pointerEvents: target ? 'none' : undefined }}
@@ -244,12 +308,18 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
           </div>
         </>
       )}
-      <Modal.Content className={classes.modal}>
+      <Modal.Content
+        ref={contentRef}
+        className={classes.modal}
+        data-guide-surface="coachmark"
+        data-guide-placement={coachmark.placement}
+        style={coachmark.style}
+      >
         <div className={classes.modalHeader}>
           <Modal.Title>{title}</Modal.Title>
           <Modal.CloseButton aria-label={closeLabel} />
         </div>
-        <Modal.Body className={classes.modalBody} tabIndex={0} aria-label={title}>
+        <Modal.Body ref={bodyRef} className={classes.modalBody} tabIndex={0} data-autofocus aria-label={title}>
           {children}
         </Modal.Body>
       </Modal.Content>

@@ -256,6 +256,7 @@ const GameDetail: FC = () => {
           component={Link}
           to={`/account/login?from=${encodeURIComponent(`/games/${numId}`)}`}
           leftSection={<Icon path={mdiLogin} size={0.8} aria-hidden="true" />}
+          data-guide="event-join"
         >
           {t('game.button.login_required')}
         </Button>
@@ -264,6 +265,7 @@ const GameDetail: FC = () => {
           disabled={!canSubmit}
           onClick={onJoin}
           leftSection={<Icon path={mdiAccountGroupOutline} size={0.8} aria-hidden="true" />}
+          data-guide="event-join"
         >
           {!isGameOpenForJoin ? t('game.button.finished') : GameActionMap.get(status)}
         </Button>
@@ -289,6 +291,7 @@ const GameDetail: FC = () => {
           to={`/games/${numId}/challenges`}
           variant="light"
           leftSection={<Icon path={mdiFlagOutline} size={0.8} aria-hidden="true" />}
+          data-guide="event-challenges"
         >
           {t('game.button.challenges')}
         </Button>

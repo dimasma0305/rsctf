@@ -79,9 +79,11 @@ const NavbarLink: FC<NavbarLinkProps> = ({ icon, label, link, onClick, isActive,
           ? 'games-navigation'
           : link === '/challenges'
             ? 'challenge-navigation'
-            : link === '/guide'
-              ? 'guide-navigation'
-              : undefined
+            : link === '/teams'
+              ? 'team-navigation'
+              : link === '/guide'
+                ? 'guide-navigation'
+                : undefined
       }
       className={classes.link}
     >

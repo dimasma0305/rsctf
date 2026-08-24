@@ -1,8 +1,8 @@
-export const GUIDE_VERSION = 2
+export const GUIDE_VERSION = 3
 export const GUIDE_STORAGE_PREFIX = 'rsctf-player-guide'
 
 export const GUIDE_FEATURES = ['dynamic-container', 'event-vpn'] as const
-export const GUIDE_TOUR_STEPS = ['welcome', 'account', 'events', 'challenges', 'connection', 'submit'] as const
+export const GUIDE_TOUR_STEPS = ['welcome', 'account', 'team', 'events', 'challenges', 'connection', 'submit'] as const
 
 export type GuideFeature = (typeof GUIDE_FEATURES)[number]
 export type GuideTourStep = (typeof GUIDE_TOUR_STEPS)[number]
@@ -78,10 +78,7 @@ export const pauseGuide = (preferences: GuidePreferences): GuidePreferences => (
   tourPaused: preferences.activeTourStep !== null,
 })
 
-export const setGuideTourStep = (
-  preferences: GuidePreferences,
-  activeTourStep: GuideTourStep
-): GuidePreferences => ({
+export const setGuideTourStep = (preferences: GuidePreferences, activeTourStep: GuideTourStep): GuidePreferences => ({
   ...preferences,
   activeTourStep,
   tourPaused: false,
