@@ -25,27 +25,22 @@ import { Empty } from '@Components/Empty'
 import { GameChallengeModal } from '@Components/GameChallengeModal'
 import { PageHeader } from '@Components/PageHeader'
 import { WithNavBar } from '@Components/WithNavbar'
-import {
-  ChallengeCategoryList,
-  SubmissionTypeIconMap,
-  useChallengeCategoryLabelMap,
-  useChallengeTypeLabelMap,
-} from '@Utils/Shared'
+import { ChallengeCategoryList, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useGame } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUser } from '@Hooks/useUser'
-import api, {
-  ChallengeCatalogItem,
-  ChallengeCategory,
-  ChallengeInfo,
-  ChallengeType,
-  SubmissionType,
-} from '@Api'
+import api, { ChallengeCatalogItem, ChallengeCatalogMode, ChallengeCategory, ChallengeInfo, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengeCatalog.module.css'
 
 const ITEMS_PER_PAGE = 24
 type SolveFilter = 'all' | 'solved' | 'unsolved'
+
+const CHALLENGE_MODES: { value: ChallengeCatalogMode; label: string }[] = [
+  { value: 'jeopardy', label: 'Jeopardy' },
+  { value: 'koth', label: 'KOTH' },
+  { value: 'attackDefense', label: 'A&D' },
+]
 
 const challengeHash = (id: number, title: string) => `#${id}-${encodeURIComponent(title.replace(/ /g, '-'))}`
 
@@ -93,14 +88,13 @@ const ChallengeCatalog: FC = () => {
   const { t } = useTranslation()
   const { user, error: userError } = useUser()
   const categoryMap = useChallengeCategoryLabelMap()
-  const typeMap = useChallengeTypeLabelMap()
   const isMobile = useIsMobile()
   const searchInput = useRef<HTMLInputElement>(null)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [debouncedSearch] = useDebouncedValue(search.trim(), 300)
   const [category, setCategory] = useState<ChallengeCategory | null>(null)
-  const [challengeType, setChallengeType] = useState<ChallengeType | null>(null)
+  const [challengeMode, setChallengeMode] = useState<ChallengeCatalogMode | null>(null)
   const [solveFilter, setSolveFilter] = useState<SolveFilter>('all')
   const [selectedChallenge, setSelectedChallenge] = useState<ChallengeCatalogItem | null>(null)
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
@@ -111,7 +105,7 @@ const ChallengeCatalog: FC = () => {
       skip: (page - 1) * ITEMS_PER_PAGE,
       search: debouncedSearch || undefined,
       category: category ?? undefined,
-      type: challengeType ?? undefined,
+      mode: challengeMode ?? undefined,
       solved: solveFilter === 'all' ? undefined : solveFilter === 'solved',
     },
     { refreshInterval: 60_000 },
@@ -128,12 +122,12 @@ const ChallengeCatalog: FC = () => {
   const clearFilters = () => {
     setSearch('')
     setCategory(null)
-    setChallengeType(null)
+    setChallengeMode(null)
     setSolveFilter('all')
     setPage(1)
     searchInput.current?.focus()
   }
-  const filtersActive = Boolean(search || category || challengeType || solveFilter !== 'all')
+  const filtersActive = Boolean(search || category || challengeMode || solveFilter !== 'all')
   const pageCount = Math.ceil((catalog?.total ?? 0) / ITEMS_PER_PAGE)
 
   return (
@@ -215,13 +209,13 @@ const ChallengeCatalog: FC = () => {
             label={t('challenge.catalog.type', 'Type')}
             placeholder={t('challenge.catalog.all_types', 'All types')}
             clearable
-            value={challengeType}
-            data={Object.values(ChallengeType).map((value) => ({
+            value={challengeMode}
+            data={CHALLENGE_MODES.map(({ value, label }) => ({
               value,
-              label: typeMap.get(value)?.name ?? value,
+              label: t(`challenge.catalog.mode_${value}`, label),
             }))}
             onChange={(value) => {
-              setChallengeType(value as ChallengeType | null)
+              setChallengeMode(value as ChallengeCatalogMode | null)
               resetPage()
             }}
           />

@@ -155,6 +155,24 @@ fn default_challenge_catalog_count() -> u64 {
     24
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ChallengeCatalogMode {
+    Jeopardy,
+    Koth,
+    AttackDefense,
+}
+
+impl ChallengeCatalogMode {
+    fn as_query_value(self) -> &'static str {
+        match self {
+            Self::Jeopardy => "jeopardy",
+            Self::Koth => "koth",
+            Self::AttackDefense => "attackDefense",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeCatalogQuery {
@@ -168,6 +186,8 @@ pub struct ChallengeCatalogQuery {
     game_id: Option<i32>,
     #[serde(default)]
     category: Option<ChallengeCategory>,
+    #[serde(default)]
+    mode: Option<ChallengeCatalogMode>,
     #[serde(default, rename = "type")]
     challenge_type: Option<ChallengeType>,
     #[serde(default)]
@@ -182,6 +202,7 @@ impl Default for ChallengeCatalogQuery {
             search: None,
             game_id: None,
             category: None,
+            mode: None,
             challenge_type: None,
             solved: None,
         }
@@ -302,11 +323,17 @@ async fn load_challenge_catalog(
                     OR catalog.game_id::text = $6)
                AND ($7::int IS NULL OR catalog.game_id = $7)
                AND ($8::smallint IS NULL OR catalog.category = $8)
-               AND ($9::smallint IS NULL OR catalog.challenge_type = $9)
-               AND ($10::boolean IS NULL OR catalog.solved = $10)
+               AND (
+                    $9::text IS NULL
+                    OR ($9 = 'jeopardy' AND catalog.challenge_type NOT IN ($10, $11))
+                    OR ($9 = 'attackDefense' AND catalog.challenge_type = $10)
+                    OR ($9 = 'koth' AND catalog.challenge_type = $11)
+               )
+               AND ($12::smallint IS NULL OR catalog.challenge_type = $12)
+               AND ($13::boolean IS NULL OR catalog.solved = $13)
              ORDER BY catalog.solved, catalog.game_start DESC,
                       catalog.game_id DESC, catalog.category, catalog.id
-             OFFSET $11 LIMIT $12"#,
+             OFFSET $14 LIMIT $15"#,
     )
     .bind(user_id)
     .bind(ParticipationStatus::Accepted as i16)
@@ -316,6 +343,9 @@ async fn load_challenge_catalog(
     .bind(search.as_deref())
     .bind(query.game_id)
     .bind(query.category.map(|category| category as i16))
+    .bind(query.mode.map(ChallengeCatalogMode::as_query_value))
+    .bind(ChallengeType::AttackDefense as i16)
+    .bind(ChallengeType::KingOfTheHill as i16)
     .bind(query.challenge_type.map(|kind| kind as i16))
     .bind(query.solved)
     .bind(query.skip.min(i64::MAX as u64) as i64)

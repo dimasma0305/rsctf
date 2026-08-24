@@ -36,6 +36,45 @@ async fn game_list_query_accepts_compact_search_and_membership_filters() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
+#[tokio::test]
+async fn challenge_catalog_query_accepts_only_the_three_player_facing_modes() {
+    let app = Router::new().route(
+        "/",
+        get(|Query(query): Query<ChallengeCatalogQuery>| async move {
+            if query.mode.map(ChallengeCatalogMode::as_query_value) == query.search.as_deref() {
+                StatusCode::NO_CONTENT
+            } else {
+                StatusCode::BAD_REQUEST
+            }
+        }),
+    );
+
+    for mode in ["jeopardy", "koth", "attackDefense"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/?mode={mode}&search={mode}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT, "mode={mode}");
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/?mode=staticContainer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
 #[test]
 fn catalog_search_is_trimmed_bounded_and_optional() {
     assert_eq!(normalized_catalog_search(None).unwrap(), None);
@@ -131,6 +170,10 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
     sqlx::query(
         r#"INSERT INTO "GameChallenges" VALUES
           (101, 1, 'Visible Web', 3, 0, 1000, 0.01, 5, 2, 0, TRUE, 0),
+          (102, 1, 'Live A&D', 3, 4, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (103, 1, 'Live KOTH', 3, 5, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (104, 1, 'Shared container', 3, 1, 1000, 0.01, 5, 0, 0, TRUE, 0),
+          (105, 1, 'Dynamic attachment', 3, 2, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (201, 2, 'Other Crypto', 1, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (301, 3, 'Pending Pwn', 2, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
           (401, 4, 'Future Reverse', 4, 0, 1000, 0.01, 5, 0, 0, TRUE, 0),
@@ -174,13 +217,53 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         ..Default::default()
     };
     let (items, total) = load_challenge_catalog(&pool, player, &query).await.unwrap();
-    assert_eq!(total, 2);
+    assert_eq!(total, 6);
     assert_eq!(
         items.iter().map(|item| item.id).collect::<Vec<_>>(),
-        vec![701, 101]
+        vec![701, 102, 103, 104, 105, 101]
     );
     assert!(items.iter().find(|item| item.id == 101).unwrap().solved);
     assert_eq!(items.iter().find(|item| item.id == 101).unwrap().score, 820);
+    assert_eq!(items.iter().find(|item| item.id == 102).unwrap().score, 0);
+    assert_eq!(items.iter().find(|item| item.id == 103).unwrap().score, 0);
+
+    let jeopardy = ChallengeCatalogQuery {
+        count: 50,
+        mode: Some(ChallengeCatalogMode::Jeopardy),
+        ..Default::default()
+    };
+    let (jeopardy_items, jeopardy_total) = load_challenge_catalog(&pool, player, &jeopardy)
+        .await
+        .unwrap();
+    assert_eq!(jeopardy_total, 4);
+    assert_eq!(
+        jeopardy_items
+            .iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>(),
+        vec![701, 104, 105, 101]
+    );
+
+    let attack_defense = ChallengeCatalogQuery {
+        count: 50,
+        mode: Some(ChallengeCatalogMode::AttackDefense),
+        ..Default::default()
+    };
+    let (attack_defense_items, attack_defense_total) =
+        load_challenge_catalog(&pool, player, &attack_defense)
+            .await
+            .unwrap();
+    assert_eq!(attack_defense_total, 1);
+    assert_eq!(attack_defense_items[0].id, 102);
+
+    let koth = ChallengeCatalogQuery {
+        count: 50,
+        mode: Some(ChallengeCatalogMode::Koth),
+        ..Default::default()
+    };
+    let (koth_items, koth_total) = load_challenge_catalog(&pool, player, &koth).await.unwrap();
+    assert_eq!(koth_total, 1);
+    assert_eq!(koth_items[0].id, 103);
 
     let (other_items, _) = load_challenge_catalog(&pool, other, &query).await.unwrap();
     assert_eq!(

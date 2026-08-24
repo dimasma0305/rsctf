@@ -2801,9 +2801,13 @@ export interface ChallengeCatalogQuery {
   /** @format int32 */
   gameId?: number;
   category?: ChallengeCategory;
+  mode?: ChallengeCatalogMode;
   type?: ChallengeType;
   solved?: boolean;
 }
+
+/** Player-facing challenge modes used by the joined-event catalog. */
+export type ChallengeCatalogMode = "jeopardy" | "koth" | "attackDefense";
 
 /** Detailed game information, including detailed introduction and current team registration status */
 export interface DetailedGameInfoModel {
