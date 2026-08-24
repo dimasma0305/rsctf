@@ -10,6 +10,7 @@ const page = readFileSync('src/pages/guide/Index.tsx', 'utf8')
 const app = readFileSync('src/App.tsx', 'utf8')
 const navigation = readFileSync('src/components/navigation.ts', 'utf8')
 const challengeModal = readFileSync('src/components/GameChallengeModal.tsx', 'utf8')
+const challengeModalShell = readFileSync('src/components/ChallengeModal.tsx', 'utf8')
 const instanceEntry = readFileSync('src/components/InstanceEntry.tsx', 'utf8')
 const eventPage = readFileSync('src/pages/games/[id]/Index.tsx', 'utf8')
 const appHeader = readFileSync('src/components/AppHeader.tsx', 'utf8')
@@ -99,9 +100,31 @@ test('guide content follows the effective platform and event connection settings
   }
   assert.match(config, /allowRegister: true/)
   assert.match(config, /emailConfirmationRequired: false/)
-  assert.match(challengeModal, /useFeatureGuide\('dynamic-container'/)
-  assert.match(challengeModal, /eventVpnRequired/)
+  assert.match(challengeModal, /ChallengeType\.StaticAttachment/)
+  assert.match(challengeModal, /resolveChallengeDeliveryGuide/)
+  assert.match(challengeModal, /useFeatureGuide\(deliveryFeature/)
   assert.match(eventPage, /useFeatureGuide\([\s\S]*'event-vpn'/)
+})
+
+test('delivery tutorials follow the real static, direct, VPN, and WSRX controls', () => {
+  for (const feature of ['static-challenge', 'container-direct', 'container-wsrx', 'container-vpn']) {
+    assert.match(provider, new RegExp(`feature === '${feature}'`), feature)
+  }
+  assert.match(provider, /featureStepIndex/)
+  assert.match(provider, /onFeatureTargetActivate/)
+  assert.match(provider, /challenge-material/)
+  assert.match(provider, /challenge-attachment/)
+  assert.match(provider, /challenge-attachment-download/)
+  assert.match(provider, /wsrx-setup/)
+  assert.match(provider, /wsrx-download/)
+  assert.match(provider, /instance-copy/)
+  assert.match(provider, /127\.0\.0\.1/)
+  assert.match(provider, /WSS URL is not a netcat address/)
+  assert.match(instanceEntry, /data-guide="wsrx-setup"/)
+  assert.match(instanceEntry, /data-guide="instance-copy"/)
+  assert.match(instanceEntry, /descriptionProps=\{isPlatformProxy \? \{ component: 'div' \} : undefined\}/)
+  assert.match(challengeModalShell, /withCloseButton = true/)
+  assert.match(challengeModalShell, /withOverlay && <Modal\.Overlay/)
 })
 
 test('permanent guide uses real, described screenshots and remains directly navigable', () => {
@@ -114,6 +137,11 @@ test('permanent guide uses real, described screenshots and remains directly navi
   assert.match(page, /<img src=\{step\.image\} alt=\{step\.imageAlt\}/)
   assert.match(page, /mdiCursorDefaultClickOutline/)
   assert.match(page, /className=\{classes\.instructionCursor\}/)
+  assert.match(page, /Static challenge/)
+  assert.match(page, /Direct host and port/)
+  assert.match(page, /Platform Proxy with Local WSRX/)
+  assert.match(page, /Event VPN host and port/)
+  assert.match(page, /WebSocketReflectorX\/releases/)
   assert.doesNotMatch(page, /<Badge[^>]*circle/)
   assert.match(pageStyles, /prefers-reduced-motion/)
   for (const name of [

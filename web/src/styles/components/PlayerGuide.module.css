@@ -149,6 +149,17 @@
   padding-inline-start: var(--mantine-spacing-md);
 }
 
+.command {
+  display: block;
+  padding: 0.45rem 0.6rem;
+  overflow-x: auto;
+  color: var(--mantine-color-text);
+  white-space: nowrap;
+  background: var(--mantine-color-default-hover);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+}
+
 @media (max-width: 48em) {
   .modal.modal {
     max-height: min(19rem, 44dvh);

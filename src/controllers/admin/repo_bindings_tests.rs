@@ -40,6 +40,12 @@ fn scan_counts_distinguish_created_and_updated_challenges() {
 }
 
 #[test]
+fn safe_retained_updates_do_not_block_missing_challenge_reconciliation() {
+    assert!(missing_challenge_reconciliation_is_safe(0));
+    assert!(!missing_challenge_reconciliation_is_safe(1));
+}
+
+#[test]
 fn event_preflight_rejects_missing_and_nested_event_roots() {
     assert!(validate_event_preflight(
         &["one/.gzevent".into(), "two/.gzevent".into()],
