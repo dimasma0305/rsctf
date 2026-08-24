@@ -20,6 +20,10 @@ test('interactive guide is account-scoped, restartable, dismissible, and storage
   assert.match(provider, /user\?\.userId/)
   assert.match(provider, /interactiveEnabled/)
   assert.match(provider, /resetGuideProgress/)
+  assert.match(provider, /preferences\.activeTourStep/)
+  assert.match(provider, /updatePreferences\(pauseGuide\)/)
+  assert.match(provider, /setGuideTourStep/)
+  assert.doesNotMatch(provider, /setTourOpen/)
   assert.match(provider, /Turn off interactive guide/)
   assert.match(provider, /try \{[\s\S]*localStorage\.setItem[\s\S]*\} catch/)
   assert.match(spotlight, /<Modal\.Root[\s\S]*returnFocus[\s\S]*trapFocus/)
@@ -34,16 +38,20 @@ test('interactive guide spotlights real controls and provides a reduced-motion g
   assert.match(instanceEntry, /data-guide="instance-entry"/)
   assert.match(appHeader, /data-guide="more-navigation"/)
   assert.match(provider, /guide-navigation[\s\S]*more-navigation/)
-  assert.match(spotlight, /querySelectorAll<HTMLElement>\(selector\)/)
+  assert.match(spotlight, /selector[\s\S]*\.split\(','\)[\s\S]*querySelectorAll<HTMLElement>\(candidate\)/)
   assert.match(spotlight, /scrollIntoView\(/)
   assert.match(spotlight, /prefers-reduced-motion: reduce/)
   assert.match(spotlight, /mdiCursorDefaultClickOutline/)
   assert.match(spotlight, /data-guide-layer="spotlight"/)
   assert.match(spotlight, /data-guide-layer="cursor"/)
+  assert.match(spotlight, /data-guide-layer="interaction-blocker"/)
+  assert.match(spotlight, /closeOnClickOutside=\{false\}/)
+  assert.match(spotlight, /pointerEvents: target \? 'none'/)
   assert.match(spotlight, /<Modal\.Body[\s\S]*tabIndex=\{0\}[\s\S]*aria-label=\{title\}/)
   assert.match(spotlight, /fillRule="evenodd"/)
   assert.match(spotlightStyles, /\.tutorialSpotlight/)
   assert.match(spotlightStyles, /\.tutorialCursor/)
+  assert.match(spotlightStyles, /\.tutorialBlocker/)
   assert.match(spotlightStyles, /prefers-reduced-motion[\s\S]*\.tutorialSpotlight/)
   assert.match(spotlightStyles, /max-height: 54dvh/)
 
@@ -75,10 +83,29 @@ test('guide content follows the effective platform and event connection settings
 test('permanent guide uses real, described screenshots and remains directly navigable', () => {
   assert.match(navigation, /common\.tab\.guide[\s\S]*\/guide/)
   assert.match(page, /<PageHeader/)
-  assert.match(page, /<section id=\{id\}/)
+  assert.match(page, /<section[\s\S]*id=\{id\}/)
   assert.match(page, /<img src=\{image\} alt=\{imageAlt \?\? ''\}/)
+  assert.match(page, /<ol className=\{classes\.instructionGrid\}/)
+  assert.match(page, /<figcaption className=\{classes\.instructionCaption\}/)
+  assert.match(page, /<img src=\{step\.image\} alt=\{step\.imageAlt\}/)
   assert.match(pageStyles, /prefers-reduced-motion/)
-  for (const name of ['login.webp', 'games.webp', 'challenge.webp']) {
+  for (const name of [
+    'login.webp',
+    'games.webp',
+    'challenge.webp',
+    'join-event.webp',
+    'join-confirm.webp',
+    'join-team.webp',
+    'join-status.webp',
+  ]) {
     assert.ok(existsSync(`public/static/guide/${name}`), name)
   }
+})
+
+test('the event tutorial resumes with destination-specific instructions after a game-card navigation', () => {
+  assert.match(provider, /isGameDetailPage[\s\S]*event-briefing/)
+  assert.match(provider, /event-card[\s\S]*games-search/)
+  assert.match(provider, /You opened an event without losing the tutorial/)
+  assert.match(provider, /event-briefing/)
+  assert.match(eventPage, /data-guide="event-briefing"/)
 })

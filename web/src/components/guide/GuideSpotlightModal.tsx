@@ -39,7 +39,12 @@ const sameRect = (left: GuideTargetRect | null, right: GuideTargetRect | null) =
 
 const renderedTargets = (selector?: string) => {
   if (!selector) return null
-  return Array.from(document.querySelectorAll<HTMLElement>(selector)).filter((element) => {
+  const elements = selector
+    .split(',')
+    .map((candidate) => candidate.trim())
+    .filter(Boolean)
+    .flatMap((candidate) => Array.from(document.querySelectorAll<HTMLElement>(candidate)))
+  return [...new Set(elements)].filter((element) => {
     const rect = element.getBoundingClientRect()
     const style = window.getComputedStyle(element)
     return (
@@ -162,6 +167,24 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
         top: target.top + target.height / 2,
       } satisfies CSSProperties)
     : undefined
+  const blockerStyles = target
+    ? [
+        { left: 0, top: 0, width: target.viewportWidth, height: target.top },
+        {
+          left: 0,
+          top: target.bottom,
+          width: target.viewportWidth,
+          height: target.viewportHeight - target.bottom,
+        },
+        { left: 0, top: target.top, width: target.left, height: target.height },
+        {
+          left: target.right,
+          top: target.top,
+          width: target.viewportWidth - target.right,
+          height: target.height,
+        },
+      ]
+    : []
 
   return (
     <Modal.Root
@@ -171,9 +194,14 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
       returnFocus
       trapFocus
       closeOnEscape
+      closeOnClickOutside={false}
       zIndex={7000}
     >
-      <Modal.Overlay backgroundOpacity={target ? 0 : overlayOpacity} blur={0} />
+      <Modal.Overlay
+        backgroundOpacity={target ? 0 : overlayOpacity}
+        blur={0}
+        style={{ pointerEvents: target ? 'none' : undefined }}
+      />
       {target && (
         <>
           <svg
@@ -190,6 +218,15 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
               clipRule="evenodd"
             />
           </svg>
+          {blockerStyles.map((style, index) => (
+            <div
+              key={index}
+              className={classes.tutorialBlocker}
+              data-guide-layer="interaction-blocker"
+              style={style}
+              aria-hidden="true"
+            />
+          ))}
           <div
             className={classes.tutorialSpotlight}
             data-guide-layer="spotlight"

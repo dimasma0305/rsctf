@@ -6,7 +6,6 @@ import {
   Card,
   Group,
   List,
-  SimpleGrid,
   Stack,
   Switch,
   Text,
@@ -48,7 +47,11 @@ interface GuideSectionProps {
 }
 
 const GuideSection: FC<GuideSectionProps> = ({ id, number, icon, title, summary, children, image, imageAlt }) => (
-  <section id={id} className={classes.section} aria-labelledby={`${id}-title`}>
+  <section
+    id={id}
+    className={`${classes.section} ${image ? '' : classes.sectionFull}`}
+    aria-labelledby={`${id}-title`}
+  >
     <div className={classes.sectionCopy}>
       <Group gap="sm" align="center" wrap="nowrap">
         <ThemeIcon size={44} radius="xl" variant="light" aria-hidden="true">
@@ -79,6 +82,41 @@ const GuideSection: FC<GuideSectionProps> = ({ id, number, icon, title, summary,
       </figure>
     )}
   </section>
+)
+
+interface InstructionStep {
+  title: string
+  description: string
+  image: string
+  imageAlt: string
+}
+
+const InstructionGallery: FC<{ label: string; steps: InstructionStep[] }> = ({ label, steps }) => (
+  <ol className={classes.instructionGrid} aria-label={label}>
+    {steps.map((step, index) => (
+      <li key={step.image} className={classes.instructionStep}>
+        <figure className={classes.instructionFigure}>
+          <div className={classes.browserBar} aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <img src={step.image} alt={step.imageAlt} loading="lazy" decoding="async" />
+          <figcaption className={classes.instructionCaption}>
+            <Badge variant="light" circle aria-hidden="true">
+              {index + 1}
+            </Badge>
+            <div>
+              <Text fw={700}>{step.title}</Text>
+              <Text size="sm" c="dimmed">
+                {step.description}
+              </Text>
+            </div>
+          </figcaption>
+        </figure>
+      </li>
+    ))}
+  </ol>
 )
 
 const Guide: FC = () => {
@@ -125,6 +163,56 @@ const Guide: FC = () => {
     ['join-event', t('guide.page.contents.join', 'Join')],
     ['play-challenge', t('guide.page.contents.play', 'Play')],
     ['submit-flag', t('guide.page.contents.submit', 'Submit')],
+  ]
+  const joinSteps: InstructionStep[] = [
+    {
+      title: t('guide.page.join.open_title', 'Open the event briefing'),
+      description: t(
+        'guide.page.join.open_description',
+        'Check the schedule, format, eligibility, VPN requirement, and team rules before joining.'
+      ),
+      image: '/static/guide/join-event.webp',
+      imageAlt: t(
+        'guide.page.join.open_image_alt',
+        'Event briefing page with the Join event button highlighted below the schedule and participation rules.'
+      ),
+    },
+    {
+      title: t('guide.page.join.confirm_title', 'Confirm that you understand the rules'),
+      description: t(
+        'guide.page.join.confirm_description',
+        'Read the participation warning, then confirm only when you are ready to represent your team.'
+      ),
+      image: '/static/guide/join-confirm.webp',
+      imageAlt: t(
+        'guide.page.join.confirm_image_alt',
+        'Join confirmation dialog showing the event participation warning and the highlighted Confirm button.'
+      ),
+    },
+    {
+      title: t('guide.page.join.choose_title', 'Choose the participating team'),
+      description: t(
+        'guide.page.join.choose_description',
+        'Select your team. Division and invite-code fields appear only when that event requires them.'
+      ),
+      image: '/static/guide/join-team.webp',
+      imageAlt: t(
+        'guide.page.join.choose_image_alt',
+        'Join event dialog with the team selector and Join button highlighted in sequence.'
+      ),
+    },
+    {
+      title: t('guide.page.join.status_title', 'Verify the participation status'),
+      description: t(
+        'guide.page.join.status',
+        'Pending means an organizer must accept the request; Approved or Joined means your team can enter when the event opens.'
+      ),
+      image: '/static/guide/join-status.webp',
+      imageAlt: t(
+        'guide.page.join.status_image_alt',
+        'Event page after a request showing a clearly labelled Pending, Approved, or Joined participation status.'
+      ),
+    },
   ]
 
   return (
@@ -265,35 +353,10 @@ const Guide: FC = () => {
             'Open the event, review its rules, select your team, and submit the join request.'
           )}
         >
-          <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="md">
-            <Card withBorder className={classes.miniCard}>
-              <Badge variant="light">1</Badge>
-              <Text fw={700}>{t('guide.page.join.rules_title', 'Read event rules')}</Text>
-              <Text size="sm" c="dimmed">
-                {t(
-                  'guide.page.join.rules',
-                  'Notice posts, eligibility, format, VPN, and team rules can differ per event.'
-                )}
-              </Text>
-            </Card>
-            <Card withBorder className={classes.miniCard}>
-              <Badge variant="light">2</Badge>
-              <Text fw={700}>{t('guide.page.join.team_title', 'Choose a team')}</Text>
-              <Text size="sm" c="dimmed">
-                {t('guide.page.join.team', 'The selected team becomes your participation for that event.')}
-              </Text>
-            </Card>
-            <Card withBorder className={classes.miniCard}>
-              <Badge variant="light">3</Badge>
-              <Text fw={700}>{t('guide.page.join.status_title', 'Check the status')}</Text>
-              <Text size="sm" c="dimmed">
-                {t(
-                  'guide.page.join.status',
-                  'Pending means an organizer must accept the request; Joined means you can play.'
-                )}
-              </Text>
-            </Card>
-          </SimpleGrid>
+          <InstructionGallery
+            label={t('guide.page.join.steps_label', 'Step-by-step images for joining an event with your team')}
+            steps={joinSteps}
+          />
         </GuideSection>
 
         <GuideSection

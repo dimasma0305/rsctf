@@ -452,7 +452,7 @@ const GameDetail: FC = () => {
               {isMobile && t('game.participation.alert.not_started.mobile')}
             </Alert>
           )}
-          <header className={classes.briefingHeader}>
+          <header className={classes.briefingHeader} data-guide="event-briefing">
             <Text className={classes.eyebrow}>{t('game.content.event_briefing_eyebrow', 'Mission file')}</Text>
             <Title order={2} className={classes.briefingTitle}>
               {t('game.content.event_briefing', 'Event briefing')}

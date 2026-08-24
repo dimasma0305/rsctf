@@ -63,6 +63,10 @@
   order: 1;
 }
 
+.sectionFull {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .sectionCopy {
   display: flex;
   flex-direction: column;
@@ -126,11 +130,45 @@
   background: var(--mantine-color-green-6);
 }
 
-.miniCard {
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
-  min-height: 9rem;
+.instructionGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(1rem, 2vw, 1.5rem);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.instructionStep {
+  min-width: 0;
+}
+
+.instructionFigure {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-lg);
+  background: var(--mantine-color-body);
+  box-shadow: 0 0.8rem 2.4rem rgb(0 0 0 / 16%);
+}
+
+.instructionFigure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  object-position: top;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+.instructionCaption {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+  padding: 1rem;
 }
 
 @media (max-width: 62em) {
@@ -156,6 +194,10 @@
 
   .contentsLink {
     border-radius: var(--mantine-radius-md);
+  }
+
+  .instructionGrid {
+    grid-template-columns: 1fr;
   }
 }
 

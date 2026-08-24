@@ -15,6 +15,12 @@
   pointer-events: none;
 }
 
+.tutorialBlocker {
+  position: fixed;
+  z-index: 6996;
+  pointer-events: auto;
+}
+
 .tutorialSpotlight {
   position: fixed;
   z-index: 6998;
@@ -99,6 +105,13 @@
 .note {
   padding-inline-start: var(--mantine-spacing-sm);
   border-inline-start: 3px solid var(--mantine-primary-color-light-color);
+}
+
+.destinationNote {
+  padding: var(--mantine-spacing-sm);
+  border: 1px solid color-mix(in srgb, var(--mantine-primary-color-filled) 35%, var(--mantine-color-default-border));
+  border-radius: var(--mantine-radius-md);
+  background: color-mix(in srgb, var(--mantine-primary-color-filled) 8%, var(--mantine-color-body));
 }
 
 .featureList {
