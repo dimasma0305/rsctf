@@ -121,8 +121,8 @@ importers:
         specifier: ^1.2.3
         version: 1.2.3
       js-sha256:
-        specifier: ^0.11.1
-        version: 0.11.1
+        specifier: ^1.0.0
+        version: 1.0.0
       jszip:
         specifier: ^3.10.1
         version: 3.10.1
@@ -1649,8 +1649,8 @@ packages:
   js-binary-schema-parser@2.0.3:
     resolution: {integrity: sha512-xezGJmOb4lk/M1ZZLTR/jaBHQ4gG/lqQnJqdIv4721DMggsa1bDVlHXNeHYogaIEHD9vCRv0fcL4hMA+Coarkg==}
 
-  js-sha256@0.11.1:
-    resolution: {integrity: sha512-o6WSo/LUvY2uC4j7mO50a2ms7E/EAdbP0swigLV+nzHKTTaYnaLIWJ02VdXrsJX0vGedDESQnLsOekr94ryfjg==}
+  js-sha256@1.0.0:
+    resolution: {integrity: sha512-Bqxf6ENUzYIMzuELCmRNrJOVbjKH1oMgbfYJBKVr/W1Xf9fazpahqCbb24v1pR7XV1isuqhM+w9KWpK7zCyUQw==}
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -3773,7 +3773,7 @@ snapshots:
 
   js-binary-schema-parser@2.0.3: {}
 
-  js-sha256@0.11.1: {}
+  js-sha256@1.0.0: {}
 
   js-tokens@4.0.0: {}
 
