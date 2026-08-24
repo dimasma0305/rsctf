@@ -19,6 +19,7 @@ import {
   Input,
   Textarea,
   Tooltip,
+  useComputedColorScheme,
 } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import {
@@ -197,6 +198,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const readOnlyArchive = !!gameEnded && !practiceMode
   const { t } = useTranslation()
   const theme = useMantineTheme()
+  const colorScheme = useComputedColorScheme('dark')
+  const reviewOutlineShade = colorScheme === 'dark' ? 4 : 8
   const { locale } = useLanguage()
 
   const placeholders = t('challenge.content.flag_placeholders', {
@@ -568,8 +571,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           onClick={() => setRating(ReviewRating.Like)}
           styles={(theme) => ({
             root: {
-              borderColor: rating === ReviewRating.Like ? undefined : theme.colors.teal[6],
-              color: rating === ReviewRating.Like ? undefined : theme.colors.teal[6],
+              borderColor: rating === ReviewRating.Like ? undefined : theme.colors.teal[reviewOutlineShade],
+              color: rating === ReviewRating.Like ? undefined : theme.colors.teal[reviewOutlineShade],
               borderWidth: rating === ReviewRating.Like ? undefined : '1px',
             },
           })}
@@ -585,8 +588,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           onClick={() => setRating(ReviewRating.Dislike)}
           styles={(theme) => ({
             root: {
-              borderColor: rating === ReviewRating.Dislike ? undefined : theme.colors.red[6],
-              color: rating === ReviewRating.Dislike ? undefined : theme.colors.red[6],
+              borderColor: rating === ReviewRating.Dislike ? undefined : theme.colors.red[reviewOutlineShade],
+              color: rating === ReviewRating.Dislike ? undefined : theme.colors.red[reviewOutlineShade],
               borderWidth: rating === ReviewRating.Dislike ? undefined : '1px',
             },
           })}

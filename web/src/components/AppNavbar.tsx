@@ -31,7 +31,6 @@ import { useTranslation } from 'react-i18next'
 import { Link, useLocation } from 'react-router'
 import { LogoBox } from '@Components/LogoBox'
 import { LogoHeader } from '@Components/LogoHeader'
-import { ScrollingText } from '@Components/ScrollingText'
 import { WsrxManager } from '@Components/WsrxManager'
 import { PRIMARY_NAVIGATION, canAccessNavigationItem, isNavigationItemActive } from '@Components/navigation'
 import { clearLocalCache } from '@Utils/Cache'
@@ -282,7 +281,7 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
             </UnstyledButton>
           </Tooltip>
 
-          <Menu position="right-end" offset={18} width={240}>
+          <Menu position="right-end" offset={18} width={240} withinPortal={false} withInitialFocusPlaceholder={false}>
             <Menu.Target>
               <UnstyledButton
                 className={classes.accountButton}
@@ -307,19 +306,14 @@ export const AppNavbar: FC<AppNavbarProps> = ({ openColorModal, compact, onToggl
             </Menu.Target>
             <Menu.Dropdown>
               {loggedIn && (
-                <>
-                  <Menu.Label>
-                    <ScrollingText text={user?.userName ?? ''} size="xs" maw={220} />
-                  </Menu.Label>
-                  <Menu.Item
-                    component={Link}
-                    to="/account/profile"
-                    leftSection={<Icon path={mdiAccountCircleOutline} size={0.9} />}
-                    data-guide="account-profile"
-                  >
-                    {t('common.tab.account.profile')}
-                  </Menu.Item>
-                </>
+                <Menu.Item
+                  component={Link}
+                  to="/account/profile"
+                  leftSection={<Icon path={mdiAccountCircleOutline} size={0.9} />}
+                  data-guide="account-profile"
+                >
+                  {t('common.tab.account.profile')}
+                </Menu.Item>
               )}
               <Menu.Item onClick={clearLocalCache} leftSection={<Icon path={mdiCached} size={0.9} />}>
                 {t('common.tab.account.clean_cache')}

@@ -13,6 +13,7 @@ import {
   parseGuidePreferences,
   pauseGuide,
   resolveChallengeDeliveryGuide,
+  resolveGuideIdentity,
   resetGuideProgress,
   setGuideTourStep,
 } from './GuideState'
@@ -28,6 +29,13 @@ test('guide preferences are account-scoped and fail closed to safe defaults', ()
     activeTourStep: null,
     tourPaused: false,
   })
+})
+
+test('guide identity waits through transient player-profile failures', () => {
+  assert.equal(resolveGuideIdentity('player-id', 500), 'player-id')
+  assert.equal(resolveGuideIdentity(undefined, 401), 'guest')
+  assert.equal(resolveGuideIdentity(undefined, 500), null)
+  assert.equal(resolveGuideIdentity(undefined), null)
 })
 
 test('guide progress accepts only known feature identifiers without duplicates', () => {
