@@ -29,6 +29,16 @@ test('guide layers yield to opened surfaces and rise for targets inside them', (
   assert.ok(GUIDE_ELEVATED_Z_INDEX > 400, 'nested guide must clear Mantine overlays')
 })
 
+test('coach marks stay docked while a highlighted target is resolving', () => {
+  const docked = coachmarkPlacement(null)
+  assert.equal(docked.placement, 'docked')
+  assert.equal(docked.style?.position, 'fixed')
+  assert.equal(docked.style?.top, MOBILE_TOP_SAFE_INSET)
+  assert.equal(docked.style?.right, '0.5rem')
+  assert.equal(docked.style?.left, 'auto')
+  assert.match(String(docked.style?.maxHeight), /100dvh/)
+})
+
 test('mobile coach marks stay clear of the header and bottom navigation', () => {
   const below = coachmarkPlacement(mobileTarget(285, 349))
   assert.equal(below.placement, 'below')
