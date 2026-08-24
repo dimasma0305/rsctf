@@ -21,7 +21,21 @@ export const guideLayerZIndex = (target: GuideTargetRect | null) =>
   target?.elevated ? GUIDE_ELEVATED_Z_INDEX : GUIDE_PAGE_Z_INDEX
 
 export const coachmarkPlacement = (target: GuideTargetRect | null) => {
-  if (!target) return { placement: 'center', style: undefined }
+  if (!target) {
+    return {
+      placement: 'docked',
+      style: {
+        position: 'fixed',
+        margin: 0,
+        top: MOBILE_TOP_SAFE_INSET,
+        bottom: 'auto',
+        left: 'auto',
+        right: '0.5rem',
+        width: 'var(--modal-size)',
+        maxHeight: `min(22rem, calc(100dvh - ${MOBILE_TOP_SAFE_INSET + MOBILE_BOTTOM_SAFE_INSET}px))`,
+      } satisfies CSSProperties,
+    }
+  }
 
   const mobile = target.viewportWidth <= 768
   const safeTop = mobile ? MOBILE_TOP_SAFE_INSET : 12

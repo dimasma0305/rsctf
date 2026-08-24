@@ -84,6 +84,8 @@ test('interactive guide spotlights real controls and provides a reduced-motion g
   assert.match(guideLayout, /GUIDE_ELEVATED_Z_INDEX = 500/)
   assert.match(guideLayout, /MOBILE_TOP_SAFE_INSET = 76/)
   assert.match(guideLayout, /MOBILE_BOTTOM_SAFE_INSET = 82/)
+  assert.match(guideLayout, /placement: 'docked'/)
+  assert.doesNotMatch(guideLayout, /placement: 'center'/)
   assert.doesNotMatch(spotlightStyles, /z-index: 700/)
 })
 
