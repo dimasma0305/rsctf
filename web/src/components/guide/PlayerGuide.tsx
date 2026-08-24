@@ -26,6 +26,7 @@ import {
   completeGuide,
   guideStorageKey,
   markGuideFeatureSeen,
+  nextGuideStepForTarget,
   openGuide,
   parseGuidePreferences,
   pauseGuide,
@@ -90,6 +91,7 @@ interface AccessibleGuideModalProps extends PropsWithChildren {
   size: string
   overlayOpacity: number
   targetSelector?: string
+  onTargetActivate?: (target: string | undefined) => void
 }
 
 const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
@@ -100,6 +102,7 @@ const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
   size,
   overlayOpacity,
   targetSelector,
+  onTargetActivate,
   children,
 }) => (
   <GuideSpotlightModal
@@ -110,6 +113,7 @@ const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
     closeLabel={closeLabel}
     overlayOpacity={overlayOpacity}
     targetSelector={targetSelector}
+    onTargetActivate={onTargetActivate}
   >
     {children}
   </GuideSpotlightModal>
@@ -294,9 +298,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         pathLabel: user
           ? t('guide.tour.account.open_profile', 'Open profile')
           : t('guide.tour.account.open_login', 'Open login'),
-        targetSelector: location.pathname.startsWith('/account/')
-          ? '[data-guide="account-access"]'
-          : '[data-guide="account-menu"], [data-guide="more-navigation"]',
+        targetSelector: location.pathname.startsWith('/account/') ? '[data-guide="account-access"]' : undefined,
       },
       {
         id: 'team',
@@ -312,11 +314,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         note: t('guide.tour.team.note', 'One person creates the team; everyone else joins with its invite code.'),
         path: user && !isTeamPage ? '/teams' : !user ? '/account/login' : undefined,
         pathLabel: user ? t('guide.tour.team.open', 'Open teams') : t('guide.tour.team.login_first', 'Sign in first'),
-        targetSelector: isTeamPage
-          ? '[data-guide="team-create"], [data-guide="team-join"]'
-          : user
-            ? '[data-guide="team-navigation"], [data-guide="more-navigation"]'
-            : '[data-guide="account-menu"], [data-guide="more-navigation"]',
+        targetSelector: isTeamPage ? '[data-guide="team-create"], [data-guide="team-join"]' : undefined,
       },
       {
         id: 'events',
@@ -339,8 +337,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           location.pathname === '/games'
             ? '[data-guide="event-card"], [data-guide="games-search"]'
             : isGameDetailPage
-              ? '[data-guide="event-join"]:not(:disabled), [data-guide="event-challenges"], [data-guide="event-briefing"]'
-              : '[data-guide="games-navigation"]',
+              ? '[data-guide="event-join"]:not(:disabled), [data-guide="event-challenges"]'
+              : undefined,
       },
       {
         id: 'challenges',
@@ -354,20 +352,14 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         pathLabel: user
           ? t('guide.tour.challenges.open', 'Open my challenges')
           : t('guide.tour.challenges.login_first', 'Browse events first'),
-        targetSelector:
-          user && isChallengePage
-            ? '[data-guide="challenge-card"], [data-guide="challenge-filters"]'
-            : user
-              ? '[data-guide="challenge-navigation"]'
-              : '[data-guide="games-navigation"]',
+        targetSelector: user && isChallengePage ? '[data-guide="challenge-card"]' : undefined,
       },
       {
         id: 'connection',
         title: t('guide.tour.connection.title', 'Start and connect'),
         body: connectionBody,
         note: t('guide.tour.connection.note', 'Static challenges skip this step. VPN-only events use their event VPN.'),
-        targetSelector:
-          '[data-guide="instance-start"], [data-guide="instance-entry"], [data-guide="challenge-card"], [data-guide="connection-tools"]',
+        targetSelector: '[data-guide="instance-start"], [data-guide="instance-entry"], [data-guide="challenge-card"]',
       },
       {
         id: 'submit',
@@ -381,8 +373,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         pathLabel: user
           ? t('guide.tour.submit.open_challenges', 'Open my challenges')
           : t('guide.tour.submit.browse_events', 'Browse events'),
-        targetSelector:
-          '[data-guide="flag-submit"], [data-guide="challenge-card"], [data-guide="challenge-navigation"], [data-guide="games-navigation"]',
+        targetSelector: '[data-guide="flag-submit"], [data-guide="challenge-card"]',
       },
     ],
     [
@@ -407,10 +398,21 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
     updatePreferences(completeGuide)
   }
 
-  const moveToStep = (index: number) => {
-    const next = steps[Math.min(steps.length - 1, Math.max(0, index))]
-    updatePreferences((current) => setGuideTourStep(current, next.id))
-  }
+  const moveToStep = useCallback(
+    (index: number) => {
+      const next = steps[Math.min(steps.length - 1, Math.max(0, index))]
+      updatePreferences((current) => setGuideTourStep(current, next.id))
+    },
+    [steps, updatePreferences]
+  )
+
+  const onTourTargetActivate = useCallback(
+    (target: string | undefined) => {
+      const nextStep = nextGuideStepForTarget(step.id, target)
+      if (nextStep) updatePreferences((current) => setGuideTourStep(current, nextStep))
+    },
+    [step.id, updatePreferences]
+  )
 
   const dismissFeature = () => {
     if (pendingFeature) updatePreferences((current) => markGuideFeatureSeen(current, pendingFeature.feature))
@@ -434,6 +436,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         closeLabel={t('guide.tour.pause', 'Pause guide')}
         overlayOpacity={0.58}
         targetSelector={step.targetSelector}
+        onTargetActivate={onTourTargetActivate}
       >
         <Stack gap="sm" className={classes.tourBody}>
           <Badge variant="light" size="sm" className={classes.stepBadge}>
@@ -468,7 +471,10 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           )}
           {atStepDestination && (
             <Text size="sm" c="dimmed" role="status" aria-live="polite" className={classes.destinationNote}>
-              {t('guide.tour.destination_ready', 'Now use the highlighted control.')}
+              {t(
+                'guide.tour.destination_ready',
+                'Use the highlighted control. When you finish that action, select Next.'
+              )}
             </Text>
           )}
           <Group justify="space-between" gap="xs" wrap="nowrap" className={classes.tourFooter}>

@@ -1,6 +1,5 @@
 .modal {
   position: relative;
-  z-index: 7004;
   max-height: min(22rem, calc(100dvh - 1rem));
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--mantine-primary-color-filled) 28%, var(--mantine-color-dark-4));
@@ -11,7 +10,6 @@
 .tutorialShade {
   position: fixed;
   inset: 0;
-  z-index: 6997;
   width: 100vw;
   height: 100dvh;
   pointer-events: none;
@@ -19,13 +17,11 @@
 
 .tutorialBlocker {
   position: fixed;
-  z-index: 6996;
   pointer-events: auto;
 }
 
 .tutorialSpotlight {
   position: fixed;
-  z-index: 6998;
   pointer-events: none;
   border: 3px solid var(--mantine-primary-color-filled);
   border-radius: var(--mantine-radius-md);
@@ -37,7 +33,6 @@
 
 .tutorialCursor {
   position: fixed;
-  z-index: 6999;
   display: grid;
   width: 2.75rem;
   height: 2.75rem;

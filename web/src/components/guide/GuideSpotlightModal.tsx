@@ -2,18 +2,12 @@ import { Modal } from '@mantine/core'
 import { mdiCursorDefaultClickOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { CSSProperties, FC, PropsWithChildren, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { coachmarkPlacement, guideLayerZIndex } from '@Utils/GuideLayout'
+import type { GuideTargetRect } from '@Utils/GuideLayout'
 import classes from '@Styles/PlayerGuide.module.css'
 
-interface GuideTargetRect {
-  left: number
-  top: number
-  right: number
-  bottom: number
-  width: number
-  height: number
-  viewportWidth: number
-  viewportHeight: number
-}
+const APPLICATION_SURFACE_SELECTOR =
+  '[role="dialog"], .mantine-Drawer-content, .mantine-Modal-content, .mantine-Menu-dropdown, .mantine-Popover-dropdown'
 
 interface GuideSpotlightModalProps extends PropsWithChildren {
   opened: boolean
@@ -23,6 +17,7 @@ interface GuideSpotlightModalProps extends PropsWithChildren {
   size: string
   overlayOpacity: number
   targetSelector?: string
+  onTargetActivate?: (target: string | undefined) => void
 }
 
 const sameRect = (left: GuideTargetRect | null, right: GuideTargetRect | null) => {
@@ -33,8 +28,15 @@ const sameRect = (left: GuideTargetRect | null, right: GuideTargetRect | null) =
     Math.abs(left.width - right.width) < 0.5 &&
     Math.abs(left.height - right.height) < 0.5 &&
     left.viewportWidth === right.viewportWidth &&
-    left.viewportHeight === right.viewportHeight
+    left.viewportHeight === right.viewportHeight &&
+    left.elevated === right.elevated
   )
+}
+
+const isRenderedElement = (element: HTMLElement) => {
+  const rect = element.getBoundingClientRect()
+  const style = window.getComputedStyle(element)
+  return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'
 }
 
 const renderedTargets = (selector?: string) => {
@@ -44,12 +46,13 @@ const renderedTargets = (selector?: string) => {
     .map((candidate) => candidate.trim())
     .filter(Boolean)
     .flatMap((candidate) => Array.from(document.querySelectorAll<HTMLElement>(candidate)))
-  return [...new Set(elements)].filter((element) => {
-    const rect = element.getBoundingClientRect()
-    const style = window.getComputedStyle(element)
-    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'
-  })
+  return [...new Set(elements)].filter(isRenderedElement)
 }
+
+const externalSurfaceIsOpen = () =>
+  Array.from(document.querySelectorAll<HTMLElement>(APPLICATION_SURFACE_SELECTOR)).some(
+    (element) => !element.closest('[data-guide-surface="coachmark"]') && isRenderedElement(element)
+  )
 
 const targetVisibleRatio = (element: HTMLElement) => {
   const rect = element.getBoundingClientRect()
@@ -101,6 +104,7 @@ const measureTarget = (selector?: string): GuideTargetRect | null => {
     height: Math.max(0, bottom - top),
     viewportWidth,
     viewportHeight,
+    elevated: Boolean(element.closest(APPLICATION_SURFACE_SELECTOR)),
   }
 }
 
@@ -155,35 +159,34 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
   return target
 }
 
+const useExternalSurface = (opened: boolean) => {
+  const [externalSurface, setExternalSurface] = useState(false)
+
+  useLayoutEffect(() => {
+    if (!opened) {
+      setExternalSurface(false)
+      return
+    }
+
+    const update = () =>
+      setExternalSurface((current) => {
+        const next = externalSurfaceIsOpen()
+        return current === next ? current : next
+      })
+    update()
+    const observer = new MutationObserver(update)
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  }, [opened])
+
+  return externalSurface
+}
+
 const shadePath = (target: GuideTargetRect) =>
   [
     `M0 0H${target.viewportWidth}V${target.viewportHeight}H0Z`,
     `M${target.left} ${target.top}V${target.bottom}H${target.right}V${target.top}Z`,
   ].join(' ')
-
-const coachmarkPlacement = (target: GuideTargetRect | null) => {
-  if (!target) return { placement: 'center', style: undefined }
-
-  const spaceAbove = target.top
-  const spaceBelow = target.viewportHeight - target.bottom
-  const placeAbove = spaceAbove >= spaceBelow
-  const mobile = target.viewportWidth <= 768
-  const targetOnRight = target.left + target.width / 2 > target.viewportWidth / 2
-  const availableHeight = Math.max(96, (placeAbove ? spaceAbove : spaceBelow) - 12)
-  const viewportHeightBudget = mobile ? target.viewportHeight * 0.44 : 352
-  const style: CSSProperties = {
-    position: 'fixed',
-    margin: 0,
-    maxHeight: Math.min(352, availableHeight, viewportHeightBudget),
-    top: placeAbove ? 'auto' : target.bottom + 12,
-    bottom: placeAbove ? target.viewportHeight - target.top + 12 : 'auto',
-    left: mobile ? '0.5rem' : targetOnRight ? '0.75rem' : 'auto',
-    right: mobile || targetOnRight ? 'auto' : '0.75rem',
-    width: 'var(--modal-size)',
-  }
-
-  return { placement: placeAbove ? 'above' : 'below', style }
-}
 
 export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   opened,
@@ -193,27 +196,47 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   size,
   overlayOpacity,
   targetSelector,
+  onTargetActivate,
   children,
 }) => {
   const target = useGuideTarget(opened, targetSelector)
+  const externalSurface = useExternalSurface(opened)
   const [animationKey, setAnimationKey] = useState(0)
   const contentRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const coachmark = coachmarkPlacement(target)
+  const guideZIndex = guideLayerZIndex(target)
+  const yielding = externalSurface && !target?.elevated
 
   useEffect(() => {
     if (opened) setAnimationKey((current) => current + 1)
   }, [opened, targetSelector])
 
   useEffect(() => {
-    if (!opened) return
+    if (!opened || yielding) return
     const frame = window.requestAnimationFrame(() => bodyRef.current?.focus({ preventScroll: true }))
     return () => window.cancelAnimationFrame(frame)
-  }, [opened, target, targetSelector])
+  }, [opened, target, targetSelector, yielding])
 
   useEffect(() => {
-    contentRef.current?.setAttribute('aria-modal', target ? 'false' : 'true')
-  }, [target])
+    contentRef.current?.setAttribute('aria-modal', target || yielding ? 'false' : 'true')
+  }, [target, yielding])
+
+  useEffect(() => {
+    if (!opened || !targetSelector || !onTargetActivate) return
+
+    const handleTargetClick = (event: MouseEvent) => {
+      const element = visibleTarget(targetSelector)
+      const eventTarget = event.target
+      if (!element || !(eventTarget instanceof Node) || !element.contains(eventTarget)) return
+
+      const guideTarget = element.dataset.guide
+      window.requestAnimationFrame(() => onTargetActivate(guideTarget))
+    }
+
+    document.addEventListener('click', handleTargetClick, true)
+    return () => document.removeEventListener('click', handleTargetClick, true)
+  }, [onTargetActivate, opened, targetSelector])
 
   const targetStyle = target
     ? ({
@@ -254,17 +277,19 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
       onClose={onClose}
       size={size}
       returnFocus
-      trapFocus={!target}
+      trapFocus={!target && !yielding}
       closeOnEscape
       closeOnClickOutside={false}
-      onEnterTransitionEnd={() => bodyRef.current?.focus({ preventScroll: true })}
-      zIndex={7000}
+      onEnterTransitionEnd={() => {
+        if (!yielding) bodyRef.current?.focus({ preventScroll: true })
+      }}
+      zIndex={guideZIndex}
     >
       <Modal.Overlay
         data-guide-layer="fallback-overlay"
-        backgroundOpacity={target ? 0 : overlayOpacity}
+        backgroundOpacity={target || yielding ? 0 : overlayOpacity}
         blur={0}
-        style={{ pointerEvents: target ? 'none' : undefined }}
+        style={{ pointerEvents: target || yielding ? 'none' : undefined, zIndex: guideZIndex }}
       />
       {target && (
         <>
@@ -274,6 +299,7 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
             viewBox={`0 0 ${target.viewportWidth} ${target.viewportHeight}`}
             preserveAspectRatio="none"
             aria-hidden="true"
+            style={{ zIndex: guideZIndex + 1 }}
           >
             <path
               d={shadePath(target)}
@@ -287,21 +313,21 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
               key={index}
               className={classes.tutorialBlocker}
               data-guide-layer="interaction-blocker"
-              style={style}
+              style={{ ...style, zIndex: guideZIndex }}
               aria-hidden="true"
             />
           ))}
           <div
             className={classes.tutorialSpotlight}
             data-guide-layer="spotlight"
-            style={targetStyle}
+            style={{ ...targetStyle, zIndex: guideZIndex + 2 }}
             aria-hidden="true"
           />
           <div
             key={animationKey}
             className={classes.tutorialCursor}
             data-guide-layer="cursor"
-            style={cursorStyle}
+            style={{ ...cursorStyle, zIndex: guideZIndex + 3 }}
             aria-hidden="true"
           >
             <Icon path={mdiCursorDefaultClickOutline} size={1.7} />
@@ -313,7 +339,14 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
         className={classes.modal}
         data-guide-surface="coachmark"
         data-guide-placement={coachmark.placement}
-        style={coachmark.style}
+        data-guide-yielding={yielding || undefined}
+        aria-hidden={yielding || undefined}
+        style={{
+          ...coachmark.style,
+          zIndex: guideZIndex + 4,
+          visibility: yielding ? 'hidden' : undefined,
+          pointerEvents: yielding ? 'none' : undefined,
+        }}
       >
         <div className={classes.modalHeader}>
           <Modal.Title>{title}</Modal.Title>

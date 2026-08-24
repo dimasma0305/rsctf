@@ -1,21 +1,9 @@
-import {
-  Alert,
-  Anchor,
-  Badge,
-  Button,
-  Card,
-  Group,
-  List,
-  Stack,
-  Switch,
-  Text,
-  ThemeIcon,
-  Title,
-} from '@mantine/core'
+import { Alert, Anchor, Button, Card, Group, List, Stack, Switch, Text, ThemeIcon, Title } from '@mantine/core'
 import {
   mdiAccountCircleOutline,
   mdiBookOpenPageVariantOutline,
   mdiCheckCircleOutline,
+  mdiCursorDefaultClickOutline,
   mdiFlagOutline,
   mdiGamepadVariantOutline,
   mdiInformationOutline,
@@ -47,11 +35,7 @@ interface GuideSectionProps {
 }
 
 const GuideSection: FC<GuideSectionProps> = ({ id, number, icon, title, summary, children, image, imageAlt }) => (
-  <section
-    id={id}
-    className={`${classes.section} ${image ? '' : classes.sectionFull}`}
-    aria-labelledby={`${id}-title`}
-  >
+  <section id={id} className={`${classes.section} ${image ? '' : classes.sectionFull}`} aria-labelledby={`${id}-title`}>
     <div className={classes.sectionCopy}>
       <Group gap="sm" align="center" wrap="nowrap">
         <ThemeIcon size={44} radius="xl" variant="light" aria-hidden="true">
@@ -103,10 +87,16 @@ const InstructionGallery: FC<{ label: string; steps: InstructionStep[] }> = ({ l
           </div>
           <img src={step.image} alt={step.imageAlt} loading="lazy" decoding="async" />
           <figcaption className={classes.instructionCaption}>
-            <Badge variant="light" circle aria-hidden="true">
-              {index + 1}
-            </Badge>
+            <Icon
+              path={mdiCursorDefaultClickOutline}
+              size={1.25}
+              className={classes.instructionCursor}
+              aria-hidden="true"
+            />
             <div>
+              <Text size="xs" fw={700} tt="uppercase" c="dimmed">
+                Step {index + 1}
+              </Text>
               <Text fw={700}>{step.title}</Text>
               <Text size="sm" c="dimmed">
                 {step.description}
@@ -271,7 +261,8 @@ const Guide: FC = () => {
         <nav className={classes.contents} aria-label={t('guide.page.contents.title', 'Guide sections')}>
           {quickLinks.map(([id, label], index) => (
             <Anchor key={id} href={`#${id}`} className={classes.contentsLink}>
-              <span>{index + 1}</span>
+              <Icon path={mdiCursorDefaultClickOutline} size={0.68} aria-hidden="true" />
+              <span className="app-sr-only">Step {index + 1}: </span>
               {label}
             </Anchor>
           ))}
