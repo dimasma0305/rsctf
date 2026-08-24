@@ -129,6 +129,16 @@ test('visual audit waits for loaded page content before taking screenshots', () 
   assert.match(auditSource, /shadowRoot\?\.querySelectorAll\('h1'\)/)
 })
 
+test('visual audit enforces compact and usable interactive guide budgets', () => {
+  const auditSource = readFileSync(join(repositoryRoot, 'tests', 'visual', 'audit.mjs'), 'utf8')
+  assert.match(auditSource, /data-guide-surface="coachmark"/)
+  assert.match(auditSource, /guideAreaBudget = result\.width\.viewport <= 320 \? 0\.45/)
+  assert.match(auditSource, /result\.guide\.targetVisibleRatio < 0\.9/)
+  assert.match(auditSource, /guide target is not pointer-accessible/)
+  assert.match(auditSource, /guide controls are outside the viewport/)
+  assert.match(auditSource, /budget is 280/)
+})
+
 test('profile identity header shrinks without escaping compact viewports', () => {
   const profile = readFileSync(join(repositoryRoot, 'web/src/pages/account/Profile.tsx'), 'utf8')
   assert.match(profile, /<Group wrap="nowrap" w="100%">/)

@@ -1,5 +1,5 @@
-import { Badge, Button, Group, List, Progress, Stack, Text, ThemeIcon, Title } from '@mantine/core'
-import { mdiArrowLeft, mdiArrowRight, mdiCheck, mdiFlagVariantOutline, mdiOpenInNew } from '@mdi/js'
+import { Badge, Button, Group, List, Progress, Stack, Text } from '@mantine/core'
+import { mdiArrowLeft, mdiArrowRight, mdiCheck, mdiOpenInNew } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import {
   Dispatch,
@@ -229,22 +229,18 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
     (provider): provider is string => Boolean(provider)
   )
   const accountBody = user
-    ? t(
-        'guide.tour.account.signed_in',
-        'You are signed in as {{name}}. Your teams and event memberships follow this account.',
-        {
-          name: user.userName ?? t('common.tab.account.title', 'your account'),
-        }
-      )
+    ? t('guide.tour.account.signed_in', 'You are signed in as {{name}}. Select Next to set up your team.', {
+        name: user.userName ?? t('common.tab.account.title', 'your account'),
+      })
     : config.allowRegister === false
       ? t(
           'guide.tour.account.closed',
-          'Public registration is closed on this platform. Sign in with an existing account or ask an organizer for access.'
+          'Registration is closed. Sign in with an existing account or ask an organizer for access.'
         )
       : config.allowPasswordRegistration === false
         ? t(
             'guide.tour.account.oauth',
-            'This platform uses OAuth-only registration. Continue with {{providers}}; no separate RSCTF password is created.',
+            'Register or sign in with {{providers}}. You do not need a separate platform password.',
             {
               providers:
                 providerNames.join(' or ') || t('guide.tour.account.configured_provider', 'a configured provider'),
@@ -252,7 +248,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           )
         : t(
             'guide.tour.account.password',
-            'Create an account with email and password{{oauth}}. Use the same account whenever you return.',
+            'Register with email and password{{oauth}}, then keep using the same account.',
             {
               oauth: providerNames.length
                 ? t('guide.tour.account.oauth_suffix', ', or use {{providers}}', {
@@ -265,33 +261,35 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
     config.portMapping === ContainerPortMappingType.PlatformProxy
       ? t(
           'guide.tour.connection.proxy',
-          'Container challenges use the platform connection proxy. Start the instance, wait until it is ready, then use the local address shown by the connection tool.'
+          'Select Start instance. When it is ready, open Connection tools and use the local address it shows.'
         )
       : t(
           'guide.tour.connection.direct',
-          'Container challenges expose a host and port directly. Start the instance, wait until it is ready, then connect to the displayed address.'
+          'Select Start instance. When it is ready, connect to the displayed host and port.'
         )
   const isGameDetailPage = /^\/games\/\d+$/.test(location.pathname)
+  const isTeamPage = location.pathname === '/teams'
+  const isChallengePage = location.pathname === '/challenges' || /^\/games\/\d+\/challenges$/.test(location.pathname)
 
   const steps = useMemo<TourStep[]>(
     () => [
       {
         id: 'welcome',
-        title: t('guide.tour.welcome.title', 'Welcome to {{platform}}', { platform: config.title || 'RSCTF' }),
+        title: t('guide.tour.welcome.title', 'Learn the playground'),
         body: t(
           'guide.tour.welcome.body',
-          'This short, interactive walkthrough follows the same path as a real player. You can pause it now and restart it from Guide at any time.'
+          'Follow the highlighted control and do one task at a time. The guide stays with you when the page changes.'
         ),
-        note: t('guide.tour.welcome.note', 'Nothing is submitted or changed while you view this guide.'),
+        note: t('guide.tour.welcome.note', 'It never joins, starts, or submits anything for you.'),
         targetSelector: '[data-guide="guide-navigation"], [data-guide="more-navigation"]',
       },
       {
         id: 'account',
-        title: t('guide.tour.account.title', 'Use one player account'),
+        title: t('guide.tour.account.title', user ? 'Your player account' : 'Sign in once'),
         body: accountBody,
         note: config.emailConfirmationRequired
           ? t('guide.tour.account.verify', 'Email confirmation is required before the account can play.')
-          : t('guide.tour.account.ready', 'After sign-in, create or join a team before entering an event.'),
+          : t('guide.tour.account.ready', 'Your teams, solves, and event access stay with this account.'),
         path: user ? '/account/profile' : '/account/login',
         pathLabel: user
           ? t('guide.tour.account.open_profile', 'Open profile')
@@ -301,101 +299,105 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           : '[data-guide="account-menu"], [data-guide="more-navigation"]',
       },
       {
+        id: 'team',
+        title: t('guide.tour.team.title', 'Create or join a team'),
+        body: user
+          ? isTeamPage
+            ? t(
+                'guide.tour.team.destination_body',
+                'Choose Create team. If a captain sent you an invite code, choose Join team instead.'
+              )
+            : t('guide.tour.team.body', 'Open Teams, then create a team or join one with an invite code.')
+          : t('guide.tour.team.guest_body', 'Sign in first. Events are entered with a team.'),
+        note: t('guide.tour.team.note', 'One person creates the team; everyone else joins with its invite code.'),
+        path: user && !isTeamPage ? '/teams' : !user ? '/account/login' : undefined,
+        pathLabel: user ? t('guide.tour.team.open', 'Open teams') : t('guide.tour.team.login_first', 'Sign in first'),
+        targetSelector: isTeamPage
+          ? '[data-guide="team-create"], [data-guide="team-join"]'
+          : user
+            ? '[data-guide="team-navigation"], [data-guide="more-navigation"]'
+            : '[data-guide="account-menu"], [data-guide="more-navigation"]',
+      },
+      {
         id: 'events',
-        title: t('guide.tour.events.title', 'Find and join an event'),
+        title: t('guide.tour.events.title', isGameDetailPage ? 'Join this event' : 'Choose an event'),
         body: isGameDetailPage
           ? t(
               'guide.tour.events.detail_body',
-              'You opened an event without losing the tutorial. Review the highlighted briefing, schedule, eligibility, VPN, and team rules before joining.'
+              'Review the schedule and rules, then use the highlighted action to join with your team.'
             )
           : t(
               'guide.tour.events.body',
-              'Games shows every visible event. Search by title or ID, then use the participation filter to separate joined and not-yet-joined events.'
+              'Select the highlighted event card. Check its schedule and rules before joining.'
             ),
         note: isGameDetailPage
-          ? t(
-              'guide.tour.events.detail_note',
-              'The event page shows Join, Pending, or Approved for your team. Select Next when you understand this event’s rules.'
-            )
-          : t(
-              'guide.tour.events.note',
-              'Open an event, choose your team, and submit the join request. Some organizers review requests before accepting them.'
-            ),
+          ? t('guide.tour.events.detail_note', 'If your team is already approved, open Challenges.')
+          : t('guide.tour.events.note', 'Some organizers review a team before approving it.'),
         path: isGameDetailPage ? undefined : '/games',
         pathLabel: t('guide.tour.events.open', 'Open games'),
         targetSelector:
           location.pathname === '/games'
             ? '[data-guide="event-card"], [data-guide="games-search"]'
             : isGameDetailPage
-              ? '[data-guide="event-briefing"]'
+              ? '[data-guide="event-join"]:not(:disabled), [data-guide="event-challenges"], [data-guide="event-briefing"]'
               : '[data-guide="games-navigation"]',
       },
       {
         id: 'challenges',
-        title: t('guide.tour.challenges.title', 'Use your challenge workspace'),
+        title: t('guide.tour.challenges.title', 'Open a challenge'),
         body: t(
           'guide.tour.challenges.body',
-          'My challenges searches across events you have joined. Filters help you narrow by category, challenge type, and solved status.'
+          'Open a challenge card. Read its description and download any attachment before solving.'
         ),
-        note: t(
-          'guide.tour.challenges.note',
-          'The catalog never reveals challenges from events you have not joined, hidden events, or events that have not started.'
-        ),
-        path: user ? '/challenges' : '/games',
+        note: t('guide.tour.challenges.note', 'My challenges only contains events your team joined.'),
+        path: isChallengePage ? undefined : user ? '/challenges' : '/games',
         pathLabel: user
           ? t('guide.tour.challenges.open', 'Open my challenges')
           : t('guide.tour.challenges.login_first', 'Browse events first'),
         targetSelector:
-          user && location.pathname === '/challenges'
-            ? '[data-guide="challenge-filters"]'
+          user && isChallengePage
+            ? '[data-guide="challenge-card"], [data-guide="challenge-filters"]'
             : user
               ? '[data-guide="challenge-navigation"]'
               : '[data-guide="games-navigation"]',
       },
       {
         id: 'connection',
-        title: t('guide.tour.connection.title', 'Start and connect safely'),
+        title: t('guide.tour.connection.title', 'Start and connect'),
         body: connectionBody,
-        note: t(
-          'guide.tour.connection.note',
-          'VPN-only events override the platform default: download that event’s VPN profile and use the event-provided port instructions.'
-        ),
+        note: t('guide.tour.connection.note', 'Static challenges skip this step. VPN-only events use their event VPN.'),
         targetSelector:
-          '[data-guide="connection-tools"], [data-guide="instance-start"], [data-guide="instance-entry"], [data-guide="games-navigation"]',
+          '[data-guide="instance-start"], [data-guide="instance-entry"], [data-guide="challenge-card"], [data-guide="connection-tools"]',
       },
       {
         id: 'submit',
         title: t('guide.tour.submit.title', 'Submit the flag'),
         body: t(
           'guide.tour.submit.body',
-          'Solve the challenge, paste the exact flag into the submission field, and wait for the verdict. A correct flag updates your team score.'
+          'Paste the exact flag into the highlighted Flag field, then select Submit. A correct verdict adds the score.'
         ),
-        note: t(
-          'guide.tour.submit.note',
-          'Do not share flags, accounts, VPN profiles, or private instance addresses. Event rules and organizer notices take priority.'
-        ),
-        path: '/guide',
-        pathLabel: t('guide.tour.submit.full_guide', 'Read the full guide'),
+        note: t('guide.tour.submit.note', 'Keep flags, accounts, VPN profiles, and instance addresses private.'),
+        path: user && !isChallengePage ? '/challenges' : !user ? '/games' : undefined,
+        pathLabel: user
+          ? t('guide.tour.submit.open_challenges', 'Open my challenges')
+          : t('guide.tour.submit.browse_events', 'Browse events'),
         targetSelector:
-          location.pathname === '/guide'
-            ? '#submit-flag'
-            : '[data-guide="challenge-navigation"], [data-guide="flag-submit"], [data-guide="games-navigation"]',
+          '[data-guide="flag-submit"], [data-guide="challenge-card"], [data-guide="challenge-navigation"], [data-guide="games-navigation"]',
       },
     ],
     [
       accountBody,
       config.emailConfirmationRequired,
-      config.title,
       connectionBody,
+      isChallengePage,
       isGameDetailPage,
+      isTeamPage,
       location.pathname,
       t,
       user,
     ]
   )
-  const activeStepIndex = preferences.activeTourStep
-    ? GUIDE_TOUR_STEPS.indexOf(preferences.activeTourStep)
-    : -1
+  const activeStepIndex = preferences.activeTourStep ? GUIDE_TOUR_STEPS.indexOf(preferences.activeTourStep) : -1
   const stepIndex = activeStepIndex >= 0 ? activeStepIndex : 0
   const step = steps[stepIndex]
   const tourOpen = ready && preferences.activeTourStep !== null && !preferences.tourPaused
@@ -427,25 +429,21 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
       <AccessibleGuideModal
         opened={tourOpen}
         onClose={() => updatePreferences(pauseGuide)}
-        title={t('guide.tour.dialog_title', 'Interactive player guide')}
-        size="min(36rem, calc(100vw - 1.5rem))"
+        title={step.title}
+        size="min(21rem, calc(100vw - 1rem))"
         closeLabel={t('guide.tour.pause', 'Pause guide')}
-        overlayOpacity={0.72}
+        overlayOpacity={0.58}
         targetSelector={step.targetSelector}
       >
-        <Stack gap="lg">
-          <Group justify="space-between" align="center" wrap="nowrap">
-            <Badge variant="light">
-              {t('guide.tour.progress', 'Step {{current}} of {{total}}', {
-                current: stepIndex + 1,
-                total: steps.length,
-              })}
-            </Badge>
-            <Text size="xs" c="dimmed">
-              {config.title || 'RSCTF'}
-            </Text>
-          </Group>
+        <Stack gap="sm" className={classes.tourBody}>
+          <Badge variant="light" size="sm" className={classes.stepBadge}>
+            {t('guide.tour.progress', 'Step {{current}} of {{total}}', {
+              current: stepIndex + 1,
+              total: steps.length,
+            })}
+          </Badge>
           <Progress
+            size="xs"
             value={((stepIndex + 1) / steps.length) * 100}
             aria-label={t('guide.tour.progress', 'Step {{current}} of {{total}}', {
               current: stepIndex + 1,
@@ -453,13 +451,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
             })}
           />
           <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
-            <ThemeIcon size={46} radius="xl" variant="light" aria-hidden="true">
-              <Icon path={stepIndex === steps.length - 1 ? mdiCheck : mdiFlagVariantOutline} size={1.05} />
-            </ThemeIcon>
-            <Title order={2} size="h3">
-              {step.title}
-            </Title>
-            <Text>{step.body}</Text>
+            <Text size="sm">{step.body}</Text>
             <Text size="sm" c="dimmed" className={classes.note}>
               {step.note}
             </Text>
@@ -469,23 +461,21 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
               variant="light"
               leftSection={<Icon path={mdiOpenInNew} size={0.72} aria-hidden="true" />}
               onClick={() => navigate(step.path!)}
+              className={classes.guideAction}
             >
               {step.pathLabel}
             </Button>
           )}
           {atStepDestination && (
             <Text size="sm" c="dimmed" role="status" aria-live="polite" className={classes.destinationNote}>
-              {t(
-                'guide.tour.destination_ready',
-                'You are on the right page. Follow the highlighted control, then select Next when you are ready.'
-              )}
+              {t('guide.tour.destination_ready', 'Now use the highlighted control.')}
             </Text>
           )}
-          <Group justify="space-between" gap="sm" wrap="wrap-reverse">
+          <Group justify="space-between" gap="xs" wrap="nowrap" className={classes.tourFooter}>
             <Button variant="subtle" color="gray" onClick={() => setInteractiveEnabled(false)}>
-              {t('guide.tour.disable', 'Turn off interactive guide')}
+              {t('guide.tour.disable', 'Stop guide')}
             </Button>
-            <Group gap="xs">
+            <Group gap={4} wrap="nowrap">
               <Button
                 variant="default"
                 disabled={stepIndex === 0}
@@ -519,9 +509,9 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
             ? t('guide.feature.vpn.title', 'New: this event requires its VPN')
             : t('guide.feature.container.title', 'New: this challenge starts an instance')
         }
-        size="min(34rem, calc(100vw - 1.5rem))"
+        size="min(23rem, calc(100vw - 1rem))"
         closeLabel={t('guide.feature.dismiss', 'Dismiss this tip')}
-        overlayOpacity={0.65}
+        overlayOpacity={0.58}
         targetSelector={
           pendingFeature?.feature === 'event-vpn'
             ? '[data-guide="event-vpn-download"]'
@@ -529,7 +519,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         }
       >
         {pendingFeature && (
-          <Stack gap="lg">
+          <Stack gap="md">
             {pendingFeature.feature === 'event-vpn' ? (
               <List type="ordered" spacing="sm" className={classes.featureList}>
                 <List.Item>

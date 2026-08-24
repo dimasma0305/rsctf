@@ -317,6 +317,42 @@ function accessibleDocumentAnalysis() {
   const mainText = `${main?.innerText ?? ''} ${main?.shadowRoot?.textContent ?? ''}`.trim()
   const pageContentElement = document.querySelector('[data-page-content]')
   const pageContentRectangle = pageContentElement?.getBoundingClientRect()
+  const guideSurface = document.querySelector('[data-guide-surface="coachmark"]')
+  const guideSpotlight = document.querySelector('[data-guide-layer="spotlight"]')
+  const guideSurfaceRectangle = guideSurface?.getBoundingClientRect()
+  const guideSpotlightRectangle = guideSpotlight?.getBoundingClientRect()
+  let guide = null
+  if (guideSurface && guideSurfaceRectangle && guideSpotlightRectangle) {
+    const overlapWidth = Math.max(
+      0,
+      Math.min(guideSurfaceRectangle.right, guideSpotlightRectangle.right) -
+        Math.max(guideSurfaceRectangle.left, guideSpotlightRectangle.left)
+    )
+    const overlapHeight = Math.max(
+      0,
+      Math.min(guideSurfaceRectangle.bottom, guideSpotlightRectangle.bottom) -
+        Math.max(guideSurfaceRectangle.top, guideSpotlightRectangle.top)
+    )
+    const spotlightArea = guideSpotlightRectangle.width * guideSpotlightRectangle.height
+    const targetCenter = document.elementFromPoint(
+      guideSpotlightRectangle.left + guideSpotlightRectangle.width / 2,
+      guideSpotlightRectangle.top + guideSpotlightRectangle.height / 2
+    )
+    const controlsOutsideViewport = [...guideSurface.querySelectorAll('button, a[href]')]
+      .filter(visible)
+      .filter((control) => {
+        const rectangle = control.getBoundingClientRect()
+        return rectangle.top < 0 || rectangle.left < 0 || rectangle.bottom > innerHeight || rectangle.right > innerWidth
+      })
+      .map((control) => accessibleName(control).slice(0, 80))
+    guide = {
+      areaRatio: (guideSurfaceRectangle.width * guideSurfaceRectangle.height) / (innerWidth * innerHeight),
+      targetVisibleRatio: spotlightArea > 0 ? 1 - (overlapWidth * overlapHeight) / spotlightArea : 0,
+      pointerTarget: targetCenter?.closest('[data-guide]')?.getAttribute('data-guide') ?? null,
+      textCharacters: guideSurface.innerText.length,
+      controlsOutsideViewport,
+    }
+  }
 
   return window.axe.run(document).then((axeResult) => ({
     title: document.title,
@@ -351,6 +387,7 @@ function accessibleDocumentAnalysis() {
     clippedText,
     viewportEscapes,
     scrollRegions,
+    guide,
     errorFallback,
     axe: {
       violations: axeResult.violations.map((violation) => ({
@@ -531,6 +568,24 @@ function failuresFor(result, expectedPath) {
     }
   }
   if (result.axe.violations.length) failures.push(`${result.axe.violations.length} axe violations`)
+  if (result.guide) {
+    const guideAreaBudget = result.width.viewport <= 320 ? 0.45 : result.width.viewport <= 768 ? 0.34 : 0.25
+    if (result.guide.areaRatio > guideAreaBudget) {
+      failures.push(
+        `guide covers ${(result.guide.areaRatio * 100).toFixed(1)}% of the viewport; budget is ${(guideAreaBudget * 100).toFixed(0)}%`
+      )
+    }
+    if (result.guide.targetVisibleRatio < 0.9) {
+      failures.push(`guide obscures ${((1 - result.guide.targetVisibleRatio) * 100).toFixed(1)}% of its target`)
+    }
+    if (!result.guide.pointerTarget) failures.push('guide target is not pointer-accessible at its center')
+    if (result.guide.controlsOutsideViewport.length) {
+      failures.push(`${result.guide.controlsOutsideViewport.length} guide controls are outside the viewport`)
+    }
+    if (result.guide.textCharacters > 280) {
+      failures.push(`guide coach-mark contains ${result.guide.textCharacters} characters; budget is 280`)
+    }
+  }
   if (result.server5xx.length) failures.push(`${result.server5xx.length} HTTP 5xx responses`)
   if (result.runtimeExceptions.length) failures.push(`${result.runtimeExceptions.length} runtime exceptions`)
   if (result.consoleErrors.length) failures.push(`${result.consoleErrors.length} console errors`)
@@ -857,6 +912,7 @@ async function main() {
             clippedText: [],
             viewportEscapes: [],
             scrollRegions: [],
+            guide: null,
             errorFallback: false,
             axe: { violations: [], passes: 0, incomplete: [] },
             auditError: error instanceof Error ? error.message : String(error),

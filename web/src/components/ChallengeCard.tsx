@@ -81,6 +81,7 @@ export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps)
       shadow="sm"
       className={cx(misc.hoverCard, classes.root)}
       data-faded={solved || isFaded || undefined}
+      data-guide="challenge-card"
       data-no-move
     >
       <button

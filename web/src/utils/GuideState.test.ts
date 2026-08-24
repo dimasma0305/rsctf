@@ -47,6 +47,9 @@ test('guide progress accepts only known feature identifiers without duplicates',
 })
 
 test('active tour checkpoints survive navigation and reject unknown steps', () => {
+  assert.equal(GUIDE_VERSION, 3)
+  assert.deepEqual(GUIDE_TOUR_STEPS, ['welcome', 'account', 'team', 'events', 'challenges', 'connection', 'submit'])
+
   const opened = openGuide(DEFAULT_GUIDE_PREFERENCES)
   assert.equal(opened.activeTourStep, GUIDE_TOUR_STEPS[0])
   assert.equal(opened.tourPaused, false)

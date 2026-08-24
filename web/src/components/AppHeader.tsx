@@ -109,9 +109,11 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
                       ? 'games-navigation'
                       : item.link === '/challenges'
                         ? 'challenge-navigation'
-                        : item.link === '/guide'
-                          ? 'guide-navigation'
-                          : undefined
+                        : item.link === '/teams'
+                          ? 'team-navigation'
+                          : item.link === '/guide'
+                            ? 'guide-navigation'
+                            : undefined
                   }
                   className={classes.navLink}
                 >
@@ -240,9 +242,11 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
                   ? 'games-navigation'
                   : item.link === '/challenges'
                     ? 'challenge-navigation'
-                    : item.link === '/guide'
-                      ? 'guide-navigation'
-                      : undefined
+                    : item.link === '/teams'
+                      ? 'team-navigation'
+                      : item.link === '/guide'
+                        ? 'guide-navigation'
+                        : undefined
               }
               className={classes.dockItem}
             >

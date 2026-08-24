@@ -117,6 +117,7 @@ const Teams: FC = () => {
         leftSection={<Icon path={mdiHumanGreetingVariant} size={1} />}
         variant="outline"
         onClick={() => setJoinOpened(true)}
+        data-guide="team-join"
       >
         {t('team.button.join')}
       </Button>
@@ -124,6 +125,7 @@ const Teams: FC = () => {
         leftSection={<Icon path={mdiAccountMultiplePlus} size={1} />}
         variant="filled"
         onClick={() => setCreateOpened(true)}
+        data-guide="team-create"
       >
         {t('team.button.create')}
       </Button>
