@@ -55,6 +55,8 @@ review does not authorize source changes or deployment.
   storage without a bound?
 - Is the UI operable at 320px and by keyboard/screen reader, with focus restored after
   dialogs and motion reduced when requested?
+- Which established component or nearby workflow was checked for semantic and visual
+  fit, and was it reused or composed instead of introducing a look-alike?
 - Is there a regression test that fails on the previous behavior?
 - If an artifact changed, what exact immutable digest is live and what proves all
   replicas and smoke tests match it?

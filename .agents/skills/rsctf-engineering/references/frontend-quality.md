@@ -2,8 +2,14 @@
 
 ## Product and code fit
 
+- Before designing UI, inspect the rendered neighboring workflows and inventory the
+  shared components and patterns already used for the same interaction. Prefer the
+  established option with the best semantic, visual, responsive, and accessibility
+  fit; reuse or compose it instead of creating a slightly different look-alike.
 - Use the existing Mantine, CSS-module, navigation, page-header, API-hook, locale, and
-  theme patterns before creating a new abstraction.
+  theme patterns. Add a new component only when the existing choices cannot represent
+  the requested behavior cleanly, and document that reason in the implementation
+  handoff or review evidence.
 - Derive behavior from the effective `/api/config` and game DTOs. Do not hard-code a
   login method, connection mode, donation provider, VPN behavior, event type, or
   registration policy that can differ by deployment or event.
