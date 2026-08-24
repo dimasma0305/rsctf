@@ -28,6 +28,7 @@ const pageStyles = readFileSync('src/styles/pages/PlayerGuidePage.module.css', '
 test('interactive guide is account-scoped, restartable, dismissible, and storage-failure safe', () => {
   assert.match(provider, /guideStorageKey\(identity\)/)
   assert.match(provider, /user\?\.userId/)
+  assert.match(provider, /resolveGuideIdentity\(user\?\.userId, userError\?\.status\)/)
   assert.match(provider, /interactiveEnabled/)
   assert.match(provider, /resetGuideProgress/)
   assert.match(provider, /preferences\.activeTourStep/)
@@ -52,6 +53,13 @@ test('interactive guide spotlights real controls and provides a reduced-motion g
   assert.match(instanceEntry, /data-guide="instance-start"/)
   assert.match(instanceEntry, /data-guide="instance-entry"/)
   assert.match(appHeader, /data-guide="more-navigation"/)
+  assert.match(appHeader, /<Drawer\.Header role="presentation">/)
+  assert.match(appHeader, /<Drawer\.Title>/)
+  assert.match(appHeader, /<Drawer\.CloseButton aria-label=/)
+  assert.match(
+    appNavbar,
+    /width=\{240\}[\s\S]*withinPortal=\{false\}[\s\S]*withInitialFocusPlaceholder=\{false\}[\s\S]*data-guide="account-menu"/
+  )
   assert.match(guideState, /guide-navigation[\s\S]*more-navigation/)
   assert.match(spotlight, /selector[\s\S]*\.split\(','\)[\s\S]*querySelectorAll<HTMLElement>\(candidate\)/)
   assert.match(spotlight, /scrollIntoView\(/)
@@ -113,6 +121,8 @@ test('guide content follows the effective platform and event connection settings
   assert.match(config, /emailConfirmationRequired: false/)
   assert.match(challengeModal, /ChallengeType\.StaticAttachment/)
   assert.match(challengeModal, /resolveChallengeDeliveryGuide/)
+  assert.match(challengeModalShell, /useComputedColorScheme\('dark'\)/)
+  assert.match(challengeModalShell, /reviewOutlineShade = colorScheme === 'dark' \? 4 : 8/)
   assert.match(challengeModal, /useFeatureGuide\(deliveryFeature/)
   assert.match(eventPage, /useFeatureGuide\([\s\S]*'event-vpn'/)
 })

@@ -13,6 +13,11 @@ export const GUIDE_TOUR_STEPS = ['welcome', 'account', 'team', 'events', 'challe
 export type GuideFeature = (typeof GUIDE_FEATURES)[number]
 export type GuideTourStep = (typeof GUIDE_TOUR_STEPS)[number]
 
+export const resolveGuideIdentity = (userId?: string | null, userErrorStatus?: number): string | null => {
+  if (userId) return userId
+  return userErrorStatus === 401 ? 'guest' : null
+}
+
 interface GuideTourTargetContext {
   step: GuideTourStep
   pathname: string

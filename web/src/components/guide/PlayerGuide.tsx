@@ -31,6 +31,7 @@ import {
   openGuide,
   parseGuidePreferences,
   pauseGuide,
+  resolveGuideIdentity,
   resetGuideProgress,
   setGuideTourStep,
 } from '@Utils/GuideState'
@@ -166,7 +167,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   const location = useLocation()
   const { config } = useConfig()
   const { user, error: userError } = useUser()
-  const identity = user?.userId ?? (userError ? 'guest' : null)
+  const identity = resolveGuideIdentity(user?.userId, userError?.status)
   const storageKey = guideStorageKey(identity)
   const [loadedKey, setLoadedKey] = useState<string | null>(null)
   const [preferences, setPreferences] = useState<GuidePreferences>(() => parseGuidePreferences(null))
