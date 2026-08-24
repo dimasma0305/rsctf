@@ -7,6 +7,7 @@ import {
   completeGuide,
   guideStorageKey,
   markGuideFeatureSeen,
+  nextGuideStepForTarget,
   openGuide,
   parseGuidePreferences,
   pauseGuide,
@@ -47,7 +48,7 @@ test('guide progress accepts only known feature identifiers without duplicates',
 })
 
 test('active tour checkpoints survive navigation and reject unknown steps', () => {
-  assert.equal(GUIDE_VERSION, 3)
+  assert.equal(GUIDE_VERSION, 4)
   assert.deepEqual(GUIDE_TOUR_STEPS, ['welcome', 'account', 'team', 'events', 'challenges', 'connection', 'submit'])
 
   const opened = openGuide(DEFAULT_GUIDE_PREFERENCES)
@@ -75,4 +76,15 @@ test('active tour checkpoints survive navigation and reject unknown steps', () =
     }
   )
   assert.equal(completeGuide(destination).activeTourStep, null)
+})
+
+test('real tutorial actions advance only when they complete the current task', () => {
+  assert.equal(nextGuideStepForTarget('welcome', 'more-navigation'), null)
+  assert.equal(nextGuideStepForTarget('welcome', 'guide-navigation'), 'account')
+  assert.equal(nextGuideStepForTarget('events', 'event-card'), null)
+  assert.equal(nextGuideStepForTarget('events', 'event-challenges'), 'challenges')
+  assert.equal(nextGuideStepForTarget('challenges', 'challenge-card'), 'connection')
+  assert.equal(nextGuideStepForTarget('connection', 'instance-start'), null)
+  assert.equal(nextGuideStepForTarget('connection', 'instance-entry'), 'submit')
+  assert.equal(nextGuideStepForTarget('submit', 'flag-submit'), null)
 })

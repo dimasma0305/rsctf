@@ -52,7 +52,7 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
 
   return (
     <>
-      <AppShell.Header className={classes.header}>
+      <AppShell.Header className={classes.header} data-guide-boundary="top-shell">
         <Group h="100%" px="md" justify="space-between" wrap="nowrap">
           <Link to="/" className={classes.brandLink}>
             <LogoHeader />
@@ -227,7 +227,11 @@ export const AppHeader: FC<AppControlProps> = ({ openColorModal }) => {
         </Stack>
       </Drawer>
 
-      <nav className={classes.dock} aria-label={t('common.tab.mobile_navigation', 'Mobile navigation')}>
+      <nav
+        className={classes.dock}
+        aria-label={t('common.tab.mobile_navigation', 'Mobile navigation')}
+        data-guide-boundary="mobile-dock"
+      >
         {dockItems.map((item) => {
           const active = isNavigationItemActive(item, location.pathname)
           return (

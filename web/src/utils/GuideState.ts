@@ -1,4 +1,4 @@
-export const GUIDE_VERSION = 3
+export const GUIDE_VERSION = 4
 export const GUIDE_STORAGE_PREFIX = 'rsctf-player-guide'
 
 export const GUIDE_FEATURES = ['dynamic-container', 'event-vpn'] as const
@@ -6,6 +6,13 @@ export const GUIDE_TOUR_STEPS = ['welcome', 'account', 'team', 'events', 'challe
 
 export type GuideFeature = (typeof GUIDE_FEATURES)[number]
 export type GuideTourStep = (typeof GUIDE_TOUR_STEPS)[number]
+
+const GUIDE_TARGET_ADVANCE: Partial<Record<GuideTourStep, string>> = {
+  welcome: 'guide-navigation',
+  events: 'event-challenges',
+  challenges: 'challenge-card',
+  connection: 'instance-entry',
+}
 
 export interface GuidePreferences {
   interactiveEnabled: boolean
@@ -83,6 +90,12 @@ export const setGuideTourStep = (preferences: GuidePreferences, activeTourStep: 
   activeTourStep,
   tourPaused: false,
 })
+
+export const nextGuideStepForTarget = (currentStep: GuideTourStep, target: string | undefined) => {
+  if (!target || GUIDE_TARGET_ADVANCE[currentStep] !== target) return null
+  const currentIndex = GUIDE_TOUR_STEPS.indexOf(currentStep)
+  return GUIDE_TOUR_STEPS[currentIndex + 1] ?? null
+}
 
 export const markGuideFeatureSeen = (preferences: GuidePreferences, feature: GuideFeature): GuidePreferences => ({
   ...preferences,

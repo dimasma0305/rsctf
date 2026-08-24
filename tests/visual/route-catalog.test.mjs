@@ -136,6 +136,7 @@ test('visual audit enforces compact and usable interactive guide budgets', () =>
   assert.match(auditSource, /result\.guide\.targetVisibleRatio < 0\.9/)
   assert.match(auditSource, /guide target is not pointer-accessible/)
   assert.match(auditSource, /guide controls are outside the viewport/)
+  assert.match(auditSource, /guide overlaps persistent UI/)
   assert.match(auditSource, /budget is 280/)
 })
 

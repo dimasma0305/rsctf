@@ -345,12 +345,25 @@ function accessibleDocumentAnalysis() {
         return rectangle.top < 0 || rectangle.left < 0 || rectangle.bottom > innerHeight || rectangle.right > innerWidth
       })
       .map((control) => accessibleName(control).slice(0, 80))
+    const chromeOverlaps = [...document.querySelectorAll('[data-guide-boundary]')]
+      .filter(visible)
+      .filter((boundary) => {
+        const rectangle = boundary.getBoundingClientRect()
+        return !(
+          guideSurfaceRectangle.right <= rectangle.left ||
+          guideSurfaceRectangle.left >= rectangle.right ||
+          guideSurfaceRectangle.bottom <= rectangle.top ||
+          guideSurfaceRectangle.top >= rectangle.bottom
+        )
+      })
+      .map((boundary) => boundary.getAttribute('data-guide-boundary'))
     guide = {
       areaRatio: (guideSurfaceRectangle.width * guideSurfaceRectangle.height) / (innerWidth * innerHeight),
       targetVisibleRatio: spotlightArea > 0 ? 1 - (overlapWidth * overlapHeight) / spotlightArea : 0,
       pointerTarget: targetCenter?.closest('[data-guide]')?.getAttribute('data-guide') ?? null,
       textCharacters: guideSurface.innerText.length,
       controlsOutsideViewport,
+      chromeOverlaps,
     }
   }
 
@@ -581,6 +594,9 @@ function failuresFor(result, expectedPath) {
     if (!result.guide.pointerTarget) failures.push('guide target is not pointer-accessible at its center')
     if (result.guide.controlsOutsideViewport.length) {
       failures.push(`${result.guide.controlsOutsideViewport.length} guide controls are outside the viewport`)
+    }
+    if (result.guide.chromeOverlaps.length) {
+      failures.push(`guide overlaps persistent UI: ${result.guide.chromeOverlaps.join(', ')}`)
     }
     if (result.guide.textCharacters > 280) {
       failures.push(`guide coach-mark contains ${result.guide.textCharacters} characters; budget is 280`)
