@@ -11,6 +11,7 @@ import {
   openGuide,
   parseGuidePreferences,
   pauseGuide,
+  resolveChallengeDeliveryGuide,
   resetGuideProgress,
   setGuideTourStep,
 } from './GuideState'
@@ -33,18 +34,84 @@ test('guide progress accepts only known feature identifiers without duplicates',
     JSON.stringify({
       interactiveEnabled: true,
       completedVersion: 2,
-      seenFeatures: ['dynamic-container', 'unknown', 'dynamic-container'],
+      seenFeatures: ['container-wsrx', 'unknown', 'container-wsrx'],
     })
   )
-  assert.deepEqual(parsed.seenFeatures, ['dynamic-container'])
+  assert.deepEqual(parsed.seenFeatures, ['container-wsrx'])
 
   const completed = completeGuide(parsed)
   assert.equal(completed.completedVersion, GUIDE_VERSION)
-  assert.deepEqual(markGuideFeatureSeen(completed, 'event-vpn').seenFeatures, ['dynamic-container', 'event-vpn'])
+  assert.deepEqual(markGuideFeatureSeen(completed, 'event-vpn').seenFeatures, ['container-wsrx', 'event-vpn'])
   assert.deepEqual(resetGuideProgress(completed), {
     ...DEFAULT_GUIDE_PREFERENCES,
     activeTourStep: 'welcome',
   })
+})
+
+test('challenge delivery modes have independent one-time guide checkpoints', () => {
+  const staticSeen = markGuideFeatureSeen(DEFAULT_GUIDE_PREFERENCES, 'static-challenge')
+  const directSeen = markGuideFeatureSeen(staticSeen, 'container-direct')
+  const proxySeen = markGuideFeatureSeen(directSeen, 'container-wsrx')
+  const vpnSeen = markGuideFeatureSeen(proxySeen, 'container-vpn')
+
+  assert.deepEqual(vpnSeen.seenFeatures, ['static-challenge', 'container-direct', 'container-wsrx', 'container-vpn'])
+  assert.deepEqual(
+    parseGuidePreferences(
+      JSON.stringify({
+        ...vpnSeen,
+        seenFeatures: [...vpnSeen.seenFeatures, 'dynamic-container'],
+      })
+    ).seenFeatures,
+    vpnSeen.seenFeatures
+  )
+})
+
+test('challenge delivery guide follows the effective service path and VPN precedence', () => {
+  assert.equal(
+    resolveChallengeDeliveryGuide({
+      staticChallenge: true,
+      containerChallenge: false,
+      eventVpnRequired: false,
+      platformProxy: true,
+    }),
+    'static-challenge'
+  )
+  assert.equal(
+    resolveChallengeDeliveryGuide({
+      staticChallenge: false,
+      containerChallenge: true,
+      eventVpnRequired: false,
+      platformProxy: false,
+    }),
+    'container-direct'
+  )
+  assert.equal(
+    resolveChallengeDeliveryGuide({
+      staticChallenge: false,
+      containerChallenge: true,
+      eventVpnRequired: false,
+      platformProxy: true,
+    }),
+    'container-wsrx'
+  )
+  assert.equal(
+    resolveChallengeDeliveryGuide({
+      staticChallenge: false,
+      containerChallenge: true,
+      eventVpnRequired: true,
+      platformProxy: true,
+    }),
+    'container-vpn'
+  )
+  assert.equal(
+    resolveChallengeDeliveryGuide({
+      staticChallenge: false,
+      containerChallenge: false,
+      eventVpnRequired: false,
+      platformProxy: true,
+    }),
+    null
+  )
 })
 
 test('active tour checkpoints survive navigation and reject unknown steps', () => {

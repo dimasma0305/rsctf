@@ -1,4 +1,4 @@
-import { Badge, Button, Group, List, Progress, Stack, Text } from '@mantine/core'
+import { Badge, Button, Group, Progress, Stack, Text } from '@mantine/core'
 import { mdiArrowLeft, mdiArrowRight, mdiCheck, mdiOpenInNew } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import {
@@ -40,6 +40,8 @@ import classes from '@Styles/PlayerGuide.module.css'
 
 interface GuideFeatureContext {
   eventVpnRequired?: boolean
+  hasAttachment?: boolean
+  instanceActive?: boolean
 }
 
 interface PendingFeature {
@@ -64,13 +66,25 @@ export const usePlayerGuide = () => {
   return context
 }
 
-export const useFeatureGuide = (feature: GuideFeature, active: boolean, context: GuideFeatureContext = {}) => {
+export const useFeatureGuide = (feature: GuideFeature | null, active: boolean, context: GuideFeatureContext = {}) => {
   const guide = usePlayerGuide()
   const eventVpnRequired = context.eventVpnRequired
+  const hasAttachment = context.hasAttachment
+  const instanceActive = context.instanceActive
 
   useEffect(() => {
-    if (active) guide.introduceFeature(feature, { eventVpnRequired })
-  }, [active, eventVpnRequired, feature, guide.introduceFeature])
+    if (active && feature) guide.introduceFeature(feature, { eventVpnRequired, hasAttachment, instanceActive })
+  }, [active, eventVpnRequired, feature, guide.introduceFeature, hasAttachment, instanceActive])
+}
+
+interface FeatureStep {
+  id: string
+  title: string
+  body: string
+  note?: string
+  command?: string
+  targetSelector?: string
+  advanceOnActivate?: boolean
 }
 
 interface TourStep {
@@ -155,6 +169,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   const [loadedKey, setLoadedKey] = useState<string | null>(null)
   const [preferences, setPreferences] = useState<GuidePreferences>(() => parseGuidePreferences(null))
   const [pendingFeature, setPendingFeature] = useState<PendingFeature | null>(null)
+  const [featureStepIndex, setFeatureStepIndex] = useState(0)
   const autoStartedKeys = useRef(new Set<string>())
   const ready = identity !== null && loadedKey === storageKey
 
@@ -163,6 +178,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
     setPreferences(loadPreferences(storageKey))
     setLoadedKey(storageKey)
     setPendingFeature(null)
+    setFeatureStepIndex(0)
   }, [identity, storageKey])
 
   const updatePreferences = useCallback(
@@ -183,6 +199,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
       }))
       if (!enabled) {
         setPendingFeature(null)
+        setFeatureStepIndex(0)
       }
     },
     [updatePreferences]
@@ -195,12 +212,24 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   const resetGuide = useCallback(() => {
     updatePreferences(resetGuideProgress)
     setPendingFeature(null)
+    setFeatureStepIndex(0)
   }, [updatePreferences])
 
   const introduceFeature = useCallback(
     (feature: GuideFeature, context: GuideFeatureContext = {}) => {
       if (!ready || !preferences.interactiveEnabled || preferences.seenFeatures.includes(feature)) return
-      setPendingFeature((current) => current ?? { feature, context })
+      setPendingFeature((current) => {
+        if (!current) return { feature, context }
+        if (current.feature !== feature) return current
+        if (
+          current.context.eventVpnRequired === context.eventVpnRequired &&
+          current.context.hasAttachment === context.hasAttachment &&
+          current.context.instanceActive === context.instanceActive
+        ) {
+          return current
+        }
+        return { feature, context }
+      })
     },
     [preferences.interactiveEnabled, preferences.seenFeatures, ready]
   )
@@ -388,6 +417,222 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
       user,
     ]
   )
+
+  const featureSteps = useMemo<FeatureStep[]>(() => {
+    if (!pendingFeature) return []
+
+    const feature = pendingFeature.feature
+    if (feature === 'event-vpn') {
+      return [
+        {
+          id: 'vpn-profile',
+          title: t('guide.feature.vpn.title', 'This event requires its VPN'),
+          body: t(
+            'guide.feature.vpn.body',
+            'Download the event profile, import it into WireGuard, and connect before opening any private challenge address.'
+          ),
+          note: t('guide.feature.vpn.note', 'Keep the profile private. It identifies your team’s event access.'),
+          targetSelector: '[data-guide="event-vpn-download"]',
+        },
+      ]
+    }
+
+    if (feature === 'static-challenge') {
+      const staticSteps: FeatureStep[] = [
+        {
+          id: 'material',
+          title: t('guide.feature.static.material_title', 'Read the challenge material'),
+          body: t(
+            'guide.feature.static.material_body',
+            'This is a static challenge, so there is no instance to start. Read the description and hints first.'
+          ),
+          note: t(
+            pendingFeature.context.eventVpnRequired
+              ? 'guide.feature.static.material_vpn_note'
+              : 'guide.feature.static.material_note',
+            pendingFeature.context.eventVpnRequired
+              ? 'The event VPN still controls access to this page, but this challenge has no service instance.'
+              : 'The challenge may be solved entirely from the text, an attachment, or both.'
+          ),
+          targetSelector: '[data-guide="challenge-material"]',
+          advanceOnActivate: true,
+        },
+      ]
+      if (pendingFeature.context.hasAttachment) {
+        staticSteps.push({
+          id: 'attachment',
+          title: t('guide.feature.static.attachment_title', 'Download and verify the attachment'),
+          body: t(
+            'guide.feature.static.attachment_body',
+            'Use the highlighted attachment control. The filename, size, and SHA-256 help you verify the real challenge file.'
+          ),
+          note: t(
+            'guide.feature.static.attachment_note',
+            'Keep the original file unchanged and do your analysis on a copy when practical.'
+          ),
+          targetSelector: '[data-guide="challenge-attachment-download"]',
+          advanceOnActivate: true,
+        })
+      }
+      staticSteps.push({
+        id: 'static-submit',
+        title: t('guide.feature.static.submit_title', 'Submit the exact flag'),
+        body: t(
+          'guide.feature.static.submit_body',
+          'When you find the flag, paste only the flag into the highlighted field and wait for the verdict.'
+        ),
+        note: t(
+          pendingFeature.context.eventVpnRequired
+            ? 'guide.feature.static.submit_vpn_note'
+            : 'guide.feature.static.submit_note',
+          pendingFeature.context.eventVpnRequired
+            ? 'Keep the event VPN connected, but do not look for a WSRX tunnel or challenge port.'
+            : 'Static challenges do not need WSRX, a challenge port, or an event VPN.'
+        ),
+        targetSelector: '[data-guide="flag-submit"]',
+      })
+      return staticSteps
+    }
+
+    const startStep: FeatureStep = {
+      id: 'start',
+      title:
+        feature === 'container-vpn'
+          ? t('guide.feature.container.vpn_start_title', 'Connect the VPN, then start the instance')
+          : t('guide.feature.container.start_title', 'Start your challenge instance'),
+      body:
+        feature === 'container-vpn'
+          ? t(
+              'guide.feature.container.vpn_start_body',
+              'Make sure the event WireGuard profile is connected, then select Start instance. Wait for the success message.'
+            )
+          : t(
+              'guide.feature.container.start_body',
+              'Select Start instance. The first start may build or pull an image on demand, so wait instead of clicking repeatedly.'
+            ),
+      note: t(
+        'guide.feature.container.start_note',
+        'This guide continues automatically only after the instance starts successfully.'
+      ),
+      targetSelector: '[data-guide="instance-start"]',
+    }
+
+    if (feature === 'container-wsrx') {
+      return [
+        startStep,
+        {
+          id: 'wsrx-setup',
+          title: t('guide.feature.wsrx.setup_title', 'Run WSRX on your computer'),
+          body: t(
+            'guide.feature.wsrx.setup_body',
+            'Keep Local WSRX selected. Download and start WebSocketReflectorX, then approve the browser connection if your computer asks.'
+          ),
+          note: t(
+            'guide.feature.wsrx.setup_note',
+            'Connection tools in the navigation bar shows whether the local WSRX app is connected. The platform retries automatically after it starts.'
+          ),
+          targetSelector: '[data-guide="wsrx-download"]',
+          advanceOnActivate: true,
+        },
+        {
+          id: 'wsrx-copy',
+          title: t('guide.feature.wsrx.copy_title', 'Wait for the local tunnel, then copy it'),
+          body: t(
+            'guide.feature.wsrx.copy_body',
+            'Wait until the status says the tunnel is ready and the field contains a 127.0.0.1 address, then use the highlighted Copy button.'
+          ),
+          note: t(
+            'guide.feature.wsrx.copy_note',
+            'The WSS URL is not a netcat address. For nc, keep Local WSRX selected and use the 127.0.0.1 address.'
+          ),
+          targetSelector: '[data-guide="instance-copy"][data-entry-mode="wsrx"]',
+          advanceOnActivate: true,
+        },
+        {
+          id: 'wsrx-connect',
+          title: t('guide.feature.wsrx.connect_title', 'Connect through the local WSRX address'),
+          body: t(
+            'guide.feature.wsrx.connect_body',
+            'Split the copied local address into its host and port, then use the protocol named by the challenge. For a TCP challenge, run:'
+          ),
+          command: 'nc 127.0.0.1 <port>',
+          note: t(
+            'guide.feature.wsrx.connect_note',
+            'Keep WebSocketReflectorX running while you play. Switch to WSS only when your client understands WebSockets and needs the raw wss:// URL.'
+          ),
+          targetSelector: '[data-guide="instance-entry"]',
+        },
+      ]
+    }
+
+    if (feature === 'container-vpn') {
+      return [
+        startStep,
+        {
+          id: 'vpn-copy',
+          title: t('guide.feature.container.vpn_copy_title', 'Copy the private host and port'),
+          body: t(
+            'guide.feature.container.vpn_copy_body',
+            'After the instance is ready, copy the displayed private host and port. It is reachable only through the event VPN.'
+          ),
+          note: t(
+            'guide.feature.container.vpn_copy_note',
+            'Do not replace this address with the platform proxy or share it outside your team.'
+          ),
+          targetSelector: '[data-guide="instance-copy"]',
+          advanceOnActivate: true,
+        },
+        {
+          id: 'vpn-connect',
+          title: t('guide.feature.container.vpn_connect_title', 'Use the challenge protocol over VPN'),
+          body: t(
+            'guide.feature.container.vpn_connect_body',
+            'Use the copied host and port with the protocol in the challenge description. A TCP service usually uses nc; a web service uses a browser.'
+          ),
+          command: 'nc <private-host> <port>',
+          note: t('guide.feature.container.vpn_connect_note', 'Leave WireGuard connected while using the instance.'),
+          targetSelector: '[data-guide="instance-entry"]',
+        },
+      ]
+    }
+
+    if (feature === 'container-direct') {
+      return [
+        startStep,
+        {
+          id: 'direct-copy',
+          title: t('guide.feature.container.direct_copy_title', 'Copy the public host and port'),
+          body: t(
+            'guide.feature.container.direct_copy_body',
+            'After the instance is ready, use the highlighted Copy button to copy its direct host-and-port address.'
+          ),
+          note: t(
+            'guide.feature.container.direct_copy_note',
+            'This mode does not need WSRX. An event VPN can still override it when the event requires one.'
+          ),
+          targetSelector: '[data-guide="instance-copy"]',
+          advanceOnActivate: true,
+        },
+        {
+          id: 'direct-connect',
+          title: t('guide.feature.container.direct_connect_title', 'Use the challenge protocol'),
+          body: t(
+            'guide.feature.container.direct_connect_body',
+            'Use the copied address with the protocol in the challenge description. For a TCP service, split the host and port and run:'
+          ),
+          command: 'nc <host> <port>',
+          note: t(
+            'guide.feature.container.direct_connect_note',
+            'For an HTTP service, open the displayed address in a browser instead.'
+          ),
+          targetSelector: '[data-guide="instance-entry"]',
+        },
+      ]
+    }
+
+    return []
+  }, [pendingFeature, t])
+
   const activeStepIndex = preferences.activeTourStep ? GUIDE_TOUR_STEPS.indexOf(preferences.activeTourStep) : -1
   const stepIndex = activeStepIndex >= 0 ? activeStepIndex : 0
   const step = steps[stepIndex]
@@ -414,9 +659,33 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
     [step.id, updatePreferences]
   )
 
+  useEffect(() => {
+    setFeatureStepIndex(0)
+  }, [pendingFeature?.feature])
+
+  useEffect(() => {
+    if (!pendingFeature?.feature.startsWith('container-') || !pendingFeature.context.instanceActive) return
+    setFeatureStepIndex((current) => (current === 0 ? 1 : current))
+  }, [pendingFeature?.context.instanceActive, pendingFeature?.feature])
+
+  const boundedFeatureStepIndex = Math.min(featureStepIndex, Math.max(featureSteps.length - 1, 0))
+  const featureStep = featureSteps[boundedFeatureStepIndex]
+  const moveFeatureStep = useCallback(
+    (index: number) => {
+      setFeatureStepIndex(Math.min(featureSteps.length - 1, Math.max(0, index)))
+    },
+    [featureSteps.length]
+  )
+
+  const onFeatureTargetActivate = useCallback(() => {
+    if (!featureStep?.advanceOnActivate || boundedFeatureStepIndex >= featureSteps.length - 1) return
+    setFeatureStepIndex((current) => Math.min(featureSteps.length - 1, current + 1))
+  }, [boundedFeatureStepIndex, featureStep?.advanceOnActivate, featureSteps.length])
+
   const dismissFeature = () => {
     if (pendingFeature) updatePreferences((current) => markGuideFeatureSeen(current, pendingFeature.feature))
     setPendingFeature(null)
+    setFeatureStepIndex(0)
   }
 
   const value = useMemo<PlayerGuideContextValue>(
@@ -508,86 +777,79 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
       </AccessibleGuideModal>
 
       <AccessibleGuideModal
-        opened={Boolean(pendingFeature) && !tourOpen && ready}
+        opened={Boolean(pendingFeature && featureStep) && !tourOpen && ready}
         onClose={dismissFeature}
-        title={
-          pendingFeature?.feature === 'event-vpn'
-            ? t('guide.feature.vpn.title', 'New: this event requires its VPN')
-            : t('guide.feature.container.title', 'New: this challenge starts an instance')
-        }
-        size="min(23rem, calc(100vw - 1rem))"
+        title={featureStep?.title ?? t('guide.feature.title', 'Challenge guide')}
+        size="min(21rem, calc(100vw - 1rem))"
         closeLabel={t('guide.feature.dismiss', 'Dismiss this tip')}
         overlayOpacity={0.58}
-        targetSelector={
-          pendingFeature?.feature === 'event-vpn'
-            ? '[data-guide="event-vpn-download"]'
-            : '[data-guide="instance-start"], [data-guide="instance-entry"]'
-        }
+        targetSelector={featureStep?.targetSelector}
+        onTargetActivate={onFeatureTargetActivate}
       >
-        {pendingFeature && (
-          <Stack gap="md">
-            {pendingFeature.feature === 'event-vpn' ? (
-              <List type="ordered" spacing="sm" className={classes.featureList}>
-                <List.Item>
-                  {t('guide.feature.vpn.download', 'Download the VPN profile from the event page.')}
-                </List.Item>
-                <List.Item>
-                  {t(
-                    'guide.feature.vpn.connect',
-                    'Import it into WireGuard and connect before opening challenge ports.'
-                  )}
-                </List.Item>
-                <List.Item>
-                  {t('guide.feature.vpn.private', 'Keep the event profile private; it identifies your event access.')}
-                </List.Item>
-              </List>
-            ) : (
-              <List type="ordered" spacing="sm" className={classes.featureList}>
-                <List.Item>
-                  {t(
-                    'guide.feature.container.start',
-                    'Select Start instance. The first start may build or pull the image on demand, so wait for the success message.'
-                  )}
-                </List.Item>
-                <List.Item>
-                  {pendingFeature.context.eventVpnRequired
-                    ? t(
-                        'guide.feature.container.vpn_connection',
-                        'This event is VPN-only. Connect its WireGuard profile, then use the displayed host and port.'
-                      )
-                    : config.portMapping === ContainerPortMappingType.PlatformProxy
-                      ? t(
-                          'guide.feature.container.proxy_connection',
-                          'The platform proxy creates a local connection address for you. Use the address shown after the instance is ready.'
-                        )
-                      : t(
-                          'guide.feature.container.direct_connection',
-                          'Connect to the host and port shown after the instance is ready.'
-                        )}
-                </List.Item>
-                <List.Item>
-                  {t(
-                    'guide.feature.container.cleanup',
-                    'Extend it near expiry if you still need it, or destroy it when finished to release resources.'
-                  )}
-                </List.Item>
-              </List>
-            )}
-            <Group justify="space-between" gap="sm" wrap="wrap-reverse">
+        {pendingFeature && featureStep && (
+          <Stack gap="sm" className={classes.tourBody}>
+            <Badge variant="light" size="sm" className={classes.stepBadge}>
+              {t('guide.feature.progress', 'Step {{current}} of {{total}}', {
+                current: boundedFeatureStepIndex + 1,
+                total: featureSteps.length,
+              })}
+            </Badge>
+            <Progress
+              size="xs"
+              value={((boundedFeatureStepIndex + 1) / featureSteps.length) * 100}
+              aria-label={t('guide.feature.progress', 'Step {{current}} of {{total}}', {
+                current: boundedFeatureStepIndex + 1,
+                total: featureSteps.length,
+              })}
+            />
+            <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
+              <Text size="sm">{featureStep.body}</Text>
+              {featureStep.command && (
+                <Text component="code" size="sm" className={classes.command}>
+                  {featureStep.command}
+                </Text>
+              )}
+              {featureStep.note && (
+                <Text size="sm" c="dimmed" className={classes.note}>
+                  {featureStep.note}
+                </Text>
+              )}
+            </Stack>
+            <Button
+              variant="default"
+              onClick={() => {
+                dismissFeature()
+                navigate('/guide#play-challenge')
+              }}
+            >
+              {t('guide.feature.full_guide', 'Open the full guide')}
+            </Button>
+            <Group justify="space-between" gap="xs" wrap="nowrap" className={classes.tourFooter}>
               <Button variant="subtle" color="gray" onClick={() => setInteractiveEnabled(false)}>
-                {t('guide.feature.disable', 'Turn off future tips')}
+                {t('guide.feature.disable', 'Stop tips')}
               </Button>
-              <Group gap="xs">
+              <Group gap={4} wrap="nowrap">
                 <Button
                   variant="default"
-                  onClick={() => {
-                    dismissFeature()
-                    navigate('/guide')
-                  }}
+                  disabled={boundedFeatureStepIndex === 0}
+                  leftSection={<Icon path={mdiArrowLeft} size={0.7} aria-hidden="true" />}
+                  onClick={() => moveFeatureStep(boundedFeatureStepIndex - 1)}
                 >
-                  {t('guide.feature.full_guide', 'Full guide')}
+                  {t('common.pagination.previous', 'Previous')}
                 </Button>
-                <Button onClick={dismissFeature}>{t('guide.feature.understood', 'Got it')}</Button>
+                {boundedFeatureStepIndex === featureSteps.length - 1 ? (
+                  <Button leftSection={<Icon path={mdiCheck} size={0.7} aria-hidden="true" />} onClick={dismissFeature}>
+                    {t('guide.feature.understood', 'Got it')}
+                  </Button>
+                ) : (
+                  <Button
+                    rightSection={<Icon path={mdiArrowRight} size={0.7} aria-hidden="true" />}
+                    disabled={featureStep.id === 'start' && !pendingFeature.context.instanceActive}
+                    onClick={() => moveFeatureStep(boundedFeatureStepIndex + 1)}
+                  >
+                    {t('common.pagination.next', 'Next')}
+                  </Button>
+                )}
               </Group>
             </Group>
           </Stack>

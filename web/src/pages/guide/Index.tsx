@@ -1,4 +1,4 @@
-import { Alert, Anchor, Button, Card, Group, List, Stack, Switch, Text, ThemeIcon, Title } from '@mantine/core'
+import { Alert, Anchor, Badge, Button, Card, Group, List, Stack, Switch, Text, ThemeIcon, Title } from '@mantine/core'
 import {
   mdiAccountCircleOutline,
   mdiBookOpenPageVariantOutline,
@@ -388,6 +388,90 @@ const Guide: FC = () => {
               )}
             </List.Item>
           </List>
+          <Stack gap="sm" aria-label={t('guide.page.play.modes_label', 'Challenge connection modes')}>
+            <Card withBorder padding="md">
+              <Group justify="space-between" gap="sm" wrap="wrap">
+                <Text fw={700}>{t('guide.page.play.static_title', 'Static challenge')}</Text>
+                <Badge variant="light" color="gray">
+                  {t('guide.page.play.no_instance', 'No instance')}
+                </Badge>
+              </Group>
+              <Text size="sm" c="dimmed" mt="xs">
+                {t(
+                  'guide.page.play.static_body',
+                  'Read the description, download and verify any attachment, solve locally, then submit the flag. No WSRX, port, or VPN is expected.'
+                )}
+              </Text>
+            </Card>
+            <Card withBorder padding="md">
+              <Group justify="space-between" gap="sm" wrap="wrap">
+                <Text fw={700}>{t('guide.page.play.direct_title', 'Direct host and port')}</Text>
+                {config.portMapping !== ContainerPortMappingType.PlatformProxy && (
+                  <Badge variant="light">{t('guide.page.play.platform_default', 'Platform default')}</Badge>
+                )}
+              </Group>
+              <List type="ordered" spacing={4} size="sm" mt="xs">
+                <List.Item>
+                  {t('guide.page.play.direct_start', 'Start the instance and wait until it is ready.')}
+                </List.Item>
+                <List.Item>{t('guide.page.play.direct_copy', 'Copy the displayed host and port.')}</List.Item>
+                <List.Item>
+                  {t(
+                    'guide.page.play.direct_use',
+                    'Use the protocol named by the challenge, such as nc <host> <port> for TCP or a browser for HTTP.'
+                  )}
+                </List.Item>
+              </List>
+            </Card>
+            <Card withBorder padding="md">
+              <Group justify="space-between" gap="sm" wrap="wrap">
+                <Text fw={700}>{t('guide.page.play.wsrx_title', 'Platform Proxy with Local WSRX')}</Text>
+                {config.portMapping === ContainerPortMappingType.PlatformProxy && (
+                  <Badge variant="light">{t('guide.page.play.platform_default', 'Platform default')}</Badge>
+                )}
+              </Group>
+              <List type="ordered" spacing={4} size="sm" mt="xs">
+                <List.Item>
+                  {t(
+                    'guide.page.play.wsrx_install',
+                    'Download and run WebSocketReflectorX, then keep Local WSRX selected in the instance panel.'
+                  )}
+                </List.Item>
+                <List.Item>
+                  {t('guide.page.play.wsrx_ready', 'Wait for Tunnel ready and copy the local 127.0.0.1 address.')}
+                </List.Item>
+                <List.Item>
+                  {t(
+                    'guide.page.play.wsrx_use',
+                    'Use nc 127.0.0.1 <port> for TCP. A wss:// URL is for WebSocket clients and cannot be passed directly to netcat.'
+                  )}
+                </List.Item>
+                <List.Item>
+                  {t(
+                    'guide.page.play.wsrx_wss',
+                    'Choose WSS only when your tool supports WebSockets and you intentionally need to copy the raw wss:// address.'
+                  )}
+                </List.Item>
+              </List>
+              <Anchor href="https://github.com/XDSEC/WebSocketReflectorX/releases" target="_blank" rel="noreferrer">
+                {t('guide.page.play.wsrx_download', 'Download WebSocketReflectorX')}
+              </Anchor>
+            </Card>
+            <Card withBorder padding="md">
+              <Group justify="space-between" gap="sm" wrap="wrap">
+                <Text fw={700}>{t('guide.page.play.vpn_title', 'Event VPN host and port')}</Text>
+                <Badge variant="light" color="orange">
+                  {t('guide.page.play.event_override', 'Event override')}
+                </Badge>
+              </Group>
+              <Text size="sm" c="dimmed" mt="xs">
+                {t(
+                  'guide.page.play.vpn_body',
+                  'Import the event WireGuard profile and connect first. Start the instance, then use its private host and port while the VPN stays connected.'
+                )}
+              </Text>
+            </Card>
+          </Stack>
           <Button component={Link} to={user ? '/challenges' : '/account/login?from=%2Fchallenges'} variant="light">
             {user
               ? t('common.tab.challenge_catalog', 'My challenges')

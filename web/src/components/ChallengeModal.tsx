@@ -114,7 +114,7 @@ const ChallengeDeadlineNotice: FC<ChallengeDeadlineNoticeProps> = ({ deadline, o
   )
 }
 
-export interface ChallengeModalProps extends ModalProps {
+export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stackId' | 'title'> {
   challenge?: ChallengeDetailModel
   cateData: ChallengeCategoryItemProps
   solved?: boolean
@@ -178,6 +178,10 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     gameId,
     flagVerdict,
     onDismissFlagVerdict,
+    withOverlay = true,
+    overlayProps,
+    withCloseButton = true,
+    closeButtonProps,
     ...modalProps
   } = props
   // A&D and KotH both run on the live engine — neither has a static challenge
@@ -313,7 +317,14 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   ])
 
   const content = (
-    <ScrollAreaAutosize mah="52vh" maw="100%" scrollbars="y" scrollbarSize={6} type="scroll">
+    <ScrollAreaAutosize
+      mah="52vh"
+      maw="100%"
+      scrollbars="y"
+      scrollbarSize={6}
+      type="scroll"
+      data-guide="challenge-material"
+    >
       {challenge?.content === undefined ? (
         <ContentPlaceholder />
       ) : (
@@ -409,7 +420,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const attachmentSize = challenge?.context?.fileSize
 
   const attachment = withAttachment && (
-    <Stack className={classes.attachment} gap={6}>
+    <Stack className={classes.attachment} gap={6} data-guide="challenge-attachment">
       <Group gap="sm" justify="space-between" align="flex-start" wrap="wrap">
         <Stack gap={1} style={{ flex: '1 1 14rem', minWidth: 0 }}>
           <Text fw={700} size="sm">
@@ -424,6 +435,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         <Button
           component="a"
           href={link ?? '#'}
+          data-guide="challenge-attachment-download"
           variant="light"
           size="compact-sm"
           target={local || onDownload ? undefined : '_blank'}
@@ -754,7 +766,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       centered
       classNames={classes}
     >
-      <Modal.Overlay />
+      {withOverlay && <Modal.Overlay {...overlayProps} />}
       <Modal.Content className={flagVerdict ? classes.verdictContent : undefined}>
         {flagVerdict ? (
           <FlagVerdictOverlay
@@ -768,7 +780,13 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           <>
             <div className={classes.header}>
               <Modal.Title>{title}</Modal.Title>
-              <Modal.CloseButton ref={closeButtonRef} aria-label={t('common.button.close', 'Close')} />
+              {withCloseButton && (
+                <Modal.CloseButton
+                  {...closeButtonProps}
+                  ref={closeButtonRef}
+                  aria-label={closeButtonProps?.['aria-label'] ?? t('common.button.close', 'Close')}
+                />
+              )}
             </div>
             <Modal.Body>{content}</Modal.Body>
             {footer}

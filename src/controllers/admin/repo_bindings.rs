@@ -108,6 +108,10 @@ impl ChallengeSyncCounts {
     }
 }
 
+fn missing_challenge_reconciliation_is_safe(unresolved_manifests: usize) -> bool {
+    unresolved_manifests == 0
+}
+
 fn validate_event_preflight(discovered: &[String], existing: &[String]) -> AppResult<()> {
     let discovered_set = discovered.iter().collect::<std::collections::BTreeSet<_>>();
     if discovered_set.len() != discovered.len() {
@@ -533,10 +537,10 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                         .map_err(|error| AppError::internal(error.to_string()))?;
                                     continue;
                                 }
-                                let failures_before_event = failures;
                                 let mut event_counts = ChallengeSyncCounts::default();
                                 let mut seen_challenge_ids =
                                     Vec::with_capacity(chal_manifests.len());
+                                let mut unresolved_manifests = 0;
                                 let mut build_jobs = Vec::new();
                                 let mut generator_build_jobs = Vec::new();
                                 for m in &chal_manifests {
@@ -581,6 +585,7 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                             }
                                         }
                                         Err(e) => {
+                                            unresolved_manifests += 1;
                                             failures += 1;
                                             messages.push(format!(
                                                 "skip {}: {e}",
@@ -658,7 +663,12 @@ async fn run_repo_scan(st: &SharedState, id: i32) -> AppResult<RepoBindingScanRe
                                 }
 
                                 let mut tombstoned = Vec::new();
-                                if failures == failures_before_event {
+                                // A retained runtime/grading update, attachment warning, or
+                                // build failure still resolved that manifest's durable ID and
+                                // cannot make a different missing path ambiguous. Only an
+                                // import error leaves the seen-ID set incomplete and must block
+                                // removal reconciliation for this event.
+                                if missing_challenge_reconciliation_is_safe(unresolved_manifests) {
                                     let configuration_lock =
                                         crate::services::ad_engine::acquire_ad_game_lock(
                                             &st.db, gid,

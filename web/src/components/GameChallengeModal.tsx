@@ -10,10 +10,11 @@ import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { encryptApiData } from '@Utils/Crypto'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
+import { resolveChallengeDeliveryGuide } from '@Utils/GuideState'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
-import api, { AnswerResult, ChallengeType, SubmissionType, ReviewRating } from '@Api'
+import api, { AnswerResult, ChallengeType, ContainerPortMappingType, SubmissionType, ReviewRating } from '@Api'
 
 interface ChallengeSolverModel {
   rank: number
@@ -90,7 +91,23 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
   const isDynamic =
     challenge?.type === ChallengeType.StaticContainer || challenge?.type === ChallengeType.DynamicContainer
-  useFeatureGuide('dynamic-container', Boolean(modalProps.opened && isDynamic), { eventVpnRequired })
+  const deliveryFeature = useMemo(
+    () =>
+      resolveChallengeDeliveryGuide({
+        staticChallenge:
+          challenge?.type === ChallengeType.StaticAttachment || challenge?.type === ChallengeType.DynamicAttachment,
+        containerChallenge: isDynamic,
+        eventVpnRequired: Boolean(eventVpnRequired),
+        platformProxy: config.portMapping === ContainerPortMappingType.PlatformProxy,
+      }),
+    [challenge?.type, config.portMapping, eventVpnRequired, isDynamic]
+  )
+
+  useFeatureGuide(deliveryFeature, Boolean(modalProps.opened && deliveryFeature), {
+    eventVpnRequired,
+    hasAttachment: Boolean(challenge?.context?.url),
+    instanceActive: Boolean(challenge?.context?.instanceEntry),
+  })
 
   const [disabled, setDisabled] = useState(false)
   const [submitId, setSubmitId] = useState(0)

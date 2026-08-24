@@ -1,11 +1,36 @@
 export const GUIDE_VERSION = 4
 export const GUIDE_STORAGE_PREFIX = 'rsctf-player-guide'
 
-export const GUIDE_FEATURES = ['dynamic-container', 'event-vpn'] as const
+export const GUIDE_FEATURES = [
+  'static-challenge',
+  'container-direct',
+  'container-wsrx',
+  'container-vpn',
+  'event-vpn',
+] as const
 export const GUIDE_TOUR_STEPS = ['welcome', 'account', 'team', 'events', 'challenges', 'connection', 'submit'] as const
 
 export type GuideFeature = (typeof GUIDE_FEATURES)[number]
 export type GuideTourStep = (typeof GUIDE_TOUR_STEPS)[number]
+
+interface ChallengeDeliveryGuideContext {
+  staticChallenge: boolean
+  containerChallenge: boolean
+  eventVpnRequired: boolean
+  platformProxy: boolean
+}
+
+export const resolveChallengeDeliveryGuide = ({
+  staticChallenge,
+  containerChallenge,
+  eventVpnRequired,
+  platformProxy,
+}: ChallengeDeliveryGuideContext): GuideFeature | null => {
+  if (staticChallenge) return 'static-challenge'
+  if (!containerChallenge) return null
+  if (eventVpnRequired) return 'container-vpn'
+  return platformProxy ? 'container-wsrx' : 'container-direct'
+}
 
 const GUIDE_TARGET_ADVANCE: Partial<Record<GuideTourStep, string>> = {
   welcome: 'guide-navigation',

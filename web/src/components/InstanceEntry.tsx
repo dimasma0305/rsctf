@@ -1,4 +1,15 @@
-import { ActionIcon, Anchor, Button, Divider, Group, SegmentedControl, Stack, Text, TextInput, Tooltip } from '@mantine/core'
+import {
+  ActionIcon,
+  Anchor,
+  Button,
+  Divider,
+  Group,
+  SegmentedControl,
+  Stack,
+  Text,
+  TextInput,
+  Tooltip,
+} from '@mantine/core'
 import { useClipboard } from '@mantine/hooks'
 import { useDebouncedCallback, useDebouncedState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
@@ -334,7 +345,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
         }
         description={
           isPlatformProxy && (
-            <Stack gap="xs">
+            <Stack gap="xs" data-guide="wsrx-setup">
               <SegmentedControl
                 value={proxyEntryMode}
                 onChange={(value) => setProxyEntryMode(value as ProxyEntryMode)}
@@ -350,7 +361,12 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
                 <>
                   <Text span size="sm">
                     {t('wsrx.tunnel.description')}&nbsp;
-                    <Anchor href="https://github.com/XDSEC/WebSocketReflectorX/releases" target="_blank" rel="noreferrer">
+                    <Anchor
+                      href="https://github.com/XDSEC/WebSocketReflectorX/releases"
+                      target="_blank"
+                      rel="noreferrer"
+                      data-guide="wsrx-download"
+                    >
                       {t('challenge.content.instance.entry.description.anchor')}
                     </Anchor>
                   </Text>
@@ -366,13 +382,9 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
             </Stack>
           )
         }
+        descriptionProps={isPlatformProxy ? { component: 'div' } : undefined}
         leftSection={
-          <Icon
-            path={mdiServerNetwork}
-            size={1}
-            data-proxied={canUseEntry || undefined}
-            className={classes.icon}
-          />
+          <Icon path={mdiServerNetwork} size={1} data-proxied={canUseEntry || undefined} className={classes.icon} />
         }
         value={entry}
         placeholder={
@@ -402,7 +414,13 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
               </Tooltip>
             )}
             <Tooltip label={t('common.button.copy')} withArrow>
-              <ActionIcon aria-label={t('common.button.copy')} onClick={onCopyEntry} disabled={!canUseEntry}>
+              <ActionIcon
+                aria-label={t('common.button.copy')}
+                onClick={onCopyEntry}
+                disabled={!canUseEntry}
+                data-guide="instance-copy"
+                data-entry-mode={isPlatformProxy ? proxyEntryMode : 'direct'}
+              >
                 <Icon path={mdiContentCopy} size={1} />
               </ActionIcon>
             </Tooltip>
