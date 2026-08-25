@@ -88,6 +88,8 @@ const visibleTarget = (selector?: string) => {
   return renderedTargets(selector)?.find(isUsableTarget) ?? null
 }
 
+const targetIsElevated = (element: HTMLElement) => Boolean(element.closest(APPLICATION_SURFACE_SELECTOR))
+
 const scrollableAncestor = (element: HTMLElement) => {
   for (let parent = element.parentElement; parent; parent = parent.parentElement) {
     const overflowY = window.getComputedStyle(parent).overflowY
@@ -96,10 +98,7 @@ const scrollableAncestor = (element: HTMLElement) => {
   return document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null
 }
 
-const measureTarget = (selector?: string): GuideTargetRect | null => {
-  const element = visibleTarget(selector)
-  if (!element) return null
-
+const measureTarget = (element: HTMLElement): GuideTargetRect => {
   const measured = element.getBoundingClientRect()
   const padding = 8
   const viewportWidth = window.innerWidth
@@ -117,7 +116,7 @@ const measureTarget = (selector?: string): GuideTargetRect | null => {
     height: Math.max(0, bottom - top),
     viewportWidth,
     viewportHeight,
-    elevated: Boolean(element.closest(APPLICATION_SURFACE_SELECTOR)),
+    elevated: targetIsElevated(element),
     guideTarget: element.dataset.guide,
   }
 }
@@ -136,6 +135,7 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
     }
 
     let frame = 0
+    let selectedTarget: HTMLElement | null = null
     let lastScrolledTarget: HTMLElement | null = null
     let lastScrolledAt = 0
     const commit = (next: GuideTargetRect | null) => {
@@ -144,8 +144,32 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
         return { selector, target: next }
       })
     }
+    const stableTarget = () => {
+      const targets = renderedTargets(selector) ?? []
+      if (selectedTarget && (!selectedTarget.isConnected || !targets.includes(selectedTarget))) {
+        selectedTarget = null
+      }
+
+      const usableTarget = targets.find(isUsableTarget) ?? null
+      if (!selectedTarget) {
+        selectedTarget = usableTarget ?? targets[0] ?? null
+      } else if (
+        usableTarget &&
+        usableTarget !== selectedTarget &&
+        targetIsElevated(usableTarget) &&
+        !targetIsElevated(selectedTarget)
+      ) {
+        // A newly opened drawer, menu, or dialog owns the next real action.
+        selectedTarget = usableTarget
+      }
+      return selectedTarget
+    }
+    const measureStableTarget = () => {
+      const element = stableTarget()
+      return element && isUsableTarget(element) ? measureTarget(element) : null
+    }
     const scrollPreferredTarget = () => {
-      const preferredTarget = renderedTargets(selector)?.[0]
+      const preferredTarget = stableTarget()
       const now = Date.now()
       if (
         !preferredTarget ||
@@ -169,7 +193,7 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
       })
     }
     const update = () => {
-      const immediate = measureTarget(selector)
+      const immediate = measureStableTarget()
       if (immediate) {
         window.cancelAnimationFrame(frame)
         commit(immediate)
@@ -180,7 +204,7 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
       scrollPreferredTarget()
       window.cancelAnimationFrame(frame)
       frame = window.requestAnimationFrame(() => {
-        commit(measureTarget(selector))
+        commit(measureStableTarget())
       })
     }
 
