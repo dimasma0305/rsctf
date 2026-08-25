@@ -230,7 +230,11 @@ const main = async () => {
     await waitFor(
       `(() => {
         const target = document.querySelector('[data-guide-surface="coachmark"]')?.dataset.guideTarget
-        return target === 'account-access' || target === 'account-oauth'
+        if (target !== 'account-access' && target !== 'account-oauth') return false
+        return [...document.querySelectorAll('[data-guide="' + CSS.escape(target) + '"]')].some((candidate) => {
+          const rectangle = candidate.getBoundingClientRect()
+          return rectangle.width > 0 && rectangle.height > 0
+        })
       })()`,
       'a configured account action'
     )
@@ -264,6 +268,10 @@ const main = async () => {
     await requireAccountFormUsable(loginTarget)
 
     await clickHref('/account/register')
+    await waitFor(
+      `location.pathname === '/account/register' && Boolean(document.querySelector('a[href="/account/login"]'))`,
+      'registration page navigation'
+    )
     const registerTarget = await currentAccountTarget()
     await requireCheckpoint('account', registerTarget)
     await requireAccountFormUsable(registerTarget)
