@@ -1,11 +1,9 @@
-import { Badge, Button, Group, Progress, Stack, Text } from '@mantine/core'
+import { Button, Group, Stack, Text } from '@mantine/core'
 import { mdiArrowLeft, mdiArrowRight, mdiCheck, mdiCursorDefaultClickOutline, mdiOpenInNew } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import {
-  Dispatch,
   FC,
   PropsWithChildren,
-  SetStateAction,
   createContext,
   useCallback,
   useContext,
@@ -20,10 +18,12 @@ import { GuideSpotlightModal } from '@Components/guide/GuideSpotlightModal'
 import {
   GUIDE_VERSION,
   GUIDE_TOUR_STEPS,
+  GUIDE_ACCOUNT_HANDOFF_KEY,
   GuideFeature,
   GuidePreferences,
   GuideTourStep,
   completeGuide,
+  createGuideAccountHandoff,
   guideStorageKey,
   guideTourTargetSelector,
   markGuideFeatureSeen,
@@ -31,8 +31,10 @@ import {
   openGuide,
   parseGuidePreferences,
   pauseGuide,
+  persistGuidePreferenceUpdate,
   resolveGuideIdentity,
   resetGuideProgress,
+  resumeGuideAfterAccountHandoff,
   setGuideTourStep,
 } from '@Utils/GuideState'
 import { useConfig } from '@Hooks/useConfig'
@@ -98,6 +100,7 @@ interface TourStep {
   pathLabel?: string
   targetSelector?: string
   requiresTargetActivation?: boolean
+  targetPrompt?: string
 }
 
 interface AccessibleGuideModalProps extends PropsWithChildren {
@@ -109,6 +112,11 @@ interface AccessibleGuideModalProps extends PropsWithChildren {
   overlayOpacity: number
   targetSelector?: string
   onTargetActivate?: (target: string | undefined) => void
+  progress?: {
+    current: number
+    total: number
+    label: string
+  }
 }
 
 const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
@@ -120,6 +128,7 @@ const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
   overlayOpacity,
   targetSelector,
   onTargetActivate,
+  progress,
   children,
 }) => (
   <GuideSpotlightModal
@@ -131,27 +140,20 @@ const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
     overlayOpacity={overlayOpacity}
     targetSelector={targetSelector}
     onTargetActivate={onTargetActivate}
+    progress={progress}
   >
     {children}
   </GuideSpotlightModal>
 )
 
-const preferenceUpdater = (
-  storageKey: string,
-  setPreferences: Dispatch<SetStateAction<GuidePreferences>>,
-  update: (current: GuidePreferences) => GuidePreferences
-) => {
-  setPreferences((current) => {
-    const next = update(current)
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(next))
-    } catch {
-      // Private-browsing and storage-quota failures must not break navigation.
-      // The in-memory preference still applies for this tab.
-    }
-    return next
-  })
-}
+const GuideTargetPrompt: FC<PropsWithChildren> = ({ children }) => (
+  <Group gap="xs" wrap="nowrap" className={classes.targetPrompt} role="status" aria-live="polite">
+    <Icon path={mdiCursorDefaultClickOutline} size={0.82} className={classes.targetPromptIcon} aria-hidden="true" />
+    <Text size="xs" fw={650}>
+      {children}
+    </Text>
+  </Group>
+)
 
 const loadPreferences = (storageKey: string) => {
   try {
@@ -171,6 +173,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   const storageKey = guideStorageKey(identity)
   const [loadedKey, setLoadedKey] = useState<string | null>(null)
   const [preferences, setPreferences] = useState<GuidePreferences>(() => parseGuidePreferences(null))
+  const preferencesRef = useRef(preferences)
   const [pendingFeature, setPendingFeature] = useState<PendingFeature | null>(null)
   const [featureStepIndex, setFeatureStepIndex] = useState(0)
   const autoStartedKeys = useRef(new Set<string>())
@@ -178,16 +181,54 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
 
   useEffect(() => {
     if (identity === null) return
-    setPreferences(loadPreferences(storageKey))
+    let loadedPreferences = loadPreferences(storageKey)
+    if (identity !== 'guest') {
+      try {
+        const resumedPreferences = resumeGuideAfterAccountHandoff(
+          loadedPreferences,
+          window.sessionStorage.getItem(GUIDE_ACCOUNT_HANDOFF_KEY)
+        )
+        if (resumedPreferences !== loadedPreferences) {
+          loadedPreferences = resumedPreferences
+          window.localStorage.setItem(storageKey, JSON.stringify(loadedPreferences))
+        }
+        window.sessionStorage.removeItem(GUIDE_ACCOUNT_HANDOFF_KEY)
+      } catch {
+        // Storage failures must not block account loading or the in-memory guide.
+      }
+    }
+    preferencesRef.current = loadedPreferences
+    setPreferences(loadedPreferences)
     setLoadedKey(storageKey)
     setPendingFeature(null)
     setFeatureStepIndex(0)
   }, [identity, storageKey])
 
+  useEffect(() => {
+    if (!ready || identity !== 'guest') return
+    try {
+      if (
+        preferences.interactiveEnabled &&
+        !preferences.tourPaused &&
+        (preferences.activeTourStep === 'account' || preferences.activeTourStep === 'team')
+      ) {
+        window.sessionStorage.setItem(GUIDE_ACCOUNT_HANDOFF_KEY, createGuideAccountHandoff())
+      } else {
+        window.sessionStorage.removeItem(GUIDE_ACCOUNT_HANDOFF_KEY)
+      }
+    } catch {
+      // The guide remains usable in-memory when session storage is unavailable.
+    }
+  }, [identity, preferences.activeTourStep, preferences.interactiveEnabled, preferences.tourPaused, ready])
+
   const updatePreferences = useCallback(
     (update: (current: GuidePreferences) => GuidePreferences) => {
       if (!ready) return
-      preferenceUpdater(storageKey, setPreferences, update)
+      const next = persistGuidePreferenceUpdate(preferencesRef.current, update, (serialized) => {
+        window.localStorage.setItem(storageKey, serialized)
+      })
+      preferencesRef.current = next
+      setPreferences(next)
     },
     [ready, storageKey]
   )
@@ -312,10 +353,17 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         step,
         pathname: location.pathname,
         signedIn: Boolean(user),
+        preferOAuth: config.allowPasswordRegistration === false,
         challengeFeature: pendingFeature?.feature,
         instanceActive: pendingFeature?.context.instanceActive,
       }),
-    [location.pathname, pendingFeature?.context.instanceActive, pendingFeature?.feature, user]
+    [
+      config.allowPasswordRegistration,
+      location.pathname,
+      pendingFeature?.context.instanceActive,
+      pendingFeature?.feature,
+      user,
+    ]
   )
 
   const steps = useMemo<TourStep[]>(
@@ -325,10 +373,11 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         title: t('guide.tour.welcome.title', 'Learn the playground'),
         body: t(
           'guide.tour.welcome.body',
-          'Follow the cursor and complete one task at a time. The guide stays open across pages.'
+          'Follow the cursor and select each highlighted control. On mobile, open More first.'
         ),
-        note: t('guide.tour.welcome.note', 'You control every join, start, and submission.'),
+        note: t('guide.tour.welcome.note', 'The guide continues when you change pages.'),
         targetSelector: tourTarget('welcome'),
+        requiresTargetActivation: true,
       },
       {
         id: 'account',
@@ -343,6 +392,12 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           : t('guide.tour.account.open_login', 'Open login'),
         targetSelector: tourTarget('account'),
         requiresTargetActivation: !user && location.pathname.startsWith('/account/'),
+        targetPrompt: !user
+          ? t(
+              'guide.tour.account.action',
+              'Start with the highlighted sign-in option. You can use the whole form; the guide resumes after sign-in.'
+            )
+          : undefined,
       },
       {
         id: 'team',
@@ -704,6 +759,11 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
 
   const boundedFeatureStepIndex = Math.min(featureStepIndex, Math.max(featureSteps.length - 1, 0))
   const featureStep = featureSteps[boundedFeatureStepIndex]
+  const featureRequiresAction = Boolean(
+    featureStep &&
+    boundedFeatureStepIndex < featureSteps.length - 1 &&
+    (featureStep.advanceOnActivate || (featureStep.id === 'start' && !pendingFeature?.context.instanceActive))
+  )
   const moveFeatureStep = useCallback(
     (index: number) => {
       setFeatureStepIndex(Math.min(featureSteps.length - 1, Math.max(0, index)))
@@ -740,8 +800,16 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         overlayOpacity={0.58}
         targetSelector={step.targetSelector}
         onTargetActivate={onTourTargetActivate}
+        progress={{
+          current: stepIndex + 1,
+          total: steps.length,
+          label: t('guide.tour.progress', 'Step {{current}} of {{total}}', {
+            current: stepIndex + 1,
+            total: steps.length,
+          }),
+        }}
       >
-        <Stack gap="sm" className={classes.tourBody}>
+        <Stack gap="xs" className={classes.tourBody}>
           <Stack
             gap="sm"
             className={classes.tourContent}
@@ -749,20 +817,6 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
             tabIndex={0}
             aria-label={t('guide.tour.instructions', 'Guide instructions')}
           >
-            <Badge variant="light" size="sm" className={classes.stepBadge}>
-              {t('guide.tour.progress', 'Step {{current}} of {{total}}', {
-                current: stepIndex + 1,
-                total: steps.length,
-              })}
-            </Badge>
-            <Progress
-              size="xs"
-              value={((stepIndex + 1) / steps.length) * 100}
-              aria-label={t('guide.tour.progress', 'Step {{current}} of {{total}}', {
-                current: stepIndex + 1,
-                total: steps.length,
-              })}
-            />
             <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
               <Text size="sm">{step.body}</Text>
               <Text size="sm" c="dimmed" className={classes.note}>
@@ -779,18 +833,16 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
                 {step.pathLabel}
               </Button>
             )}
-            <Text size="sm" c="dimmed" role="status" aria-live="polite" className={classes.destinationNote}>
-              {needsNavigation
-                ? t(
-                    'guide.tour.open_destination',
-                    'Follow the cursor or use the button above. This step stays open on the next screen.'
-                  )
-                : t(
-                    'guide.tour.destination_ready',
-                    'Select the control under the cursor. The guide continues on the next screen.'
-                  )}
-            </Text>
           </Stack>
+          <GuideTargetPrompt>
+            {step.targetPrompt && !needsNavigation
+              ? step.targetPrompt
+              : needsNavigation
+                ? t('guide.tour.open_destination', 'Open the page above. This step continues there.')
+                : needsTargetActivation
+                  ? t('guide.tour.destination_ready', 'Select the highlighted control to continue.')
+                  : t('guide.tour.target_optional', 'Use the highlighted control, or choose Next.')}
+          </GuideTargetPrompt>
           <Group justify="space-between" gap="xs" wrap="nowrap" className={classes.tourFooter}>
             <Button
               variant="subtle"
@@ -813,25 +865,14 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
                 <Button leftSection={<Icon path={mdiCheck} size={0.7} aria-hidden="true" />} onClick={completeTour}>
                   {t('guide.tour.finish', 'Finish')}
                 </Button>
-              ) : (
+              ) : !needsNavigation && !needsTargetActivation ? (
                 <Button
-                  disabled={needsNavigation || needsTargetActivation}
-                  rightSection={
-                    <Icon
-                      path={needsTargetActivation ? mdiCursorDefaultClickOutline : mdiArrowRight}
-                      size={0.7}
-                      aria-hidden="true"
-                    />
-                  }
+                  rightSection={<Icon path={mdiArrowRight} size={0.7} aria-hidden="true" />}
                   onClick={moveToNextStep}
                 >
-                  {needsTargetActivation
-                    ? t('guide.tour.use_cursor', 'Use cursor')
-                    : needsNavigation
-                      ? t('guide.tour.open_first', 'Open first')
-                      : t('common.pagination.next', 'Next')}
+                  {t('common.pagination.next', 'Next')}
                 </Button>
-              )}
+              ) : null}
             </Group>
           </Group>
         </Stack>
@@ -846,9 +887,21 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         overlayOpacity={0.58}
         targetSelector={featureStep?.targetSelector}
         onTargetActivate={onFeatureTargetActivate}
+        progress={
+          featureStep
+            ? {
+                current: boundedFeatureStepIndex + 1,
+                total: featureSteps.length,
+                label: t('guide.feature.progress', 'Step {{current}} of {{total}}', {
+                  current: boundedFeatureStepIndex + 1,
+                  total: featureSteps.length,
+                }),
+              }
+            : undefined
+        }
       >
         {pendingFeature && featureStep && (
-          <Stack gap="sm" className={classes.tourBody}>
+          <Stack gap="xs" className={classes.tourBody}>
             <Stack
               gap="sm"
               className={classes.tourContent}
@@ -856,20 +909,6 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
               tabIndex={0}
               aria-label={t('guide.feature.instructions', 'Challenge guide instructions')}
             >
-              <Badge variant="light" size="sm" className={classes.stepBadge}>
-                {t('guide.feature.progress', 'Step {{current}} of {{total}}', {
-                  current: boundedFeatureStepIndex + 1,
-                  total: featureSteps.length,
-                })}
-              </Badge>
-              <Progress
-                size="xs"
-                value={((boundedFeatureStepIndex + 1) / featureSteps.length) * 100}
-                aria-label={t('guide.feature.progress', 'Step {{current}} of {{total}}', {
-                  current: boundedFeatureStepIndex + 1,
-                  total: featureSteps.length,
-                })}
-              />
               <Stack gap="xs" role="status" aria-live="polite" aria-atomic="true">
                 <Text size="sm">{featureStep.body}</Text>
                 {featureStep.command && (
@@ -893,6 +932,11 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
                 {t('guide.feature.full_guide', 'Open the full guide')}
               </Button>
             </Stack>
+            <GuideTargetPrompt>
+              {featureRequiresAction
+                ? t('guide.feature.use_highlight', 'Complete the highlighted action to continue.')
+                : t('guide.feature.try_highlight', 'Use the highlighted control while following this step.')}
+            </GuideTargetPrompt>
             <Group justify="space-between" gap="xs" wrap="nowrap" className={classes.tourFooter}>
               <Button
                 variant="subtle"
@@ -915,15 +959,14 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
                   <Button leftSection={<Icon path={mdiCheck} size={0.7} aria-hidden="true" />} onClick={dismissFeature}>
                     {t('guide.feature.understood', 'Got it')}
                   </Button>
-                ) : (
+                ) : !featureRequiresAction ? (
                   <Button
                     rightSection={<Icon path={mdiArrowRight} size={0.7} aria-hidden="true" />}
-                    disabled={featureStep.id === 'start' && !pendingFeature.context.instanceActive}
                     onClick={() => moveFeatureStep(boundedFeatureStepIndex + 1)}
                   >
                     {t('common.pagination.next', 'Next')}
                   </Button>
-                )}
+                ) : null}
               </Group>
             </Group>
           </Stack>

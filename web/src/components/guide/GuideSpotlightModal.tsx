@@ -1,4 +1,4 @@
-import { Modal } from '@mantine/core'
+import { Badge, Modal, Progress } from '@mantine/core'
 import { mdiCursorDefaultClickOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { CSSProperties, FC, PropsWithChildren, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -18,6 +18,11 @@ interface GuideSpotlightModalProps extends PropsWithChildren {
   overlayOpacity: number
   targetSelector?: string
   onTargetActivate?: (target: string | undefined) => void
+  progress?: {
+    current: number
+    total: number
+    label: string
+  }
 }
 
 const sameRect = (left: GuideTargetRect | null, right: GuideTargetRect | null) => {
@@ -77,10 +82,18 @@ const targetCenterIsUsable = (element: HTMLElement) => {
   return Boolean(topPageElement && (topPageElement === element || element.contains(topPageElement)))
 }
 
-const isUsableTarget = (element: HTMLElement) => targetVisibleRatio(element) >= 0.6 && targetCenterIsUsable(element)
+const isUsableTarget = (element: HTMLElement) => targetVisibleRatio(element) >= 0.75 && targetCenterIsUsable(element)
 
 const visibleTarget = (selector?: string) => {
   return renderedTargets(selector)?.find(isUsableTarget) ?? null
+}
+
+const scrollableAncestor = (element: HTMLElement) => {
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    const overflowY = window.getComputedStyle(parent).overflowY
+    if (/(auto|scroll|overlay)/.test(overflowY) && parent.scrollHeight > parent.clientHeight + 1) return parent
+  }
+  return document.scrollingElement instanceof HTMLElement ? document.scrollingElement : null
 }
 
 const measureTarget = (selector?: string): GuideTargetRect | null => {
@@ -110,24 +123,43 @@ const measureTarget = (selector?: string): GuideTargetRect | null => {
 }
 
 const useGuideTarget = (opened: boolean, selector?: string) => {
-  const [target, setTarget] = useState<GuideTargetRect | null>(null)
+  const [measurement, setMeasurement] = useState<{
+    selector?: string
+    target: GuideTargetRect | null
+  }>({ selector, target: null })
+  const target = measurement.selector === selector ? measurement.target : null
 
   useLayoutEffect(() => {
     if (!opened) {
-      setTarget(null)
+      setMeasurement({ selector, target: null })
       return
     }
 
     let frame = 0
-    let scrolledTarget: HTMLElement | null = null
+    let lastScrolledTarget: HTMLElement | null = null
+    let lastScrolledAt = 0
+    const commit = (next: GuideTargetRect | null) => {
+      setMeasurement((current) => {
+        if (current.selector === selector && sameRect(current.target, next)) return current
+        return { selector, target: next }
+      })
+    }
     const scrollPreferredTarget = () => {
       const preferredTarget = renderedTargets(selector)?.[0]
-      if (!preferredTarget || isUsableTarget(preferredTarget) || preferredTarget === scrolledTarget) return
+      const now = Date.now()
+      if (
+        !preferredTarget ||
+        isUsableTarget(preferredTarget) ||
+        (preferredTarget === lastScrolledTarget && now - lastScrolledAt < 800)
+      ) {
+        return
+      }
 
-      scrolledTarget = preferredTarget
+      lastScrolledTarget = preferredTarget
+      lastScrolledAt = now
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
       const targetHeight = Math.min(preferredTarget.getBoundingClientRect().height, window.innerHeight)
-      const coachmarkBudget = Math.min(352, window.innerHeight * 0.44)
+      const coachmarkBudget = Math.min(320, window.innerHeight * 0.42)
       const bottomNavigationAllowance = window.innerWidth <= 768 ? 70 : 0
       const canCenterBoth = targetHeight + coachmarkBudget + 12 <= window.innerHeight - bottomNavigationAllowance
       preferredTarget.scrollIntoView({
@@ -137,11 +169,18 @@ const useGuideTarget = (opened: boolean, selector?: string) => {
       })
     }
     const update = () => {
+      const immediate = measureTarget(selector)
+      if (immediate) {
+        window.cancelAnimationFrame(frame)
+        commit(immediate)
+        return
+      }
+
+      commit(null)
       scrollPreferredTarget()
       window.cancelAnimationFrame(frame)
       frame = window.requestAnimationFrame(() => {
-        const next = measureTarget(selector)
-        setTarget((current) => (sameRect(current, next) ? current : next))
+        commit(measureTarget(selector))
       })
     }
 
@@ -201,6 +240,7 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   overlayOpacity,
   targetSelector,
   onTargetActivate,
+  progress,
   children,
 }) => {
   const target = useGuideTarget(opened, targetSelector)
@@ -208,23 +248,87 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   const [animationKey, setAnimationKey] = useState(0)
   const contentRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const focusedForOpening = useRef(false)
+  const separationAttempt = useRef<string | null>(null)
   const coachmark = coachmarkPlacement(target)
   const guideZIndex = guideLayerZIndex(target)
   const yielding = externalSurface && !target?.elevated
+  const surroundingInteractionAllowed = Boolean(
+    target && visibleTarget(targetSelector)?.closest('[data-guide-interaction-scope]')
+  )
 
   useEffect(() => {
     if (opened) setAnimationKey((current) => current + 1)
-  }, [opened, targetSelector])
+  }, [opened, target?.guideTarget, targetSelector])
 
   useEffect(() => {
-    if (!opened || yielding) return
+    if (!opened) {
+      focusedForOpening.current = false
+      return
+    }
+    if (yielding || focusedForOpening.current) return
+
+    focusedForOpening.current = true
     const frame = window.requestAnimationFrame(() => bodyRef.current?.focus({ preventScroll: true }))
     return () => window.cancelAnimationFrame(frame)
-  }, [opened, target, targetSelector, yielding])
+  }, [opened, yielding])
 
   useEffect(() => {
     contentRef.current?.setAttribute('aria-modal', target || yielding ? 'false' : 'true')
   }, [target, yielding])
+
+  useLayoutEffect(() => {
+    separationAttempt.current = null
+  }, [opened, targetSelector])
+
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    if (!opened || !target || !content || yielding) return
+
+    const separateTarget = () => {
+      const contentRect = content.getBoundingClientRect()
+      const overlapWidth = Math.max(
+        0,
+        Math.min(contentRect.right, target.right) - Math.max(contentRect.left, target.left)
+      )
+      const overlapHeight = Math.max(
+        0,
+        Math.min(contentRect.bottom, target.bottom) - Math.max(contentRect.top, target.top)
+      )
+      const targetArea = target.width * target.height
+      if (targetArea <= 0 || (overlapWidth * overlapHeight) / targetArea <= 0.1) return
+
+      const attemptKey = `${targetSelector ?? ''}:${target.guideTarget ?? ''}:${coachmark.placement}`
+      if (separationAttempt.current === attemptKey) return
+      const element = visibleTarget(targetSelector)
+      if (!element) return
+
+      separationAttempt.current = attemptKey
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const scrollParent = scrollableAncestor(element)
+      if (!scrollParent) return
+
+      const gap = 12
+      const moveTargetAbove = Math.max(0, target.bottom - contentRect.top + gap)
+      const moveTargetBelow = Math.max(0, contentRect.bottom - target.top + gap)
+      const roomUp = scrollParent.scrollTop
+      const roomDown = scrollParent.scrollHeight - scrollParent.clientHeight - scrollParent.scrollTop
+      const scrollDelta =
+        roomDown >= moveTargetAbove
+          ? moveTargetAbove
+          : roomUp >= moveTargetBelow
+            ? -moveTargetBelow
+            : roomDown >= roomUp
+              ? roomDown
+              : -roomUp
+      if (Math.abs(scrollDelta) <= 1) return
+      scrollParent.scrollBy({ top: scrollDelta, behavior: reducedMotion ? 'auto' : 'smooth' })
+    }
+
+    separateTarget()
+    const settledCheck = window.setTimeout(separateTarget, 250)
+    return () => window.clearTimeout(settledCheck)
+  }, [coachmark.placement, opened, target, targetSelector, yielding])
 
   useEffect(() => {
     if (!opened || !targetSelector || !onTargetActivate) return
@@ -235,7 +339,7 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
       if (!element || !(eventTarget instanceof Node) || !element.contains(eventTarget)) return
 
       const guideTarget = element.dataset.guide
-      window.requestAnimationFrame(() => onTargetActivate(guideTarget))
+      onTargetActivate(guideTarget)
     }
 
     document.addEventListener('click', handleTargetClick, true)
@@ -282,10 +386,14 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
       size={size}
       returnFocus
       trapFocus={!target && !yielding}
+      lockScroll={!target && !yielding}
       closeOnEscape
       closeOnClickOutside={false}
       onEnterTransitionEnd={() => {
-        if (!yielding) bodyRef.current?.focus({ preventScroll: true })
+        if (!yielding && !focusedForOpening.current) {
+          focusedForOpening.current = true
+          bodyRef.current?.focus({ preventScroll: true })
+        }
       }}
       zIndex={guideZIndex}
     >
@@ -313,6 +421,7 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
             />
           </svg>
           {!target.elevated &&
+            !surroundingInteractionAllowed &&
             blockerStyles.map((style, index) => (
               <div
                 key={index}
@@ -354,10 +463,25 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
           pointerEvents: yielding ? 'none' : undefined,
         }}
       >
-        <div className={classes.modalHeader}>
-          <Modal.Title>{title}</Modal.Title>
+        <Modal.Header role="presentation" className={classes.modalHeader}>
+          <div className={classes.modalHeading}>
+            <Modal.Title>{title}</Modal.Title>
+            {progress && (
+              <Badge variant="light" size="sm" className={classes.stepBadge}>
+                {progress.current} / {progress.total}
+              </Badge>
+            )}
+          </div>
           <Modal.CloseButton aria-label={closeLabel} />
-        </div>
+          {progress && (
+            <Progress
+              className={classes.modalProgress}
+              size={3}
+              value={(progress.current / progress.total) * 100}
+              aria-label={progress.label}
+            />
+          )}
+        </Modal.Header>
         <Modal.Body ref={bodyRef} className={classes.modalBody} tabIndex={0} data-autofocus aria-label={title}>
           {children}
         </Modal.Body>

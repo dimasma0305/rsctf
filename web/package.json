@@ -11,6 +11,7 @@
     "check": "tsc --noEmit --strict --project tsconfig.app.json",
     "test": "node scripts/run-tests.mjs && node --test ../tests/visual/*.test.mjs",
     "visual:audit": "node ../tests/visual/audit.mjs",
+    "visual:guide": "node ../tests/visual/guide-journey.mjs",
     "build": "pnpm check && vite build",
     "preview": "vite preview",
     "prettier": "prettier --write src --write plugins --write *.mjs --write *.mts",

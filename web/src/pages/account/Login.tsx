@@ -212,6 +212,7 @@ const Login: FC = () => {
       onSubmit={onLogin}
     >
       <TextInput
+        data-guide="account-access"
         required
         label={t('account.label.username_or_email')}
         placeholder="ctfer"

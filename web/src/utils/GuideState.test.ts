@@ -7,13 +7,16 @@ import {
   completeGuide,
   guideStorageKey,
   guideTourTargetSelector,
+  createGuideAccountHandoff,
   markGuideFeatureSeen,
   nextGuideStepForTarget,
   openGuide,
   parseGuidePreferences,
   pauseGuide,
+  persistGuidePreferenceUpdate,
   resolveChallengeDeliveryGuide,
   resolveGuideIdentity,
+  resumeGuideAfterAccountHandoff,
   resetGuideProgress,
   setGuideTourStep,
 } from './GuideState'
@@ -124,7 +127,7 @@ test('challenge delivery guide follows the effective service path and VPN preced
 })
 
 test('active tour checkpoints survive navigation and reject unknown steps', () => {
-  assert.equal(GUIDE_VERSION, 4)
+  assert.equal(GUIDE_VERSION, 5)
   assert.deepEqual(GUIDE_TOUR_STEPS, ['welcome', 'account', 'team', 'events', 'challenges', 'connection', 'submit'])
 
   const opened = openGuide(DEFAULT_GUIDE_PREFERENCES)
@@ -154,6 +157,30 @@ test('active tour checkpoints survive navigation and reject unknown steps', () =
   assert.equal(completeGuide(destination).activeTourStep, null)
 })
 
+test('guide checkpoints persist synchronously before a target can navigate away', () => {
+  const order: string[] = []
+  const next = persistGuidePreferenceUpdate(
+    openGuide(DEFAULT_GUIDE_PREFERENCES),
+    (current) => {
+      order.push('update')
+      return setGuideTourStep(current, 'account')
+    },
+    (serialized) => {
+      order.push('persist')
+      assert.equal(parseGuidePreferences(serialized).activeTourStep, 'account')
+    }
+  )
+  order.push('navigate')
+
+  assert.equal(next.activeTourStep, 'account')
+  assert.deepEqual(order, ['update', 'persist', 'navigate'])
+  assert.doesNotThrow(() =>
+    persistGuidePreferenceUpdate(next, pauseGuide, () => {
+      throw new Error('storage unavailable')
+    })
+  )
+})
+
 test('real tutorial actions advance only when they complete the current task', () => {
   assert.equal(nextGuideStepForTarget('welcome', 'more-navigation'), null)
   assert.equal(nextGuideStepForTarget('welcome', 'guide-navigation'), 'account')
@@ -178,6 +205,10 @@ test('every novice checkpoint resolves a page target before and after navigation
 
   assert.match(selector('account', '/games'), /account-menu/)
   assert.match(selector('account', '/account/profile'), /account-access/)
+  assert.match(
+    guideTourTargetSelector({ step: 'account', pathname: '/account/login', signedIn: false, preferOAuth: true }),
+    /^\[data-guide="account-oauth"\]/
+  )
   assert.match(selector('team', '/account/profile'), /team-navigation/)
   assert.match(selector('team', '/teams'), /team-create-form/)
   assert.match(selector('events', '/teams'), /games-navigation/)
@@ -206,5 +237,30 @@ test('every novice checkpoint resolves a page target before and after navigation
       instanceActive: true,
     }),
     /instance-entry/
+  )
+})
+
+test('account sign-in handoff resumes a fresh authenticated guide at team setup', () => {
+  const now = 1_800_000_000_000
+  const resumed = resumeGuideAfterAccountHandoff(DEFAULT_GUIDE_PREFERENCES, createGuideAccountHandoff(now), now)
+  assert.equal(resumed.activeTourStep, 'team')
+  assert.equal(resumed.tourPaused, false)
+
+  assert.equal(
+    resumeGuideAfterAccountHandoff(
+      DEFAULT_GUIDE_PREFERENCES,
+      createGuideAccountHandoff(now - 2 * 60 * 60 * 1000 - 1),
+      now
+    ),
+    DEFAULT_GUIDE_PREFERENCES
+  )
+  assert.equal(resumeGuideAfterAccountHandoff(DEFAULT_GUIDE_PREFERENCES, '{bad json', now), DEFAULT_GUIDE_PREFERENCES)
+  assert.equal(
+    resumeGuideAfterAccountHandoff(
+      { ...DEFAULT_GUIDE_PREFERENCES, interactiveEnabled: false },
+      createGuideAccountHandoff(now),
+      now
+    ).activeTourStep,
+    null
   )
 })

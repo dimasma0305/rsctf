@@ -60,7 +60,7 @@ export const AccountView: FC<AccountViewProps> = ({ title, description, onSubmit
             </Text>
           </Stack>
 
-          <form className={classes.form} onSubmit={onSubmit} aria-labelledby={titleId} data-guide="account-access">
+          <form className={classes.form} onSubmit={onSubmit} aria-labelledby={titleId} data-guide-interaction-scope>
             <Stack gap="sm">{children}</Stack>
           </form>
         </Paper>
