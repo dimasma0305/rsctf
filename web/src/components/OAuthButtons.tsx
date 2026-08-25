@@ -57,6 +57,7 @@ export const OAuthButtons: FC = () => {
         <Button
           fullWidth
           variant="default"
+          data-guide="account-oauth"
           leftSection={<Icon path={mdiGoogle} size={0.9} />}
           onClick={() => go('google')}
         >
@@ -67,6 +68,7 @@ export const OAuthButtons: FC = () => {
         <Button
           fullWidth
           variant="default"
+          data-guide="account-oauth"
           leftSection={<Icon path={mdiDiscordPath} size={0.9} />}
           onClick={() => go('discord')}
         >

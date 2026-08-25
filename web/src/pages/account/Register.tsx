@@ -176,17 +176,10 @@ const Register: FC = () => {
   if (!bootstrapMode && config.allowPasswordRegistration === false) {
     const providerAvailable = Boolean(config.enableGoogleAuth || config.enableDiscordAuth)
     return (
-      <AccountView
-        title={t('account.title.register')}
-        description={t('account.oauth.registration_only_description')}
-      >
+      <AccountView title={t('account.title.register')} description={t('account.oauth.registration_only_description')}>
         <Alert color={providerAvailable ? 'blue' : 'red'}>
           <Text size="sm">
-            {t(
-              providerAvailable
-                ? 'account.oauth.registration_only_notice'
-                : 'account.oauth.registration_unavailable'
-            )}
+            {t(providerAvailable ? 'account.oauth.registration_only_notice' : 'account.oauth.registration_unavailable')}
           </Text>
         </Alert>
         {providerAvailable && <OAuthButtons />}
@@ -209,7 +202,7 @@ const Register: FC = () => {
           label={t('account.label.bootstrap_token', 'Setup token')}
           description={t(
             'account.content.register.bootstrap_token',
-            'Enter the one-time setup token shown by your rsctf installer or Helm notes.',
+            'Enter the one-time setup token shown by your rsctf installer or Helm notes.'
           )}
           value={bootstrapToken}
           disabled={disabled}
@@ -219,6 +212,7 @@ const Register: FC = () => {
         />
       )}
       <TextInput
+        data-guide="account-access"
         required
         label={t('account.label.email')}
         type="email"

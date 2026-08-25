@@ -1,5 +1,7 @@
-export const GUIDE_VERSION = 4
+export const GUIDE_VERSION = 5
 export const GUIDE_STORAGE_PREFIX = 'rsctf-player-guide'
+export const GUIDE_ACCOUNT_HANDOFF_KEY = `${GUIDE_STORAGE_PREFIX}:account-handoff`
+const GUIDE_ACCOUNT_HANDOFF_TTL = 2 * 60 * 60 * 1000
 
 export const GUIDE_FEATURES = [
   'static-challenge',
@@ -22,6 +24,7 @@ interface GuideTourTargetContext {
   step: GuideTourStep
   pathname: string
   signedIn: boolean
+  preferOAuth?: boolean
   challengeFeature?: GuideFeature | null
   instanceActive?: boolean
 }
@@ -60,6 +63,7 @@ export const guideTourTargetSelector = ({
   step,
   pathname,
   signedIn,
+  preferOAuth,
   challengeFeature,
   instanceActive,
 }: GuideTourTargetContext) => {
@@ -68,17 +72,18 @@ export const guideTourTargetSelector = ({
   const isGamesPage = pathname === '/games'
   const isGameDetailPage = /^\/games\/\d+$/.test(pathname)
   const isChallengePage = pathname === '/challenges' || /^\/games\/\d+\/challenges$/.test(pathname)
+  const accountPageTargets = preferOAuth
+    ? '[data-guide="account-oauth"], [data-guide="account-access"]'
+    : '[data-guide="account-access"], [data-guide="account-oauth"]'
 
   switch (step) {
     case 'welcome':
       return '[data-guide="guide-navigation"], [data-guide="more-navigation"]'
     case 'account':
-      return isAccountPage ? `[data-guide="account-access"], ${ACCOUNT_NAVIGATION_TARGETS}` : ACCOUNT_NAVIGATION_TARGETS
+      return isAccountPage ? `${accountPageTargets}, ${ACCOUNT_NAVIGATION_TARGETS}` : ACCOUNT_NAVIGATION_TARGETS
     case 'team':
       if (!signedIn)
-        return isAccountPage
-          ? `[data-guide="account-access"], ${ACCOUNT_NAVIGATION_TARGETS}`
-          : ACCOUNT_NAVIGATION_TARGETS
+        return isAccountPage ? `${accountPageTargets}, ${ACCOUNT_NAVIGATION_TARGETS}` : ACCOUNT_NAVIGATION_TARGETS
       return isTeamPage
         ? '[data-guide="team-create-form"], [data-guide="team-join-form"], [data-guide="team-create"], [data-guide="team-join"], [data-guide="team-navigation"]'
         : TEAM_NAVIGATION_TARGETS
@@ -130,6 +135,20 @@ export interface GuidePreferences {
   tourPaused: boolean
 }
 
+export const persistGuidePreferenceUpdate = (
+  current: GuidePreferences,
+  update: (preferences: GuidePreferences) => GuidePreferences,
+  persist: (serialized: string) => void
+) => {
+  const next = update(current)
+  try {
+    persist(JSON.stringify(next))
+  } catch {
+    // Storage failures must not block the in-memory tutorial state.
+  }
+  return next
+}
+
 export const DEFAULT_GUIDE_PREFERENCES: GuidePreferences = {
   interactiveEnabled: true,
   completedVersion: 0,
@@ -172,6 +191,41 @@ export const parseGuidePreferences = (value: string | null | undefined): GuidePr
   } catch {
     return { ...DEFAULT_GUIDE_PREFERENCES }
   }
+}
+
+export const createGuideAccountHandoff = (createdAt = Date.now()) =>
+  JSON.stringify({ version: GUIDE_VERSION, createdAt })
+
+export const resumeGuideAfterAccountHandoff = (
+  preferences: GuidePreferences,
+  serializedHandoff: string | null | undefined,
+  now = Date.now()
+): GuidePreferences => {
+  if (
+    !serializedHandoff ||
+    !preferences.interactiveEnabled ||
+    preferences.activeTourStep !== null ||
+    preferences.completedVersion >= GUIDE_VERSION
+  ) {
+    return preferences
+  }
+
+  try {
+    const handoff = JSON.parse(serializedHandoff) as { version?: unknown; createdAt?: unknown }
+    if (
+      handoff.version !== GUIDE_VERSION ||
+      typeof handoff.createdAt !== 'number' ||
+      !Number.isFinite(handoff.createdAt) ||
+      handoff.createdAt > now + 60_000 ||
+      now - handoff.createdAt > GUIDE_ACCOUNT_HANDOFF_TTL
+    ) {
+      return preferences
+    }
+  } catch {
+    return preferences
+  }
+
+  return setGuideTourStep(preferences, 'team')
 }
 
 export const completeGuide = (preferences: GuidePreferences): GuidePreferences => ({
