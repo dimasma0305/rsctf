@@ -113,6 +113,8 @@
 }
 
 .card {
+  box-sizing: border-box;
+  min-width: 0;
   width: min(100%, 31rem);
   border-color: var(--app-surface-border);
   box-shadow: var(--mantine-shadow-lg);

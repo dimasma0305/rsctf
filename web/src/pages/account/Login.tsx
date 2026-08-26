@@ -1,4 +1,4 @@
-import { Anchor, Button, Grid, PasswordInput, TextInput } from '@mantine/core'
+import { Anchor, Button, PasswordInput, SimpleGrid, TextInput } from '@mantine/core'
 import { useDisclosure, useInputState } from '@mantine/hooks'
 import { showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
@@ -11,7 +11,10 @@ import { Captcha, useCaptchaRef } from '@Components/Captcha'
 import { OAuthButtons } from '@Components/OAuthButtons'
 import { TermsOfService } from '@Components/TermsOfService'
 import { encryptApiData } from '@Utils/Crypto'
+import { collectFingerprintIdentity } from '@Utils/FingerprintIdentity'
+import { isAbortError, throwIfAborted } from '@Utils/FingerprintProbe'
 import { tryGetClientError } from '@Utils/Shared'
+import { useConsentSingleFlight } from '@Utils/SingleFlightOperation'
 import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUser } from '@Hooks/useUser'
@@ -29,7 +32,6 @@ const Login: FC = () => {
   const [pwdError, setPwdError] = useState<string | null>(null)
   const [disabled, setDisabled] = useState(false)
   const [needRedirect, setNeedRedirect] = useState(false)
-  const [accepted, setAccepted] = useState(false)
   const [tosOpened, { open: openTos, close: closeTos }] = useDisclosure(false)
 
   const { captchaRef, getToken, cleanUp } = useCaptchaRef()
@@ -90,7 +92,7 @@ const Login: FC = () => {
     })
   }, [])
 
-  const executeLogin = async () => {
+  const executeLogin = async (signal: AbortSignal, consentGranted: boolean) => {
     const unameInvalid = uname.length === 0
     const pwdInvalid = pwd.length < 6
     if (unameInvalid || pwdInvalid) {
@@ -106,70 +108,60 @@ const Login: FC = () => {
         message: t('common.error.check_input'),
         icon: <Icon path={mdiClose} size={1} />,
       })
-      setDisabled(false)
       return
     }
 
     setUnameError(null)
     setPwdError(null)
 
-    if (config.enableBrowserFingerprint && !accepted) {
-      openTos()
-      return
-    }
-
-    const { valid, token } = await getToken()
-
-    if (!valid) {
-      showNotification({
-        color: 'orange',
-        title: t('account.notification.captcha.not_valid'),
-        message: t('common.error.try_later'),
-        loading: true,
-      })
-      return
-    }
-
     setDisabled(true)
 
-    showNotification({
-      color: 'orange',
-      id: 'login-status',
-      title: t('account.notification.captcha.request_sent.title'),
-      message: t('account.notification.captcha.request_sent.message'),
-      loading: true,
-      autoClose: false,
-    })
-
     try {
-      const fingerprintPayload = config.enableBrowserFingerprint
-        ? await (async () => {
-            // Avoid loading/running fingerprinting code unless the feature is enabled.
-            const challengeResponse = await api.account.accountFingerprintChallenge()
-            const challenge = challengeResponse.data.data
-            if (!challenge?.nonce || !challenge.requiredSignals) {
-              throw new Error('Invalid fingerprint challenge')
-            }
+      if (config.enableBrowserFingerprint && !consentGranted) {
+        throw new Error('Device verification consent is required.')
+      }
+      const { valid, token } = await getToken()
+      throwIfAborted(signal)
 
-            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-            const payload = await getFingerprintPayload({
-              nonce: challenge.nonce,
-              requiredSignals: challenge.requiredSignals,
-            })
-            return {
-              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
-              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
-            }
-          })()
-        : undefined
+      if (!valid) {
+        showNotification({
+          color: 'orange',
+          title: t('account.notification.captcha.not_valid'),
+          message: t('common.error.try_later'),
+          loading: true,
+        })
+        return
+      }
 
-      await api.account.accountLogIn({
-        userName: uname,
-        password: await encryptApiData(t, pwd, config.apiPublicKey),
-        challenge: token,
-        fingerprint: fingerprintPayload?.fingerprint,
-        fingerprintProof: fingerprintPayload?.fingerprintProof,
+      showNotification({
+        color: 'orange',
+        id: 'login-status',
+        title: t('account.notification.captcha.request_sent.title'),
+        message: t('account.notification.captcha.request_sent.message'),
+        loading: true,
+        autoClose: false,
       })
+
+      const fingerprintPayload = await collectFingerprintIdentity({
+        enabled: config.enableBrowserFingerprint,
+        apiPublicKey: config.apiPublicKey,
+        signal,
+        translate: t,
+      })
+      const password = await encryptApiData(t, pwd, config.apiPublicKey)
+      throwIfAborted(signal)
+
+      await api.account.accountLogIn(
+        {
+          userName: uname,
+          password,
+          challenge: token,
+          fingerprint: fingerprintPayload.fingerprint,
+          fingerprintProof: fingerprintPayload.fingerprintProof,
+        },
+        { signal }
+      )
+      throwIfAborted(signal)
 
       updateNotification({
         id: 'login-status',
@@ -184,6 +176,7 @@ const Login: FC = () => {
       setNeedRedirect(true)
       mutate()
     } catch (err: any) {
+      if (signal.aborted || isAbortError(err)) return
       const { title, message } = tryGetClientError(err, t)
       updateNotification({
         id: 'login-status',
@@ -196,13 +189,24 @@ const Login: FC = () => {
       })
       cleanUp(false)
     } finally {
-      setDisabled(false)
+      if (!signal.aborted) setDisabled(false)
     }
   }
 
-  const onLogin = async (event: React.SyntheticEvent) => {
+  const loginOperation = useConsentSingleFlight({
+    requiresConsent: Boolean(config.enableBrowserFingerprint),
+    onConsentRequired: openTos,
+    operation: executeLogin,
+  })
+
+  const onLogin = (event: React.SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
-    await executeLogin()
+    void loginOperation.run().catch((error) => {
+      if (!isAbortError(error)) {
+        const { title, message } = tryGetClientError(error, t)
+        showNotification({ color: 'red', title, message, icon: <Icon path={mdiClose} size={1} /> })
+      }
+    })
   }
 
   return (
@@ -253,28 +257,26 @@ const Login: FC = () => {
       <TermsOfService
         confirmMode
         opened={tosOpened}
-        onClose={closeTos}
-        onAccept={() => {
-          setAccepted(true)
+        onClose={() => {
+          loginOperation.rejectConsent()
           closeTos()
-          void executeLogin()
+        }}
+        onAccept={() => {
+          loginOperation.acceptConsent()
+          closeTos()
         }}
       />
       <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to="/account/recovery">
         {t('account.anchor.recovery')}
       </Anchor>
-      <Grid grow w="100%">
-        <Grid.Col span={2}>
-          <Button fullWidth variant="outline" component={Link} to="/account/register">
-            {t('account.button.register')}
-          </Button>
-        </Grid.Col>
-        <Grid.Col span={2}>
-          <Button fullWidth disabled={disabled} onClick={onLogin}>
-            {t('account.button.login')}
-          </Button>
-        </Grid.Col>
-      </Grid>
+      <SimpleGrid cols={{ base: 1, xs: 2 }} spacing="sm" w="100%">
+        <Button fullWidth variant="outline" component={Link} to="/account/register">
+          {t('account.button.register')}
+        </Button>
+        <Button type="submit" fullWidth disabled={disabled}>
+          {t('account.button.login')}
+        </Button>
+      </SimpleGrid>
       <OAuthButtons />
     </AccountView>
   )

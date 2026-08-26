@@ -11,7 +11,7 @@ import classes from '@Styles/AccountView.module.css'
 interface AccountViewProps extends PropsWithChildren {
   title: ReactNode
   description?: ReactNode
-  onSubmit?: (event: React.SubmitEvent<HTMLFormElement>) => Promise<void>
+  onSubmit?: (event: React.SubmitEvent<HTMLFormElement>) => void | Promise<void>
 }
 
 export const AccountView: FC<AccountViewProps> = ({ title, description, onSubmit, children }) => {

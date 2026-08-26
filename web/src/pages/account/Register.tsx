@@ -12,7 +12,10 @@ import { OAuthButtons } from '@Components/OAuthButtons'
 import { StrengthPasswordInput } from '@Components/StrengthPasswordInput'
 import { TermsOfService } from '@Components/TermsOfService'
 import { encryptApiData } from '@Utils/Crypto'
+import { collectFingerprintIdentity } from '@Utils/FingerprintIdentity'
+import { isAbortError, throwIfAborted } from '@Utils/FingerprintProbe'
 import { tryGetClientError } from '@Utils/Shared'
+import { useConsentSingleFlight } from '@Utils/SingleFlightOperation'
 import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import api, { RegisterStatus } from '@Api'
@@ -25,7 +28,6 @@ const Register: FC = () => {
   const [email, setEmail] = useInputState('')
   const [bootstrapToken, setBootstrapToken] = useInputState('')
   const [disabled, setDisabled] = useState(false)
-  const [accepted, setAccepted] = useState(false)
   const [tosOpened, { open: openTos, close: closeTos }] = useDisclosure(false)
   const { config } = useConfig()
 
@@ -62,12 +64,7 @@ const Register: FC = () => {
 
   usePageTitle(t('account.title.register'))
 
-  const executeRegister = async () => {
-    if (config.enableBrowserFingerprint && !accepted) {
-      openTos()
-      return
-    }
-
+  const executeRegister = async (signal: AbortSignal, consentGranted: boolean) => {
     if (pwd !== retypedPwd) {
       showNotification({
         color: 'red',
@@ -78,60 +75,56 @@ const Register: FC = () => {
       return
     }
 
-    const { valid, token } = await getToken()
-
-    if (!valid) {
-      showNotification({
-        color: 'orange',
-        title: t('account.notification.captcha.not_valid'),
-        message: t('common.error.try_later'),
-        loading: true,
-      })
-      return
-    }
-
     setDisabled(true)
 
-    showNotification({
-      color: 'orange',
-      id: 'register-status',
-      title: t('account.notification.captcha.request_sent.title'),
-      message: t('account.notification.captcha.request_sent.message'),
-      loading: true,
-      autoClose: false,
-    })
-
     try {
-      const fingerprintPayload = config.enableBrowserFingerprint
-        ? await (async () => {
-            // Avoid loading/running fingerprinting code unless the feature is enabled.
-            const challengeResponse = await api.account.accountFingerprintChallenge()
-            const challenge = challengeResponse.data.data
-            if (!challenge?.nonce || !challenge.requiredSignals) {
-              throw new Error('Invalid fingerprint challenge')
-            }
+      if (config.enableBrowserFingerprint && !consentGranted) {
+        throw new Error('Device verification consent is required.')
+      }
+      const { valid, token } = await getToken()
+      throwIfAborted(signal)
 
-            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-            const payload = await getFingerprintPayload({
-              nonce: challenge.nonce,
-              requiredSignals: challenge.requiredSignals,
-            })
-            return {
-              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
-              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
-            }
-          })()
-        : undefined
+      if (!valid) {
+        showNotification({
+          color: 'orange',
+          title: t('account.notification.captcha.not_valid'),
+          message: t('common.error.try_later'),
+          loading: true,
+        })
+        return
+      }
 
-      const res = await api.account.accountRegister({
-        userName: uname,
-        password: await encryptApiData(t, pwd, config.apiPublicKey),
-        email: email,
-        challenge: token,
-        fingerprint: fingerprintPayload?.fingerprint,
-        fingerprintProof: fingerprintPayload?.fingerprintProof,
-        bootstrapToken: bootstrapMode ? bootstrapToken : undefined,
+      showNotification({
+        color: 'orange',
+        id: 'register-status',
+        title: t('account.notification.captcha.request_sent.title'),
+        message: t('account.notification.captcha.request_sent.message'),
+        loading: true,
+        autoClose: false,
       })
+
+      const fingerprintPayload = await collectFingerprintIdentity({
+        enabled: config.enableBrowserFingerprint,
+        apiPublicKey: config.apiPublicKey,
+        signal,
+        translate: t,
+      })
+      const password = await encryptApiData(t, pwd, config.apiPublicKey)
+      throwIfAborted(signal)
+
+      const res = await api.account.accountRegister(
+        {
+          userName: uname,
+          password,
+          email: email,
+          challenge: token,
+          fingerprint: fingerprintPayload.fingerprint,
+          fingerprintProof: fingerprintPayload.fingerprintProof,
+          bootstrapToken: bootstrapMode ? bootstrapToken : undefined,
+        },
+        { signal }
+      )
+      throwIfAborted(signal)
       const data = RegisterStatusMap.get(res.data.data)
       if (data) {
         updateNotification({
@@ -151,6 +144,7 @@ const Register: FC = () => {
         else navigate('/account/login')
       }
     } catch (err: any) {
+      if (signal.aborted || isAbortError(err)) return
       const { title, message } = tryGetClientError(err, t)
 
       updateNotification({
@@ -164,13 +158,24 @@ const Register: FC = () => {
       })
       cleanUp(false)
     } finally {
-      setDisabled(false)
+      if (!signal.aborted) setDisabled(false)
     }
   }
 
-  const onRegister = async (event: React.SyntheticEvent) => {
+  const registerOperation = useConsentSingleFlight({
+    requiresConsent: Boolean(config.enableBrowserFingerprint),
+    onConsentRequired: openTos,
+    operation: executeRegister,
+  })
+
+  const onRegister = (event: React.SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
-    await executeRegister()
+    void registerOperation.run().catch((error) => {
+      if (!isAbortError(error)) {
+        const { title, message } = tryGetClientError(error, t)
+        showNotification({ color: 'red', title, message, icon: <Icon path={mdiClose} size={1} /> })
+      }
+    })
   }
 
   if (!bootstrapMode && config.allowPasswordRegistration === false) {
@@ -246,17 +251,19 @@ const Register: FC = () => {
       <TermsOfService
         confirmMode
         opened={tosOpened}
-        onClose={closeTos}
-        onAccept={() => {
-          setAccepted(true)
+        onClose={() => {
+          registerOperation.rejectConsent()
           closeTos()
-          void executeRegister()
+        }}
+        onAccept={() => {
+          registerOperation.acceptConsent()
+          closeTos()
         }}
       />
       <Anchor fz="xs" className={misc.alignSelfEnd} component={Link} to="/account/login">
         {t('account.anchor.login')}
       </Anchor>
-      <Button type="submit" fullWidth onClick={onRegister} disabled={disabled}>
+      <Button type="submit" fullWidth disabled={disabled}>
         {t('account.button.register')}
       </Button>
       <OAuthButtons />
