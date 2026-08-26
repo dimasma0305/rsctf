@@ -23,7 +23,7 @@ type InstanceContext = {
   instanceEntry?: string | null
 }
 
-type InstanceExtension = {
+type InstanceRuntimeResponse = {
   entry?: string | null
   expectStopAt?: number | null
 }
@@ -37,10 +37,24 @@ export const mergeInstanceContext = <T extends { context?: InstanceContext }>(
   return { ...latest, context: { ...latest.context, ...patch } }
 }
 
+/** Publish a create response unless the cache already names a different runtime. */
+export const mergeCreatedInstanceContext = <T extends { context?: InstanceContext }>(
+  latest: T | undefined,
+  created: InstanceRuntimeResponse
+): T | undefined => {
+  if (!created.entry || typeof created.expectStopAt !== 'number') return latest
+  const currentEntry = latest?.context?.instanceEntry
+  if (currentEntry && currentEntry !== created.entry) return latest
+  return mergeInstanceContext(latest, {
+    closeTime: created.expectStopAt,
+    instanceEntry: created.entry,
+  })
+}
+
 /** Apply an extension only while the cache still names the runtime in its response. */
 export const mergeExtendedInstanceContext = <T extends { context?: InstanceContext }>(
   latest: T | undefined,
-  extension: InstanceExtension
+  extension: InstanceRuntimeResponse
 ): T | undefined => {
   if (
     !extension.entry ||

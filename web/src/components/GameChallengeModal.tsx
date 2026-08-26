@@ -14,8 +14,8 @@ import { resolveChallengeDeliveryGuide } from '@Utils/GuideState'
 import {
   clearDestroyedInstanceContext,
   destroyReconciledInstance,
+  mergeCreatedInstanceContext,
   mergeExtendedInstanceContext,
-  mergeInstanceContext,
 } from '@Utils/InstanceLifecycle'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
@@ -145,14 +145,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
     try {
       const res = await api.game.gameCreateContainer(gameId, challengeId)
-      await mutate(
-        (latest) =>
-          mergeInstanceContext(latest, {
-            closeTime: res.data.expectStopAt,
-            instanceEntry: res.data.entry,
-          }),
-        { revalidate: false }
-      )
+      await mutate((latest) => mergeCreatedInstanceContext(latest, res.data), { revalidate: false })
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.created.title'),

@@ -4,6 +4,7 @@ import {
   clearDestroyedInstanceContext,
   destroyReconciledInstance,
   isInstanceExtensionWindowOpen,
+  mergeCreatedInstanceContext,
   mergeExtendedInstanceContext,
   mergeInstanceContext,
   runInstanceExtension,
@@ -57,6 +58,57 @@ test('instance responses merge into the newest cache without reverting concurren
     context: { closeTime: 250, instanceEntry: 'new-entry' },
   })
   assert.equal(mergeInstanceContext(undefined, { closeTime: 250 }), undefined)
+})
+
+test('a create response publishes into empty and matching runtime caches', () => {
+  const created = { entry: 'created-entry', expectStopAt: 200 }
+  const empty = {
+    attempts: 2,
+    context: { closeTime: null, instanceEntry: null },
+  }
+  const matching = {
+    attempts: 3,
+    context: { closeTime: 100, instanceEntry: 'created-entry' },
+  }
+
+  assert.deepEqual(mergeCreatedInstanceContext(empty, created), {
+    attempts: 2,
+    context: { closeTime: 200, instanceEntry: 'created-entry' },
+  })
+  assert.deepEqual(mergeCreatedInstanceContext(matching, created), {
+    attempts: 3,
+    context: { closeTime: 200, instanceEntry: 'created-entry' },
+  })
+  assert.equal(mergeCreatedInstanceContext(undefined, created), undefined)
+})
+
+test('a delayed create response cannot replace a destroyed and recreated runtime', async () => {
+  const originalResponse = { entry: 'old-entry', expectStopAt: 100 }
+  const replacementResponse = { entry: 'replacement-entry', expectStopAt: 300 }
+  let cached = {
+    attempts: 4,
+    context: { closeTime: null, instanceEntry: null },
+  }
+  let resolveCreate: ((created: typeof originalResponse) => void) | undefined
+  const delayedCreate = new Promise<typeof originalResponse>((resolve) => {
+    resolveCreate = resolve
+  })
+  const publishCreate = delayedCreate.then((created) => {
+    cached = mergeCreatedInstanceContext(cached, created) ?? cached
+  })
+
+  cached = mergeCreatedInstanceContext(cached, originalResponse) ?? cached
+  const deleted = cached
+  cached = clearDestroyedInstanceContext(cached, deleted) ?? cached
+  cached = mergeCreatedInstanceContext(cached, replacementResponse) ?? cached
+
+  resolveCreate?.(originalResponse)
+  await publishCreate
+
+  assert.deepEqual(cached, {
+    attempts: 4,
+    context: { closeTime: 300, instanceEntry: 'replacement-entry' },
+  })
 })
 
 test('a delayed extension response cannot stamp a destroyed and recreated runtime', async () => {
