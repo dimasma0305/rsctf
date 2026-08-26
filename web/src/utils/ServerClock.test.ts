@@ -144,6 +144,7 @@ test('timing polling owns one retry per subscribed key and cancels it after reco
   )
   const owner = createGameTimingSWRConfig()
   const { config } = owner
+  const activeConfig = { ...config, isOnline: () => true, isVisible: () => true }
   let supersededReads = 0
   let recoveredReads = 0
   const options = { retryCount: 1 }
@@ -155,7 +156,7 @@ test('timing polling owns one retry per subscribed key and cancels it after reco
     config.onErrorRetry?.(
       { response: { status: 503 } },
       '/api/game/recent',
-      config,
+      activeConfig,
       () => {
         supersededReads += 1
       },
@@ -164,7 +165,7 @@ test('timing polling owns one retry per subscribed key and cancels it after reco
     config.onErrorRetry?.(
       { response: { status: 503 } },
       '/api/game/recent',
-      config,
+      activeConfig,
       () => {
         recoveredReads += 1
       },
@@ -180,7 +181,7 @@ test('timing polling owns one retry per subscribed key and cancels it after reco
     config.onErrorRetry?.(
       { response: { status: 503 } },
       '/api/game/recent',
-      config,
+      activeConfig,
       () => {
         recoveredReads += 1
       },
@@ -193,7 +194,7 @@ test('timing polling owns one retry per subscribed key and cancels it after reco
     config.onErrorRetry?.(
       { response: { status: 503 } },
       '/api/game/recent',
-      config,
+      activeConfig,
       () => {
         recoveredReads += 1
       },
@@ -285,6 +286,116 @@ test('multiple game subscribers share one refresh request per timing key', async
     const readsAfterStop = reads
     await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS))
     assert.equal(reads, readsAfterStop)
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('timing retries pause while hidden or offline and cancel across scope changes', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games' })
+  const restoreDom = installTestDom(browser)
+  context.mock.timers.enable({ apis: ['setTimeout'], now: 0 })
+  let visibilityState: DocumentVisibilityState = 'visible'
+  let online = true
+  Object.defineProperty(browser.document, 'visibilityState', {
+    configurable: true,
+    get: () => visibilityState,
+  })
+  Object.defineProperty(browser.navigator, 'onLine', {
+    configurable: true,
+    get: () => online,
+  })
+  const { GAME_TIMING_REFRESH_MS, useGameTimingSWRConfig } = await import('../hooks/useGame')
+  const { default: useSWR, SWRConfig } = await import('swr')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  const reads = new Map<number, number>()
+  const cache = new Map()
+  const swrConfig = {
+    provider: () => cache,
+    isVisible: () => browser.document.visibilityState !== 'hidden',
+    isOnline: () => browser.navigator.onLine,
+  }
+  const Probe: FC<{ page: number }> = ({ page }) => {
+    const timingConfig = useGameTimingSWRConfig()
+    useSWR(
+      ['/test/inactive-timing', { page }],
+      async ([, query]) => {
+        const count = (reads.get(query.page) ?? 0) + 1
+        reads.set(query.page, count)
+        if (count === 1) throw { response: { status: 503 } }
+        return { page: query.page }
+      },
+      timingConfig
+    )
+    return null
+  }
+  const Scope: FC<{ page: number | null }> = ({ page }) =>
+    createElement(SWRConfig, { value: swrConfig }, page === null ? null : createElement(Probe, { page }))
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => root.render(createElement(Scope, { page: 1 })))
+    assert.equal(reads.get(1), 1)
+
+    visibilityState = 'hidden'
+    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS))
+    assert.equal(reads.get(1), 1)
+    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS * 3))
+    assert.equal(reads.get(1), 1)
+
+    visibilityState = 'visible'
+    online = false
+    await act(async () => {
+      browser.document.dispatchEvent(new browser.Event('visibilitychange'))
+    })
+    assert.equal(reads.get(1), 1)
+
+    online = true
+    await act(async () => {
+      browser.document.dispatchEvent(new browser.Event('visibilitychange'))
+      browser.dispatchEvent(new browser.Event('online'))
+    })
+    assert.equal(reads.get(1), 2)
+
+    // Switching keys cancels page 2 after its inactive timeout has become a
+    // deferred retry. A later activity signal cannot revive the old key.
+    await act(async () => root.render(createElement(Scope, { page: 2 })))
+    assert.equal(reads.get(2), 1)
+    visibilityState = 'hidden'
+    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS))
+    assert.equal(reads.get(2), 1)
+    await act(async () => root.render(createElement(Scope, { page: 3 })))
+    assert.equal(reads.get(3), 1)
+    visibilityState = 'visible'
+    await act(async () => {
+      browser.document.dispatchEvent(new browser.Event('visibilitychange'))
+      browser.dispatchEvent(new browser.Event('online'))
+    })
+    assert.equal(reads.get(2), 1)
+    assert.equal(reads.get(3), 1)
+
+    // The last unmount also removes a retry that was already deferred while
+    // hidden, including its shared activity listeners.
+    await act(async () => root.render(createElement(Scope, { page: 4 })))
+    assert.equal(reads.get(4), 1)
+    visibilityState = 'hidden'
+    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS))
+    assert.equal(reads.get(4), 1)
+    await act(async () => root.render(createElement(Scope, { page: null })))
+    visibilityState = 'visible'
+    await act(async () => {
+      browser.document.dispatchEvent(new browser.Event('visibilitychange'))
+      browser.dispatchEvent(new browser.Event('online'))
+      context.mock.timers.tick(GAME_TIMING_REFRESH_MS)
+    })
+    assert.equal(reads.get(4), 1)
   } finally {
     await act(async () => root.unmount())
     context.mock.timers.reset()

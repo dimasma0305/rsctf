@@ -31,13 +31,47 @@ export const gameTimingSWRConfig: SWRConfiguration = {
 /** Own one timing poll leader and one replaceable recovery timer per SWR key. */
 export const createGameTimingSWRConfig = () => {
   type LeadershipListener = (isLeader: boolean) => void
+  type DeferredRetry = { isActive: () => boolean; run: () => void }
 
   const subscribers = new Map<string, Map<symbol, LeadershipListener>>()
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const deferredRetries = new Map<string, DeferredRetry>()
+  let removeActivityListeners: (() => void) | null = null
+  const stopListeningForActivity = () => {
+    removeActivityListeners?.()
+    removeActivityListeners = null
+  }
+  const resumeDeferredRetries = () => {
+    deferredRetries.forEach((retry, key) => {
+      if (!subscribers.has(key)) {
+        deferredRetries.delete(key)
+      } else if (retry.isActive()) {
+        deferredRetries.delete(key)
+        retry.run()
+      }
+    })
+    if (deferredRetries.size === 0) stopListeningForActivity()
+  }
+  const listenForActivity = () => {
+    if (removeActivityListeners) return
+    const currentDocument = typeof document === 'undefined' ? null : document
+    const currentWindow = typeof window === 'undefined' ? null : window
+    if (!currentDocument && !currentWindow) return
+    currentDocument?.addEventListener('visibilitychange', resumeDeferredRetries)
+    currentWindow?.addEventListener('focus', resumeDeferredRetries)
+    currentWindow?.addEventListener('online', resumeDeferredRetries)
+    removeActivityListeners = () => {
+      currentDocument?.removeEventListener('visibilitychange', resumeDeferredRetries)
+      currentWindow?.removeEventListener('focus', resumeDeferredRetries)
+      currentWindow?.removeEventListener('online', resumeDeferredRetries)
+    }
+  }
   const cancel = (key: string) => {
     const timer = retryTimers.get(key)
     if (timer !== undefined) clearTimeout(timer)
     retryTimers.delete(key)
+    deferredRetries.delete(key)
+    if (deferredRetries.size === 0) stopListeningForActivity()
   }
   const subscribe = (key: string, listener: LeadershipListener) => {
     const token = Symbol(key)
@@ -63,6 +97,8 @@ export const createGameTimingSWRConfig = () => {
   const cancelAll = () => {
     retryTimers.forEach((timer) => clearTimeout(timer))
     retryTimers.clear()
+    deferredRetries.clear()
+    stopListeningForActivity()
   }
   const scopeMiddleware: Middleware = (useSWRNext) =>
     function useSharedGameTimingPoll(key, fetcher, swrConfig) {
@@ -100,7 +136,22 @@ export const createGameTimingSWRConfig = () => {
         key,
         setTimeout(() => {
           retryTimers.delete(key)
-          if (subscribers.has(key)) void revalidate(options)
+          if (!subscribers.has(key)) return
+          const visible = _config.refreshWhenHidden || _config.isVisible()
+          const online = _config.refreshWhenOffline || _config.isOnline()
+          if (!visible || !online) {
+            // Keep no dormant timer chain. One shared listener resumes this
+            // deduplicating revalidator once visibility and connectivity agree.
+            deferredRetries.set(key, {
+              isActive: () =>
+                (_config.refreshWhenHidden || _config.isVisible()) &&
+                (_config.refreshWhenOffline || _config.isOnline()),
+              run: () => void revalidate(options),
+            })
+            listenForActivity()
+            return
+          }
+          void revalidate(options)
         }, GAME_TIMING_REFRESH_MS)
       )
     },
