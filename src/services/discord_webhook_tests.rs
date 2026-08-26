@@ -182,6 +182,12 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
         CREATE INDEX ix_discord_webhook_outbox_pending
           ON "DiscordWebhookOutbox" (available_at_utc, notice_id)
           WHERE delivered_at_utc IS NULL AND dead_at_utc IS NULL;
+        CREATE INDEX ix_discord_webhook_outbox_exhausted
+          ON "DiscordWebhookOutbox"
+             (attempts,
+              (COALESCE(lease_expires_at_utc, '-infinity'::TIMESTAMPTZ)),
+              notice_id)
+          WHERE delivered_at_utc IS NULL AND dead_at_utc IS NULL;
         CREATE INDEX ix_discord_webhook_outbox_terminal
           ON "DiscordWebhookOutbox"
              ((COALESCE(delivered_at_utc, dead_at_utc)), notice_id)
@@ -703,6 +709,53 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
     )
     .await
     .unwrap();
+
+    // Exhausted jobs may be scheduled far into the future (including by a
+    // freeze), but each reconciler pass must still touch only its fixed batch.
+    let mut exhausted_transaction = pool.begin().await.unwrap();
+    lock_game_blood_notice_order(&mut exhausted_transaction, 6)
+        .await
+        .unwrap();
+    for notice_id in 10_i32..=12_i32 {
+        sqlx::query(
+            r#"INSERT INTO "GameNotices"
+                 (id, game_id, "Type", values, publish_time_utc)
+               VALUES ($1, 6, $2, $3, clock_timestamp())"#,
+        )
+        .bind(notice_id)
+        .bind(NoticeType::FirstBlood as i16)
+        .bind(sqlx::types::Json(json!(["Exhausted", "Challenge"])))
+        .execute(&mut *exhausted_transaction)
+        .await
+        .unwrap();
+        assert!(
+            enqueue_blood_notice(&mut exhausted_transaction, notice_id, 6, Utc::now())
+                .await
+                .unwrap()
+        );
+    }
+    exhausted_transaction.commit().await.unwrap();
+    sqlx::query(
+        r#"UPDATE "DiscordWebhookOutbox"
+              SET attempts = $1,
+                  available_at_utc = clock_timestamp() + INTERVAL '1 day'
+            WHERE notice_id BETWEEN 10 AND 12"#,
+    )
+    .bind(MAX_ATTEMPTS)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(expire_exhausted(&pool, 2).await.unwrap(), 2);
+    let first_expiry_count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM "DiscordWebhookOutbox"
+            WHERE notice_id BETWEEN 10 AND 12 AND dead_at_utc IS NOT NULL"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(first_expiry_count, 2);
+    assert_eq!(expire_exhausted(&pool, 2).await.unwrap(), 1);
+    assert_eq!(expire_exhausted(&pool, 2).await.unwrap(), 0);
 
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

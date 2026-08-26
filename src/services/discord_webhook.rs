@@ -24,6 +24,7 @@ const MAX_ATTEMPTS: i32 = 8;
 const LEASE_SECONDS: i64 = 30;
 const MAX_RETRY_SECONDS: u64 = 300;
 const FROZEN_DEFER_LIMIT: i64 = 256;
+const EXHAUSTED_EXPIRY_LIMIT: i64 = 256;
 const TERMINAL_CLEANUP_LIMIT: i64 = 256;
 const TERMINAL_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -548,20 +549,32 @@ async fn purge_terminal(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
     Ok(affected.rows_affected())
 }
 
-async fn expire_exhausted(pool: &sqlx::PgPool) -> AppResult<u64> {
+async fn expire_exhausted(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
     let affected = sqlx::query(
-        r#"UPDATE "DiscordWebhookOutbox"
+        r#"WITH exhausted AS MATERIALIZED (
+               SELECT notice_id
+                 FROM "DiscordWebhookOutbox"
+                WHERE delivered_at_utc IS NULL
+                  AND dead_at_utc IS NULL
+                  AND attempts >= $1
+                  AND COALESCE(lease_expires_at_utc, '-infinity'::TIMESTAMPTZ)
+                      <= clock_timestamp()
+                ORDER BY attempts,
+                         COALESCE(lease_expires_at_utc, '-infinity'::TIMESTAMPTZ),
+                         notice_id
+                LIMIT $2
+                FOR UPDATE SKIP LOCKED
+           )
+           UPDATE "DiscordWebhookOutbox" job
               SET dead_at_utc = clock_timestamp(),
                   lease_token = NULL,
                   lease_expires_at_utc = NULL,
                   last_error = 'retry_budget_exhausted'
-            WHERE delivered_at_utc IS NULL
-              AND dead_at_utc IS NULL
-              AND attempts >= $1
-              AND (lease_expires_at_utc IS NULL
-                   OR lease_expires_at_utc <= clock_timestamp())"#,
+              FROM exhausted
+             WHERE job.notice_id = exhausted.notice_id"#,
     )
     .bind(MAX_ATTEMPTS)
+    .bind(limit.clamp(1, 1_024))
     .execute(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -736,7 +749,7 @@ async fn deliver_one(pool: &sqlx::PgPool, lease_token: Uuid, job: LeasedDelivery
 /// games remain concurrent and capped; no transaction or row lock is held during
 /// outbound I/O.
 pub async fn reconcile(pool: &sqlx::PgPool, limit: i64) -> AppResult<usize> {
-    expire_exhausted(pool).await?;
+    expire_exhausted(pool, EXHAUSTED_EXPIRY_LIMIT).await?;
     defer_frozen(pool, FROZEN_DEFER_LIMIT).await?;
     let (lease_token, jobs) = claim_pending(pool, limit).await?;
     let claimed = jobs.len();

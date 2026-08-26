@@ -41,6 +41,13 @@ CREATE INDEX IF NOT EXISTS ix_discord_webhook_outbox_pending
 CREATE INDEX IF NOT EXISTS ix_discord_webhook_outbox_game_notice
     ON "DiscordWebhookOutbox" (game_id, notice_id);
 
+CREATE INDEX IF NOT EXISTS ix_discord_webhook_outbox_exhausted
+    ON "DiscordWebhookOutbox"
+       (attempts,
+        (COALESCE(lease_expires_at_utc, '-infinity'::TIMESTAMPTZ)),
+        notice_id)
+    WHERE delivered_at_utc IS NULL AND dead_at_utc IS NULL;
+
 CREATE INDEX IF NOT EXISTS ix_discord_webhook_outbox_terminal
     ON "DiscordWebhookOutbox"
        ((COALESCE(delivered_at_utc, dead_at_utc)), notice_id)
@@ -79,6 +86,8 @@ mod tests {
         assert!(UP_SQL.contains("CREATE INDEX IF NOT EXISTS"));
         assert!(UP_SQL.contains("(game_id, notice_id)"));
         assert!(UP_SQL.contains("ix_discord_webhook_outbox_terminal"));
+        assert!(UP_SQL.contains("ix_discord_webhook_outbox_exhausted"));
+        assert!(UP_SQL.contains("COALESCE(lease_expires_at_utc, '-infinity'::TIMESTAMPTZ)"));
         assert!(UP_SQL.contains("COALESCE(delivered_at_utc, dead_at_utc)"));
         assert!(UP_SQL.contains("REFERENCES \"GameNotices\""));
         assert!(UP_SQL.contains("REFERENCES \"Games\""));
