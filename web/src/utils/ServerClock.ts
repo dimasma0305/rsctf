@@ -39,7 +39,7 @@ const modelServerTime = (value: unknown): number | null => {
   return null
 }
 
-/** Accept a live response sample using its request midpoint and best latency in a bounded window. */
+/** Accept a response-stamped sample at receipt, preferring the lowest RTT in a bounded window. */
 export const observeServerTime = (
   serverTime: number,
   receivedAt: number = Date.now(),
@@ -69,8 +69,10 @@ export const observeServerTime = (
   if (roundTripMilliseconds > bestRoundTripMilliseconds) return true
   bestRoundTripMilliseconds = roundTripMilliseconds
 
-  const midpoint = startedAt + roundTripMilliseconds / 2
-  const nextOffset = serverTime - midpoint
+  // API serverTime values are sampled near response creation, after handler
+  // work. Anchoring them at the request midpoint would mistake server-side
+  // processing for clock skew and can move lifecycle controls early.
+  const nextOffset = serverTime - receivedAt
   if (nextOffset === offsetMilliseconds) return true
   offsetMilliseconds = nextOffset
   listeners.forEach((listener) => listener())

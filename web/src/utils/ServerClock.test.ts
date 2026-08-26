@@ -63,16 +63,22 @@ test('server-corrected lifecycle crosses kickoff and close without navigation', 
 
     serverClockTestApi.reset()
     assert.equal(observeServerTime(serverStart, localStart + 200, localStart), true)
-    assert.equal(serverClockTestApi.offset(), -60 * 60 * 1000 - 100)
+    assert.equal(serverClockTestApi.offset(), -60 * 60 * 1000 - 200)
     assert.equal(serverClockTestApi.bestRoundTrip(), 200)
 
     // A newer low-latency response corrects the estimate. A later slow
     // response advances ordering but cannot degrade the offset in this window.
     assert.equal(observeServerTime(serverStart + 1_000, localStart + 1_020, localStart + 1_000), true)
-    assert.equal(serverClockTestApi.offset(), -60 * 60 * 1000 - 10)
+    assert.equal(serverClockTestApi.offset(), -60 * 60 * 1000 - 20)
     assert.equal(serverClockTestApi.bestRoundTrip(), 20)
     assert.equal(observeServerTime(serverStart + 2_000, localStart + 4_000, localStart + 2_000), true)
-    assert.equal(serverClockTestApi.offset(), -60 * 60 * 1000 - 10)
+    assert.equal(serverClockTestApi.offset(), -60 * 60 * 1000 - 20)
+
+    // The API stamps serverTime after handler work. Ten seconds of server-side
+    // processing must not be interpreted as five seconds of positive skew.
+    serverClockTestApi.reset()
+    assert.equal(observeServerTime(serverStart + 10_000, localStart + 10_020, localStart), true)
+    assert.equal(serverClockTestApi.offset(), -60 * 60 * 1000 - 20)
   } finally {
     serverClockTestApi.reset()
     context.mock.timers.reset()

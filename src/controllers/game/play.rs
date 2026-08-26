@@ -25,8 +25,8 @@ pub async fn recent_games(
     }
 
     // Stamp the payload after the database read and in-memory work. Capturing
-    // this before an arbitrarily slow query would turn server processing time
-    // into apparent negative clock skew in the browser's midpoint estimate.
+    // this before an arbitrarily slow query would make the receipt-anchored
+    // browser estimate lag by the entire server processing interval.
     let response_time = Utc::now();
     let res: Vec<BasicGameInfoModel> = rows
         .iter()
