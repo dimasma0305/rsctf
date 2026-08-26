@@ -121,10 +121,17 @@
   }
 
   .tabList {
+    box-sizing: border-box;
     flex-wrap: nowrap;
-    width: max-content;
-    min-width: 100%;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    /* Keep the global 3px focus ring and its 2px offset inside the clipped scroller. */
+    padding: 5px;
     overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
   }
 
   .tabLabel {
@@ -133,6 +140,7 @@
   }
 
   .tab {
+    flex: 0 0 auto;
     min-height: 44px;
     padding-inline: var(--mantine-spacing-sm);
   }

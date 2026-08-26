@@ -78,6 +78,38 @@ test('game workspace uses one bounded width and container-sized challenge cards'
     'utf8'
   )
   assert.match(challengeGrid, /repeat\(auto-fill, minmax\(min\(15rem, 100%\), 1fr\)\)/)
+
+  const mobileTabList = challengeGrid.match(/@media \(max-width: \$mantine-breakpoint-sm\)[\s\S]*?\.tabList\s*\{([^}]+)\}/)?.[1]
+  assert.ok(mobileTabList, 'mobile challenge category tabs must have a dedicated layout')
+  assert.match(mobileTabList, /width:\s*100%/)
+  assert.match(mobileTabList, /max-width:\s*100%/)
+  assert.match(mobileTabList, /overflow-x:\s*auto/)
+  assert.match(mobileTabList, /padding:\s*5px/)
+  assert.doesNotMatch(mobileTabList, /width:\s*max-content/)
+
+  const mobileTab = challengeGrid.match(/@media \(max-width: \$mantine-breakpoint-sm\)[\s\S]*?\.tab\s*\{([^}]+)\}/)?.[1]
+  assert.ok(mobileTab, 'mobile challenge tabs must have a dedicated item layout')
+  assert.match(mobileTab, /flex:\s*0 0 auto/)
+})
+
+test('compact challenge categories are exercised with touch and keyboard in Chromium', () => {
+  const panel = readFileSync(join(repositoryRoot, 'web/src/components/ChallengePanel.tsx'), 'utf8')
+  const audit = readFileSync(join(repositoryRoot, 'tests/visual/audit.mjs'), 'utf8')
+
+  assert.match(panel, /data-challenge-category-tabs/)
+  assert.match(audit, /Input\.dispatchTouchEvent/)
+  assert.match(audit, /key: 'ArrowRight'/)
+  assert.match(audit, /scrollIntoView\(\{ block: 'center'/)
+  assert.match(audit, /touchReachedLast/)
+  assert.match(audit, /keyboardReachedLast/)
+  assert.match(audit, /keyboardFocusIndicatorContained/)
+  assert.match(audit, /initialRestored/)
+  assert.match(audit, /viewportScrollRestored/)
+  assert.match(audit, /interactionSkipped/)
+  assert.match(audit, /challenge category tabs are absent/)
+  assert.match(audit, /compact challenge category fixture does not overflow/)
+  assert.match(audit, /final challenge category is not reachable with a touch swipe/)
+  assert.match(audit, /final challenge category is not reachable with the keyboard/)
 })
 
 test('cheat analysis separates its sections and keeps evidence tabs on one row', () => {

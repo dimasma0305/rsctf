@@ -2,6 +2,7 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { launchBrowser } from './cdp.mjs'
 import {
   discoverPageRoutes,
@@ -551,6 +552,247 @@ async function waitForRender(cdp) {
   throw new Error('page did not finish rendering one h1 without a loading overlay within 25 seconds')
 }
 
+async function restoreChallengeCategoryViewport(cdp) {
+  const restored = await evaluate(
+    cdp,
+    `(() => {
+      const snapshot = globalThis.__rsctfVisualCategoryScrollSnapshot
+      if (!snapshot) return false
+      for (const { element, left, top } of snapshot.ancestors) {
+        element.scrollLeft = left
+        element.scrollTop = top
+      }
+      window.scrollTo(snapshot.windowX, snapshot.windowY)
+      const matchesSnapshot =
+        snapshot.ancestors.every(
+          ({ element, left, top }) => Math.abs(element.scrollLeft - left) <= 1 && Math.abs(element.scrollTop - top) <= 1
+        ) &&
+        Math.abs(window.scrollX - snapshot.windowX) <= 1 &&
+        Math.abs(window.scrollY - snapshot.windowY) <= 1
+      delete globalThis.__rsctfVisualCategoryScrollSnapshot
+      return matchesSnapshot
+    })()`
+  )
+  if (!restored) throw new Error('challenge category audit did not restore the initial page scroll position')
+  return true
+}
+
+async function auditChallengeCategoryScroller(cdp, route, viewport) {
+  if (!viewport.mobile || viewport.width > 390 || !/^\/games\/\d+\/challenges$/.test(route.path)) return null
+
+  const present = await evaluate(cdp, `Boolean(document.querySelector('[data-challenge-category-tabs]'))`)
+  if (!present) return { present: false }
+  await evaluate(
+    cdp,
+    `(() => {
+      const list = document.querySelector('[data-challenge-category-tabs]')
+      const ancestors = []
+      for (let element = list.parentElement; element; element = element.parentElement) {
+        ancestors.push({ element, left: element.scrollLeft, top: element.scrollTop })
+      }
+      globalThis.__rsctfVisualCategoryScrollSnapshot = {
+        ancestors,
+        windowX: window.scrollX,
+        windowY: window.scrollY,
+      }
+      list.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' })
+      list.scrollLeft = 0
+    })()`
+  )
+  await sleep(50)
+
+  const initial = await evaluate(
+    cdp,
+    `(() => {
+      const list = document.querySelector('[data-challenge-category-tabs]')
+      const rectangle = list.getBoundingClientRect()
+      const tabs = [...list.querySelectorAll('[role="tab"]')]
+      return {
+        present: true,
+        tabCount: tabs.length,
+        overflowX: getComputedStyle(list).overflowX,
+        bounded:
+          rectangle.left >= -1 &&
+          rectangle.right <= document.documentElement.clientWidth + 1 &&
+          list.clientWidth <= document.documentElement.clientWidth + 1,
+        clientWidth: list.clientWidth,
+        scrollWidth: list.scrollWidth,
+        maximumScroll: Math.max(0, list.scrollWidth - list.clientWidth),
+        rectangle: {
+          left: rectangle.left,
+          right: rectangle.right,
+          top: rectangle.top,
+          bottom: rectangle.bottom,
+        },
+      }
+    })()`
+  )
+  const overflowRequired = initial.maximumScroll > 1
+  if (!overflowRequired || initial.tabCount < 2) {
+    const viewportScrollRestored = await restoreChallengeCategoryViewport(cdp)
+    return {
+      ...initial,
+      overflowRequired,
+      interactionSkipped: true,
+      touchReachedLast: false,
+      keyboardReachedLast: false,
+      initialRestored: true,
+      viewportScrollRestored,
+    }
+  }
+
+  const touchWidth = Math.max(1, initial.rectangle.right - initial.rectangle.left - 24)
+  const touchAttempts = Math.min(12, Math.ceil(initial.maximumScroll / touchWidth) + 2)
+  const touchY = initial.rectangle.top + (initial.rectangle.bottom - initial.rectangle.top) / 2
+  const touchStartX = initial.rectangle.right - 12
+  const touchEndX = initial.rectangle.left + 12
+  for (let attempt = 0; attempt < touchAttempts; attempt += 1) {
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ x: touchStartX, y: touchY }],
+    })
+    for (let step = 1; step <= 6; step += 1) {
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [
+          {
+            x: touchStartX + ((touchEndX - touchStartX) * step) / 6,
+            y: touchY,
+          },
+        ],
+      })
+      await sleep(12)
+    }
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchEnd',
+      touchPoints: [],
+    })
+    await sleep(40)
+    const atEnd = await evaluate(
+      cdp,
+      `(() => {
+        const list = document.querySelector('[data-challenge-category-tabs]')
+        return list.scrollLeft >= list.scrollWidth - list.clientWidth - 2
+      })()`
+    )
+    if (atEnd) break
+  }
+  const touch = await evaluate(
+    cdp,
+    `(() => {
+      const list = document.querySelector('[data-challenge-category-tabs]')
+      const last = [...list.querySelectorAll('[role="tab"]')].at(-1)
+      const listRectangle = list.getBoundingClientRect()
+      const lastRectangle = last?.getBoundingClientRect()
+      return {
+        scrollLeft: list.scrollLeft,
+        reachedLast:
+          Boolean(lastRectangle) &&
+          lastRectangle.left >= listRectangle.left - 1 &&
+          lastRectangle.right <= listRectangle.right + 1,
+      }
+    })()`
+  )
+
+  await evaluate(
+    cdp,
+    `(() => {
+      const list = document.querySelector('[data-challenge-category-tabs]')
+      const first = list.querySelector('[role="tab"]')
+      list.scrollLeft = 0
+      first.focus({ preventScroll: true })
+    })()`
+  )
+  for (let index = 1; index < initial.tabCount; index += 1) {
+    await cdp.send('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown',
+      key: 'ArrowRight',
+      code: 'ArrowRight',
+      windowsVirtualKeyCode: 39,
+      nativeVirtualKeyCode: 39,
+    })
+    await cdp.send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'ArrowRight',
+      code: 'ArrowRight',
+      windowsVirtualKeyCode: 39,
+      nativeVirtualKeyCode: 39,
+    })
+    await sleep(20)
+  }
+  const keyboard = await evaluate(
+    cdp,
+    `(() => {
+      const list = document.querySelector('[data-challenge-category-tabs]')
+      const last = [...list.querySelectorAll('[role="tab"]')].at(-1)
+      const listRectangle = list.getBoundingClientRect()
+      const lastRectangle = last?.getBoundingClientRect()
+      const lastStyle = last ? getComputedStyle(last) : null
+      const outlineWidth = Number.parseFloat(lastStyle?.outlineWidth ?? '0') || 0
+      const outlineOffset = Number.parseFloat(lastStyle?.outlineOffset ?? '0') || 0
+      const requiredFocusGutter = lastStyle?.outlineStyle === 'none' ? 0 : outlineWidth + Math.max(0, outlineOffset)
+      const availableFocusGutter = lastRectangle
+        ? Math.min(
+            lastRectangle.left - listRectangle.left,
+            listRectangle.right - lastRectangle.right,
+            lastRectangle.top - listRectangle.top,
+            listRectangle.bottom - lastRectangle.bottom
+          )
+        : -1
+      return {
+        scrollLeft: list.scrollLeft,
+        reachedLast:
+          document.activeElement === last &&
+          Boolean(lastRectangle) &&
+          lastRectangle.left >= listRectangle.left - 1 &&
+          lastRectangle.right <= listRectangle.right + 1,
+        focusIndicatorContained:
+          Boolean(last?.matches(':focus-visible')) && availableFocusGutter + 0.5 >= requiredFocusGutter,
+      }
+    })()`
+  )
+
+  await evaluate(
+    cdp,
+    `(() => {
+      const first = document.querySelector('[data-challenge-category-tabs] [role="tab"]')
+      first.click()
+    })()`
+  )
+  let initialRestored = false
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    initialRestored = await evaluate(
+      cdp,
+      `document.querySelector('[data-challenge-category-tabs] [role="tab"]')?.getAttribute('aria-selected') === 'true'`
+    )
+    if (initialRestored) break
+    await sleep(20)
+  }
+  if (!initialRestored) throw new Error('initial challenge category did not restore after keyboard traversal')
+  await evaluate(
+    cdp,
+    `(() => {
+      const list = document.querySelector('[data-challenge-category-tabs]')
+      list.scrollLeft = 0
+      list.querySelector('[role="tab"]')?.blur()
+    })()`
+  )
+  await sleep(50)
+  const viewportScrollRestored = await restoreChallengeCategoryViewport(cdp)
+
+  return {
+    ...initial,
+    overflowRequired,
+    touchScrollLeft: touch.scrollLeft,
+    touchReachedLast: touch.reachedLast,
+    keyboardScrollLeft: keyboard.scrollLeft,
+    keyboardReachedLast: keyboard.reachedLast,
+    keyboardFocusIndicatorContained: keyboard.focusIndicatorContained,
+    initialRestored,
+    viewportScrollRestored,
+  }
+}
+
 function failuresFor(result, expectedPath) {
   const failures = []
   if (result.path !== expectedPath) failures.push(`redirected to ${result.path}`)
@@ -562,6 +804,29 @@ function failuresFor(result, expectedPath) {
   }
   if (result.viewportEscapes.length) {
     failures.push(`${result.viewportEscapes.length} elements escape the viewport`)
+  }
+  if (result.challengeCategoryTabs) {
+    const tabs = result.challengeCategoryTabs
+    if (!tabs.present) {
+      failures.push('challenge category tabs are absent, so compact reachability was not exercised')
+    } else {
+      if (!tabs.bounded) failures.push('challenge category tabs escape the compact viewport')
+      if (result.width.viewport <= 320 && !tabs.overflowRequired) {
+        failures.push('compact challenge category fixture does not overflow, so reachability was not exercised')
+      }
+      if (tabs.overflowRequired && !['auto', 'scroll'].includes(tabs.overflowX)) {
+        failures.push(`challenge category tabs use overflow-x ${tabs.overflowX} instead of a scroller`)
+      }
+      if (tabs.overflowRequired && !tabs.touchReachedLast) {
+        failures.push('final challenge category is not reachable with a touch swipe')
+      }
+      if (tabs.overflowRequired && !tabs.keyboardReachedLast) {
+        failures.push('final challenge category is not reachable with the keyboard')
+      }
+      if (tabs.overflowRequired && !tabs.keyboardFocusIndicatorContained) {
+        failures.push('final challenge category keyboard focus indicator is clipped')
+      }
+    }
   }
   if (result.unnamedControls.length) failures.push(`${result.unnamedControls.length} unnamed controls`)
   if (result.crowdedSmallTargets.length) {
@@ -908,7 +1173,9 @@ async function main() {
           await cdp.send('Page.navigate', { url: `${target}${route.urlPath}` })
           await waitForRender(cdp)
           await evaluate(cdp, 'window.scrollTo(0, 0)')
+          const challengeCategoryTabs = await auditChallengeCategoryScroller(cdp, route, viewport)
           result = await evaluate(cdp, `(${accessibleDocumentAnalysis.toString()})()`, true)
+          result.challengeCategoryTabs = challengeCategoryTabs
         } catch (error) {
           result = {
             title: '',
@@ -928,6 +1195,7 @@ async function main() {
             clippedText: [],
             viewportEscapes: [],
             scrollRegions: [],
+            challengeCategoryTabs: null,
             guide: null,
             errorFallback: false,
             axe: { violations: [], passes: 0, incomplete: [] },
@@ -1029,4 +1297,6 @@ async function main() {
   if (report.summary.failed) process.exitCode = 1
 }
 
-await main()
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main()
+
+export { auditChallengeCategoryScroller }
