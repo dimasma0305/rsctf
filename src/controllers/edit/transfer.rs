@@ -75,7 +75,8 @@ pub struct ExportGameModel {
     pub team_member_count_limit: i32,
     #[serde(default = "default_container_limit")]
     pub container_count_limit: i32,
-    #[serde(default)]
+    // Backward-compatible on read, but never export this outbound credential.
+    #[serde(default, skip_serializing)]
     pub discord_webhook: Option<String>,
     #[serde(default = "epoch")]
     pub start_time_utc: DateTime<Utc>,
@@ -203,7 +204,7 @@ impl ExportGameModel {
             invite_code: g.invite_code.clone(),
             team_member_count_limit: g.team_member_count_limit,
             container_count_limit: g.container_count_limit,
-            discord_webhook: g.discord_webhook.clone(),
+            discord_webhook: None,
             start_time_utc: g.start_time_utc,
             end_time_utc: g.end_time_utc,
             freeze_time_utc: g.freeze_time_utc,

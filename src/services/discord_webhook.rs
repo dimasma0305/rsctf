@@ -149,10 +149,6 @@ fn delivery_endpoint(normalized: &str) -> Result<Url, &'static str> {
     Ok(url)
 }
 
-fn truncate_chars(value: &str, maximum: usize) -> String {
-    value.chars().take(maximum).collect()
-}
-
 fn escape_discord_markdown(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
@@ -165,6 +161,17 @@ fn escape_discord_markdown(value: &str) -> String {
         escaped.push(character);
     }
     escaped
+}
+
+fn safe_discord_text(value: &str, maximum: usize) -> String {
+    let normalized = value.chars().map(|character| {
+        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+            ' '
+        } else {
+            character
+        }
+    });
+    escape_discord_markdown(&normalized.take(maximum).collect::<String>())
 }
 
 fn delivery_payload(job: &LeasedDelivery) -> Result<Value, &'static str> {
@@ -183,9 +190,9 @@ fn delivery_payload(job: &LeasedDelivery) -> Result<Value, &'static str> {
         .get(1)
         .and_then(Value::as_str)
         .ok_or("invalid_notice_values")?;
-    let team = escape_discord_markdown(&truncate_chars(team, 200));
-    let challenge = escape_discord_markdown(&truncate_chars(challenge, 300));
-    let game = escape_discord_markdown(&truncate_chars(&job.game_title, 300));
+    let team = safe_discord_text(team, 200);
+    let challenge = safe_discord_text(challenge, 300);
+    let game = safe_discord_text(&job.game_title, 300);
 
     Ok(json!({
         "username": "RSCTF",
@@ -385,6 +392,14 @@ async fn claim_pending(pool: &sqlx::PgPool, limit: i64) -> AppResult<(Uuid, Vec<
                   AND job.available_at_utc <= observed_clock.db_now
                   AND (job.lease_expires_at_utc IS NULL
                        OR job.lease_expires_at_utc <= observed_clock.db_now)
+                  AND NOT EXISTS (
+                      SELECT 1
+                        FROM "DiscordWebhookOutbox" earlier
+                       WHERE earlier.game_id = job.game_id
+                         AND earlier.notice_id < job.notice_id
+                         AND earlier.delivered_at_utc IS NULL
+                         AND earlier.dead_at_utc IS NULL
+                  )
                   AND (game.freeze_time_utc IS NULL
                        OR observed_clock.db_now < game.freeze_time_utc
                        OR observed_clock.db_now >= game.end_time_utc)
@@ -523,8 +538,10 @@ async fn deliver_one(pool: &sqlx::PgPool, lease_token: Uuid, job: LeasedDelivery
     Ok(())
 }
 
-/// Process a bounded batch. Network calls are concurrent but capped; no
-/// PostgreSQL transaction or row lock is held during outbound I/O.
+/// Process a bounded batch. At most one notice per game is claimable, preserving
+/// first/second/third blood order across retries and freeze release. Independent
+/// games remain concurrent and capped; no transaction or row lock is held during
+/// outbound I/O.
 pub async fn reconcile(pool: &sqlx::PgPool, limit: i64) -> AppResult<usize> {
     expire_exhausted(pool).await?;
     let (lease_token, jobs) = claim_pending(pool, limit).await?;

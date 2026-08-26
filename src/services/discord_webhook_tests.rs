@@ -67,14 +67,26 @@ fn sender_forces_observable_discord_responses() {
 
 #[test]
 fn payload_blocks_mentions_and_escapes_untrusted_markdown() {
-    let payload = delivery_payload(&leased(NoticeType::FirstBlood)).unwrap();
+    let mut job = leased(NoticeType::FirstBlood);
+    job.values = json!([
+        "team_*@everyone\n# forged\r\nline\u{2028}break",
+        "challenge_[one]"
+    ]);
+    job.game_title = "event_*\n# forged".to_string();
+    let payload = delivery_payload(&job).unwrap();
     assert_eq!(payload["allowed_mentions"]["parse"], json!([]));
     assert_eq!(payload["embeds"][0]["title"], "🩸 First Blood");
     let description = payload["embeds"][0]["description"].as_str().unwrap();
-    assert!(description.contains("team\\_\\*"));
+    assert!(description.contains("team\\_\\*@everyone # forged  line break"));
     assert!(description.contains("challenge\\_\\[one\\]"));
     assert!(description.contains("@everyone"));
-    assert_eq!(payload["embeds"][0]["fields"][0]["value"], "event\\_\\*");
+    assert!(!description
+        .chars()
+        .any(|character| matches!(character, '\r' | '\n' | '\u{2028}' | '\u{2029}')));
+    assert_eq!(
+        payload["embeds"][0]["fields"][0]["value"],
+        "event\\_\\* # forged"
+    );
     assert!(delivery_payload(&leased(NoticeType::Normal)).is_err());
 }
 
@@ -157,13 +169,20 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
           last_error VARCHAR(256),
           created_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
         );
+        CREATE INDEX ix_discord_webhook_outbox_game_notice
+          ON "DiscordWebhookOutbox" (game_id, notice_id);
         "#,
     )
     .execute(&pool)
     .await
     .unwrap();
 
-    for (id, frozen) in [(1_i32, false), (2_i32, true), (3_i32, false)] {
+    for (id, frozen) in [
+        (1_i32, false),
+        (2_i32, true),
+        (3_i32, false),
+        (4_i32, false),
+    ] {
         let configured = (id != 3).then(|| webhook("discord.com"));
         sqlx::query(
             r#"INSERT INTO "Games"
@@ -180,14 +199,34 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
         .execute(&pool)
         .await
         .unwrap();
+        if id <= 3 {
+            sqlx::query(
+                r#"INSERT INTO "GameNotices"
+                     (id, game_id, "Type", values, publish_time_utc)
+                   VALUES ($1, $2, $3, $4, clock_timestamp())"#,
+            )
+            .bind(id)
+            .bind(id)
+            .bind(NoticeType::FirstBlood as i16)
+            .bind(sqlx::types::Json(json!(["Team", "Challenge"])))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    }
+    for (notice_id, game_id, notice_type) in [
+        (4_i32, 1_i32, NoticeType::SecondBlood),
+        (5_i32, 1_i32, NoticeType::ThirdBlood),
+        (6_i32, 4_i32, NoticeType::FirstBlood),
+    ] {
         sqlx::query(
             r#"INSERT INTO "GameNotices"
                  (id, game_id, "Type", values, publish_time_utc)
                VALUES ($1, $2, $3, $4, clock_timestamp())"#,
         )
-        .bind(id)
-        .bind(id)
-        .bind(NoticeType::FirstBlood as i16)
+        .bind(notice_id)
+        .bind(game_id)
+        .bind(notice_type as i16)
         .bind(sqlx::types::Json(json!(["Team", "Challenge"])))
         .execute(&pool)
         .await
@@ -207,15 +246,56 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
     assert!(!enqueue_blood_notice(&mut transaction, 3, 3, Utc::now())
         .await
         .unwrap());
+    for (notice_id, game_id) in [(4, 1), (5, 1), (6, 4)] {
+        assert!(
+            enqueue_blood_notice(&mut transaction, notice_id, game_id, Utc::now())
+                .await
+                .unwrap()
+        );
+    }
     transaction.commit().await.unwrap();
 
     let (lease_token, jobs) = claim_pending(&pool, 16).await.unwrap();
-    assert_eq!(jobs.len(), 1, "the frozen event must remain queued");
-    assert_eq!(jobs[0].notice_id, 1);
+    assert_eq!(
+        jobs.iter().map(|job| job.notice_id).collect::<Vec<_>>(),
+        vec![1, 6],
+        "the frozen event must remain queued and each active game may lease only its oldest notice"
+    );
+    let (_, overtaking) = claim_pending(&pool, 16).await.unwrap();
+    assert!(
+        overtaking.is_empty(),
+        "later bloods must not overtake a delayed leased delivery"
+    );
+    let first = jobs.iter().find(|job| job.notice_id == 1).unwrap();
+    let independent = jobs.iter().find(|job| job.notice_id == 6).unwrap();
     finish_job(
         &pool,
-        &jobs[0],
+        independent,
         lease_token,
+        DeliveryDisposition::Delivered { status: 200 },
+    )
+    .await
+    .unwrap();
+    finish_job(
+        &pool,
+        first,
+        lease_token,
+        DeliveryDisposition::Delivered { status: 200 },
+    )
+    .await
+    .unwrap();
+    let (second_lease, second_jobs) = claim_pending(&pool, 16).await.unwrap();
+    assert_eq!(
+        second_jobs
+            .iter()
+            .map(|job| job.notice_id)
+            .collect::<Vec<_>>(),
+        vec![4]
+    );
+    finish_job(
+        &pool,
+        &second_jobs[0],
+        second_lease,
         DeliveryDisposition::Delivered { status: 200 },
     )
     .await
@@ -236,6 +316,17 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
     .await
     .unwrap();
     assert!(frozen_pending);
+
+    sqlx::query(r#"DELETE FROM "Games" WHERE id = 1"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let remaining_for_deleted_game: i64 =
+        sqlx::query_scalar(r#"SELECT COUNT(*) FROM "DiscordWebhookOutbox" WHERE game_id = 1"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining_for_deleted_game, 0);
 
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))

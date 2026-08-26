@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS "DiscordWebhookOutbox" (
 CREATE INDEX IF NOT EXISTS ix_discord_webhook_outbox_pending
     ON "DiscordWebhookOutbox" (available_at_utc, notice_id)
     WHERE delivered_at_utc IS NULL AND dead_at_utc IS NULL;
+
+CREATE INDEX IF NOT EXISTS ix_discord_webhook_outbox_game_notice
+    ON "DiscordWebhookOutbox" (game_id, notice_id);
 "#;
 
 const DOWN_SQL: &str = r#"
@@ -67,6 +70,7 @@ mod tests {
         assert!(UP_SQL.contains("CREATE TABLE IF NOT EXISTS"));
         assert!(UP_SQL.contains("attempts >= 0 AND attempts <= 64"));
         assert!(UP_SQL.contains("CREATE INDEX IF NOT EXISTS"));
+        assert!(UP_SQL.contains("(game_id, notice_id)"));
         assert!(UP_SQL.contains("REFERENCES \"GameNotices\""));
         assert!(UP_SQL.contains("REFERENCES \"Games\""));
         assert!(!UP_SQL.contains("webhook_url"));
