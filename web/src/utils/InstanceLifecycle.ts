@@ -1,0 +1,63 @@
+export const runInstanceExtension = async (extend: () => void | Promise<void>, onSuccess: () => void) => {
+  await extend()
+  onSuccess()
+}
+
+type InstanceContext = {
+  closeTime?: number | null
+  instanceEntry?: string | null
+}
+
+/** Merge a runtime response into the newest SWR value, never a render-time snapshot. */
+export const mergeInstanceContext = <T extends { context?: InstanceContext }>(
+  latest: T | undefined,
+  patch: Partial<InstanceContext>
+): T | undefined => {
+  if (!latest) return latest
+  return { ...latest, context: { ...latest.context, ...patch } }
+}
+
+interface DestroyReconciliation<T> {
+  refresh: () => Promise<T | undefined>
+  hasInstance: (value: T | undefined) => boolean
+  destroy: () => Promise<void>
+  publishAbsent: (latest: T) => Promise<void>
+}
+
+/** Destroy from the latest server snapshot and converge when another caller won the race. */
+export const destroyReconciledInstance = async <T>({
+  refresh,
+  hasInstance,
+  destroy,
+  publishAbsent,
+}: DestroyReconciliation<T>): Promise<'destroyed' | 'alreadyAbsent'> => {
+  const latest = await refresh()
+  if (!latest || !hasInstance(latest)) return 'alreadyAbsent'
+
+  try {
+    await destroy()
+  } catch (error) {
+    try {
+      const reconciled = await refresh()
+      if (!hasInstance(reconciled)) return 'alreadyAbsent'
+    } catch {
+      // A failed refresh cannot prove convergence. Preserve the operation error
+      // that prompted reconciliation so the player sees the actionable cause.
+    }
+    throw error
+  }
+
+  try {
+    await publishAbsent(latest)
+  } catch (error) {
+    // Confirmation is still useful after a local publication failure, but it
+    // must not replace the cache error that the caller can act on.
+    await refresh().catch(() => undefined)
+    throw error
+  }
+
+  // The delete is authoritative and the cache is already absent. A transient
+  // confirmation read must not turn that successful operation into an error.
+  await refresh().catch(() => undefined)
+  return 'destroyed'
+}

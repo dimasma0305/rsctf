@@ -105,6 +105,8 @@ pub struct GameInfoModel {
     pub vpn_source_asn_telemetry_enabled: bool,
     #[serde(default)]
     pub vpn_device_sharing_telemetry_enabled: bool,
+    #[serde(skip_deserializing, with = "crate::utils::datetime::millis_opt")]
+    pub server_time: Option<DateTime<Utc>>,
     /// Required only when an existing event's VPN/telemetry policy changes.
     #[serde(default, skip_serializing)]
     pub vpn_policy_change_reason: Option<String>,
@@ -155,6 +157,7 @@ impl GameInfoModel {
             vpn_provider_dns_telemetry_enabled: g.vpn_provider_dns_telemetry_enabled,
             vpn_source_asn_telemetry_enabled: g.vpn_source_asn_telemetry_enabled,
             vpn_device_sharing_telemetry_enabled: g.vpn_device_sharing_telemetry_enabled,
+            server_time: Some(Utc::now()),
             vpn_policy_change_reason: None,
         }
     }

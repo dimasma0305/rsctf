@@ -25,8 +25,7 @@ import { useIsMobile } from '@Utils/ThemeOverride'
 import { adRoundSecondsRemaining } from '@Utils/adState'
 import { epochProgress } from '@Utils/epochProgress'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
-import { useAdState, useGameTeamInfo } from '@Hooks/useGame'
-import { useTicker } from '@Hooks/useTicker'
+import { useAdState, useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
 import { ChallengeType, Role } from '@Api'
 
 const Challenges: FC = () => {
@@ -36,7 +35,8 @@ const Challenges: FC = () => {
   const isCompact = useIsMobile(1200)
 
   const { teamInfo, game } = useGameTeamInfo(numId)
-  const archived = isReadOnlyGameArchive(game)
+  const { now: serverNow } = useGameStatus(game)
+  const archived = isReadOnlyGameArchive(game, serverNow.valueOf())
   // Three separate flags so the toolkit buttons can be shown / hidden
   // independently — a pure-AD game has no KotH button to confuse anyone,
   // and vice versa. hasAdEngine still gates the shared engine plumbing
@@ -61,13 +61,9 @@ const Challenges: FC = () => {
   const [adGuideOpened, adGuideHandlers] = useDisclosure(false)
   const [kothGuideOpened, kothGuideHandlers] = useDisclosure(false)
 
-  // useTicker fires every 1s so the countdown actually counts down between
-  // SWR refreshes (which only happen every 10s). Without this the value is
-  // frozen until the next adState refetch.
-  const now = useTicker()
   const roundEndsIn = adRoundSecondsRemaining(
     adState?.roundEndsAt,
-    now.valueOf(),
+    serverNow.valueOf(),
     !!adState?.scoringPaused,
     adState?.scoringPausedAt
   )

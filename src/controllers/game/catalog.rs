@@ -124,6 +124,7 @@ pub async fn games(
     .map_err(|error| AppError::internal(error.to_string()))?;
 
     let total = rows.first().map_or(0, |row| row.total_count);
+    let server_time = Utc::now();
     let data = rows
         .into_iter()
         .map(|row| {
@@ -145,6 +146,7 @@ pub async fn games(
                 participation_status,
                 start: row.start_time_utc,
                 end: row.end_time_utc,
+                server_time,
             })
         })
         .collect::<AppResult<Vec<_>>>()?;

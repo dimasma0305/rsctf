@@ -21,8 +21,8 @@ import { FC, useMemo } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { ScrollingText } from '@Components/ScrollingText'
 import { useLanguage } from '@Utils/I18n'
+import { useServerNow } from '@Utils/ServerClock'
 import { BloodsTypes, PartialIconProps, useChallengeCategoryLabelMap } from '@Utils/Shared'
-import { useTicker } from '@Hooks/useTicker'
 import { ChallengeInfo, ChallengeType, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengeCard.module.css'
 import misc from '@Styles/Misc.module.css'
@@ -253,7 +253,7 @@ const ChallengeCardContent: FC<ChallengeCardContentProps> = (props) => {
 }
 
 const DeadlineAwareChallengeCard: FC<ChallengeCardProps> = (props) => {
-  const now = useTicker()
+  const now = useServerNow()
   return <ChallengeCardContent {...props} deadlinePassed={now.isAfter(dayjs(props.challenge.deadline))} />
 }
 

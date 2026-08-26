@@ -21,10 +21,11 @@ import duration from 'dayjs/plugin/duration'
 import { FC, useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HandleWsrxError, useWsrx } from '@Components/WsrxProvider'
+import { runInstanceExtension } from '@Utils/InstanceLifecycle'
+import { getServerNowMilliseconds, useServerNow } from '@Utils/ServerClock'
 import { getProxyUrl as getProxyEntry } from '@Utils/Shared'
 import { getWsrxTunnelPhase } from '@Utils/WsrxTunnel'
 import { useConfig } from '@Hooks/useConfig'
-import { useTicker } from '@Hooks/useTicker'
 import api, { ClientFlagContext, ContainerPortMappingType } from '@Api'
 import classes from '@Styles/InstanceEntry.module.css'
 import misc from '@Styles/Misc.module.css'
@@ -45,7 +46,7 @@ interface InstanceEntryProps {
   context: ClientFlagContext
   disabled?: boolean
   onCreate?: () => void
-  onExtend?: () => void
+  onExtend?: () => void | Promise<void>
   onDestroy?: () => void
 }
 
@@ -59,7 +60,7 @@ interface CountdownProps {
 const Countdown: FC<CountdownProps> = (props) => {
   const { time, onTimeout, extendEnabled, enableExtend } = props
   const { config } = useConfig()
-  const now = useTicker()
+  const now = useServerNow()
   const [timeoutExecuted, setTimeoutExecuted] = useState(false)
   const end = time ? dayjs(time) : now.add(config.defaultLifetime ?? 120, 'minutes')
 
@@ -131,16 +132,15 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     if (!canExtend || !props.onExtend) return
 
     try {
-      await Promise.resolve(props.onExtend())
-
-      showNotification({
-        color: 'teal',
-        title: t('challenge.notification.instance.extend.success.title'),
-        message: t('challenge.notification.instance.extend.success.message'),
-        icon: <Icon path={mdiCheck} size={1} />,
+      await runInstanceExtension(props.onExtend, () => {
+        showNotification({
+          color: 'teal',
+          title: t('challenge.notification.instance.extend.success.title'),
+          message: t('challenge.notification.instance.extend.success.message'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        setCanExtend(false)
       })
-
-      setCanExtend(false)
     } catch (err) {
       showNotification({
         color: 'red',
@@ -284,7 +284,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   useEffect(() => {
     if (!isPlatformProxy || !capabilityExpiresAt) return
 
-    const refreshIn = Math.max(capabilityExpiresAt - Date.now() - CAPABILITY_REFRESH_SAFETY_MS, 1000)
+    const refreshIn = Math.max(capabilityExpiresAt - getServerNowMilliseconds() - CAPABILITY_REFRESH_SAFETY_MS, 1000)
     const refresh = window.setTimeout(() => void onRefreshProxyEntry(), refreshIn)
     return () => window.clearTimeout(refresh)
   }, [capabilityExpiresAt, isPlatformProxy, onRefreshProxyEntry])

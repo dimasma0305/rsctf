@@ -1,17 +1,49 @@
 import dayjs, { Dayjs } from 'dayjs'
 import { TFunction } from 'i18next'
-import useSWR from 'swr'
+import { useEffect, useRef } from 'react'
+import useSWR, { type SWRConfiguration } from 'swr'
 import { GameStatus } from '@Components/GameCard'
+import { useServerNow } from '@Utils/ServerClock'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ParticipationStatus } from '@Api'
 
+export const GAME_TIMING_REFRESH_MS = 60_000
+
+type HttpError = { status?: unknown; response?: { status?: unknown } }
+
+export const shouldRetryGameTimingError = (error: unknown) => {
+  if (!error || typeof error !== 'object') return true
+  const candidate = error as HttpError
+  const status = candidate.response?.status ?? candidate.status
+  return typeof status !== 'number' || status === 408 || status === 425 || status === 429 || status >= 500
+}
+
+export const gameTimingSWRConfig: SWRConfiguration = {
+  ...OnceSWRConfig,
+  refreshInterval: GAME_TIMING_REFRESH_MS,
+  refreshWhenHidden: false,
+  refreshWhenOffline: false,
+  revalidateOnFocus: true,
+  revalidateOnReconnect: true,
+  shouldRetryOnError: shouldRetryGameTimingError,
+  onErrorRetry: (_error, _key, _config, revalidate, options) => {
+    setTimeout(() => revalidate({ retryCount: options.retryCount }), GAME_TIMING_REFRESH_MS)
+  },
+}
+
+/** Publish one authoritative final snapshot when a lifecycle-owned poller stops. */
+export const useRevalidateWhenPollingStops = (polling: boolean, revalidate: () => unknown) => {
+  const wasPolling = useRef(polling)
+
+  useEffect(() => {
+    const stopped = wasPolling.current && !polling
+    wasPolling.current = polling
+    if (stopped) void revalidate()
+  }, [polling, revalidate])
+}
+
 export const useRecentGames = () => {
-  const { data, mutate, error } = api.game.useGameRecentGames(
-    { limit: 7 },
-    {
-      refreshInterval: 30 * 60 * 1000,
-    }
-  )
+  const { data, mutate, error } = api.game.useGameRecentGames({ limit: 7 }, gameTimingSWRConfig)
 
   // Guard against SWR hydrating a stale non-array value from persistent
   // cache (e.g. an old 302/HTML response from a misconfigured proxy).
@@ -49,6 +81,16 @@ export const getGameStatus = (game?: { start?: number; end?: number }, now: Dayj
   }
 }
 
+/** Reactive lifecycle projection driven by the shared, server-corrected clock. */
+export const useGameStatus = (game?: { start?: number; end?: number }) => {
+  const now = useServerNow()
+  return { ...getGameStatus(game, now), now }
+}
+
+/** Duration shown beside a lifecycle status, using the same corrected clock. */
+export const getGameDurationMinutes = (status: GameStatus, startTime: Dayjs, endTime: Dayjs, now: Dayjs) =>
+  Math.max(0, status === GameStatus.OnGoing ? endTime.diff(now, 'minute') : endTime.diff(startTime, 'minute'))
+
 export const toLimitTag = (t: TFunction, limit?: number) => {
   if (!limit || limit === 0) return t('game.tag.multiplayer')
   if (limit === 1) return t('game.tag.individual')
@@ -68,14 +110,15 @@ export const useAdminDivisions = (numId: number) => {
 }
 
 export const useGame = (numId: number) => {
-  const { data: game, error, mutate } = api.game.useGameGame(numId, OnceSWRConfig, numId > 0)
+  const { data: game, error, mutate } = api.game.useGameGame(numId, gameTimingSWRConfig, numId > 0)
 
   return { game, error, mutate, status: game?.status ?? ParticipationStatus.Unsubmitted }
 }
 
 export const useGameScoreboard = (numId: number, isTabActive: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
+  const polling = status === GameStatus.OnGoing && isTabActive
 
   const {
     data: scoreboard,
@@ -83,15 +126,17 @@ export const useGameScoreboard = (numId: number, isTabActive: boolean = true) =>
     mutate,
   } = api.game.useGameScoreboard(numId, {
     ...OnceSWRConfig,
-    refreshInterval: status === GameStatus.OnGoing && isTabActive ? 30 * 1000 : 0,
+    refreshInterval: polling ? 30 * 1000 : 0,
   })
+  useRevalidateWhenPollingStops(polling, mutate)
 
   return { scoreboard, error, mutate }
 }
 
 export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
+  const polling = status === GameStatus.OnGoing && shouldPoll
 
   const {
     data: teamInfo,
@@ -100,8 +145,9 @@ export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
   } = api.game.useGameChallengesWithTeamInfo(numId, {
     ...OnceSWRConfig,
     shouldRetryOnError: false,
-    refreshInterval: status === GameStatus.OnGoing && shouldPoll ? 10 * 1000 : 0,
+    refreshInterval: polling ? 10 * 1000 : 0,
   })
+  useRevalidateWhenPollingStops(polling, mutate)
 
   return { teamInfo, game, error, mutate }
 }
@@ -110,7 +156,8 @@ export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
  *  to skip the request entirely (e.g. on pages that only conditionally need it). */
 export const useAdState = (numId: number, doFetch: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
+  const polling = doFetch && status === GameStatus.OnGoing
   const {
     data: adState,
     error,
@@ -120,17 +167,18 @@ export const useAdState = (numId: number, doFetch: boolean = true) => {
     {
       ...OnceSWRConfig,
       shouldRetryOnError: false,
-      refreshInterval: status === GameStatus.OnGoing ? 10 * 1000 : 0,
+      refreshInterval: polling ? 10 * 1000 : 0,
     },
     doFetch
   )
+  useRevalidateWhenPollingStops(polling, mutate)
   return { adState, error, mutate }
 }
 
 /** Official A&D epoch scoreboard poll. */
 export const useAdScoreboard = (numId: number, doFetch: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
   const {
     data: adScoreboard,
     error,
@@ -274,7 +322,7 @@ export interface KothScoreboardModel {
 
 export const useKothScoreboard = (numId: number, doFetch: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
   const {
     data: kothScoreboard,
     error,
@@ -344,7 +392,7 @@ export interface CombinedScoreboardModel {
 /** Fixed, challenge-count-weighted 0-100 board across every active competition format. */
 export const useCombinedScoreboard = (numId: number, doFetch: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
   const {
     data: combinedScoreboard,
     error,
@@ -380,15 +428,17 @@ export const useAdTokenHint = (numId: number, doFetch: boolean = true) => {
 /** A&D admin — operator console state poll. Faster refresh during active games. */
 export const useAdminAdState = (numId: number) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
+  const polling = status === GameStatus.OnGoing
   const {
     data: adminAdState,
     error,
     mutate,
   } = api.edit.useEditAdState(numId, {
     ...OnceSWRConfig,
-    refreshInterval: status === GameStatus.OnGoing ? 5 * 1000 : 0,
+    refreshInterval: polling ? 5 * 1000 : 0,
   })
+  useRevalidateWhenPollingStops(polling, mutate)
   return { adminAdState, error, mutate }
 }
 
@@ -488,7 +538,8 @@ export interface AdminKothObserverModel {
  */
 export const useAdminKothState = (numId: number) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
+  const polling = status === GameStatus.OnGoing
   const {
     data: adminKothState,
     error,
@@ -496,7 +547,8 @@ export const useAdminKothState = (numId: number) => {
   } = useSWR<AdminKothStateModel>(numId > 0 ? `/api/edit/games/${numId}/ad/koth/state` : null, {
     ...OnceSWRConfig,
     shouldRetryOnError: false,
-    refreshInterval: status === GameStatus.OnGoing ? 5 * 1000 : 0,
+    refreshInterval: polling ? 5 * 1000 : 0,
   })
+  useRevalidateWhenPollingStops(polling, mutate)
   return { adminKothState, error, mutate }
 }

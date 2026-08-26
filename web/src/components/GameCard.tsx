@@ -15,7 +15,7 @@ import { CSSProperties, FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { useLanguage } from '@Utils/I18n'
-import { getGameStatus, toLimitTag } from '@Hooks/useGame'
+import { toLimitTag, useGameStatus } from '@Hooks/useGame'
 import { BasicGameInfoModel, ParticipationStatus } from '@Api'
 import classes from '@Styles/GameCard.module.css'
 
@@ -52,7 +52,7 @@ export const GameCard: FC<GameCardProps> = ({ game, showMembership = false, ...o
   const { locale } = useLanguage()
 
   const { summary, title, poster, limit, teamCount, userCount } = game
-  const { startTime, endTime, status } = getGameStatus(game)
+  const { startTime, endTime, status } = useGameStatus(game)
   const durationMinutes = Math.max(0, endTime.diff(startTime, 'minute'))
   const durationLabel =
     durationMinutes >= 48 * 60

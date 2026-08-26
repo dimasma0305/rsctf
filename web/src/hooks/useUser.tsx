@@ -1,16 +1,21 @@
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
 import { useSWRConfig } from 'swr'
 import { setAuthSession } from '@Utils/AuthState'
+import { createProfileRetryTimers, profileErrorDisposition, profileRetryDelay } from '@Utils/ProfileRetry'
 import api from '@Api'
+
+const handledBannedProfileErrors = new WeakSet<object>()
 
 export const useUser = () => {
   const navigate = useNavigate()
   const { t } = useTranslation()
+  const retryTimers = useRef(createProfileRetryTimers())
+  const handledTerminalError = useRef<unknown>(null)
 
   const {
     data: user,
@@ -18,28 +23,54 @@ export const useUser = () => {
     mutate,
   } = api.account.useAccountProfile({
     refreshInterval: 0,
-    shouldRetryOnError: false,
+    shouldRetryOnError: (err) => profileErrorDisposition(err) === 'retry',
     revalidateOnFocus: false,
-    onErrorRetry: async (err, _key, _config, revalidate, { retryCount }) => {
-      if (err?.status === 403) {
-        await api.account.accountLogOut()
+    onErrorRetry: (err, _key, _config, revalidate, { retryCount }) => {
+      const delay = profileRetryDelay(err, retryCount)
+      if (delay === null) return
+      retryTimers.current.schedule(delay, () => revalidate({ retryCount }))
+    },
+  })
+
+  // A user replacement and an unmount both invalidate retry ownership.
+  useEffect(() => {
+    retryTimers.current.cancel()
+    handledTerminalError.current = null
+    return () => retryTimers.current.cancel()
+  }, [user?.userId])
+
+  // SWR can retain the same profile while a transient revalidation fails.
+  // Cancel its queued retry as soon as that same account recovers.
+  useEffect(() => {
+    if (user && !error) retryTimers.current.cancel()
+  }, [user, error])
+
+  // Terminal session effects cannot live in onErrorRetry: SWR deliberately
+  // skips that callback when shouldRetryOnError rejects the status.
+  useEffect(() => {
+    const disposition = profileErrorDisposition(error)
+    if ((disposition !== 'anonymous' && disposition !== 'banned') || handledTerminalError.current === error) return
+    handledTerminalError.current = error
+    retryTimers.current.cancel()
+    setAuthSession(false)
+    void mutate(undefined, { revalidate: false })
+
+    if (disposition !== 'banned' || !error || typeof error !== 'object') return
+    if (handledBannedProfileErrors.has(error)) return
+    handledBannedProfileErrors.add(error)
+
+    void api.account
+      .accountLogOut()
+      .catch(() => undefined)
+      .finally(() => {
         navigate('/')
         showNotification({
           color: 'red',
           message: t('account.notification.login.banned'),
           icon: <Icon path={mdiClose} size={1} />,
         })
-        return
-      }
-
-      if (err?.status === 401 || retryCount >= 5) {
-        mutate(undefined, false)
-        return
-      }
-
-      setTimeout(() => revalidate({ retryCount: retryCount }), 10000)
-    },
-  })
+      })
+  }, [error, mutate, navigate, t])
 
   // Feed the global 401 interceptor's "is there a session?" belief. A loaded
   // profile means logged in; a 401 on the profile probe means anonymous (or
@@ -47,7 +78,7 @@ export const useUser = () => {
   // instead of redirecting them to login on an optional [RequireUser] fetch.
   useEffect(() => {
     if (user) setAuthSession(true)
-    else if (error?.status === 401) setAuthSession(false)
+    else if (profileErrorDisposition(error) === 'anonymous') setAuthSession(false)
   }, [user, error])
 
   return { user, error, mutate }

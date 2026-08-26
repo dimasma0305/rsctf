@@ -242,6 +242,8 @@ pub struct BasicGameInfoModel {
     pub start: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
     pub end: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub server_time: DateTime<Utc>,
 }
 
 /// RSCTF `AdminDashboardModel`.
@@ -268,6 +270,7 @@ pub async fn dashboard(
         .await?;
 
     let mut top_games = Vec::with_capacity(games.len());
+    let server_time = Utc::now();
     for g in games {
         let tc = participation::Entity::find()
             .filter(participation::Column::GameId.eq(g.id))
@@ -285,6 +288,7 @@ pub async fn dashboard(
             review_count: 0,
             start: g.start_time_utc,
             end: g.end_time_utc,
+            server_time,
         });
     }
     top_games.sort_by_key(|game| std::cmp::Reverse(game.team_count));

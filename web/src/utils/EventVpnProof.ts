@@ -1,4 +1,5 @@
 import { AxiosError, AxiosHeaders, AxiosInstance, InternalAxiosRequestConfig } from 'axios'
+import { getServerNowMilliseconds } from '@Utils/ServerClock'
 
 type VpnChallenge = {
   challenge: string
@@ -48,7 +49,7 @@ const mintProof = (instance: AxiosInstance, gameId: number): Promise<VpnProof> =
       { withCredentials: true, headers: { 'Content-Type': 'application/json' } }
     )
     const proof = responseData<VpnProof>(proofResponse)
-    if (!proof.proof || !proof.proofHeader || proof.expiresAtUtc <= Date.now()) {
+    if (!proof.proof || !proof.proofHeader || proof.expiresAtUtc <= getServerNowMilliseconds()) {
       throw new Error('Event VPN returned an invalid proof')
     }
     proofCache.set(gameId, proof)
@@ -62,7 +63,7 @@ export const installEventVpnProof = (instance: AxiosInstance) => {
   instance.interceptors.request.use((config) => {
     const gameId = protectedEventGameId(config.url)
     const proof = gameId === null ? undefined : proofCache.get(gameId)
-    if (proof && proof.expiresAtUtc > Date.now() + 1_000) {
+    if (proof && proof.expiresAtUtc > getServerNowMilliseconds() + 1_000) {
       const headers = AxiosHeaders.from(config.headers)
       headers.set(proof.proofHeader, proof.proof)
       config.headers = headers

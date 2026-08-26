@@ -12,9 +12,8 @@ import { IconTabs } from '@Components/IconTabs'
 import { RequireRole } from '@Components/WithRole'
 import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
-import { getGameStatus, useGame } from '@Hooks/useGame'
+import { useGame, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
-import { useTicker } from '@Hooks/useTicker'
 import { useUserRole } from '@Hooks/useUser'
 import { DetailedGameInfoModel, ParticipationStatus, Role } from '@Api'
 import misc from '@Styles/Misc.module.css'
@@ -22,9 +21,7 @@ import misc from '@Styles/Misc.module.css'
 dayjs.extend(duration)
 
 const GameCountdown: FC<{ game?: DetailedGameInfoModel }> = ({ game }) => {
-  const { endTime, progress, started, finished } = getGameStatus(game)
-  // Shared 1s ticker: single global interval for every countdown on the page.
-  const now = useTicker()
+  const { endTime, progress, started, finished, now } = useGameStatus(game)
 
   const { t } = useTranslation()
 
@@ -67,9 +64,10 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
 
   const { role } = useUserRole()
   const { game, status } = useGame(numId)
+  const { started, finished, now } = useGameStatus(game)
   const { t } = useTranslation()
 
-  const archived = isReadOnlyGameArchive(game)
+  const archived = isReadOnlyGameArchive(game, now.valueOf())
 
   const pages = [
     {
@@ -128,8 +126,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
     if (game) {
       if (location.pathname.includes('monitor') && role === undefined) return
 
-      const now = dayjs()
-      if (now < dayjs(game.start)) {
+      if (!started) {
         navigate(`/games/${numId}`)
         showNotification({
           id: 'no-access',
@@ -160,7 +157,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
       // before the visitor has even signed in.
       if (role === undefined) return
 
-      if (now < dayjs(game.end)) {
+      if (!finished) {
         if (status === ParticipationStatus.Suspended) {
           navigate(`/games/${numId}`)
           showNotification({
@@ -191,7 +188,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
         })
       }
     }
-  }, [game, status, role, location])
+  }, [finished, game, location, navigate, numId, role, started, status, t])
 
   return (
     <Stack pos="relative" mt="md" style={{ containerType: 'inline-size' }}>

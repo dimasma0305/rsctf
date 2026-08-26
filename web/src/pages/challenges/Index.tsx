@@ -16,7 +16,6 @@ import {
 import { useDebouncedValue } from '@mantine/hooks'
 import { mdiClose, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import dayjs from 'dayjs'
 import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Navigate } from 'react-router'
@@ -27,7 +26,7 @@ import { PageHeader } from '@Components/PageHeader'
 import { WithNavBar } from '@Components/WithNavbar'
 import { ChallengeCategoryList, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { useGame } from '@Hooks/useGame'
+import { useGame, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUser } from '@Hooks/useUser'
 import api, { ChallengeCatalogItem, ChallengeCatalogMode, ChallengeCategory, ChallengeInfo, SubmissionType } from '@Api'
@@ -62,6 +61,10 @@ interface CatalogChallengeModalProps {
 
 const CatalogChallengeModal: FC<CatalogChallengeModalProps> = ({ challenge, onClose }) => {
   const { game } = useGame(challenge.gameId)
+  const { finished } = useGameStatus({
+    start: game?.start ?? challenge.gameStart,
+    end: game?.end ?? challenge.gameEnd,
+  })
   const categoryMap = useChallengeCategoryLabelMap()
   const eventHref = `/games/${challenge.gameId}/challenges${challengeHash(challenge.id, challenge.title)}`
 
@@ -71,7 +74,7 @@ const CatalogChallengeModal: FC<CatalogChallengeModalProps> = ({ challenge, onCl
       gameTitle={game?.title ?? challenge.gameTitle}
       opened
       onClose={onClose}
-      gameEnded={dayjs().isAfter(dayjs(game?.end ?? challenge.gameEnd))}
+      gameEnded={finished}
       practiceMode={game?.practiceMode}
       eventVpnRequired={game?.vpnAccessRequired}
       eventHref={eventHref}

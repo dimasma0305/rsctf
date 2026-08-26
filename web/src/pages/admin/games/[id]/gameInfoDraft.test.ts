@@ -23,10 +23,11 @@ const schedule = {
 }
 
 test('an unchanged game info form does not become dirty', () => {
-  const baseline = buildGameInfoUpdatePayload(saved, schedule, false)
-  const current = buildGameInfoUpdatePayload({ ...saved }, schedule, false)
+  const baseline = buildGameInfoUpdatePayload({ ...saved, serverTime: 1_000 }, schedule, false)
+  const current = buildGameInfoUpdatePayload({ ...saved, serverTime: 2_000 }, schedule, false)
 
   assert.equal(gameInfoDraftChanged(current, baseline), false)
+  assert.equal('serverTime' in current, false)
 })
 
 test('schedule and ordinary field edits make the form dirty', () => {

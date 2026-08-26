@@ -34,6 +34,20 @@ fn game_creation_keeps_every_supplied_ad_timing_field() {
 }
 
 #[test]
+fn game_info_server_time_is_response_owned_and_uses_unix_milliseconds() {
+    let now = chrono::Utc::now();
+    let mut model: GameInfoModel = serde_json::from_value(serde_json::json!({
+        "serverTime": now.timestamp_millis()
+    }))
+    .unwrap();
+
+    assert_eq!(model.server_time, None);
+    model.server_time = Some(now);
+    let serialized = serde_json::to_value(model).unwrap();
+    assert_eq!(serialized["serverTime"], now.timestamp_millis());
+}
+
+#[test]
 fn clone_challenge_defaults_match_non_nullable_schema_defaults() {
     use crate::models::data::game_challenge;
     use crate::utils::enums::{

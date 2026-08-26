@@ -16,15 +16,15 @@ on 2026-08-25.
   - Apply the same clock transition to player A&D state and the A&D/KotH operator
     console: a console opened before kickoff currently chooses a zero refresh interval
     and has no render scheduled at kickoff to turn polling on.
-  - Revalidate authoritative timing at a bounded cadence and after a configuration
-    notification so an organizer's start/end extension or early close is not pinned to
-    the one game-detail response loaded at navigation time.
+  - Revalidate authoritative timing at a bounded visible/online cadence and on
+    focus/reconnect so an organizer's start/end extension or early close is not pinned
+    to the one game-detail response loaded at navigation time.
   - Drive event discovery from the same local boundary clock. The catalog currently
     regroups cards only when React happens to render or its five-minute list poll
     completes, while the home/recent feed can keep “Upcoming,” “Live,” remaining-time,
-    and live-count labels stale for its 30-minute refresh interval. Schedule one shared
-    wake-up at the nearest start/end boundary (plus coarse visible-time updates) rather
-    than shortening either HTTP poll.
+    and live-count labels stale for its 30-minute refresh interval. Drive every card
+    from one shared server-corrected ticker and keep one bounded visible-only list
+    refresh owner rather than starting per-card polling.
   - Avoid trusting an uncorrected client clock for authoritative event access.
   - Add fake-timer regression tests covering a page opened before kickoff and kept open
     through both kickoff and event close, catalog/home lifecycle regrouping and counts,
@@ -3043,7 +3043,7 @@ on 2026-08-25.
   - Relevant code: `web/src/components/admin/KothOpsPanel.tsx` and
     `src/controllers/game/koth/admin.rs`, `src/controllers/game/koth/api/admin.rs`.
 
-- [ ] Propagate container-extension failures to `InstanceEntry`.
+- [x] Propagate container-extension failures to `InstanceEntry`.
   - Do not display a success notification or disable retry when the extension request
     failed.
   - Base destroy on the value returned by `mutate()`. `requestDestroy` currently awaits
@@ -3075,7 +3075,7 @@ on 2026-08-25.
   - Relevant code: `web/src/components/InstanceEntry.tsx` and
     `web/src/components/WsrxProvider.tsx`.
 
-- [ ] Repair account-profile error handling.
+- [x] Repair account-profile error handling.
   - Resolve the contradiction between `shouldRetryOnError: false` and `onErrorRetry`.
     In the installed SWR behavior, the false predicate prevents `onErrorRetry` from
     being called at all, so its 403 logout/ban notification and intended five-attempt

@@ -55,7 +55,7 @@ import {
 } from '@Utils/Shared'
 import { createDefaultJeopardyWorkloadSpec, formatWorkloadSpec, parseJeopardyWorkloadSpec } from '@Utils/WorkloadSpec'
 import { useEditChallenge, useEditChallenges } from '@Hooks/useEdit'
-import { useAdminGame } from '@Hooks/useGame'
+import { useAdminGame, useGameStatus } from '@Hooks/useGame'
 import api, {
   ChallengeBuildStatus,
   ChallengeCategory,
@@ -133,6 +133,7 @@ const GameChallengeEdit: FC = () => {
   const [numId, numCId] = [parseInt(id ?? '-1'), parseInt(chalId ?? '-1')]
 
   const { game } = useAdminGame(numId)
+  const { started: eventSecurityFrozen } = useGameStatus(game)
   const { challenge, mutate } = useEditChallenge(numId, numCId)
   const { challenges, mutate: mutateChals } = useEditChallenges(numId)
 
@@ -154,7 +155,6 @@ const GameChallengeEdit: FC = () => {
   const isContainerType = isAdEngine || isJeopardyContainer
   const isKoth = type === ChallengeType.KingOfTheHill
   const adScoringStarted = type === ChallengeType.AttackDefense && game?.adScoringStartRound != null
-  const eventSecurityFrozen = !!game?.start && dayjs().isAfter(dayjs(game.start))
   const [workloadEditorEnabled, setWorkloadEditorEnabled] = useState(challenge?.workloadSpec != null)
   const [workloadJson, setWorkloadJson] = useState(
     challenge?.workloadSpec ? formatWorkloadSpec(challenge.workloadSpec) : ''

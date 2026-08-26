@@ -77,6 +77,8 @@ pub struct BasicGameInfoModel {
     pub start: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
     pub end: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub server_time: DateTime<Utc>,
 }
 
 impl From<&game::Model> for BasicGameInfoModel {
@@ -95,6 +97,7 @@ impl From<&game::Model> for BasicGameInfoModel {
             participation_status: None,
             start: g.start_time_utc,
             end: g.end_time_utc,
+            server_time: Utc::now(),
         }
     }
 }
@@ -150,6 +153,8 @@ pub struct DetailedGameInfoModel {
     pub start: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
     pub end: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub server_time: DateTime<Utc>,
 }
 
 /// RSCTF `GameNotice` response.

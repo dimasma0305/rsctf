@@ -52,6 +52,7 @@ import { ScrollingText } from '@Components/ScrollingText'
 import { abbreviatedSha256, attachmentDownloadInfo } from '@Utils/AttachmentDownload'
 import { FlagVerdictKind, FlagVerdictState } from '@Utils/FlagVerdict'
 import { useLanguage } from '@Utils/I18n'
+import { useServerNow } from '@Utils/ServerClock'
 import { ChallengeCategoryItemProps, HunamizeSize } from '@Utils/Shared'
 import { ChallengeDetailModel, ChallengeType, ReviewRating, SolveReceiptMode, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengeModal.module.css'
@@ -91,7 +92,7 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   receiptProof: string
   setReceiptProof: (value: string | React.ChangeEvent<any> | null | undefined) => void
   onCreate: () => void
-  onExtend?: () => void
+  onExtend?: () => void | Promise<void>
   onDestroy: () => void
   onSubmitFlag: () => void
   onDownload?: () => void
@@ -155,6 +156,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const colorScheme = useComputedColorScheme('dark')
   const reviewOutlineShade = colorScheme === 'dark' ? 4 : 8
   const { locale } = useLanguage()
+  const serverNow = useServerNow()
 
   const placeholders = t('challenge.content.flag_placeholders', {
     returnObjects: true,
@@ -226,11 +228,13 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   }
 
   const deadlineTime = useMemo(() => (challenge?.deadline ? dayjs(challenge.deadline) : null), [challenge?.deadline])
-  const [isDeadlinePassed, setIsDeadlinePassed] = useState(() => (deadlineTime ? dayjs().isAfter(deadlineTime) : false))
+  const [isDeadlinePassed, setIsDeadlinePassed] = useState(() =>
+    deadlineTime ? serverNow.isAfter(deadlineTime) : false
+  )
 
   useEffect(() => {
-    setIsDeadlinePassed(deadlineTime ? dayjs().isAfter(deadlineTime) : false)
-  }, [deadlineTime])
+    setIsDeadlinePassed(deadlineTime ? serverNow.isAfter(deadlineTime) : false)
+  }, [deadlineTime, serverNow])
 
   const isLimitReached = (challenge?.limit && (challenge.attempts ?? 0) >= challenge.limit) || false
 

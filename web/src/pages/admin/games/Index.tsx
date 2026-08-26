@@ -39,6 +39,7 @@ import { GameColorMap } from '@Components/GameCard'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { CloneGameModal } from '@Components/admin/CloneGameModal'
 import { GameCreateModal } from '@Components/admin/GameCreateModal'
+import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useArrayResponse } from '@Hooks/useArrayResponse'
@@ -64,6 +65,7 @@ const Games: FC = () => {
 
   const navigate = useNavigate()
   const { t } = useTranslation()
+  const now = useServerNow()
   const theme = useMantineTheme()
   const isNarrow = useIsMobile(480)
 
@@ -255,7 +257,7 @@ const Games: FC = () => {
               <Table.Tbody>
                 {games &&
                   games.map((game) => {
-                    const { startTime, endTime, status } = getGameStatus(game)
+                    const { startTime, endTime, status } = getGameStatus(game, now)
                     const color = GameColorMap.get(status)
 
                     return (
@@ -343,7 +345,7 @@ const Games: FC = () => {
         </Box>
         <SimpleGrid hiddenFrom="lg" cols={{ base: 1, sm: 2 }} spacing="sm" className={mobileClasses.mobileList}>
           {games?.map((game) => {
-            const { startTime, endTime, status } = getGameStatus(game)
+            const { startTime, endTime, status } = getGameStatus(game, now)
             const color = GameColorMap.get(status)
             const gameHeadingId = `mobile-game-${game.id}`
             const gameTitle = game.title || t('common.label.game')

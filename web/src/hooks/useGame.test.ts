@@ -2,7 +2,7 @@ import dayjs from 'dayjs'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { GameStatus } from '../components/GameCard'
-import { getGameStatus } from './useGame'
+import { getGameDurationMinutes, getGameStatus } from './useGame'
 
 test('sub-minute event progress is finite at every boundary', () => {
   const start = 2_000_000_000_000
@@ -33,4 +33,16 @@ test('malformed event windows never expose NaN or out-of-range progress', () => 
     assert.equal(status.progress, 0)
     assert.ok(Number.isFinite(status.progress))
   }
+})
+
+test('live duration uses the same corrected clock as lifecycle status', () => {
+  const start = 2_000_000_000_000
+  const end = start + 60 * 60_000
+  const correctedNow = dayjs(start + 10 * 60_000)
+  const rawBrowserNow = dayjs(end + 60 * 60_000)
+  const projection = getGameStatus({ start, end }, correctedNow)
+
+  assert.equal(projection.status, GameStatus.OnGoing)
+  assert.equal(getGameDurationMinutes(projection.status, projection.startTime, projection.endTime, correctedNow), 50)
+  assert.equal(getGameDurationMinutes(projection.status, projection.startTime, projection.endTime, rawBrowserNow), 0)
 })

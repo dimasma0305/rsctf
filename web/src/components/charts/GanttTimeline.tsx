@@ -1,11 +1,12 @@
 import { Badge, Box, Group, ScrollArea, Stack, Text, Title } from '@mantine/core'
 import { mdiCalendarBlankOutline, mdiGestureSwipeHorizontal } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import dayjs, { Dayjs } from 'dayjs'
+import type { Dayjs } from 'dayjs'
 import { CSSProperties, FC, ReactNode, useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { useLanguage } from '@Utils/I18n'
+import { useServerNow } from '@Utils/ServerClock'
 import classes from '@Styles/GanttTimeline.module.css'
 
 interface GanttTimeLineProps {
@@ -51,9 +52,10 @@ export const GanttTimeLine: FC<GanttTimeLineProps> = ({ items }) => {
   const todayMarker = useRef<HTMLSpanElement>(null)
   const { t } = useTranslation()
   const { locale } = useLanguage()
+  const now = useServerNow()
+  const dayKey = now.startOf('day').valueOf()
 
   const dateData = useMemo<DateData>(() => {
-    const now = dayjs()
     const start = now.startOf('week').subtract(3, 'week').startOf('day')
     const end = start.add(DAY_COUNT, 'day')
     const durationSeconds = end.diff(start, 'second')
@@ -88,7 +90,7 @@ export const GanttTimeLine: FC<GanttTimeLineProps> = ({ items }) => {
       days,
       months,
     }
-  }, [locale])
+  }, [dayKey, locale])
 
   useEffect(() => {
     const element = viewport.current

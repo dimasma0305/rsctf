@@ -1,9 +1,13 @@
 import useSWR, { SWRConfiguration, MutatorOptions, mutate } from "swr";
 import { handleAxiosError } from "@Utils/ApiHelper";
+import { installEventVpnProof } from "@Utils/EventVpnProof";
+import { installServerClock } from "@Utils/ServerClock";
 
 <%~ includeFile("@default/api.eta", it) %>
 
 const api = new Api();
+installEventVpnProof(api.instance);
+installServerClock(api.instance);
 export default api;
 
 export const fetcher = async (args: string | [string, Record<string, unknown>]) => {

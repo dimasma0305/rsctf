@@ -39,7 +39,7 @@ import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useConfig } from '@Hooks/useConfig'
-import { getGameStatus, useGame } from '@Hooks/useGame'
+import { useGame, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useTeams, useUser } from '@Hooks/useUser'
 import api, { GameJoinModel, ParticipationStatus } from '@Api'
@@ -100,7 +100,7 @@ const GameDetail: FC = () => {
 
   const theme = useMantineTheme()
 
-  const { startTime, endTime, finished, started, progress, status: gameStatus } = getGameStatus(game)
+  const { startTime, endTime, finished, started, progress, status: gameStatus } = useGameStatus(game)
 
   const { locale } = useLanguage()
   const { config } = useConfig()

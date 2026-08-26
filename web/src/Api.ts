@@ -1567,6 +1567,11 @@ export interface GameInfoModel {
   vpnSourceAsnTelemetryEnabled?: boolean;
   /** Record when one event peer appears from several endpoint identities. */
   vpnDeviceSharingTelemetryEnabled?: boolean;
+  /**
+   * Response-owned server clock sample for lifecycle display.
+   * @format uint64
+   */
+  serverTime?: number;
   /** Required audit reason when any VPN/security switch changes. */
   vpnPolicyChangeReason?: string | null;
 }
@@ -2745,6 +2750,11 @@ export interface BasicGameInfoModel {
    * @format uint64
    */
   end: number;
+  /**
+   * Server clock sample for lifecycle display
+   * @format uint64
+   */
+  serverTime: number;
 }
 
 /** List response */
@@ -2864,6 +2874,11 @@ export interface DetailedGameInfoModel {
    * @format uint64
    */
   end?: number;
+  /**
+   * Server clock sample for lifecycle display
+   * @format uint64
+   */
+  serverTime?: number;
 }
 
 export interface DivisionInfo {
@@ -3945,6 +3960,7 @@ import type {
 } from "axios";
 import axios from "axios";
 import { installEventVpnProof } from "@Utils/EventVpnProof";
+import { installServerClock } from "@Utils/ServerClock";
 
 export type QueryParamsType = Record<string | number, any>;
 
@@ -10193,6 +10209,7 @@ export class Api<
 
 const api = new Api();
 installEventVpnProof(api.instance);
+installServerClock(api.instance);
 export default api;
 
 export const fetcher = async (

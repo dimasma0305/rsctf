@@ -11,10 +11,18 @@ import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { encryptApiData } from '@Utils/Crypto'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
 import { resolveChallengeDeliveryGuide } from '@Utils/GuideState'
+import { destroyReconciledInstance, mergeInstanceContext } from '@Utils/InstanceLifecycle'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
-import api, { AnswerResult, ChallengeType, ContainerPortMappingType, SubmissionType, ReviewRating } from '@Api'
+import api, {
+  AnswerResult,
+  ChallengeDetailModel,
+  ChallengeType,
+  ContainerPortMappingType,
+  SubmissionType,
+  ReviewRating,
+} from '@Api'
 
 interface ChallengeSolverModel {
   rank: number
@@ -132,14 +140,14 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
     try {
       const res = await api.game.gameCreateContainer(gameId, challengeId)
-      mutate({
-        ...challenge,
-        context: {
-          ...challenge?.context,
-          closeTime: res.data.expectStopAt,
-          instanceEntry: res.data.entry,
-        },
-      })
+      await mutate(
+        (latest) =>
+          mergeInstanceContext(latest, {
+            closeTime: res.data.expectStopAt,
+            instanceEntry: res.data.entry,
+          }),
+        { revalidate: false }
+      )
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.created.title'),
@@ -155,17 +163,16 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
   const requestDestroy = async () => {
     try {
-      await mutate()
-
-      if (!challenge?.context?.instanceEntry) return
-
-      await api.game.gameDeleteContainer(gameId, challengeId)
-      mutate({
-        ...challenge,
-        context: {
-          ...challenge?.context,
-          closeTime: null,
-          instanceEntry: null,
+      await destroyReconciledInstance<ChallengeDetailModel>({
+        refresh: mutate,
+        hasInstance: (latest) => Boolean(latest?.context?.instanceEntry),
+        destroy: async () => {
+          await api.game.gameDeleteContainer(gameId, challengeId)
+        },
+        publishAbsent: async () => {
+          await mutate((current) => mergeInstanceContext(current, { closeTime: null, instanceEntry: null }), {
+            revalidate: false,
+          })
         },
       })
       showNotification({
@@ -182,10 +189,11 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const onDestroy = async () => {
     if (!challengeId || disabled) return
     setDisabled(true)
-
-    await requestDestroy()
-
-    setDisabled(false)
+    try {
+      await requestDestroy()
+    } finally {
+      setDisabled(false)
+    }
   }
 
   const onExtend = async () => {
@@ -194,15 +202,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
     try {
       const res = await api.game.gameExtendContainerLifetime(gameId, challengeId)
-      mutate({
-        ...challenge,
-        context: {
-          ...challenge?.context,
-          closeTime: res.data.expectStopAt,
-        },
+      await mutate((latest) => mergeInstanceContext(latest, { closeTime: res.data.expectStopAt }), {
+        revalidate: false,
       })
-    } catch (e) {
-      showErrorMsg(e, t)
     } finally {
       setDisabled(false)
     }

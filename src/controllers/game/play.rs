@@ -10,7 +10,7 @@ pub async fn recent_games(
     State(st): State<SharedState>,
     Query(q): Query<RecentQuery>,
 ) -> AppResult<RequestResponse<Vec<BasicGameInfoModel>>> {
-    let now = Utc::now();
+    let ordering_time = Utc::now();
     let mut rows = game::Entity::find()
         .filter(game::Column::Hidden.eq(false))
         .all(&st.db)
@@ -18,15 +18,41 @@ pub async fn recent_games(
 
     // Mirror RSCTF GenRecentGames ordering: ongoing games first (by proximity),
     // then upcoming (by start), then ended (most recent first).
-    rows.sort_by_key(|g| recent_sort_key(g, now));
+    rows.sort_by_key(|g| recent_sort_key(g, ordering_time));
     rows.truncate(50);
-
-    let data: Vec<BasicGameInfoModel> = rows.iter().map(BasicGameInfoModel::from).collect();
-    let mut res = data;
-    if q.limit > 0 && res.len() > q.limit {
-        res.truncate(q.limit);
+    if q.limit > 0 && rows.len() > q.limit {
+        rows.truncate(q.limit);
     }
+
+    // Stamp the payload after the database read and in-memory work. Capturing
+    // this before an arbitrarily slow query would turn server processing time
+    // into apparent negative clock skew in the browser's midpoint estimate.
+    let response_time = Utc::now();
+    let res: Vec<BasicGameInfoModel> = rows
+        .iter()
+        .map(|game| BasicGameInfoModel {
+            server_time: response_time,
+            ..BasicGameInfoModel::from(game)
+        })
+        .collect();
     Ok(RequestResponse::ok(res))
+}
+
+#[cfg(test)]
+mod response_clock_tests {
+    #[test]
+    fn recent_games_stamp_the_clock_after_the_database_read() {
+        let source = include_str!("play.rs");
+        let database_read = source
+            .find(".all(&st.db)\n        .await?;")
+            .expect("recent-games database read remains visible");
+        let response_stamp = source
+            .find("let response_time = Utc::now();")
+            .expect("recent-games response has a fresh clock sample");
+
+        assert!(database_read < response_stamp);
+        assert!(source[response_stamp..].contains("server_time: response_time"));
+    }
 }
 
 /// Sort key in seconds (RSCTF GenRecentGames): every game keyed by a raw
@@ -167,6 +193,7 @@ pub async fn game_details(
         challenges,
         start: g.start_time_utc,
         end: g.end_time_utc,
+        server_time: Utc::now(),
     };
     Ok(RequestResponse::ok(model))
 }

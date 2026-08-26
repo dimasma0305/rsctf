@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { GameColorMap, GameStatus, getGameStatusLabel } from '@Components/GameCard'
 import { useLanguage } from '@Utils/I18n'
-import { getGameStatus, toLimitTag } from '@Hooks/useGame'
+import { toLimitTag, useGameStatus } from '@Hooks/useGame'
 import { BasicGameInfoModel } from '@Api'
 import classes from '@Styles/RecentGame.module.css'
 
@@ -19,7 +19,7 @@ export const RecentGame: FC<RecentGameProps> = ({ game, ...others }) => {
   const { locale } = useLanguage()
   const theme = useMantineTheme()
   const { title, poster, limit } = game
-  const { startTime, endTime, status, progress } = getGameStatus(game)
+  const { startTime, endTime, status, progress } = useGameStatus(game)
   const color = GameColorMap.get(status)
   const referenceTime = status === GameStatus.Coming ? startTime : endTime
   const statusText = getGameStatusLabel(t, status)
