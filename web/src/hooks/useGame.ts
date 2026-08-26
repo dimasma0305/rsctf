@@ -1,6 +1,6 @@
 import dayjs, { Dayjs } from 'dayjs'
 import { TFunction } from 'i18next'
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import useSWR, { type Middleware, type SWRConfiguration, unstable_serialize } from 'swr'
 import { GameStatus } from '@Components/GameCard'
 import { useServerNow } from '@Utils/ServerClock'
@@ -56,7 +56,7 @@ export const createGameTimingSWRConfig = () => {
     function useGameTimingRetryScope(key, fetcher, swrConfig) {
       const serializedKey = unstable_serialize(key)
 
-      useEffect(() => {
+      useLayoutEffect(() => {
         if (!serializedKey) return
         activate(serializedKey)
         return () => deactivate(serializedKey)
