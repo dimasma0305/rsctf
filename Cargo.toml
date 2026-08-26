@@ -1,6 +1,6 @@
 [package]
 name = "rsctf"
-version = "0.1.89"
+version = "0.1.90"
 edition = "2021"
 license = "MIT"
 authors = ["rsctf contributors"]
@@ -48,6 +48,7 @@ sea-orm-migration = { version = "1.1", features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_repr = "0.1"
+serde_ignored = "0.1"
 
 # auth / crypto
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }

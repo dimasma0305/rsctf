@@ -16,7 +16,29 @@ The public [`dimasma0305/rsctf-challenges`](https://github.com/dimasma0305/rsctf
 | Claim marker | `KingOfTheHill` | Exclusive shared hill and `/koth/king` marker scoring |
 | Proof arena | `KingOfTheHill` | Concurrent API play with a separately deployed signed evidence referee |
 
-The event manifest is `.gzevent` at the challenge repository root. Challenges use the layout `AD/<category>/<challenge>/`, `Koth/<category>/<challenge>/`, or `Jeopardy/<category>/<challenge>/`. Because every challenge lives below the root event manifest, the binding imports them into the same game.
+The event manifest is `.gzevent` at the challenge repository root. Challenges use
+the layout `challenges/AD/<category>/<challenge>/`,
+`challenges/Koth/<category>/<challenge>/`, or
+`challenges/Jeopardy/<category>/<challenge>/`. Because every challenge lives below
+the root event manifest, the binding imports them into the same game.
+
+## Validate it in GitHub Actions
+
+Challenge repositories can invoke rsctf's own parser without copying platform code
+or a wrapper script:
+
+```yaml
+- name: Validate manifests with rsctf
+  uses: dimasma0305/rsctf@main
+```
+
+The composite action selects the rsctf image corresponding to its action ref,
+resolves the pull to an immutable digest, verifies the image source and version
+labels, and runs `rsctf challenge check` against the caller's checkout. The manifest
+tree is mounted read-only; the validator container has no network, capabilities, or
+writable root filesystem. Pin the action to a matching rsctf release tag once that
+release includes the action. A commit-pinned action may instead receive its matching
+`ghcr.io/dimasma0305/rsctf@sha256:...` through the `image` input.
 
 ## Import it on your rsctf instance
 
@@ -106,12 +128,14 @@ Removing a manifest does not silently erase played history. rsctf retains the ch
 - `checker/lib.py` — protocol-neutral contexts, verdict mapping, `@checker`, shuffled A&D/KotH suite runners, and the legacy single-checker decorators
 - `checker/run.py` — the challenge's protocol and focused, order-independent check suite; compare the hosted Pwn raw TCP checker with the self-hosted Web HTTP checker
 - `checker/requirements.txt` — optional exact PyPI pins; Pwn uses `pwntools==4.15.0` and Web uses `httpx==0.28.1`
-- `scripts/validate.mjs` — strict example validation used by GitHub Actions
+- `scripts/validate.mjs` — strict challenge-repository convention validation used
+  in addition to rsctf's official imported action
 - `scripts/test-checkers.py` — live checker smoke tests for all four verdict classes
 - `generator/Dockerfile` and `generator/generate.py` — auto-built deterministic `RSCTF_VARIANT_INPUT` to manifest contract
 - `scripts/generate-variants.mjs` — administrator pre-event generation and inventory call
 - `scripts/issue-solve-receipt.mjs` — protected verifier-to-control receipt adapter
-- `PROVENANCE.md` — automatic build, registry fallback, configuration, API, and trust-boundary guide
+- `docs/provenance.md` — automatic build, registry fallback, configuration, API,
+  and trust-boundary guide
 
 Copy the complete checker directory when adapting a template. `run.py` imports
 its sibling `lib.py`. When dependencies are necessary, every requirements entry
@@ -120,4 +144,8 @@ version ranges, and source builds are rejected. rsctf installs accepted packages
 wheel-only while preparing an immutable checker revision. Treat the repository
 commit and all dependency pins as trusted, administrator-approved inputs.
 
-The challenge repository's [README](https://github.com/dimasma0305/rsctf-challenges), [manifest reference](https://github.com/dimasma0305/rsctf-challenges/blob/main/CONFIGURATION.md), [provenance guide](https://github.com/dimasma0305/rsctf-challenges/blob/main/PROVENANCE.md), and [checker guide](https://github.com/dimasma0305/rsctf-challenges/blob/main/CHECKERS.md) document every file and current runtime caveat.
+The challenge repository's [README](https://github.com/dimasma0305/rsctf-challenges),
+[manifest reference](https://github.com/dimasma0305/rsctf-challenges/blob/main/docs/configuration.md),
+[provenance guide](https://github.com/dimasma0305/rsctf-challenges/blob/main/docs/provenance.md),
+and [checker guide](https://github.com/dimasma0305/rsctf-challenges/blob/main/docs/checkers.md)
+document every file and current runtime caveat.

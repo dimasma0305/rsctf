@@ -22,6 +22,8 @@ pub const DEFAULT_JEOPARDY_ORIGINAL_SCORE: i32 = 1_000;
 pub const DEFAULT_JEOPARDY_MIN_SCORE_POINTS: i32 = 10;
 pub const DEFAULT_JEOPARDY_MIN_SCORE_RATE: f64 =
     DEFAULT_JEOPARDY_MIN_SCORE_POINTS as f64 / DEFAULT_JEOPARDY_ORIGINAL_SCORE as f64;
+pub const DEFAULT_JEOPARDY_DIFFICULTY: f64 = 5.0;
+pub const DEFAULT_CHALLENGE_SUBMISSION_LIMIT: i32 = 0;
 
 /// Whether a public scoreboard is currently hiding post-freeze evidence.
 /// Event end is still an immutable evidence cutoff, but it is not a "frozen

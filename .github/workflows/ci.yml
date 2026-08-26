@@ -42,6 +42,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          submodules: recursive
+
+      - name: Test challenge validation action wrapper
+        run: python3 github-action/test_run.py
 
       - name: Install native build dependencies
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpcap-dev
@@ -65,6 +69,13 @@ jobs:
 
       - name: Build
         run: cargo build --locked
+
+      - name: Validate bundled challenge repository with rsctf
+        run: >-
+          ./target/debug/rsctf challenge check
+          --github
+          --deny-warnings
+          examples/challenge-repository
 
       - name: Run tests
         run: cargo test --all-targets --all-features --locked
@@ -240,7 +251,7 @@ jobs:
         shell: bash
         run: |
           docker build --tag rsctf-worker-smoke:ci \
-            examples/challenge-repository/Jeopardy/Web/static-flag-service/src
+            examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src
           image_id="$(docker image inspect rsctf-worker-smoke:ci --format '{{.Id}}')"
           RSCTF_WORKER_TEST_IMAGE_ID="$image_id" \
             cargo test --manifest-path agents/worker-agent/Cargo.toml --locked \

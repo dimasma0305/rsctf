@@ -90,4 +90,6 @@ EXPOSE 8080
 EXPOSE 9443
 # WireGuard hub UDP port teams dial (A&D VPN).
 EXPOSE 51820/udp
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 \
+  CMD ["python3", "-c", "import sys,urllib.request; sys.exit(urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).read()!=b'ok')"]
 ENTRYPOINT ["/usr/local/bin/rsctf"]

@@ -57,11 +57,36 @@ public as well when it is enabled.
 
 ## Sample challenge source validation
 
-The standalone [`dimasma0305/rsctf-challenges`](https://github.com/dimasma0305/rsctf-challenges) repository is pinned here as the `examples/challenge-repository` Git submodule. Its `Validate challenge repository` workflow validates seven manifests, compiles and smoke-tests the hosted A&D, self-hosted A&D, and KotH checkers, and builds all five checked-in `src/Dockerfile` contexts without pushing them to a registry. Every checker keeps platform context parsing, verdict mapping, `@checker`, and the shuffled `run_ad_checker()` / `run_koth_checker()` entry points in a dependency-free, protocol-neutral `lib.py`; the legacy `@ad_checker` and `@koth_checker` wrappers remain supported. Each `run.py` implements the challenge's protocol and registers focused checks. Their order is cryptographically shuffled per checker process, every function is attempted once, and failures are aggregated deterministically. The managed Pwn example pins `pwntools==4.15.0` for its raw TCP line protocol, the self-hosted Web example pins `httpx==0.28.1`, and KotH uses standard-library HTTP. The example manifests omit `containerImage`, so a trusted Repository Bindings scan exercises rsctf's import-time build path instead of pulling prebuilt sample challenge images from Docker Hub or GHCR.
+The standalone [`dimasma0305/rsctf-challenges`](https://github.com/dimasma0305/rsctf-challenges)
+repository is pinned here as the `examples/challenge-repository` Git submodule. Its
+`Validate challenge repository` workflow imports this repository's maintained
+challenge validation action:
+
+```yaml
+- name: Validate manifests with rsctf
+  uses: dimasma0305/rsctf@main
+```
+
+The action runs `rsctf challenge check` from the matching rsctf image; the challenge
+repository does not vendor a platform-validator script. The
+workflow also validates its own catalog conventions, compiles and smoke-tests the
+hosted A&D, self-hosted A&D, and KotH checkers, and dynamically builds six service
+contexts plus one generator without pushing them. Every checker keeps platform
+context parsing, verdict mapping, `@checker`, and the shuffled `run_ad_checker()` /
+`run_koth_checker()` entry points in a dependency-free, protocol-neutral `lib.py`;
+the legacy `@ad_checker` and `@koth_checker` wrappers remain supported. Each `run.py`
+implements the challenge's protocol and registers focused checks. Their order is
+cryptographically shuffled per checker process, every function is attempted once,
+and failures are aggregated deterministically. The managed Pwn example pins
+`pwntools==4.15.0` for its raw TCP line protocol, the self-hosted Web example pins
+`httpx==0.28.1`, and KotH uses standard-library HTTP. The example manifests omit
+`containerImage`, so a trusted Repository Bindings scan exercises rsctf's import-time
+build path instead of pulling prebuilt sample challenge images from Docker Hub or
+GHCR.
 
 After a non-recursive rsctf clone, populate the example with `git submodule update --init --recursive`.
 
-See [Import the sample challenge repository](../organizers/sample-repository) for the Docker-backend and shared-daemon requirements of local source builds. Challenge authors can use the standalone repository's [manifest reference](https://github.com/dimasma0305/rsctf-challenges/blob/main/CONFIGURATION.md) and [checker guide](https://github.com/dimasma0305/rsctf-challenges/blob/main/CHECKERS.md), including the separate hosted and self-hosted A&D templates and the KotH checker contract. Copy the complete checker directory. An optional `requirements.txt` beside `run.py` may contain simple, exact PyPI pins only; rsctf rejects URLs, local paths, pip options, editable or unpinned requirements, and source-only packages, then installs accepted dependencies wheel-only into the immutable checker environment.
+See [Import the sample challenge repository](../organizers/sample-repository) for the Docker-backend and shared-daemon requirements of local source builds. Challenge authors can use the standalone repository's [manifest reference](https://github.com/dimasma0305/rsctf-challenges/blob/main/docs/configuration.md) and [checker guide](https://github.com/dimasma0305/rsctf-challenges/blob/main/docs/checkers.md), including the separate hosted and self-hosted A&D templates and the KotH checker contract. Copy the complete checker directory. An optional `requirements.txt` beside `run.py` may contain simple, exact PyPI pins only; rsctf rejects URLs, local paths, pip options, editable or unpinned requirements, and source-only packages, then installs accepted dependencies wheel-only into the immutable checker environment.
 
 ## Helm chart package
 

@@ -1,6 +1,8 @@
 //! Ported from RSCTF `Program.cs` — the rsctf entry point. Builds the
 //! composition root (`AppState`), runs migrations, and serves the API.
 
+mod cli;
+
 // argon2 (password hashing) is memory-hard — ~19 MiB per hash. glibc malloc keeps those
 // large freed chunks in its arenas instead of returning them to the OS, so a register/
 // login flood ratchets RSS up unboundedly (1.2 → 8+ GiB observed, never released).
@@ -43,6 +45,9 @@ fn main() -> anyhow::Result<()> {
         == Some(rsctf::services::ad_engine::sandbox::PREFLIGHT_ARG)
     {
         rsctf::services::ad_engine::sandbox::confinement_probe_main();
+    }
+    if let Some(status) = cli::dispatch() {
+        std::process::exit(status);
     }
     install_tls_crypto_provider()?;
     tokio::runtime::Builder::new_multi_thread()

@@ -15,7 +15,10 @@ use super::GitCredentials;
 use crate::models::data::game_challenge;
 use crate::utils::enums::{ChallengeVariantMode, NetworkMode, SolveReceiptMode};
 use crate::utils::error::{AppError, AppResult};
-use crate::utils::scoring::DEFAULT_JEOPARDY_MIN_SCORE_RATE;
+use crate::utils::scoring::{
+    DEFAULT_CHALLENGE_SUBMISSION_LIMIT, DEFAULT_JEOPARDY_DIFFICULTY,
+    DEFAULT_JEOPARDY_MIN_SCORE_RATE,
+};
 
 /// Serializable mirror of [`ChallengeYaml`](super::ChallengeYaml) used to
 /// REGENERATE a `challenge.yml` from the DB row (the inverse of
@@ -194,8 +197,9 @@ fn serialize_challenge_inner(
             .filter(|value| !value.is_empty()),
         min_score_rate: (ch.min_score_rate != DEFAULT_JEOPARDY_MIN_SCORE_RATE)
             .then_some(ch.min_score_rate),
-        difficulty: (ch.difficulty != 5.0).then_some(ch.difficulty),
-        submission_limit: (ch.submission_limit != 0).then_some(ch.submission_limit),
+        difficulty: (ch.difficulty != DEFAULT_JEOPARDY_DIFFICULTY).then_some(ch.difficulty),
+        submission_limit: (ch.submission_limit != DEFAULT_CHALLENGE_SUBMISSION_LIMIT)
+            .then_some(ch.submission_limit),
         disable_blood_bonus: ch.disable_blood_bonus.then_some(true),
         variant_mode: (ch.variant_mode != ChallengeVariantMode::Disabled)
             .then_some(ch.variant_mode),

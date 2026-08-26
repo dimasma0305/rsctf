@@ -107,16 +107,19 @@ pub use manifest::{
 };
 mod discovery;
 pub use discovery::{discover_challenges, discover_events};
+mod validation;
+use validation::resolve_challenge_scoring;
+pub use validation::{
+    validate_repository, RepositoryDiagnostic, RepositoryDiagnosticLevel,
+    RepositoryValidationReport,
+};
 mod repository;
 use repository::find_repository_challenge;
 pub(crate) use repository::{manifest_candidate_in_checkout, tombstone_missing_challenges};
 mod runtime;
 use runtime::{live_runtime_update_deferred, LiveRuntimeIntent};
 mod grading;
-use grading::{
-    competition_scoring_started_locked, grading_fence_locked, normalize_min_score_rate,
-    GradingIntent,
-};
+use grading::{competition_scoring_started_locked, grading_fence_locked, GradingIntent};
 mod policy;
 pub use policy::ImportPolicy;
 use policy::{initialize_new_import_review, validate_pending_manifest, MAX_PENDING_MANIFEST_BYTES};
@@ -357,6 +360,14 @@ pub async fn import_manifest(
     // Category is inferred from the enclosing directories when it is absent.
     let category = resolve_category(model.category.as_deref(), package_dir);
 
+    // Repository manifests share the exact defaults and validation policy used
+    // by interactive challenge creation. Invalid authored values fail closed;
+    // they are never silently clamped into a different scoring policy.
+    let scoring = resolve_challenge_scoring(&model)?;
+    let min_score_rate = scoring.min_score_rate;
+    let difficulty = scoring.difficulty;
+    let submission_limit = scoring.submission_limit;
+
     // Author is folded into the content body ("Author: **X**\n\n...") exactly as
     // RSCTF's ApplyYamlToChallenge does, so a later re-export round-trips.
     let description = model.description.unwrap_or_default();
@@ -377,18 +388,6 @@ pub async fn import_manifest(
         ),
         _ => None,
     };
-
-    // Scoring: clamp to the same bounds the API PUT enforces so an out-of-range
-    // manifest can't invert the dynamic-score decay curve. Defaults match the
-    // GameChallenge entity init (10 points from the default 1,000 / difficulty 5).
-    let min_score_rate = normalize_min_score_rate(model.min_score_rate);
-    let requested_difficulty = model.difficulty.unwrap_or(5.0);
-    let difficulty = if requested_difficulty.is_finite() && requested_difficulty > 0.0 {
-        requested_difficulty
-    } else {
-        5.0
-    };
-    let submission_limit = model.submission_limit.unwrap_or(0).max(0);
 
     let container = model.container.as_ref();
     let flag_template = container
