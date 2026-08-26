@@ -34,7 +34,7 @@ import { Icon } from '@mdi/react'
 import * as signalR from '@microsoft/signalr'
 import cx from 'clsx'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { ScrollingText } from '@Components/ScrollingText'
@@ -43,7 +43,7 @@ import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { useGame, useGameStatus } from '@Hooks/useGame'
+import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import api, { EventType, GameEvent } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 import { formatGameEvent } from '../eventFormat'
@@ -115,32 +115,32 @@ const Events: FC = () => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
   }, [activePage, viewport])
 
-  useEffect(() => {
-    const fetchEvents = async () => {
-      try {
-        const res = await api.game.gameEvents(numId, {
-          hideContainer: hideContainerEvents,
-          count: ITEM_COUNT_PER_PAGE,
-          skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
-          search: debouncedSearch || undefined,
-        })
-        setEvents(res.data)
-      } catch (err) {
-        showNotification({
-          color: 'red',
-          title: t('game.notification.fetch_failed.event'),
-          message: await handleAxiosError(err),
-          icon: <Icon path={mdiClose} size={1} />,
-        })
-      }
+  const fetchEvents = useCallback(async () => {
+    try {
+      const res = await api.game.gameEvents(numId, {
+        hideContainer: hideContainerEvents,
+        count: ITEM_COUNT_PER_PAGE,
+        skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
+        search: debouncedSearch || undefined,
+      })
+      setEvents(res.data)
+    } catch (err) {
+      showNotification({
+        color: 'red',
+        title: t('game.notification.fetch_failed.event'),
+        message: await handleAxiosError(err),
+        icon: <Icon path={mdiClose} size={1} />,
+      })
     }
+  }, [activePage, hideContainerEvents, debouncedSearch, numId, t])
 
-    fetchEvents()
+  useEffect(() => {
+    void fetchEvents()
 
     if (activePage === 1) {
       newEvents.current = []
     }
-  }, [activePage, hideContainerEvents, debouncedSearch, numId, t])
+  }, [activePage, fetchEvents])
 
   useEffect(() => {
     if (monitorConnectionActive) {
@@ -181,6 +181,11 @@ const Events: FC = () => {
       }
     }
   }, [monitorConnectionActive, numId, t])
+
+  // This effect is intentionally declared after hub ownership. React tears
+  // down the live connection first, then publishes one authoritative REST
+  // snapshot for a mounted active -> stopped lifecycle transition.
+  useRevalidateWhenPollingStops(monitorConnectionActive, fetchEvents)
 
   const filteredEvents = newEvents.current.filter(
     (e) => !hideContainerEvents || (e.type !== EventType.ContainerStart && e.type !== EventType.ContainerDestroy)

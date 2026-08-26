@@ -32,7 +32,7 @@ import { Icon } from '@mdi/react'
 import * as signalR from '@microsoft/signalr'
 import cx from 'clsx'
 import dayjs from 'dayjs'
-import { FC, useEffect, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { ScrollingText } from '@Components/ScrollingText'
@@ -40,7 +40,7 @@ import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { downloadBlob, handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
-import { useGame, useGameStatus } from '@Hooks/useGame'
+import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import api, { AnswerResult, Submission } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 
@@ -98,32 +98,32 @@ const Submissions: FC = () => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
   }, [activePage, viewport])
 
-  useEffect(() => {
-    const fetchSubmissions = async () => {
-      try {
-        const res = await api.game.gameSubmissions(numId, {
-          type: type === 'All' ? undefined : type,
-          count: ITEM_COUNT_PER_PAGE,
-          skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
-          search: debouncedSearch || undefined,
-        })
-        setSubmissions(res.data)
-      } catch (err) {
-        showNotification({
-          color: 'red',
-          title: t('game.notification.fetch_failed.submission'),
-          message: await handleAxiosError(err),
-          icon: <Icon path={mdiClose} size={1} />,
-        })
-      }
+  const fetchSubmissions = useCallback(async () => {
+    try {
+      const res = await api.game.gameSubmissions(numId, {
+        type: type === 'All' ? undefined : type,
+        count: ITEM_COUNT_PER_PAGE,
+        skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
+        search: debouncedSearch || undefined,
+      })
+      setSubmissions(res.data)
+    } catch (err) {
+      showNotification({
+        color: 'red',
+        title: t('game.notification.fetch_failed.submission'),
+        message: await handleAxiosError(err),
+        icon: <Icon path={mdiClose} size={1} />,
+      })
     }
+  }, [activePage, type, debouncedSearch, numId, t])
 
-    fetchSubmissions()
+  useEffect(() => {
+    void fetchSubmissions()
 
     if (activePage === 1) {
       newSubmissions.current = []
     }
-  }, [activePage, type, debouncedSearch, numId, t])
+  }, [activePage, fetchSubmissions])
 
   useEffect(() => {
     if (monitorConnectionActive) {
@@ -164,6 +164,10 @@ const Submissions: FC = () => {
       }
     }
   }, [monitorConnectionActive, numId, t])
+
+  // Keep the final request separate from hub ownership: stopping a retained
+  // monitor performs one REST reconciliation without reopening the connection.
+  useRevalidateWhenPollingStops(monitorConnectionActive, fetchSubmissions)
 
   const filteredSubs = newSubmissions.current.filter((item) => type === 'All' || item.status === type)
 
