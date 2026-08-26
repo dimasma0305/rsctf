@@ -42,8 +42,7 @@ import { GameCreateModal } from '@Components/admin/GameCreateModal'
 import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { useArrayResponse } from '@Hooks/useArrayResponse'
-import { getGameStatus } from '@Hooks/useGame'
+import { getGameStatus, useGameTimingSWRConfig } from '@Hooks/useGame'
 import { useUser } from '@Hooks/useUser'
 import api, { GameInfoModel, Role } from '@Api'
 import misc from '@Styles/Misc.module.css'
@@ -59,8 +58,6 @@ const Games: FC = () => {
   const [cloneTarget, setCloneTarget] = useState<GameInfoModel | null>(null)
   const [disabled, setDisabled] = useState(false)
   const [progress, setProgress] = useState(0)
-  const { data: games, total, setData: setGames, updateData: updateGames } = useArrayResponse<GameInfoModel>()
-  const [current, setCurrent] = useState(0)
   const { user } = useUser()
 
   const navigate = useNavigate()
@@ -68,6 +65,25 @@ const Games: FC = () => {
   const now = useServerNow()
   const theme = useMantineTheme()
   const isNarrow = useIsMobile(480)
+  const timingConfig = useGameTimingSWRConfig()
+  const {
+    data: gamePage,
+    error: gamesError,
+    mutate: mutateGames,
+  } = api.edit.useEditGetGames(
+    {
+      count: ITEM_COUNT_PER_PAGE,
+      skip: (page - 1) * ITEM_COUNT_PER_PAGE,
+    },
+    timingConfig
+  )
+  const games = gamePage?.data
+  const total = gamePage?.total ?? 0
+  const current = (page - 1) * ITEM_COUNT_PER_PAGE + (games?.length ?? 0)
+
+  useEffect(() => {
+    if (gamesError) showErrorMsg(gamesError, t)
+  }, [gamesError, t])
 
   const onToggleHidden = async (game: GameInfoModel) => {
     if (!game.id) return
@@ -78,16 +94,16 @@ const Games: FC = () => {
         ...game,
         hidden: !game.hidden,
       })
-      if (games) {
-        updateGames(
-          games.map((g) => {
-            if (g.id === game.id) {
-              return { ...g, hidden: !g.hidden }
-            }
-            return g
-          })
-        )
-      }
+      await mutateGames(
+        (currentPage) =>
+          currentPage
+            ? {
+                ...currentPage,
+                data: currentPage.data.map((item) => (item.id === game.id ? { ...item, hidden: !item.hidden } : item)),
+              }
+            : currentPage,
+        { revalidate: false }
+      )
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
@@ -115,13 +131,7 @@ const Games: FC = () => {
       setDisabled(false)
 
       if (res.data) {
-        // Refresh the games list
-        const gamesRes = await api.edit.editGetGames({
-          count: ITEM_COUNT_PER_PAGE,
-          skip: (page - 1) * ITEM_COUNT_PER_PAGE,
-        })
-        setGames(gamesRes.data)
-        setCurrent((page - 1) * ITEM_COUNT_PER_PAGE + gamesRes.data.length)
+        await mutateGames()
 
         // Navigate to the imported game
         navigate(`/admin/games/${res.data}/info`)
@@ -133,26 +143,9 @@ const Games: FC = () => {
     }
   }
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const res = await api.edit.editGetGames({
-          count: ITEM_COUNT_PER_PAGE,
-          skip: (page - 1) * ITEM_COUNT_PER_PAGE,
-        })
-        setGames(res.data)
-        setCurrent((page - 1) * ITEM_COUNT_PER_PAGE + res.data.length)
-      } catch (e) {
-        showErrorMsg(e, t)
-      }
-    }
-
-    fetchData()
-  }, [page])
-
   return (
     <AdminPage
-      isLoading={!games}
+      isLoading={!gamePage && !gamesError}
       headProps={{ justify: 'space-between' }}
       head={
         <>
@@ -484,7 +477,7 @@ const Games: FC = () => {
       <GameCreateModal
         opened={createOpened}
         onClose={() => setCreateOpened(false)}
-        onAddGame={(game) => updateGames([...(games ?? []), game])}
+        onAddGame={() => void mutateGames()}
       />
       <CloneGameModal game={cloneTarget} opened={!!cloneTarget} onClose={() => setCloneTarget(null)} />
     </AdminPage>
