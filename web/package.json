@@ -79,6 +79,7 @@
     "@vitejs/plugin-react": "^6.0.5",
     "axe-core": "^4.13.0",
     "esbuild": "^0.28.2",
+    "happy-dom": "^20.11.2",
     "oxlint": "^1.77.0",
     "postcss": "^8.5.26",
     "postcss-preset-mantine": "^1.18.0",

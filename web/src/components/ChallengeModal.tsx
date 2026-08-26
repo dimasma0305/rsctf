@@ -39,11 +39,11 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import duration from 'dayjs/plugin/duration'
 import relativeTime from 'dayjs/plugin/relativeTime'
 import { FC, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdChallengePanel } from '@Components/AdChallengePanel'
+import { ChallengeDeadlineNotice } from '@Components/ChallengeDeadlineNotice'
 import { FlagVerdictOverlay } from '@Components/FlagVerdictOverlay'
 import { InstanceEntry } from '@Components/InstanceEntry'
 import { KothChallengePanel } from '@Components/KothChallengePanel'
@@ -53,7 +53,6 @@ import { abbreviatedSha256, attachmentDownloadInfo } from '@Utils/AttachmentDown
 import { FlagVerdictKind, FlagVerdictState } from '@Utils/FlagVerdict'
 import { useLanguage } from '@Utils/I18n'
 import { ChallengeCategoryItemProps, HunamizeSize } from '@Utils/Shared'
-import { useTicker } from '@Hooks/useTicker'
 import { ChallengeDetailModel, ChallengeType, ReviewRating, SolveReceiptMode, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengeModal.module.css'
 import misc from '@Styles/Misc.module.css'
@@ -68,51 +67,6 @@ export interface SolverInfo {
   type: SubmissionType
   time: number
   score: number
-}
-
-dayjs.extend(duration)
-
-interface ChallengeDeadlineNoticeProps {
-  deadline: dayjs.Dayjs
-  onExpiredChange: (expired: boolean) => void
-}
-
-const ChallengeDeadlineNotice: FC<ChallengeDeadlineNoticeProps> = ({ deadline, onExpiredChange }) => {
-  const { t } = useTranslation()
-  // Shared 1s ticker so multiple deadline widgets share one interval.
-  const now = useTicker()
-  const { locale } = useLanguage()
-
-  useEffect(() => {
-    onExpiredChange(now.isAfter(deadline))
-  }, [now, deadline, onExpiredChange])
-
-  if (now.isAfter(deadline)) {
-    return null
-  }
-
-  const formattedDeadline = useMemo(() => deadline.locale(locale).format('L LTS'), [deadline, locale])
-
-  const diff = deadline.diff(now)
-  const duration = dayjs.duration(diff)
-  const countdownText = `${Math.floor(duration.asHours())}:${duration.format('mm:ss')}`
-
-  return (
-    <Group gap="xs" justify="space-between" wrap="nowrap">
-      <Text fw="bold" size="sm">
-        {t('challenge.content.deadline.remaining')}&nbsp;
-        <Text span ff="monospace" fw="bold" size="sm" c="brand">
-          {countdownText}
-        </Text>
-      </Text>
-      <Text fw="bold" size="xs" c="dimmed">
-        {t('challenge.content.deadline.label')}&nbsp;
-        <Text span ff="monospace" c="dimmed" fw="bold" size="xs">
-          {formattedDeadline}
-        </Text>
-      </Text>
-    </Group>
-  )
 }
 
 export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stackId' | 'title'> {
@@ -412,7 +366,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
 
   const withDeadline = deadlineTime && !isDeadlinePassed
   const deadline = withDeadline && (
-    <ChallengeDeadlineNotice deadline={deadlineTime} onExpiredChange={setIsDeadlinePassed} />
+    <ChallengeDeadlineNotice deadline={deadlineTime} locale={locale} onExpiredChange={setIsDeadlinePassed} />
   )
 
   const withAttachment = !!challenge?.context?.url || onDownload
