@@ -273,6 +273,44 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
     .unwrap();
     assert!(frozen_was_scheduled_once);
 
+    let (first_freeze, first_end): (Option<chrono::DateTime<Utc>>, chrono::DateTime<Utc>) =
+        sqlx::query_as(r#"SELECT freeze_time_utc, end_time_utc FROM "Games" WHERE id = 2"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let extended_end = first_end + chrono::Duration::minutes(30);
+    let mut end_extension = pool.begin().await.unwrap();
+    sqlx::query(r#"UPDATE "Games" SET end_time_utc = $2 WHERE id = $1"#)
+        .bind(2_i32)
+        .bind(extended_end)
+        .execute(&mut *end_extension)
+        .await
+        .unwrap();
+    assert_eq!(
+        reschedule_game_blood_notices(
+            &mut end_extension,
+            2,
+            first_freeze,
+            first_end,
+            first_freeze,
+            extended_end,
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    end_extension.commit().await.unwrap();
+    let extension_rescheduled_to_new_end: bool = sqlx::query_scalar(
+        r#"SELECT job.available_at_utc = game.end_time_utc
+             FROM "DiscordWebhookOutbox" job
+             JOIN "Games" game ON game.id = job.game_id
+            WHERE job.notice_id = 2"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(extension_rescheduled_to_new_end);
+
     sqlx::query(
         r#"UPDATE "DiscordWebhookOutbox"
               SET available_at_utc = clock_timestamp() - INTERVAL '1 second'
