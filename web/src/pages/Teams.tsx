@@ -16,6 +16,7 @@ import { WithRole } from '@Components/WithRole'
 import { usePlayerGuide } from '@Components/guide/PlayerGuide'
 import { encryptApiData } from '@Utils/Crypto'
 import { showErrorMsg } from '@Utils/Shared'
+import { isValidTeamInviteCode } from '@Utils/TeamInvite'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -67,10 +68,10 @@ const Teams: FC = () => {
     setEditOpened(true)
   }
 
-  const codePartten = /:\d+:[0-9a-f]{32}$/
+  const validJoinTeamCode = isValidTeamInviteCode(joinTeamCode)
 
   const onJoinTeam = async () => {
-    if (!codePartten.test(joinTeamCode)) {
+    if (!validJoinTeamCode) {
       showNotification({
         color: 'red',
         title: t('common.error.encountered'),
@@ -220,7 +221,7 @@ const Teams: FC = () => {
           <Stack
             component="form"
             data-guide="team-join-workflow"
-            data-guide-stage={joinTeamCode.trim().length > 0 ? 'submit' : 'input'}
+            data-guide-stage={validJoinTeamCode ? 'submit' : 'input'}
             data-guide-interaction-scope
             onSubmit={(event) => {
               event.preventDefault()
@@ -246,7 +247,7 @@ const Teams: FC = () => {
               fullWidth
               variant="outline"
               loading={joining}
-              disabled={joining || joinTeamCode.trim().length === 0}
+              disabled={joining || !validJoinTeamCode}
               data-guide="team-join-submit"
             >
               {t('team.button.join')}

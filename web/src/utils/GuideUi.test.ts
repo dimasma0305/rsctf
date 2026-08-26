@@ -248,6 +248,9 @@ test('the novice path teaches every action on the real player controls', () => {
   )
   assert.match(teamsPage, /data-guide="team-join-code"/)
   assert.match(teamsPage, /data-guide="team-join-submit"/)
+  assert.match(teamsPage, /const validJoinTeamCode = isValidTeamInviteCode\(joinTeamCode\)/)
+  assert.match(teamsPage, /data-guide-stage=\{validJoinTeamCode \? 'submit' : 'input'\}/)
+  assert.match(teamsPage, /disabled=\{joining \|\| !validJoinTeamCode\}/)
   assert.match(teamsPage, /completeTeamSetup\(\)[\s\S]*mutateTeams\(\)/)
   assert.match(teamsPage, /<AccessibleModal/)
   assert.match(
