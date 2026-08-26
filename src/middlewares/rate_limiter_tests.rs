@@ -415,6 +415,33 @@ fn high_source_ceilings_have_constant_size_state() {
     assert_eq!(Policy::PublicHubAdmission.fixed_window(), (512, 51_200));
 }
 
+#[test]
+fn verdict_recovery_has_a_distinct_bounded_identity_budget() {
+    assert!(matches!(
+        Policy::Verdict.kind(),
+        Kind::Bucket {
+            capacity: 30.0,
+            refill_per_sec: 0.5,
+        }
+    ));
+    assert_eq!(Policy::Verdict.fixed_window(), (30, 60_000));
+    assert!(redis_key(Policy::Verdict, "partition").starts_with("rl:tb:12:"));
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let key = format!("verdict-recovery-{nonce}");
+    for _ in 0..30 {
+        assert_eq!(check(Policy::Verdict, key.clone()), Ok(()));
+    }
+    assert_eq!(check(Policy::Verdict, key.clone()), Err(2));
+    shard_for(Policy::Verdict, &key)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&(Policy::Verdict, key));
+}
+
 /// Two `DistributedLimiter` instances = two replicas sharing one Redis. Proves
 /// the whole point of the distributed limiter: N nodes enforce ONE combined
 /// quota, not N independent ones (two in-process stores would each admit `limit`,

@@ -142,6 +142,9 @@ pub enum Policy {
     /// Long-lived socket counts are bounded separately by `hubs::admission`.
     /// Appended to preserve every shipped Redis policy discriminant.
     PublicHubAdmission,
+    /// Per-identity ceiling for player submission-verdict recovery. Appended to
+    /// preserve every shipped Redis policy discriminant.
+    Verdict,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -197,6 +200,14 @@ impl Policy {
             Policy::PublicHubAdmission => Kind::Bucket {
                 capacity: 512.0,
                 refill_per_sec: 10.0,
+            },
+            // A committed submission normally needs one read. Thirty immediate
+            // recoveries support a burst of legitimate submissions while the
+            // sustained 30/min ceiling prevents this cheap status route from
+            // consuming the platform-wide 150/min identity allowance alone.
+            Policy::Verdict => Kind::Bucket {
+                capacity: 30.0,
+                refill_per_sec: 0.5,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {

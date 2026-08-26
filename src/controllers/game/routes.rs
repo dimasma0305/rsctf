@@ -82,7 +82,7 @@ fn router_with_domains(
         )
         .route(
             "/api/game/{id}/challenges/{challengeId}/status/{submitId}",
-            get(status),
+            limited(Policy::Verdict, get(status)),
         )
         .route(
             "/api/game/{id}/container/{challengeId}",
