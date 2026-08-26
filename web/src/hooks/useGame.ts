@@ -27,7 +27,7 @@ export const gameTimingSWRConfig: SWRConfiguration = {
   revalidateOnReconnect: true,
   shouldRetryOnError: shouldRetryGameTimingError,
   onErrorRetry: (_error, _key, _config, revalidate, options) => {
-    setTimeout(() => revalidate({ retryCount: options.retryCount }), GAME_TIMING_REFRESH_MS)
+    setTimeout(() => revalidate(options), GAME_TIMING_REFRESH_MS)
   },
 }
 
