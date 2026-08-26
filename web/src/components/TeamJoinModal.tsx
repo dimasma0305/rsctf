@@ -1,12 +1,12 @@
-import { Button, Stack, Text, TextInput } from '@mantine/core'
+import { Alert, Button, Stack, Text, TextInput } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
 import { encryptApiData } from '@Utils/Crypto'
-import { showErrorMsg } from '@Utils/Shared'
+import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { isValidTeamInviteCode } from '@Utils/TeamInvite'
 import { settleTeamJoinAttempt } from '@Utils/TeamJoinFlow'
 import api from '@Api'
@@ -30,20 +30,45 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
   ...modalProps
 }) => {
   const [joining, setJoining] = useState(false)
+  const [joinError, setJoinError] = useState<string | null>(null)
+  const attemptGeneration = useRef(0)
+  const attemptInFlight = useRef(false)
+  const codeInputRef = useRef<HTMLInputElement>(null)
   const { t } = useTranslation()
   const validCode = isValidTeamInviteCode(code)
 
+  useEffect(
+    () => () => {
+      attemptGeneration.current += 1
+      attemptInFlight.current = false
+    },
+    []
+  )
+
+  useEffect(() => {
+    if (!joinError) return
+    const timer = setTimeout(() => codeInputRef.current?.focus(), 0)
+    return () => clearTimeout(timer)
+  }, [joinError])
+
   const onJoinTeam = async () => {
+    if (attemptInFlight.current) return
+
     if (!validCode) {
+      const message = t('team.notification.join.wrong_invite_code')
+      setJoinError(message)
       showNotification({
         color: 'red',
         title: t('common.error.encountered'),
-        message: t('team.notification.join.wrong_invite_code'),
+        message,
         icon: <Icon path={mdiClose} size={1} />,
       })
       return
     }
 
+    const generation = ++attemptGeneration.current
+    attemptInFlight.current = true
+    setJoinError(null)
     setJoining(true)
     try {
       await settleTeamJoinAttempt({
@@ -70,6 +95,7 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
           await api.team.teamAccept(identity)
         },
         onAccepted: () => {
+          if (generation !== attemptGeneration.current) return
           showNotification({
             color: 'teal',
             title: t('team.notification.join.success'),
@@ -81,10 +107,17 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
           onCodeChange('')
           modalProps.onClose()
         },
-        onRejected: (error) => showErrorMsg(error, t),
+        onRejected: (error) => {
+          if (generation !== attemptGeneration.current) return
+          setJoinError(tryGetErrorMsg(error, t))
+          showErrorMsg(error, t)
+        },
       })
     } finally {
-      setJoining(false)
+      if (generation === attemptGeneration.current) {
+        attemptInFlight.current = false
+        setJoining(false)
+      }
     }
   }
 
@@ -101,7 +134,13 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
         }}
       >
         <Text size="sm">{t('team.content.join')}</Text>
+        {joinError && (
+          <Alert color="red" role="alert" title={t('common.error.encountered')}>
+            {joinError}
+          </Alert>
+        )}
         <TextInput
+          ref={codeInputRef}
           data-guide="team-join-code"
           label={t('team.label.invite_code')}
           description={t(
@@ -112,7 +151,12 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
           placeholder="team:0:01234567890123456789012345678901"
           w="100%"
           value={code}
-          onChange={(event) => onCodeChange(event.currentTarget.value)}
+          error={joinError ? t('common.error.check_input') : undefined}
+          disabled={joining}
+          onChange={(event) => {
+            setJoinError(null)
+            onCodeChange(event.currentTarget.value)
+          }}
         />
         <Button
           type="submit"

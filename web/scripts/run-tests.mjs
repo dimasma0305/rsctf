@@ -60,6 +60,9 @@ try {
     // it selects its browser MessageChannel path, which leaves Node ports open.
     external: [
       '@mantine/core',
+      // The collector is a browser-only dynamic chunk. Join-dialog tests cover
+      // its recoverable failure boundary without initializing CreepJS in Node.
+      '@Utils/BrowserFingerprint',
       'axios',
       'happy-dom',
       'i18next',

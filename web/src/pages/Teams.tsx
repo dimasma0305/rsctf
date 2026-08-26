@@ -1,7 +1,7 @@
 import { Button, Center, Group, Loader, SimpleGrid, Stack, Text, Title } from '@mantine/core'
 import { mdiAccountMultiplePlus, mdiClose, mdiHumanGreetingVariant } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router'
 import { Empty } from '@Components/Empty'
@@ -29,6 +29,19 @@ const Teams: FC = () => {
   const [joinOpened, setJoinOpened] = useState(false)
   const [joinTeamCode, setJoinTeamCode] = useState('')
   const [searchParams, setSearchParams] = useSearchParams()
+  const activeAccountId = useRef<string | null>(null)
+  const nextAccountId = user?.userId ?? null
+  const accountChanged = Boolean(activeAccountId.current && activeAccountId.current !== nextAccountId)
+
+  useEffect(() => {
+    const previousAccountId = activeAccountId.current
+
+    if (previousAccountId && previousAccountId !== nextAccountId) {
+      setJoinTeamCode('')
+      setJoinOpened(false)
+    }
+    activeAccountId.current = nextAccountId
+  }, [nextAccountId])
 
   // Auto-open join modal when arriving via invite link (?join=code)
   useEffect(() => {
@@ -161,9 +174,10 @@ const Teams: FC = () => {
         </Stack>
 
         <TeamJoinModal
-          opened={joinOpened}
+          key={user?.userId ?? 'account-pending'}
+          opened={joinOpened && !accountChanged}
           title={t('team.button.join')}
-          code={joinTeamCode}
+          code={accountChanged ? '' : joinTeamCode}
           onCodeChange={setJoinTeamCode}
           onClose={() => {
             setJoinTeamCode('')

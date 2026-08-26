@@ -12,7 +12,7 @@ import {
   Title,
   useMantineTheme,
 } from '@mantine/core'
-import { useModals } from '@mantine/modals'
+import { closeModal, useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import {
   mdiAccountGroupOutline,
@@ -25,7 +25,7 @@ import {
   mdiTimerSand,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { CSSProperties, FC, useEffect, useState } from 'react'
+import { CSSProperties, FC, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate, useParams } from 'react-router'
 import { GameColorMap, getGameStatusLabel } from '@Components/GameCard'
@@ -106,7 +106,7 @@ const GameDetail: FC = () => {
   const { config } = useConfig()
 
   const { user } = useUser()
-  const { teams } = useTeams()
+  const { teams, mutate: mutateTeams } = useTeams()
 
   const modals = useModals()
   const isMobile = useIsMobile()
@@ -124,6 +124,27 @@ const GameDetail: FC = () => {
   }, [error, hasLoadedGame, navigate, t])
 
   const [joinModalOpen, setJoinModalOpen] = useState(false)
+  const joinConfirmId = useRef<string | null>(null)
+  const joinScope = `${numId}:${user?.userId ?? 'anonymous'}`
+  const previousJoinScope = useRef(joinScope)
+  const joinScopeChanged = previousJoinScope.current !== joinScope
+
+  useEffect(() => {
+    if (previousJoinScope.current === joinScope) return
+    previousJoinScope.current = joinScope
+    setJoinModalOpen(false)
+    if (joinConfirmId.current) {
+      closeModal(joinConfirmId.current)
+      joinConfirmId.current = null
+    }
+  }, [joinScope])
+
+  useEffect(
+    () => () => {
+      if (joinConfirmId.current) closeModal(joinConfirmId.current)
+    },
+    []
+  )
 
   const GameActionMap = new Map([
     [ParticipationStatus.Pending, t('game.participation.actions.pending')],
@@ -134,37 +155,33 @@ const GameDetail: FC = () => {
   ])
 
   const onSubmitJoin = async (info: GameJoinModel) => {
-    try {
-      if (!numId) return
+    if (!Number.isSafeInteger(numId) || numId <= 0) throw new Error('Invalid game ID')
 
-      const identity = config.enableBrowserFingerprint
-        ? await (async () => {
-            const challengeResponse = await api.account.accountFingerprintChallenge()
-            const challenge = challengeResponse.data.data
-            if (!challenge?.nonce || !challenge.requiredSignals) {
-              throw new Error('Invalid fingerprint challenge')
-            }
-            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-            const payload = await getFingerprintPayload({
-              nonce: challenge.nonce,
-              requiredSignals: challenge.requiredSignals,
-            })
-            return {
-              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
-              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
-            }
-          })()
-        : {}
-      await api.game.gameJoinGame(numId, { ...info, ...identity })
-      showNotification({
-        color: 'teal',
-        message: t('game.notification.joined'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      mutate()
-    } catch (err) {
-      return showErrorMsg(err, t)
-    }
+    const identity = config.enableBrowserFingerprint
+      ? await (async () => {
+          const challengeResponse = await api.account.accountFingerprintChallenge()
+          const challenge = challengeResponse.data.data
+          if (!challenge?.nonce || !challenge.requiredSignals) {
+            throw new Error('Invalid fingerprint challenge')
+          }
+          const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
+          const payload = await getFingerprintPayload({
+            nonce: challenge.nonce,
+            requiredSignals: challenge.requiredSignals,
+          })
+          return {
+            fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
+            fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
+          }
+        })()
+      : {}
+    await api.game.gameJoinGame(numId, { ...info, ...identity })
+    showNotification({
+      color: 'teal',
+      message: t('game.notification.joined'),
+      icon: <Icon path={mdiCheck} size={1} />,
+    })
+    mutate()
   }
 
   const onSubmitLeave = async () => {
@@ -219,8 +236,8 @@ const GameDetail: FC = () => {
   const eventHue = ((game?.id ?? numId) * 47 + 186) % 360
   const eventTitle = game?.title || t('game.content.untitled', 'Untitled event')
 
-  const onJoin = () =>
-    modals.openConfirmModal({
+  const onJoin = () => {
+    const confirmId = modals.openConfirmModal({
       title: t('game.content.join.confirm'),
       children: (
         <Stack gap="xs">
@@ -233,9 +250,17 @@ const GameDetail: FC = () => {
           </Text>
         </Stack>
       ),
-      onConfirm: () => setJoinModalOpen(true),
+      onConfirm: () => {
+        joinConfirmId.current = null
+        setJoinModalOpen(true)
+      },
+      onCancel: () => {
+        joinConfirmId.current = null
+      },
       confirmProps: { color: theme.primaryColor, 'data-guide': 'event-join-confirm' },
     })
+    joinConfirmId.current = confirmId
+  }
 
   const onLeave = () =>
     modals.openConfirmModal({
@@ -471,8 +496,14 @@ const GameDetail: FC = () => {
           )}
         </Stack>
         <GameJoinModal
+          key={joinScope}
+          accountId={user?.userId}
+          game={game}
+          gameId={numId}
+          teams={teams}
+          refreshTeams={mutateTeams}
           title={t('game.content.join.title')}
-          opened={joinModalOpen}
+          opened={joinModalOpen && !joinScopeChanged}
           withCloseButton
           onClose={() => setJoinModalOpen(false)}
           onSubmitJoin={onSubmitJoin}

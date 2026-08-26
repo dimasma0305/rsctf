@@ -31,11 +31,13 @@ export const installTestDom = (browser: Window) => {
   const values: Record<string, unknown> = {
     window: browser,
     document: browser.document,
+    Document: browser.Document,
     navigator: browser.navigator,
     Node: browser.Node,
     Element: browser.Element,
     HTMLElement: browser.HTMLElement,
     HTMLIFrameElement: browser.HTMLIFrameElement,
+    ShadowRoot: browser.ShadowRoot,
     SVGElement: browser.SVGElement,
     MutationObserver: browser.MutationObserver,
     ResizeObserver: browser.ResizeObserver,

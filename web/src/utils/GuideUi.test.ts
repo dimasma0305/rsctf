@@ -222,8 +222,12 @@ test('the event tutorial resumes with destination-specific instructions after a 
   assert.match(eventPage, /data-guide="event-join"/)
   assert.match(eventPage, /data-guide="event-challenges"/)
   assert.match(eventPage, /event-join-confirm/)
+  assert.match(eventPage, /previousJoinScope[\s\S]*setJoinModalOpen\(false\)/)
+  assert.match(eventPage, /key=\{joinScope\}/)
   assert.match(gameJoinModal, /event-join-team/)
   assert.match(gameJoinModal, /event-join-submit/)
+  assert.match(gameJoinModal, /validationAbort\.current\?\.abort\(\)/)
+  assert.match(gameJoinModal, /submissionInFlight\.current/)
 })
 
 test('the novice path teaches every action on the real player controls', () => {
@@ -263,9 +267,12 @@ test('the novice path teaches every action on the real player controls', () => {
     teamJoinModal,
     /onAccepted:[\s\S]*onTeamReady\?\.\(\)[\s\S]*mutate\(\)[\s\S]*onCodeChange\(''\)[\s\S]*modalProps\.onClose\(\)/
   )
-  assert.match(teamJoinModal, /onRejected: \(error\) => showErrorMsg\(error, t\)/)
+  assert.match(teamJoinModal, /onRejected: \(error\) => \{[\s\S]*setJoinError\([\s\S]*showErrorMsg\(error, t\)/)
+  assert.match(teamJoinModal, /attemptInFlight\.current/)
+  assert.match(teamJoinModal, /role="alert"/)
   assert.doesNotMatch(teamJoinModal, /finally[\s\S]*onCodeChange\(''\)/)
   assert.match(teamsPage, /mutate=\{mutateTeams\}/)
+  assert.match(teamsPage, /activeAccountId[\s\S]*setJoinTeamCode\(''\)[\s\S]*setJoinOpened\(false\)/)
   assert.match(teamJoinModal, /<AccessibleModal/)
   assert.match(
     teamCreateModal,
