@@ -56,6 +56,9 @@ export const guideTargetHasKeyboardEntryFocus = (element: HTMLElement, activeEle
   guideTargetAcceptsKeyboardEntry(element) &&
   Boolean(activeElement && (element === activeElement || element.contains(activeElement)))
 
+export const guideTargetKeyboardActivation = (element: HTMLElement, activeElement: Element | null) =>
+  guideTargetHasKeyboardEntryFocus(element, activeElement) ? element.dataset.guide : undefined
+
 const renderedTargets = (selector?: string) => {
   if (!selector) return null
   const elements = selector
@@ -390,17 +393,20 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
     }
 
     const handleTargetFocus = (event: FocusEvent) => {
-      const element = activatedTarget(event.target)
-      if (!element || !guideTargetAcceptsKeyboardEntry(element)) return
+      const element = visibleTarget(targetSelector)
+      if (!element) return
 
-      onTargetActivate(element.dataset.guide)
+      onTargetActivate(guideTargetKeyboardActivation(element, event.target instanceof Element ? event.target : null))
     }
 
     document.addEventListener('click', handleTargetClick, true)
     document.addEventListener('focusin', handleTargetFocus, true)
     const focusedElement = visibleTarget(targetSelector)
-    if (focusedElement && guideTargetHasKeyboardEntryFocus(focusedElement, document.activeElement)) {
-      onTargetActivate(focusedElement.dataset.guide)
+    const focusedActivation = focusedElement
+      ? guideTargetKeyboardActivation(focusedElement, document.activeElement)
+      : undefined
+    if (focusedActivation) {
+      onTargetActivate(focusedActivation)
     }
     return () => {
       document.removeEventListener('click', handleTargetClick, true)
