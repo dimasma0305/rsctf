@@ -555,11 +555,22 @@ async function waitForRender(cdp) {
 async function auditChallengeCategoryScroller(cdp, route, viewport) {
   if (!viewport.mobile || viewport.width > 390 || !/^\/games\/\d+\/challenges$/.test(route.path)) return null
 
+  const present = await evaluate(cdp, `Boolean(document.querySelector('[data-challenge-category-tabs]'))`)
+  if (!present) return null
+  await evaluate(
+    cdp,
+    `(() => {
+      const list = document.querySelector('[data-challenge-category-tabs]')
+      list.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' })
+      list.scrollLeft = 0
+    })()`
+  )
+  await sleep(50)
+
   const initial = await evaluate(
     cdp,
     `(() => {
       const list = document.querySelector('[data-challenge-category-tabs]')
-      if (!list) return null
       const rectangle = list.getBoundingClientRect()
       const tabs = [...list.querySelectorAll('[role="tab"]')]
       return {
@@ -581,8 +592,6 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
       }
     })()`
   )
-  if (!initial) return null
-
   const overflowRequired = initial.maximumScroll > 1
   if (!overflowRequired || initial.tabCount < 2) {
     return {
@@ -593,7 +602,6 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
     }
   }
 
-  await evaluate(cdp, `document.querySelector('[data-challenge-category-tabs]').scrollLeft = 0`)
   const touchWidth = Math.max(1, initial.rectangle.right - initial.rectangle.left - 24)
   const touchAttempts = Math.min(12, Math.ceil(initial.maximumScroll / touchWidth) + 2)
   const touchY = initial.rectangle.top + (initial.rectangle.bottom - initial.rectangle.top) / 2
@@ -691,6 +699,33 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
     })()`
   )
 
+  await evaluate(
+    cdp,
+    `(() => {
+      const first = document.querySelector('[data-challenge-category-tabs] [role="tab"]')
+      first.click()
+    })()`
+  )
+  let initialRestored = false
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    initialRestored = await evaluate(
+      cdp,
+      `document.querySelector('[data-challenge-category-tabs] [role="tab"]')?.getAttribute('aria-selected') === 'true'`
+    )
+    if (initialRestored) break
+    await sleep(20)
+  }
+  if (!initialRestored) throw new Error('initial challenge category did not restore after keyboard traversal')
+  await evaluate(
+    cdp,
+    `(() => {
+      const list = document.querySelector('[data-challenge-category-tabs]')
+      list.scrollLeft = 0
+      list.querySelector('[role="tab"]')?.blur()
+    })()`
+  )
+  await sleep(50)
+
   return {
     ...initial,
     overflowRequired,
@@ -698,6 +733,7 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
     touchReachedLast: touch.reachedLast,
     keyboardScrollLeft: keyboard.scrollLeft,
     keyboardReachedLast: keyboard.reachedLast,
+    initialRestored,
   }
 }
 
@@ -716,6 +752,9 @@ function failuresFor(result, expectedPath) {
   if (result.challengeCategoryTabs) {
     const tabs = result.challengeCategoryTabs
     if (!tabs.bounded) failures.push('challenge category tabs escape the compact viewport')
+    if (result.width.viewport <= 320 && !tabs.overflowRequired) {
+      failures.push('compact challenge category fixture does not overflow, so reachability was not exercised')
+    }
     if (tabs.overflowRequired && !['auto', 'scroll'].includes(tabs.overflowX)) {
       failures.push(`challenge category tabs use overflow-x ${tabs.overflowX} instead of a scroller`)
     }
