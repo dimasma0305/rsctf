@@ -196,7 +196,10 @@ fn delivery_payload(job: &LeasedDelivery) -> Result<Value, &'static str> {
         .ok_or("invalid_notice_values")?;
     let team = safe_discord_text(team, 200);
     let challenge = safe_discord_text(challenge, 300);
-    let game = safe_discord_text(&job.game_title, 300);
+    let mut game = safe_discord_text(&job.game_title, 300);
+    if game.trim().is_empty() {
+        game = "Untitled event".to_string();
+    }
 
     Ok(json!({
         "username": "RSCTF",

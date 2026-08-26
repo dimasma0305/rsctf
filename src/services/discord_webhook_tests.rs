@@ -87,6 +87,13 @@ fn payload_blocks_mentions_and_escapes_untrusted_markdown() {
         payload["embeds"][0]["fields"][0]["value"],
         "event\\_\\* # forged"
     );
+
+    job.game_title = "\n\u{0000}\u{2028}".to_string();
+    let blank_event_payload = delivery_payload(&job).unwrap();
+    assert_eq!(
+        blank_event_payload["embeds"][0]["fields"][0]["value"],
+        "Untitled event"
+    );
     assert!(delivery_payload(&leased(NoticeType::Normal)).is_err());
 }
 
