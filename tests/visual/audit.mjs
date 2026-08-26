@@ -727,6 +727,18 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
       const last = [...list.querySelectorAll('[role="tab"]')].at(-1)
       const listRectangle = list.getBoundingClientRect()
       const lastRectangle = last?.getBoundingClientRect()
+      const lastStyle = last ? getComputedStyle(last) : null
+      const outlineWidth = Number.parseFloat(lastStyle?.outlineWidth ?? '0') || 0
+      const outlineOffset = Number.parseFloat(lastStyle?.outlineOffset ?? '0') || 0
+      const requiredFocusGutter = lastStyle?.outlineStyle === 'none' ? 0 : outlineWidth + Math.max(0, outlineOffset)
+      const availableFocusGutter = lastRectangle
+        ? Math.min(
+            lastRectangle.left - listRectangle.left,
+            listRectangle.right - lastRectangle.right,
+            lastRectangle.top - listRectangle.top,
+            listRectangle.bottom - lastRectangle.bottom
+          )
+        : -1
       return {
         scrollLeft: list.scrollLeft,
         reachedLast:
@@ -734,6 +746,8 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
           Boolean(lastRectangle) &&
           lastRectangle.left >= listRectangle.left - 1 &&
           lastRectangle.right <= listRectangle.right + 1,
+        focusIndicatorContained:
+          Boolean(last?.matches(':focus-visible')) && availableFocusGutter + 0.5 >= requiredFocusGutter,
       }
     })()`
   )
@@ -773,6 +787,7 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
     touchReachedLast: touch.reachedLast,
     keyboardScrollLeft: keyboard.scrollLeft,
     keyboardReachedLast: keyboard.reachedLast,
+    keyboardFocusIndicatorContained: keyboard.focusIndicatorContained,
     initialRestored,
     viewportScrollRestored,
   }
@@ -807,6 +822,9 @@ function failuresFor(result, expectedPath) {
       }
       if (tabs.overflowRequired && !tabs.keyboardReachedLast) {
         failures.push('final challenge category is not reachable with the keyboard')
+      }
+      if (tabs.overflowRequired && !tabs.keyboardFocusIndicatorContained) {
+        failures.push('final challenge category keyboard focus indicator is clipped')
       }
     }
   }

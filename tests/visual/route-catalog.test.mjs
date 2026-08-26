@@ -84,6 +84,7 @@ test('game workspace uses one bounded width and container-sized challenge cards'
   assert.match(mobileTabList, /width:\s*100%/)
   assert.match(mobileTabList, /max-width:\s*100%/)
   assert.match(mobileTabList, /overflow-x:\s*auto/)
+  assert.match(mobileTabList, /padding:\s*5px/)
   assert.doesNotMatch(mobileTabList, /width:\s*max-content/)
 
   const mobileTab = challengeGrid.match(/@media \(max-width: \$mantine-breakpoint-sm\)[\s\S]*?\.tab\s*\{([^}]+)\}/)?.[1]
@@ -101,6 +102,7 @@ test('compact challenge categories are exercised with touch and keyboard in Chro
   assert.match(audit, /scrollIntoView\(\{ block: 'center'/)
   assert.match(audit, /touchReachedLast/)
   assert.match(audit, /keyboardReachedLast/)
+  assert.match(audit, /keyboardFocusIndicatorContained/)
   assert.match(audit, /initialRestored/)
   assert.match(audit, /viewportScrollRestored/)
   assert.match(audit, /interactionSkipped/)
