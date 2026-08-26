@@ -23,6 +23,11 @@ type InstanceContext = {
   instanceEntry?: string | null
 }
 
+type InstanceExtension = {
+  entry?: string | null
+  expectStopAt?: number | null
+}
+
 /** Merge a runtime response into the newest SWR value, never a render-time snapshot. */
 export const mergeInstanceContext = <T extends { context?: InstanceContext }>(
   latest: T | undefined,
@@ -30,6 +35,20 @@ export const mergeInstanceContext = <T extends { context?: InstanceContext }>(
 ): T | undefined => {
   if (!latest) return latest
   return { ...latest, context: { ...latest.context, ...patch } }
+}
+
+/** Apply an extension only while the cache still names the runtime in its response. */
+export const mergeExtendedInstanceContext = <T extends { context?: InstanceContext }>(
+  latest: T | undefined,
+  extension: InstanceExtension
+): T | undefined => {
+  if (
+    !extension.entry ||
+    typeof extension.expectStopAt !== 'number' ||
+    latest?.context?.instanceEntry !== extension.entry
+  )
+    return latest
+  return mergeInstanceContext(latest, { closeTime: extension.expectStopAt })
 }
 
 /** Clear only the runtime identity that the completed delete actually removed. */

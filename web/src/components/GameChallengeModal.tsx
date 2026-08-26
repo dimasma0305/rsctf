@@ -14,6 +14,7 @@ import { resolveChallengeDeliveryGuide } from '@Utils/GuideState'
 import {
   clearDestroyedInstanceContext,
   destroyReconciledInstance,
+  mergeExtendedInstanceContext,
   mergeInstanceContext,
 } from '@Utils/InstanceLifecycle'
 import { showErrorMsg } from '@Utils/Shared'
@@ -204,9 +205,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
     try {
       const res = await api.game.gameExtendContainerLifetime(gameId, challengeId)
-      await mutate((latest) => mergeInstanceContext(latest, { closeTime: res.data.expectStopAt }), {
-        revalidate: false,
-      })
+      await mutate((latest) => mergeExtendedInstanceContext(latest, res.data), { revalidate: false })
     } finally {
       setDisabled(false)
     }

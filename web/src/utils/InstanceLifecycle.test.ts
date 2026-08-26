@@ -4,6 +4,7 @@ import {
   clearDestroyedInstanceContext,
   destroyReconciledInstance,
   isInstanceExtensionWindowOpen,
+  mergeExtendedInstanceContext,
   mergeInstanceContext,
   runInstanceExtension,
 } from './InstanceLifecycle'
@@ -56,6 +57,39 @@ test('instance responses merge into the newest cache without reverting concurren
     context: { closeTime: 250, instanceEntry: 'new-entry' },
   })
   assert.equal(mergeInstanceContext(undefined, { closeTime: 250 }), undefined)
+})
+
+test('a delayed extension response cannot stamp a destroyed and recreated runtime', async () => {
+  const original = { context: { closeTime: 100, instanceEntry: 'old-entry' } }
+  let cached = original
+  let resolveExtension: ((extension: { entry: string; expectStopAt: number }) => void) | undefined
+  const delayedExtension = new Promise<{ entry: string; expectStopAt: number }>((resolve) => {
+    resolveExtension = resolve
+  })
+  const publishExtension = delayedExtension.then((extension) => {
+    cached = mergeExtendedInstanceContext(cached, extension) ?? cached
+  })
+
+  cached = clearDestroyedInstanceContext(cached, original) ?? cached
+  cached =
+    mergeInstanceContext(cached, {
+      closeTime: 300,
+      instanceEntry: 'replacement-entry',
+    }) ?? cached
+
+  resolveExtension?.({ entry: 'old-entry', expectStopAt: 200 })
+  await publishExtension
+
+  assert.deepEqual(cached, {
+    context: { closeTime: 300, instanceEntry: 'replacement-entry' },
+  })
+  assert.deepEqual(
+    mergeExtendedInstanceContext(cached, {
+      entry: 'replacement-entry',
+      expectStopAt: 400,
+    }),
+    { context: { closeTime: 400, instanceEntry: 'replacement-entry' } }
+  )
 })
 
 test('destroy preserves a replacement instance published while deletion is in flight', async () => {
