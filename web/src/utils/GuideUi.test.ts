@@ -22,6 +22,7 @@ const accountView = readFileSync('src/components/AccountView.tsx', 'utf8')
 const loginPage = readFileSync('src/pages/account/Login.tsx', 'utf8')
 const oauthButtons = readFileSync('src/components/OAuthButtons.tsx', 'utf8')
 const teamCreateModal = readFileSync('src/components/TeamCreateModal.tsx', 'utf8')
+const teamJoinModal = readFileSync('src/components/TeamJoinModal.tsx', 'utf8')
 const gameJoinModal = readFileSync('src/components/GameJoinModal.tsx', 'utf8')
 const accessibleModal = readFileSync('src/components/AccessibleModal.tsx', 'utf8')
 const challengeCard = readFileSync('src/components/ChallengeCard.tsx', 'utf8')
@@ -83,6 +84,7 @@ test('interactive guide spotlights real controls and provides a reduced-motion g
   assert.match(spotlight, /const preferredTarget = stableTarget\(\)/)
   assert.match(spotlight, /prefers-reduced-motion: reduce/)
   assert.match(spotlight, /mdiCursorDefaultClickOutline/)
+  assert.match(spotlight, /showTargetCursor &&/)
   assert.match(spotlight, /data-guide-layer="spotlight"/)
   assert.match(spotlight, /data-guide-layer="cursor"/)
   assert.match(spotlight, /data-guide-layer="interaction-blocker"/)
@@ -91,7 +93,10 @@ test('interactive guide spotlights real controls and provides a reduced-motion g
   assert.match(spotlight, /data-guide-placement=/)
   assert.match(spotlight, /data-guide-target=/)
   assert.match(spotlight, /document\.addEventListener\('click', handleTargetClick, true\)/)
-  assert.match(spotlight, /const guideTarget = element\.dataset\.guide\s+onTargetActivate\(guideTarget\)/)
+  assert.match(spotlight, /document\.addEventListener\('focusin', handleTargetFocus, true\)/)
+  assert.match(spotlight, /guideTargetAcceptsKeyboardEntry\(element\)/)
+  assert.match(spotlight, /guideTargetHasKeyboardEntryFocus\(focusedElement, document\.activeElement\)/)
+  assert.match(spotlight, /onTargetActivate\(element\.dataset\.guide\)/)
   assert.doesNotMatch(spotlight, /requestAnimationFrame\(\(\) => onTargetActivate/)
   assert.match(spotlight, /new MutationObserver\(update\)/)
   assert.match(spotlight, /observer\.observe\(document\.body, \{ childList: true, subtree: true \}\)/)
@@ -242,17 +247,24 @@ test('the novice path teaches every action on the real player controls', () => {
   assert.match(provider, /resumeGuideAfterAccountHandoff/)
   assert.match(teamsPage, /data-guide="team-create"/)
   assert.match(teamsPage, /data-guide="team-join"/)
+  assert.match(teamsPage, /<TeamJoinModal/)
   assert.match(
-    teamsPage,
+    teamJoinModal,
     /component="form"[\s\S]*data-guide="team-join-workflow"[\s\S]*data-guide-stage=[\s\S]*data-guide-interaction-scope/
   )
-  assert.match(teamsPage, /data-guide="team-join-code"/)
-  assert.match(teamsPage, /data-guide="team-join-submit"/)
-  assert.match(teamsPage, /const validJoinTeamCode = isValidTeamInviteCode\(joinTeamCode\)/)
-  assert.match(teamsPage, /data-guide-stage=\{validJoinTeamCode \? 'submit' : 'input'\}/)
-  assert.match(teamsPage, /disabled=\{joining \|\| !validJoinTeamCode\}/)
-  assert.match(teamsPage, /completeTeamSetup\(\)[\s\S]*mutateTeams\(\)/)
-  assert.match(teamsPage, /<AccessibleModal/)
+  assert.match(teamJoinModal, /data-guide="team-join-code"/)
+  assert.match(teamJoinModal, /data-guide="team-join-submit"/)
+  assert.match(teamJoinModal, /const validCode = isValidTeamInviteCode\(code\)/)
+  assert.match(teamJoinModal, /data-guide-stage=\{validCode \? 'submit' : 'input'\}/)
+  assert.match(teamJoinModal, /disabled=\{joining \|\| !validCode\}/)
+  assert.match(
+    teamJoinModal,
+    /onAccepted:[\s\S]*onTeamReady\?\.\(\)[\s\S]*mutate\(\)[\s\S]*onCodeChange\(''\)[\s\S]*modalProps\.onClose\(\)/
+  )
+  assert.match(teamJoinModal, /onRejected: \(error\) => showErrorMsg\(error, t\)/)
+  assert.doesNotMatch(teamJoinModal, /finally[\s\S]*onCodeChange\(''\)/)
+  assert.match(teamsPage, /mutate=\{mutateTeams\}/)
+  assert.match(teamJoinModal, /<AccessibleModal/)
   assert.match(
     teamCreateModal,
     /component="form"[\s\S]*data-guide="team-create-workflow"[\s\S]*data-guide-stage=[\s\S]*data-guide-interaction-scope/
@@ -272,5 +284,9 @@ test('the novice path teaches every action on the real player controls', () => {
   assert.match(provider, /When the cursor moves to Create or Join, select it/)
   assert.match(provider, /Good—now type your team name/)
   assert.match(provider, /Good—now paste the invite code/)
+  assert.match(provider, /teamGuideNeedsKeyboard/)
+  assert.match(provider, /teamGuideKeyboardActive/)
+  assert.match(provider, /mdiKeyboardOutline/)
+  assert.match(provider, /showTargetCursor={!teamGuideKeyboardActive}/)
   assert.match(provider, /Select the highlighted control to continue/)
 })

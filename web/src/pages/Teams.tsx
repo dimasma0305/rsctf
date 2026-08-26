@@ -1,27 +1,23 @@
-import { Button, Center, Group, Loader, SimpleGrid, Stack, Text, TextInput, Title } from '@mantine/core'
-import { showNotification } from '@mantine/notifications'
-import { mdiAccountMultiplePlus, mdiCheck, mdiClose, mdiHumanGreetingVariant } from '@mdi/js'
+import { Button, Center, Group, Loader, SimpleGrid, Stack, Text, Title } from '@mantine/core'
+import { mdiAccountMultiplePlus, mdiClose, mdiHumanGreetingVariant } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router'
-import { AccessibleModal } from '@Components/AccessibleModal'
 import { Empty } from '@Components/Empty'
 import { PageHeader } from '@Components/PageHeader'
 import { TeamCard } from '@Components/TeamCard'
 import { TeamCreateModal } from '@Components/TeamCreateModal'
 import { TeamEditModal } from '@Components/TeamEditModal'
+import { TeamJoinModal } from '@Components/TeamJoinModal'
 import { WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
 import { usePlayerGuide } from '@Components/guide/PlayerGuide'
-import { encryptApiData } from '@Utils/Crypto'
-import { showErrorMsg } from '@Utils/Shared'
-import { isValidTeamInviteCode } from '@Utils/TeamInvite'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useTeams, useUser } from '@Hooks/useUser'
-import api, { Role, TeamInfoModel } from '@Api'
+import { Role, TeamInfoModel } from '@Api'
 import classes from '@Styles/Teams.module.css'
 
 const Teams: FC = () => {
@@ -32,7 +28,6 @@ const Teams: FC = () => {
 
   const [joinOpened, setJoinOpened] = useState(false)
   const [joinTeamCode, setJoinTeamCode] = useState('')
-  const [joining, setJoining] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
 
   // Auto-open join modal when arriving via invite link (?join=code)
@@ -66,58 +61,6 @@ const Teams: FC = () => {
   const onEditTeam = (team: TeamInfoModel) => {
     setEditTeam(team)
     setEditOpened(true)
-  }
-
-  const validJoinTeamCode = isValidTeamInviteCode(joinTeamCode)
-
-  const onJoinTeam = async () => {
-    if (!validJoinTeamCode) {
-      showNotification({
-        color: 'red',
-        title: t('common.error.encountered'),
-        message: t('team.notification.join.wrong_invite_code'),
-        icon: <Icon path={mdiClose} size={1} />,
-      })
-      return
-    }
-
-    setJoining(true)
-    try {
-      const identity = config.enableBrowserFingerprint
-        ? await (async () => {
-            const challengeResponse = await api.account.accountFingerprintChallenge()
-            const challenge = challengeResponse.data.data
-            if (!challenge?.nonce || !challenge.requiredSignals) {
-              throw new Error('Invalid fingerprint challenge')
-            }
-            const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-            const payload = await getFingerprintPayload({
-              nonce: challenge.nonce,
-              requiredSignals: challenge.requiredSignals,
-            })
-            return {
-              code: joinTeamCode,
-              fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
-              fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
-            }
-          })()
-        : { code: joinTeamCode }
-      await api.team.teamAccept(identity)
-      showNotification({
-        color: 'teal',
-        title: t('team.notification.join.success'),
-        message: t('team.notification.updated'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      completeTeamSetup()
-      mutateTeams()
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setJoining(false)
-      setJoinTeamCode('')
-      setJoinOpened(false)
-    }
   }
 
   const teamActions = (className: string) => (
@@ -217,43 +160,20 @@ const Teams: FC = () => {
           )}
         </Stack>
 
-        <AccessibleModal opened={joinOpened} title={t('team.button.join')} onClose={() => setJoinOpened(false)}>
-          <Stack
-            component="form"
-            data-guide="team-join-workflow"
-            data-guide-stage={validJoinTeamCode ? 'submit' : 'input'}
-            data-guide-interaction-scope
-            onSubmit={(event) => {
-              event.preventDefault()
-              void onJoinTeam()
-            }}
-          >
-            <Text size="sm">{t('team.content.join')}</Text>
-            <TextInput
-              data-guide="team-join-code"
-              label={t('team.label.invite_code')}
-              description={t(
-                'team.content.join_code_hint',
-                'Paste the complete invite code from your teammate, then select Join.'
-              )}
-              type="text"
-              placeholder="team:0:01234567890123456789012345678901"
-              w="100%"
-              value={joinTeamCode}
-              onChange={(event) => setJoinTeamCode(event.currentTarget.value)}
-            />
-            <Button
-              type="submit"
-              fullWidth
-              variant="outline"
-              loading={joining}
-              disabled={joining || !validJoinTeamCode}
-              data-guide="team-join-submit"
-            >
-              {t('team.button.join')}
-            </Button>
-          </Stack>
-        </AccessibleModal>
+        <TeamJoinModal
+          opened={joinOpened}
+          title={t('team.button.join')}
+          code={joinTeamCode}
+          onCodeChange={setJoinTeamCode}
+          onClose={() => {
+            setJoinTeamCode('')
+            setJoinOpened(false)
+          }}
+          mutate={mutateTeams}
+          onTeamReady={completeTeamSetup}
+          enableBrowserFingerprint={config.enableBrowserFingerprint}
+          apiPublicKey={config.apiPublicKey}
+        />
 
         <TeamCreateModal
           opened={createOpened}

@@ -23,7 +23,7 @@ test('guided team creation requires input and completes only after a successful 
             button: { create: 'Create team' },
             content: { create: 'Enter your team details.' },
             label: { name: 'Team name', bio: 'Team bio' },
-            placeholder: { bio: 'Optional bio' },
+            placeholder: { name: 'Type your team name', bio: 'Optional bio' },
             notification: {
               create: {
                 success: { title: 'Team created', message: '{{team}} is ready' },
@@ -84,6 +84,7 @@ test('guided team creation requires input and completes only after a successful 
     assert.equal(form.hasAttribute('data-guide-interaction-scope'), true)
     assert.equal(form.dataset.guideStage, 'input')
     assert.equal(input.dataset.guide, 'team-create-name')
+    assert.equal(input.placeholder, 'Type your team name')
     assert.equal(submit.dataset.guide, 'team-create-submit')
     assert.equal(submit.disabled, true)
 

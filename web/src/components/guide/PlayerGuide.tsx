@@ -1,5 +1,12 @@
 import { Button, Group, Stack, Text } from '@mantine/core'
-import { mdiArrowLeft, mdiArrowRight, mdiCheck, mdiCursorDefaultClickOutline, mdiOpenInNew } from '@mdi/js'
+import {
+  mdiArrowLeft,
+  mdiArrowRight,
+  mdiCheck,
+  mdiCursorDefaultClickOutline,
+  mdiKeyboardOutline,
+  mdiOpenInNew,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import {
   FC,
@@ -116,6 +123,7 @@ interface AccessibleGuideModalProps extends PropsWithChildren {
   targetSelector?: string
   onTargetActivate?: (target: string | undefined) => void
   onTargetChange?: (target: string | undefined) => void
+  showTargetCursor?: boolean
   progress?: {
     current: number
     total: number
@@ -133,6 +141,7 @@ const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
   targetSelector,
   onTargetActivate,
   onTargetChange,
+  showTargetCursor,
   progress,
   children,
 }) => (
@@ -146,15 +155,21 @@ const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
     targetSelector={targetSelector}
     onTargetActivate={onTargetActivate}
     onTargetChange={onTargetChange}
+    showTargetCursor={showTargetCursor}
     progress={progress}
   >
     {children}
   </GuideSpotlightModal>
 )
 
-const GuideTargetPrompt: FC<PropsWithChildren> = ({ children }) => (
+const GuideTargetPrompt: FC<PropsWithChildren<{ keyboardEntry?: boolean }>> = ({ children, keyboardEntry }) => (
   <Group gap="xs" wrap="nowrap" className={classes.targetPrompt} role="status" aria-live="polite">
-    <Icon path={mdiCursorDefaultClickOutline} size={0.82} className={classes.targetPromptIcon} aria-hidden="true" />
+    <Icon
+      path={keyboardEntry ? mdiKeyboardOutline : mdiCursorDefaultClickOutline}
+      size={0.82}
+      className={classes.targetPromptIcon}
+      aria-hidden="true"
+    />
     <Text size="xs" fw={650}>
       {children}
     </Text>
@@ -776,6 +791,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   }, [location.pathname, step.id])
 
   const teamGuideAction = resolveTeamGuideAction(activeTourTarget, activatedTourTarget)
+  const teamGuideNeedsKeyboard = teamGuideAction === 'type-create-name' || teamGuideAction === 'paste-join-code'
+  const teamGuideKeyboardActive = step.id === 'team' && Boolean(user) && isTeamPage && teamGuideNeedsKeyboard
   const teamGuidePrompt =
     teamGuideAction === 'select-create-name'
       ? t('guide.tour.team.select_create_name', 'Select the highlighted Team name field.')
@@ -852,6 +869,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         targetSelector={step.targetSelector}
         onTargetActivate={onTourTargetActivate}
         onTargetChange={setActiveTourTarget}
+        showTargetCursor={!teamGuideKeyboardActive}
         progress={{
           current: stepIndex + 1,
           total: steps.length,
@@ -886,7 +904,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
               </Button>
             )}
           </Stack>
-          <GuideTargetPrompt>
+          <GuideTargetPrompt keyboardEntry={teamGuideKeyboardActive}>
             {step.id === 'team' && user && isTeamPage && !needsNavigation
               ? teamGuidePrompt
               : step.targetPrompt && !needsNavigation

@@ -76,7 +76,7 @@ export const TeamCreateModal: FC<TeamCreateModalProps> = (props) => {
               'Type a team name. Create Team becomes available when the field is not empty.'
             )}
             type="text"
-            placeholder="team"
+            placeholder={t('team.placeholder.name', 'Type your team name')}
             w="100%"
             disabled={disabled}
             maxLength={128}

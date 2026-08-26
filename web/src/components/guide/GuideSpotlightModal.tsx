@@ -19,6 +19,7 @@ interface GuideSpotlightModalProps extends PropsWithChildren {
   targetSelector?: string
   onTargetActivate?: (target: string | undefined) => void
   onTargetChange?: (target: string | undefined) => void
+  showTargetCursor?: boolean
   progress?: {
     current: number
     total: number
@@ -45,6 +46,15 @@ const isRenderedElement = (element: HTMLElement) => {
   const style = window.getComputedStyle(element)
   return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'
 }
+
+export const guideTargetAcceptsKeyboardEntry = (element: HTMLElement) =>
+  element.matches(
+    'input:not([type="button"]):not([type="submit"]):not([type="reset"]), textarea, select, [contenteditable="true"]'
+  )
+
+export const guideTargetHasKeyboardEntryFocus = (element: HTMLElement, activeElement: Element | null) =>
+  guideTargetAcceptsKeyboardEntry(element) &&
+  Boolean(activeElement && (element === activeElement || element.contains(activeElement)))
 
 const renderedTargets = (selector?: string) => {
   if (!selector) return null
@@ -266,6 +276,7 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   targetSelector,
   onTargetActivate,
   onTargetChange,
+  showTargetCursor = true,
   progress,
   children,
 }) => {
@@ -363,18 +374,39 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   useEffect(() => {
     if (!opened || !targetSelector || !onTargetActivate) return
 
-    const handleTargetClick = (event: MouseEvent) => {
+    const activatedTarget = (eventTarget: EventTarget | null) => {
       const element = visibleTarget(targetSelector)
-      const eventTarget = event.target
-      if (!element || !(eventTarget instanceof Node) || !element.contains(eventTarget)) return
+      if (!element || !(eventTarget instanceof Node) || !element.contains(eventTarget)) return null
+
+      return element
+    }
+
+    const handleTargetClick = (event: MouseEvent) => {
+      const element = activatedTarget(event.target)
+      if (!element) return
 
       const guideTarget = element.dataset.guide
       onTargetActivate(guideTarget)
     }
 
+    const handleTargetFocus = (event: FocusEvent) => {
+      const element = activatedTarget(event.target)
+      if (!element || !guideTargetAcceptsKeyboardEntry(element)) return
+
+      onTargetActivate(element.dataset.guide)
+    }
+
     document.addEventListener('click', handleTargetClick, true)
-    return () => document.removeEventListener('click', handleTargetClick, true)
-  }, [onTargetActivate, opened, targetSelector])
+    document.addEventListener('focusin', handleTargetFocus, true)
+    const focusedElement = visibleTarget(targetSelector)
+    if (focusedElement && guideTargetHasKeyboardEntryFocus(focusedElement, document.activeElement)) {
+      onTargetActivate(focusedElement.dataset.guide)
+    }
+    return () => {
+      document.removeEventListener('click', handleTargetClick, true)
+      document.removeEventListener('focusin', handleTargetFocus, true)
+    }
+  }, [onTargetActivate, opened, target?.guideTarget, targetSelector])
 
   const targetStyle = target
     ? ({
@@ -467,15 +499,17 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
             style={{ ...targetStyle, zIndex: guideZIndex + 2 }}
             aria-hidden="true"
           />
-          <div
-            key={animationKey}
-            className={classes.tutorialCursor}
-            data-guide-layer="cursor"
-            style={{ ...cursorStyle, zIndex: guideZIndex + 3 }}
-            aria-hidden="true"
-          >
-            <Icon path={mdiCursorDefaultClickOutline} size={1.7} />
-          </div>
+          {showTargetCursor && (
+            <div
+              key={animationKey}
+              className={classes.tutorialCursor}
+              data-guide-layer="cursor"
+              style={{ ...cursorStyle, zIndex: guideZIndex + 3 }}
+              aria-hidden="true"
+            >
+              <Icon path={mdiCursorDefaultClickOutline} size={1.7} />
+            </div>
+          )}
         </>
       )}
       <Modal.Content
