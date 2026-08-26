@@ -1,3 +1,4 @@
+import { Window } from 'happy-dom'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
@@ -17,8 +18,10 @@ import {
   persistGuidePreferenceUpdate,
   resolveChallengeDeliveryGuide,
   resolveGuideIdentity,
+  retainTeamGuideActivation,
   resumeGuideAfterAccountHandoff,
   resetGuideProgress,
+  resolveTeamGuideAction,
   setGuideTourStep,
 } from './GuideState'
 
@@ -40,6 +43,23 @@ test('guide identity waits through transient player-profile failures', () => {
   assert.equal(resolveGuideIdentity(undefined, 401), 'guest')
   assert.equal(resolveGuideIdentity(undefined, 500), null)
   assert.equal(resolveGuideIdentity(undefined), null)
+})
+
+test('team guide acknowledges an input click and then follows the enabled action', () => {
+  assert.equal(resolveTeamGuideAction('team-create', undefined), 'choose')
+  assert.equal(resolveTeamGuideAction('team-create-name', undefined), 'select-create-name')
+  assert.equal(resolveTeamGuideAction('team-create-name', 'team-create-name'), 'type-create-name')
+  assert.equal(resolveTeamGuideAction('team-join-code', undefined), 'select-join-code')
+  assert.equal(resolveTeamGuideAction('team-join-code', 'team-join-code'), 'paste-join-code')
+  assert.equal(resolveTeamGuideAction('team-create-submit', 'team-create-name'), 'submit-create')
+  assert.equal(resolveTeamGuideAction('team-join-submit', 'team-join-code'), 'submit-join')
+})
+
+test('team guide forgets field activation when the tour closes or the target departs', () => {
+  assert.equal(retainTeamGuideActivation('team-create-name', 'team-create-name', true), 'team-create-name')
+  assert.equal(retainTeamGuideActivation('team-create-name', 'team-create-name', false), undefined)
+  assert.equal(retainTeamGuideActivation(undefined, 'team-create-name', true), undefined)
+  assert.equal(retainTeamGuideActivation('team-create-submit', 'team-create-name', true), undefined)
 })
 
 test('guide progress accepts only known feature identifiers without duplicates', () => {
@@ -194,7 +214,8 @@ test('real tutorial actions advance only when they complete the current task', (
   assert.equal(nextGuideStepForTarget('connection', 'flag-submit'), 'submit')
   assert.equal(nextGuideStepForTarget('connection', 'challenge-material'), 'submit')
   assert.equal(nextGuideStepForTarget('submit', 'flag-submit'), null)
-  assert.equal(nextGuideStepForTarget('team', 'team-create-workflow'), null)
+  assert.equal(nextGuideStepForTarget('team', 'team-create-name'), null)
+  assert.equal(nextGuideStepForTarget('team', 'team-create-submit'), null)
 
   const teamStep = setGuideTourStep(DEFAULT_GUIDE_PREFERENCES, 'team')
   assert.equal(completeTeamGuide(teamStep).activeTourStep, 'events')
@@ -217,7 +238,11 @@ test('every novice checkpoint resolves a page target before and after navigation
     /^\[data-guide="account-oauth"\]/
   )
   assert.match(selector('team', '/account/profile'), /team-navigation/)
-  assert.match(selector('team', '/teams'), /team-create-workflow/)
+  const teamSelector = selector('team', '/teams')
+  assert.match(teamSelector, /team-create-workflow[^,]+team-create-name/)
+  assert.match(teamSelector, /team-join-workflow[^,]+team-join-code/)
+  assert.match(teamSelector, /team-create-workflow[^,]+team-create-submit[^,]+:not\(:disabled\)/)
+  assert.match(teamSelector, /team-join-workflow[^,]+team-join-submit[^,]+:not\(:disabled\)/)
   assert.match(selector('events', '/teams'), /games-navigation/)
   assert.match(selector('events', '/games'), /event-card/)
   assert.match(selector('events', '/games/23'), /event-challenges/)
@@ -245,6 +270,36 @@ test('every novice checkpoint resolves a page target before and after navigation
     }),
     /instance-entry/
   )
+})
+
+test('team setup cursor moves from the required input to the enabled submit action', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/teams' })
+  const form = browser.document.createElement('form')
+  form.dataset.guide = 'team-create-workflow'
+  form.dataset.guideStage = 'input'
+  const input = browser.document.createElement('input')
+  input.dataset.guide = 'team-create-name'
+  const submit = browser.document.createElement('button')
+  submit.dataset.guide = 'team-create-submit'
+  submit.disabled = true
+  const launcher = browser.document.createElement('button')
+  launcher.dataset.guide = 'team-create'
+  form.append(input, submit)
+  browser.document.body.append(form, launcher)
+
+  const selector = guideTourTargetSelector({ step: 'team', pathname: '/teams', signedIn: true })
+  const firstMatch = () =>
+    selector
+      .split(',')
+      .map((candidate) => candidate.trim())
+      .flatMap((candidate) => Array.from(browser.document.querySelectorAll<HTMLElement>(candidate)))[0]
+
+  assert.equal(firstMatch(), input)
+  form.dataset.guideStage = 'submit'
+  submit.disabled = false
+  assert.equal(firstMatch(), submit)
+
+  await browser.happyDOM.close()
 })
 
 test('account sign-in handoff resumes a fresh authenticated guide at team setup', () => {

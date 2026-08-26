@@ -18,6 +18,8 @@ interface GuideSpotlightModalProps extends PropsWithChildren {
   overlayOpacity: number
   targetSelector?: string
   onTargetActivate?: (target: string | undefined) => void
+  onTargetChange?: (target: string | undefined) => void
+  showTargetCursor?: boolean
   progress?: {
     current: number
     total: number
@@ -44,6 +46,18 @@ const isRenderedElement = (element: HTMLElement) => {
   const style = window.getComputedStyle(element)
   return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'
 }
+
+export const guideTargetAcceptsKeyboardEntry = (element: HTMLElement) =>
+  element.matches(
+    'input:not([type="button"]):not([type="submit"]):not([type="reset"]), textarea, select, [contenteditable="true"]'
+  )
+
+export const guideTargetHasKeyboardEntryFocus = (element: HTMLElement, activeElement: Element | null) =>
+  guideTargetAcceptsKeyboardEntry(element) &&
+  Boolean(activeElement && (element === activeElement || element.contains(activeElement)))
+
+export const guideTargetKeyboardActivation = (element: HTMLElement, activeElement: Element | null) =>
+  guideTargetHasKeyboardEntryFocus(element, activeElement) ? element.dataset.guide : undefined
 
 const renderedTargets = (selector?: string) => {
   if (!selector) return null
@@ -264,6 +278,8 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   overlayOpacity,
   targetSelector,
   onTargetActivate,
+  onTargetChange,
+  showTargetCursor = true,
   progress,
   children,
 }) => {
@@ -284,6 +300,10 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   useEffect(() => {
     if (opened) setAnimationKey((current) => current + 1)
   }, [opened, target?.guideTarget, targetSelector])
+
+  useEffect(() => {
+    onTargetChange?.(opened ? target?.guideTarget : undefined)
+  }, [onTargetChange, opened, target?.guideTarget])
 
   useEffect(() => {
     if (!opened) {
@@ -357,18 +377,42 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   useEffect(() => {
     if (!opened || !targetSelector || !onTargetActivate) return
 
-    const handleTargetClick = (event: MouseEvent) => {
+    const activatedTarget = (eventTarget: EventTarget | null) => {
       const element = visibleTarget(targetSelector)
-      const eventTarget = event.target
-      if (!element || !(eventTarget instanceof Node) || !element.contains(eventTarget)) return
+      if (!element || !(eventTarget instanceof Node) || !element.contains(eventTarget)) return null
+
+      return element
+    }
+
+    const handleTargetClick = (event: MouseEvent) => {
+      const element = activatedTarget(event.target)
+      if (!element) return
 
       const guideTarget = element.dataset.guide
       onTargetActivate(guideTarget)
     }
 
+    const handleTargetFocus = (event: FocusEvent) => {
+      const element = visibleTarget(targetSelector)
+      if (!element) return
+
+      onTargetActivate(guideTargetKeyboardActivation(element, event.target instanceof Element ? event.target : null))
+    }
+
     document.addEventListener('click', handleTargetClick, true)
-    return () => document.removeEventListener('click', handleTargetClick, true)
-  }, [onTargetActivate, opened, targetSelector])
+    document.addEventListener('focusin', handleTargetFocus, true)
+    const focusedElement = visibleTarget(targetSelector)
+    const focusedActivation = focusedElement
+      ? guideTargetKeyboardActivation(focusedElement, document.activeElement)
+      : undefined
+    if (focusedActivation) {
+      onTargetActivate(focusedActivation)
+    }
+    return () => {
+      document.removeEventListener('click', handleTargetClick, true)
+      document.removeEventListener('focusin', handleTargetFocus, true)
+    }
+  }, [onTargetActivate, opened, target?.guideTarget, targetSelector])
 
   const targetStyle = target
     ? ({
@@ -461,15 +505,17 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
             style={{ ...targetStyle, zIndex: guideZIndex + 2 }}
             aria-hidden="true"
           />
-          <div
-            key={animationKey}
-            className={classes.tutorialCursor}
-            data-guide-layer="cursor"
-            style={{ ...cursorStyle, zIndex: guideZIndex + 3 }}
-            aria-hidden="true"
-          >
-            <Icon path={mdiCursorDefaultClickOutline} size={1.7} />
-          </div>
+          {showTargetCursor && (
+            <div
+              key={animationKey}
+              className={classes.tutorialCursor}
+              data-guide-layer="cursor"
+              style={{ ...cursorStyle, zIndex: guideZIndex + 3 }}
+              aria-hidden="true"
+            >
+              <Icon path={mdiCursorDefaultClickOutline} size={1.7} />
+            </div>
+          )}
         </>
       )}
       <Modal.Content

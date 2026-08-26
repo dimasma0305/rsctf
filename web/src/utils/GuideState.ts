@@ -15,6 +15,39 @@ export const GUIDE_TOUR_STEPS = ['welcome', 'account', 'team', 'events', 'challe
 export type GuideFeature = (typeof GUIDE_FEATURES)[number]
 export type GuideTourStep = (typeof GUIDE_TOUR_STEPS)[number]
 
+export type TeamGuideAction =
+  | 'choose'
+  | 'select-create-name'
+  | 'type-create-name'
+  | 'select-join-code'
+  | 'paste-join-code'
+  | 'submit-create'
+  | 'submit-join'
+
+export const resolveTeamGuideAction = (
+  activeTarget: string | undefined,
+  activatedTarget: string | undefined
+): TeamGuideAction => {
+  switch (activeTarget) {
+    case 'team-create-name':
+      return activatedTarget === activeTarget ? 'type-create-name' : 'select-create-name'
+    case 'team-join-code':
+      return activatedTarget === activeTarget ? 'paste-join-code' : 'select-join-code'
+    case 'team-create-submit':
+      return 'submit-create'
+    case 'team-join-submit':
+      return 'submit-join'
+    default:
+      return 'choose'
+  }
+}
+
+export const retainTeamGuideActivation = (
+  activeTarget: string | undefined,
+  activatedTarget: string | undefined,
+  tourOpen: boolean
+) => (tourOpen && activeTarget === activatedTarget ? activatedTarget : undefined)
+
 export const resolveGuideIdentity = (userId?: string | null, userErrorStatus?: number): string | null => {
   if (userId) return userId
   return userErrorStatus === 401 ? 'guest' : null
@@ -85,7 +118,7 @@ export const guideTourTargetSelector = ({
       if (!signedIn)
         return isAccountPage ? `${accountPageTargets}, ${ACCOUNT_NAVIGATION_TARGETS}` : ACCOUNT_NAVIGATION_TARGETS
       return isTeamPage
-        ? '[data-guide="team-create-workflow"], [data-guide="team-join-workflow"], [data-guide="team-create"], [data-guide="team-join"], [data-guide="team-navigation"]'
+        ? '[data-guide="team-create-workflow"][data-guide-stage="input"] [data-guide="team-create-name"], [data-guide="team-join-workflow"][data-guide-stage="input"] [data-guide="team-join-code"], [data-guide="team-create-workflow"][data-guide-stage="submit"] [data-guide="team-create-submit"]:not(:disabled), [data-guide="team-join-workflow"][data-guide-stage="submit"] [data-guide="team-join-submit"]:not(:disabled), [data-guide="team-create"], [data-guide="team-join"], [data-guide="team-navigation"]'
         : TEAM_NAVIGATION_TARGETS
     case 'events':
       if (isGameDetailPage) {

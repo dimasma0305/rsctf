@@ -1,5 +1,12 @@
 import { Button, Group, Stack, Text } from '@mantine/core'
-import { mdiArrowLeft, mdiArrowRight, mdiCheck, mdiCursorDefaultClickOutline, mdiOpenInNew } from '@mdi/js'
+import {
+  mdiArrowLeft,
+  mdiArrowRight,
+  mdiCheck,
+  mdiCursorDefaultClickOutline,
+  mdiKeyboardOutline,
+  mdiOpenInNew,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import {
   FC,
@@ -35,6 +42,8 @@ import {
   persistGuidePreferenceUpdate,
   resolveGuideIdentity,
   resetGuideProgress,
+  resolveTeamGuideAction,
+  retainTeamGuideActivation,
   resumeGuideAfterAccountHandoff,
   setGuideTourStep,
 } from '@Utils/GuideState'
@@ -114,6 +123,8 @@ interface AccessibleGuideModalProps extends PropsWithChildren {
   overlayOpacity: number
   targetSelector?: string
   onTargetActivate?: (target: string | undefined) => void
+  onTargetChange?: (target: string | undefined) => void
+  showTargetCursor?: boolean
   progress?: {
     current: number
     total: number
@@ -130,6 +141,8 @@ const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
   overlayOpacity,
   targetSelector,
   onTargetActivate,
+  onTargetChange,
+  showTargetCursor,
   progress,
   children,
 }) => (
@@ -142,15 +155,22 @@ const AccessibleGuideModal: FC<AccessibleGuideModalProps> = ({
     overlayOpacity={overlayOpacity}
     targetSelector={targetSelector}
     onTargetActivate={onTargetActivate}
+    onTargetChange={onTargetChange}
+    showTargetCursor={showTargetCursor}
     progress={progress}
   >
     {children}
   </GuideSpotlightModal>
 )
 
-const GuideTargetPrompt: FC<PropsWithChildren> = ({ children }) => (
+const GuideTargetPrompt: FC<PropsWithChildren<{ keyboardEntry?: boolean }>> = ({ children, keyboardEntry }) => (
   <Group gap="xs" wrap="nowrap" className={classes.targetPrompt} role="status" aria-live="polite">
-    <Icon path={mdiCursorDefaultClickOutline} size={0.82} className={classes.targetPromptIcon} aria-hidden="true" />
+    <Icon
+      path={keyboardEntry ? mdiKeyboardOutline : mdiCursorDefaultClickOutline}
+      size={0.82}
+      className={classes.targetPromptIcon}
+      aria-hidden="true"
+    />
     <Text size="xs" fw={650}>
       {children}
     </Text>
@@ -178,6 +198,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   const preferencesRef = useRef(preferences)
   const [pendingFeature, setPendingFeature] = useState<PendingFeature | null>(null)
   const [featureStepIndex, setFeatureStepIndex] = useState(0)
+  const [activeTourTarget, setActiveTourTarget] = useState<string>()
+  const [activatedTourTarget, setActivatedTourTarget] = useState<string>()
   const autoStartedKeys = useRef(new Set<string>())
   const ready = identity !== null && loadedKey === storageKey
 
@@ -413,11 +435,13 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           ? isTeamPage
             ? t(
                 'guide.tour.team.destination_body',
-                'Choose Create or Join. Type the required value in the highlighted form, then press its Create or Join button.'
+                'Choose Create or Join, then type in the highlighted field. The cursor moves to the button when it is ready.'
               )
             : t('guide.tour.team.body', 'Open Teams, then create a team or join one with an invite code.')
           : t('guide.tour.team.guest_body', 'Sign in first. Events are entered with a team.'),
-        note: t('guide.tour.team.note', 'One person creates the team; everyone else joins with its invite code.'),
+        note: isTeamPage
+          ? t('guide.tour.team.form_note', 'The guide waits here until the platform confirms that your team is ready.')
+          : t('guide.tour.team.note', 'One person creates the team; everyone else joins with its invite code.'),
         path: user && !isTeamPage ? '/teams' : !user ? '/account/login' : undefined,
         pathLabel: user ? t('guide.tour.team.open', 'Open teams') : t('guide.tour.team.login_first', 'Sign in first'),
         targetSelector: tourTarget('team'),
@@ -426,7 +450,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           user && isTeamPage
             ? t(
                 'guide.tour.team.form_action',
-                'Clicking an input only places the text cursor. Type the team name or invite code, then submit the form; the guide continues after the team is ready.'
+                'Type in the highlighted field. When the cursor moves to Create or Join, select it.'
               )
             : undefined,
       },
@@ -756,11 +780,38 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
 
   const onTourTargetActivate = useCallback(
     (target: string | undefined) => {
+      setActivatedTourTarget(target)
       const nextStep = nextGuideStepForTarget(step.id, target)
       if (nextStep) updatePreferences((current) => setGuideTourStep(current, nextStep))
     },
     [step.id, updatePreferences]
   )
+
+  useEffect(() => {
+    setActivatedTourTarget(undefined)
+  }, [location.pathname, step.id])
+
+  useEffect(() => {
+    setActivatedTourTarget((current) => retainTeamGuideActivation(activeTourTarget, current, tourOpen))
+  }, [activeTourTarget, tourOpen])
+
+  const teamGuideAction = resolveTeamGuideAction(activeTourTarget, activatedTourTarget)
+  const teamGuideNeedsKeyboard = teamGuideAction === 'type-create-name' || teamGuideAction === 'paste-join-code'
+  const teamGuideKeyboardActive = step.id === 'team' && Boolean(user) && isTeamPage && teamGuideNeedsKeyboard
+  const teamGuidePrompt =
+    teamGuideAction === 'select-create-name'
+      ? t('guide.tour.team.select_create_name', 'Select the highlighted Team name field.')
+      : teamGuideAction === 'type-create-name'
+        ? t('guide.tour.team.type_create_name', 'Good—now type your team name. The cursor moves when it is ready.')
+        : teamGuideAction === 'select-join-code'
+          ? t('guide.tour.team.select_join_code', 'Select the highlighted Invite code field.')
+          : teamGuideAction === 'paste-join-code'
+            ? t('guide.tour.team.paste_join_code', 'Good—now paste the invite code your teammate sent you.')
+            : teamGuideAction === 'submit-create'
+              ? t('guide.tour.team.submit_create', 'Your team name is ready. Select Create Team.')
+              : teamGuideAction === 'submit-join'
+                ? t('guide.tour.team.submit_join', 'Your invite code is ready. Select Join.')
+                : t('guide.tour.team.choose_action', 'Select Create or Join to begin.')
 
   useEffect(() => {
     setFeatureStepIndex(0)
@@ -822,6 +873,8 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         overlayOpacity={0.58}
         targetSelector={step.targetSelector}
         onTargetActivate={onTourTargetActivate}
+        onTargetChange={setActiveTourTarget}
+        showTargetCursor={!teamGuideKeyboardActive}
         progress={{
           current: stepIndex + 1,
           total: steps.length,
@@ -856,14 +909,16 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
               </Button>
             )}
           </Stack>
-          <GuideTargetPrompt>
-            {step.targetPrompt && !needsNavigation
-              ? step.targetPrompt
-              : needsNavigation
-                ? t('guide.tour.open_destination', 'Open the page above. This step continues there.')
-                : needsTargetActivation
-                  ? t('guide.tour.destination_ready', 'Select the highlighted control to continue.')
-                  : t('guide.tour.target_optional', 'Use the highlighted control, or choose Next.')}
+          <GuideTargetPrompt keyboardEntry={teamGuideKeyboardActive}>
+            {step.id === 'team' && user && isTeamPage && !needsNavigation
+              ? teamGuidePrompt
+              : step.targetPrompt && !needsNavigation
+                ? step.targetPrompt
+                : needsNavigation
+                  ? t('guide.tour.open_destination', 'Open the page above. This step continues there.')
+                  : needsTargetActivation
+                    ? t('guide.tour.destination_ready', 'Select the highlighted control to continue.')
+                    : t('guide.tour.target_optional', 'Use the highlighted control, or choose Next.')}
           </GuideTargetPrompt>
           <Group justify="space-between" gap="xs" wrap="nowrap" className={classes.tourFooter}>
             <Button
