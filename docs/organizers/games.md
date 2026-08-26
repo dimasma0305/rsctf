@@ -42,6 +42,16 @@ selector or live scoring-policy override.
 
 When at least two challenge formats are active, the public scoreboard opens on an **Overall** tab. RSCTF normalizes each format to 0-100 and gives it one fixed budget unit per enabled, approved challenge. Jeopardy is divided by the attainable score allowed by the team's division, including blood-bonus headroom; A&D and KotH use their official settled epoch totals. Dynamic Jeopardy values stay inside the Jeopardy component and never alter its outer challenge count. Challenge eligibility and counts lock at the competition boundary, and the formula is absolute rather than leader-relative, so field composition cannot rescale a team's result. See the [Overall scoreboard guide](../players/overall-scoreboard).
 
+## Discord blood announcements
+
+Set the game's Discord webhook to an official HTTPS `discord.com/api/webhooks/...`
+URL to announce first, second, and third blood for Jeopardy challenges. Turning
+off a challenge's blood bonus removes only the extra points; the blood badge and
+announcement remain active. Announcements reached during a scoreboard freeze
+stay queued until the game ends so the webhook cannot leak frozen solves. The
+delivery worker retries temporary Discord failures with a bounded backoff, but
+does not replay bloods that occurred before webhook delivery was enabled.
+
 ## Writeups
 
 If writeups are required, set the deadline and explain the accepted format to players. The current server accepts one lowercase `.pdf` per team, up to 20 MiB; a replacement upload overwrites the previous submission.

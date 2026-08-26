@@ -181,8 +181,9 @@ impl GameInfoModel {
         }
     }
 
-    fn validate(&self) -> AppResult<()> {
-        self.configuration().validate()
+    fn validate(&self) -> AppResult<Option<String>> {
+        self.configuration().validate()?;
+        crate::services::discord_webhook::normalize_discord_webhook(self.discord_webhook.as_deref())
     }
 
     fn validate_event_security(&self, st: &SharedState) -> AppResult<()> {
@@ -311,7 +312,7 @@ pub async fn add_game(
     _admin: AdminUser,
     Json(model): Json<GameInfoModel>,
 ) -> AppResult<RequestResponse<GameInfoModel>> {
-    model.validate()?;
+    let discord_webhook = model.validate()?;
     model.validate_event_security(&st)?;
     let koth_epoch_ticks = model.koth_epoch_ticks.unwrap_or(12);
     let koth_cycle_ticks = model.koth_cycle_ticks.unwrap_or(3);
@@ -336,7 +337,7 @@ pub async fn add_game(
         writeup_required: Set(model.writeup_required),
         invite_code: Set(model.invite_code.clone()),
         team_member_count_limit: Set(model.team_member_count_limit),
-        discord_webhook: Set(model.discord_webhook.clone()),
+        discord_webhook: Set(discord_webhook),
         container_count_limit: Set(model.container_count_limit),
         start_time_utc: Set(model.start_time_utc),
         end_time_utc: Set(model.end_time_utc),
@@ -508,7 +509,7 @@ pub async fn update_game(
     Json(model): Json<GameInfoModel>,
 ) -> AppResult<RequestResponse<GameInfoModel>> {
     manager_or_admin(&st, &user, id).await?;
-    model.validate()?;
+    let discord_webhook = model.validate()?;
     model.validate_event_security(&st)?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     let tx = control.transaction_mut();
@@ -779,7 +780,7 @@ pub async fn update_game(
     .bind(model.writeup_deadline)
     .bind(model.freeze_time_utc)
     .bind(super::blood_bonus_from_value(model.blood_bonus_value))
-    .bind(&model.discord_webhook)
+    .bind(&discord_webhook)
     .bind(model.ad_warmup_seconds)
     .bind(model.ad_snapshot_retention_days)
     .bind(model.ad_tick_seconds)

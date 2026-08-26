@@ -115,6 +115,23 @@ pub(crate) fn maximum_jeopardy_contribution(score: i32, bonus: i64, blood_eligib
         .fold(score, i32::max)
 }
 
+fn solve_contribution(
+    score: i32,
+    bonus: i64,
+    submission_type: SubmissionType,
+    blood_bonus_disabled: bool,
+) -> i32 {
+    if blood_bonus_disabled {
+        return score;
+    }
+    match submission_type {
+        SubmissionType::FirstBlood => blood_adjusted_score(score, bonus, 0),
+        SubmissionType::SecondBlood => blood_adjusted_score(score, bonus, 1),
+        SubmissionType::ThirdBlood => blood_adjusted_score(score, bonus, 2),
+        _ => score,
+    }
+}
+
 fn compare_scoreboard_rows(
     a: &(ScoreboardItem, DateTime<Utc>),
     b: &(ScoreboardItem, DateTime<Utc>),
@@ -487,7 +504,7 @@ pub(crate) async fn build_scoreboard(
         // first/second/third-blood SLOT, which would downgrade the tier of every
         // legitimately-scoring solver after it (RSCTF gates blood on BloodEligible
         // && ScoreEligible).
-        if *blood_eligible && *score_eligible && !disable_blood {
+        if *blood_eligible && *score_eligible {
             let count = blood_count.entry(*chal_id).or_insert(0);
             if *count < 3 {
                 sub_type = match *count {
@@ -506,17 +523,11 @@ pub(crate) async fn build_scoreboard(
                 }
             }
         }
-        // Contribution: 0 when the division cannot score this challenge; otherwise the
-        // base score for Normal solves and the banker's-rounded blood-adjusted score
-        // for the three bloods. When the game's blood bonus is zero the factor is
-        // exactly 1.0, so this collapses to the base score (RSCTF `NoBonus` branch).
+        // Blood classification and the scoreboard badge are independent of the
+        // optional point multiplier. Disabling the bonus keeps the tier but uses
+        // the base score, matching the organizer-facing setting's meaning.
         let contribution = if *score_eligible {
-            match sub_type {
-                SubmissionType::FirstBlood => blood_adjusted_score(score, bonus, 0),
-                SubmissionType::SecondBlood => blood_adjusted_score(score, bonus, 1),
-                SubmissionType::ThirdBlood => blood_adjusted_score(score, bonus, 2),
-                _ => score,
-            }
+            solve_contribution(score, bonus, sub_type, disable_blood)
         } else {
             0
         };
@@ -705,6 +716,19 @@ mod tests {
         assert_eq!(maximum_jeopardy_contribution(100, bonus, true), 150);
         assert_eq!(maximum_jeopardy_contribution(100, bonus, false), 100);
         assert_eq!(maximum_jeopardy_contribution(-100, bonus, true), 0);
+    }
+
+    #[test]
+    fn disabled_blood_bonus_preserves_tier_without_extra_points() {
+        let bonus = 500_i64 << 20;
+        assert_eq!(
+            solve_contribution(100, bonus, SubmissionType::FirstBlood, false),
+            150
+        );
+        assert_eq!(
+            solve_contribution(100, bonus, SubmissionType::FirstBlood, true),
+            100
+        );
     }
 
     #[test]

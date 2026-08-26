@@ -92,6 +92,36 @@ fn normal_flag_submit_type_allowed(
     uses_live_engine && practice_mode && submit_time >= game_end
 }
 
+fn blood_recognition_eligible(
+    submit_time: DateTime<Utc>,
+    game_start: DateTime<Utc>,
+    game_end: DateTime<Utc>,
+    deadline: Option<DateTime<Utc>>,
+    permissions: GamePermission,
+) -> bool {
+    submit_time >= game_start
+        && submit_time < game_end
+        && deadline.is_none_or(|deadline| submit_time <= deadline)
+        && permissions.contains(GamePermission::GET_BLOOD)
+        && permissions.contains(GamePermission::GET_SCORE)
+}
+
+fn blood_notice_type(
+    claimed_first_solve: bool,
+    blood_eligible: bool,
+    prior: i64,
+) -> Option<NoticeType> {
+    if !claimed_first_solve || !blood_eligible {
+        return None;
+    }
+    match prior {
+        0 => Some(NoticeType::FirstBlood),
+        1 => Some(NoticeType::SecondBlood),
+        2 => Some(NoticeType::ThirdBlood),
+        _ => None,
+    }
+}
+
 /// Count prior first solves that are eligible to consume a blood slot. Called
 /// while the challenge-global advisory lock is held, so two teams solving at the
 /// same instant cannot both announce the same tier.
@@ -683,12 +713,16 @@ pub async fn submit(
         .map_err(|error| AppError::internal(error.to_string()))?;
 
         if !already_solved {
-            let blood_eligible = submit_time >= game_start
-                && submit_time < game_end
-                && current_deadline.is_none_or(|deadline| submit_time <= deadline)
-                && !disable_blood_bonus
-                && live_permissions.contains(GamePermission::GET_BLOOD)
-                && live_permissions.contains(GamePermission::GET_SCORE);
+            // `disable_blood_bonus` controls score multiplication only. Blood
+            // recognition, in-platform notices, and Discord announcements stay
+            // available when organizers choose a zero-bonus competition.
+            let blood_eligible = blood_recognition_eligible(
+                submit_time,
+                game_start,
+                game_end,
+                current_deadline,
+                live_permissions,
+            );
 
             // Serialize only the rare first-three eligible solves globally for this
             // challenge. The per-team lock is always acquired first, so lock order is
@@ -731,16 +765,7 @@ pub async fn submit(
                 claim_first_solve(&mut transaction, ctx.participation.id, challenge_id, sub_id)
                     .await?;
 
-            let notice_type = if claimed_first_solve && blood_eligible {
-                match prior {
-                    0 => Some(NoticeType::FirstBlood),
-                    1 => Some(NoticeType::SecondBlood),
-                    2 => Some(NoticeType::ThirdBlood),
-                    _ => None,
-                }
-            } else {
-                None
-            };
+            let notice_type = blood_notice_type(claimed_first_solve, blood_eligible, prior);
             if let Some(notice_type) = notice_type {
                 let values = serde_json::json!([team_name, challenge.title]);
                 let publish_time = Utc::now();
@@ -757,6 +782,13 @@ pub async fn submit(
                 .fetch_one(&mut *transaction)
                 .await
                 .map_err(|error| AppError::internal(error.to_string()))?;
+                crate::services::discord_webhook::enqueue_blood_notice(
+                    &mut transaction,
+                    notice_id,
+                    id,
+                    publish_time,
+                )
+                .await?;
                 notice_to_broadcast = Some((notice_type, notice_id, values, publish_time));
             }
         }
@@ -834,7 +866,8 @@ pub async fn submit(
 #[cfg(test)]
 mod tests {
     use super::{
-        normal_flag_submit_type_allowed, ChallengeType, FINALIZE_SUBMISSION_SQL,
+        blood_notice_type, blood_recognition_eligible, normal_flag_submit_type_allowed,
+        ChallengeType, GamePermission, NoticeType, FINALIZE_SUBMISSION_SQL,
         LOAD_GRADING_POLICY_SQL,
     };
     use chrono::{Duration, Utc};
@@ -863,6 +896,33 @@ mod tests {
                 "missing optimistic grading fence predicate: {predicate}"
             );
         }
+    }
+
+    #[test]
+    fn disabling_bonus_points_does_not_disable_blood_recognition() {
+        let start = Utc::now() - Duration::minutes(5);
+        let end = Utc::now() + Duration::minutes(5);
+        let permissions = GamePermission(GamePermission::GET_BLOOD | GamePermission::GET_SCORE);
+        assert!(blood_recognition_eligible(
+            Utc::now(),
+            start,
+            end,
+            None,
+            permissions,
+        ));
+        assert_eq!(
+            blood_notice_type(true, true, 0),
+            Some(NoticeType::FirstBlood)
+        );
+        assert_eq!(
+            blood_notice_type(true, true, 1),
+            Some(NoticeType::SecondBlood)
+        );
+        assert_eq!(
+            blood_notice_type(true, true, 2),
+            Some(NoticeType::ThirdBlood)
+        );
+        assert_eq!(blood_notice_type(true, true, 3), None);
     }
 
     #[test]
