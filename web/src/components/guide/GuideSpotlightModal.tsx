@@ -18,6 +18,7 @@ interface GuideSpotlightModalProps extends PropsWithChildren {
   overlayOpacity: number
   targetSelector?: string
   onTargetActivate?: (target: string | undefined) => void
+  onTargetChange?: (target: string | undefined) => void
   progress?: {
     current: number
     total: number
@@ -264,6 +265,7 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   overlayOpacity,
   targetSelector,
   onTargetActivate,
+  onTargetChange,
   progress,
   children,
 }) => {
@@ -284,6 +286,10 @@ export const GuideSpotlightModal: FC<GuideSpotlightModalProps> = ({
   useEffect(() => {
     if (opened) setAnimationKey((current) => current + 1)
   }, [opened, target?.guideTarget, targetSelector])
+
+  useEffect(() => {
+    onTargetChange?.(opened ? target?.guideTarget : undefined)
+  }, [onTargetChange, opened, target?.guideTarget])
 
   useEffect(() => {
     if (!opened) {

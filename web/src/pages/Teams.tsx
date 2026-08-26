@@ -220,6 +220,7 @@ const Teams: FC = () => {
           <Stack
             component="form"
             data-guide="team-join-workflow"
+            data-guide-stage={joinTeamCode.trim().length > 0 ? 'submit' : 'input'}
             data-guide-interaction-scope
             onSubmit={(event) => {
               event.preventDefault()
@@ -228,7 +229,12 @@ const Teams: FC = () => {
           >
             <Text size="sm">{t('team.content.join')}</Text>
             <TextInput
+              data-guide="team-join-code"
               label={t('team.label.invite_code')}
+              description={t(
+                'team.content.join_code_hint',
+                'Paste the complete invite code from your teammate, then select Join.'
+              )}
               type="text"
               placeholder="team:0:01234567890123456789012345678901"
               w="100%"

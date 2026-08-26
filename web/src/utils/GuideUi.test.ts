@@ -96,6 +96,7 @@ test('interactive guide spotlights real controls and provides a reduced-motion g
   assert.match(spotlight, /new MutationObserver\(update\)/)
   assert.match(spotlight, /observer\.observe\(document\.body, \{ childList: true, subtree: true \}\)/)
   assert.match(spotlight, /onTargetActivate\(guideTarget\)/)
+  assert.match(spotlight, /onTargetChange\?\.\(opened \? target\?\.guideTarget : undefined\)/)
   assert.match(spotlight, /guideLayerZIndex\(target\)/)
   assert.match(spotlight, /\[role="dialog"\]/)
   assert.match(spotlight, /externalSurface && !target\?\.elevated/)
@@ -221,7 +222,9 @@ test('the event tutorial resumes with destination-specific instructions after a 
 test('the novice path teaches every action on the real player controls', () => {
   assert.match(provider, /id: 'team'/)
   assert.match(provider, /Create or join a team/)
-  assert.match(guideState, /team-create-workflow[\s\S]*team-join-workflow/)
+  assert.match(guideState, /team-create-workflow[\s\S]*team-create-name[\s\S]*team-join-workflow[\s\S]*team-join-code/)
+  assert.match(guideState, /team-create-submit[\s\S]*:not\(:disabled\)/)
+  assert.match(guideState, /team-join-submit[\s\S]*:not\(:disabled\)/)
   assert.match(guideState, /challenge-card/)
   assert.match(guideState, /instance-start[\s\S]*instance-entry/)
   assert.match(guideState, /flag-submit/)
@@ -239,13 +242,20 @@ test('the novice path teaches every action on the real player controls', () => {
   assert.match(provider, /resumeGuideAfterAccountHandoff/)
   assert.match(teamsPage, /data-guide="team-create"/)
   assert.match(teamsPage, /data-guide="team-join"/)
-  assert.match(teamsPage, /component="form"[\s\S]*data-guide="team-join-workflow"[\s\S]*data-guide-interaction-scope/)
+  assert.match(
+    teamsPage,
+    /component="form"[\s\S]*data-guide="team-join-workflow"[\s\S]*data-guide-stage=[\s\S]*data-guide-interaction-scope/
+  )
+  assert.match(teamsPage, /data-guide="team-join-code"/)
+  assert.match(teamsPage, /data-guide="team-join-submit"/)
   assert.match(teamsPage, /completeTeamSetup\(\)[\s\S]*mutateTeams\(\)/)
   assert.match(teamsPage, /<AccessibleModal/)
   assert.match(
     teamCreateModal,
-    /component="form"[\s\S]*data-guide="team-create-workflow"[\s\S]*data-guide-interaction-scope/
+    /component="form"[\s\S]*data-guide="team-create-workflow"[\s\S]*data-guide-stage=[\s\S]*data-guide-interaction-scope/
   )
+  assert.match(teamCreateModal, /data-guide="team-create-name"/)
+  assert.match(teamCreateModal, /data-guide="team-create-submit"/)
   assert.match(teamCreateModal, /onTeamReady\?\.\(\)[\s\S]*mutate\(\)/)
   assert.match(teamsPage, /onTeamReady=\{completeTeamSetup\}/)
   assert.match(teamCreateModal, /<AccessibleModal/)
@@ -255,6 +265,9 @@ test('the novice path teaches every action on the real player controls', () => {
   assert.match(accessibleModal, /aria-label=\{closeButtonProps\?\.\['aria-label'\]/)
   assert.match(challengeCard, /data-guide="challenge-card"/)
   assert.match(provider, /requiresTargetActivation/)
-  assert.match(provider, /Clicking an input only places the text cursor/)
+  assert.match(provider, /The cursor moves to the button when it is ready/)
+  assert.match(provider, /When the cursor moves to Create or Join, select it/)
+  assert.match(provider, /Good—now type your team name/)
+  assert.match(provider, /Good—now paste the invite code/)
   assert.match(provider, /Select the highlighted control to continue/)
 })

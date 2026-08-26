@@ -35,13 +35,18 @@ test('guided team creation requires input and completes only after a successful 
     },
   })
   const originalCreate = api.team.teamCreateTeam
+  const originalWarn = console.warn
   const teamApi = api.team as typeof api.team & { teamCreateTeam: typeof api.team.teamCreateTeam }
   let submitted: TeamUpdateModel | undefined
+  let attempts = 0
   const actions: string[] = []
   teamApi.teamCreateTeam = (async (model: TeamUpdateModel) => {
     submitted = model
+    attempts += 1
+    if (attempts === 1) throw new Error('team name rejected')
     return { data: { name: model.name } }
   }) as typeof api.team.teamCreateTeam
+  console.warn = () => undefined
   const { createRoot } = await import('react-dom/client')
   const container = browser.document.createElement('div')
   browser.document.body.append(container)
@@ -77,6 +82,9 @@ test('guided team creation requires input and completes only after a successful 
     assert.ok(input)
     assert.ok(submit)
     assert.equal(form.hasAttribute('data-guide-interaction-scope'), true)
+    assert.equal(form.dataset.guideStage, 'input')
+    assert.equal(input.dataset.guide, 'team-create-name')
+    assert.equal(submit.dataset.guide, 'team-create-submit')
     assert.equal(submit.disabled, true)
 
     await act(async () => {
@@ -86,6 +94,17 @@ test('guided team creation requires input and completes only after a successful 
       input.dispatchEvent(new browser.Event('input', { bubbles: true }))
       input.dispatchEvent(new browser.Event('change', { bubbles: true }))
     })
+    assert.equal(form.dataset.guideStage, 'submit')
+    assert.equal(submit.disabled, false)
+    assert.deepEqual(actions, [])
+
+    await act(async () => {
+      form.dispatchEvent(new browser.Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    assert.equal(submitted?.name, 'rookies')
+    assert.equal(form.dataset.guideStage, 'submit')
     assert.equal(submit.disabled, false)
     assert.deepEqual(actions, [])
 
@@ -99,6 +118,7 @@ test('guided team creation requires input and completes only after a successful 
   } finally {
     await act(async () => root.unmount())
     teamApi.teamCreateTeam = originalCreate
+    console.warn = originalWarn
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
     await browser.happyDOM.close()
     restoreDom()

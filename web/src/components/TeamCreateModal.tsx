@@ -60,6 +60,7 @@ export const TeamCreateModal: FC<TeamCreateModalProps> = (props) => {
         <Stack
           component="form"
           data-guide="team-create-workflow"
+          data-guide-stage={(createTeam.name?.trim().length ?? 0) > 0 ? 'submit' : 'input'}
           data-guide-interaction-scope
           onSubmit={(event) => {
             event.preventDefault()
@@ -68,7 +69,12 @@ export const TeamCreateModal: FC<TeamCreateModalProps> = (props) => {
         >
           <Text>{t('team.content.create')}</Text>
           <TextInput
+            data-guide="team-create-name"
             label={t('team.label.name')}
+            description={t(
+              'team.content.create_name_hint',
+              'Type a team name. Create Team becomes available when the field is not empty.'
+            )}
             type="text"
             placeholder="team"
             w="100%"
