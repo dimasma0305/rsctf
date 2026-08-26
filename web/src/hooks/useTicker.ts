@@ -16,6 +16,7 @@ type Listener = (now: Dayjs) => void
 
 const listeners = new Set<Listener>()
 let interval: ReturnType<typeof setInterval> | null = null
+let alignmentTimeout: ReturnType<typeof setTimeout> | null = null
 let lastValue: Dayjs = dayjs()
 
 const tick = (): void => {
@@ -24,20 +25,28 @@ const tick = (): void => {
 }
 
 const start = (): void => {
-  if (interval !== null) return
+  if (interval !== null || alignmentTimeout !== null || listeners.size === 0) return
+  if (typeof document !== 'undefined' && document.hidden) return
   // Align first tick to the next whole second so multiple mounts agree on
   // the clock to the millisecond.
   const toNextSecond = 1000 - (Date.now() % 1000)
-  setTimeout(() => {
+  alignmentTimeout = setTimeout(() => {
+    alignmentTimeout = null
+    if (listeners.size === 0 || (typeof document !== 'undefined' && document.hidden)) return
     tick()
     interval = setInterval(tick, 1000)
   }, toNextSecond)
 }
 
 const stop = (): void => {
-  if (interval === null) return
-  clearInterval(interval)
-  interval = null
+  if (alignmentTimeout !== null) {
+    clearTimeout(alignmentTimeout)
+    alignmentTimeout = null
+  }
+  if (interval !== null) {
+    clearInterval(interval)
+    interval = null
+  }
 }
 
 if (typeof document !== 'undefined') {

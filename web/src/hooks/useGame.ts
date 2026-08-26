@@ -1,4 +1,4 @@
-import dayjs from 'dayjs'
+import dayjs, { Dayjs } from 'dayjs'
 import { TFunction } from 'i18next'
 import useSWR from 'swr'
 import { GameStatus } from '@Components/GameCard'
@@ -18,16 +18,24 @@ export const useRecentGames = () => {
   return { recentGames: Array.isArray(data) ? data : undefined, error, mutate }
 }
 
-export const getGameStatus = (game?: { start?: number; end?: number }) => {
+export const getGameStatus = (game?: { start?: number; end?: number }, now: Dayjs = dayjs()) => {
   const startTime = dayjs(game?.start)
   const endTime = dayjs(game?.end)
 
-  const total = endTime.diff(startTime, 'minute')
-  const current = dayjs().diff(startTime, 'minute')
-
-  const finished = dayjs().isAfter(endTime)
-  const started = dayjs().isAfter(startTime)
-  const progress = started ? (finished ? 1 : current / total) : 0
+  const hasFiniteWindow =
+    typeof game?.start === 'number' &&
+    Number.isFinite(game.start) &&
+    typeof game.end === 'number' &&
+    Number.isFinite(game.end) &&
+    startTime.isValid() &&
+    endTime.isValid()
+  const totalMilliseconds = hasFiniteWindow ? endTime.diff(startTime) : 0
+  const validWindow = totalMilliseconds > 0
+  const total = validWindow ? totalMilliseconds / 60_000 : 0
+  const started = validWindow && !now.isBefore(startTime)
+  const finished = validWindow && !now.isBefore(endTime)
+  const elapsed = validWindow ? now.diff(startTime) : 0
+  const progress = started ? (finished ? 1 : Math.min(1, Math.max(0, elapsed / totalMilliseconds))) : 0
   const status = started ? (finished ? GameStatus.Ended : GameStatus.OnGoing) : GameStatus.Coming
 
   return {
@@ -35,7 +43,7 @@ export const getGameStatus = (game?: { start?: number; end?: number }) => {
     endTime,
     finished,
     started,
-    progress: progress * 100,
+    progress: Number.isFinite(progress) ? progress * 100 : 0,
     total,
     status,
   }

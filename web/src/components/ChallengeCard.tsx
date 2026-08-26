@@ -22,6 +22,7 @@ import { Trans, useTranslation } from 'react-i18next'
 import { ScrollingText } from '@Components/ScrollingText'
 import { useLanguage } from '@Utils/I18n'
 import { BloodsTypes, PartialIconProps, useChallengeCategoryLabelMap } from '@Utils/Shared'
+import { useTicker } from '@Hooks/useTicker'
 import { ChallengeInfo, ChallengeType, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengeCard.module.css'
 import misc from '@Styles/Misc.module.css'
@@ -47,6 +48,7 @@ export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps)
   const { colorScheme } = useMantineColorScheme()
   const { locale } = useLanguage()
   const { t } = useTranslation()
+  const now = useTicker()
   // A&D AND KotH both run on the live-scoring engine — neither has a static
   // "challenge.score" worth showing. Without including KotH here, the card
   // would print the default OriginalScore (e.g. "100 pts") which is meaningless
@@ -59,11 +61,7 @@ export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps)
   const isKoth = challenge.type === ChallengeType.KingOfTheHill
   const isAttackDefense = challenge.type === ChallengeType.AttackDefense
 
-  const isFaded = useMemo(() => {
-    if (!challenge.deadline) return false
-
-    return dayjs().isAfter(dayjs(challenge.deadline))
-  }, [challenge.deadline])
+  const isFaded = challenge.deadline ? now.isAfter(dayjs(challenge.deadline)) : false
 
   const ratingBadge = useMemo(() => {
     if (!rating) return null

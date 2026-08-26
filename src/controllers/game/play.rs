@@ -210,9 +210,9 @@ pub async fn game_details_with_challenges(
             challenges.insert(cat, kept);
         }
     }
-    // Mirrors RSCTF `ChallengeCount = challenges.Count` — the number of visible
-    // *categories* (Dictionary key count), not the total challenge count.
-    let challenge_count = challenges.len() as i32;
+    let visible_challenge_ids = visible_challenge_ids(&challenges);
+    let challenge_count = i32::try_from(visible_challenge_ids.len()).unwrap_or(i32::MAX);
+    let visible_challenges: HashSet<i32> = visible_challenge_ids.iter().copied().collect();
 
     // The caller team's scoreboard row (rank/score/solvedChallenges). The React
     // ChallengePanel hides EVERY challenge behind a "scoreboard not ready" screen
@@ -220,10 +220,13 @@ pub async fn game_details_with_challenges(
     // players can't see any challenges. RSCTF returns the team's ScoreboardItem;
     // `build_scoreboard` ranks all accepted participants, so a participant always
     // resolves to a row with rank >= 1.
-    let rank = board
+    let mut rank = board
         .items
         .into_iter()
         .find(|it| it.id == ctx.participation.team_id);
+    if let Some(rank) = &mut rank {
+        retain_visible_solves(rank, &visible_challenges);
+    }
 
     let model = GameDetailModel {
         challenges,
@@ -233,12 +236,6 @@ pub async fn game_details_with_challenges(
         writeup_required: ctx.game.writeup_required,
         writeup_deadline: ctx.game.writeup_deadline,
     };
-    let visible_challenge_ids = model
-        .challenges
-        .values()
-        .flatten()
-        .map(|challenge| challenge.id)
-        .collect();
     // Everything above is safe to prepare before retaining a pool connection.
     // The finalizer re-proves every returned challenge and its current division
     // permission on the roster transaction, then serializes under those locks.
@@ -252,6 +249,20 @@ pub async fn game_details_with_challenges(
         model,
     )
     .await
+}
+
+fn visible_challenge_ids(challenges: &BTreeMap<String, Vec<ChallengeInfo>>) -> Vec<i32> {
+    challenges
+        .values()
+        .flatten()
+        .map(|challenge| challenge.id)
+        .collect()
+}
+
+fn retain_visible_solves(rank: &mut ScoreboardItem, visible_challenges: &HashSet<i32>) {
+    rank.solved_challenges
+        .retain(|solve| visible_challenges.contains(&solve.id));
+    rank.solved_count = rank.solved_challenges.len();
 }
 
 // ---------------------------------------------------------------------------
@@ -793,3 +804,7 @@ pub async fn get_challenge(
     )
     .await
 }
+
+#[cfg(test)]
+#[path = "play_projection_tests.rs"]
+mod detail_projection_tests;

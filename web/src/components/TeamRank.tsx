@@ -20,6 +20,7 @@ import { FC, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
 import { ErrorCodes } from '@Utils/Shared'
+import { visibleChallengeSolveProgress } from '@Utils/challengeProgress'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
 import { useGameTeamInfo } from '@Hooks/useGame'
 import misc from '@Styles/Misc.module.css'
@@ -34,7 +35,7 @@ export const TeamRank: FC<CardProps> = (props) => {
   const clipboard = useClipboard()
   const { t } = useTranslation()
 
-  const solved = (teamInfo?.rank?.solvedCount ?? 0) / (teamInfo?.challengeCount ?? 1)
+  const solvedProgress = visibleChallengeSolveProgress(teamInfo?.rank?.solvedCount, teamInfo?.challengeCount)
 
   const division = useMemo(() => {
     if (teamInfo?.rank?.divisionId && game?.divisions) {
@@ -106,7 +107,10 @@ export const TeamRank: FC<CardProps> = (props) => {
           {item(t('game.label.score_table.score'), rank?.score)}
           {item(t('game.label.score_table.solved_count'), rank?.solvedCount)}
         </Group>
-        <Progress value={solved * 100} aria-label={t('game.label.score_table.solved_progress', 'Challenges solved')} />
+        <Progress
+          value={solvedProgress}
+          aria-label={t('game.label.score_table.solved_progress', 'Challenges solved')}
+        />
         {!archived && (
           <PasswordInput
             label={t('team.label.token', 'Team token')}

@@ -15,6 +15,7 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      npm run details-read  # fixed-rate authenticated challenge-details poll
       npm run donations     # fixed-rate, read-only cached donation-feed smoke
       npm run asset-download # fixed-rate authenticated 1 MiB attachment ranges
       npm run event-security # destructive fixed-rate bounded telemetry/resource comparison
@@ -172,6 +173,20 @@ query bucket. One iteration is exactly one HTTP request. Supply both game IDs:
 TARGET=https://ctf.example JEO_GAME=162 AD_GAME=163 RATE=300 \
   DURATION=60s npm run polled-read
 ```
+
+`details-read` is the focused companion for the authenticated ten-second player
+challenge poll. It uses only accepted-participation users from the selected event,
+checks exact health before and after, and verifies that `challengeCount`, the visible
+challenge IDs, and the caller's solved projection agree. It performs no mutations:
+
+```sh
+TARGET=https://ctf.example GAME=162 RATE=10 DURATION=30s \
+  SUMMARY_JSON=/tmp/details-read.json npm run details-read
+```
+
+Set `REQUIRE_FIXED_PROJECTION=0` only when collecting a before-fix baseline; the
+projection mismatch remains visible in the exported metric but does not fail that
+baseline run.
 
 `scoreboard-evidence` isolates the database work behind a Jeopardy scoreboard
 cache fill. Its default disposable fixture contains 100 teams, 20 challenges,
