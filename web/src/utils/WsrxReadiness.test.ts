@@ -94,6 +94,54 @@ test('slow readiness responses are single-flight and schedule the next read from
   }
 })
 
+test('a late window cannot overlap a request still settling from an expired window', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  let requests = 0
+  let inFlight = 0
+  let maxInFlight = 0
+  let resolveFirst: (() => void) | undefined
+  const scheduler = createWsrxReadinessScheduler({
+    sync: () => {
+      requests += 1
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      if (requests === 1) {
+        return new Promise<void>((resolve) => {
+          resolveFirst = () => {
+            inFlight -= 1
+            resolve()
+          }
+        })
+      }
+      inFlight -= 1
+      return Promise.resolve()
+    },
+    onExpiredChange: () => undefined,
+  })
+
+  try {
+    scheduler.setEnabled(true)
+    scheduler.updatePending(['old'])
+    context.mock.timers.tick(WSRX_READINESS_POLL_MS)
+    assert.equal(requests, 1)
+
+    context.mock.timers.tick(WSRX_READINESS_WINDOW_MS - WSRX_READINESS_POLL_MS)
+    scheduler.updatePending(['old', 'late'])
+    context.mock.timers.tick(WSRX_READINESS_POLL_MS)
+    assert.equal(requests, 1)
+
+    resolveFirst?.()
+    await flushPromises()
+    context.mock.timers.tick(WSRX_READINESS_POLL_MS)
+    await flushPromises()
+    assert.equal(requests, 2)
+    assert.equal(maxInFlight, 1)
+  } finally {
+    scheduler.dispose()
+    context.mock.timers.reset()
+  }
+})
+
 test('daemon failure stops queued work and one explicit retry can recover', async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
   let requests = 0
@@ -219,6 +267,106 @@ test('one and one hundred pending tunnels share the same bounded request count',
     assert.equal(one.expiredCount, 1)
     assert.equal(hundred.expiredCount, 100)
   } finally {
+    context.mock.timers.reset()
+  }
+})
+
+test('tunnels added near an existing deadline receive their own full window without a dogpile', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  let requests = 0
+  let expired = new Set<string>()
+  const scheduler = createWsrxReadinessScheduler({
+    sync: async () => {
+      requests += 1
+    },
+    onExpiredChange: (next) => {
+      expired = new Set(next)
+    },
+  })
+  const lateRemotes = Array.from({ length: 100 }, (_, index) => `late-${index}`)
+
+  try {
+    scheduler.setEnabled(true)
+    scheduler.updatePending(['early'])
+    await advanceImmediateWindow(context, 7_500)
+    assert.equal(requests, 5)
+
+    scheduler.updatePending(['early', ...lateRemotes])
+    context.mock.timers.tick(500)
+    await flushPromises()
+    assert.deepEqual([...expired], ['early'])
+    assert.equal(requests, 5)
+
+    context.mock.timers.tick(1_000)
+    await flushPromises()
+    for (let index = 0; index < 4; index += 1) {
+      context.mock.timers.tick(WSRX_READINESS_POLL_MS)
+      await flushPromises()
+    }
+    assert.equal(requests, 10)
+    assert.equal(expired.size, 1)
+
+    context.mock.timers.tick(499)
+    assert.equal(expired.size, 1)
+    context.mock.timers.tick(1)
+    await flushPromises()
+    assert.equal(expired.size, 101)
+
+    context.mock.timers.tick(60_000)
+    await flushPromises()
+    assert.equal(requests, 10)
+  } finally {
+    scheduler.dispose()
+    context.mock.timers.reset()
+  }
+})
+
+test('one retry near expiry gets a full window but repeated retry signals cannot extend it', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  let requests = 0
+  let expired = new Set<string>()
+  const scheduler = createWsrxReadinessScheduler({
+    sync: async () => {
+      requests += 1
+    },
+    onExpiredChange: (next) => {
+      expired = new Set(next)
+    },
+  })
+
+  try {
+    scheduler.setEnabled(true)
+    scheduler.updatePending(['retry-me'])
+    await advanceImmediateWindow(context, 7_500)
+    assert.equal(requests, 5)
+
+    scheduler.retry('retry-me')
+    context.mock.timers.tick(500)
+    await flushPromises()
+    assert.equal(expired.size, 0)
+
+    context.mock.timers.tick(1_000)
+    await flushPromises()
+    for (let index = 0; index < 4; index += 1) {
+      context.mock.timers.tick(WSRX_READINESS_POLL_MS)
+      await flushPromises()
+    }
+    assert.equal(requests, 10)
+
+    // A duplicate signal just before the retry window closes must not move
+    // the deadline again and turn an explicit action into endless polling.
+    scheduler.retry('retry-me')
+    context.mock.timers.tick(499)
+    assert.equal(expired.size, 0)
+    context.mock.timers.tick(1)
+    await flushPromises()
+    assert.deepEqual([...expired], ['retry-me'])
+
+    context.mock.timers.tick(60_000)
+    await flushPromises()
+    assert.equal(requests, 10)
+  } finally {
+    scheduler.dispose()
     context.mock.timers.reset()
   }
 })
