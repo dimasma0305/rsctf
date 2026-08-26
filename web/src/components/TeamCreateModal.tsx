@@ -8,13 +8,14 @@ import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleMod
 import { showErrorMsg } from '@Utils/Shared'
 import api, { TeamUpdateModel } from '@Api'
 
-interface TeamEditModalProps extends AccessibleModalProps {
+interface TeamCreateModalProps extends AccessibleModalProps {
   disallowCreate: boolean
   mutate: () => void
+  onTeamReady?: () => void
 }
 
-export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
-  const { disallowCreate, mutate, ...modalProps } = props
+export const TeamCreateModal: FC<TeamCreateModalProps> = (props) => {
+  const { disallowCreate, mutate, onTeamReady, ...modalProps } = props
   const [createTeam, setCreateTeam] = useState<TeamUpdateModel>({ name: '', bio: '' })
   const [disabled, setDisabled] = useState(false)
   const theme = useMantineTheme()
@@ -33,6 +34,7 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
       setCreateTeam({ name: '', bio: '' })
+      onTeamReady?.()
       mutate()
       modalProps.onClose()
     } catch (e) {
@@ -55,10 +57,17 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
           </Text>
         </Stack>
       ) : (
-        <Stack>
+        <Stack
+          component="form"
+          data-guide="team-create-workflow"
+          data-guide-interaction-scope
+          onSubmit={(event) => {
+            event.preventDefault()
+            void onCreateTeam()
+          }}
+        >
           <Text>{t('team.content.create')}</Text>
           <TextInput
-            data-guide="team-create-form"
             label={t('team.label.name')}
             type="text"
             placeholder="team"
@@ -80,7 +89,13 @@ export const TeamCreateModal: FC<TeamEditModalProps> = (props) => {
             maxLength={4096}
             onChange={(event) => setCreateTeam({ ...createTeam, bio: event.currentTarget.value })}
           />
-          <Button fullWidth variant="outline" onClick={onCreateTeam} disabled={disabled}>
+          <Button
+            type="submit"
+            fullWidth
+            variant="outline"
+            disabled={disabled || (createTeam.name?.trim().length ?? 0) === 0}
+            data-guide="team-create-submit"
+          >
             {t('team.button.create')}
           </Button>
         </Stack>

@@ -205,6 +205,16 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
 }
 
 export const isWriteupDeadlineError = (error: unknown): boolean => {
-  const response = (error as { response?: { data?: { status?: unknown; title?: unknown } } })?.response
-  return response?.data?.status === 400 && response.data.title === 'Writeup deadline has passed'
+  const response = (
+    error as {
+      response?: { status?: unknown; data?: { status?: unknown; title?: unknown } }
+    }
+  )?.response
+  const status = response?.data?.status ?? response?.status
+  const title = response?.data?.title
+
+  return (
+    (status === 400 && title === 'Writeup deadline has passed') ||
+    (status === 409 && title === 'Writeup submission is no longer eligible')
+  )
 }

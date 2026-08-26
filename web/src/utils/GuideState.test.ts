@@ -5,6 +5,7 @@ import {
   GUIDE_TOUR_STEPS,
   GUIDE_VERSION,
   completeGuide,
+  completeTeamGuide,
   guideStorageKey,
   guideTourTargetSelector,
   createGuideAccountHandoff,
@@ -193,6 +194,12 @@ test('real tutorial actions advance only when they complete the current task', (
   assert.equal(nextGuideStepForTarget('connection', 'flag-submit'), 'submit')
   assert.equal(nextGuideStepForTarget('connection', 'challenge-material'), 'submit')
   assert.equal(nextGuideStepForTarget('submit', 'flag-submit'), null)
+  assert.equal(nextGuideStepForTarget('team', 'team-create-workflow'), null)
+
+  const teamStep = setGuideTourStep(DEFAULT_GUIDE_PREFERENCES, 'team')
+  assert.equal(completeTeamGuide(teamStep).activeTourStep, 'events')
+  const accountStep = setGuideTourStep(DEFAULT_GUIDE_PREFERENCES, 'account')
+  assert.equal(completeTeamGuide(accountStep), accountStep)
 })
 
 test('every novice checkpoint resolves a page target before and after navigation', () => {
@@ -210,7 +217,7 @@ test('every novice checkpoint resolves a page target before and after navigation
     /^\[data-guide="account-oauth"\]/
   )
   assert.match(selector('team', '/account/profile'), /team-navigation/)
-  assert.match(selector('team', '/teams'), /team-create-form/)
+  assert.match(selector('team', '/teams'), /team-create-workflow/)
   assert.match(selector('events', '/teams'), /games-navigation/)
   assert.match(selector('events', '/games'), /event-card/)
   assert.match(selector('events', '/games/23'), /event-challenges/)

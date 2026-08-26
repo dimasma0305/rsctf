@@ -13,6 +13,21 @@ export const installTestDom = (browser: Window) => {
   // happy-dom does not currently expose Document.compatMode. Browser code
   // (notably KaTeX) uses the standards-mode value to reject quirks rendering.
   Object.defineProperty(browser.document, 'compatMode', { configurable: true, value: 'CSS1Compat' })
+  // Mantine's autosizing textarea refreshes when web fonts finish loading.
+  // happy-dom omits the FontFaceSet entirely, so provide the event surface a
+  // standards browser exposes without pretending to load any fonts.
+  const documentWithFonts = browser.document as typeof browser.document & {
+    fonts?: { addEventListener: () => void; removeEventListener: () => void }
+  }
+  if (!documentWithFonts.fonts) {
+    Object.defineProperty(browser.document, 'fonts', {
+      configurable: true,
+      value: {
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+    })
+  }
   const values: Record<string, unknown> = {
     window: browser,
     document: browser.document,

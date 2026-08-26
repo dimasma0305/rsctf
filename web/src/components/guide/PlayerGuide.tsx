@@ -23,6 +23,7 @@ import {
   GuidePreferences,
   GuideTourStep,
   completeGuide,
+  completeTeamGuide,
   createGuideAccountHandoff,
   guideStorageKey,
   guideTourTargetSelector,
@@ -59,6 +60,7 @@ interface PlayerGuideContextValue {
   startGuide: () => void
   setInteractiveEnabled: (enabled: boolean) => void
   resetGuide: () => void
+  completeTeamSetup: () => void
   introduceFeature: (feature: GuideFeature, context?: GuideFeatureContext) => void
 }
 
@@ -259,6 +261,11 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
     setFeatureStepIndex(0)
   }, [updatePreferences])
 
+  const completeTeamSetup = useCallback(() => {
+    if (preferencesRef.current.activeTourStep !== 'team') return
+    updatePreferences(completeTeamGuide)
+  }, [updatePreferences])
+
   const introduceFeature = useCallback(
     (feature: GuideFeature, context: GuideFeatureContext = {}) => {
       if (!ready || !preferences.interactiveEnabled || preferences.seenFeatures.includes(feature)) return
@@ -406,7 +413,7 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
           ? isTeamPage
             ? t(
                 'guide.tour.team.destination_body',
-                'Choose Create team. If a captain sent you an invite code, choose Join team instead.'
+                'Choose Create or Join. Type the required value in the highlighted form, then press its Create or Join button.'
               )
             : t('guide.tour.team.body', 'Open Teams, then create a team or join one with an invite code.')
           : t('guide.tour.team.guest_body', 'Sign in first. Events are entered with a team.'),
@@ -414,7 +421,14 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
         path: user && !isTeamPage ? '/teams' : !user ? '/account/login' : undefined,
         pathLabel: user ? t('guide.tour.team.open', 'Open teams') : t('guide.tour.team.login_first', 'Sign in first'),
         targetSelector: tourTarget('team'),
-        requiresTargetActivation: !user,
+        requiresTargetActivation: true,
+        targetPrompt:
+          user && isTeamPage
+            ? t(
+                'guide.tour.team.form_action',
+                'Clicking an input only places the text cursor. Type the team name or invite code, then submit the form; the guide continues after the team is ready.'
+              )
+            : undefined,
       },
       {
         id: 'events',
@@ -783,8 +797,16 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   }
 
   const value = useMemo<PlayerGuideContextValue>(
-    () => ({ preferences, ready, startGuide, setInteractiveEnabled, resetGuide, introduceFeature }),
-    [introduceFeature, preferences, ready, resetGuide, setInteractiveEnabled, startGuide]
+    () => ({
+      preferences,
+      ready,
+      startGuide,
+      setInteractiveEnabled,
+      resetGuide,
+      completeTeamSetup,
+      introduceFeature,
+    }),
+    [completeTeamSetup, introduceFeature, preferences, ready, resetGuide, setInteractiveEnabled, startGuide]
   )
 
   return (

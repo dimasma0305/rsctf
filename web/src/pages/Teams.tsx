@@ -13,6 +13,7 @@ import { TeamCreateModal } from '@Components/TeamCreateModal'
 import { TeamEditModal } from '@Components/TeamEditModal'
 import { WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
+import { usePlayerGuide } from '@Components/guide/PlayerGuide'
 import { encryptApiData } from '@Utils/Crypto'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
@@ -26,6 +27,7 @@ const Teams: FC = () => {
   const { user, error: userError, mutate: mutateUser } = useUser()
   const { teams, mutate: mutateTeams, error: teamsError } = useTeams()
   const { config } = useConfig()
+  const { preferences: guidePreferences, completeTeamSetup } = usePlayerGuide()
 
   const [joinOpened, setJoinOpened] = useState(false)
   const [joinTeamCode, setJoinTeamCode] = useState('')
@@ -46,6 +48,10 @@ const Teams: FC = () => {
   const [editOpened, setEditOpened] = useState(false)
 
   const [editTeam, setEditTeam] = useState<TeamInfoModel | null>(null)
+
+  useEffect(() => {
+    if ((teams?.length ?? 0) > 0 && guidePreferences.activeTourStep === 'team') completeTeamSetup()
+  }, [completeTeamSetup, guidePreferences.activeTourStep, teams?.length])
 
   const teamsOwned = teams?.filter((t) => t.members?.some((m) => m?.captain && m.id === user?.userId))
   const disallowCreate = (teamsOwned?.length ?? 0) >= 3
@@ -102,6 +108,7 @@ const Teams: FC = () => {
         message: t('team.notification.updated'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
+      completeTeamSetup()
       mutateTeams()
     } catch (e) {
       showErrorMsg(e, t)
@@ -210,10 +217,17 @@ const Teams: FC = () => {
         </Stack>
 
         <AccessibleModal opened={joinOpened} title={t('team.button.join')} onClose={() => setJoinOpened(false)}>
-          <Stack>
+          <Stack
+            component="form"
+            data-guide="team-join-workflow"
+            data-guide-interaction-scope
+            onSubmit={(event) => {
+              event.preventDefault()
+              void onJoinTeam()
+            }}
+          >
             <Text size="sm">{t('team.content.join')}</Text>
             <TextInput
-              data-guide="team-join-form"
               label={t('team.label.invite_code')}
               type="text"
               placeholder="team:0:01234567890123456789012345678901"
@@ -221,7 +235,14 @@ const Teams: FC = () => {
               value={joinTeamCode}
               onChange={(event) => setJoinTeamCode(event.currentTarget.value)}
             />
-            <Button fullWidth variant="outline" loading={joining} disabled={joining} onClick={onJoinTeam}>
+            <Button
+              type="submit"
+              fullWidth
+              variant="outline"
+              loading={joining}
+              disabled={joining || joinTeamCode.trim().length === 0}
+              data-guide="team-join-submit"
+            >
               {t('team.button.join')}
             </Button>
           </Stack>
@@ -233,6 +254,7 @@ const Teams: FC = () => {
           disallowCreate={disallowCreate ?? false}
           onClose={() => setCreateOpened(false)}
           mutate={mutateTeams}
+          onTeamReady={completeTeamSetup}
         />
 
         <TeamEditModal

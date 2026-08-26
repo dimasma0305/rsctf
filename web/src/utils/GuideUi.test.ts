@@ -75,7 +75,10 @@ test('interactive guide spotlights real controls and provides a reduced-motion g
   assert.match(spotlight, /document\.elementsFromPoint/)
   assert.match(spotlight, /renderedTargets\(selector\)\?\.find\(isUsableTarget\)/)
   assert.match(spotlight, /let selectedTarget: HTMLElement \| null = null/)
-  assert.match(spotlight, /selectedTarget && \(!selectedTarget\.isConnected \|\| !targets\.includes\(selectedTarget\)\)/)
+  assert.match(
+    spotlight,
+    /selectedTarget && \(!selectedTarget\.isConnected \|\| !targets\.includes\(selectedTarget\)\)/
+  )
   assert.match(spotlight, /targetIsElevated\(usableTarget\)[\s\S]*!targetIsElevated\(selectedTarget\)/)
   assert.match(spotlight, /const preferredTarget = stableTarget\(\)/)
   assert.match(spotlight, /prefers-reduced-motion: reduce/)
@@ -218,7 +221,7 @@ test('the event tutorial resumes with destination-specific instructions after a 
 test('the novice path teaches every action on the real player controls', () => {
   assert.match(provider, /id: 'team'/)
   assert.match(provider, /Create or join a team/)
-  assert.match(guideState, /team-create-form[\s\S]*team-join-form/)
+  assert.match(guideState, /team-create-workflow[\s\S]*team-join-workflow/)
   assert.match(guideState, /challenge-card/)
   assert.match(guideState, /instance-start[\s\S]*instance-entry/)
   assert.match(guideState, /flag-submit/)
@@ -236,9 +239,15 @@ test('the novice path teaches every action on the real player controls', () => {
   assert.match(provider, /resumeGuideAfterAccountHandoff/)
   assert.match(teamsPage, /data-guide="team-create"/)
   assert.match(teamsPage, /data-guide="team-join"/)
-  assert.match(teamsPage, /data-guide="team-join-form"/)
+  assert.match(teamsPage, /component="form"[\s\S]*data-guide="team-join-workflow"[\s\S]*data-guide-interaction-scope/)
+  assert.match(teamsPage, /completeTeamSetup\(\)[\s\S]*mutateTeams\(\)/)
   assert.match(teamsPage, /<AccessibleModal/)
-  assert.match(teamCreateModal, /data-guide="team-create-form"/)
+  assert.match(
+    teamCreateModal,
+    /component="form"[\s\S]*data-guide="team-create-workflow"[\s\S]*data-guide-interaction-scope/
+  )
+  assert.match(teamCreateModal, /onTeamReady\?\.\(\)[\s\S]*mutate\(\)/)
+  assert.match(teamsPage, /onTeamReady=\{completeTeamSetup\}/)
   assert.match(teamCreateModal, /<AccessibleModal/)
   assert.match(gameJoinModal, /<AccessibleModal/)
   assert.match(accessibleModal, /<Modal\.Header role="presentation">/)
@@ -246,5 +255,6 @@ test('the novice path teaches every action on the real player controls', () => {
   assert.match(accessibleModal, /aria-label=\{closeButtonProps\?\.\['aria-label'\]/)
   assert.match(challengeCard, /data-guide="challenge-card"/)
   assert.match(provider, /requiresTargetActivation/)
+  assert.match(provider, /Clicking an input only places the text cursor/)
   assert.match(provider, /Select the highlighted control to continue/)
 })
