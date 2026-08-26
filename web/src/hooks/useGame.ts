@@ -1,6 +1,6 @@
 import dayjs, { Dayjs } from 'dayjs'
 import { TFunction } from 'i18next'
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import useSWR, { type Middleware, type SWRConfiguration, unstable_serialize } from 'swr'
 import { GameStatus } from '@Components/GameCard'
 import { useServerNow } from '@Utils/ServerClock'
@@ -28,41 +28,64 @@ export const gameTimingSWRConfig: SWRConfiguration = {
   shouldRetryOnError: shouldRetryGameTimingError,
 }
 
-/** Own one replaceable recovery timer for the hook's active SWR key. */
+/** Own one timing poll leader and one replaceable recovery timer per SWR key. */
 export const createGameTimingSWRConfig = () => {
+  type LeadershipListener = (isLeader: boolean) => void
+
+  const subscribers = new Map<string, Map<symbol, LeadershipListener>>()
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  let activeKey: string | null = null
   const cancel = (key: string) => {
     const timer = retryTimers.get(key)
     if (timer !== undefined) clearTimeout(timer)
     retryTimers.delete(key)
   }
-  const activate = (key: string) => {
-    activeKey = key
-    retryTimers.forEach((_timer, pendingKey) => {
-      if (pendingKey !== key) cancel(pendingKey)
-    })
-  }
-  const deactivate = (key: string) => {
-    cancel(key)
-    if (activeKey === key) activeKey = null
+  const subscribe = (key: string, listener: LeadershipListener) => {
+    const token = Symbol(key)
+    const members = subscribers.get(key) ?? new Map<symbol, LeadershipListener>()
+    const isFirst = members.size === 0
+    members.set(token, listener)
+    subscribers.set(key, members)
+    if (isFirst) listener(true)
+
+    return () => {
+      const current = subscribers.get(key)
+      if (!current) return
+      const wasLeader = current.keys().next().value === token
+      current.delete(token)
+      if (current.size === 0) {
+        subscribers.delete(key)
+        cancel(key)
+      } else if (wasLeader) {
+        current.values().next().value?.(true)
+      }
+    }
   }
   const cancelAll = () => {
     retryTimers.forEach((timer) => clearTimeout(timer))
     retryTimers.clear()
-    activeKey = null
   }
   const scopeMiddleware: Middleware = (useSWRNext) =>
-    function useGameTimingRetryScope(key, fetcher, swrConfig) {
+    function useSharedGameTimingPoll(key, fetcher, swrConfig) {
       const serializedKey = unstable_serialize(key)
+      const [leaderKey, setLeaderKey] = useState<string | null>(null)
 
       useLayoutEffect(() => {
-        if (!serializedKey) return
-        activate(serializedKey)
-        return () => deactivate(serializedKey)
+        if (!serializedKey) {
+          setLeaderKey(null)
+          return
+        }
+        return subscribe(serializedKey, (isLeader) => {
+          setLeaderKey((current) => {
+            const next = isLeader ? serializedKey : null
+            return current === next ? current : next
+          })
+        })
       }, [serializedKey])
 
-      return useSWRNext(key, fetcher, swrConfig)
+      return useSWRNext(key, fetcher, {
+        ...swrConfig,
+        refreshInterval: leaderKey === serializedKey ? GAME_TIMING_REFRESH_MS : 0,
+      })
     }
   const config: SWRConfiguration = {
     ...gameTimingSWRConfig,
@@ -71,27 +94,23 @@ export const createGameTimingSWRConfig = () => {
     onSuccess: (_data, key) => cancel(key),
     onDiscarded: cancel,
     onErrorRetry: (_error, key, _config, revalidate, options) => {
-      if (key !== activeKey) return
+      if (!subscribers.has(key)) return
       cancel(key)
       retryTimers.set(
         key,
         setTimeout(() => {
           retryTimers.delete(key)
-          void revalidate(options)
+          if (subscribers.has(key)) void revalidate(options)
         }, GAME_TIMING_REFRESH_MS)
       )
     },
   }
-  return { config, activate, cancelAll }
+  return { config, cancelAll, subscribe }
 }
 
-export const useGameTimingSWRConfig = () => {
-  const owner = useRef<ReturnType<typeof createGameTimingSWRConfig> | null>(null)
-  if (!owner.current) owner.current = createGameTimingSWRConfig()
+const sharedGameTimingOwner = createGameTimingSWRConfig()
 
-  useEffect(() => () => owner.current?.cancelAll(), [])
-  return owner.current.config
-}
+export const useGameTimingSWRConfig = () => sharedGameTimingOwner.config
 
 /** Publish one authoritative final snapshot when a lifecycle-owned poller stops. */
 export const useRevalidateWhenPollingStops = (polling: boolean, revalidate: () => unknown) => {

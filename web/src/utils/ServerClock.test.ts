@@ -137,7 +137,7 @@ test('cached event access waits for a live clock sample before enforcing lifecyc
   }
 })
 
-test('timing polling owns one retry for its active key and cancels it after recovery or unmount', async (context) => {
+test('timing polling owns one retry per subscribed key and cancels it after recovery or unmount', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'], now: 0 })
   const { createGameTimingSWRConfig, GAME_TIMING_REFRESH_MS, shouldRetryGameTimingError } = await import(
     '../hooks/useGame'
@@ -151,7 +151,7 @@ test('timing polling owns one retry for its active key and cancels it after reco
   try {
     assert.equal(shouldRetryGameTimingError({ response: { status: 503 } }), true)
     assert.equal(shouldRetryGameTimingError({ response: { status: 404 } }), false)
-    owner.activate('/api/game/recent')
+    const unsubscribe = owner.subscribe('/api/game/recent', () => undefined)
     config.onErrorRetry?.(
       { response: { status: 503 } },
       '/api/game/recent',
@@ -202,9 +202,95 @@ test('timing polling owns one retry for its active key and cancels it after reco
     owner.cancelAll()
     context.mock.timers.tick(GAME_TIMING_REFRESH_MS)
     assert.equal(recoveredReads, 1)
+    unsubscribe()
   } finally {
     owner.cancelAll()
     context.mock.timers.reset()
+  }
+})
+
+test('multiple game subscribers share one refresh request per timing key', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/17/scoreboard' })
+  const restoreDom = installTestDom(browser)
+  context.mock.timers.enable({ apis: ['setTimeout'], now: 0 })
+  const { GAME_TIMING_REFRESH_MS, useGame, useGameScoreboard, useGameTeamInfo } = await import('../hooks/useGame')
+  const { SWRConfig } = await import('swr')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  let reads = 0
+  const cache = new Map()
+  const swrConfig = {
+    provider: () => cache,
+    fetcher: async (request: unknown) => {
+      const path = typeof request === 'string' ? request : Array.isArray(request) ? request[0] : null
+      if (path === '/api/game/17') reads += 1
+      return { id: 17, start: 0, end: GAME_TIMING_REFRESH_MS * 10 }
+    },
+  }
+  const DirectGameSubscriber: FC = () => {
+    useGame(17)
+    return null
+  }
+  const TeamInfoSubscriber: FC = () => {
+    useGameTeamInfo(17, false)
+    return null
+  }
+  const ScoreboardSubscriber: FC = () => {
+    useGameScoreboard(17, false)
+    return null
+  }
+  const subscribers = {
+    direct: DirectGameSubscriber,
+    team: TeamInfoSubscriber,
+    scoreboard: ScoreboardSubscriber,
+  }
+  type Subscriber = keyof typeof subscribers
+  const ScoreboardSubscribers: FC<{ active: Subscriber[] }> = ({ active }) =>
+    createElement(
+      SWRConfig,
+      {
+        value: swrConfig,
+      },
+      ...active.map((name) => createElement(subscribers[name], { key: name }))
+    )
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => root.render(createElement(ScoreboardSubscribers, { active: ['direct'] })))
+    assert.equal(reads, 1)
+
+    // Scoreboard panels and timelines do not all mount on the same render. Their
+    // individual SWR refresh timers used to drift and each request this key.
+    await act(async () => context.mock.timers.tick(10_000))
+    await act(async () => root.render(createElement(ScoreboardSubscribers, { active: ['direct', 'team'] })))
+    await act(async () => context.mock.timers.tick(10_000))
+    await act(async () =>
+      root.render(createElement(ScoreboardSubscribers, { active: ['direct', 'team', 'scoreboard'] }))
+    )
+    const readsAfterMount = reads
+
+    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS))
+    assert.equal(reads, readsAfterMount + 1)
+
+    // The remaining indirect useGame subscriber takes over when the original
+    // owner disappears, without reviving a second timer.
+    await act(async () => root.render(createElement(ScoreboardSubscribers, { active: ['team', 'scoreboard'] })))
+    const readsBeforeHandoff = reads
+    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS))
+    assert.equal(reads, readsBeforeHandoff + 1)
+
+    await act(async () => root.render(createElement(ScoreboardSubscribers, { active: [] })))
+    const readsAfterStop = reads
+    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS))
+    assert.equal(reads, readsAfterStop)
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
   }
 })
 
