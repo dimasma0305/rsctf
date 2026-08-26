@@ -1,6 +1,8 @@
 /target
 **/*.rs.bk
 *.pdb
+__pycache__/
+*.py[cod]
 .env
 .env.local
 /data

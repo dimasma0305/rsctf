@@ -41,7 +41,7 @@ const DEPLOY_COMPOSE = resolve(REPOSITORY_ROOT, 'deploy/compose.yml');
 const WORKER_COMPOSE = resolve(REPOSITORY_ROOT, 'deploy/compose.workers.yml');
 const FIXTURE_CONTEXT = resolve(
   REPOSITORY_ROOT,
-  'examples/challenge-repository/Jeopardy/Web/static-flag-service/src',
+  'examples/challenge-repository/challenges/Jeopardy/Web/static-flag-service/src',
 );
 
 function positiveInteger(value, label) {

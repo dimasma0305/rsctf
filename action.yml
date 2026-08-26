@@ -1,0 +1,48 @@
+name: Validate rsctf challenge repository
+description: Run rsctf's own offline Repository Bindings validator in GitHub Actions
+author: rsctf
+
+inputs:
+  path:
+    description: Repository root containing .gzevent
+    required: false
+    default: .
+  image:
+    description: Optional exact ghcr.io owner/repository image @sha256 digest
+    required: false
+    default: ''
+  deny-warnings:
+    description: Fail when rsctf reports a warning
+    required: false
+    default: 'true'
+  github-annotations:
+    description: Emit file annotations in the GitHub Actions log
+    required: false
+    default: 'true'
+
+outputs:
+  image:
+    description: Immutable rsctf image reference used for validation
+    value: ${{ steps.validate.outputs.image }}
+  version:
+    description: rsctf version used for validation
+    value: ${{ steps.validate.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run rsctf challenge check
+      id: validate
+      shell: bash
+      env:
+        RSCTF_ACTION_DENY_WARNINGS: ${{ inputs.deny-warnings }}
+        RSCTF_ACTION_GITHUB_ANNOTATIONS: ${{ inputs.github-annotations }}
+        RSCTF_ACTION_IMAGE: ${{ inputs.image }}
+        RSCTF_ACTION_PATH_INPUT: ${{ inputs.path }}
+        RSCTF_ACTION_REF: ${{ github.action_ref }}
+        RSCTF_ACTION_REPOSITORY: ${{ github.action_repository }}
+      run: python3 "$GITHUB_ACTION_PATH/github-action/run.py"
+
+branding:
+  icon: check-circle
+  color: green
