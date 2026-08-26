@@ -78,6 +78,17 @@ test('game workspace uses one bounded width and container-sized challenge cards'
     'utf8'
   )
   assert.match(challengeGrid, /repeat\(auto-fill, minmax\(min\(15rem, 100%\), 1fr\)\)/)
+
+  const mobileTabList = challengeGrid.match(/@media \(max-width: \$mantine-breakpoint-sm\)[\s\S]*?\.tabList\s*\{([^}]+)\}/)?.[1]
+  assert.ok(mobileTabList, 'mobile challenge category tabs must have a dedicated layout')
+  assert.match(mobileTabList, /width:\s*100%/)
+  assert.match(mobileTabList, /max-width:\s*100%/)
+  assert.match(mobileTabList, /overflow-x:\s*auto/)
+  assert.doesNotMatch(mobileTabList, /width:\s*max-content/)
+
+  const mobileTab = challengeGrid.match(/@media \(max-width: \$mantine-breakpoint-sm\)[\s\S]*?\.tab\s*\{([^}]+)\}/)?.[1]
+  assert.ok(mobileTab, 'mobile challenge tabs must have a dedicated item layout')
+  assert.match(mobileTab, /flex:\s*0 0 auto/)
 })
 
 test('cheat analysis separates its sections and keeps evidence tabs on one row', () => {
