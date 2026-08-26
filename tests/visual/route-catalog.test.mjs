@@ -91,6 +91,19 @@ test('game workspace uses one bounded width and container-sized challenge cards'
   assert.match(mobileTab, /flex:\s*0 0 auto/)
 })
 
+test('compact challenge categories are exercised with touch and keyboard in Chromium', () => {
+  const panel = readFileSync(join(repositoryRoot, 'web/src/components/ChallengePanel.tsx'), 'utf8')
+  const audit = readFileSync(join(repositoryRoot, 'tests/visual/audit.mjs'), 'utf8')
+
+  assert.match(panel, /data-challenge-category-tabs/)
+  assert.match(audit, /Input\.dispatchTouchEvent/)
+  assert.match(audit, /key: 'ArrowRight'/)
+  assert.match(audit, /touchReachedLast/)
+  assert.match(audit, /keyboardReachedLast/)
+  assert.match(audit, /final challenge category is not reachable with a touch swipe/)
+  assert.match(audit, /final challenge category is not reachable with the keyboard/)
+})
+
 test('cheat analysis separates its sections and keeps evidence tabs on one row', () => {
   const component = readFileSync(join(repositoryRoot, 'web/src/components/monitor/CheatInfo.tsx'), 'utf8')
   const styles = readFileSync(join(repositoryRoot, 'web/src/components/monitor/CheatInfo.module.css'), 'utf8')

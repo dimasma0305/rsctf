@@ -405,7 +405,10 @@ export const ChallengePanel: FC = () => {
               tab: classes.tab,
             }}
           >
-            <Tabs.List aria-label={t('game.label.challenge_category', { defaultValue: 'Filter by category' })}>
+            <Tabs.List
+              data-challenge-category-tabs
+              aria-label={t('game.label.challenge_category', { defaultValue: 'Filter by category' })}
+            >
               <Tabs.Tab value={'All'} leftSection={<Icon path={mdiPuzzle} size={1} />}>
                 <Group justify="space-between" wrap="nowrap" gap={6}>
                   <Text fz="sm" fw="bold" c="inherit">
