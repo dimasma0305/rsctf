@@ -49,3 +49,8 @@ test('the scoped WSS capability is renewed before it can leave a stale local lis
   assert.match(entry, /CAPABILITY_REFRESH_SAFETY_MS/)
   assert.match(entry, /setTimeout\(\(\) => void onRefreshProxyEntry\(\), refreshIn\)/)
 })
+
+test('extension availability is initialized from the corrected server clock', () => {
+  assert.match(entry, /isInstanceExtensionWindowOpen\([\s\S]*?getServerNowMilliseconds\(\)[\s\S]*?\)/)
+  assert.doesNotMatch(entry, /dayjs\(context\.closeTime \?\? 0\)\.diff\(dayjs\(\)\)/)
+})

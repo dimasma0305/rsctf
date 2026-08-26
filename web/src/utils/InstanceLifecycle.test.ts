@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { destroyReconciledInstance, mergeInstanceContext, runInstanceExtension } from './InstanceLifecycle'
+import {
+  destroyReconciledInstance,
+  isInstanceExtensionWindowOpen,
+  mergeInstanceContext,
+  runInstanceExtension,
+} from './InstanceLifecycle'
 
 test('extension success is published only after the authoritative request succeeds', async () => {
   let successes = 0
@@ -24,6 +29,15 @@ test('extension success is published only after the authoritative request succee
     }
   )
   assert.equal(successes, 1)
+})
+
+test('extension availability uses corrected server time under browser clock skew', () => {
+  const serverNow = 2_000_000_000_000
+  const closeTime = serverNow + 30 * 60_000
+
+  assert.equal(isInstanceExtensionWindowOpen(closeTime, 10, serverNow), false)
+  assert.equal(isInstanceExtensionWindowOpen(closeTime, 10, serverNow + 2 * 60 * 60_000), true)
+  assert.equal(isInstanceExtensionWindowOpen(serverNow + 9 * 60_000, 10, serverNow), true)
 })
 
 test('instance responses merge into the newest cache without reverting concurrent fields', () => {

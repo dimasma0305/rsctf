@@ -21,7 +21,7 @@ import duration from 'dayjs/plugin/duration'
 import { FC, useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HandleWsrxError, useWsrx } from '@Components/WsrxProvider'
-import { runInstanceExtension } from '@Utils/InstanceLifecycle'
+import { isInstanceExtensionWindowOpen, runInstanceExtension } from '@Utils/InstanceLifecycle'
 import { getServerNowMilliseconds, useServerNow } from '@Utils/ServerClock'
 import { getProxyUrl as getProxyEntry } from '@Utils/Shared'
 import { getWsrxTunnelPhase } from '@Utils/WsrxTunnel'
@@ -124,8 +124,13 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
 
   useEffect(() => {
     setWithContainer(!!context.instanceEntry)
-    const countdown = dayjs.duration(dayjs(context.closeTime ?? 0).diff(dayjs()))
-    setCanExtend(countdown.asMinutes() < (config.renewalWindow ?? 10))
+    setCanExtend(
+      isInstanceExtensionWindowOpen(
+        context.closeTime,
+        config.renewalWindow ?? 10,
+        getServerNowMilliseconds()
+      )
+    )
   }, [context, config.renewalWindow])
 
   const onExtend = async () => {

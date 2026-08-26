@@ -26,9 +26,45 @@ export const gameTimingSWRConfig: SWRConfiguration = {
   revalidateOnFocus: true,
   revalidateOnReconnect: true,
   shouldRetryOnError: shouldRetryGameTimingError,
-  onErrorRetry: (_error, _key, _config, revalidate, options) => {
-    setTimeout(() => revalidate(options), GAME_TIMING_REFRESH_MS)
-  },
+}
+
+/** Own one replaceable recovery timer per SWR key. */
+export const createGameTimingSWRConfig = () => {
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const cancel = (key: string) => {
+    const timer = retryTimers.get(key)
+    if (timer !== undefined) clearTimeout(timer)
+    retryTimers.delete(key)
+  }
+  const cancelAll = () => {
+    retryTimers.forEach((timer) => clearTimeout(timer))
+    retryTimers.clear()
+  }
+  const config: SWRConfiguration = {
+    ...gameTimingSWRConfig,
+    onError: (_error, key) => cancel(key),
+    onSuccess: (_data, key) => cancel(key),
+    onDiscarded: cancel,
+    onErrorRetry: (_error, key, _config, revalidate, options) => {
+      cancel(key)
+      retryTimers.set(
+        key,
+        setTimeout(() => {
+          retryTimers.delete(key)
+          void revalidate(options)
+        }, GAME_TIMING_REFRESH_MS)
+      )
+    },
+  }
+  return { config, cancelAll }
+}
+
+export const useGameTimingSWRConfig = () => {
+  const owner = useRef<ReturnType<typeof createGameTimingSWRConfig> | null>(null)
+  if (!owner.current) owner.current = createGameTimingSWRConfig()
+
+  useEffect(() => () => owner.current?.cancelAll(), [])
+  return owner.current.config
 }
 
 /** Publish one authoritative final snapshot when a lifecycle-owned poller stops. */
@@ -43,7 +79,8 @@ export const useRevalidateWhenPollingStops = (polling: boolean, revalidate: () =
 }
 
 export const useRecentGames = () => {
-  const { data, mutate, error } = api.game.useGameRecentGames({ limit: 7 }, gameTimingSWRConfig)
+  const timingConfig = useGameTimingSWRConfig()
+  const { data, mutate, error } = api.game.useGameRecentGames({ limit: 7 }, timingConfig)
 
   // Guard against SWR hydrating a stale non-array value from persistent
   // cache (e.g. an old 302/HTML response from a misconfigured proxy).
@@ -110,7 +147,8 @@ export const useAdminDivisions = (numId: number) => {
 }
 
 export const useGame = (numId: number) => {
-  const { data: game, error, mutate } = api.game.useGameGame(numId, gameTimingSWRConfig, numId > 0)
+  const timingConfig = useGameTimingSWRConfig()
+  const { data: game, error, mutate } = api.game.useGameGame(numId, timingConfig, numId > 0)
 
   return { game, error, mutate, status: game?.status ?? ParticipationStatus.Unsubmitted }
 }

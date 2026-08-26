@@ -28,7 +28,7 @@ import { WithNavBar } from '@Components/WithNavbar'
 import { GanttTimeLine } from '@Components/charts/GanttTimeline'
 import { useServerNow } from '@Utils/ServerClock'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { gameTimingSWRConfig, getGameStatus, toLimitTag, useRecentGames } from '@Hooks/useGame'
+import { getGameStatus, toLimitTag, useGameTimingSWRConfig, useRecentGames } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUser } from '@Hooks/useUser'
 import api, { GameMembershipFilter } from '@Api'
@@ -50,6 +50,7 @@ const Games: FC = () => {
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
   const { user } = useUser()
+  const timingConfig = useGameTimingSWRConfig()
 
   const { data: games, isLoading } = api.game.useGameGames(
     {
@@ -58,7 +59,7 @@ const Games: FC = () => {
       search: debouncedSearch || undefined,
       membership: user ? membership : GameMembershipFilter.All,
     },
-    gameTimingSWRConfig
+    timingConfig
   )
 
   const clearSearch = () => {

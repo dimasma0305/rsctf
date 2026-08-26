@@ -88,28 +88,84 @@ test('server-corrected lifecycle crosses kickoff and close without navigation', 
   }
 })
 
-test('timing polling retries a transient failure at one bounded cadence', async (context) => {
+test('timing polling owns one retry per key and cancels it after recovery or unmount', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'], now: 0 })
-  const { GAME_TIMING_REFRESH_MS, gameTimingSWRConfig, shouldRetryGameTimingError } = await import('../hooks/useGame')
+  const { createGameTimingSWRConfig, GAME_TIMING_REFRESH_MS, shouldRetryGameTimingError } = await import(
+    '../hooks/useGame'
+  )
+  const owner = createGameTimingSWRConfig()
+  const { config } = owner
+  let supersededReads = 0
   let recoveredReads = 0
+  let otherKeyReads = 0
+  const options = { retryCount: 1 }
 
   try {
     assert.equal(shouldRetryGameTimingError({ response: { status: 503 } }), true)
     assert.equal(shouldRetryGameTimingError({ response: { status: 404 } }), false)
-    gameTimingSWRConfig.onErrorRetry(
+    config.onErrorRetry?.(
       { response: { status: 503 } },
       '/api/game/recent',
-      gameTimingSWRConfig,
+      config,
+      () => {
+        supersededReads += 1
+      },
+      options
+    )
+    config.onErrorRetry?.(
+      { response: { status: 503 } },
+      '/api/game/recent',
+      config,
       () => {
         recoveredReads += 1
       },
-      { retryCount: 1 }
+      options
+    )
+    config.onErrorRetry?.(
+      { response: { status: 503 } },
+      '/api/game/2',
+      config,
+      () => {
+        otherKeyReads += 1
+      },
+      options
     )
     context.mock.timers.tick(GAME_TIMING_REFRESH_MS - 1)
+    assert.equal(supersededReads, 0)
     assert.equal(recoveredReads, 0)
+    assert.equal(otherKeyReads, 0)
     context.mock.timers.tick(1)
+    assert.equal(supersededReads, 0)
+    assert.equal(recoveredReads, 1)
+    assert.equal(otherKeyReads, 1)
+
+    config.onErrorRetry?.(
+      { response: { status: 503 } },
+      '/api/game/recent',
+      config,
+      () => {
+        recoveredReads += 1
+      },
+      options
+    )
+    config.onSuccess?.([], '/api/game/recent', config)
+    context.mock.timers.tick(GAME_TIMING_REFRESH_MS)
+    assert.equal(recoveredReads, 1)
+
+    config.onErrorRetry?.(
+      { response: { status: 503 } },
+      '/api/game/recent',
+      config,
+      () => {
+        recoveredReads += 1
+      },
+      options
+    )
+    owner.cancelAll()
+    context.mock.timers.tick(GAME_TIMING_REFRESH_MS)
     assert.equal(recoveredReads, 1)
   } finally {
+    owner.cancelAll()
     context.mock.timers.reset()
   }
 })

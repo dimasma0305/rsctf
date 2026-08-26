@@ -3,6 +3,21 @@ export const runInstanceExtension = async (extend: () => void | Promise<void>, o
   onSuccess()
 }
 
+export const isInstanceExtensionWindowOpen = (
+  closeTime: number | null | undefined,
+  renewalWindowMinutes: number,
+  nowMilliseconds: number
+) => {
+  const normalizedCloseTime = closeTime ?? 0
+  if (
+    !Number.isFinite(normalizedCloseTime) ||
+    !Number.isFinite(renewalWindowMinutes) ||
+    !Number.isFinite(nowMilliseconds)
+  )
+    return false
+  return normalizedCloseTime - nowMilliseconds < renewalWindowMinutes * 60_000
+}
+
 type InstanceContext = {
   closeTime?: number | null
   instanceEntry?: string | null
