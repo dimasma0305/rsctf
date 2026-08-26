@@ -16,6 +16,7 @@
  */
 import { FC, useEffect, useRef } from 'react'
 import { useParams, useSearchParams } from 'react-router'
+import { apiJsonFetch as fetch } from '@Utils/ApiJsonFetch'
 import { epochProgress } from '@Utils/epochProgress'
 import type { AdScoreboardModel } from '@Api'
 import { createJeopardy, type JeopCategory } from './arenaJeopardy'

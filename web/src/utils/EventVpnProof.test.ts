@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { protectedEventGamePathId } from './EventVpnProof'
+import { protectedEventGameId, protectedEventGamePathId } from './EventVpnProof'
 
 const protectedPaths = [
   '/api/game/7/challenges/9',
@@ -44,4 +44,9 @@ test('event VPN proof matching accepts only positive PostgreSQL game ids', () =>
   ]) {
     assert.equal(protectedEventGamePathId(path), null, path)
   }
+})
+
+test('event VPN proof matching never attaches a proof to another origin', () => {
+  assert.equal(protectedEventGameId('/api/Game/7/Ad/Scoreboard', 'https://arena.test'), 7)
+  assert.equal(protectedEventGameId('https://attacker.test/api/Game/7/Ad/Scoreboard', 'https://arena.test'), null)
 })

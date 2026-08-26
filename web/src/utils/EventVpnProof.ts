@@ -34,10 +34,12 @@ export const protectedEventGamePathId = (path: string): number | null => {
   return !suffix || suffix === 'vpn' || suffix === 'check' ? null : gameId
 }
 
-export const protectedEventGameId = (value: string | undefined): number | null => {
+export const protectedEventGameId = (value: string | undefined, origin?: string): number | null => {
   if (!value) return null
   try {
-    return protectedEventGamePathId(new URL(value, window.location.origin).pathname)
+    const expectedOrigin = new URL(origin ?? window.location.origin).origin
+    const target = new URL(value, expectedOrigin)
+    return target.origin === expectedOrigin ? protectedEventGamePathId(target.pathname) : null
   } catch {
     return null
   }
@@ -50,13 +52,13 @@ const responseData = <T>(value: unknown): T => {
   return ((body?.data as { data?: unknown } | undefined)?.data ?? body?.data ?? value) as T
 }
 
-const mintProof = (instance: AxiosInstance, gameId: number): Promise<VpnProof> => {
+const mintProof = (instance: AxiosInstance, gameId: number, origin?: string): Promise<VpnProof> => {
   const existing = proofFlights.get(gameId)
   if (existing) return existing
   const flight = (async () => {
     const challengeResponse = await instance.post(`/api/game/${gameId}/vpn/challenge`)
     const challenge = responseData<VpnChallenge>(challengeResponse)
-    const proofUrl = new URL(challenge.proofUrl, window.location.origin)
+    const proofUrl = new URL(challenge.proofUrl, origin ?? window.location.origin)
     if (proofUrl.protocol !== 'https:') throw new Error('Event VPN proof URL must use HTTPS')
     const proofResponse = await instance.post(
       proofUrl.toString(),
@@ -74,9 +76,9 @@ const mintProof = (instance: AxiosInstance, gameId: number): Promise<VpnProof> =
   return flight
 }
 
-export const installEventVpnProof = (instance: AxiosInstance) => {
+export const installEventVpnProof = (instance: AxiosInstance, origin?: string) => {
   instance.interceptors.request.use((config) => {
-    const gameId = protectedEventGameId(config.url)
+    const gameId = protectedEventGameId(config.url, origin)
     const proof = gameId === null ? undefined : proofCache.get(gameId)
     if (proof && proof.expiresAtUtc > getServerNowMilliseconds() + 1_000) {
       const headers = AxiosHeaders.from(config.headers)
@@ -88,14 +90,14 @@ export const installEventVpnProof = (instance: AxiosInstance) => {
 
   instance.interceptors.response.use(undefined, async (error: AxiosError) => {
     const config = error.config as RetryConfig | undefined
-    const gameId = protectedEventGameId(config?.url)
+    const gameId = protectedEventGameId(config?.url, origin)
     if (error.response?.status !== 401 || gameId === null || !config || config.rsctfVpnProofRetry) {
       throw error
     }
     config.rsctfVpnProofRetry = true
     proofCache.delete(gameId)
     try {
-      const proof = await mintProof(instance, gameId)
+      const proof = await mintProof(instance, gameId, origin)
       const headers = AxiosHeaders.from(config.headers)
       headers.set(proof.proofHeader, proof.proof)
       config.headers = headers
