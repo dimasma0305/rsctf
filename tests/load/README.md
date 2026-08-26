@@ -22,6 +22,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run donations     # fixed-rate, read-only cached donation-feed smoke
       npm run news-feed     # fixed-rate, conditional homepage-feed smoke
       npm run asset-download # fixed-rate authenticated 1 MiB attachment ranges
+      npm run monitor-exports # fixed-rate bounded monitor XLSX exports + health
       npm run event-security # destructive fixed-rate bounded telemetry/resource comparison
       npm run scoreboard-evidence # isolated fixed-rate canonical FirstSolve query benchmark
       npm run player        # A&D + KotH player poll/submit load
@@ -133,6 +134,29 @@ Use the same retained post history, rate, and duration for before/after comparis
 The public-safe default stays below the anonymous-IP admission budget; higher rates
 belong on an isolated stack with the admission limit configured for the test.
 
+### Monitor spreadsheet exports
+
+Run this read-only scenario against a quiescent event so the PostgreSQL and XLSX
+row counts remain identical before and after the load. It downloads and inspects
+both workbook types, then holds a fixed export arrival rate while probing exact
+`/healthz`. Local runs also sample replica RSS and task/thread counts; HTTP 429
+and 503 are accepted only with a positive `Retry-After` header.
+
+```sh
+MONITOR_EXPORT_STRESS_ACK=1 GAME=92001 MONITOR_TOKEN=<monitor-jwt> \
+  RATE=2 VUS=4 DURATION=30s \
+  SUMMARY_JSON=/tmp/monitor-exports.json \
+  RESOURCE_JSON=/tmp/monitor-exports-resources.json \
+  npm run monitor-exports
+```
+
+The runner fails on a missing/duplicate worksheet row, a response outside the
+200/429/503 contract, an export timeout, dropped arrivals, health p95 above 500
+ms, a health failure, or resource growth beyond the declared bounds. Remote
+targets additionally require `ALLOW_REMOTE_MONITOR_EXPORT_STRESS` to equal the
+exact origin and explicit `EXPECTED_SCOREBOARD_ROWS` / `EXPECTED_SUBMISSION_ROWS`.
+Use the same event snapshot, rate, duration, and host for release comparisons.
+
 ### On-demand image storage
 
 `image-storage` targets one explicitly prepared, disposable challenge that is
@@ -184,6 +208,8 @@ tests/load/
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
   polled-read.mjs   read-only broad-token fixed-rate polling smoke
   asset-download.mjs fixed-rate range/resume delivery benchmark
+  monitor-exports.mjs bounded XLSX row-integrity/resource acceptance
+  monitor-export-model.js shared export response and row-bound contracts
   event-security.mjs fixed-rate control-vs-telemetry CPU/RAM/storage benchmark
   news-feed.mjs     fixed-rate conditional homepage-feed benchmark
   asset-download-model.js shared asset-path and deterministic range rules
@@ -203,6 +229,7 @@ tests/load/
     organizer-hubs.js  fixed-rate privileged negotiate, WebSocket, and exec traffic
     polled-read.js     one read per iteration across the dominant polled endpoints
     asset-download.js  one authenticated deterministic attachment range per iteration
+    monitor-exports.js fixed-rate monitor exports plus independent health arrivals
     event-security.js  fixed-rate empty-control and aggregate sensor-ingest phases
     news-feed.js     fixed-rate conditional homepage-feed reads
     player.js         A&D + KotH player: poll format/Overall boards, tokens/state, submit flags

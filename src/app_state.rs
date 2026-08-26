@@ -48,6 +48,8 @@ pub struct AppState {
     /// Bounded active large-attachment streams. The permit is owned by the
     /// response body so slow or disconnected clients release capacity safely.
     pub(crate) asset_download_admission: crate::services::asset_admission::AssetDownloadAdmission,
+    /// Per-replica row/byte-weighted admission for monitor XLSX snapshots/builds.
+    pub(crate) monitor_export_admission: crate::services::monitor_export::MonitorExportAdmission,
     /// Bounded handoff to the per-process best-effort user-activity writer.
     /// Requests only `try_send`; the worker owns all PostgreSQL interaction.
     pub(crate) user_activity: crate::middlewares::user_activity::ActivityQueue,
@@ -157,6 +159,7 @@ impl AppState {
             worker_store,
             proxy_admission: crate::services::proxy_admission::ProxyAdmission::new(),
             asset_download_admission: Default::default(),
+            monitor_export_admission: Default::default(),
             events,
             user_activity: crate::middlewares::user_activity::ActivityQueue::new(),
         })

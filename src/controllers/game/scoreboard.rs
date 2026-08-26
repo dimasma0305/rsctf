@@ -1,6 +1,9 @@
 //! Scoreboard, notices, events, participations, and the monitor submission feed + Excel exports.
 use super::*;
-use sea_orm::sea_query::{Alias, Expr, Func};
+use crate::services::monitor_export::{
+    load_submission_export_snapshot, MonitorExportAdmissionError, MonitorExportPermit,
+    SubmissionExportRow, SubmissionSnapshotError,
+};
 use std::collections::BinaryHeap;
 
 #[cfg(test)]
@@ -49,6 +52,61 @@ pub(super) fn bounded_solver_page(query: &SolversQuery) -> AppResult<(usize, usi
         return Err(AppError::bad_request("Solver page offset is too large"));
     }
     Ok((skip as usize, count as usize))
+}
+
+const MAX_SCOREBOARD_EXPORT_ROWS: usize = 10_000;
+const MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
+const EXPORT_RETRY_AFTER_SECONDS: u64 = 3;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportOverloadBody {
+    title: &'static str,
+    status: u16,
+    retry_after: u64,
+}
+
+fn export_overload_response(error: MonitorExportAdmissionError) -> Response {
+    let (status, title) = match error {
+        MonitorExportAdmissionError::Busy => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Spreadsheet export workers are busy; retry shortly",
+        ),
+        MonitorExportAdmissionError::WeightedCapacity => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Spreadsheet export capacity is in use; retry shortly",
+        ),
+    };
+    let mut response = (
+        status,
+        axum::Json(ExportOverloadBody {
+            title,
+            status: status.as_u16(),
+            retry_after: EXPORT_RETRY_AFTER_SECONDS,
+        }),
+    )
+        .into_response();
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        axum::http::HeaderValue::from(EXPORT_RETRY_AFTER_SECONDS),
+    );
+    response
+}
+
+fn begin_monitor_export(st: &SharedState) -> Result<MonitorExportPermit, Response> {
+    st.monitor_export_admission
+        .try_begin()
+        .map_err(export_overload_response)
+}
+
+fn reserve_monitor_export_work(
+    permit: &mut MonitorExportPermit,
+    rows: usize,
+    bytes: usize,
+) -> Result<(), Response> {
+    permit
+        .try_reserve_work(rows, bytes)
+        .map_err(export_overload_response)
 }
 
 // ---------------------------------------------------------------------------
@@ -669,10 +727,64 @@ pub async fn scoreboard_sheet(
         return Err(AppError::bad_request("Game has not started"));
     }
 
+    let mut export_permit = match begin_monitor_export(&st) {
+        Ok(permit) => permit,
+        Err(response) => return Ok(response),
+    };
+    let bounded_count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)::bigint
+             FROM (
+               SELECT participation.id
+                 FROM "Participations" participation
+                WHERE participation.game_id = $1 AND participation.status = $2
+                ORDER BY participation.id
+                LIMIT $3
+             ) bounded"#,
+    )
+    .bind(id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .bind(i64::try_from(MAX_SCOREBOARD_EXPORT_ROWS + 1).unwrap_or(i64::MAX))
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if bounded_count > MAX_SCOREBOARD_EXPORT_ROWS as i64 {
+        return Err(AppError::payload_too_large(format!(
+            "Scoreboard export is limited to {MAX_SCOREBOARD_EXPORT_ROWS} teams"
+        )));
+    }
+    // Charge the maximum bounded scoreboard before loading the model. This
+    // remains safe if a participation is accepted between the count and the
+    // cache fill, and two small scoreboards may still use both task slots.
+    if let Err(response) = reserve_monitor_export_work(
+        &mut export_permit,
+        MAX_SCOREBOARD_EXPORT_ROWS,
+        MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES,
+    ) {
+        return Ok(response);
+    }
+
     // Monitor-only export: always the live (unfrozen) board.
-    let board = build_scoreboard_cached(&st, &g, true).await?;
-    let bytes = build_scoreboard_xlsx(&board)
-        .map_err(|_| AppError::bad_request("Failed to build scoreboard sheet"))?;
+    let board_json = build_scoreboard_json(&st, &g, true).await?;
+    if board_json.len() > MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES {
+        return Err(AppError::payload_too_large(format!(
+            "Scoreboard export snapshot is limited to {} MiB",
+            MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES / 1024 / 1024
+        )));
+    }
+    let board: ScoreboardModel = serde_json::from_slice(&board_json)
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    if board.items.len() > MAX_SCOREBOARD_EXPORT_ROWS {
+        return Err(AppError::payload_too_large(format!(
+            "Scoreboard export is limited to {MAX_SCOREBOARD_EXPORT_ROWS} teams"
+        )));
+    }
+    let bytes = build_xlsx_off_thread(
+        board,
+        export_permit,
+        build_scoreboard_xlsx,
+        "Failed to build scoreboard sheet",
+    )
+    .await?;
 
     let filename = format!(
         "{}-Scoreboard-{}.xlsx",
@@ -683,17 +795,17 @@ pub async fn scoreboard_sheet(
 }
 
 /// Build the scoreboard `.xlsx` in memory (rank / team / score / solved).
-fn build_scoreboard_xlsx(board: &ScoreboardModel) -> Result<Vec<u8>, rust_xlsxwriter::XlsxError> {
+fn build_scoreboard_xlsx(board: ScoreboardModel) -> Result<Vec<u8>, rust_xlsxwriter::XlsxError> {
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
     sheet.set_name("Scoreboard")?;
     for (col, h) in ["Ranking", "Team", "Score", "Solved"].iter().enumerate() {
         sheet.write_string(0, col as u16, *h)?;
     }
-    for (i, item) in board.items.iter().enumerate() {
+    for (i, item) in board.items.into_iter().enumerate() {
         let row = (i + 1) as u32;
         sheet.write_number(row, 0, item.rank as f64)?;
-        sheet.write_string(row, 1, item.name.clone())?;
+        sheet.write_string(row, 1, item.name)?;
         sheet.write_number(row, 2, item.score as f64)?;
         sheet.write_number(row, 3, item.solved_count as f64)?;
     }
@@ -733,37 +845,24 @@ pub async fn submission_sheet(
         return Err(AppError::bad_request("Game has not started"));
     }
 
-    let rows = submission::Entity::find()
-        .filter(submission::Column::GameId.eq(id))
-        .order_by_desc(submission::Column::SubmitTimeUtc)
-        .all(&st.db)
-        .await?;
-
-    let team_names = team_name_map(&st, rows.iter().map(|s| s.team_id)).await?;
-    let user_names = user_name_map(&st, rows.iter().filter_map(|s| s.user_id)).await?;
-    let challenge_titles = challenge_title_map(&st, rows.iter().map(|s| s.challenge_id)).await?;
-
-    let projected: Vec<[String; 6]> = rows
-        .iter()
-        .map(|s| {
-            [
-                s.submit_time_utc.format("%Y-%m-%d %H:%M:%SZ").to_string(),
-                team_names.get(&s.team_id).cloned().unwrap_or_default(),
-                s.user_id
-                    .and_then(|u| user_names.get(&u).cloned())
-                    .unwrap_or_default(),
-                challenge_titles
-                    .get(&s.challenge_id)
-                    .cloned()
-                    .unwrap_or_default(),
-                s.answer.clone(),
-                answer_result_str(s.status).to_string(),
-            ]
-        })
-        .collect();
-
-    let bytes = build_submission_xlsx(&projected)
-        .map_err(|_| AppError::bad_request("Failed to build submission sheet"))?;
+    let mut export_permit = match begin_monitor_export(&st) {
+        Ok(permit) => permit,
+        Err(response) => return Ok(response),
+    };
+    let rows = match load_submission_export_snapshot(st.pg(), id, &mut export_permit).await {
+        Ok(rows) => rows,
+        Err(SubmissionSnapshotError::Application(error)) => return Err(error),
+        Err(SubmissionSnapshotError::Overloaded(error)) => {
+            return Ok(export_overload_response(error));
+        }
+    };
+    let bytes = build_xlsx_off_thread(
+        rows,
+        export_permit,
+        build_submission_xlsx,
+        "Failed to build submission sheet",
+    )
+    .await?;
 
     let filename = format!(
         "{}_Submissions_{}.xlsx",
@@ -775,7 +874,9 @@ pub async fn submission_sheet(
 
 /// Build the submissions `.xlsx` in memory (time / team / user / challenge /
 /// answer / status), one row per pre-projected submission.
-fn build_submission_xlsx(rows: &[[String; 6]]) -> Result<Vec<u8>, rust_xlsxwriter::XlsxError> {
+fn build_submission_xlsx(
+    rows: Vec<SubmissionExportRow>,
+) -> Result<Vec<u8>, rust_xlsxwriter::XlsxError> {
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
     sheet.set_name("Submissions")?;
@@ -785,24 +886,59 @@ fn build_submission_xlsx(rows: &[[String; 6]]) -> Result<Vec<u8>, rust_xlsxwrite
     {
         sheet.write_string(0, col as u16, *h)?;
     }
-    for (i, r) in rows.iter().enumerate() {
+    for (i, submission) in rows.into_iter().enumerate() {
         let row = (i + 1) as u32;
-        for (col, v) in r.iter().enumerate() {
-            sheet.write_string(row, col as u16, v.clone())?;
-        }
+        sheet.write_string(
+            row,
+            0,
+            submission
+                .submit_time_utc
+                .format("%Y-%m-%d %H:%M:%SZ")
+                .to_string(),
+        )?;
+        sheet.write_string(row, 1, submission.team_name.unwrap_or_default())?;
+        sheet.write_string(row, 2, submission.user_name.unwrap_or_default())?;
+        sheet.write_string(row, 3, submission.challenge_title.unwrap_or_default())?;
+        sheet.write_string(row, 4, submission.answer)?;
+        sheet.write_string(row, 5, answer_result_str(submission.status))?;
     }
     workbook.save_to_buffer()
 }
 
 /// Human-readable label for an `AnswerResult`, mirroring RSCTF `ToShortString`.
-fn answer_result_str(r: AnswerResult) -> &'static str {
+fn answer_result_str(r: i16) -> &'static str {
     match r {
-        AnswerResult::NotFound => "Not Found",
-        AnswerResult::FlagSubmitted => "Submitted",
-        AnswerResult::Accepted => "Accepted",
-        AnswerResult::WrongAnswer => "Wrong Answer",
-        AnswerResult::CheatDetected => "Cheat Detected",
+        value if value == AnswerResult::NotFound as i16 => "Not Found",
+        value if value == AnswerResult::FlagSubmitted as i16 => "Submitted",
+        value if value == AnswerResult::Accepted as i16 => "Accepted",
+        value if value == AnswerResult::WrongAnswer as i16 => "Wrong Answer",
+        value if value == AnswerResult::CheatDetected as i16 => "Cheat Detected",
+        _ => "Unknown",
     }
+}
+
+/// Keep all XLSX serialization off Tokio request workers. The snapshot and its
+/// admission permit remain owned until the blocking task has fully completed.
+async fn build_xlsx_off_thread<T, F>(
+    snapshot: T,
+    permit: MonitorExportPermit,
+    builder: F,
+    public_error: &'static str,
+) -> AppResult<Vec<u8>>
+where
+    T: Send + 'static,
+    F: FnOnce(T) -> Result<Vec<u8>, rust_xlsxwriter::XlsxError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        // The task, rather than the request future, owns admission. If a client
+        // disconnects and Axum drops the handler while rust_xlsxwriter is still
+        // running, the detached blocking task remains counted until completion.
+        let _permit = permit;
+        builder(snapshot)
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("spreadsheet task failed: {error}")))?
+    .map_err(|_| AppError::bad_request(public_error))
 }
 
 /// Spreadsheet MIME type shared by both `.xlsx` exports.
@@ -828,3 +964,6 @@ fn xlsx_response(bytes: Vec<u8>, filename: &str) -> Response {
 fn sanitize_filename(name: &str) -> String {
     name.replace(['"', '\r', '\n', '/', '\\'], "_")
 }
+
+#[cfg(test)]
+mod export_tests;

@@ -314,9 +314,15 @@ const GameInfoEdit: FC = () => {
   }
 
   const onExportGame = async () => {
-    if (!game?.id) return
+    const gameId = game?.id
+    if (!gameId) return
 
-    await downloadBlob(api.edit.editExportGame(game.id, { format: 'blob' }), setDisabled, t)
+    await downloadBlob(
+      `admin:game-export:${gameId}`,
+      () => api.edit.editExportGame(gameId, { format: 'blob' }),
+      setDisabled,
+      t
+    )
   }
 
   const onGenerateVariants = async () => {
