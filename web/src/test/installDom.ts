@@ -38,6 +38,7 @@ export const installTestDom = (browser: Window) => {
     HTMLIFrameElement: browser.HTMLIFrameElement,
     SVGElement: browser.SVGElement,
     MutationObserver: browser.MutationObserver,
+    ResizeObserver: browser.ResizeObserver,
     Event: browser.Event,
     CustomEvent: browser.CustomEvent,
     StorageEvent: browser.StorageEvent,
