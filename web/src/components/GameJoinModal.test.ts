@@ -7,6 +7,7 @@ import { act, createElement } from 'react'
 import { I18nextProvider } from 'react-i18next'
 import api, { DetailedGameInfoModel, GameJoinCheckInfoModel, GameJoinModel, TeamInfoModel } from '../Api'
 import { installTestDom } from '../test/installDom'
+import { submitGameEnrollment } from '../utils/EnrollmentFlow'
 import { GameJoinModal } from './GameJoinModal'
 
 const flush = async () => {
@@ -175,6 +176,110 @@ test('event join retains choices across recoverable failures and closes only aft
   } finally {
     await act(async () => root.unmount())
     gameApi.gameGetGameJoinCheckInfo = originalCheck
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('event join keeps the invite and focus when the real fingerprint challenge request fails', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1' })
+  const restoreDom = installTestDom(browser)
+  const i18n = await createI18n()
+  const originalCheck = api.game.gameGetGameJoinCheckInfo
+  const originalChallenge = api.account.accountFingerprintChallenge
+  const originalJoin = api.game.gameJoinGame
+  const gameApi = api.game as typeof api.game & {
+    gameGetGameJoinCheckInfo: typeof api.game.gameGetGameJoinCheckInfo
+    gameJoinGame: typeof api.game.gameJoinGame
+  }
+  const accountApi = api.account as typeof api.account & {
+    accountFingerprintChallenge: typeof api.account.accountFingerprintChallenge
+  }
+  context.mock.method(console, 'warn', () => undefined)
+
+  let challengeAttempts = 0
+  let joinAttempts = 0
+  gameApi.gameGetGameJoinCheckInfo = (async () => ({ data: check(10) })) as typeof api.game.gameGetGameJoinCheckInfo
+  accountApi.accountFingerprintChallenge = (async () => {
+    challengeAttempts += 1
+    throw new Error('Fingerprint challenge unavailable')
+  }) as typeof api.account.accountFingerprintChallenge
+  gameApi.gameJoinGame = (async () => {
+    joinAttempts += 1
+    return { data: undefined }
+  }) as typeof api.game.gameJoinGame
+
+  const actions: string[] = []
+  const currentTeams = [team(1)]
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => {
+      root.render(
+        createElement(
+          HeadlessMantineProvider,
+          null,
+          createElement(
+            I18nextProvider,
+            { i18n },
+            createElement(GameJoinModal, {
+              opened: true,
+              title: 'Join event',
+              accountId: 'account-a',
+              gameId: 1,
+              game: game(1, 10, true),
+              teams: currentTeams,
+              refreshTeams: async () => currentTeams,
+              onSubmitJoin: (info) =>
+                submitGameEnrollment({
+                  gameId: 1,
+                  info,
+                  enableBrowserFingerprint: true,
+                  t: i18n.t,
+                }),
+              onClose: () => actions.push('close'),
+            })
+          )
+        )
+      )
+      await flush()
+      await flush()
+    })
+
+    const form = browser.document.querySelector<HTMLFormElement>('form')
+    const inviteInput = browser.document.querySelector<HTMLInputElement>('[data-guide="event-join-code"]')
+    assert.ok(form)
+    assert.ok(inviteInput)
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(browser.HTMLInputElement.prototype, 'value')?.set
+      assert.ok(setValue)
+      setValue.call(inviteInput, 'fingerprint-retry-code')
+      inviteInput.dispatchEvent(new browser.Event('input', { bubbles: true }))
+      inviteInput.dispatchEvent(new browser.Event('change', { bubbles: true }))
+      await flush()
+      form.dispatchEvent(new browser.Event('submit', { bubbles: true, cancelable: true }))
+      await flush()
+    })
+
+    assert.equal(challengeAttempts, 1)
+    assert.equal(joinAttempts, 0)
+    assert.equal(inviteInput.value, 'fingerprint-retry-code')
+    assert.equal(browser.document.activeElement, inviteInput)
+    assert.match(
+      browser.document.querySelector('[role="alert"]')?.textContent ?? '',
+      /Fingerprint challenge unavailable/
+    )
+    assert.deepEqual(actions, [])
+  } finally {
+    await act(async () => root.unmount())
+    gameApi.gameGetGameJoinCheckInfo = originalCheck
+    accountApi.accountFingerprintChallenge = originalChallenge
+    gameApi.gameJoinGame = originalJoin
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
     await browser.happyDOM.close()
     restoreDom()

@@ -34,7 +34,7 @@ import { GameProgress } from '@Components/GameProgress'
 import { Markdown } from '@Components/MarkdownRenderer'
 import { WithNavBar } from '@Components/WithNavbar'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
-import { encryptApiData } from '@Utils/Crypto'
+import { submitGameEnrollment } from '@Utils/EnrollmentFlow'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
@@ -155,27 +155,13 @@ const GameDetail: FC = () => {
   ])
 
   const onSubmitJoin = async (info: GameJoinModel) => {
-    if (!Number.isSafeInteger(numId) || numId <= 0) throw new Error('Invalid game ID')
-
-    const identity = config.enableBrowserFingerprint
-      ? await (async () => {
-          const challengeResponse = await api.account.accountFingerprintChallenge()
-          const challenge = challengeResponse.data.data
-          if (!challenge?.nonce || !challenge.requiredSignals) {
-            throw new Error('Invalid fingerprint challenge')
-          }
-          const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-          const payload = await getFingerprintPayload({
-            nonce: challenge.nonce,
-            requiredSignals: challenge.requiredSignals,
-          })
-          return {
-            fingerprint: await encryptApiData(t, payload.fingerprint, config.apiPublicKey),
-            fingerprintProof: await encryptApiData(t, payload.proof, config.apiPublicKey),
-          }
-        })()
-      : {}
-    await api.game.gameJoinGame(numId, { ...info, ...identity })
+    await submitGameEnrollment({
+      gameId: numId,
+      info,
+      enableBrowserFingerprint: config.enableBrowserFingerprint,
+      apiPublicKey: config.apiPublicKey,
+      t,
+    })
     showNotification({
       color: 'teal',
       message: t('game.notification.joined'),

@@ -2,14 +2,13 @@ import { Alert, Button, Stack, Text, TextInput } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
-import { encryptApiData } from '@Utils/Crypto'
+import { submitTeamEnrollment } from '@Utils/EnrollmentFlow'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { isValidTeamInviteCode } from '@Utils/TeamInvite'
 import { settleTeamJoinAttempt } from '@Utils/TeamJoinFlow'
-import api from '@Api'
 
 interface TeamJoinModalProps extends AccessibleModalProps {
   code: string
@@ -27,6 +26,8 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
   onTeamReady,
   enableBrowserFingerprint,
   apiPublicKey,
+  opened,
+  onClose,
   ...modalProps
 }) => {
   const [joining, setJoining] = useState(false)
@@ -37,19 +38,36 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
   const { t } = useTranslation()
   const validCode = isValidTeamInviteCode(code)
 
-  useEffect(
-    () => () => {
-      attemptGeneration.current += 1
-      attemptInFlight.current = false
-    },
-    []
-  )
+  const invalidateAttempt = useCallback(() => {
+    attemptGeneration.current += 1
+    attemptInFlight.current = false
+  }, [])
+
+  useEffect(() => () => invalidateAttempt(), [invalidateAttempt])
+
+  const resetAttempt = useCallback(() => {
+    invalidateAttempt()
+    setJoining(false)
+    setJoinError(null)
+  }, [invalidateAttempt])
+
+  const previousOpened = useRef(opened)
+  useEffect(() => {
+    if (previousOpened.current === opened) return
+    previousOpened.current = opened
+    resetAttempt()
+  }, [opened, resetAttempt])
 
   useEffect(() => {
     if (!joinError) return
     const timer = setTimeout(() => codeInputRef.current?.focus(), 0)
     return () => clearTimeout(timer)
   }, [joinError])
+
+  const closeAndReset = () => {
+    resetAttempt()
+    onClose()
+  }
 
   const onJoinTeam = async () => {
     if (attemptInFlight.current) return
@@ -72,28 +90,7 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
     setJoining(true)
     try {
       await settleTeamJoinAttempt({
-        accept: async () => {
-          const identity = enableBrowserFingerprint
-            ? await (async () => {
-                const challengeResponse = await api.account.accountFingerprintChallenge()
-                const challenge = challengeResponse.data.data
-                if (!challenge?.nonce || !challenge.requiredSignals) {
-                  throw new Error('Invalid fingerprint challenge')
-                }
-                const { getFingerprintPayload } = await import('@Utils/BrowserFingerprint')
-                const payload = await getFingerprintPayload({
-                  nonce: challenge.nonce,
-                  requiredSignals: challenge.requiredSignals,
-                })
-                return {
-                  code,
-                  fingerprint: await encryptApiData(t, payload.fingerprint, apiPublicKey),
-                  fingerprintProof: await encryptApiData(t, payload.proof, apiPublicKey),
-                }
-              })()
-            : { code }
-          await api.team.teamAccept(identity)
-        },
+        accept: () => submitTeamEnrollment({ code, enableBrowserFingerprint, apiPublicKey, t }),
         onAccepted: () => {
           if (generation !== attemptGeneration.current) return
           showNotification({
@@ -105,7 +102,7 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
           onTeamReady?.()
           mutate()
           onCodeChange('')
-          modalProps.onClose()
+          closeAndReset()
         },
         onRejected: (error) => {
           if (generation !== attemptGeneration.current) return
@@ -122,7 +119,7 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
   }
 
   return (
-    <AccessibleModal {...modalProps}>
+    <AccessibleModal {...modalProps} opened={opened} onClose={closeAndReset}>
       <Stack
         component="form"
         data-guide="team-join-workflow"
