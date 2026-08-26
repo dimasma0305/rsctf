@@ -585,6 +585,10 @@ fn start_background_services(
                 shutdown.clone(),
             ),
         ));
+        required.push(RequiredTask::Unit(
+            "Discord webhook reconciler",
+            rsctf::services::discord_webhook::start_reconciler(state.clone(), shutdown.clone()),
+        ));
     }
     if let Some(worker_plane) = worker_plane {
         let service = worker_plane.service.clone();

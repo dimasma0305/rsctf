@@ -181,8 +181,9 @@ impl GameInfoModel {
         }
     }
 
-    fn validate(&self) -> AppResult<()> {
-        self.configuration().validate()
+    fn validate(&self) -> AppResult<Option<String>> {
+        self.configuration().validate()?;
+        crate::services::discord_webhook::normalize_discord_webhook(self.discord_webhook.as_deref())
     }
 
     fn validate_event_security(&self, st: &SharedState) -> AppResult<()> {
@@ -311,7 +312,7 @@ pub async fn add_game(
     _admin: AdminUser,
     Json(model): Json<GameInfoModel>,
 ) -> AppResult<RequestResponse<GameInfoModel>> {
-    model.validate()?;
+    let discord_webhook = model.validate()?;
     model.validate_event_security(&st)?;
     let koth_epoch_ticks = model.koth_epoch_ticks.unwrap_or(12);
     let koth_cycle_ticks = model.koth_cycle_ticks.unwrap_or(3);
@@ -336,7 +337,7 @@ pub async fn add_game(
         writeup_required: Set(model.writeup_required),
         invite_code: Set(model.invite_code.clone()),
         team_member_count_limit: Set(model.team_member_count_limit),
-        discord_webhook: Set(model.discord_webhook.clone()),
+        discord_webhook: Set(discord_webhook),
         container_count_limit: Set(model.container_count_limit),
         start_time_utc: Set(model.start_time_utc),
         end_time_utc: Set(model.end_time_utc),
@@ -508,7 +509,7 @@ pub async fn update_game(
     Json(model): Json<GameInfoModel>,
 ) -> AppResult<RequestResponse<GameInfoModel>> {
     manager_or_admin(&st, &user, id).await?;
-    model.validate()?;
+    let discord_webhook = model.validate()?;
     model.validate_event_security(&st)?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     let tx = control.transaction_mut();
@@ -576,6 +577,12 @@ pub async fn update_game(
     if deletion_pending {
         return Err(AppError::conflict("Game is being deleted"));
     }
+    let current_freeze_time: Option<DateTime<Utc>> =
+        sqlx::query_scalar(r#"SELECT freeze_time_utc FROM "Games" WHERE id = $1"#)
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
 
     let current_vpn_policy: (bool, bool, bool, bool, bool, bool, i64) = sqlx::query_as(
         r#"SELECT vpn_access_required, vpn_behavior_telemetry_enabled,
@@ -674,6 +681,8 @@ pub async fn update_game(
     )?;
     let schedule_changed =
         model.start_time_utc != current_start_time || model.end_time_utc != current_end_time;
+    let delivery_schedule_changed =
+        schedule_changed || model.freeze_time_utc != current_freeze_time;
     let config_snapshotted = if schedule_changed {
         let config_snapshotted: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(SELECT 1 FROM "KothOfficialConfigs" WHERE game_id = $1)"#,
@@ -779,7 +788,7 @@ pub async fn update_game(
     .bind(model.writeup_deadline)
     .bind(model.freeze_time_utc)
     .bind(super::blood_bonus_from_value(model.blood_bonus_value))
-    .bind(&model.discord_webhook)
+    .bind(&discord_webhook)
     .bind(model.ad_warmup_seconds)
     .bind(model.ad_snapshot_retention_days)
     .bind(model.ad_tick_seconds)
@@ -804,6 +813,17 @@ pub async fn update_game(
     .execute(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if delivery_schedule_changed {
+        crate::services::discord_webhook::reschedule_game_blood_notices(
+            tx,
+            id,
+            current_freeze_time,
+            current_end_time,
+            model.freeze_time_utc,
+            model.end_time_utc,
+        )
+        .await?;
+    }
     if let Some(reason) = vpn_policy_reason {
         let old_policy = serde_json::json!({
             "accessRequired": current_vpn_policy.0,

@@ -39,6 +39,17 @@ fn sparse_game_exports_receive_crown_cycle_defaults() {
 }
 
 #[test]
+fn game_exports_omit_discord_webhook_credentials() {
+    let mut model: ExportGameModel = serde_json::from_value(serde_json::json!({})).unwrap();
+    model.discord_webhook = Some(
+        "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz_1234567890"
+            .to_string(),
+    );
+    let serialized = serde_json::to_value(model).unwrap();
+    assert!(serialized.get("discordWebhook").is_none());
+}
+
+#[test]
 fn sparse_challenge_imports_disable_blood_bonus() {
     let model: ExportChallengeModel = serde_json::from_value(serde_json::json!({})).unwrap();
     assert!(model.disable_blood_bonus);

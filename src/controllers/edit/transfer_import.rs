@@ -156,7 +156,9 @@ fn imported_game_model(
         writeup_required: Set(source.writeup_required),
         invite_code: Set(None),
         team_member_count_limit: Set(source.team_member_count_limit),
-        discord_webhook: Set(source.discord_webhook.clone()),
+        // Webhooks are deployment-local outbound credentials. Old archives may
+        // still deserialize the field, but an import must never activate it.
+        discord_webhook: Set(None),
         container_count_limit: Set(source.container_count_limit),
         start_time_utc: Set(source.start_time_utc),
         end_time_utc: Set(source.end_time_utc),
@@ -347,11 +349,13 @@ mod tests {
     #[test]
     fn import_clears_unbundled_direct_hash_and_executable_references() {
         let game: ExportGameModel = serde_json::from_value(serde_json::json!({
-            "posterHash": "deployment-a-poster"
+            "posterHash": "deployment-a-poster",
+            "discordWebhook": "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz_1234567890"
         }))
         .unwrap();
         let imported_game = imported_game_model(&game, "public".into(), "private".into());
         assert_eq!(imported_game.poster_hash, Set(None));
+        assert_eq!(imported_game.discord_webhook, Set(None));
 
         let challenge: ExportChallengeModel = serde_json::from_value(serde_json::json!({
             "type": "DynamicContainer",

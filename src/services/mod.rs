@@ -13,6 +13,7 @@ pub mod challenge_workloads;
 pub mod container;
 pub mod container_policy;
 pub mod cron;
+pub mod discord_webhook;
 pub mod donations;
 pub mod event_bus;
 pub mod event_security;
