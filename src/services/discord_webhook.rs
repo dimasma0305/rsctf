@@ -29,6 +29,11 @@ const TERMINAL_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
+// ASCII `DBLD`. This is intentionally distinct from submit's `(0,
+// challenge_id)` lock. Holding it immediately before allocating a GameNotices
+// id makes successful per-game blood ids visible in commit order.
+const BLOOD_NOTICE_LOCK_NAMESPACE: i32 = 0x4442_4c44;
+
 static HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -336,6 +341,23 @@ async fn send(job: &LeasedDelivery) -> DeliveryDisposition {
     }
 }
 
+/// Serialize canonical blood-notice id allocation for one event. Call this
+/// immediately before inserting `GameNotices`, and keep the remaining
+/// transaction tail short so a committed successor can never overtake an
+/// invisible predecessor.
+pub async fn lock_game_blood_notice_order(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+) -> AppResult<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+        .bind(BLOOD_NOTICE_LOCK_NAMESPACE)
+        .bind(game_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
+}
+
 /// Enqueue delivery in the same transaction as the canonical game notice. A
 /// blank webhook intentionally creates no row. `ON CONFLICT` makes replay safe.
 pub async fn enqueue_blood_notice(
@@ -346,14 +368,17 @@ pub async fn enqueue_blood_notice(
 ) -> AppResult<bool> {
     let inserted = sqlx::query(
         r#"INSERT INTO "DiscordWebhookOutbox"
-               (notice_id, game_id, available_at_utc)
+               (notice_id, game_id, available_at_utc, freeze_deferred)
            SELECT $1, game.id,
                   CASE WHEN game.freeze_time_utc IS NOT NULL
                                   AND $3 >= game.freeze_time_utc
                                   AND $3 < game.end_time_utc
                        THEN game.end_time_utc
                        ELSE $3
-                  END
+                  END,
+                  game.freeze_time_utc IS NOT NULL
+                      AND $3 >= game.freeze_time_utc
+                      AND $3 < game.end_time_utc
              FROM "Games" game
             WHERE game.id = $2
               AND game.discord_webhook IS NOT NULL
@@ -370,8 +395,8 @@ pub async fn enqueue_blood_notice(
 }
 
 /// Recompute pending delivery times when an organizer edits the event freeze
-/// window. Only notices covered by the old or new freeze are touched, so
-/// unrelated retry backoff remains intact.
+/// window. Explicit deferral state distinguishes retries postponed by a freeze
+/// from ordinary backoff that happens to share an event timestamp.
 pub async fn reschedule_game_blood_notices(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     game_id: i32,
@@ -381,15 +406,37 @@ pub async fn reschedule_game_blood_notices(
     new_end_time_utc: DateTime<Utc>,
 ) -> AppResult<u64> {
     let affected = sqlx::query(
-        r#"UPDATE "DiscordWebhookOutbox" job
+        r#"WITH observed_clock AS MATERIALIZED (
+               SELECT clock_timestamp() AS db_now
+           )
+           UPDATE "DiscordWebhookOutbox" job
               SET available_at_utc =
                   CASE WHEN $4 IS NOT NULL
-                                  AND notice.publish_time_utc >= $4
-                                  AND notice.publish_time_utc < $5
+                                  AND (
+                                      (notice.publish_time_utc >= $4
+                                       AND notice.publish_time_utc < $5)
+                                      OR
+                                      (job.freeze_deferred
+                                       AND observed_clock.db_now >= $4
+                                       AND observed_clock.db_now < $5)
+                                  )
                        THEN $5
-                       ELSE LEAST(job.available_at_utc, clock_timestamp())
+                       ELSE LEAST(job.available_at_utc, observed_clock.db_now)
+                  END,
+                  freeze_deferred =
+                  CASE WHEN $4 IS NOT NULL
+                                  AND (
+                                      (notice.publish_time_utc >= $4
+                                       AND notice.publish_time_utc < $5)
+                                      OR
+                                      (job.freeze_deferred
+                                       AND observed_clock.db_now >= $4
+                                       AND observed_clock.db_now < $5)
+                                  )
+                       THEN TRUE
+                       ELSE FALSE
                   END
-             FROM "GameNotices" notice
+             FROM "GameNotices" notice, observed_clock
             WHERE job.notice_id = notice.id
               AND job.game_id = $1
               AND job.delivered_at_utc IS NULL
@@ -402,14 +449,33 @@ pub async fn reschedule_game_blood_notices(
                   ($4 IS NOT NULL
                    AND notice.publish_time_utc >= $4
                    AND notice.publish_time_utc < $5)
+                  OR job.freeze_deferred
               )
-              AND job.available_at_utc IS DISTINCT FROM
-                  CASE WHEN $4 IS NOT NULL
-                                  AND notice.publish_time_utc >= $4
-                                  AND notice.publish_time_utc < $5
-                       THEN $5
-                       ELSE LEAST(job.available_at_utc, clock_timestamp())
-                  END"#,
+              AND (
+                  job.available_at_utc IS DISTINCT FROM
+                      CASE WHEN $4 IS NOT NULL
+                                      AND (
+                                          (notice.publish_time_utc >= $4
+                                           AND notice.publish_time_utc < $5)
+                                          OR
+                                          (job.freeze_deferred
+                                           AND observed_clock.db_now >= $4
+                                           AND observed_clock.db_now < $5)
+                                      )
+                           THEN $5
+                           ELSE LEAST(job.available_at_utc, observed_clock.db_now)
+                      END
+                  OR job.freeze_deferred IS DISTINCT FROM
+                      ($4 IS NOT NULL
+                       AND (
+                           (notice.publish_time_utc >= $4
+                            AND notice.publish_time_utc < $5)
+                           OR
+                           (job.freeze_deferred
+                            AND observed_clock.db_now >= $4
+                            AND observed_clock.db_now < $5)
+                       ))
+              )"#,
     )
     .bind(game_id)
     .bind(old_freeze_time_utc)
@@ -445,7 +511,8 @@ async fn defer_frozen(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
                 FOR UPDATE OF job SKIP LOCKED
            )
            UPDATE "DiscordWebhookOutbox" job
-              SET available_at_utc = due.end_time_utc
+              SET available_at_utc = due.end_time_utc,
+                  freeze_deferred = TRUE
              FROM due
             WHERE job.notice_id = due.notice_id"#,
     )
@@ -592,6 +659,7 @@ async fn finish_job(
                 r#"UPDATE "DiscordWebhookOutbox"
                   SET available_at_utc = clock_timestamp()
                         + ($3::bigint * INTERVAL '1 second'),
+                      freeze_deferred = FALSE,
                       lease_token = NULL,
                       lease_expires_at_utc = NULL,
                       last_http_status = $4,

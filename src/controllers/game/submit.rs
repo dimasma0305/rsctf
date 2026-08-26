@@ -767,6 +767,14 @@ pub async fn submit(
 
             let notice_type = blood_notice_type(claimed_first_solve, blood_eligible, prior);
             if let Some(notice_type) = notice_type {
+                // Allocate the canonical notice id only after the per-game lock.
+                // Otherwise a higher id from another challenge can commit and be
+                // delivered while its lower-id predecessor remains invisible.
+                crate::services::discord_webhook::lock_game_blood_notice_order(
+                    &mut transaction,
+                    id,
+                )
+                .await?;
                 let values = serde_json::json!([team_name, challenge.title]);
                 let publish_time = Utc::now();
                 let notice_id: i32 = sqlx::query_scalar(

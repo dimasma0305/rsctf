@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS "DiscordWebhookOutbox" (
     game_id              INTEGER NOT NULL,
     attempts             INTEGER NOT NULL DEFAULT 0,
     available_at_utc     TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    freeze_deferred      BOOLEAN NOT NULL DEFAULT FALSE,
     lease_token          UUID NULL,
     lease_expires_at_utc TIMESTAMPTZ NULL,
     delivered_at_utc     TIMESTAMPTZ NULL,
@@ -74,6 +75,7 @@ mod tests {
     fn outbox_is_idempotent_bounded_and_contains_no_webhook_secret() {
         assert!(UP_SQL.contains("CREATE TABLE IF NOT EXISTS"));
         assert!(UP_SQL.contains("attempts >= 0 AND attempts <= 64"));
+        assert!(UP_SQL.contains("freeze_deferred      BOOLEAN NOT NULL DEFAULT FALSE"));
         assert!(UP_SQL.contains("CREATE INDEX IF NOT EXISTS"));
         assert!(UP_SQL.contains("(game_id, notice_id)"));
         assert!(UP_SQL.contains("ix_discord_webhook_outbox_terminal"));

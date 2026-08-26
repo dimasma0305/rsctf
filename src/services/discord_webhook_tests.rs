@@ -168,6 +168,7 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
           game_id INTEGER NOT NULL REFERENCES "Games"(id) ON DELETE CASCADE,
           attempts INTEGER NOT NULL DEFAULT 0,
           available_at_utc TIMESTAMPTZ NOT NULL,
+          freeze_deferred BOOLEAN NOT NULL DEFAULT FALSE,
           lease_token UUID,
           lease_expires_at_utc TIMESTAMPTZ,
           delivered_at_utc TIMESTAMPTZ,
@@ -487,6 +488,221 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
             .await
             .unwrap();
     assert_eq!(remaining_for_deleted_game, 0);
+
+    // A pre-freeze notice can be retried during a freeze. If an organizer moves
+    // the freeze later, that retry must be released rather than waiting for the
+    // obsolete event end.
+    sqlx::query(
+        r#"INSERT INTO "Games"
+             (id, title, discord_webhook, freeze_time_utc, end_time_utc)
+           VALUES (5, 'Retry schedule', $1,
+                   clock_timestamp() - INTERVAL '1 minute',
+                   clock_timestamp() + INTERVAL '1 hour')"#,
+    )
+    .bind(webhook("discord.com"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let pre_freeze_publish = Utc::now() - chrono::Duration::minutes(2);
+    sqlx::query(
+        r#"INSERT INTO "GameNotices"
+             (id, game_id, "Type", values, publish_time_utc)
+           VALUES (7, 5, $1, $2, $3)"#,
+    )
+    .bind(NoticeType::FirstBlood as i16)
+    .bind(sqlx::types::Json(json!(["Team", "Challenge"])))
+    .bind(pre_freeze_publish)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut retry_enqueue = pool.begin().await.unwrap();
+    assert!(
+        enqueue_blood_notice(&mut retry_enqueue, 7, 5, pre_freeze_publish)
+            .await
+            .unwrap()
+    );
+    retry_enqueue.commit().await.unwrap();
+    assert_eq!(defer_frozen(&pool, 256).await.unwrap(), 1);
+    let was_explicitly_deferred: bool = sqlx::query_scalar(
+        r#"SELECT freeze_deferred
+             FROM "DiscordWebhookOutbox" WHERE notice_id = 7"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(was_explicitly_deferred);
+
+    let (retry_old_freeze, retry_end): (Option<chrono::DateTime<Utc>>, chrono::DateTime<Utc>) =
+        sqlx::query_as(r#"SELECT freeze_time_utc, end_time_utc FROM "Games" WHERE id = 5"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let later_freeze = Utc::now() + chrono::Duration::minutes(10);
+    let mut retry_schedule_edit = pool.begin().await.unwrap();
+    sqlx::query(r#"UPDATE "Games" SET freeze_time_utc = $2 WHERE id = $1"#)
+        .bind(5_i32)
+        .bind(later_freeze)
+        .execute(&mut *retry_schedule_edit)
+        .await
+        .unwrap();
+    assert_eq!(
+        reschedule_game_blood_notices(
+            &mut retry_schedule_edit,
+            5,
+            retry_old_freeze,
+            retry_end,
+            Some(later_freeze),
+            retry_end,
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    retry_schedule_edit.commit().await.unwrap();
+    let (retry_is_due, retry_still_deferred): (bool, bool) = sqlx::query_as(
+        r#"SELECT available_at_utc <= clock_timestamp(), freeze_deferred
+             FROM "DiscordWebhookOutbox" WHERE notice_id = 7"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(retry_is_due);
+    assert!(!retry_still_deferred);
+    let (retry_lease, retry_jobs) = claim_pending(&pool, 16).await.unwrap();
+    assert_eq!(
+        retry_jobs
+            .iter()
+            .map(|job| job.notice_id)
+            .collect::<Vec<_>>(),
+        vec![7]
+    );
+    finish_job(
+        &pool,
+        &retry_jobs[0],
+        retry_lease,
+        DeliveryDisposition::Delivered { status: 200 },
+    )
+    .await
+    .unwrap();
+
+    // The sequence lock is taken before id allocation. A second challenge in
+    // the same event therefore cannot commit an outbox row while the lower-id
+    // transaction is still invisible to the worker.
+    sqlx::query(
+        r#"INSERT INTO "Games"
+             (id, title, discord_webhook, freeze_time_utc, end_time_utc)
+           VALUES (6, 'Concurrent event', $1, NULL,
+                   clock_timestamp() + INTERVAL '1 hour')"#,
+    )
+    .bind(webhook("discord.com"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut first_transaction = pool.begin().await.unwrap();
+    lock_game_blood_notice_order(&mut first_transaction, 6)
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "GameNotices"
+             (id, game_id, "Type", values, publish_time_utc)
+           VALUES (8, 6, $1, $2, clock_timestamp())"#,
+    )
+    .bind(NoticeType::FirstBlood as i16)
+    .bind(sqlx::types::Json(json!(["First", "Challenge A"])))
+    .execute(&mut *first_transaction)
+    .await
+    .unwrap();
+    assert!(
+        enqueue_blood_notice(&mut first_transaction, 8, 6, Utc::now())
+            .await
+            .unwrap()
+    );
+
+    let (backend_sender, backend_receiver) = tokio::sync::oneshot::channel();
+    let second_pool = pool.clone();
+    let second_transaction = tokio::spawn(async move {
+        let mut transaction = second_pool.begin().await.unwrap();
+        let backend_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+        backend_sender.send(backend_pid).unwrap();
+        lock_game_blood_notice_order(&mut transaction, 6)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO "GameNotices"
+                 (id, game_id, "Type", values, publish_time_utc)
+               VALUES (9, 6, $1, $2, clock_timestamp())"#,
+        )
+        .bind(NoticeType::FirstBlood as i16)
+        .bind(sqlx::types::Json(json!(["Second", "Challenge B"])))
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        assert!(enqueue_blood_notice(&mut transaction, 9, 6, Utc::now())
+            .await
+            .unwrap());
+        transaction.commit().await.unwrap();
+    });
+    let second_backend_pid = backend_receiver.await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let is_blocked: bool =
+                sqlx::query_scalar("SELECT cardinality(pg_blocking_pids($1)) > 0")
+                    .bind(second_backend_pid)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            if is_blocked {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the successor transaction should wait for the per-game sequence lock");
+
+    let (_, premature_jobs) = claim_pending(&pool, 16).await.unwrap();
+    assert!(
+        premature_jobs.is_empty(),
+        "the worker must not observe a successor before its predecessor commits"
+    );
+    first_transaction.commit().await.unwrap();
+    second_transaction.await.unwrap();
+
+    let (first_sequence_lease, first_sequence_jobs) = claim_pending(&pool, 16).await.unwrap();
+    assert_eq!(
+        first_sequence_jobs
+            .iter()
+            .map(|job| job.notice_id)
+            .collect::<Vec<_>>(),
+        vec![8]
+    );
+    finish_job(
+        &pool,
+        &first_sequence_jobs[0],
+        first_sequence_lease,
+        DeliveryDisposition::Delivered { status: 200 },
+    )
+    .await
+    .unwrap();
+    let (second_sequence_lease, second_sequence_jobs) = claim_pending(&pool, 16).await.unwrap();
+    assert_eq!(
+        second_sequence_jobs
+            .iter()
+            .map(|job| job.notice_id)
+            .collect::<Vec<_>>(),
+        vec![9]
+    );
+    finish_job(
+        &pool,
+        &second_sequence_jobs[0],
+        second_sequence_lease,
+        DeliveryDisposition::Delivered { status: 200 },
+    )
+    .await
+    .unwrap();
 
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
