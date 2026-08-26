@@ -6,6 +6,8 @@ const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504])
 export const MAX_PROFILE_RETRIES = 5
 const MAX_BACKOFF_MS = 30_000
 const MAX_RETRY_AFTER_MS = 5 * 60_000
+export const PROFILE_RECOVERY_PROBE_MS = 5 * 60_000
+const MAX_TIMER_DELAY_MS = 2_147_000_000
 
 type ErrorWithResponse = {
   status?: unknown
@@ -84,6 +86,23 @@ export const profileRetryDelay = (
   if (retryAfter !== null && retryAfter > MAX_RETRY_AFTER_MS) return null
   return Math.max(backoff, retryAfter ?? 0)
 }
+
+/** Keep one low-frequency recovery probe after the fast retry budget is exhausted. */
+export const profileRecoveryProbeDelay = (
+  error: unknown,
+  now: number = getServerNowMilliseconds()
+): number | null => {
+  if (profileErrorDisposition(error) !== 'retry') return null
+  const retryAfter = retryAfterMilliseconds(error, now) ?? 0
+  return Math.min(MAX_TIMER_DELAY_MS, Math.max(PROFILE_RECOVERY_PROBE_MS, retryAfter))
+}
+
+export const profileRetryScheduleDelay = (
+  error: unknown,
+  retryCount: number,
+  random: () => number = Math.random,
+  now: number = getServerNowMilliseconds()
+) => profileRetryDelay(error, retryCount, random, now) ?? profileRecoveryProbeDelay(error, now)
 
 /** Owns the sole pending retry so later errors and successful reads supersede it. */
 export const createProfileRetryTimers = () => {

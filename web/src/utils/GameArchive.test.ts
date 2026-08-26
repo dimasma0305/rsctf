@@ -34,6 +34,8 @@ test('event access, archives, and challenge modals use the server-corrected life
   const archive = readFileSync('src/utils/gameArchive.ts', 'utf8')
 
   assert.match(tabs, /const \{ started, finished, now \} = useGameStatus\(game\)/)
+  assert.match(tabs, /const clockReady = useServerClockReady\(\)/)
+  assert.match(tabs, /if \(game && clockReady\)/)
   assert.doesNotMatch(tabs, /const now = dayjs\(\)/)
   assert.match(challengePanel, /const \{ finished \} = useGameStatus\(game\)/)
   assert.doesNotMatch(challengePanel, /dayjs\(game\?\.end\)/)

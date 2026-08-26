@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  clearDestroyedInstanceContext,
   destroyReconciledInstance,
   isInstanceExtensionWindowOpen,
   mergeInstanceContext,
@@ -55,6 +56,33 @@ test('instance responses merge into the newest cache without reverting concurren
     context: { closeTime: 250, instanceEntry: 'new-entry' },
   })
   assert.equal(mergeInstanceContext(undefined, { closeTime: 250 }), undefined)
+})
+
+test('destroy preserves a replacement instance published while deletion is in flight', async () => {
+  const deleted = { context: { closeTime: 100, instanceEntry: 'old-entry' } }
+  let cached = deleted
+  let refreshes = 0
+
+  const result = await destroyReconciledInstance({
+    refresh: async () => {
+      refreshes += 1
+      if (refreshes > 1) throw new Error('confirmation unavailable')
+      return deleted
+    },
+    hasInstance: (value) => Boolean(value?.context.instanceEntry),
+    destroy: async () => {
+      cached = { context: { closeTime: 300, instanceEntry: 'replacement-entry' } }
+    },
+    publishAbsent: async (latest) => {
+      cached = clearDestroyedInstanceContext(cached, latest) ?? cached
+    },
+  })
+
+  assert.equal(result, 'destroyed')
+  assert.deepEqual(cached, { context: { closeTime: 300, instanceEntry: 'replacement-entry' } })
+  assert.deepEqual(clearDestroyedInstanceContext(deleted, deleted), {
+    context: { closeTime: null, instanceEntry: null },
+  })
 })
 
 test('destroy uses the refreshed instance and revalidates after success', async () => {

@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
 import { useSWRConfig } from 'swr'
 import { setAuthSession } from '@Utils/AuthState'
-import { createProfileRetryTimers, profileErrorDisposition, profileRetryDelay } from '@Utils/ProfileRetry'
+import { createProfileRetryTimers, profileErrorDisposition, profileRetryScheduleDelay } from '@Utils/ProfileRetry'
 import api from '@Api'
 
 const handledBannedProfileErrors = new WeakSet<object>()
@@ -26,7 +26,7 @@ export const useUser = () => {
     shouldRetryOnError: (err) => profileErrorDisposition(err) === 'retry',
     revalidateOnFocus: false,
     onErrorRetry: (err, _key, _config, revalidate, { retryCount }) => {
-      const delay = profileRetryDelay(err, retryCount)
+      const delay = profileRetryScheduleDelay(err, retryCount)
       if (delay === null) return
       retryTimers.current.schedule(delay, () => revalidate({ retryCount }))
     },

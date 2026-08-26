@@ -6,6 +6,7 @@ type Listener = () => void
 
 const listeners = new Set<Listener>()
 let offsetMilliseconds = 0
+let liveSampleReady = false
 let latestServerTime = Number.NEGATIVE_INFINITY
 let bestRoundTripMilliseconds = Number.POSITIVE_INFINITY
 let sampleWindowStartedAt = Number.NEGATIVE_INFINITY
@@ -19,9 +20,11 @@ const subscribe = (listener: Listener) => {
 }
 
 const getSnapshot = () => offsetMilliseconds
+const getReadySnapshot = () => liveSampleReady
 
 /** Current authoritative-clock estimate for non-React expiry calculations. */
 export const getServerNowMilliseconds = (localNow: number = Date.now()) => localNow + offsetMilliseconds
+export const hasLiveServerClockSample = () => liveSampleReady
 
 const finiteServerTime = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
@@ -55,6 +58,8 @@ export const observeServerTime = (
     return false
   if (serverTime < latestServerTime) return false
 
+  const readinessChanged = !liveSampleReady
+  liveSampleReady = true
   latestServerTime = serverTime
   if (
     !Number.isFinite(sampleWindowStartedAt) ||
@@ -66,14 +71,20 @@ export const observeServerTime = (
   }
 
   const roundTripMilliseconds = receivedAt - startedAt
-  if (roundTripMilliseconds > bestRoundTripMilliseconds) return true
+  if (roundTripMilliseconds > bestRoundTripMilliseconds) {
+    if (readinessChanged) listeners.forEach((listener) => listener())
+    return true
+  }
   bestRoundTripMilliseconds = roundTripMilliseconds
 
   // API serverTime values are sampled near response creation, after handler
   // work. Anchoring them at the request midpoint would mistake server-side
   // processing for clock skew and can move lifecycle controls early.
   const nextOffset = serverTime - receivedAt
-  if (nextOffset === offsetMilliseconds) return true
+  if (nextOffset === offsetMilliseconds) {
+    if (readinessChanged) listeners.forEach((listener) => listener())
+    return true
+  }
   offsetMilliseconds = nextOffset
   listeners.forEach((listener) => listener())
   return true
@@ -106,14 +117,19 @@ export const useServerNow = () => {
   return localNow.add(offset, 'millisecond')
 }
 
+/** True only after a live HTTP response supplies an authoritative clock sample. */
+export const useServerClockReady = () => useSyncExternalStore(subscribe, getReadySnapshot, getReadySnapshot)
+
 export const serverClockTestApi = {
   reset: () => {
     offsetMilliseconds = 0
+    liveSampleReady = false
     latestServerTime = Number.NEGATIVE_INFINITY
     bestRoundTripMilliseconds = Number.POSITIVE_INFINITY
     sampleWindowStartedAt = Number.NEGATIVE_INFINITY
   },
   offset: getSnapshot,
+  ready: getReadySnapshot,
   bestRoundTrip: () => bestRoundTripMilliseconds,
   modelServerTime,
 }

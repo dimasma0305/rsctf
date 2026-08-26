@@ -3043,7 +3043,7 @@ on 2026-08-25.
   - Relevant code: `web/src/components/admin/KothOpsPanel.tsx` and
     `src/controllers/game/koth/admin.rs`, `src/controllers/game/koth/api/admin.rs`.
 
-- [x] Propagate container-extension failures to `InstanceEntry`.
+- [ ] Propagate container-extension failures to `InstanceEntry`.
   - Do not display a success notification or disable retry when the extension request
     failed.
   - Base destroy on the value returned by `mutate()`. `requestDestroy` currently awaits
@@ -3075,7 +3075,7 @@ on 2026-08-25.
   - Relevant code: `web/src/components/InstanceEntry.tsx` and
     `web/src/components/WsrxProvider.tsx`.
 
-- [x] Repair account-profile error handling.
+- [ ] Repair account-profile error handling.
   - Resolve the contradiction between `shouldRetryOnError: false` and `onErrorRetry`.
     In the installed SWR behavior, the false predicate prevents `onErrorRetry` from
     being called at all, so its 403 logout/ban notification and intended five-attempt

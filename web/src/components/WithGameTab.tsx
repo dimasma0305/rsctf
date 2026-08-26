@@ -11,6 +11,7 @@ import { GameProgress } from '@Components/GameProgress'
 import { IconTabs } from '@Components/IconTabs'
 import { RequireRole } from '@Components/WithRole'
 import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
+import { useServerClockReady } from '@Utils/ServerClock'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
 import { useGame, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -65,6 +66,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
   const { role } = useUserRole()
   const { game, status } = useGame(numId)
   const { started, finished, now } = useGameStatus(game)
+  const clockReady = useServerClockReady()
   const { t } = useTranslation()
 
   const archived = isReadOnlyGameArchive(game, now.valueOf())
@@ -123,7 +125,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
   usePageTitle(game?.title)
 
   useEffect(() => {
-    if (game) {
+    if (game && clockReady) {
       if (location.pathname.includes('monitor') && role === undefined) return
 
       if (!started) {
@@ -188,7 +190,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
         })
       }
     }
-  }, [finished, game, location, navigate, numId, role, started, status, t])
+  }, [clockReady, finished, game, location, navigate, numId, role, started, status, t])
 
   return (
     <Stack pos="relative" mt="md" style={{ containerType: 'inline-size' }}>

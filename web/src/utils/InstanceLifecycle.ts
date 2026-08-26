@@ -32,6 +32,16 @@ export const mergeInstanceContext = <T extends { context?: InstanceContext }>(
   return { ...latest, context: { ...latest.context, ...patch } }
 }
 
+/** Clear only the runtime identity that the completed delete actually removed. */
+export const clearDestroyedInstanceContext = <T extends { context?: InstanceContext }>(
+  current: T | undefined,
+  deleted: T
+): T | undefined => {
+  const deletedEntry = deleted.context?.instanceEntry
+  if (!deletedEntry || current?.context?.instanceEntry !== deletedEntry) return current
+  return mergeInstanceContext(current, { closeTime: null, instanceEntry: null })
+}
+
 interface DestroyReconciliation<T> {
   refresh: () => Promise<T | undefined>
   hasInstance: (value: T | undefined) => boolean

@@ -88,6 +88,55 @@ test('server-corrected lifecycle crosses kickoff and close without navigation', 
   }
 })
 
+test('cached event access waits for a live clock sample before enforcing lifecycle state', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1/challenges' })
+  const restoreDom = installTestDom(browser)
+  const localNow = 2_000_007_200_000
+  const serverNow = localNow - 2 * 60 * 60_000
+  context.mock.timers.enable({
+    apis: ['Date', 'setInterval', 'setTimeout'],
+    now: new Date(localNow),
+  })
+  const {
+    hasLiveServerClockSample,
+    observeServerTime,
+    serverClockTestApi,
+    useServerClockReady,
+  } = await import('./ServerClock')
+  const { useGameStatus } = await import('../hooks/useGame')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  const cachedGame = { start: serverNow - 500, end: serverNow + 500 }
+  const Probe: FC = () => {
+    const ready = useServerClockReady()
+    const { status } = useGameStatus(cachedGame)
+    return createElement('output', null, ready ? status : 'waiting')
+  }
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    serverClockTestApi.reset()
+    assert.equal(hasLiveServerClockSample(), false)
+    await act(async () => root.render(createElement(Probe)))
+    assert.equal(container.textContent, 'waiting')
+
+    await act(async () => {
+      assert.equal(observeServerTime(serverNow, localNow), true)
+    })
+    assert.equal(hasLiveServerClockSample(), true)
+    assert.equal(container.textContent, 'ongoing')
+  } finally {
+    await act(async () => root.unmount())
+    serverClockTestApi.reset()
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
 test('timing polling owns one retry per key and cancels it after recovery or unmount', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'], now: 0 })
   const { createGameTimingSWRConfig, GAME_TIMING_REFRESH_MS, shouldRetryGameTimingError } = await import(

@@ -11,7 +11,11 @@ import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { encryptApiData } from '@Utils/Crypto'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
 import { resolveChallengeDeliveryGuide } from '@Utils/GuideState'
-import { destroyReconciledInstance, mergeInstanceContext } from '@Utils/InstanceLifecycle'
+import {
+  clearDestroyedInstanceContext,
+  destroyReconciledInstance,
+  mergeInstanceContext,
+} from '@Utils/InstanceLifecycle'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
@@ -169,10 +173,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         destroy: async () => {
           await api.game.gameDeleteContainer(gameId, challengeId)
         },
-        publishAbsent: async () => {
-          await mutate((current) => mergeInstanceContext(current, { closeTime: null, instanceEntry: null }), {
-            revalidate: false,
-          })
+        publishAbsent: async (deleted) => {
+          await mutate((current) => clearDestroyedInstanceContext(current, deleted), { revalidate: false })
         },
       })
       showNotification({
