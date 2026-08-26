@@ -102,6 +102,8 @@ test('compact challenge categories are exercised with touch and keyboard in Chro
   assert.match(audit, /touchReachedLast/)
   assert.match(audit, /keyboardReachedLast/)
   assert.match(audit, /initialRestored/)
+  assert.match(audit, /viewportScrollRestored/)
+  assert.match(audit, /interactionSkipped/)
   assert.match(audit, /compact challenge category fixture does not overflow/)
   assert.match(audit, /final challenge category is not reachable with a touch swipe/)
   assert.match(audit, /final challenge category is not reachable with the keyboard/)

@@ -552,6 +552,31 @@ async function waitForRender(cdp) {
   throw new Error('page did not finish rendering one h1 without a loading overlay within 25 seconds')
 }
 
+async function restoreChallengeCategoryViewport(cdp) {
+  const restored = await evaluate(
+    cdp,
+    `(() => {
+      const snapshot = globalThis.__rsctfVisualCategoryScrollSnapshot
+      if (!snapshot) return false
+      for (const { element, left, top } of snapshot.ancestors) {
+        element.scrollLeft = left
+        element.scrollTop = top
+      }
+      window.scrollTo(snapshot.windowX, snapshot.windowY)
+      const matchesSnapshot =
+        snapshot.ancestors.every(
+          ({ element, left, top }) => Math.abs(element.scrollLeft - left) <= 1 && Math.abs(element.scrollTop - top) <= 1
+        ) &&
+        Math.abs(window.scrollX - snapshot.windowX) <= 1 &&
+        Math.abs(window.scrollY - snapshot.windowY) <= 1
+      delete globalThis.__rsctfVisualCategoryScrollSnapshot
+      return matchesSnapshot
+    })()`
+  )
+  if (!restored) throw new Error('challenge category audit did not restore the initial page scroll position')
+  return true
+}
+
 async function auditChallengeCategoryScroller(cdp, route, viewport) {
   if (!viewport.mobile || viewport.width > 390 || !/^\/games\/\d+\/challenges$/.test(route.path)) return null
 
@@ -561,6 +586,15 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
     cdp,
     `(() => {
       const list = document.querySelector('[data-challenge-category-tabs]')
+      const ancestors = []
+      for (let element = list.parentElement; element; element = element.parentElement) {
+        ancestors.push({ element, left: element.scrollLeft, top: element.scrollTop })
+      }
+      globalThis.__rsctfVisualCategoryScrollSnapshot = {
+        ancestors,
+        windowX: window.scrollX,
+        windowY: window.scrollY,
+      }
       list.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'auto' })
       list.scrollLeft = 0
     })()`
@@ -594,11 +628,15 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
   )
   const overflowRequired = initial.maximumScroll > 1
   if (!overflowRequired || initial.tabCount < 2) {
+    const viewportScrollRestored = await restoreChallengeCategoryViewport(cdp)
     return {
       ...initial,
       overflowRequired,
-      touchReachedLast: true,
-      keyboardReachedLast: true,
+      interactionSkipped: true,
+      touchReachedLast: false,
+      keyboardReachedLast: false,
+      initialRestored: true,
+      viewportScrollRestored,
     }
   }
 
@@ -725,6 +763,7 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
     })()`
   )
   await sleep(50)
+  const viewportScrollRestored = await restoreChallengeCategoryViewport(cdp)
 
   return {
     ...initial,
@@ -734,6 +773,7 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
     keyboardScrollLeft: keyboard.scrollLeft,
     keyboardReachedLast: keyboard.reachedLast,
     initialRestored,
+    viewportScrollRestored,
   }
 }
 
