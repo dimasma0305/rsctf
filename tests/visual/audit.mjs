@@ -581,7 +581,7 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
   if (!viewport.mobile || viewport.width > 390 || !/^\/games\/\d+\/challenges$/.test(route.path)) return null
 
   const present = await evaluate(cdp, `Boolean(document.querySelector('[data-challenge-category-tabs]'))`)
-  if (!present) return null
+  if (!present) return { present: false }
   await evaluate(
     cdp,
     `(() => {
@@ -608,6 +608,7 @@ async function auditChallengeCategoryScroller(cdp, route, viewport) {
       const rectangle = list.getBoundingClientRect()
       const tabs = [...list.querySelectorAll('[role="tab"]')]
       return {
+        present: true,
         tabCount: tabs.length,
         overflowX: getComputedStyle(list).overflowX,
         bounded:
@@ -791,18 +792,22 @@ function failuresFor(result, expectedPath) {
   }
   if (result.challengeCategoryTabs) {
     const tabs = result.challengeCategoryTabs
-    if (!tabs.bounded) failures.push('challenge category tabs escape the compact viewport')
-    if (result.width.viewport <= 320 && !tabs.overflowRequired) {
-      failures.push('compact challenge category fixture does not overflow, so reachability was not exercised')
-    }
-    if (tabs.overflowRequired && !['auto', 'scroll'].includes(tabs.overflowX)) {
-      failures.push(`challenge category tabs use overflow-x ${tabs.overflowX} instead of a scroller`)
-    }
-    if (tabs.overflowRequired && !tabs.touchReachedLast) {
-      failures.push('final challenge category is not reachable with a touch swipe')
-    }
-    if (tabs.overflowRequired && !tabs.keyboardReachedLast) {
-      failures.push('final challenge category is not reachable with the keyboard')
+    if (!tabs.present) {
+      failures.push('challenge category tabs are absent, so compact reachability was not exercised')
+    } else {
+      if (!tabs.bounded) failures.push('challenge category tabs escape the compact viewport')
+      if (result.width.viewport <= 320 && !tabs.overflowRequired) {
+        failures.push('compact challenge category fixture does not overflow, so reachability was not exercised')
+      }
+      if (tabs.overflowRequired && !['auto', 'scroll'].includes(tabs.overflowX)) {
+        failures.push(`challenge category tabs use overflow-x ${tabs.overflowX} instead of a scroller`)
+      }
+      if (tabs.overflowRequired && !tabs.touchReachedLast) {
+        failures.push('final challenge category is not reachable with a touch swipe')
+      }
+      if (tabs.overflowRequired && !tabs.keyboardReachedLast) {
+        failures.push('final challenge category is not reachable with the keyboard')
+      }
     }
   }
   if (result.unnamedControls.length) failures.push(`${result.unnamedControls.length} unnamed controls`)
