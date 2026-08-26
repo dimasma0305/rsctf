@@ -126,6 +126,7 @@ mod m0103_recent_games_candidates;
 mod m0104_post_feed_order;
 mod m0105_manager_autocomplete_indexes;
 mod m0106_submission_idempotency;
+mod m0107_monitor_history_indexes;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -248,6 +249,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0104_post_feed_order::Migration),
             Box::new(m0105_manager_autocomplete_indexes::Migration),
             Box::new(m0106_submission_idempotency::Migration),
+            Box::new(m0107_monitor_history_indexes::Migration),
         ]
     }
 }

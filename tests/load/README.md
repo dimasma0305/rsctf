@@ -16,6 +16,7 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
+      npm run monitor-history # fixed-rate bounded monitor event/submission history
       npm run details-read  # fixed-rate authenticated challenge-details poll
       npm run donations     # fixed-rate, read-only cached donation-feed smoke
       npm run news-feed     # fixed-rate, conditional homepage-feed smoke
@@ -59,6 +60,21 @@ target additionally requires `ALLOW_REMOTE_ADMIN_DASHBOARD` to equal the exact
 origin. Use identical row count, rate, duration, host, and summary settings for a
 before/after comparison. Retain the first reportable distributions alongside
 application/PostgreSQL resource samples in `REPORT.md`; do not compare peak rps.
+
+### Bounded monitor history
+
+`monitor-history` is read-only and requires a selected game with at least 10,000
+events and 10,000 submissions. It holds a fixed arrival rate across zero,
+minimum, maximum, oversized, literal-wildcard, and long-search pages:
+
+```sh
+MONITOR_HISTORY_GAME=17 RATE=1 DURATION=20s npm run monitor-history
+```
+
+Its baseline gate is zero 5xx, 429, invalid responses, oversized bodies,
+row-limit violations, or dropped iterations, with p95 below 800 ms. Use a
+disposable/local stack when raising `RATE`; the Query policy deliberately limits
+sustained work per monitor identity.
 
 ### Bounded event-security telemetry
 

@@ -1,6 +1,5 @@
 //! Scoreboard, notices, events, participations, and the monitor submission feed + Excel exports.
 use super::*;
-use sea_orm::sea_query::{Alias, Expr, Func};
 
 // ---------------------------------------------------------------------------
 // Notices / Events / Participations
@@ -116,10 +115,9 @@ pub async fn notices(
 
 /// `GET /api/game/{id}/events` — requires Monitor.
 ///
-/// Mirrors RSCTF `GameController.Events` + `GameEventRepository.GetEvents`:
-/// `hideContainer` drops the container-lifecycle events, `search` matches team
-/// name / user name (applied at SQL level, i.e. BEFORE pagination so page counts
-/// stay correct), and `count`/`skip` follow `TakeAllIfZero` (count 0 ⇒ all rows).
+/// `hideContainer` drops container-lifecycle events and `search` matches the
+/// event-scoped team/user/value projection before pagination. Zero/omitted
+/// counts use the bounded default; no live request can materialize all rows.
 pub async fn events(
     State(st): State<SharedState>,
     MonitorUser(_user): MonitorUser,
@@ -132,77 +130,7 @@ pub async fn events(
         return Err(AppError::game_not_started());
     }
 
-    let mut query = game_event::Entity::find().filter(game_event::Column::GameId.eq(id));
-
-    // `hideContainer`: exclude ContainerStart / ContainerDestroy lifecycle events.
-    if q.hide_container {
-        query = query.filter(
-            Condition::all()
-                .add(game_event::Column::EventType.ne(EventType::ContainerStart))
-                .add(game_event::Column::EventType.ne(EventType::ContainerDestroy)),
-        );
-    }
-
-    // `search`: RSCTF matches team name / user name / the `Values` array (raw SQL:
-    // `array_to_string(Values, ' ') ILIKE '%term%'`). `Values` is a Postgres `text[]`
-    // modeled here as `Json`; casting the column to text and matching a lower-cased
-    // `LIKE '%term%'` reproduces the containment on the array's contents. Team/user-name
-    // matches are resolved to ids up front; all predicates are OR-ed at SQL level so
-    // they land BEFORE skip/take (mirrors RSCTF `GameEventRepository.GetEvents`).
-    if let Some(term) = q.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        let team_ids: Vec<i32> = team::Entity::find()
-            .filter(team::Column::Name.contains(term))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .map(|t| t.id)
-            .collect();
-        let user_ids: Vec<Uuid> = user::Entity::find()
-            .filter(user::Column::UserName.contains(term))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .map(|u| u.id)
-            .collect();
-        let values_pat = format!("%{}%", term.to_lowercase());
-        query = query.filter(
-            Condition::any()
-                .add(game_event::Column::TeamId.is_in(team_ids))
-                .add(game_event::Column::UserId.is_in(user_ids))
-                .add(
-                    Expr::expr(Func::lower(
-                        game_event::Column::Values
-                            .into_expr()
-                            .cast_as(Alias::new("text")),
-                    ))
-                    .like(values_pat.as_str()),
-                ),
-        );
-    }
-
-    query = query.order_by_desc(game_event::Column::PublishTimeUtc);
-    // `TakeAllIfZero`: count 0 ⇒ every row; otherwise the requested page (RSCTF caps
-    // count at 100 via `[Range(0,100)]`).
-    let count = q.count.unwrap_or(100);
-    if count > 0 {
-        query = query.offset(q.skip.unwrap_or(0)).limit(count.min(100));
-    }
-    let rows = query.all(&st.db).await?;
-
-    let team_names = team_name_map(&st, rows.iter().map(|e| e.team_id)).await?;
-    let user_ids: Vec<Uuid> = rows.iter().filter_map(|e| e.user_id).collect();
-    let user_names = user_name_map(&st, user_ids.into_iter()).await?;
-
-    let data = rows
-        .into_iter()
-        .map(|e| GameEventModel {
-            event_type: e.event_type,
-            values: e.values,
-            time: e.publish_time_utc,
-            user: e.user_id.and_then(|u| user_names.get(&u).cloned()),
-            team: team_names.get(&e.team_id).cloned(),
-        })
-        .collect();
+    let data = monitor_history::load_events(st.pg(), id, &q).await?;
     Ok(RequestResponse::ok(data))
 }
 
@@ -493,72 +421,8 @@ pub async fn submissions(
 ) -> AppResult<RequestResponse<Vec<SubmissionModel>>> {
     let _ = load_game(&st, id).await?;
 
-    let mut query = submission::Entity::find().filter(submission::Column::GameId.eq(id));
-    if let Some(status) = q.type_filter.as_deref().and_then(parse_answer_result) {
-        query = query.filter(submission::Column::Status.eq(status));
-    }
-
-    // `search`: RSCTF `SubmissionRepository.GetSubmissions` matches team name / user
-    // name / challenge title / answer, applied BEFORE `TakeAllIfZero` (skip/take) so
-    // pagination pages over the filtered set. Resolve the name matches to ids up
-    // front, then OR them with the answer `LIKE` at SQL level.
-    if let Some(term) = q.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        let team_ids: Vec<i32> = team::Entity::find()
-            .filter(team::Column::Name.contains(term))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .map(|t| t.id)
-            .collect();
-        let user_ids: Vec<Uuid> = user::Entity::find()
-            .filter(user::Column::UserName.contains(term))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .map(|u| u.id)
-            .collect();
-        let chal_ids: Vec<i32> = game_challenge::Entity::find()
-            .filter(game_challenge::Column::GameId.eq(id))
-            .filter(game_challenge::Column::Title.contains(term))
-            .all(&st.db)
-            .await?
-            .into_iter()
-            .map(|c| c.id)
-            .collect();
-        query = query.filter(
-            Condition::any()
-                .add(submission::Column::Answer.contains(term))
-                .add(submission::Column::TeamId.is_in(team_ids))
-                .add(submission::Column::UserId.is_in(user_ids))
-                .add(submission::Column::ChallengeId.is_in(chal_ids)),
-        );
-    }
-
-    query = query.order_by_desc(submission::Column::SubmitTimeUtc);
-    // `TakeAllIfZero`: count 0 ⇒ every row; otherwise the requested page (RSCTF caps
-    // count at 100 via `[Range(0,100)]`).
-    let count = q.count.unwrap_or(100);
-    if count > 0 {
-        query = query.offset(q.skip.unwrap_or(0)).limit(count.min(100));
-    }
-    let rows = query.all(&st.db).await?;
-
-    let team_names = team_name_map(&st, rows.iter().map(|s| s.team_id)).await?;
-    let user_ids: Vec<Uuid> = rows.iter().filter_map(|s| s.user_id).collect();
-    let user_names = user_name_map(&st, user_ids.into_iter()).await?;
-    let challenge_titles = challenge_title_map(&st, rows.iter().map(|s| s.challenge_id)).await?;
-
-    let data = rows
-        .into_iter()
-        .map(|s| SubmissionModel {
-            user: s.user_id.and_then(|u| user_names.get(&u).cloned()),
-            team: team_names.get(&s.team_id).cloned(),
-            challenge: challenge_titles.get(&s.challenge_id).cloned(),
-            answer: s.answer,
-            status: s.status,
-            time: s.submit_time_utc,
-        })
-        .collect();
+    let status = q.type_filter.as_deref().and_then(parse_answer_result);
+    let data = monitor_history::load_submissions(st.pg(), id, &q, status).await?;
     Ok(RequestResponse::ok(data))
 }
 

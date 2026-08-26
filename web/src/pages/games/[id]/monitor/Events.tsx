@@ -43,6 +43,7 @@ import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
 import { gameEventMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
+import { LatestRequest } from '@Utils/LatestRequest'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import api, { EventType, GameEvent } from '@Api'
@@ -104,6 +105,7 @@ const Events: FC = () => {
   const [events, setEvents] = useState<GameEvent[]>()
   const monitorHubStop = useRef<Promise<void>>(Promise.resolve())
   const waitForMonitorHubStop = useCallback(() => monitorHubStop.current, [])
+  const eventRequest = useRef(new LatestRequest())
 
   const { game } = useGame(numId)
   const { finished } = useGameStatus(game)
@@ -120,13 +122,19 @@ const Events: FC = () => {
 
   const fetchEvents = useCallback(async () => {
     try {
-      const res = await api.game.gameEvents(numId, {
-        hideContainer: hideContainerEvents,
-        count: ITEM_COUNT_PER_PAGE,
-        skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
-        search: debouncedSearch || undefined,
-      })
-      setEvents(res.data)
+      const res = await eventRequest.current.run((signal) =>
+        api.game.gameEvents(
+          numId,
+          {
+            hideContainer: hideContainerEvents,
+            count: ITEM_COUNT_PER_PAGE,
+            skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
+            search: debouncedSearch || undefined,
+          },
+          { signal }
+        )
+      )
+      if (res) setEvents(res.data)
     } catch (err) {
       showNotification({
         color: 'red',
@@ -143,6 +151,8 @@ const Events: FC = () => {
     if (activePage === 1) {
       newEvents.current = []
     }
+
+    return () => eventRequest.current.cancel()
   }, [activePage, fetchEvents])
 
   useEffect(() => {

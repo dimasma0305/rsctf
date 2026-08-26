@@ -40,6 +40,7 @@ import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { downloadBlob, handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
 import { submissionMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
+import { LatestRequest } from '@Utils/LatestRequest'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
 import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import api, { AnswerResult, Submission } from '@Api'
@@ -82,6 +83,7 @@ const Submissions: FC = () => {
   const [submissions, setSubmissions] = useState<Submission[]>()
   const monitorHubStop = useRef<Promise<void>>(Promise.resolve())
   const waitForMonitorHubStop = useCallback(() => monitorHubStop.current, [])
+  const submissionRequest = useRef(new LatestRequest())
   const [type, setType] = useState<AnswerResult | 'All'>('All')
   const [disabled, setDisabled] = useState(false)
 
@@ -103,13 +105,19 @@ const Submissions: FC = () => {
 
   const fetchSubmissions = useCallback(async () => {
     try {
-      const res = await api.game.gameSubmissions(numId, {
-        type: type === 'All' ? undefined : type,
-        count: ITEM_COUNT_PER_PAGE,
-        skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
-        search: debouncedSearch || undefined,
-      })
-      setSubmissions(res.data)
+      const res = await submissionRequest.current.run((signal) =>
+        api.game.gameSubmissions(
+          numId,
+          {
+            type: type === 'All' ? undefined : type,
+            count: ITEM_COUNT_PER_PAGE,
+            skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
+            search: debouncedSearch || undefined,
+          },
+          { signal }
+        )
+      )
+      if (res) setSubmissions(res.data)
     } catch (err) {
       showNotification({
         color: 'red',
@@ -126,6 +134,8 @@ const Submissions: FC = () => {
     if (activePage === 1) {
       newSubmissions.current = []
     }
+
+    return () => submissionRequest.current.cancel()
   }, [activePage, fetchSubmissions])
 
   useEffect(() => {

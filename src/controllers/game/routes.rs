@@ -28,7 +28,7 @@ fn router_with_domains(
         )
         .route("/api/game/{id}/details", get(game_details_with_challenges))
         .route("/api/game/{id}/notices", get(notices))
-        .route("/api/game/{id}/events", get(events))
+        .route("/api/game/{id}/events", limited(Policy::Query, get(events)))
         .route("/api/game/{id}/participations", get(participations))
         // The scoreboard is fully cache-served (cheap), so the always-on Global
         // window is protection enough — dropping the per-route Query decorator
@@ -40,7 +40,10 @@ fn router_with_domains(
             get(combined_scoreboard),
         )
         .route("/api/game/{id}/scoreboardsheet", get(scoreboard_sheet))
-        .route("/api/game/{id}/submissions", get(submissions))
+        .route(
+            "/api/game/{id}/submissions",
+            limited(Policy::Query, get(submissions)),
+        )
         .route("/api/game/{id}/submissionsheet", get(submission_sheet))
         .route("/api/game/{id}/check", get(join_check))
         .route("/api/game/{id}/vpn/challenge", post(vpn_challenge))

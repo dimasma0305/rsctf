@@ -1,11 +1,8 @@
-//! Ported from RSCTF `Controllers/GameController.cs` (player-facing surface) plus
-//! `Services/FlagChecker.cs` and the Game/Participation/Submission/GameInstance
-//! repositories.
+//! Player-facing game surface and flag-checking behavior ported from RSCTF.
 //!
 //! Route prefix `/api/game`. Covers game listing/details, notices/events,
 //! participations, scoreboard, join, the challenge view, flag SUBMISSION (judged
-//! synchronously here — rsctf has no background channel worker, so the logic of
-//! `GameInstanceRepository.VerifyAnswer` runs inline in `submit`), submission
+//! synchronously here), submission
 //! status, container lifecycle, immutable cheat evidence/reporting, traffic
 //! capture, and writeups.
 
@@ -13,6 +10,9 @@ pub mod ad;
 mod cheat_capabilities;
 mod cheat_identity;
 pub mod koth;
+mod monitor_history;
+#[cfg(test)]
+mod monitor_history_tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
