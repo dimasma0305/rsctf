@@ -29,14 +29,28 @@ static PROOF_SUBJECT_FLIGHT: LazyLock<
 
 fn protected_game_path(path: &str) -> Option<i32> {
     let mut segments = path.split('/').filter(|segment| !segment.is_empty());
-    if segments.next()? != "api" || segments.next()? != "game" {
+    // Axum's registered A&D compatibility surface intentionally contains
+    // mixed-case `/api/Game/{id}/Ad/...` routes. Classify the namespace with
+    // the same ASCII case folding used by the browser proof interceptor so a
+    // compatibility alias can never skip this gate.
+    if !segments.next()?.eq_ignore_ascii_case("api")
+        || !segments.next()?.eq_ignore_ascii_case("game")
+    {
         return None;
     }
-    let game_id = segments.next()?.parse().ok()?;
+    let game_id_segment = segments.next()?;
+    let game_id = game_id_segment
+        .parse()
+        .ok()
+        .filter(|game_id| *game_id > 0)?;
     let suffix = segments.next();
     // Joining, the public event summary, enrollment, and the connectivity check
     // must remain reachable before a participant has a VPN profile.
-    if suffix.is_none() || matches!(suffix, Some("vpn" | "check")) {
+    if suffix.is_none()
+        || suffix.is_some_and(|segment| {
+            segment.eq_ignore_ascii_case("vpn") || segment.eq_ignore_ascii_case("check")
+        })
+    {
         return None;
     }
     Some(game_id)
@@ -177,16 +191,281 @@ pub async fn middleware(
 
 #[cfg(test)]
 mod tests {
-    use super::protected_game_path;
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use axum::body::Body;
+    use axum::http::{header::AUTHORIZATION, Request, StatusCode};
+    use axum::middleware::from_fn_with_state;
+    use axum::Router;
+    use chrono::{Duration as ChronoDuration, Utc};
+    use sea_orm::SqlxPostgresConnector;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use super::{middleware, protected_game_path, subject_cache_key};
+    use crate::app_state::{AppState, SharedState};
+    use crate::models::internal::configs::AppConfig;
+    use crate::services::cache::InMemoryCache;
+    use crate::services::container::NoopContainerManager;
+    use crate::services::event_security::{
+        issue_proof, stamp_hash, EventVpnPolicy, VPN_PROOF_HEADER,
+    };
+    use crate::services::token::TokenService;
+    use crate::storage::LocalBlobStorage;
+    use crate::utils::enums::Role;
+
+    const KEY: &str = "event-vpn-route-test-key-0123456789abcdef";
+    const GAME_ID: i32 = 7;
+
+    const PROTECTED_PATHS: &[&str] = &[
+        // Jeopardy surfaces in lowercase, uppercase and mixed case.
+        "/api/game/7/challenges/9",
+        "/API/GAME/7/CHALLENGES/9",
+        "/Api/GaMe/7/Challenges/9",
+        // The registered A&D compatibility casing plus canonical variants.
+        "/api/game/7/ad/scoreboard",
+        "/API/GAME/7/AD/SCOREBOARD",
+        "/api/Game/7/Ad/Scoreboard",
+        // KotH is served by lowercase and mixed-case A&D aliases.
+        "/api/game/7/ad/koth/scoreboard",
+        "/API/GAME/7/AD/KOTH/SCOREBOARD",
+        "/api/Game/7/Ad/Koth/Scoreboard",
+    ];
+
+    const PUBLIC_PATHS: &[&str] = &[
+        "/api/game/7",
+        "/API/GAME/7",
+        "/api/Game/7/Check",
+        "/API/game/7/VpN/challenge",
+        "/api/game/recent",
+        "/api/edit/games/7",
+    ];
+
+    fn test_state() -> SharedState {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .unwrap();
+        let database = SqlxPostgresConnector::from_sqlx_postgres_pool(pool);
+        let mut config = AppConfig::default();
+        config.event_vpn_credential_key = KEY.to_owned();
+        AppState::new(
+            database,
+            Arc::new(config),
+            Arc::new(InMemoryCache::new()),
+            Arc::new(LocalBlobStorage::new(std::env::temp_dir())),
+            TokenService::new(KEY, 60),
+            Arc::new(NoopContainerManager),
+        )
+    }
+
+    async fn prime_active_policy(st: &SharedState) {
+        let now = Utc::now();
+        let policy = EventVpnPolicy {
+            game_id: GAME_ID,
+            access_required: true,
+            behavior_telemetry_enabled: false,
+            flag_scan_enabled: false,
+            provider_dns_telemetry_enabled: false,
+            source_asn_telemetry_enabled: false,
+            device_sharing_telemetry_enabled: false,
+            revision: 11,
+            start_time_utc: now - ChronoDuration::minutes(1),
+            end_time_utc: now + ChronoDuration::minutes(1),
+            override_active: false,
+        };
+        st.cache
+            .set(
+                &format!("event-vpn-policy:{GAME_ID}"),
+                &serde_json::to_vec(&policy).unwrap(),
+                None,
+            )
+            .await;
+    }
+
+    async fn prime_live_user(st: &SharedState, id: Uuid, role: Role, stamp: &str) {
+        let entry = serde_json::json!({
+            "Found": {
+                "user": { "id": id, "role": role, "name": "route-test" },
+                "security_stamp": stamp,
+            }
+        });
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // Cover a scheduler hop across the one-second live-authorization key
+        // boundary without weakening the production cache's one-second TTL.
+        for window in now.saturating_sub(1)..=now + 2 {
+            st.cache
+                .set(
+                    &format!("_LiveAuthorization_{id}_{window:016x}"),
+                    &serde_json::to_vec(&entry).unwrap(),
+                    Some(Duration::from_secs(5)),
+                )
+                .await;
+        }
+    }
+
+    fn gated_router(st: SharedState) -> Router {
+        Router::new()
+            .fallback(|| async { StatusCode::NO_CONTENT })
+            .layer(from_fn_with_state(st.clone(), middleware))
+            .with_state(st)
+    }
+
+    async fn get(
+        router: &Router,
+        path: &str,
+        token: Option<&str>,
+        proof: Option<&str>,
+    ) -> StatusCode {
+        let mut request = Request::get(path);
+        if let Some(token) = token {
+            request = request.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        if let Some(proof) = proof {
+            request = request.header(VPN_PROOF_HEADER, proof);
+        }
+        router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
 
     #[test]
-    fn only_post_enrollment_game_paths_are_protected() {
-        assert_eq!(protected_game_path("/api/game/7/details"), Some(7));
-        assert_eq!(protected_game_path("/api/game/7/scoreboard"), Some(7));
-        assert_eq!(protected_game_path("/api/game/7"), None);
-        assert_eq!(protected_game_path("/api/game/7/check"), None);
-        assert_eq!(protected_game_path("/api/game/7/vpn/config"), None);
-        assert_eq!(protected_game_path("/api/game/recent"), None);
-        assert_eq!(protected_game_path("/api/edit/games/7"), None);
+    fn route_classification_is_case_insensitive_for_every_game_mode() {
+        for path in PROTECTED_PATHS {
+            assert_eq!(protected_game_path(path), Some(GAME_ID), "{path}");
+        }
+        for path in PUBLIC_PATHS {
+            assert_eq!(protected_game_path(path), None, "{path}");
+        }
+        assert_eq!(protected_game_path("/api/game/0/details"), None);
+        assert_eq!(protected_game_path("/api/game/-7/details"), None);
+        // Axum's integer path extractor accepts a leading plus sign too, so
+        // the middleware must protect the same resolved game id.
+        assert_eq!(protected_game_path("/api/game/+7/details"), Some(GAME_ID));
+        assert_eq!(protected_game_path("/api/games/7/details"), None);
+    }
+
+    #[tokio::test]
+    async fn active_gate_denies_anonymous_and_off_vpn_requests_for_every_casing() {
+        let st = test_state();
+        prime_active_policy(&st).await;
+        let user_id = Uuid::new_v4();
+        let stamp = "accepted-stamp";
+        prime_live_user(&st, user_id, Role::User, stamp).await;
+        let token = st
+            .token
+            .issue(user_id, Role::User, "player", stamp)
+            .unwrap();
+        let router = gated_router(st);
+
+        for path in PROTECTED_PATHS {
+            assert_eq!(
+                get(&router, path, None, None).await,
+                StatusCode::UNAUTHORIZED,
+                "anonymous {path}"
+            );
+            assert_eq!(
+                get(&router, path, Some(&token), None).await,
+                StatusCode::UNAUTHORIZED,
+                "off-VPN {path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_proof_and_monitor_boundaries_hold_for_every_casing() {
+        let st = test_state();
+        prime_active_policy(&st).await;
+
+        let user_id = Uuid::new_v4();
+        let stamp = "accepted-stamp";
+        prime_live_user(&st, user_id, Role::User, stamp).await;
+        let user_token = st
+            .token
+            .issue(user_id, Role::User, "player", stamp)
+            .unwrap();
+        let (proof, claims) = issue_proof(
+            KEY,
+            user_id,
+            GAME_ID,
+            19,
+            Uuid::new_v4(),
+            2,
+            11,
+            stamp_hash(stamp),
+        )
+        .unwrap();
+        let (wrong_game_proof, _) = issue_proof(
+            KEY,
+            user_id,
+            GAME_ID + 1,
+            19,
+            claims.peer_id,
+            2,
+            11,
+            stamp_hash(stamp),
+        )
+        .unwrap();
+        st.cache
+            .set(
+                &subject_cache_key(&claims),
+                b"1",
+                Some(Duration::from_secs(5)),
+            )
+            .await;
+
+        let monitor_id = Uuid::new_v4();
+        let monitor_stamp = "monitor-stamp";
+        prime_live_user(&st, monitor_id, Role::Monitor, monitor_stamp).await;
+        let monitor_token = st
+            .token
+            .issue(monitor_id, Role::Monitor, "monitor", monitor_stamp)
+            .unwrap();
+        let router = gated_router(st);
+
+        for path in PROTECTED_PATHS {
+            assert_eq!(
+                get(&router, path, Some(&user_token), Some(&proof)).await,
+                StatusCode::NO_CONTENT,
+                "accepted proof {path}"
+            );
+            assert_eq!(
+                get(&router, path, Some(&user_token), Some("invalid-proof")).await,
+                StatusCode::UNAUTHORIZED,
+                "invalid proof {path}"
+            );
+            assert_eq!(
+                get(&router, path, Some(&user_token), Some(&wrong_game_proof)).await,
+                StatusCode::UNAUTHORIZED,
+                "wrong-game proof {path}"
+            );
+            assert_eq!(
+                get(&router, path, Some(&monitor_token), None).await,
+                StatusCode::NO_CONTENT,
+                "monitor {path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn enrollment_and_proof_bootstrap_routes_remain_public() {
+        let st = test_state();
+        prime_active_policy(&st).await;
+        let router = gated_router(st);
+
+        for path in PUBLIC_PATHS {
+            assert_eq!(
+                get(&router, path, None, None).await,
+                StatusCode::NO_CONTENT,
+                "{path}"
+            );
+        }
     }
 }

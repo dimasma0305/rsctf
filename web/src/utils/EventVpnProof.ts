@@ -19,13 +19,28 @@ type RetryConfig = InternalAxiosRequestConfig & { rsctfVpnProofRetry?: boolean }
 const proofCache = new Map<number, VpnProof>()
 const proofFlights = new Map<number, Promise<VpnProof>>()
 
+const GAME_ID_MAX = 2_147_483_647
+
+/** Keep this segment contract aligned with `middlewares/event_vpn.rs`. */
+export const protectedEventGamePathId = (path: string): number | null => {
+  const segments = path.split('/').filter(Boolean)
+  if (segments[0]?.toLowerCase() !== 'api' || segments[1]?.toLowerCase() !== 'game') return null
+  // Rust's i32 parser (used by both the middleware and Axum's Path extractor)
+  // accepts an optional leading plus sign.
+  if (!/^\+?\d+$/.test(segments[2] ?? '')) return null
+  const gameId = Number(segments[2])
+  if (!Number.isSafeInteger(gameId) || gameId <= 0 || gameId > GAME_ID_MAX) return null
+  const suffix = segments[3]?.toLowerCase()
+  return !suffix || suffix === 'vpn' || suffix === 'check' ? null : gameId
+}
+
 export const protectedEventGameId = (value: string | undefined): number | null => {
   if (!value) return null
-  const path = new URL(value, window.location.origin).pathname
-  const match = path.match(/^\/api\/game\/(\d+)(?:\/([^/]+))?/i)
-  if (!match || !match[2] || match[2].toLowerCase() === 'vpn' || match[2].toLowerCase() === 'check') return null
-  const gameId = Number(match[1])
-  return Number.isSafeInteger(gameId) ? gameId : null
+  try {
+    return protectedEventGamePathId(new URL(value, window.location.origin).pathname)
+  } catch {
+    return null
+  }
 }
 
 const responseData = <T>(value: unknown): T => {
