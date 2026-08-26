@@ -42,6 +42,7 @@ import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
+import { gameEventMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import api, { EventType, GameEvent } from '@Api'
@@ -190,6 +191,9 @@ const Events: FC = () => {
   const filteredEvents = newEvents.current.filter(
     (e) => !hideContainerEvents || (e.type !== EventType.ContainerStart && e.type !== EventType.ContainerDestroy)
   )
+  const bufferedEvents =
+    activePage === 1 ? unreconciledMonitorRows(filteredEvents, events ?? [], gameEventMonitorIdentity) : []
+  const visibleEvents = [...bufferedEvents, ...(events ?? [])]
 
   return (
     <WithGameMonitor isLoading={!events}>
@@ -251,12 +255,12 @@ const Events: FC = () => {
         }}
       >
         <Stack gap="xs" pr={10} w="100%">
-          {[...(activePage === 1 ? filteredEvents : []), ...(events ?? [])]?.map((event, i) => (
+          {visibleEvents.map((event, i) => (
             <Card
               shadow="sm"
               p="xs"
               key={`${event.time}@${i}`}
-              className={cx({ [tableClasses.fade]: i === 0 && activePage === 1 && filteredEvents.length > 0 })}
+              className={cx({ [tableClasses.fade]: i === 0 && bufferedEvents.length > 0 })}
             >
               <Group wrap="nowrap" align="flex-start" justify="right" gap="sm" w="100%">
                 <Icon {...iconMap.get(event.type)!} />

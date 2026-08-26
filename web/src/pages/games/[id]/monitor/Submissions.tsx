@@ -39,6 +39,7 @@ import { ScrollingText } from '@Components/ScrollingText'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { downloadBlob, handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
+import { submissionMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
 import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import api, { AnswerResult, Submission } from '@Api'
@@ -170,11 +171,13 @@ const Submissions: FC = () => {
   useRevalidateWhenPollingStops(monitorConnectionActive, fetchSubmissions)
 
   const filteredSubs = newSubmissions.current.filter((item) => type === 'All' || item.status === type)
+  const bufferedSubmissions =
+    activePage === 1 ? unreconciledMonitorRows(filteredSubs, submissions ?? [], submissionMonitorIdentity) : []
 
-  const rows = [...(activePage === 1 ? filteredSubs : []), ...(submissions ?? [])].map((item, i) => (
+  const rows = [...bufferedSubmissions, ...(submissions ?? [])].map((item, i) => (
     <Table.Tr
       key={`${item.time}@${i}`}
-      className={cx({ [tableClasses.fade]: i === 0 && activePage === 1 && filteredSubs.length > 0 })}
+      className={cx({ [tableClasses.fade]: i === 0 && bufferedSubmissions.length > 0 })}
     >
       <Table.Td>
         <Icon {...iconMap.get(item.status ?? AnswerResult.FlagSubmitted)!} />
