@@ -10,10 +10,10 @@ import { useLocation, useNavigate, useParams } from 'react-router'
 import { GameProgress } from '@Components/GameProgress'
 import { IconTabs } from '@Components/IconTabs'
 import { RequireRole } from '@Components/WithRole'
-import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
 import { useServerClockReady } from '@Utils/ServerClock'
+import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
-import { useGame, useGameStatus } from '@Hooks/useGame'
+import { useGameAccess, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUserRole } from '@Hooks/useUser'
 import { DetailedGameInfoModel, ParticipationStatus, Role } from '@Api'
@@ -64,7 +64,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
   const navigate = useNavigate()
 
   const { role } = useUserRole()
-  const { game, status } = useGame(numId)
+  const { game, liveReadReady, status } = useGameAccess(numId)
   const { started, finished, now } = useGameStatus(game)
   const clockReady = useServerClockReady()
   const { t } = useTranslation()
@@ -125,7 +125,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
   usePageTitle(game?.title)
 
   useEffect(() => {
-    if (game && clockReady) {
+    if (game && clockReady && liveReadReady) {
       if (location.pathname.includes('monitor') && role === undefined) return
 
       if (!started) {
@@ -190,7 +190,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
         })
       }
     }
-  }, [clockReady, finished, game, location, navigate, numId, role, started, status, t])
+  }, [clockReady, finished, game, liveReadReady, location, navigate, numId, role, started, status, t])
 
   return (
     <Stack pos="relative" mt="md" style={{ containerType: 'inline-size' }}>

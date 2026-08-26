@@ -35,7 +35,8 @@ test('event access, archives, and challenge modals use the server-corrected life
 
   assert.match(tabs, /const \{ started, finished, now \} = useGameStatus\(game\)/)
   assert.match(tabs, /const clockReady = useServerClockReady\(\)/)
-  assert.match(tabs, /if \(game && clockReady\)/)
+  assert.match(tabs, /const \{ game, liveReadReady, status \} = useGameAccess\(numId\)/)
+  assert.match(tabs, /if \(game && clockReady && liveReadReady\)/)
   assert.doesNotMatch(tabs, /const now = dayjs\(\)/)
   assert.match(challengePanel, /const \{ finished \} = useGameStatus\(game\)/)
   assert.doesNotMatch(challengePanel, /dayjs\(game\?\.end\)/)

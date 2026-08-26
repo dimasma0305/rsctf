@@ -9,6 +9,51 @@ import api, { ParticipationStatus } from '@Api'
 
 export const GAME_TIMING_REFRESH_MS = 60_000
 
+type LiveGameReadGeneration = {
+  key: string
+  generation: number
+  validationObserved: boolean
+  ready: boolean
+}
+
+/**
+ * A persisted SWR value may paint immediately, but it is not authoritative
+ * enough for redirects until this mounted game key completes a live read.
+ */
+const useLiveGameReadReady = (key: string, gameId: number | undefined, isValidating: boolean, error: unknown) => {
+  const [state, setState] = useState<LiveGameReadGeneration>({
+    key,
+    generation: 0,
+    validationObserved: false,
+    ready: false,
+  })
+  const responseMatchesKey = gameId !== undefined && key === unstable_serialize(`/api/game/${gameId}`)
+
+  useLayoutEffect(() => {
+    setState((current) => {
+      const active =
+        current.key === key
+          ? current
+          : {
+              key,
+              generation: current.generation + 1,
+              validationObserved: false,
+              ready: false,
+            }
+      const validationObserved = active.validationObserved || isValidating
+      const ready =
+        active.ready ||
+        (validationObserved && !isValidating && error === undefined && key.length > 0 && responseMatchesKey)
+
+      if (active === current && validationObserved === current.validationObserved && ready === current.ready)
+        return current
+      return { ...active, validationObserved, ready }
+    })
+  }, [error, isValidating, key, responseMatchesKey])
+
+  return state.key === key && state.ready && responseMatchesKey
+}
+
 type HttpError = { status?: unknown; response?: { status?: unknown } }
 
 export const shouldRetryGameTimingError = (error: unknown) => {
@@ -244,9 +289,18 @@ export const useAdminDivisions = (numId: number) => {
 
 export const useGame = (numId: number) => {
   const timingConfig = useGameTimingSWRConfig()
-  const { data: game, error, mutate } = api.game.useGameGame(numId, timingConfig, numId > 0)
+  const { data: game, error, isValidating, mutate } = api.game.useGameGame(numId, timingConfig, numId > 0)
 
-  return { game, error, mutate, status: game?.status ?? ParticipationStatus.Unsubmitted }
+  return { game, error, isValidating, mutate, status: game?.status ?? ParticipationStatus.Unsubmitted }
+}
+
+/** Game data plus a per-route live-read gate for lifecycle/access redirects. */
+export const useGameAccess = (numId: number) => {
+  const gameState = useGame(numId)
+  const gameKey = unstable_serialize(numId > 0 ? `/api/game/${numId}` : null)
+  const liveReadReady = useLiveGameReadReady(gameKey, gameState.game?.id, gameState.isValidating, gameState.error)
+
+  return { ...gameState, liveReadReady }
 }
 
 export const useGameScoreboard = (numId: number, isTabActive: boolean = true) => {
