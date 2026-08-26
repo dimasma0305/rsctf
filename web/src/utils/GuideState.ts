@@ -42,6 +42,12 @@ export const resolveTeamGuideAction = (
   }
 }
 
+export const retainTeamGuideActivation = (
+  activeTarget: string | undefined,
+  activatedTarget: string | undefined,
+  tourOpen: boolean
+) => (tourOpen && activeTarget === activatedTarget ? activatedTarget : undefined)
+
 export const resolveGuideIdentity = (userId?: string | null, userErrorStatus?: number): string | null => {
   if (userId) return userId
   return userErrorStatus === 401 ? 'guest' : null

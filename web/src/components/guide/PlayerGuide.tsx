@@ -43,6 +43,7 @@ import {
   resolveGuideIdentity,
   resetGuideProgress,
   resolveTeamGuideAction,
+  retainTeamGuideActivation,
   resumeGuideAfterAccountHandoff,
   setGuideTourStep,
 } from '@Utils/GuideState'
@@ -789,6 +790,10 @@ export const PlayerGuideProvider: FC<PropsWithChildren> = ({ children }) => {
   useEffect(() => {
     setActivatedTourTarget(undefined)
   }, [location.pathname, step.id])
+
+  useEffect(() => {
+    setActivatedTourTarget((current) => retainTeamGuideActivation(activeTourTarget, current, tourOpen))
+  }, [activeTourTarget, tourOpen])
 
   const teamGuideAction = resolveTeamGuideAction(activeTourTarget, activatedTourTarget)
   const teamGuideNeedsKeyboard = teamGuideAction === 'type-create-name' || teamGuideAction === 'paste-join-code'

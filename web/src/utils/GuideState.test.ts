@@ -18,6 +18,7 @@ import {
   persistGuidePreferenceUpdate,
   resolveChallengeDeliveryGuide,
   resolveGuideIdentity,
+  retainTeamGuideActivation,
   resumeGuideAfterAccountHandoff,
   resetGuideProgress,
   resolveTeamGuideAction,
@@ -52,6 +53,13 @@ test('team guide acknowledges an input click and then follows the enabled action
   assert.equal(resolveTeamGuideAction('team-join-code', 'team-join-code'), 'paste-join-code')
   assert.equal(resolveTeamGuideAction('team-create-submit', 'team-create-name'), 'submit-create')
   assert.equal(resolveTeamGuideAction('team-join-submit', 'team-join-code'), 'submit-join')
+})
+
+test('team guide forgets field activation when the tour closes or the target departs', () => {
+  assert.equal(retainTeamGuideActivation('team-create-name', 'team-create-name', true), 'team-create-name')
+  assert.equal(retainTeamGuideActivation('team-create-name', 'team-create-name', false), undefined)
+  assert.equal(retainTeamGuideActivation(undefined, 'team-create-name', true), undefined)
+  assert.equal(retainTeamGuideActivation('team-create-submit', 'team-create-name', true), undefined)
 })
 
 test('guide progress accepts only known feature identifiers without duplicates', () => {

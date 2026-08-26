@@ -286,6 +286,7 @@ test('the novice path teaches every action on the real player controls', () => {
   assert.match(provider, /Good—now paste the invite code/)
   assert.match(provider, /teamGuideNeedsKeyboard/)
   assert.match(provider, /teamGuideKeyboardActive/)
+  assert.match(provider, /retainTeamGuideActivation\(activeTourTarget, current, tourOpen\)/)
   assert.match(provider, /mdiKeyboardOutline/)
   assert.match(provider, /showTargetCursor={!teamGuideKeyboardActive}/)
   assert.match(provider, /Select the highlighted control to continue/)
