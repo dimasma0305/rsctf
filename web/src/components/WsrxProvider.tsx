@@ -6,6 +6,7 @@ import { Wsrx, WsrxError, WsrxErrorKind, WsrxFeature, WsrxInstance, WsrxOptions,
 import { t } from 'i18next'
 import { createContext, useCallback, use, useEffect, useMemo, useRef, useState } from 'react'
 import { showErrorMsg } from '@Utils/Shared'
+import { createWsrxReadinessScheduler } from '@Utils/WsrxReadiness'
 import { useConfig } from '@Hooks/useConfig'
 import { ContainerPortMappingType } from '@Api'
 
@@ -69,8 +70,10 @@ interface WsrxContextType {
   wsrx: Wsrx
   wsrxState: WsrxState
   wsrxInstances: WsrxInstance[]
+  wsrxReadinessExpired: ReadonlySet<string>
   wsrxOptions: CustomWsrxOptions
   doWsrxConnect: () => void
+  retryWsrxReadiness: (remote: string) => void
   setWsrxOptions: (options: CustomWsrxOptions | ((prev: CustomWsrxOptions) => CustomWsrxOptions)) => void
 }
 
@@ -95,6 +98,7 @@ const getWsrxConfig = (options: CustomWsrxOptions) => {
 export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [wsrxState, setWsrxState] = useState<WsrxState>(WsrxState.Invalid)
   const [wsrxInstances, setWsrxInstances] = useState<WsrxInstance[]>([])
+  const [wsrxReadinessExpired, setWsrxReadinessExpired] = useState<ReadonlySet<string>>(() => new Set())
   const platformConfig = useConfig()
 
   const [wsrxOptions, setWsrxOptions] = useLocalStorage<CustomWsrxOptions>({
@@ -104,6 +108,14 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   })
 
   const wsrx = useMemo(() => new Wsrx(getWsrxConfig(wsrxOptions)), [])
+  const readinessScheduler = useMemo(
+    () =>
+      createWsrxReadinessScheduler({
+        sync: () => wsrx.sync(),
+        onExpiredChange: setWsrxReadinessExpired,
+      }),
+    [wsrx]
+  )
   const connectGeneration = useRef(0)
   const connectActive = useRef(false)
   const pendingGeneration = useRef<number | null>(null)
@@ -117,6 +129,7 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       return
     }
     connectActive.current = true
+    readinessScheduler.setEnabled(false)
     void (async () => {
       try {
         await wsrx.connect()
@@ -124,9 +137,11 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         if (wsrx.getState() === WsrxState.Usable) {
           await wsrx.sync()
           retryAttempt.current = 0
+          readinessScheduler.setEnabled(true)
         }
       } catch (err) {
         if (generation !== connectGeneration.current) return
+        readinessScheduler.setEnabled(false)
         if (err instanceof WsrxError && err.kind === WsrxErrorKind.DaemonUnavailable) {
           const attempt = Math.min(retryAttempt.current++, 5)
           const baseDelay = Math.min(8_000, 500 * 2 ** attempt)
@@ -155,11 +170,13 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     () => () => {
       connectGeneration.current += 1
       if (retryTimer.current !== null) clearTimeout(retryTimer.current)
+      readinessScheduler.dispose()
     },
-    [],
+    [readinessScheduler]
   )
 
   useEffect(() => {
+    readinessScheduler.reset()
     if (!wsrxOptions || platformConfig.config.portMapping !== ContainerPortMappingType.PlatformProxy) {
       connectGeneration.current += 1
       pendingGeneration.current = null
@@ -173,8 +190,9 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       connectGeneration.current += 1
       pendingGeneration.current = null
       if (retryTimer.current !== null) clearTimeout(retryTimer.current)
+      readinessScheduler.reset()
     }
-  }, [wsrx, wsrxOptions, doWsrxConnect, platformConfig.config.portMapping])
+  }, [wsrx, wsrxOptions, doWsrxConnect, platformConfig.config.portMapping, readinessScheduler])
 
   useEffect(() => {
     if (platformConfig?.config.title) {
@@ -189,20 +207,25 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     }
   }, [platformConfig?.config.title, setWsrxOptions])
 
-  const updateState = useCallback((newState: WsrxState) => {
-    setWsrxState((prev) => {
-      if (newState === WsrxState.Invalid && prev !== WsrxState.Invalid) {
-        showNotification({
-          id: 'wsrx-daemon-offline',
-          color: 'red',
-          icon: <Icon path={mdiClose} size={1} />,
-          title: t('wsrx.error.daemon_offline.title'),
-          message: t('wsrx.error.daemon_offline.message'),
-        })
-      }
-      return newState
-    })
-  }, [])
+  const updateState = useCallback(
+    (newState: WsrxState) => {
+      if (newState !== WsrxState.Usable) readinessScheduler.setEnabled(false)
+      else if (!connectActive.current) readinessScheduler.setEnabled(true)
+      setWsrxState((prev) => {
+        if (newState === WsrxState.Invalid && prev !== WsrxState.Invalid) {
+          showNotification({
+            id: 'wsrx-daemon-offline',
+            color: 'red',
+            icon: <Icon path={mdiClose} size={1} />,
+            title: t('wsrx.error.daemon_offline.title'),
+            message: t('wsrx.error.daemon_offline.message'),
+          })
+        }
+        return newState
+      })
+    },
+    [readinessScheduler]
+  )
 
   useEffect(() => {
     const id = wsrx.onStateChange(updateState)
@@ -210,22 +233,40 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   }, [wsrx, updateState])
 
   useEffect(() => {
-    const updateInstances = (instances: WsrxInstance[]) => setWsrxInstances([...instances])
+    const updateInstances = (instances: WsrxInstance[]) => {
+      setWsrxInstances([...instances])
+      readinessScheduler.updatePending(
+        instances.filter((instance) => instance.latency === -1).map((instance) => instance.remote)
+      )
+    }
     updateInstances(wsrx.list())
     const id = wsrx.onInstancesChange(updateInstances)
     return () => wsrx.offInstancesChange(id)
-  }, [wsrx])
+  }, [wsrx, readinessScheduler])
+
+  const retryWsrxReadiness = useCallback((remote: string) => readinessScheduler.retry(remote), [readinessScheduler])
 
   const contextValue = useMemo(
     () => ({
       wsrx,
       wsrxState,
       wsrxInstances,
+      wsrxReadinessExpired,
       wsrxOptions,
       doWsrxConnect,
+      retryWsrxReadiness,
       setWsrxOptions,
     }),
-    [wsrx, wsrxState, wsrxInstances, wsrxOptions, doWsrxConnect, setWsrxOptions]
+    [
+      wsrx,
+      wsrxState,
+      wsrxInstances,
+      wsrxReadinessExpired,
+      wsrxOptions,
+      doWsrxConnect,
+      retryWsrxReadiness,
+      setWsrxOptions,
+    ]
   )
 
   return <WsrxContext.Provider value={contextValue}>{children}</WsrxContext.Provider>

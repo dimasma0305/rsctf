@@ -49,7 +49,10 @@ test('instance UI listens for daemon updates and exposes WSS only through the ex
 
   assert.match(provider, /onInstancesChange\(updateInstances\)/)
   assert.match(entry, /phase === 'ready' \? \(localTraffic\?\.local \?\? ''\) :/)
-  assert.match(entry, /setInterval\(\(\) => void wsrx\.sync\(\)/)
+  assert.doesNotMatch(entry, /setInterval\(/)
+  assert.match(provider, /createWsrxReadinessScheduler/)
+  assert.match(provider, /instance\.latency === -1/)
+  assert.match(entry, /wsrxReadinessExpired\.has\(wsrxRemoteEntry\)/)
   assert.match(entry, /type ProxyEntryMode = 'wsrx' \| 'wss'/)
   assert.match(entry, /isWssMode \? wsrxRemoteEntry : localEntry/)
   assert.match(entry, /value=\{proxyEntryMode\}/)

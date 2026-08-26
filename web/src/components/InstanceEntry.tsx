@@ -91,7 +91,8 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const { test: isPreview, label, context, disabled, onCreate, onDestroy } = props
   const showLifecycle = props.lifecycleControls ?? !isPreview
   const supportsExtend = !!props.onExtend
-  const { wsrx, wsrxState, wsrxInstances, wsrxOptions, doWsrxConnect } = useWsrx()
+  const { wsrx, wsrxState, wsrxInstances, wsrxReadinessExpired, wsrxOptions, doWsrxConnect, retryWsrxReadiness } =
+    useWsrx()
 
   const { config } = useConfig()
   const clipBoard = useClipboard()
@@ -167,7 +168,6 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
   const [capabilityAttempt, setCapabilityAttempt] = useState(0)
   const [tunnelRequestComplete, setTunnelRequestComplete] = useState(false)
   const [tunnelRequestFailed, setTunnelRequestFailed] = useState(false)
-  const [tunnelCheckExpired, setTunnelCheckExpired] = useState(false)
   const [tunnelRetrying, setTunnelRetrying] = useState(false)
 
   useEffect(() => {
@@ -175,7 +175,6 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     setCapabilityExpiresAt(null)
     setTunnelRequestComplete(false)
     setTunnelRequestFailed(false)
-    setTunnelCheckExpired(false)
     if (!isPlatformProxy || !instanceEntry) return
 
     let active = true
@@ -212,12 +211,15 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
 
     const requestProxy = async () => {
       try {
-        await wsrx.add({
+        const added = await wsrx.add({
           label,
           remote: wsrxRemoteEntry,
           local: localAddr,
         })
-        if (active) setTunnelRequestComplete(true)
+        if (active) {
+          setTunnelRequestComplete(true)
+          if (capabilityAttempt > 0) retryWsrxReadiness(added.remote)
+        }
       } catch (err) {
         if (active) {
           setTunnelRequestComplete(true)
@@ -231,22 +233,9 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     return () => {
       active = false
     }
-  }, [wsrx, wsrxRemoteEntry, isWsrxUsable, label, t, wsrxOptions.allowLan])
+  }, [capabilityAttempt, isWsrxUsable, label, retryWsrxReadiness, t, wsrx, wsrxOptions.allowLan, wsrxRemoteEntry])
 
-  useEffect(() => {
-    setTunnelCheckExpired(false)
-    if (!localTraffic || localTraffic.latency !== -1) return
-
-    // The desktop daemon calculates latency after returning from POST /pool.
-    // Pull the result promptly instead of waiting for the client's 15-second
-    // background refresh before deciding whether the local address is usable.
-    const refresh = window.setInterval(() => void wsrx.sync().catch(() => undefined), 1500)
-    const timeout = window.setTimeout(() => setTunnelCheckExpired(true), 8000)
-    return () => {
-      window.clearInterval(refresh)
-      window.clearTimeout(timeout)
-    }
-  }, [localTraffic?.latency, localTraffic?.local, wsrx, wsrxRemoteEntry])
+  const tunnelCheckExpired = wsrxReadinessExpired.has(wsrxRemoteEntry)
 
   const phase = getWsrxTunnelPhase({
     isPlatformProxy,
@@ -272,8 +261,6 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     setCapabilityExpiresAt(null)
     setTunnelRequestComplete(false)
     setTunnelRequestFailed(false)
-    setTunnelCheckExpired(false)
-
     if (wsrxState === WsrxState.Usable && localTraffic?.local) {
       try {
         await wsrx.delete(localTraffic.local)
