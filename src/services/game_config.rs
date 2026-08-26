@@ -193,6 +193,9 @@ mod tests {
         let mut config = valid();
         assert!(config.validate().is_ok());
 
+        config.end_time_utc = config.start_time_utc + Duration::seconds(30);
+        assert!(config.validate().is_ok());
+
         config.ad_tick_seconds = Some(30);
         config.ad_min_grace_period_seconds = Some(18);
         assert!(config.validate().is_ok());

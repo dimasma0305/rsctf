@@ -19,13 +19,14 @@ import { mdiCheck, mdiExclamationThick, mdiFileDocumentOutline, mdiFileHidden } 
 import { Icon } from '@mdi/react'
 import cx from 'clsx'
 import dayjs from 'dayjs'
-import { FC, useEffect, useState } from 'react'
+import { FC, useEffect, useMemo, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Markdown } from '@Components/MarkdownRenderer'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { HunamizeSize } from '@Utils/Shared'
 import { OnceSWRConfig } from '@Hooks/useConfig'
+import { useTicker } from '@Hooks/useTicker'
 import api from '@Api'
 import misc from '@Styles/Misc.module.css'
 import uploadClasses from '@Styles/Upload.module.css'
@@ -39,24 +40,27 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
   const { data, mutate } = api.game.useGameGetWriteup(gameId, OnceSWRConfig)
 
   const theme = useMantineTheme()
-  const [ddl, setDdl] = useState(dayjs(wpddl))
+  const ddl = useMemo(() => dayjs(wpddl), [wpddl])
+  const now = useTicker()
   const { locale } = useLanguage()
-  const [disabled, setDisabled] = useState(dayjs().isAfter(wpddl))
+  const [uploading, setUploading] = useState(false)
+  const [deadlineRejected, setDeadlineRejected] = useState(false)
   const [progress, setProgress] = useState(0)
   const noteColor = data?.submitted ? theme.colors.teal[5] : theme.colors.red[5]
+  const deadlinePassed = !ddl.isValid() || now.isAfter(ddl)
+  const disabled = uploading || deadlinePassed || deadlineRejected
 
   const { t } = useTranslation()
 
   useEffect(() => {
-    setDdl(dayjs(wpddl))
-    setDisabled(dayjs().isAfter(wpddl))
-  }, [wpddl])
+    setDeadlineRejected(false)
+  }, [gameId, wpddl])
 
   const onUpload = async (file: File | null) => {
     if (!file || disabled) return
 
     setProgress(0)
-    setDisabled(true)
+    setUploading(true)
 
     try {
       await api.game.gameSubmitWriteup(
@@ -77,12 +81,12 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
         icon: <Icon path={mdiCheck} size={1} />,
       })
       mutate()
-      setDisabled(false)
     } catch (err) {
+      if (isWriteupDeadlineError(err) || dayjs().isAfter(ddl)) setDeadlineRejected(true)
       showErrorMsg(err, t)
     } finally {
       setProgress(0)
-      setDisabled(false)
+      setUploading(false)
     }
   }
 
@@ -178,7 +182,7 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
               color={progress !== 0 ? 'cyan' : theme.primaryColor}
             >
               <div className={uploadClasses.label}>
-                {dayjs().isAfter(ddl)
+                {deadlinePassed || deadlineRejected
                   ? t('game.content.writeup.deadline_exceeded')
                   : progress !== 0
                     ? t('game.button.writeup.uploading')
@@ -198,4 +202,9 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
       </Stack>
     </Modal>
   )
+}
+
+export const isWriteupDeadlineError = (error: unknown): boolean => {
+  const response = (error as { response?: { data?: { status?: unknown; title?: unknown } } })?.response
+  return response?.data?.status === 400 && response.data.title === 'Writeup deadline has passed'
 }

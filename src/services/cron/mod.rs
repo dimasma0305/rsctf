@@ -855,13 +855,17 @@ async fn flush_stale_scoreboards(state: &SharedState) -> AppResult<u64> {
 
     let mut flushed = 0u64;
     for g in &ended {
-        for key in scoreboard_cache_keys(g.id) {
-            state.cache.remove(&key).await;
-        }
+        evict_scoreboard_cache(state.cache.as_ref(), g.id).await;
         flushed += 1;
     }
 
     Ok(flushed)
+}
+
+async fn evict_scoreboard_cache(cache: &dyn crate::services::cache::Cache, game_id: i32) {
+    for key in scoreboard_cache_keys(game_id) {
+        cache.remove(&key).await;
+    }
 }
 
 /// Scoreboard cache entries whose time-dependent view changes at event close.
@@ -877,14 +881,15 @@ fn scoreboard_cache_keys(game_id: i32) -> [String; 12] {
         format!("_KothScoreBoardFrozen_{game_id}"),
         format!("_KothTimeline_{game_id}"),
         format!("_KothTimelineFrozen_{game_id}"),
-        format!("_CombinedScoreBoard_{game_id}"),
-        format!("_CombinedScoreBoardFrozen_{game_id}"),
+        format!("_CombinedScoreBoardByChallenge_{game_id}"),
+        format!("_CombinedScoreBoardByChallengeFrozen_{game_id}"),
     ]
 }
 
 #[cfg(test)]
 mod tests {
-    use super::container_id_is_known;
+    use super::{container_id_is_known, evict_scoreboard_cache, scoreboard_cache_keys};
+    use crate::services::cache::{Cache, InMemoryCache};
 
     #[test]
     fn orphan_identity_matching_accepts_full_and_daemon_short_ids_only() {
@@ -899,5 +904,33 @@ mod tests {
         assert!(container_id_is_known("rsctf-koth-cycle-17", &named));
         assert!(!container_id_is_known("rsctf-koth-cycle", &named));
         assert!(!container_id_is_known("rsctf-koth-cycle-17-extra", &named));
+    }
+
+    #[tokio::test]
+    async fn ended_event_sweep_removes_the_real_combined_scoreboard_keys() {
+        let cache = InMemoryCache::new();
+        let game_id = 17;
+        for key in scoreboard_cache_keys(game_id) {
+            cache.set(&key, b"cached", None).await;
+        }
+        cache.set("unrelated", b"keep", None).await;
+
+        evict_scoreboard_cache(&cache, game_id).await;
+
+        assert!(cache
+            .get("_CombinedScoreBoardByChallenge_17")
+            .await
+            .is_none());
+        assert!(cache
+            .get("_CombinedScoreBoardByChallengeFrozen_17")
+            .await
+            .is_none());
+        for key in scoreboard_cache_keys(game_id) {
+            assert!(cache.get(&key).await.is_none(), "{key} survived");
+        }
+        assert_eq!(
+            cache.get("unrelated").await.as_deref(),
+            Some(b"keep".as_slice())
+        );
     }
 }
