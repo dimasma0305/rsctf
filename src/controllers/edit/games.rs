@@ -577,6 +577,12 @@ pub async fn update_game(
     if deletion_pending {
         return Err(AppError::conflict("Game is being deleted"));
     }
+    let current_freeze_time: Option<DateTime<Utc>> =
+        sqlx::query_scalar(r#"SELECT freeze_time_utc FROM "Games" WHERE id = $1"#)
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
 
     let current_vpn_policy: (bool, bool, bool, bool, bool, bool, i64) = sqlx::query_as(
         r#"SELECT vpn_access_required, vpn_behavior_telemetry_enabled,
@@ -675,6 +681,8 @@ pub async fn update_game(
     )?;
     let schedule_changed =
         model.start_time_utc != current_start_time || model.end_time_utc != current_end_time;
+    let delivery_schedule_changed =
+        schedule_changed || model.freeze_time_utc != current_freeze_time;
     let config_snapshotted = if schedule_changed {
         let config_snapshotted: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(SELECT 1 FROM "KothOfficialConfigs" WHERE game_id = $1)"#,
@@ -805,6 +813,17 @@ pub async fn update_game(
     .execute(&mut **tx)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if delivery_schedule_changed {
+        crate::services::discord_webhook::reschedule_game_blood_notices(
+            tx,
+            id,
+            current_freeze_time,
+            current_end_time,
+            model.freeze_time_utc,
+            model.end_time_utc,
+        )
+        .await?;
+    }
     if let Some(reason) = vpn_policy_reason {
         let old_policy = serde_json::json!({
             "accessRequired": current_vpn_policy.0,

@@ -171,6 +171,13 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
         );
         CREATE INDEX ix_discord_webhook_outbox_game_notice
           ON "DiscordWebhookOutbox" (game_id, notice_id);
+        CREATE INDEX ix_discord_webhook_outbox_pending
+          ON "DiscordWebhookOutbox" (available_at_utc, notice_id)
+          WHERE delivered_at_utc IS NULL AND dead_at_utc IS NULL;
+        CREATE INDEX ix_discord_webhook_outbox_terminal
+          ON "DiscordWebhookOutbox"
+             ((COALESCE(delivered_at_utc, dead_at_utc)), notice_id)
+          WHERE delivered_at_utc IS NOT NULL OR dead_at_utc IS NOT NULL;
         "#,
     )
     .execute(&pool)
@@ -255,6 +262,37 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
     }
     transaction.commit().await.unwrap();
 
+    let frozen_was_scheduled_once: bool = sqlx::query_scalar(
+        r#"SELECT job.available_at_utc = game.end_time_utc
+             FROM "DiscordWebhookOutbox" job
+             JOIN "Games" game ON game.id = job.game_id
+            WHERE job.notice_id = 2"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(frozen_was_scheduled_once);
+
+    sqlx::query(
+        r#"UPDATE "DiscordWebhookOutbox"
+              SET available_at_utc = clock_timestamp() - INTERVAL '1 second'
+            WHERE notice_id = 2"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(defer_frozen(&pool, 256).await.unwrap(), 1);
+    let repaired_to_current_end: bool = sqlx::query_scalar(
+        r#"SELECT job.available_at_utc = game.end_time_utc
+             FROM "DiscordWebhookOutbox" job
+             JOIN "Games" game ON game.id = job.game_id
+            WHERE job.notice_id = 2"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(repaired_to_current_end);
+
     let (lease_token, jobs) = claim_pending(&pool, 16).await.unwrap();
     assert_eq!(
         jobs.iter().map(|job| job.notice_id).collect::<Vec<_>>(),
@@ -308,14 +346,91 @@ async fn outbox_enqueue_claim_freeze_and_completion_are_durable() {
     .await
     .unwrap();
     assert!(delivered);
-    let frozen_pending: bool = sqlx::query_scalar(
-        r#"SELECT delivered_at_utc IS NULL AND dead_at_utc IS NULL
-             FROM "DiscordWebhookOutbox" WHERE notice_id = 2"#,
+
+    let (old_freeze, old_end): (Option<chrono::DateTime<Utc>>, chrono::DateTime<Utc>) =
+        sqlx::query_as(r#"SELECT freeze_time_utc, end_time_utc FROM "Games" WHERE id = 2"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut schedule_edit = pool.begin().await.unwrap();
+    sqlx::query(r#"UPDATE "Games" SET freeze_time_utc = NULL WHERE id = 2"#)
+        .execute(&mut *schedule_edit)
+        .await
+        .unwrap();
+    assert_eq!(
+        reschedule_game_blood_notices(&mut schedule_edit, 2, old_freeze, old_end, None, old_end,)
+            .await
+            .unwrap(),
+        1
+    );
+    schedule_edit.commit().await.unwrap();
+    let (released_lease, released_jobs) = claim_pending(&pool, 16).await.unwrap();
+    assert_eq!(
+        released_jobs
+            .iter()
+            .map(|job| job.notice_id)
+            .collect::<Vec<_>>(),
+        vec![2, 5],
+        "the newly unfrozen event and an independent ordered successor may run together"
+    );
+    let released_frozen = released_jobs.iter().find(|job| job.notice_id == 2).unwrap();
+    let ordered_third = released_jobs.iter().find(|job| job.notice_id == 5).unwrap();
+    finish_job(
+        &pool,
+        released_frozen,
+        released_lease,
+        DeliveryDisposition::Dead {
+            status: Some(404),
+            reason: "test_terminal_dead_letter",
+        },
+    )
+    .await
+    .unwrap();
+    finish_job(
+        &pool,
+        ordered_third,
+        released_lease,
+        DeliveryDisposition::Delivered { status: 200 },
+    )
+    .await
+    .unwrap();
+
+    sqlx::query(
+        r#"UPDATE "DiscordWebhookOutbox"
+              SET delivered_at_utc = clock_timestamp() - INTERVAL '8 days'
+            WHERE notice_id IN (1, 6)"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"UPDATE "DiscordWebhookOutbox"
+              SET dead_at_utc = clock_timestamp() - INTERVAL '8 days'
+            WHERE notice_id = 2"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(purge_terminal(&pool, 2).await.unwrap(), 2);
+    let expired_remaining: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM "DiscordWebhookOutbox"
+            WHERE COALESCE(delivered_at_utc, dead_at_utc)
+                  < clock_timestamp() - INTERVAL '7 days'"#,
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert!(frozen_pending);
+    assert_eq!(expired_remaining, 1, "cleanup must obey its batch limit");
+    assert_eq!(purge_terminal(&pool, 2).await.unwrap(), 1);
+    let recent_terminal_retained: bool = sqlx::query_scalar(
+        r#"SELECT delivered_at_utc IS NOT NULL
+             FROM "DiscordWebhookOutbox" WHERE notice_id = 4"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(recent_terminal_retained);
 
     sqlx::query(r#"DELETE FROM "Games" WHERE id = 1"#)
         .execute(&pool)

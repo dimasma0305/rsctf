@@ -23,7 +23,11 @@ const MAX_CONCURRENT_DELIVERIES: usize = 4;
 const MAX_ATTEMPTS: i32 = 8;
 const LEASE_SECONDS: i64 = 30;
 const MAX_RETRY_SECONDS: u64 = 300;
+const FROZEN_DEFER_LIMIT: i64 = 256;
+const TERMINAL_CLEANUP_LIMIT: i64 = 256;
+const TERMINAL_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 static HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -340,7 +344,13 @@ pub async fn enqueue_blood_notice(
     let inserted = sqlx::query(
         r#"INSERT INTO "DiscordWebhookOutbox"
                (notice_id, game_id, available_at_utc)
-           SELECT $1, game.id, $3
+           SELECT $1, game.id,
+                  CASE WHEN game.freeze_time_utc IS NOT NULL
+                                  AND $3 >= game.freeze_time_utc
+                                  AND $3 < game.end_time_utc
+                       THEN game.end_time_utc
+                       ELSE $3
+                  END
              FROM "Games" game
             WHERE game.id = $2
               AND game.discord_webhook IS NOT NULL
@@ -354,6 +364,118 @@ pub async fn enqueue_blood_notice(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(inserted.rows_affected() == 1)
+}
+
+/// Recompute pending delivery times when an organizer edits the event freeze
+/// window. Only notices covered by the old or new freeze are touched, so
+/// unrelated retry backoff remains intact.
+pub async fn reschedule_game_blood_notices(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    game_id: i32,
+    old_freeze_time_utc: Option<DateTime<Utc>>,
+    old_end_time_utc: DateTime<Utc>,
+    new_freeze_time_utc: Option<DateTime<Utc>>,
+    new_end_time_utc: DateTime<Utc>,
+) -> AppResult<u64> {
+    let affected = sqlx::query(
+        r#"UPDATE "DiscordWebhookOutbox" job
+              SET available_at_utc =
+                  CASE WHEN $4 IS NOT NULL
+                                  AND notice.publish_time_utc >= $4
+                                  AND notice.publish_time_utc < $5
+                       THEN $5
+                       ELSE LEAST(job.available_at_utc, clock_timestamp())
+                  END
+             FROM "GameNotices" notice
+            WHERE job.notice_id = notice.id
+              AND job.game_id = $1
+              AND job.delivered_at_utc IS NULL
+              AND job.dead_at_utc IS NULL
+              AND (
+                  ($2 IS NOT NULL
+                   AND notice.publish_time_utc >= $2
+                   AND notice.publish_time_utc < $3)
+                  OR
+                  ($4 IS NOT NULL
+                   AND notice.publish_time_utc >= $4
+                   AND notice.publish_time_utc < $5)
+              )
+              AND job.available_at_utc IS DISTINCT FROM
+                  CASE WHEN $4 IS NOT NULL
+                                  AND notice.publish_time_utc >= $4
+                                  AND notice.publish_time_utc < $5
+                       THEN $5
+                       ELSE LEAST(job.available_at_utc, clock_timestamp())
+                  END"#,
+    )
+    .bind(game_id)
+    .bind(old_freeze_time_utc)
+    .bind(old_end_time_utc)
+    .bind(new_freeze_time_utc)
+    .bind(new_end_time_utc)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(affected.rows_affected())
+}
+
+/// Repair stale due rows without scanning or rewriting an unbounded batch.
+/// This is a fail-safe for a solve racing a schedule edit or an interrupted
+/// older deployment; normal enqueue and edit paths already schedule precisely.
+async fn defer_frozen(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
+    let affected = sqlx::query(
+        r#"WITH observed_clock AS MATERIALIZED (
+               SELECT clock_timestamp() AS db_now
+           ), due AS MATERIALIZED (
+               SELECT job.notice_id, game.end_time_utc
+                 FROM "DiscordWebhookOutbox" job
+                 JOIN "Games" game ON game.id = job.game_id
+                 CROSS JOIN observed_clock
+                WHERE job.delivered_at_utc IS NULL
+                  AND job.dead_at_utc IS NULL
+                  AND job.available_at_utc <= observed_clock.db_now
+                  AND game.freeze_time_utc IS NOT NULL
+                  AND observed_clock.db_now >= game.freeze_time_utc
+                  AND observed_clock.db_now < game.end_time_utc
+                ORDER BY job.available_at_utc, job.notice_id
+                LIMIT $1
+                FOR UPDATE OF job SKIP LOCKED
+           )
+           UPDATE "DiscordWebhookOutbox" job
+              SET available_at_utc = due.end_time_utc
+             FROM due
+            WHERE job.notice_id = due.notice_id"#,
+    )
+    .bind(limit.clamp(1, 1_024))
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(affected.rows_affected())
+}
+
+/// Retain a short diagnostic window, then delete terminal rows in small,
+/// indexed batches so the outbox cannot grow with the lifetime of the server.
+async fn purge_terminal(pool: &sqlx::PgPool, limit: i64) -> AppResult<u64> {
+    let affected = sqlx::query(
+        r#"WITH expired AS MATERIALIZED (
+               SELECT notice_id
+                 FROM "DiscordWebhookOutbox"
+                WHERE COALESCE(delivered_at_utc, dead_at_utc)
+                      < clock_timestamp() - ($2::bigint * INTERVAL '1 second')
+                ORDER BY COALESCE(delivered_at_utc, dead_at_utc), notice_id
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+           )
+           DELETE FROM "DiscordWebhookOutbox" job
+            USING expired
+            WHERE job.notice_id = expired.notice_id"#,
+    )
+    .bind(limit.clamp(1, 1_024))
+    .bind(TERMINAL_RETENTION_SECONDS)
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(affected.rows_affected())
 }
 
 async fn expire_exhausted(pool: &sqlx::PgPool) -> AppResult<u64> {
@@ -544,6 +666,7 @@ async fn deliver_one(pool: &sqlx::PgPool, lease_token: Uuid, job: LeasedDelivery
 /// outbound I/O.
 pub async fn reconcile(pool: &sqlx::PgPool, limit: i64) -> AppResult<usize> {
     expire_exhausted(pool).await?;
+    defer_frozen(pool, FROZEN_DEFER_LIMIT).await?;
     let (lease_token, jobs) = claim_pending(pool, limit).await?;
     let claimed = jobs.len();
     let results = stream::iter(
@@ -566,9 +689,17 @@ pub fn start_reconciler(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut next_cleanup = tokio::time::Instant::now();
         loop {
             if *shutdown.borrow() {
                 break;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= next_cleanup {
+                if let Err(error) = purge_terminal(state.pg(), TERMINAL_CLEANUP_LIMIT).await {
+                    tracing::error!(%error, "Discord webhook retention cleanup failed");
+                }
+                next_cleanup = now + CLEANUP_INTERVAL;
             }
             if let Err(error) = reconcile(state.pg(), CLAIM_LIMIT).await {
                 tracing::error!(%error, "Discord webhook reconciler pass failed");
