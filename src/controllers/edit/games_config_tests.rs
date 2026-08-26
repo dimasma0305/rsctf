@@ -48,6 +48,30 @@ fn game_info_server_time_is_response_owned_and_uses_unix_milliseconds() {
 }
 
 #[test]
+fn game_delete_stamps_server_time_after_delayed_teardown() {
+    let source = include_str!("games.rs");
+    let delete_start = source
+        .find("pub async fn delete_game(")
+        .expect("delete_game controller exists");
+    let delete_end = source[delete_start..]
+        .find("/// `GET /api/edit/games/{id}/HashSalt`")
+        .map(|offset| delete_start + offset)
+        .expect("delete_game controller boundary exists");
+    let delete = &source[delete_start..delete_end];
+    let final_teardown = delete
+        .rfind("flush_game_scoreboards(&st, id).await;")
+        .expect("delete_game completes its final cache teardown");
+    let response_stamp = delete
+        .rfind("GameInfoModel::from_game(&g)")
+        .expect("delete_game stamps its response model");
+
+    assert!(
+        response_stamp > final_teardown,
+        "delete_game captured serverTime before its slow teardown completed"
+    );
+}
+
+#[test]
 fn clone_challenge_defaults_match_non_nullable_schema_defaults() {
     use crate::models::data::game_challenge;
     use crate::utils::enums::{
