@@ -38,14 +38,24 @@ test('shared ticker cancels alignment and survives rapid visibility changes', as
     browser.document.body.append(secondContainer)
     const secondRoot = createRoot(secondContainer)
     await act(async () => secondRoot.render(createElement(Probe)))
-    assert.equal(secondContainer.textContent, initialValue)
+    assert.notEqual(secondContainer.textContent, initialValue)
+    assert.equal(secondContainer.textContent, String(startedAt + 2_000))
+
+    // Resuming a hidden page must synchronously replace the paused snapshot;
+    // deadline controls cannot wait for the next aligned tick to become safe.
+    await act(async () => setHidden(true))
+    const pausedValue = secondContainer.textContent
+    await act(async () => context.mock.timers.tick(2_000))
+    assert.equal(secondContainer.textContent, pausedValue)
+    await act(async () => setHidden(false))
+    assert.equal(secondContainer.textContent, String(startedAt + 4_000))
 
     // hide -> show before alignment used to queue two callbacks. Hiding again
     // cleared only the last interval, so the orphan kept ticking in background.
-    setHidden(true)
-    setHidden(false)
+    await act(async () => setHidden(true))
+    await act(async () => setHidden(false))
     await act(async () => context.mock.timers.tick(1_000))
-    setHidden(true)
+    await act(async () => setHidden(true))
     const hiddenValue = secondContainer.textContent
     await act(async () => context.mock.timers.tick(2_000))
     assert.equal(secondContainer.textContent, hiddenValue)

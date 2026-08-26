@@ -40,15 +40,18 @@ interface ChallengeCardProps {
   rating?: { likes: number; dislikes: number }
 }
 
-export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps) => {
-  const { challenge, solved, onClick, contextLabel, iconMap, teamId, colorMap, rating } = props
+interface ChallengeCardContentProps extends ChallengeCardProps {
+  deadlinePassed: boolean
+}
+
+const ChallengeCardContent: FC<ChallengeCardContentProps> = (props) => {
+  const { challenge, solved, onClick, contextLabel, iconMap, teamId, colorMap, rating, deadlinePassed } = props
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
   const cateData = challengeCategoryLabelMap.get(challenge.category!)
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
   const { locale } = useLanguage()
   const { t } = useTranslation()
-  const now = useTicker()
   // A&D AND KotH both run on the live-scoring engine — neither has a static
   // "challenge.score" worth showing. Without including KotH here, the card
   // would print the default OriginalScore (e.g. "100 pts") which is meaningless
@@ -60,8 +63,6 @@ export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps)
   const isAdEngine = challenge.type === ChallengeType.AttackDefense || challenge.type === ChallengeType.KingOfTheHill
   const isKoth = challenge.type === ChallengeType.KingOfTheHill
   const isAttackDefense = challenge.type === ChallengeType.AttackDefense
-
-  const isFaded = challenge.deadline ? now.isAfter(dayjs(challenge.deadline)) : false
 
   const ratingBadge = useMemo(() => {
     if (!rating) return null
@@ -78,7 +79,7 @@ export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps)
       onClick={onClick}
       shadow="sm"
       className={cx(misc.hoverCard, classes.root)}
-      data-faded={solved || isFaded || undefined}
+      data-faded={solved || deadlinePassed || undefined}
       data-guide="challenge-card"
       data-no-move
     >
@@ -250,3 +251,15 @@ export const ChallengeCard: FC<ChallengeCardProps> = (props: ChallengeCardProps)
     </Card>
   )
 }
+
+const DeadlineAwareChallengeCard: FC<ChallengeCardProps> = (props) => {
+  const now = useTicker()
+  return <ChallengeCardContent {...props} deadlinePassed={now.isAfter(dayjs(props.challenge.deadline))} />
+}
+
+export const ChallengeCard: FC<ChallengeCardProps> = (props) =>
+  props.challenge.deadline ? (
+    <DeadlineAwareChallengeCard {...props} />
+  ) : (
+    <ChallengeCardContent {...props} deadlinePassed={false} />
+  )

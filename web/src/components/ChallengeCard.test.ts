@@ -36,28 +36,28 @@ test('challenge card fades when its deadline passes while mounted', async (conte
   const { createRoot } = await import('react-dom/client')
   const root = createRoot(container)
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+  const renderCard = (cardChallenge: ChallengeInfo) =>
+    createElement(
+      HeadlessMantineProvider,
+      null,
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          LanguageProvider,
+          null,
+          createElement(ChallengeCard, {
+            challenge: cardChallenge,
+            iconMap: new Map<SubmissionType, undefined>(),
+            colorMap: new Map<SubmissionType, undefined>(),
+          })
+        )
+      )
+    )
 
   try {
     await act(async () => {
-      root.render(
-        createElement(
-          HeadlessMantineProvider,
-          null,
-          createElement(
-            I18nextProvider,
-            { i18n },
-            createElement(
-              LanguageProvider,
-              null,
-              createElement(ChallengeCard, {
-                challenge,
-                iconMap: new Map<SubmissionType, undefined>(),
-                colorMap: new Map<SubmissionType, undefined>(),
-              })
-            )
-          )
-        )
-      )
+      root.render(renderCard(challenge))
     })
     const card = container.querySelector('article')
     assert.ok(card)
@@ -65,6 +65,21 @@ test('challenge card fades when its deadline passes while mounted', async (conte
 
     await act(async () => context.mock.timers.tick(2_500))
     assert.equal(card.getAttribute('data-faded'), 'true')
+
+    let staticDeadlineReads = 0
+    const staticChallenge = { ...challenge, id: 8, title: 'No deadline' }
+    Object.defineProperty(staticChallenge, 'deadline', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        staticDeadlineReads += 1
+        return undefined
+      },
+    })
+    await act(async () => root.render(renderCard(staticChallenge)))
+    const readsAfterRender = staticDeadlineReads
+    await act(async () => context.mock.timers.tick(3_000))
+    assert.equal(staticDeadlineReads, readsAfterRender, 'static cards must not subscribe to the one-second ticker')
   } finally {
     await act(async () => root.unmount())
     context.mock.timers.reset()

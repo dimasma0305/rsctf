@@ -85,7 +85,7 @@ export const guideTourTargetSelector = ({
       if (!signedIn)
         return isAccountPage ? `${accountPageTargets}, ${ACCOUNT_NAVIGATION_TARGETS}` : ACCOUNT_NAVIGATION_TARGETS
       return isTeamPage
-        ? '[data-guide="team-create-form"], [data-guide="team-join-form"], [data-guide="team-create"], [data-guide="team-join"], [data-guide="team-navigation"]'
+        ? '[data-guide="team-create-workflow"], [data-guide="team-join-workflow"], [data-guide="team-create"], [data-guide="team-join"], [data-guide="team-navigation"]'
         : TEAM_NAVIGATION_TARGETS
     case 'events':
       if (isGameDetailPage) {
@@ -258,6 +258,9 @@ export const nextGuideStepForTarget = (currentStep: GuideTourStep, target: strin
   const currentIndex = GUIDE_TOUR_STEPS.indexOf(currentStep)
   return GUIDE_TOUR_STEPS[currentIndex + 1] ?? null
 }
+
+export const completeTeamGuide = (preferences: GuidePreferences): GuidePreferences =>
+  preferences.activeTourStep === 'team' ? setGuideTourStep(preferences, 'events') : preferences
 
 export const markGuideFeatureSeen = (preferences: GuidePreferences, feature: GuideFeature): GuidePreferences => ({
   ...preferences,

@@ -13,9 +13,19 @@ import { isWriteupDeadlineError, WriteupSubmitModal } from './WriteupSubmitModal
 const deadlineError = {
   response: { status: 400, data: { status: 400, title: 'Writeup deadline has passed' } },
 }
+const transactionalDeadlineError = {
+  response: { status: 409, data: { status: 409, title: 'Writeup submission is no longer eligible' } },
+}
 
 test('writeup deadline errors have a stable client classification', () => {
   assert.equal(isWriteupDeadlineError(deadlineError), true)
+  assert.equal(isWriteupDeadlineError(transactionalDeadlineError), true)
+  assert.equal(
+    isWriteupDeadlineError({
+      response: { status: 409, data: { title: 'Writeup submission is no longer eligible' } },
+    }),
+    true
+  )
   assert.equal(isWriteupDeadlineError({ response: { data: { status: 400, title: 'Invalid PDF' } } }), false)
 })
 
@@ -68,7 +78,7 @@ test('writeup upload locks at the live deadline and stays locked after authorita
     mutate: async () => undefined,
   })) as typeof api.game.useGameGetWriteup
   gameApi.gameSubmitWriteup = (async () => {
-    throw deadlineError
+    throw transactionalDeadlineError
   }) as typeof api.game.gameSubmitWriteup
   const warning = context.mock.method(console, 'warn', () => undefined)
   const { createRoot } = await import('react-dom/client')
@@ -112,6 +122,12 @@ test('writeup upload locks at the live deadline and stays locked after authorita
     assert.equal(uploadButton()?.disabled, false)
     await act(async () => context.mock.timers.tick(2_500))
     assert.equal(uploadButton()?.disabled, true)
+    assert.match(uploadButton()?.textContent ?? '', /Deadline exceeded/)
+
+    await act(async () => root.unmount())
+    context.mock.timers.tick(5_000)
+    root = await renderModal(Date.now() - 1_000)
+    assert.equal(uploadButton()?.disabled, true, 'a newly mounted modal must sample the current time immediately')
     assert.match(uploadButton()?.textContent ?? '', /Deadline exceeded/)
 
     await act(async () => root.unmount())
