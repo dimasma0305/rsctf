@@ -6,7 +6,7 @@
  * Arcade / anime "cyber arena" design & animation by lawbyte
  * (https://github.com/lawbyte). Ported into the platform here and wired to the
  * live plain-WebSocket attack feed (/hub/attack/ws?game={id}) plus the public
- * A&D / KotH scoreboards (/api/Game/{id}/Ad/Scoreboard, .../Ad/Koth/Scoreboard).
+ * Jeopardy, A&D, KotH, and Overall scoreboards.
  *
  * The whole piece is a self-contained imperative SVG + canvas scene with its
  * own full-page CSS, so it is mounted into a Shadow DOM: that isolates its
@@ -20,6 +20,15 @@ import { apiJsonFetch as fetch } from '@Utils/ApiJsonFetch'
 import { epochProgress } from '@Utils/epochProgress'
 import type { AdScoreboardModel } from '@Api'
 import { createJeopardy, type JeopCategory } from './arenaJeopardy'
+import {
+  arenaHasEnded,
+  arenaRoutes,
+  arenaSecondsRemaining,
+  initialArenaMatchTiming,
+  observeArenaGameTiming,
+  previewArenaMatchTiming,
+  resolveArenaFinalState,
+} from './arenaLifecycle'
 import { createSoundEngine } from './audio'
 import { createFbRenderer } from './fbRenderer'
 import { createFxRenderer } from './fxRenderer'
@@ -617,6 +626,7 @@ const ARENA_BODY = `
 /* self-contained DOM/canvas scene, not app data flow.                        */
 /* -------------------------------------------------------------------------- */
 function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => void {
+  const routes = arenaRoutes(gameId)
   let killed = false
   const timers: number[] = []
   let raf = 0
@@ -716,15 +726,14 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   // (5s); the FIRST BLOOD title lands at ~15% (=750ms), so onImpact/shake fire at slam=750.
   const FB = { total: 5000, slam: 750, soundDelay: 0, preroll: 5000 }
 
-  // match clock + scoreboard freeze + winner.
-  // live: gameEndMs = real EndTimeUtc; freeze driven by the board's isFrozenView.
-  // preview: gameEndMs = boot + MATCH_SECONDS; freeze in the final FREEZE_SECONDS.
+  // Match clock + scoreboard freeze + winner. Live timing is anchored by the
+  // response-owned server clock; preview timing intentionally follows this browser.
   const MATCH_SECONDS = 360,
     FREEZE_SECONDS = 90
   let frozen = false,
     matchOver = false,
-    endingMatch = false,
-    gameEndMs: number | null = null
+    endingMatch = false
+  let matchTiming = initialArenaMatchTiming()
   let nextEndCheckMs = 0
   // while frozen the board shows the snapshot taken at freeze; real values keep updating underneath.
   // RANKING panel mode — switchable between the three score boards.
@@ -1817,7 +1826,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   const renderAllScores = () => TEAMS.forEach(renderScore)
 
   /* -------- scoreboard freeze + match winner -------- */
-  const secsLeft = () => (gameEndMs != null ? Math.max(0, Math.round((gameEndMs - Date.now()) / 1000)) : 0)
+  const secsLeft = () => arenaSecondsRemaining(matchTiming)
   function enterFreeze() {
     if (frozen) return
     frozen = true
@@ -1881,35 +1890,23 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       updatePreviewScores(true)
     } else {
       try {
-        const finalBoard = await fetchJSON<AdScoreboardModel>(`/api/Game/${gameId}/Ad/Scoreboard`)
+        // Refresh the response-stamped schedule before reading final standings.
+        // This closes the race where an organizer extends an event as the old
+        // deadline fires in an already-open arena.
+        const game: any = await fetchJSON(routes.game)
         if (killed) return
-        // Recheck a possible organizer extension before committing the podium.
-        try {
-          const game: any = await fetchJSON(`/api/Game/${gameId}`)
-          if (game?.end) gameEndMs = new Date(game.end).getTime()
-        } catch {}
-        if (gameEndMs != null && Date.now() < gameEndMs - 1500) return
-        const pureKoth = SERVICES.length === 0 && HILLS.length > 0
-        if (pureKoth) {
-          const finalKoth: any = await fetchJSON(`/api/Game/${gameId}/Ad/Koth/Scoreboard`)
-          if (!finalKoth?.fullySettled) {
-            const settling = $('fzCount')
-            if (settling) settling.textContent = 'FINAL EPOCH SETTLING'
-            return
-          }
-          applyOfficialKothBoard(finalKoth)
-        } else if (!finalBoard.fullySettled) {
+        matchTiming = observeArenaGameTiming(matchTiming, game)
+        if (!arenaHasEnded(matchTiming)) return
+        const finalBoard: any = await fetchJSON(routes.combinedScoreboard)
+        if (killed) return
+        const finalState = resolveArenaFinalState(matchTiming, finalBoard)
+        if (finalState === 'playing') return
+        if (finalState === 'settling') {
           const settling = $('fzCount')
           if (settling) settling.textContent = 'FINAL EPOCH SETTLING'
           return
-        } else if (finalBoard.started) {
-          applyOfficialAdBoard(finalBoard)
-        } else {
-          const finalKoth: any = await fetchJSON(`/api/Game/${gameId}/Ad/Koth/Scoreboard`)
-          const generatedAt = new Date(finalKoth?.generatedAt).getTime()
-          if (!Number.isFinite(generatedAt) || generatedAt + 1000 < finalBoard.generatedAt) return
-          applyOfficialKothBoard(finalKoth)
         }
+        applyOfficialCombinedBoard(finalBoard)
       } catch {
         return // fail closed; tickClock retries and no stale podium is rendered
       } finally {
@@ -1984,7 +1981,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     round = 1
     tickLeft = 30
     kothDir.reset()
-    gameEndMs = Date.now() + MATCH_SECONDS * 1000
+    matchTiming = previewArenaMatchTiming(Date.now() + MATCH_SECONDS * 1000)
     TEAMS.forEach((t) => {
       t.score = 0
       t.projectedScore = 0
@@ -2132,14 +2129,14 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   function tickClock() {
     tNow = Date.now()
     // match countdown to game end (live: real EndTimeUtc; preview: boot + MATCH_SECONDS)
-    if (gameEndMs != null && !matchOver) {
+    if (matchTiming.endTime != null && !matchOver) {
       const left = secsLeft()
       if (preview && left <= FREEZE_SECONDS && !frozen) enterFreeze() // live freeze comes from the board's isFrozenView
       if (frozen) {
         const fc = $('fzCount')
         if (fc) fc.textContent = 'RESULTS IN T- ' + fmtMS(left)
       }
-      if (left <= 0) {
+      if (arenaHasEnded(matchTiming)) {
         void endMatch()
         return
       }
@@ -2169,11 +2166,48 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   }
 
   /* -------- live data -------- */
+  const LIVE_REQUEST_TIMEOUT_MS = 10_000
   async function fetchJSON<T = any>(url: string): Promise<T> {
-    const r = await fetch(url, { headers: { Accept: 'application/json' } })
+    const r = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(LIVE_REQUEST_TIMEOUT_MS),
+    })
     if (!r.ok) throw new Error(url + ' -> ' + r.status)
     return r.json()
   }
+
+  const fetchLiveSnapshot = () =>
+    Promise.allSettled([
+      fetchJSON<AdScoreboardModel>(routes.adScoreboard),
+      fetchJSON(routes.kothScoreboard),
+      fetchJSON(routes.standardScoreboard),
+      fetchJSON(routes.game),
+    ] as const)
+
+  const emptyAdScoreboard = (): AdScoreboardModel => ({
+    epochTicks: 0,
+    startRound: null,
+    started: false,
+    fullySettled: true,
+    currentEpoch: 0,
+    latestRound: 0,
+    currentRoundEndsAt: null,
+    tickSeconds: 0,
+    isFrozenView: false,
+    freeze: null,
+    challenges: [],
+    detailEpochLimit: 0,
+    evidence: {
+      eligibleFlags: 0,
+      capturedFlags: 0,
+      acceptedCaptures: 0,
+      defenseOpportunities: 0,
+      protectedOpportunities: 0,
+    },
+    teams: [],
+    generatedAt: 0,
+  })
+  let latestAdBoard = emptyAdScoreboard()
 
   // Jeopardy categories for the constellation overlay: every challenge on the standard
   // scoreboard that is NOT an A&D service or KotH hill, grouped by category, with the
@@ -2227,16 +2261,20 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   // jeopardy scoreboard (jp.items, by team name) onto the arena teams, for the two
   // non-A&D ranking modes. A&D score stays t.score from the A&D board.
   function applyAuxScores(koth: any, jp: any) {
-    const kById: any = {}
+    const kByParticipation: any = {}
+    const kByTeam: any = {}
+    const kByName: any = {}
     ;((koth && koth.teams) || []).forEach((r: any) => {
-      kById['p' + r.participationId] = r
+      kByParticipation[r.participationId] = r
+      kByTeam[r.teamId] = r
+      kByName[r.teamName] = r
     })
     const jByName: any = {}
     ;((jp && jp.items) || []).forEach((r: any) => {
       jByName[r.name] = r
     })
     TEAMS.forEach((t) => {
-      const k = kById[t.id]
+      const k = kByParticipation[t.pid] || kByTeam[t.teamId] || kByName[t.name]
       if (k) {
         t.kothScore = Math.round(k.settledTotal || 0)
         t.kothRank = Number.isInteger(k.rank) && k.rank > 0 ? k.rank : null
@@ -2256,23 +2294,39 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     const svcIds = svcDefs.map((c: any) => c.challengeId)
 
     const adRows = ad.teams || []
-    const hasOfficialAdRoster = adRows.length > 0
-    const rosterRows: any[] = hasOfficialAdRoster
-      ? adRows
-      : ((koth && koth.teams) || []).map((row: any) => ({
-          ...row,
-          settledTotal: 0,
-          projectedTotal: 0,
-          offenseRate: 0,
-          defenseRate: 0,
-          slaRate: 0,
-        }))
+    // Build one stable union. The former A&D/KotH-only fallback left a pure
+    // Jeopardy arena with no teams even though the standard board was healthy.
+    const rosterRows: any[] = []
+    const seenTeamIds = new Set<number>()
+    const seenNames = new Set<string>()
+    const addRosterRow = (row: any) => {
+      const teamId = Number.isInteger(row.teamId) ? row.teamId : Number.isInteger(row.id) ? row.id : null
+      const teamName = String(row.teamName ?? row.name ?? '')
+      if (!teamName || (teamId != null ? seenTeamIds.has(teamId) : seenNames.has(teamName))) return
+      if (teamId != null) seenTeamIds.add(teamId)
+      seenNames.add(teamName)
+      rosterRows.push({
+        ...row,
+        teamId,
+        teamName,
+        settledTotal: Number(row.settledTotal) || 0,
+        projectedTotal: Number(row.projectedTotal) || 0,
+        offenseRate: Number(row.offenseRate) || 0,
+        defenseRate: Number(row.defenseRate) || 0,
+        slaRate: Number(row.slaRate) || 0,
+      })
+    }
+    adRows.forEach(addRosterRow)
+    ;((koth && koth.teams) || []).forEach(addRosterRow)
+    ;((jp && jp.items) || []).forEach(addRosterRow)
 
     TEAMS = rosterRows.map((row, i: number) => {
       const color = PALETTE[i % PALETTE.length]
+      const participationId = Number.isInteger(row.participationId) ? row.participationId : null
       const t: any = {
-        id: 'p' + row.participationId,
-        pid: row.participationId,
+        id: participationId != null ? 'p' + participationId : 't' + (row.teamId ?? i),
+        pid: participationId,
+        teamId: row.teamId,
         name: row.teamName,
         color,
         hue: Math.round((i * 137.508) % 360),
@@ -2283,7 +2337,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
         defenseRate: boundedRate(row.defenseRate),
         slaRate: boundedRate(row.slaRate),
         captureEvidence: 0,
-        onOfficialBoard: hasOfficialAdRoster,
+        onOfficialBoard: true,
         kothScore: 0,
         kothRank: null,
         jpScore: 0,
@@ -2323,8 +2377,11 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       h.y = CY + HILLR * Math.sin(ang)
     })
 
-    if (!preview && SERVICES.length === 0 && HILLS.length > 0 && rankMode === 'ad') {
-      rankMode = 'koth'
+    const hasJeopardy = Object.values((jp && jp.challenges) || {}).some((group: any) =>
+      (group || []).some((challenge: any) => challenge.type !== 'AttackDefense' && challenge.type !== 'KingOfTheHill')
+    )
+    if (!preview && SERVICES.length === 0 && rankMode === 'ad' && (HILLS.length > 0 || hasJeopardy)) {
+      rankMode = HILLS.length > 0 ? 'koth' : 'jeopardy'
       const tabs: any = $('rankTabs')
       if (tabs)
         tabs.querySelectorAll('button').forEach((button: any) => {
@@ -2343,6 +2400,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   }
 
   function applyOfficialAdBoard(ad: AdScoreboardModel) {
+    if (!ad.teams.length) return
     const adById = new Map(ad.teams.map((row) => ['p' + row.participationId, row] as const))
     TEAMS.forEach((t) => {
       const row = adById.get(t.id)
@@ -2362,28 +2420,28 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     refreshRank()
   }
 
-  function applyOfficialKothBoard(koth: any) {
-    const kothById = new Map(((koth && koth.teams) || []).map((row: any) => ['p' + row.participationId, row]))
+  function applyOfficialCombinedBoard(combined: any) {
+    const byTeamId = new Map(((combined && combined.items) || []).map((row: any) => [row.id, row]))
+    const byName = new Map(((combined && combined.items) || []).map((row: any) => [row.name, row]))
     TEAMS.forEach((team) => {
-      const row: any = kothById.get(team.id)
+      const row: any = byTeamId.get(team.teamId) || byName.get(team.name)
       team.onOfficialBoard = Boolean(row)
       if (!row) return
-      team.name = row.teamName
-      team.score = Number(row.settledTotal) || 0
-      team.kothRank = Number.isInteger(row.rank) && row.rank > 0 ? row.rank : null
-      team.officialRank = team.kothRank || team.officialRank
-      team.kothScore = team.score
+      team.name = row.name
+      team.score = Number(row.score) || 0
+      team.projectedScore = Number(row.projectedScore) || team.score
+      team.officialRank = Number.isInteger(row.rank) && row.rank > 0 ? row.rank : team.officialRank
       renderScore(team)
     })
-    applyKothRoundClock(koth)
     refreshRank()
   }
 
-  function applyLivePoll(ad: AdScoreboardModel, koth: any, jp: any) {
+  function applyLivePoll(ad: AdScoreboardModel | null, koth: any, jp: any) {
+    if (ad) latestAdBoard = ad
     applyAuxScores(koth, jp)
-    applyKothRoundClock(koth)
-    jeop.setData(buildJeopCats(ad, jp))
-    applyOfficialAdBoard(ad)
+    if (koth) applyKothRoundClock(koth)
+    if (jp) jeop.setData(buildJeopCats(latestAdBoard, jp))
+    if (ad) applyOfficialAdBoard(ad)
     const kothHills = koth && koth.hills ? koth.hills : []
     kothHills.forEach((kh: any) => {
       const h = HILLS.find((x) => x.cid === kh.challengeId)
@@ -2405,34 +2463,27 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     // public ICPC freeze drives the lock screen. !matchOver on BOTH branches: after endMatch
     // the board often stays isFrozenView until organizers unfreeze — re-entering freeze here
     // would start a permanent fzRenderer loop hidden under the win overlay (z96 < z97).
-    if (ad.isFrozenView && !frozen && !matchOver) enterFreeze()
-    else if (!ad.isFrozenView && frozen && !matchOver) unfreeze()
+    const freezeViews = [ad?.isFrozenView, koth?.isFrozenView, jp?.isFrozenView].filter(
+      (value): value is boolean => typeof value === 'boolean'
+    )
+    if (freezeViews.some(Boolean) && !frozen && !matchOver) enterFreeze()
+    else if (freezeViews.length > 0 && freezeViews.every((value) => !value) && frozen && !matchOver) unfreeze()
   }
 
   async function pollLive() {
     if (killed) return
-    try {
-      const ad = await fetchJSON<AdScoreboardModel>(`/api/Game/${gameId}/Ad/Scoreboard`)
-      let koth: any = null
-      try {
-        koth = await fetchJSON(`/api/Game/${gameId}/Ad/Koth/Scoreboard`)
-      } catch {}
-      let jp: any = null
-      try {
-        jp = await fetchJSON(`/api/Game/${gameId}/Scoreboard`)
-      } catch {}
-      // refresh the real end time: an admin extending EndTimeUtc mid-match must move the podium
-      // trigger (and un-stick it if the champions screen already showed) — gameEndMs was otherwise
-      // read once at load and never updated. Keep the old value if the field is missing.
-      try {
-        const gi = await fetchJSON(`/api/Game/${gameId}`)
-        if (gi && gi.end) gameEndMs = new Date(gi.end).getTime()
-      } catch {}
-      if (matchOver && gameEndMs != null && Date.now() < gameEndMs - 1500) reopenMatch()
-      if (!killed) applyLivePoll(ad, koth, jp)
-    } catch {
-      /* transient */
+    const [adResult, kothResult, jpResult, gameResult] = await fetchLiveSnapshot()
+    if (killed) return
+
+    if (gameResult.status === 'fulfilled') {
+      matchTiming = observeArenaGameTiming(matchTiming, gameResult.value)
+      if (matchOver && !arenaHasEnded(matchTiming)) reopenMatch()
     }
+
+    const ad = adResult.status === 'fulfilled' ? adResult.value : null
+    const koth = kothResult.status === 'fulfilled' ? kothResult.value : null
+    const jp = jpResult.status === 'fulfilled' ? jpResult.value : null
+    if (ad || koth || jp) applyLivePoll(ad, koth, jp)
   }
 
   function liveAttack(f: any) {
@@ -2599,75 +2650,28 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     if (!raf) raf = requestAnimationFrame(loop)
   }
 
-  // Backfill the battle log with recent attacks so a refresh doesn't start empty.
-  // History only — scores come from the 15s poll, and we deliberately skip the map
-  // cinematics (replaying ~50 events would be a flurry of noise). Oldest-first from the
-  // server; the backend returns [] for Hidden/frozen games (matching the live gate).
-  async function seedLog() {
-    let evts: any[]
-    try {
-      evts = await fetchJSON(`/api/Game/${gameId}/AttackFeed?limit=50`)
-    } catch {
-      return
-    }
-    if (!Array.isArray(evts) || !evts.length) return
-    for (const f of evts) {
-      if (!f || f.type === 'Unaccepted') continue
-      const who = esc(f.teamName || '???')
-      const svc = esc(f.challengeTitle || 'flag')
-      const vic = f.victimTeamName ? esc(f.victimTeamName) : 'CORE'
-      const capture = Boolean(f.victimTeamName)
-      if (capture) {
-        const team = teamByName(f.teamName)
-        if (team) team.captureEvidence = (team.captureEvidence || 0) + 1
-      }
-      if (f.type === 'FirstBlood')
-        addLog(
-          'FIRST BLOOD',
-          'fb',
-          `<span class="who">${who}</span> drew first blood${capture ? ` on <span class="vic">${vic}</span> <span class="em">CAPTURE ACCEPTED</span>` : ''} :: <span class="svc">${svc}</span>`
-        )
-      else
-        addLog(
-          'FLAG',
-          'flag',
-          `<span class="who">${who}</span> &gt; <span class="vic">${vic}</span> :: <span class="svc">${svc}</span>${capture ? ' <span class="em">CAPTURE ACCEPTED</span>' : ''}`
-        )
-    }
-    refreshRank()
-  }
-
   async function start() {
-    let ad: AdScoreboardModel
-    try {
-      ad = await fetchJSON<AdScoreboardModel>(`/api/Game/${gameId}/Ad/Scoreboard`)
-    } catch {
-      if (killed) return
-      showNote('NO LIVE A&amp;D DATA<br/>this game has no Attack &amp; Defense<br/>or King of the Hill challenges')
-      addLog('SYS', 'sys', `<span class="em">NO A&amp;D / KOTH SCOREBOARD</span> for this game`)
-      tNow = Date.now()
-      ensureLiveLoops()
-      return
-    }
-    let koth: any = null
-    try {
-      koth = await fetchJSON(`/api/Game/${gameId}/Ad/Koth/Scoreboard`)
-    } catch {}
-    let jp: any = null
-    try {
-      jp = await fetchJSON(`/api/Game/${gameId}/Scoreboard`)
-    } catch {}
-    let title: string | null = null
-    try {
-      const gi = await fetchJSON(`/api/Game/${gameId}`)
-      title = gi && gi.title
-      if (gi && gi.end) gameEndMs = new Date(gi.end).getTime()
-    } catch {}
+    const [adResult, kothResult, jpResult, gameResult] = await fetchLiveSnapshot()
     if (killed) return
 
-    buildLiveModel(ad, koth, jp, title)
+    const ad = adResult.status === 'fulfilled' ? adResult.value : emptyAdScoreboard()
+    const koth = kothResult.status === 'fulfilled' ? kothResult.value : null
+    const jp = jpResult.status === 'fulfilled' ? jpResult.value : null
+    const game: any = gameResult.status === 'fulfilled' ? gameResult.value : null
+    if (game) matchTiming = observeArenaGameTiming(matchTiming, game)
+    if (adResult.status === 'rejected' && !koth && !jp) {
+      showNote('LIVE SCOREBOARDS ARE TEMPORARILY UNAVAILABLE')
+      addLog('SYS', 'sys', `<span class="em">WAITING FOR LIVE SCOREBOARDS</span>`)
+      tNow = Date.now()
+      ensureLiveLoops()
+      timers.push(window.setTimeout(() => !killed && void start(), 5000))
+      return
+    }
+
+    latestAdBoard = ad
+    buildLiveModel(ad, koth, jp, game?.title ?? null)
     if (!TEAMS.length) {
-      showNote('WAITING FOR THE OFFICIAL A&amp;D ROSTER')
+      showNote('WAITING FOR THE OFFICIAL EVENT ROSTER')
       tNow = Date.now()
       ensureLiveLoops()
       timers.push(
@@ -2682,9 +2686,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     buildArena()
     refreshRank()
     sizeCanvas()
-    if (ad.isFrozenView) enterFreeze() // board already frozen when we connect
-    await seedLog() // replay recent attacks first so the log survives a refresh
-    if (killed) return
+    if (ad.isFrozenView || koth?.isFrozenView || jp?.isFrozenView) enterFreeze()
     addLog(
       'SYS',
       'sys',
@@ -2824,7 +2826,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     liveRoundEndsAt = null
     round = 1
     tickLeft = 30
-    gameEndMs = Date.now() + MATCH_SECONDS * 1000
+    matchTiming = previewArenaMatchTiming(Date.now() + MATCH_SECONDS * 1000)
     totalFlags = 0
     buildArena()
     TEAMS.forEach((t) => renderSvc(t))
@@ -2985,7 +2987,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     // so the on-screen counts always match the inputs from the start.
     let title: string | null = null
     try {
-      const gi = await fetchJSON(`/api/Game/${gameId}`)
+      const gi = await fetchJSON(routes.game)
       title = gi && gi.title
     } catch {}
     if (killed) return
@@ -2994,7 +2996,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     liveRoundEndsAt = null
     round = 1
     tickLeft = 30
-    gameEndMs = Date.now() + MATCH_SECONDS * 1000
+    matchTiming = previewArenaMatchTiming(Date.now() + MATCH_SECONDS * 1000)
     buildArena()
     const fbb: any = $('fbBtns')
     if (fbb) fbb.style.display = ''
