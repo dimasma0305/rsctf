@@ -43,7 +43,7 @@ import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { useGame } from '@Hooks/useGame'
+import { useGame, useGameStatus } from '@Hooks/useGame'
 import api, { EventType, GameEvent } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 import { formatGameEvent } from '../eventFormat'
@@ -103,6 +103,8 @@ const Events: FC = () => {
   const [events, setEvents] = useState<GameEvent[]>()
 
   const { game } = useGame(numId)
+  const { finished } = useGameStatus(game)
+  const monitorConnectionActive = Boolean(game?.end) && !finished
   const isNarrow = useIsMobile(480)
 
   const iconMap = EventTypeIconMap(1.15)
@@ -141,7 +143,7 @@ const Events: FC = () => {
   }, [activePage, hideContainerEvents, debouncedSearch, numId, t])
 
   useEffect(() => {
-    if (game?.end && new Date() < new Date(game.end)) {
+    if (monitorConnectionActive) {
       const connection = new signalR.HubConnectionBuilder()
         .withUrl(`/hub/monitor?game=${numId}`)
         .withHubProtocol(new signalR.JsonHubProtocol())
@@ -178,7 +180,7 @@ const Events: FC = () => {
         })
       }
     }
-  }, [game, numId, t])
+  }, [monitorConnectionActive, numId, t])
 
   const filteredEvents = newEvents.current.filter(
     (e) => !hideContainerEvents || (e.type !== EventType.ContainerStart && e.type !== EventType.ContainerDestroy)

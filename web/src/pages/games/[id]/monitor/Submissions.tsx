@@ -40,7 +40,7 @@ import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { downloadBlob, handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
-import { useGame } from '@Hooks/useGame'
+import { useGame, useGameStatus } from '@Hooks/useGame'
 import api, { AnswerResult, Submission } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 
@@ -83,6 +83,8 @@ const Submissions: FC = () => {
   const [disabled, setDisabled] = useState(false)
 
   const { game } = useGame(numId)
+  const { finished } = useGameStatus(game)
+  const monitorConnectionActive = Boolean(game?.end) && !finished
 
   const iconMap = AnswerResultIconMap(0.8)
   const { classes: inputClasses } = useDisplayInputStyles({ ff: 'monospace' })
@@ -124,7 +126,7 @@ const Submissions: FC = () => {
   }, [activePage, type, debouncedSearch, numId, t])
 
   useEffect(() => {
-    if (game?.end && new Date() < new Date(game.end)) {
+    if (monitorConnectionActive) {
       const connection = new signalR.HubConnectionBuilder()
         .withUrl(`/hub/monitor?game=${numId}`)
         .withHubProtocol(new signalR.JsonHubProtocol())
@@ -161,7 +163,7 @@ const Submissions: FC = () => {
         })
       }
     }
-  }, [game, numId, t])
+  }, [monitorConnectionActive, numId, t])
 
   const filteredSubs = newSubmissions.current.filter((item) => type === 'All' || item.status === type)
 

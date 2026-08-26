@@ -137,7 +137,7 @@ test('cached event access waits for a live clock sample before enforcing lifecyc
   }
 })
 
-test('timing polling owns one retry per key and cancels it after recovery or unmount', async (context) => {
+test('timing polling owns one retry for its active key and cancels it after recovery or unmount', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'], now: 0 })
   const { createGameTimingSWRConfig, GAME_TIMING_REFRESH_MS, shouldRetryGameTimingError } = await import(
     '../hooks/useGame'
@@ -146,12 +146,12 @@ test('timing polling owns one retry per key and cancels it after recovery or unm
   const { config } = owner
   let supersededReads = 0
   let recoveredReads = 0
-  let otherKeyReads = 0
   const options = { retryCount: 1 }
 
   try {
     assert.equal(shouldRetryGameTimingError({ response: { status: 503 } }), true)
     assert.equal(shouldRetryGameTimingError({ response: { status: 404 } }), false)
+    owner.activate('/api/game/recent')
     config.onErrorRetry?.(
       { response: { status: 503 } },
       '/api/game/recent',
@@ -170,23 +170,12 @@ test('timing polling owns one retry per key and cancels it after recovery or unm
       },
       options
     )
-    config.onErrorRetry?.(
-      { response: { status: 503 } },
-      '/api/game/2',
-      config,
-      () => {
-        otherKeyReads += 1
-      },
-      options
-    )
     context.mock.timers.tick(GAME_TIMING_REFRESH_MS - 1)
     assert.equal(supersededReads, 0)
     assert.equal(recoveredReads, 0)
-    assert.equal(otherKeyReads, 0)
     context.mock.timers.tick(1)
     assert.equal(supersededReads, 0)
     assert.equal(recoveredReads, 1)
-    assert.equal(otherKeyReads, 1)
 
     config.onErrorRetry?.(
       { response: { status: 503 } },
@@ -216,6 +205,50 @@ test('timing polling owns one retry per key and cancels it after recovery or unm
   } finally {
     owner.cancelAll()
     context.mock.timers.reset()
+  }
+})
+
+test('timing polling cancels an obsolete scope before its retry fires', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games' })
+  const restoreDom = installTestDom(browser)
+  context.mock.timers.enable({ apis: ['setTimeout'], now: 0 })
+  const { GAME_TIMING_REFRESH_MS, useGameTimingSWRConfig } = await import('../hooks/useGame')
+  const { default: useSWR } = await import('swr')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  const reads = new Map<number, number>()
+  const Probe: FC<{ page: number }> = ({ page }) => {
+    const timingConfig = useGameTimingSWRConfig()
+    useSWR(
+      ['/test/timing', { page }],
+      async ([, query]) => {
+        reads.set(query.page, (reads.get(query.page) ?? 0) + 1)
+        throw { response: { status: 503 } }
+      },
+      timingConfig
+    )
+    return null
+  }
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => root.render(createElement(Probe, { page: 1 })))
+    assert.equal(reads.get(1), 1)
+
+    await act(async () => root.render(createElement(Probe, { page: 2 })))
+    assert.equal(reads.get(2), 1)
+
+    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS))
+    assert.equal(reads.get(1), 1)
+    assert.equal(reads.get(2), 2)
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
   }
 })
 

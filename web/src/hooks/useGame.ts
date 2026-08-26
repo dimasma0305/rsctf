@@ -1,7 +1,7 @@
 import dayjs, { Dayjs } from 'dayjs'
 import { TFunction } from 'i18next'
 import { useEffect, useRef } from 'react'
-import useSWR, { type SWRConfiguration } from 'swr'
+import useSWR, { type Middleware, type SWRConfiguration, unstable_serialize } from 'swr'
 import { GameStatus } from '@Components/GameCard'
 import { useServerNow } from '@Utils/ServerClock'
 import { OnceSWRConfig } from '@Hooks/useConfig'
@@ -28,24 +28,50 @@ export const gameTimingSWRConfig: SWRConfiguration = {
   shouldRetryOnError: shouldRetryGameTimingError,
 }
 
-/** Own one replaceable recovery timer per SWR key. */
+/** Own one replaceable recovery timer for the hook's active SWR key. */
 export const createGameTimingSWRConfig = () => {
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  let activeKey: string | null = null
   const cancel = (key: string) => {
     const timer = retryTimers.get(key)
     if (timer !== undefined) clearTimeout(timer)
     retryTimers.delete(key)
   }
+  const activate = (key: string) => {
+    activeKey = key
+    retryTimers.forEach((_timer, pendingKey) => {
+      if (pendingKey !== key) cancel(pendingKey)
+    })
+  }
+  const deactivate = (key: string) => {
+    cancel(key)
+    if (activeKey === key) activeKey = null
+  }
   const cancelAll = () => {
     retryTimers.forEach((timer) => clearTimeout(timer))
     retryTimers.clear()
+    activeKey = null
   }
+  const scopeMiddleware: Middleware = (useSWRNext) =>
+    function useGameTimingRetryScope(key, fetcher, swrConfig) {
+      const serializedKey = unstable_serialize(key)
+
+      useEffect(() => {
+        if (!serializedKey) return
+        activate(serializedKey)
+        return () => deactivate(serializedKey)
+      }, [serializedKey])
+
+      return useSWRNext(key, fetcher, swrConfig)
+    }
   const config: SWRConfiguration = {
     ...gameTimingSWRConfig,
+    use: [...(gameTimingSWRConfig.use ?? []), scopeMiddleware],
     onError: (_error, key) => cancel(key),
     onSuccess: (_data, key) => cancel(key),
     onDiscarded: cancel,
     onErrorRetry: (_error, key, _config, revalidate, options) => {
+      if (key !== activeKey) return
       cancel(key)
       retryTimers.set(
         key,
@@ -56,7 +82,7 @@ export const createGameTimingSWRConfig = () => {
       )
     },
   }
-  return { config, cancelAll }
+  return { config, activate, cancelAll }
 }
 
 export const useGameTimingSWRConfig = () => {

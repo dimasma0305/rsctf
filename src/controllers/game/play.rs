@@ -5,34 +5,93 @@ use super::*;
 #[path = "play_final_policy.rs"]
 mod final_policy;
 
-/// `GET /api/game/recent` — recent games ordered ongoing > upcoming > ended.
+const MAX_RECENT_GAMES: usize = 50;
+
+// Match RSCTF GenRecentGames' integer-second key: ended games use time since
+// end, upcoming games use time until start, and ongoing games use their nearest
+// edge. The classes intentionally interleave by that magnitude.
+const RECENT_GAMES_SQL: &str = r#"
+    SELECT id, title, summary, poster_hash, team_member_count_limit,
+           start_time_utc, end_time_utc
+      FROM "Games"
+     WHERE hidden = FALSE
+     ORDER BY CASE
+         WHEN end_time_utc <= $1::timestamptz THEN
+             FLOOR(EXTRACT(EPOCH FROM ($1::timestamptz - end_time_utc)))::bigint
+         WHEN start_time_utc >= $1::timestamptz THEN
+             FLOOR(EXTRACT(EPOCH FROM (start_time_utc - $1::timestamptz)))::bigint
+         ELSE LEAST(
+             FLOOR(EXTRACT(EPOCH FROM ($1::timestamptz - start_time_utc)))::bigint,
+             FLOOR(EXTRACT(EPOCH FROM (end_time_utc - $1::timestamptz)))::bigint
+         )
+     END ASC,
+     id ASC
+     LIMIT $2
+"#;
+
+#[derive(sqlx::FromRow)]
+struct RecentGameRow {
+    id: i32,
+    title: String,
+    summary: String,
+    poster_hash: Option<String>,
+    team_member_count_limit: i32,
+    start_time_utc: DateTime<Utc>,
+    end_time_utc: DateTime<Utc>,
+}
+
+fn recent_games_limit(requested: usize) -> i64 {
+    if requested == 0 {
+        MAX_RECENT_GAMES as i64
+    } else {
+        requested.min(MAX_RECENT_GAMES) as i64
+    }
+}
+
+async fn query_recent_games(
+    pool: &sqlx::PgPool,
+    ordering_time: DateTime<Utc>,
+    limit: i64,
+) -> AppResult<Vec<RecentGameRow>> {
+    sqlx::query_as::<_, RecentGameRow>(RECENT_GAMES_SQL)
+        .bind(ordering_time)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
+/// `GET /api/game/recent` — visible games ordered by temporal proximity.
 pub async fn recent_games(
     State(st): State<SharedState>,
     Query(q): Query<RecentQuery>,
 ) -> AppResult<RequestResponse<Vec<BasicGameInfoModel>>> {
     let ordering_time = Utc::now();
-    let mut rows = game::Entity::find()
-        .filter(game::Column::Hidden.eq(false))
-        .all(&st.db)
-        .await?;
+    let rows = query_recent_games(st.pg(), ordering_time, recent_games_limit(q.limit)).await?;
 
-    // Mirror RSCTF GenRecentGames ordering: ongoing games first (by proximity),
-    // then upcoming (by start), then ended (most recent first).
-    rows.sort_by_key(|g| recent_sort_key(g, ordering_time));
-    rows.truncate(50);
-    if q.limit > 0 && rows.len() > q.limit {
-        rows.truncate(q.limit);
-    }
-
-    // Stamp the payload after the database read and in-memory work. Capturing
+    // Stamp the payload after the bounded database read. Capturing
     // this before an arbitrarily slow query would make the receipt-anchored
     // browser estimate lag by the entire server processing interval.
     let response_time = Utc::now();
-    let res: Vec<BasicGameInfoModel> = rows
-        .iter()
+    let res = rows
+        .into_iter()
         .map(|game| BasicGameInfoModel {
+            id: game.id,
+            title: game.title,
+            summary: game.summary,
+            poster: game
+                .poster_hash
+                .map(|hash| format!("/assets/{hash}/poster")),
+            limit: game.team_member_count_limit,
+            team_count: 0,
+            user_count: 0,
+            average_rating: 0.0,
+            review_count: 0,
+            joined: false,
+            participation_status: None,
+            start: game.start_time_utc,
+            end: game.end_time_utc,
             server_time: response_time,
-            ..BasicGameInfoModel::from(game)
         })
         .collect();
     Ok(RequestResponse::ok(res))
@@ -40,11 +99,15 @@ pub async fn recent_games(
 
 #[cfg(test)]
 mod response_clock_tests {
+    use super::*;
+    use chrono::TimeZone;
+    use sqlx::postgres::PgPoolOptions;
+
     #[test]
     fn recent_games_stamp_the_clock_after_the_database_read() {
         let source = include_str!("play.rs");
         let database_read = source
-            .find(".all(&st.db)\n        .await?;")
+            .find("let rows = query_recent_games")
             .expect("recent-games database read remains visible");
         let response_stamp = source
             .find("let response_time = Utc::now();")
@@ -53,26 +116,100 @@ mod response_clock_tests {
         assert!(database_read < response_stamp);
         assert!(source[response_stamp..].contains("server_time: response_time"));
     }
-}
 
-/// Sort key in seconds (RSCTF GenRecentGames): every game keyed by a raw
-/// TimeSpan magnitude, sorted ascending. Ended games key on |now - end|,
-/// upcoming on time-to-start, ongoing on the closest edge (start or end).
-/// All three interleave by that magnitude — there is no ended-vs-live offset.
-fn recent_sort_key(g: &game::Model, now: DateTime<Utc>) -> i64 {
-    if g.end_time_utc <= now {
-        // ended: keyed by |now - end| (most-recently-ended first). RSCTF
-        // GenRecentGames sorts by the raw TimeSpan magnitude with no offset, so
-        // ended games interleave with upcoming/ongoing by recency.
-        (now - g.end_time_utc).num_seconds()
-    } else if g.start_time_utc >= now {
-        // upcoming: soonest start first.
-        (g.start_time_utc - now).num_seconds()
-    } else {
-        // ongoing: closest edge (start or end) first.
-        let since_start = (now - g.start_time_utc).num_seconds();
-        let to_end = (g.end_time_utc - now).num_seconds();
-        since_start.min(to_end)
+    #[test]
+    fn recent_games_query_is_ordered_hidden_filtered_and_bounded() {
+        for fragment in [
+            "WHERE hidden = FALSE",
+            "WHEN end_time_utc <= $1::timestamptz",
+            "WHEN start_time_utc >= $1::timestamptz",
+            "ELSE LEAST(",
+            "FLOOR(EXTRACT(EPOCH",
+            "LIMIT $2",
+        ] {
+            assert!(
+                RECENT_GAMES_SQL.contains(fragment),
+                "missing recent-games query invariant: {fragment}"
+            );
+        }
+
+        assert_eq!(recent_games_limit(0), 50);
+        assert_eq!(recent_games_limit(1), 1);
+        assert_eq!(recent_games_limit(50), 50);
+        assert_eq!(recent_games_limit(51), 50);
+        assert_eq!(recent_games_limit(usize::MAX), 50);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+    async fn recent_games_query_preserves_proximity_order_and_caps_rows() {
+        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("connect test database");
+        sqlx::query(
+            r#"CREATE TEMP TABLE "Games" (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                poster_hash TEXT,
+                team_member_count_limit INTEGER NOT NULL,
+                hidden BOOLEAN NOT NULL,
+                start_time_utc TIMESTAMPTZ NOT NULL,
+                end_time_utc TIMESTAMPTZ NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create recent-games fixture table");
+
+        let now = Utc
+            .with_ymd_and_hms(2026, 8, 26, 12, 0, 0)
+            .single()
+            .expect("valid fixture timestamp");
+        sqlx::query(
+            r#"INSERT INTO "Games" VALUES
+                (1, 'ended', '', NULL, 0, FALSE,
+                 $1::timestamptz - interval '20 seconds', $1::timestamptz - interval '3 seconds'),
+                (2, 'upcoming', '', NULL, 0, FALSE,
+                 $1::timestamptz + interval '2 seconds', $1::timestamptz + interval '1 day'),
+                (3, 'ongoing', '', NULL, 0, FALSE,
+                 $1::timestamptz - interval '1 second', $1::timestamptz + interval '1 hour'),
+                (4, 'hidden', '', NULL, 0, TRUE,
+                 $1::timestamptz, $1::timestamptz + interval '1 day')"#,
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert ordering fixtures");
+        sqlx::query(
+            r#"INSERT INTO "Games"
+                SELECT n, 'filler', '', NULL, 0, FALSE,
+                       $1::timestamptz + make_interval(secs => n + 100),
+                       $1::timestamptz + interval '1 day'
+                  FROM generate_series(100, 170) AS n"#,
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert bounded-result fixtures");
+
+        let nearest = query_recent_games(&pool, now, recent_games_limit(3))
+            .await
+            .expect("query nearest games");
+        assert_eq!(
+            nearest.iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
+
+        let default_page = query_recent_games(&pool, now, recent_games_limit(0))
+            .await
+            .expect("query capped default page");
+        assert_eq!(default_page.len(), MAX_RECENT_GAMES);
+        assert!(default_page.iter().all(|row| row.id != 4));
     }
 }
 
