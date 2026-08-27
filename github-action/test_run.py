@@ -18,6 +18,7 @@ from run import (
     RSCTF_ENTRYPOINT,
     docker_run_command,
     image_tag_for_action_ref,
+    normalize_container_matrix,
     parse_boolean,
     select_source_image,
     main,
@@ -124,6 +125,31 @@ class ChallengeCheckActionTests(unittest.TestCase):
             command[-4:], ["challenge", "check", "--github", "/repository"]
         )
 
+    def test_container_matrix_is_bounded_and_canonical(self) -> None:
+        raw = json.dumps(
+            {
+                "include": [
+                    {
+                        "name": "Jeopardy/Web/example",
+                        "context": "challenges/Jeopardy/Web/example/src",
+                        "tag": "jeopardy-web-example",
+                        "kind": "service",
+                    }
+                ]
+            }
+        )
+        matrix, count = normalize_container_matrix(raw)
+        self.assertEqual(count, 1)
+        self.assertEqual(json.loads(matrix), json.loads(raw))
+        for invalid in [
+            '{"include":[{"name":"x","context":"../x","tag":"x","kind":"service"}]}',
+            '{"include":[{"name":"x","context":"x","tag":"BAD","kind":"service"}]}',
+            '{"include":[{"name":"x","context":"x","tag":"x","kind":"other"}]}',
+            '{"include":[{"name":"x","context":"x","tag":"x","kind":"service"},{"name":"x","context":"y","tag":"y","kind":"service"}]}',
+        ]:
+            with self.subTest(invalid=invalid), self.assertRaises(ActionError):
+                normalize_container_matrix(invalid)
+
     def test_action_resolves_validates_and_runs_the_platform_image(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rsctf-action-") as directory:
             root = Path(directory)
@@ -159,6 +185,13 @@ class ChallengeCheckActionTests(unittest.TestCase):
                     return subprocess.CompletedProcess(
                         command, 0, "rsctf 0.2.3\n", ""
                     )
+                if command[-3:] == ["challenge", "matrix", "/repository"]:
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        '{"include":[{"context":"challenges/Jeopardy/Web/example/src","kind":"service","name":"Jeopardy/Web/example","tag":"jeopardy-web-example"}]}\n',
+                        "",
+                    )
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             environment = {
@@ -179,7 +212,18 @@ class ChallengeCheckActionTests(unittest.TestCase):
                 self.assertEqual(main(), 0)
 
             self.assertIn(["docker", "pull", VALID_IMAGE], calls)
-            validation = calls[-1]
+            validation = next(
+                command
+                for command in calls
+                if command[-5:]
+                == [
+                    "challenge",
+                    "check",
+                    "--github",
+                    "--deny-warnings",
+                    "/repository",
+                ]
+            )
             self.assertEqual(
                 validation[-5:],
                 [
@@ -192,7 +236,10 @@ class ChallengeCheckActionTests(unittest.TestCase):
             )
             self.assertEqual(
                 output.read_text(encoding="utf-8"),
-                f"image={VALID_IMAGE}\nversion=0.2.3\n",
+                f"image={VALID_IMAGE}\n"
+                "version=0.2.3\n"
+                'container_matrix={"include":[{"context":"challenges/Jeopardy/Web/example/src","kind":"service","name":"Jeopardy/Web/example","tag":"jeopardy-web-example"}]}\n'
+                "container_count=1\n",
             )
 
 

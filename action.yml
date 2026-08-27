@@ -1,5 +1,5 @@
 name: Validate rsctf challenge repository
-description: Run rsctf's own offline Repository Bindings validator in GitHub Actions
+description: Validate a challenge repository and discover Docker builds with rsctf
 author: rsctf
 
 inputs:
@@ -27,11 +27,17 @@ outputs:
   version:
     description: rsctf version used for validation
     value: ${{ steps.validate.outputs.version }}
+  container_matrix:
+    description: Dynamic GitHub matrix for repository-owned Docker build contexts
+    value: ${{ steps.validate.outputs.container_matrix }}
+  container_count:
+    description: Number of repository-owned Docker build contexts
+    value: ${{ steps.validate.outputs.container_count }}
 
 runs:
   using: composite
   steps:
-    - name: Run rsctf challenge check
+    - name: Validate and discover with rsctf
       id: validate
       shell: bash
       env:

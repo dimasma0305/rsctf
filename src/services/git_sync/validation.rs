@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use chrono::{Duration, Utc};
 use serde::de::DeserializeOwned;
 
+use super::build_matrix::{collect_container_builds, RepositoryContainerBuild};
 use super::checker::{checker_source_dir, validate_checker_source};
 use super::package::{find_dockerfile_context, parse_enum};
 use super::{ChallengeYaml, GzEventModel};
@@ -47,6 +48,7 @@ pub struct RepositoryDiagnostic {
 pub struct RepositoryValidationReport {
     pub event_count: usize,
     pub challenge_count: usize,
+    pub container_builds: Vec<RepositoryContainerBuild>,
     pub diagnostics: Vec<RepositoryDiagnostic>,
 }
 
@@ -693,6 +695,10 @@ pub async fn validate_repository(root: &Path) -> RepositoryValidationReport {
         }
     };
     report.challenge_count = challenges.len();
+    match collect_container_builds(root, &challenges) {
+        Ok(builds) => report.container_builds = builds,
+        Err(error) => report.error(root, root, error),
+    }
     let mut names_by_event = BTreeMap::<PathBuf, BTreeMap<String, PathBuf>>::new();
     for manifest in &challenges {
         let owners = event_roots

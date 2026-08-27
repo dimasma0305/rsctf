@@ -67,11 +67,13 @@ challenge validation action:
   uses: dimasma0305/rsctf@main
 ```
 
-The action runs `rsctf challenge check` from the matching rsctf image; the challenge
-repository does not vendor a platform-validator script. The
-workflow also validates its own catalog conventions, compiles and smoke-tests the
-hosted A&D, self-hosted A&D, and KotH checkers, and dynamically builds six service
-contexts plus one generator without pushing them. Every checker keeps platform
+The action runs `rsctf challenge check` from the matching rsctf image and emits the
+result of `rsctf challenge matrix`; the challenge repository does not vendor a
+validator or discovery script. Its workflow consumes that matrix to build six service
+contexts plus one generator without pushing them, then runs each service until its
+Docker `HEALTHCHECK` reports healthy. Checker verdicts, flag rotation, and complete
+player-visible protocol behavior remain hidden-staging and playtest gates. Every
+checker keeps platform
 context parsing, verdict mapping, `@checker`, and the shuffled `run_ad_checker()` /
 `run_koth_checker()` entry points in a dependency-free, protocol-neutral `lib.py`;
 the legacy `@ad_checker` and `@koth_checker` wrappers remain supported. Each `run.py`
