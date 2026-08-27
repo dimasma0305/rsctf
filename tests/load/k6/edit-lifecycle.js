@@ -109,6 +109,7 @@ function validShape(shape, value) {
       value &&
       value.claimSource === 'Api' &&
       value.configured === true &&
+      Number.isSafeInteger(value.revision) &&
       typeof value.contextPath === 'string' &&
       typeof value.observationPath === 'string' &&
       !Object.prototype.hasOwnProperty.call(value, 'secret')

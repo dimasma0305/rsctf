@@ -896,6 +896,8 @@ export interface AdminKothReceiptsModel {
 
 export interface AdminKothObserverModel {
   challengeId: number
+  /** Monotonic credential-state revision used by rotate/revoke preconditions. */
+  revision: number
   claimSource: 'Api' | 'Marker' | string
   configured: boolean
   secretHint: string | null
@@ -915,7 +917,9 @@ export interface AdminKothObserverModel {
   lastObservationAt: number | null
   contextPath: string
   observationPath: string
-  /** Returned exactly once by credential creation/rotation. */
+  /** Identifies a completed recoverable credential mutation result. */
+  operationId?: string
+  /** Returned only by the original authorized mutation/recovery operation. */
   secret?: string
 }
 

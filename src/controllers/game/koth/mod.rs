@@ -65,8 +65,8 @@ mod timeline;
 mod tokens;
 pub use admin::{admin_state, audit_receipts, recover_hill};
 pub use api::{
-    authenticate_capability, get_observer, observer_context, revoke_observer, rotate_observer,
-    submit_observation,
+    authenticate_capability, get_observer, observer_context, recover_observer_operation,
+    revoke_observer, rotate_observer, submit_observation,
 };
 use board::*;
 pub use capture::ensure_koth_hills;
@@ -591,6 +591,10 @@ fn common_router() -> Router<SharedState> {
             get(get_observer)
                 .post(rotate_observer)
                 .delete(revoke_observer),
+        )
+        .route(
+            "/api/edit/games/{id}/ad/koth/{challengeId}/observer/operations/{operationId}",
+            get(recover_observer_operation),
         )
         .route(
             "/api/v1/koth/games/{id}/challenges/{challengeId}/context",
