@@ -516,18 +516,20 @@ pub async fn create_container(
     // Surface container activity on the monitor `/events` feed. RSCTF emits a
     // ContainerStart GameEvent with Values = [challengeId, challengeTitle]; the team is
     // carried on the event's TeamId/UserId, not the values array (see Monitor Events.tsx).
-    let event = game_event::ActiveModel {
-        game_id: Set(id),
-        event_type: Set(crate::utils::enums::EventType::ContainerStart),
-        values: Set(serde_json::json!([cid.to_string(), challenge.title])),
-        publish_time_utc: Set(now),
-        user_id: Set(Some(user.id)),
-        team_id: Set(participation.team_id),
-        ..Default::default()
-    }
-    .insert(&st.db)
-    .await;
-    if let Err(err) = event {
+    let values = serde_json::json!([cid.to_string(), challenge.title]);
+    if let Err(err) = crate::services::game_event_feed::persist_and_publish(
+        &st,
+        crate::services::game_event_feed::NewGameEvent {
+            game_id: id,
+            event_type: crate::utils::enums::EventType::ContainerStart,
+            values: &values,
+            publish_time: now,
+            user_id: Some(user.id),
+            team_id: participation.team_id,
+        },
+    )
+    .await
+    {
         tracing::warn!(game = id, challenge = cid, error = %err, "container start event persist failed");
     }
 
@@ -630,18 +632,25 @@ pub async fn delete_container(
 
     // Mirror RSCTF: emit a ContainerDestroy GameEvent (Values = [challengeId, title]) so
     // the monitor `/events` feed reflects the teardown alongside the ContainerStart.
-    game_event::ActiveModel {
-        game_id: Set(id),
-        event_type: Set(crate::utils::enums::EventType::ContainerDestroy),
-        values: Set(serde_json::json!([cid.to_string(), challenge_title])),
-        publish_time_utc: Set(Utc::now()),
-        user_id: Set(Some(user.id)),
-        team_id: Set(ctx.participation.team_id),
-        ..Default::default()
-    }
-    .insert(&st.db)
-    .await?;
+    let values = serde_json::json!([cid.to_string(), challenge_title]);
+    let event_id = crate::services::game_event_feed::insert_on(
+        distributed.transaction_mut(),
+        crate::services::game_event_feed::NewGameEvent {
+            game_id: id,
+            event_type: crate::utils::enums::EventType::ContainerDestroy,
+            values: &values,
+            publish_time: Utc::now(),
+            user_id: Some(user.id),
+            team_id: ctx.participation.team_id,
+        },
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     distributed.release().await?;
+    if let Err(error) = crate::services::game_event_feed::publish_committed(&st, &[event_id]).await
+    {
+        tracing::warn!(event_id, %error, "container destroy event publish failed");
+    }
 
     Ok(StatusCode::OK)
 }

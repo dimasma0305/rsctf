@@ -130,6 +130,7 @@ mod m0107_monitor_history_indexes;
 mod m0108_koth_observer_rotation_operations;
 mod m0109_operator_console_latest_rows;
 mod m0110_participation_review_indexes;
+mod m0111_game_event_feed_cursor;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -139,6 +140,8 @@ pub(crate) use m0108_koth_observer_rotation_operations::UP_SQL as KOTH_OBSERVER_
 pub(crate) use m0109_operator_console_latest_rows::UP_SQL as OPERATOR_LATEST_INDEX_SQL;
 #[cfg(test)]
 pub(crate) use m0110_participation_review_indexes::UP_SQL as PARTICIPATION_REVIEW_INDEX_SQL;
+#[cfg(test)]
+pub(crate) use m0111_game_event_feed_cursor::UP_SQL as GAME_EVENT_FEED_CURSOR_SQL;
 
 pub struct Migrator;
 
@@ -262,6 +265,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0108_koth_observer_rotation_operations::Migration),
             Box::new(m0109_operator_console_latest_rows::Migration),
             Box::new(m0110_participation_review_indexes::Migration),
+            Box::new(m0111_game_event_feed_cursor::Migration),
         ]
     }
 }
@@ -407,7 +411,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 8..],
+            &names[names.len() - 9..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -417,6 +421,7 @@ mod tests {
                 "m0108_koth_observer_rotation_operations",
                 "m0109_operator_console_latest_rows",
                 "m0110_participation_review_indexes",
+                "m0111_game_event_feed_cursor",
             ]
         );
     }

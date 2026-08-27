@@ -25,6 +25,8 @@ pub(super) const MONITOR_MAX_SKIP: u64 = 10_000;
 pub(super) const MONITOR_EVENTS_SQL: &str = r#"
 /* rsctf_monitor_events */
 SELECT event."Type"::smallint AS event_type,
+       event.id,
+       event.feed_cursor,
        event.values,
        event.publish_time_utc,
        account.user_name,
@@ -69,6 +71,8 @@ WITH matching AS MATERIALIZED (
       LIMIT $6)
 )
 SELECT event."Type"::smallint AS event_type,
+       event.id,
+       event.feed_cursor,
        event.values,
        event.publish_time_utc,
        account.user_name,
@@ -226,6 +230,8 @@ pub(super) fn normalized_search_pattern(search: Option<&str>) -> Option<String> 
 
 #[derive(sqlx::FromRow)]
 struct EventRow {
+    id: i32,
+    feed_cursor: i64,
     event_type: i16,
     values: Json,
     publish_time_utc: DateTime<Utc>,
@@ -301,6 +307,8 @@ pub(super) async fn load_events(
     rows.into_iter()
         .map(|row| {
             Ok(GameEventModel {
+                id: row.id,
+                cursor: row.feed_cursor,
                 event_type: event_type_from_db(row.event_type)?,
                 values: row.values,
                 time: row.publish_time_utc,

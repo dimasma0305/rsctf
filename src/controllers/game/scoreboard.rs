@@ -109,6 +109,21 @@ fn reserve_monitor_export_work(
         .map_err(export_overload_response)
 }
 
+/// Reconnect backfill. Omitting `after` returns a cursor-only checkpoint; a
+/// supplied cursor returns the next commit-ordered bounded page.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventBackfillQuery {
+    #[serde(default)]
+    pub after: Option<i64>,
+    #[serde(default = "event_backfill_default_limit")]
+    pub limit: i64,
+}
+
+fn event_backfill_default_limit() -> i64 {
+    crate::services::game_event_feed::MAX_BACKFILL_EVENTS
+}
+
 // ---------------------------------------------------------------------------
 // Notices / Events / Participations
 // ---------------------------------------------------------------------------
@@ -239,6 +254,49 @@ pub async fn events(
     }
 
     let data = monitor_history::load_events(st.pg(), id, &q).await?;
+    Ok(RequestResponse::ok(data))
+}
+
+/// `GET /api/game/{id}/events/backfill` — monitor-only reconnect recovery.
+///
+/// With no `after`, this returns a cursor-only checkpoint. With `after`, it
+/// returns at most 100 committed events in ascending cursor order and reports
+/// whether another bounded page remains.
+pub async fn event_backfill(
+    State(st): State<SharedState>,
+    MonitorUser(_user): MonitorUser,
+    Path(id): Path<i32>,
+    Query(q): Query<EventBackfillQuery>,
+) -> AppResult<RequestResponse<crate::services::game_event_feed::GameEventBackfill>> {
+    let start: Option<DateTime<Utc>> = sqlx::query_scalar(
+        r#"SELECT start_time_utc FROM "Games" WHERE id = $1 AND deletion_pending = FALSE"#,
+    )
+    .bind(id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let start = start.ok_or_else(|| AppError::not_found("Game not found"))?;
+    if Utc::now() < start {
+        return Err(AppError::game_not_started());
+    }
+
+    let data = match q.after {
+        Some(after) if after < 0 => {
+            return Err(AppError::bad_request("Event cursor must not be negative"));
+        }
+        Some(after) => {
+            crate::services::game_event_feed::backfill_after(st.pg(), id, after, q.limit)
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?
+        }
+        None => crate::services::game_event_feed::GameEventBackfill {
+            events: Vec::new(),
+            next_cursor: crate::services::game_event_feed::latest_cursor(st.pg(), id)
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?,
+            has_more: false,
+        },
+    };
     Ok(RequestResponse::ok(data))
 }
 
@@ -817,3 +875,7 @@ fn sanitize_filename(name: &str) -> String {
 
 #[cfg(test)]
 mod export_tests;
+
+#[cfg(test)]
+#[path = "event_feed_tests.rs"]
+mod event_feed_tests;

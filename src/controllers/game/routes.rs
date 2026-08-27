@@ -30,6 +30,10 @@ fn router_with_domains(
         .route("/api/game/{id}/notices", get(notices))
         .route("/api/game/{id}/events", limited(Policy::Query, get(events)))
         .route(
+            "/api/game/{id}/events/backfill",
+            limited(Policy::Query, get(event_backfill)),
+        )
+        .route(
             "/api/game/{id}/participations",
             limited(Policy::Query, get(participations)),
         )

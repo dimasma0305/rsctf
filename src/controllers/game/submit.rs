@@ -728,6 +728,20 @@ pub async fn submit(
     .fetch_one(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let flag_event_id = crate::services::game_event_feed::insert_flag_submission_on(
+        &mut transaction,
+        id,
+        result,
+        &answer,
+        &challenge.title,
+        sub_id,
+        submit_time,
+        user.id,
+        ctx.participation.team_id,
+    )
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut committed_event_ids = vec![flag_event_id];
 
     if let Some(receipt) = receipt {
         crate::services::event_security::consume_receipt(&mut transaction, receipt, sub_id).await?;
@@ -764,20 +778,17 @@ pub async fn submit(
         .map_err(|error| AppError::internal(error.to_string()))?;
 
         let values = serde_json::json!([challenge.title, team_name, source_team_name,]);
-        sqlx::query(
-            r#"INSERT INTO "GameEvents"
-                 (game_id, "Type", "values", publish_time_utc, user_id, team_id)
-               VALUES ($1, $2, $3, $4, $5, $6)"#,
+        let cheat_event_id = crate::services::game_event_feed::insert_cheat_detected_on(
+            &mut transaction,
+            id,
+            &values,
+            submit_time,
+            user.id,
+            ctx.participation.team_id,
         )
-        .bind(id)
-        .bind(crate::utils::enums::EventType::CheatDetected as i16)
-        .bind(sqlx::types::Json(&values))
-        .bind(submit_time)
-        .bind(user.id)
-        .bind(ctx.participation.team_id)
-        .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+        committed_event_ids.push(cheat_event_id);
     }
 
     // The submission and its replay intent are one commit. Control may crash at
@@ -944,7 +955,11 @@ pub async fn submit(
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-
+    if let Err(error) =
+        crate::services::game_event_feed::publish_committed(&st, &committed_event_ids).await
+    {
+        tracing::warn!(game = id, %error, "submission game events could not be published");
+    }
     st.publish_event(
         "ReceivedSubmissions",
         Some(id),
@@ -982,9 +997,4 @@ pub async fn submit(
 }
 
 #[cfg(test)]
-#[path = "submit_unit_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "submit_evidence_tests.rs"]
-mod evidence_tests;

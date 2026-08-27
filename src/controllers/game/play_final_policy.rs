@@ -707,6 +707,7 @@ fn strip_live_runtime_context(model: &mut ChallengeDetailModel) {
 
 pub(super) async fn finish_challenge_response(
     pool: &sqlx::PgPool,
+    events: &crate::services::event_bus::EventBus,
     user: &CurrentUser,
     scope: ChallengeResponseScope,
     grant: PreparedChallengeGrant,
@@ -749,6 +750,7 @@ pub(super) async fn finish_challenge_response(
     }
 
     let result = async {
+        let mut inserted_event_id = None;
         let scope = lock_play_scope_on(
             roster.transaction_mut(),
             game_id,
@@ -777,7 +779,7 @@ pub(super) async fn finish_challenge_response(
             strip_live_runtime_context(&mut model);
         } else {
             let challenge_id_text = challenge_id.to_string();
-            sqlx::query(
+            inserted_event_id = sqlx::query_scalar(
                 r#"INSERT INTO "GameEvents"
                      (game_id, "Type", "values", publish_time_utc, user_id, team_id)
                    SELECT $1, $2, $3, clock_timestamp(), $4, $5
@@ -790,7 +792,8 @@ pub(super) async fn finish_challenge_response(
                           SELECT 1 FROM "GameEvents"
                            WHERE game_id = $1 AND team_id = $5 AND "Type" = $2
                              AND "values"->>0 = $6
-                    )"#,
+                    )
+                   RETURNING id"#,
             )
             .bind(game_id)
             .bind(EventType::ChallengeOpened as i16)
@@ -801,7 +804,7 @@ pub(super) async fn finish_challenge_response(
             .bind(user.id)
             .bind(team_id)
             .bind(&challenge_id_text)
-            .execute(&mut **roster.transaction_mut())
+            .fetch_optional(&mut **roster.transaction_mut())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
 
@@ -813,10 +816,21 @@ pub(super) async fn finish_challenge_response(
                 strip_live_runtime_context(&mut model);
             }
         }
-        Ok(RequestResponse::ok(model).into_response())
+        Ok((
+            RequestResponse::ok(model).into_response(),
+            inserted_event_id,
+        ))
     }
     .await;
-    release_with_result(roster, result).await
+    let (response, event_id) = release_with_result(roster, result).await?;
+    if let Some(event_id) = event_id {
+        if let Err(error) =
+            crate::services::game_event_feed::publish_committed_on(pool, events, &[event_id]).await
+        {
+            tracing::warn!(event_id, %error, "challenge-open event publish failed");
+        }
+    }
+    Ok(response)
 }
 
 #[cfg(test)]

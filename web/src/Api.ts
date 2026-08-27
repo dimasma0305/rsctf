@@ -3246,10 +3246,14 @@ export interface Blood {
 }
 
 /**
- * Game event, recorded but not sent to the client.
+ * Game event shown in the monitor snapshot and real-time feed.
  * Information includes flag submission, container start/stop, cheating, and score changes.
  */
 export type GameEvent = FormattableDataOfEventType & {
+  /** Stable row identity used to deduplicate snapshots, pushes, and backfills. */
+  id: number;
+  /** Commit-ordered reconnect cursor. */
+  cursor: number;
   /**
    * Publish time
    * @format uint64
@@ -3260,6 +3264,13 @@ export type GameEvent = FormattableDataOfEventType & {
   /** Related team name */
   team?: string;
 };
+
+/** One bounded commit-ordered page used to recover a monitor-hub reconnect. */
+export interface GameEventBackfill {
+  events: GameEvent[];
+  nextCursor: number;
+  hasMore: boolean;
+}
 
 /** Formattable data */
 export interface FormattableDataOfEventType {
@@ -8032,6 +8043,7 @@ export class Api<
          * @min 0
          * @max 100
          * @default 100
+         * @description Zero is accepted as a bounded 100-row page.
          */
         count?: number;
         /**
@@ -8046,6 +8058,36 @@ export class Api<
     ) =>
       this.request<GameEvent[], RequestResponse>({
         path: `/api/game/${id}/events`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves a bounded commit-ordered monitor event backfill; omitting after returns a cursor-only checkpoint
+     *
+     * @tags Game
+     * @name GameEventBackfill
+     * @summary Backfill game events after a reconnect
+     * @request GET:/api/game/{id}/events/backfill
+     */
+    gameEventBackfill: (
+      id: number,
+      query?: {
+        /** Commit cursor previously observed by the client. */
+        after?: number;
+        /**
+         * @format int32
+         * @min 1
+         * @max 100
+         * @default 100
+         */
+        limit?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<GameEventBackfill, RequestResponse>({
+        path: `/api/game/${id}/events/backfill`,
         method: "GET",
         query: query,
         format: "json",

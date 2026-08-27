@@ -37,8 +37,8 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser, MonitorUser};
 use crate::models::data::{
     attachment, challenge_review, container, division, division_challenge_config, flag_context,
-    game, game_challenge, game_event, game_instance, game_notice, local_file, participation,
-    submission, team, team_member, user,
+    game, game_challenge, game_instance, game_notice, local_file, participation, submission, team,
+    team_member, user,
 };
 use crate::services::container::ContainerSpec;
 use crate::utils::crypto_utils::ct_eq;
@@ -169,20 +169,8 @@ pub struct GameNoticeModel {
     pub time: DateTime<Utc>,
 }
 
-/// RSCTF `GameEvent` response (`FormattableDataOfEventType` + time/user/team).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GameEventModel {
-    #[serde(rename = "type")]
-    pub event_type: crate::utils::enums::EventType,
-    pub values: Json,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub time: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub team: Option<String>,
-}
+/// One serializer is shared by polled, backfilled, and pushed monitor events.
+pub type GameEventModel = crate::services::game_event_feed::GameEventMessage;
 
 /// RSCTF `ChallengeItem` (a solved cell on the scoreboard).
 #[derive(Debug, Serialize, Deserialize)]

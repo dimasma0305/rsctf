@@ -107,7 +107,7 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
         CREATE TABLE "GameEvents" (
             id INTEGER PRIMARY KEY, game_id INTEGER NOT NULL, "Type" SMALLINT NOT NULL,
             values JSONB NOT NULL, publish_time_utc TIMESTAMPTZ NOT NULL,
-            user_id UUID NULL, team_id INTEGER NOT NULL
+            user_id UUID NULL, team_id INTEGER NOT NULL, feed_cursor BIGINT NOT NULL
         );
         CREATE TABLE "Submissions" (
             id INTEGER PRIMARY KEY, answer TEXT NOT NULL, status SMALLINT NOT NULL,
@@ -145,17 +145,18 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
 
     sqlx::query(
         r#"INSERT INTO "GameEvents"
-               (id, game_id, "Type", values, publish_time_utc, user_id, team_id)
+               (id, game_id, "Type", values, publish_time_utc, user_id, team_id, feed_cursor)
            SELECT n, 7, (n % 7)::smallint,
                   jsonb_build_array('game-seven-' || n::text),
                   clock_timestamp() - n * interval '1 millisecond',
                   CASE WHEN n % 2 = 0 THEN $1 ELSE $2 END,
-                  CASE WHEN n % 2 = 0 THEN 1 ELSE 2 END
+                  CASE WHEN n % 2 = 0 THEN 1 ELSE 2 END, n::bigint
              FROM generate_series(1, 30000) n
            UNION ALL
            SELECT 100000 + n, 8, (n % 7)::smallint,
                   jsonb_build_array('game-eight-' || n::text),
-                  clock_timestamp() - n * interval '1 millisecond', $2, 2
+                  clock_timestamp() - n * interval '1 millisecond', $2, 2,
+                  (100000 + n)::bigint
              FROM generate_series(1, 10000) n"#,
     )
     .bind(first_user)

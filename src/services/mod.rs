@@ -18,6 +18,7 @@ pub mod donations;
 pub mod event_bus;
 pub mod event_security;
 pub(crate) mod game_config;
+pub mod game_event_feed;
 pub mod git_sync;
 pub mod health;
 pub mod honeypot_listener;

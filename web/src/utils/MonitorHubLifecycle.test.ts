@@ -5,18 +5,30 @@ import { test } from 'node:test'
 import { act, createElement, type FC, useCallback, useEffect, useRef, useState } from 'react'
 import { AnswerResult, EventType, type GameEvent, type Submission } from '../Api'
 import { installTestDom } from '../test/installDom'
-import { gameEventMonitorIdentity, submissionMonitorIdentity, unreconciledMonitorRows } from './MonitorFeed'
+import {
+  currentMonitorBufferRows,
+  currentMonitorSnapshotRows,
+  gameEventMonitorIdentity,
+  mergeGameEventBuffer,
+  monitorPushIsCurrent,
+  monitorSnapshotIsCurrent,
+  rebaseGameEventBuffer,
+  submissionMonitorIdentity,
+  unreconciledMonitorRows,
+} from './MonitorFeed'
 
 const monitorPages = [
   {
     path: 'src/pages/games/[id]/monitor/Events.tsx',
     fetchName: 'fetchEvents',
+    finalName: 'reconcileEvents',
     identityName: 'gameEventMonitorIdentity',
-    callbackDependencies: /\[activePage, hideContainerEvents, debouncedSearch, numId, t\]/,
+    callbackDependencies: /\[loadSnapshot, t\]/,
   },
   {
     path: 'src/pages/games/[id]/monitor/Submissions.tsx',
     fetchName: 'fetchSubmissions',
+    finalName: 'fetchSubmissions',
     identityName: 'submissionMonitorIdentity',
     callbackDependencies: /\[activePage, type, debouncedSearch, numId, t\]/,
   },
@@ -27,7 +39,7 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
   assert.match(recoveringHub, /stopPromise\.current = controller\.stop\(\)/)
   assert.match(recoveringHub, /return \{ state, waitForStop \}/)
 
-  for (const { path, fetchName, identityName, callbackDependencies } of monitorPages) {
+  for (const { path, fetchName, finalName, identityName, callbackDependencies } of monitorPages) {
     const source = readFileSync(path, 'utf8')
 
     assert.match(source, /const \{ finished \} = useGameStatus\(game\)/, path)
@@ -39,11 +51,34 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
     )
     assert.match(source, /url: `\/hub\/monitor\?game=\$\{numId\}`/, path)
     assert.doesNotMatch(source, /new signalR\.HubConnectionBuilder\(\)/, path)
+    if (path.endsWith('Events.tsx')) {
+      assert.match(source, /api\.game\.gameEventBackfill\(numId/, path)
+      assert.match(source, /page < MAX_BACKFILL_PAGES/, path)
+      assert.match(source, /mergeGameEventBuffer\(incoming, newEvents\.current, MAX_BUFFERED_EVENTS\)/, path)
+      assert.match(source, /activeFeedScope\.current === feedScope/, path)
+      assert.match(source, /monitorSnapshotIsCurrent\(/, path)
+      assert.match(source, /const \{ scope: viewerScope \} = useViewerIdentity\(\)/, path)
+      assert.match(
+        source,
+        /const loadSnapshot = useCallback[\s\S]*?\[activePage, hideContainerEvents, debouncedSearch, numId, snapshotScope\]/,
+        path
+      )
+      const fallback = source.slice(
+        source.indexOf('// Cap recovery at ten pages'),
+        source.indexOf('const { waitForStop: waitForMonitorHubStop }')
+      )
+      assert.match(
+        fallback,
+        /const checkpoint = await api\.game\.gameEventBackfill\(numId, \{\}, \{ signal \}\)[\s\S]*const snapshot = await loadSnapshot\(\)[\s\S]*if \(!isCurrent\(\) \|\| snapshot === undefined\) return[\s\S]*rebaseAtCheckpoint\(checkpoint\.data\.nextCursor\)/,
+        `${path} must not skip a large reconnect gap when its replacement snapshot fails`
+      )
+    }
+    assert.doesNotMatch(source, /\}, \[game, numId, t\]\)/, path)
     assert.match(source, new RegExp(`const ${fetchName} = useCallback`), path)
     assert.match(source, callbackDependencies, `${path} must retire stale backfills whenever its query scope changes`)
     assert.match(
       source,
-      new RegExp(`useRevalidateWhenPollingStops\\(monitorConnectionActive, ${fetchName}, waitForMonitorHubStop\\)`),
+      new RegExp(`useRevalidateWhenPollingStops\\(monitorConnectionActive, ${finalName}, waitForMonitorHubStop\\)`),
       path
     )
     assert.match(source, new RegExp(`unreconciledMonitorRows\\([^;]+${identityName}\\)`), path)
@@ -254,6 +289,8 @@ const hubTime = (milliseconds: number) => new Date(milliseconds).toISOString() a
 
 test('monitor reconciliation consumes snapshot identities as an occurrence-aware stable multiset', () => {
   const repeated: GameEvent = {
+    id: 1,
+    cursor: 1,
     time: 1_000,
     type: EventType.Normal,
     values: ['same-payload'],
@@ -264,6 +301,59 @@ test('monitor reconciliation consumes snapshot identities as an occurrence-aware
   const snapshot = [{ ...repeated }, { ...repeated }]
 
   assert.equal(unreconciledMonitorRows(pushed, snapshot, gameEventMonitorIdentity).length, 1)
+  assert.equal(gameEventMonitorIdentity(repeated), '1')
+})
+
+test('event pushes and reconnect pages merge in cursor order without duplicate identities', () => {
+  const event = (id: number, cursor: number): GameEvent => ({
+    id,
+    cursor,
+    time: cursor,
+    type: EventType.Normal,
+    values: [`event-${id}`],
+  })
+  const merged = mergeGameEventBuffer([event(2, 12), event(1, 11), event(2, 12)], [event(3, 13), event(1, 11)], 2)
+  assert.deepEqual(
+    merged.map(({ id, cursor }) => [id, cursor]),
+    [
+      [3, 13],
+      [2, 12],
+    ]
+  )
+})
+
+test('a delayed game-A snapshot and late game-A push cannot enter game B', () => {
+  const gameAScope = JSON.stringify([1, 1, false, ''])
+  const gameBScope = JSON.stringify([2, 1, false, ''])
+  assert.equal(monitorSnapshotIsCurrent(gameBScope, gameAScope, 2, 1), false)
+  assert.equal(monitorSnapshotIsCurrent(gameBScope, gameBScope, 2, 2), true)
+  assert.equal(monitorPushIsCurrent(2, 1, false), false)
+  assert.equal(monitorPushIsCurrent(2, 2, false), true)
+  assert.equal(monitorPushIsCurrent(2, 2, true), false)
+  assert.equal(currentMonitorSnapshotRows(gameBScope, { scope: gameAScope, rows: ['game-A'] }), undefined)
+  assert.deepEqual(currentMonitorSnapshotRows(gameBScope, { scope: gameBScope, rows: ['game-B'] }), ['game-B'])
+  assert.deepEqual(currentMonitorBufferRows('account:B/game:2', 'account:A/game:1', ['game-A']), [])
+  assert.deepEqual(currentMonitorBufferRows('account:B/game:2', 'account:B/game:2', ['game-B']), ['game-B'])
+})
+
+test('a large-gap fallback rebases stale pages and preserves post-checkpoint pushes in order', () => {
+  const event = (cursor: number): GameEvent => ({
+    id: cursor,
+    cursor,
+    time: cursor,
+    type: EventType.Normal,
+    values: [`event-${cursor}`],
+  })
+  const recoveredPages = Array.from({ length: 500 }, (_, index) => event(501 + index))
+  const buffered = mergeGameEventBuffer([event(1501)], recoveredPages, 500)
+  const rebased = rebaseGameEventBuffer(buffered, 1500)
+  const snapshot = Array.from({ length: 30 }, (_, index) => event(1500 - index))
+  const visible = mergeGameEventBuffer(rebased, snapshot, 500)
+
+  assert.deepEqual(
+    visible.map(({ cursor }) => cursor),
+    Array.from({ length: 31 }, (_, index) => 1501 - index)
+  )
 })
 
 test('each browser feed serializes stop and backfill across received, in-flight, and post-stop commits', async (context) => {
@@ -373,9 +463,27 @@ test('each browser feed serializes stop and backfill across received, in-flight,
 
   await runCase<GameEvent>({
     name: 'events',
-    initial: { time: hubTime(1_000), type: EventType.Normal, values: ['initial'], user: 'one', team: 'alpha' },
-    received: { time: hubTime(2_000), type: EventType.FlagSubmit, values: ['received'], user: 'two', team: 'beta' },
+    initial: {
+      id: 1,
+      cursor: 1,
+      time: hubTime(1_000),
+      type: EventType.Normal,
+      values: ['initial'],
+      user: 'one',
+      team: 'alpha',
+    },
+    received: {
+      id: 2,
+      cursor: 2,
+      time: hubTime(2_000),
+      type: EventType.FlagSubmit,
+      values: ['received'],
+      user: 'two',
+      team: 'beta',
+    },
     inFlight: {
+      id: 3,
+      cursor: 3,
       time: hubTime(3_000),
       type: EventType.CheatDetected,
       values: ['in-flight'],
@@ -383,6 +491,8 @@ test('each browser feed serializes stop and backfill across received, in-flight,
       team: 'gamma',
     },
     postStop: {
+      id: 4,
+      cursor: 4,
       time: hubTime(4_000),
       type: EventType.Download,
       values: ['post-stop'],
