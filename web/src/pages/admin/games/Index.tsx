@@ -75,7 +75,12 @@ const Games: FC = () => {
       count: ITEM_COUNT_PER_PAGE,
       skip: (page - 1) * ITEM_COUNT_PER_PAGE,
     },
-    timingConfig
+    {
+      ...timingConfig,
+      // These rows own hide, clone, and edit controls. Never retain rows from
+      // the previous serialized pagination key while this page is loading.
+      keepPreviousData: false,
+    }
   )
   const games = gamePage?.data
   const total = gamePage?.total ?? 0
