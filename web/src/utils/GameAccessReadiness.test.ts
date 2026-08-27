@@ -28,6 +28,97 @@ const game = (
   status: ParticipationStatus
 ): DetailedGameInfoModel => ({ id, title, start, end, status, practiceMode: false })
 
+test('navigation mounted inside the SWR dedupe window adopts the same key successful read', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/games/61/challenges' })
+  const restoreDom = installTestDom(browser)
+  const now = Date.now()
+  let reads = 0
+  const fetcher: BareFetcher<DetailedGameInfoModel> = async (request) => {
+    assert.equal(request, '/api/game/61')
+    reads += 1
+    return game(61, 'live event', now - 60_000, now + 600_000, ParticipationStatus.Accepted)
+  }
+  const swrConfig: SWRConfiguration = {
+    provider: () => new Map(),
+    fetcher,
+    dedupingInterval: 2_000,
+  }
+  const { SWRConfig } = await import('swr')
+  const { useGame, useGameAccess } = await import('../hooks/useGame')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  const ExistingSubscriber: FC = () => {
+    const { game: current } = useGame(61)
+    return createElement('output', { id: 'existing-game' }, current?.title ?? 'loading')
+  }
+  const NavigationSubscriber: FC = () => {
+    const { liveReadReady } = useGameAccess(61)
+    return createElement('output', { id: 'navigation-access' }, liveReadReady ? 'ready' : 'waiting')
+  }
+  const App: FC<{ navigating: boolean }> = ({ navigating }) =>
+    createElement(
+      SWRConfig,
+      { value: swrConfig },
+      createElement(ExistingSubscriber),
+      navigating ? createElement(NavigationSubscriber) : null
+    )
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => root.render(createElement(App, { navigating: false })))
+    assert.equal(reads, 1)
+    assert.equal(container.querySelector('#existing-game')?.textContent, 'live event')
+
+    await act(async () => root.render(createElement(App, { navigating: true })))
+    assert.equal(reads, 1, 'the navigation subscriber is deduplicated behind the completed request')
+    assert.equal(container.querySelector('#navigation-access')?.textContent, 'ready')
+  } finally {
+    await act(async () => root.unmount())
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('successful read memory is key-scoped, response-scoped, expiring, and error-invalidated', async () => {
+  let now = 1_000
+  const { createGameTimingSWRConfig, GAME_ACCESS_READ_READY_MS } = await import('../hooks/useGame')
+  const owner = createGameTimingSWRConfig(() => now)
+  const { config } = owner
+  const live = game(71, 'live A', 10_000, 20_000, ParticipationStatus.Accepted)
+
+  try {
+    config.onSuccess?.(live, '/api/game/71', config)
+    assert.equal(owner.hasRecentSuccessfulGameRead('/api/game/71', live), true)
+    assert.equal(
+      owner.hasRecentSuccessfulGameRead(
+        '/api/game/71',
+        game(71, 'stale schedule', 30_000, 40_000, ParticipationStatus.Unsubmitted)
+      ),
+      false
+    )
+    assert.equal(
+      owner.hasRecentSuccessfulGameRead(
+        '/api/game/72',
+        game(72, 'other key', 10_000, 20_000, ParticipationStatus.Accepted)
+      ),
+      false
+    )
+
+    now += GAME_ACCESS_READ_READY_MS
+    assert.equal(owner.hasRecentSuccessfulGameRead('/api/game/71', live), false)
+
+    config.onSuccess?.(live, '/api/game/71', config)
+    assert.equal(owner.hasRecentSuccessfulGameRead('/api/game/71', live), true)
+    config.onError?.({ response: { status: 503 } }, '/api/game/71', config)
+    assert.equal(owner.hasRecentSuccessfulGameRead('/api/game/71', live), false)
+  } finally {
+    owner.cancelAll()
+  }
+})
+
 test('cached game paint waits for this key before applying retained schedule and participation changes', async () => {
   const browser = new Window({ url: 'https://rsctf.test/games/41/challenges' })
   const restoreDom = installTestDom(browser)

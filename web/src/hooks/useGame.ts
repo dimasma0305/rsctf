@@ -9,6 +9,87 @@ import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ParticipationStatus } from '@Api'
 
 export const GAME_TIMING_REFRESH_MS = 60_000
+export const GAME_ACCESS_READ_READY_MS = 5_000
+const MAX_RECENT_GAME_READS = 128
+
+type GameAccessReadSnapshot = {
+  id: number
+  start: unknown
+  end: unknown
+  status: unknown
+  practiceMode: unknown
+  serverTime: unknown
+}
+
+type RecentGameRead = {
+  expiresAt: number
+  snapshot: GameAccessReadSnapshot
+}
+
+const monotonicMilliseconds = () => (typeof performance === 'undefined' ? Date.now() : performance.now())
+
+const gameAccessReadSnapshot = (key: string, data: unknown): GameAccessReadSnapshot | null => {
+  const keyMatch = /^\/api\/game\/(\d+)$/.exec(key)
+  if (!keyMatch || !data || typeof data !== 'object') return null
+  const record = data as Record<string, unknown>
+  const id = Number(keyMatch[1])
+  if (!Number.isSafeInteger(id) || record.id !== id) return null
+  return {
+    id,
+    start: record.start,
+    end: record.end,
+    status: record.status,
+    practiceMode: record.practiceMode,
+    serverTime: record.serverTime,
+  }
+}
+
+const sameGameAccessRead = (left: GameAccessReadSnapshot, right: GameAccessReadSnapshot) =>
+  left.id === right.id &&
+  Object.is(left.start, right.start) &&
+  Object.is(left.end, right.end) &&
+  Object.is(left.status, right.status) &&
+  Object.is(left.practiceMode, right.practiceMode) &&
+  Object.is(left.serverTime, right.serverTime)
+
+const createRecentGameReads = (nowMilliseconds: () => number) => {
+  const reads = new Map<string, RecentGameRead>()
+  const prune = (now: number) => {
+    reads.forEach((entry, key) => {
+      if (entry.expiresAt <= now) reads.delete(key)
+    })
+  }
+  const invalidate = (key: string) => reads.delete(key)
+  const remember = (key: string, data: unknown) => {
+    const snapshot = gameAccessReadSnapshot(key, data)
+    if (!snapshot) {
+      invalidate(key)
+      return
+    }
+    const now = nowMilliseconds()
+    prune(now)
+    reads.delete(key)
+    reads.set(key, { expiresAt: now + GAME_ACCESS_READ_READY_MS, snapshot })
+    while (reads.size > MAX_RECENT_GAME_READS) {
+      const oldestKey = reads.keys().next().value
+      if (oldestKey === undefined) break
+      reads.delete(oldestKey)
+    }
+  }
+  const matches = (key: string, data: unknown) => {
+    const now = nowMilliseconds()
+    const entry = reads.get(key)
+    if (!entry) return false
+    if (entry.expiresAt <= now) {
+      reads.delete(key)
+      return false
+    }
+    const snapshot = gameAccessReadSnapshot(key, data)
+    return snapshot !== null && sameGameAccessRead(entry.snapshot, snapshot)
+  }
+  const clear = () => reads.clear()
+  return { clear, invalidate, matches, remember }
+}
 
 type LiveGameReadGeneration = {
   key: string
@@ -21,12 +102,18 @@ type LiveGameReadGeneration = {
  * A persisted SWR value may paint immediately, but it is not authoritative
  * enough for redirects until this mounted game key completes a live read.
  */
-const useLiveGameReadReady = (key: string, gameId: number | undefined, isValidating: boolean, error: unknown) => {
+const useLiveGameReadReady = (
+  key: string,
+  gameId: number | undefined,
+  isValidating: boolean,
+  error: unknown,
+  recentSuccessfulRead: boolean
+) => {
   const [state, setState] = useState<LiveGameReadGeneration>({
     key,
     generation: 0,
     validationObserved: false,
-    ready: false,
+    ready: recentSuccessfulRead,
   })
   const responseMatchesKey = gameId !== undefined && key === unstable_serialize(`/api/game/${gameId}`)
 
@@ -44,15 +131,16 @@ const useLiveGameReadReady = (key: string, gameId: number | undefined, isValidat
       const validationObserved = active.validationObserved || isValidating
       const ready =
         active.ready ||
+        recentSuccessfulRead ||
         (validationObserved && !isValidating && error === undefined && key.length > 0 && responseMatchesKey)
 
       if (active === current && validationObserved === current.validationObserved && ready === current.ready)
         return current
       return { ...active, validationObserved, ready }
     })
-  }, [error, isValidating, key, responseMatchesKey])
+  }, [error, isValidating, key, recentSuccessfulRead, responseMatchesKey])
 
-  return state.key === key && state.ready && responseMatchesKey
+  return responseMatchesKey && ((state.key === key && state.ready) || recentSuccessfulRead)
 }
 
 export const shouldRetryGameTimingError = (error: unknown) => isRetryableHttpError(error)
@@ -72,13 +160,14 @@ export const gameTimingSWRConfig: SWRConfiguration = {
 }
 
 /** Own one timing poll leader and one replaceable recovery timer per SWR key. */
-export const createGameTimingSWRConfig = () => {
+export const createGameTimingSWRConfig = (nowMilliseconds: () => number = monotonicMilliseconds) => {
   type LeadershipListener = (isLeader: boolean) => void
   type DeferredRetry = { isActive: () => boolean; run: () => void }
 
   const subscribers = new Map<string, Map<symbol, LeadershipListener>>()
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const deferredRetries = new Map<string, DeferredRetry>()
+  const recentGameReads = createRecentGameReads(nowMilliseconds)
   let removeActivityListeners: (() => void) | null = null
   const stopListeningForActivity = () => {
     removeActivityListeners?.()
@@ -141,6 +230,7 @@ export const createGameTimingSWRConfig = () => {
     retryTimers.forEach((timer) => clearTimeout(timer))
     retryTimers.clear()
     deferredRetries.clear()
+    recentGameReads.clear()
     stopListeningForActivity()
   }
   const scopeMiddleware: Middleware = (useSWRNext) =>
@@ -169,8 +259,14 @@ export const createGameTimingSWRConfig = () => {
   const config: SWRConfiguration = {
     ...gameTimingSWRConfig,
     use: [...(gameTimingSWRConfig.use ?? []), scopeMiddleware],
-    onError: (_error, key) => cancel(key),
-    onSuccess: (_data, key) => cancel(key),
+    onError: (_error, key) => {
+      cancel(key)
+      recentGameReads.invalidate(key)
+    },
+    onSuccess: (data, key) => {
+      cancel(key)
+      recentGameReads.remember(key, data)
+    },
     onDiscarded: cancel,
     onErrorRetry: (_error, key, _config, revalidate, options) => {
       if (!subscribers.has(key)) return
@@ -199,7 +295,12 @@ export const createGameTimingSWRConfig = () => {
       )
     },
   }
-  return { config, cancelAll, subscribe }
+  return {
+    config,
+    cancelAll,
+    subscribe,
+    hasRecentSuccessfulGameRead: (key: string, data: unknown) => recentGameReads.matches(key, data),
+  }
 }
 
 const sharedGameTimingOwner = createGameTimingSWRConfig()
@@ -309,7 +410,14 @@ export const useGame = (numId: number) => {
 export const useGameAccess = (numId: number) => {
   const gameState = useGame(numId)
   const gameKey = unstable_serialize(numId > 0 ? `/api/game/${numId}` : null)
-  const liveReadReady = useLiveGameReadReady(gameKey, gameState.game?.id, gameState.isValidating, gameState.error)
+  const recentSuccessfulRead = sharedGameTimingOwner.hasRecentSuccessfulGameRead(gameKey, gameState.game)
+  const liveReadReady = useLiveGameReadReady(
+    gameKey,
+    gameState.game?.id,
+    gameState.isValidating,
+    gameState.error,
+    recentSuccessfulRead
+  )
 
   return { ...gameState, liveReadReady }
 }
