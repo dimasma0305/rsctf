@@ -27,16 +27,16 @@ CREATE INDEX IF NOT EXISTS ix_submissions_game_challenge
     ON "Submissions" (game_id, challenge_id);
 
 CREATE INDEX IF NOT EXISTS ix_teams_monitor_name_trgm
-    ON "Teams" USING GIN (LOWER(name) gin_trgm_ops);
+    ON "Teams" USING GIN (LOWER(name) public.gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS ix_users_monitor_name_trgm
-    ON "AspNetUsers" USING GIN (LOWER(user_name) gin_trgm_ops)
+    ON "AspNetUsers" USING GIN (LOWER(user_name) public.gin_trgm_ops)
     WHERE user_name IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_challenges_monitor_title_trgm
-    ON "GameChallenges" USING GIN (LOWER(title) gin_trgm_ops);
+    ON "GameChallenges" USING GIN (LOWER(title) public.gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS ix_submissions_monitor_answer_trgm
-    ON "Submissions" USING GIST (LOWER(answer) gist_trgm_ops(siglen=64));
+    ON "Submissions" USING GIST (LOWER(answer) public.gist_trgm_ops(siglen=64));
 CREATE INDEX IF NOT EXISTS ix_gameevents_monitor_values_trgm
-    ON "GameEvents" USING GIST (LOWER(values::text) gist_trgm_ops(siglen=64));
+    ON "GameEvents" USING GIST (LOWER(values::text) public.gist_trgm_ops(siglen=64));
 "#;
 
 const DOWN_SQL: &str = r#"
@@ -79,8 +79,8 @@ mod tests {
         assert_eq!(UP_SQL.matches("CREATE INDEX IF NOT EXISTS").count(), 11);
         assert!(UP_SQL.contains("(game_id, publish_time_utc DESC, id DESC)"));
         assert!(UP_SQL.contains("(game_id, status, submit_time_utc DESC, id DESC)"));
-        assert!(UP_SQL.contains("gin_trgm_ops"));
-        assert!(UP_SQL.contains("gist_trgm_ops(siglen=64)"));
+        assert!(UP_SQL.contains("public.gin_trgm_ops"));
+        assert!(UP_SQL.contains("public.gist_trgm_ops(siglen=64)"));
         assert!(!DOWN_SQL.contains("DROP EXTENSION"));
     }
 }

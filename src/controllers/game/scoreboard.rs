@@ -46,8 +46,7 @@ pub(super) fn bounded_solver_page(query: &SolversQuery) -> AppResult<(usize, usi
     let count = query
         .count
         .unwrap_or(DEFAULT_SOLVER_PAGE_SIZE)
-        .max(1)
-        .min(MAX_SOLVER_PAGE_SIZE);
+        .clamp(1, MAX_SOLVER_PAGE_SIZE);
     let skip = query.skip.unwrap_or(0);
     if skip > MAX_SOLVER_SKIP {
         return Err(AppError::bad_request("Solver page offset is too large"));
@@ -94,20 +93,18 @@ fn export_overload_response(error: MonitorExportAdmissionError) -> Response {
     response
 }
 
-fn begin_monitor_export(st: &SharedState) -> Result<MonitorExportPermit, Response> {
-    st.monitor_export_admission
-        .try_begin()
-        .map_err(export_overload_response)
+fn begin_monitor_export(
+    st: &SharedState,
+) -> Result<MonitorExportPermit, MonitorExportAdmissionError> {
+    st.monitor_export_admission.try_begin()
 }
 
 fn reserve_monitor_export_work(
     permit: &mut MonitorExportPermit,
     rows: usize,
     bytes: usize,
-) -> Result<(), Response> {
-    permit
-        .try_reserve_work(rows, bytes)
-        .map_err(export_overload_response)
+) -> Result<(), MonitorExportAdmissionError> {
+    permit.try_reserve_work(rows, bytes)
 }
 
 /// Reconnect backfill. Omitting `after` returns a cursor-only checkpoint; a
@@ -644,7 +641,7 @@ pub async fn scoreboard_sheet(
 
     let mut export_permit = match begin_monitor_export(&st) {
         Ok(permit) => permit,
-        Err(response) => return Ok(response),
+        Err(error) => return Ok(export_overload_response(error)),
     };
     let bounded_count: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*)::bigint
@@ -670,12 +667,12 @@ pub async fn scoreboard_sheet(
     // Charge the maximum bounded scoreboard before loading the model. This
     // remains safe if a participation is accepted between the count and the
     // cache fill, and two small scoreboards may still use both task slots.
-    if let Err(response) = reserve_monitor_export_work(
+    if let Err(error) = reserve_monitor_export_work(
         &mut export_permit,
         MAX_SCOREBOARD_EXPORT_ROWS,
         MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES,
     ) {
-        return Ok(response);
+        return Ok(export_overload_response(error));
     }
 
     // Monitor-only export: always the live (unfrozen) board.
@@ -762,7 +759,7 @@ pub async fn submission_sheet(
 
     let mut export_permit = match begin_monitor_export(&st) {
         Ok(permit) => permit,
-        Err(response) => return Ok(response),
+        Err(error) => return Ok(export_overload_response(error)),
     };
     let rows = match load_submission_export_snapshot(st.pg(), id, &mut export_permit).await {
         Ok(rows) => rows,

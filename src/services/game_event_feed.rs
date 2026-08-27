@@ -677,7 +677,7 @@ mod tests {
         let natural_commit_order: Vec<(i32, i64)> = sqlx::query_as(
             r#"SELECT id, feed_cursor FROM "GameEvents" WHERE id = ANY($1) ORDER BY feed_cursor"#,
         )
-        .bind(&[lower_id_event, higher_id_event])
+        .bind([lower_id_event, higher_id_event])
         .fetch_all(&pool)
         .await
         .unwrap();
@@ -733,7 +733,7 @@ mod tests {
         let cursor_pair: Vec<(i32, i64)> = sqlx::query_as(
             r#"SELECT id, feed_cursor FROM "GameEvents" WHERE id = ANY($1) ORDER BY feed_cursor"#,
         )
-        .bind(&[first_id, second_id])
+        .bind([first_id, second_id])
         .fetch_all(&pool)
         .await
         .unwrap();
