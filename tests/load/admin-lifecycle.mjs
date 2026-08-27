@@ -1552,7 +1552,11 @@ async function observabilityAndRuntime() {
     'file inventory omitted the fixture writeup',
   );
 
-  const instances = await call('GET', '/api/admin/instances', '/api/admin/instances?count=100&skip=0');
+  const instances = await call(
+    'GET',
+    '/api/admin/instances',
+    '/api/admin/instances?count=50&skip=0&includeRuntimeStats=true',
+  );
   const fixtureInstance = instances.json?.data?.find(
     (instance) => instance.containerGuid === containerGuid,
   );
@@ -1574,6 +1578,11 @@ async function observabilityAndRuntime() {
   requireCondition(
     typeof fixtureInstance.isProxy === 'boolean',
     `instance inventory omitted its proxy capability: ${JSON.stringify(fixtureInstance)}`,
+  );
+  requireCondition(
+    ['Available', 'Unavailable'].includes(fixtureInstance.runtimeStats?.availability) &&
+      Number.isFinite(fixtureInstance.runtimeStats?.sampledAt),
+    `instance inventory omitted its bounded runtime sample: ${JSON.stringify(fixtureInstance)}`,
   );
   const stats = await call(
     'GET',

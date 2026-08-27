@@ -352,7 +352,7 @@
     },
     "instances": {
       "destroy": "Apakah kamu yakin ingin menghapus instance {{name}}?",
-      "note": "Note: Statistik container tidak termasuk container tes admin dan container yang telah dihapus",
+      "note": "Metrik runtime diambil dalam satu batch terbatas. Metrik yang tidak dapat dilaporkan runtime ditampilkan sebagai tidak tersedia.",
       "stats": " <1>{{count}}</1> instance yang didistribusikan secara total"
     },
     "markdown_inline_support": "Support dengan markdown styling",
@@ -537,12 +537,15 @@
       "copy_proxy_url": "Salin URL proxy",
       "entry": "Entri instance",
       "life_cycle": "Siklus",
+      "limit_unavailable": "Batas tidak tersedia",
       "owner": {
         "admin_test": "Tes admin",
         "exercise": "Latihan",
         "shared": "Bersama (semua tim)",
         "unassigned": "Belum ditetapkan"
-      }
+      },
+      "stats_disabled": "Statistik langsung dinonaktifkan",
+      "stats_unavailable": "Metrik runtime tidak tersedia"
     },
     "logs": {
       "message": "Pesan",

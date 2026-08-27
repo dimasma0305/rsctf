@@ -145,7 +145,7 @@ export const ADMIN_OPERATIONS = Object.freeze([
   operation("admin_instances_get", "GET", "/api/admin/instances", {
     poll: true,
     responseKind: "page",
-    query: "count=25&skip=0",
+    query: "count=25&skip=0&includeRuntimeStats=true",
   }),
   operation("admin_instance_delete", "DELETE", "/api/admin/instances/{id}", {
     mutation: true,
@@ -153,7 +153,6 @@ export const ADMIN_OPERATIONS = Object.freeze([
     params: { id: "instanceId" },
   }),
   operation("admin_instance_stats_get", "GET", "/api/admin/instances/{id}/stats", {
-    poll: true,
     responseKind: "instance-stats",
     params: { id: "instanceId" },
   }),

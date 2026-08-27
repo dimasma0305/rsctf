@@ -1,6 +1,13 @@
 //! Admin container-instance listing + destroy + stats — split from admin/mod.rs.
 use super::*;
 use crate::models::data::container;
+use crate::services::container::{ContainerManager, ContainerStatus};
+use futures::{stream, StreamExt};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration as StdDuration;
+use tokio::sync::{RwLock, Semaphore};
+use tokio::time::Instant;
 
 /// RSCTF `ChallengeModel` (nested challenge reference).
 #[derive(Debug, Serialize)]
@@ -43,6 +50,207 @@ pub struct ContainerInstanceModel {
     pub ip: String,
     pub port: i32,
     pub is_proxy: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_stats: Option<ContainerRuntimeStatsModel>,
+}
+
+/// Whether the runtime returned a sample for this managed container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum ContainerRuntimeAvailability {
+    Available,
+    Unavailable,
+}
+
+/// A runtime sample attached to an admin inventory page.
+///
+/// Metrics that the selected backend cannot measure are `null`, never an
+/// authoritative-looking zero. A missing/stopped runtime is represented by an
+/// `Unavailable` sample so one stale row cannot fail or trigger retries for the
+/// whole page.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerRuntimeStatsModel {
+    pub availability: ContainerRuntimeAvailability,
+    pub cpu_percent: Option<f64>,
+    pub memory_used_bytes: Option<i64>,
+    pub memory_limit_bytes: Option<i64>,
+    pub net_rx_bytes: Option<i64>,
+    pub net_tx_bytes: Option<i64>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub sampled_at: DateTime<Utc>,
+}
+
+const INSTANCE_RUNTIME_BATCH_MAX: u64 = 50;
+const INSTANCE_RUNTIME_CONCURRENCY: usize = 8;
+const INSTANCE_RUNTIME_CACHE_CAPACITY: usize = 2_048;
+const INSTANCE_RUNTIME_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
+const INSTANCE_RUNTIME_QUERY_TIMEOUT: StdDuration = StdDuration::from_secs(2);
+
+static INSTANCE_RUNTIME_SLOTS: Semaphore = Semaphore::const_new(INSTANCE_RUNTIME_CONCURRENCY);
+static INSTANCE_RUNTIME_CACHE: LazyLock<RuntimeSampleCache> = LazyLock::new(|| {
+    RuntimeSampleCache::new(INSTANCE_RUNTIME_CACHE_TTL, INSTANCE_RUNTIME_CACHE_CAPACITY)
+});
+
+#[derive(Clone)]
+struct CachedRuntimeSample {
+    sample: ContainerRuntimeStatsModel,
+    expires_at: Instant,
+}
+
+struct RuntimeSampleCache {
+    entries: RwLock<HashMap<String, CachedRuntimeSample>>,
+    ttl: StdDuration,
+    capacity: usize,
+}
+
+impl RuntimeSampleCache {
+    fn new(ttl: StdDuration, capacity: usize) -> Self {
+        Self {
+            entries: RwLock::new(HashMap::new()),
+            ttl,
+            capacity: capacity.max(1),
+        }
+    }
+
+    async fn get(&self, runtime_id: &str) -> Option<ContainerRuntimeStatsModel> {
+        let now = Instant::now();
+        let entries = self.entries.read().await;
+        entries
+            .get(runtime_id)
+            .filter(|entry| entry.expires_at > now)
+            .map(|entry| entry.sample.clone())
+    }
+
+    async fn insert(&self, runtime_id: String, sample: ContainerRuntimeStatsModel) {
+        let now = Instant::now();
+        let mut entries = self.entries.write().await;
+        entries.retain(|_, entry| entry.expires_at > now);
+        if entries.len() >= self.capacity && !entries.contains_key(&runtime_id) {
+            if let Some(oldest) = entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.expires_at)
+                .map(|(key, _)| key.clone())
+            {
+                entries.remove(&oldest);
+            }
+        }
+        entries.insert(
+            runtime_id,
+            CachedRuntimeSample {
+                sample,
+                expires_at: now + self.ttl,
+            },
+        );
+    }
+
+    async fn remove(&self, runtime_id: &str) {
+        self.entries.write().await.remove(runtime_id);
+    }
+}
+
+fn available_runtime_sample(
+    status: ContainerStatus,
+    sampled_at: DateTime<Utc>,
+) -> ContainerRuntimeStatsModel {
+    ContainerRuntimeStatsModel {
+        availability: ContainerRuntimeAvailability::Available,
+        cpu_percent: status
+            .cpu_usage
+            .map(|value| value * 100.0)
+            .filter(|value| value.is_finite() && *value >= 0.0),
+        memory_used_bytes: status
+            .memory_bytes
+            .and_then(|value| i64::try_from(value).ok()),
+        // ContainerStatus intentionally exposes neither the configured memory
+        // ceiling nor network counters. Keep those metrics explicitly absent.
+        memory_limit_bytes: None,
+        net_rx_bytes: None,
+        net_tx_bytes: None,
+        sampled_at,
+    }
+}
+
+fn unavailable_runtime_sample(sampled_at: DateTime<Utc>) -> ContainerRuntimeStatsModel {
+    ContainerRuntimeStatsModel {
+        availability: ContainerRuntimeAvailability::Unavailable,
+        cpu_percent: None,
+        memory_used_bytes: None,
+        memory_limit_bytes: None,
+        net_rx_bytes: None,
+        net_tx_bytes: None,
+        sampled_at,
+    }
+}
+
+async fn sample_runtime(
+    manager: &Arc<dyn ContainerManager>,
+    cache: &RuntimeSampleCache,
+    slots: &Semaphore,
+    runtime_id: &str,
+) -> ContainerRuntimeStatsModel {
+    if let Some(sample) = cache.get(runtime_id).await {
+        return sample;
+    }
+
+    // Concurrent tabs and overlapping in-process requests
+    // wait behind one key, then re-check the cache instead of dogpiling the
+    // runtime exactly when its sample expires.
+    let flight_key = format!("admin-instance-runtime:{runtime_id}");
+    let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
+    if let Some(sample) = cache.get(runtime_id).await {
+        return sample;
+    }
+
+    let sample = match slots.acquire().await {
+        Ok(_permit) => {
+            let sampled_at = Utc::now();
+            match tokio::time::timeout(INSTANCE_RUNTIME_QUERY_TIMEOUT, manager.query(runtime_id))
+                .await
+            {
+                Ok(Ok(status)) => available_runtime_sample(status, sampled_at),
+                Ok(Err(_)) | Err(_) => unavailable_runtime_sample(sampled_at),
+            }
+        }
+        Err(_) => unavailable_runtime_sample(Utc::now()),
+    };
+    cache.insert(runtime_id.to_owned(), sample.clone()).await;
+    sample
+}
+
+async fn sample_runtime_batch(
+    manager: &Arc<dyn ContainerManager>,
+    cache: &RuntimeSampleCache,
+    slots: &Semaphore,
+    instances: &[(Uuid, String)],
+) -> HashMap<Uuid, ContainerRuntimeStatsModel> {
+    stream::iter(instances.iter().cloned())
+        .map(|(guid, runtime_id)| async move {
+            let sample = sample_runtime(manager, cache, slots, &runtime_id).await;
+            (guid, sample)
+        })
+        .buffer_unordered(INSTANCE_RUNTIME_CONCURRENCY)
+        .collect()
+        .await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceListQuery {
+    #[serde(default = "default_count")]
+    count: u64,
+    #[serde(default)]
+    skip: u64,
+    #[serde(default)]
+    include_runtime_stats: bool,
+}
+
+fn instance_page_count(query: &InstanceListQuery) -> i64 {
+    let limit = if query.include_runtime_stats {
+        INSTANCE_RUNTIME_BATCH_MAX
+    } else {
+        500
+    };
+    query.count.min(limit) as i64
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -224,6 +432,7 @@ fn project_instance(row: ContainerInstanceRow) -> AppResult<ContainerInstanceMod
         ip: row.ip,
         port: row.port,
         is_proxy: row.is_proxy,
+        runtime_stats: None,
     })
 }
 
@@ -232,9 +441,9 @@ fn project_instance(row: ContainerInstanceRow) -> AppResult<ContainerInstanceMod
 pub async fn instances(
     State(st): State<SharedState>,
     _admin: AdminUser,
-    Query(q): Query<ListQuery>,
+    Query(q): Query<InstanceListQuery>,
 ) -> AppResult<ArrayResponse<ContainerInstanceModel>> {
-    let count = q.count.clamp(0, 500) as i64;
+    let count = instance_page_count(&q);
     let skip = i64::try_from(q.skip).unwrap_or(i64::MAX);
     let total = sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Containers""#)
         .fetch_one(st.pg())
@@ -246,10 +455,27 @@ pub async fn instances(
         .fetch_all(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let data = rows
+    let mut data = rows
         .into_iter()
         .map(project_instance)
         .collect::<AppResult<Vec<_>>>()?;
+
+    if q.include_runtime_stats && !data.is_empty() {
+        let identities = data
+            .iter()
+            .map(|instance| (instance.container_guid, instance.container_id.clone()))
+            .collect::<Vec<_>>();
+        let mut samples = sample_runtime_batch(
+            &st.containers,
+            &INSTANCE_RUNTIME_CACHE,
+            &INSTANCE_RUNTIME_SLOTS,
+            &identities,
+        )
+        .await;
+        for instance in &mut data {
+            instance.runtime_stats = samples.remove(&instance.container_guid);
+        }
+    }
 
     Ok(ArrayResponse::new(data, total))
 }
@@ -266,6 +492,7 @@ pub async fn destroy_instance(
         .ok_or_else(|| AppError::not_found("Container instance not found"))?;
 
     crate::controllers::game::destroy_managed_container_row(&st, &c, false).await?;
+    INSTANCE_RUNTIME_CACHE.remove(&c.container_id).await;
     Ok(MessageResponse::ok(""))
 }
 
@@ -286,9 +513,8 @@ pub struct ContainerStatsModel {
 ///
 /// Mirrors RSCTF `AdminController.GetInstanceStats`: look up the container row by
 /// its database GUID, then sample the live runtime via `st.containers.query`,
-/// which reads the Docker stats API and returns a `ContainerStatus` with
-/// `memory_bytes` / `cpu_usage` populated. The coarse `ContainerStatus` sample
-/// carries CPU (as a fraction of one core) and memory (bytes); it does not expose
+/// which reads the Docker stats API and returns a `ContainerStatus` carrying
+/// CPU (as a fraction of one core) and memory (bytes); it does not expose
 /// a memory limit or per-interface network counters, so those DTO fields stay `0`
 /// (matching the "stats the backend can provide" contract). `cpu_usage` is scaled
 /// ×100 to the `cpuPercent` (0–100 × cores) the client renders.
@@ -302,43 +528,186 @@ pub async fn instance_stats(
     _admin: AdminUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<RequestResponse<ContainerStatsModel>> {
-    let c = container::Entity::find_by_id(id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Container instance not found"))?;
+    let runtime_id =
+        sqlx::query_scalar::<_, String>(r#"SELECT container_id FROM "Containers" WHERE id = $1"#)
+            .bind(id)
+            .fetch_optional(st.pg())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+            .ok_or_else(|| AppError::not_found("Container instance not found"))?;
 
-    // Sample the live runtime. A backend error (Docker unreachable / no backend /
-    // container gone) degrades to a 404 "stats unavailable" rather than a 500,
-    // so the admin UI just shows the row without a stats overlay.
-    let status = st
-        .containers
-        .query(&c.container_id)
-        .await
-        .map_err(|_| AppError::not_found("Stats unavailable for this container."))?;
+    let sample = sample_runtime(
+        &st.containers,
+        &INSTANCE_RUNTIME_CACHE,
+        &INSTANCE_RUNTIME_SLOTS,
+        &runtime_id,
+    )
+    .await;
+    if sample.availability == ContainerRuntimeAvailability::Unavailable {
+        return Err(AppError::not_found("Stats unavailable for this container."));
+    }
 
     Ok(RequestResponse::ok(ContainerStatsModel {
-        cpu_percent: status.cpu_usage.map(|v| v * 100.0).unwrap_or(0.0),
-        memory_used_bytes: status.memory_bytes.map(|m| m as i64).unwrap_or(0),
+        cpu_percent: sample.cpu_percent.unwrap_or(0.0),
+        memory_used_bytes: sample.memory_used_bytes.unwrap_or(0),
         // The coarse ContainerStatus sample carries no memory limit or network
         // counters; leave them zero until the backend surfaces them.
         memory_limit_bytes: 0,
         net_rx_bytes: 0,
         net_tx_bytes: 0,
-        sampled_at: Utc::now(),
+        sampled_at: sample.sampled_at,
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use crate::services::container::{ContainerInfo, ContainerSpec};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    struct TrackingRuntime {
+        calls: AtomicUsize,
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
+        missing: bool,
+    }
+
+    impl TrackingRuntime {
+        fn new(missing: bool) -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                in_flight: AtomicUsize::new(0),
+                max_in_flight: AtomicUsize::new(0),
+                missing,
+            }
+        }
+    }
+
+    struct InFlight<'a>(&'a AtomicUsize);
+
+    impl Drop for InFlight<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl ContainerManager for TrackingRuntime {
+        async fn create(&self, _spec: ContainerSpec) -> AppResult<ContainerInfo> {
+            Err(AppError::bad_request("not used by runtime sampling test"))
+        }
+
+        async fn destroy(&self, _id: &str) -> AppResult<()> {
+            Err(AppError::bad_request("not used by runtime sampling test"))
+        }
+
+        async fn query(&self, id: &str) -> AppResult<ContainerStatus> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(current, Ordering::SeqCst);
+            let _in_flight = InFlight(&self.in_flight);
+            tokio::time::sleep(StdDuration::from_millis(15)).await;
+            if self.missing {
+                return Err(AppError::not_found("runtime missing"));
+            }
+            Ok(ContainerStatus {
+                id: id.to_owned(),
+                status: "running".to_owned(),
+                memory_bytes: Some(1_024),
+                cpu_usage: Some(0.5),
+            })
+        }
+    }
 
     #[test]
     fn ownership_projection_rejects_unknown_database_values() {
         assert_eq!(owner_kind("Shared").unwrap(), ContainerOwnerKind::Shared);
         assert!(owner_kind("LegacyMystery").is_err());
+    }
+
+    #[test]
+    fn runtime_pages_and_inventory_pages_have_hard_size_bounds() {
+        assert_eq!(
+            instance_page_count(&InstanceListQuery {
+                count: 100,
+                skip: 0,
+                include_runtime_stats: true,
+            }),
+            50
+        );
+        assert_eq!(
+            instance_page_count(&InstanceListQuery {
+                count: 1_000,
+                skip: 0,
+                include_runtime_stats: false,
+            }),
+            500
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_batch_caps_backend_concurrency() {
+        let tracked = Arc::new(TrackingRuntime::new(false));
+        let manager: Arc<dyn ContainerManager> = tracked.clone();
+        let cache = RuntimeSampleCache::new(StdDuration::from_secs(60), 128);
+        let slots = Semaphore::new(4);
+        let instances = (1_u128..=100)
+            .map(|value| (Uuid::from_u128(value), format!("runtime-{value}")))
+            .collect::<Vec<_>>();
+
+        let samples = sample_runtime_batch(&manager, &cache, &slots, &instances).await;
+
+        assert_eq!(samples.len(), 100);
+        assert_eq!(tracked.calls.load(Ordering::SeqCst), 100);
+        assert!(tracked.max_in_flight.load(Ordering::SeqCst) <= 4);
+        assert!(samples.values().all(|sample| {
+            sample.availability == ContainerRuntimeAvailability::Available
+                && sample.cpu_percent == Some(50.0)
+                && sample.memory_limit_bytes.is_none()
+                && sample.net_rx_bytes.is_none()
+        }));
+    }
+
+    #[tokio::test]
+    async fn missing_runtime_is_coalesced_and_negatively_cached() {
+        let tracked = Arc::new(TrackingRuntime::new(true));
+        let manager: Arc<dyn ContainerManager> = tracked.clone();
+        let cache = RuntimeSampleCache::new(StdDuration::from_secs(60), 128);
+        let slots = Semaphore::new(4);
+        let instances = (1_u128..=100)
+            .map(|value| (Uuid::from_u128(value), "missing-runtime".to_owned()))
+            .collect::<Vec<_>>();
+
+        let first = sample_runtime_batch(&manager, &cache, &slots, &instances).await;
+        let second = sample_runtime_batch(&manager, &cache, &slots, &instances).await;
+
+        assert_eq!(first.len(), 100);
+        assert_eq!(second.len(), 100);
+        assert_eq!(tracked.calls.load(Ordering::SeqCst), 1);
+        assert!(first.values().chain(second.values()).all(|sample| {
+            sample.availability == ContainerRuntimeAvailability::Unavailable
+                && sample.cpu_percent.is_none()
+                && sample.memory_used_bytes.is_none()
+        }));
+    }
+
+    #[tokio::test]
+    async fn runtime_sample_cache_has_a_hard_entry_bound() {
+        let cache = RuntimeSampleCache::new(StdDuration::from_secs(60), 2);
+        for runtime_id in ["runtime-a", "runtime-b", "runtime-c"] {
+            cache
+                .insert(
+                    runtime_id.to_owned(),
+                    unavailable_runtime_sample(Utc::now()),
+                )
+                .await;
+        }
+
+        assert_eq!(cache.entries.read().await.len(), 2);
     }
 
     #[tokio::test]
@@ -470,6 +839,19 @@ mod tests {
         .execute(&pool)
         .await
         .expect("seed ownership shapes");
+
+        let total = sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Containers""#)
+            .fetch_one(&pool)
+            .await
+            .expect("count complete inventory");
+        let page = sqlx::query_as::<_, ContainerInstanceRow>(INSTANCE_PAGE_SQL)
+            .bind(2_i64)
+            .bind(2_i64)
+            .fetch_all(&pool)
+            .await
+            .expect("fetch bounded inventory page");
+        assert_eq!(total, 5);
+        assert_eq!(page.len(), 2);
 
         let rows = sqlx::query_as::<_, ContainerInstanceRow>(INSTANCE_PAGE_SQL)
             .bind(100_i64)

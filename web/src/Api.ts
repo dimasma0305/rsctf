@@ -1026,6 +1026,24 @@ export enum ContainerOwnerKind {
   Unassigned = "Unassigned",
 }
 
+/** Availability of one bounded container-runtime sample */
+export enum ContainerRuntimeAvailability {
+  Available = "Available",
+  Unavailable = "Unavailable",
+}
+
+/** Runtime metrics attached to an admin instance inventory page */
+export interface ContainerRuntimeStatsModel {
+  availability: ContainerRuntimeAvailability;
+  cpuPercent?: number | null;
+  memoryUsedBytes?: number | null;
+  memoryLimitBytes?: number | null;
+  netRxBytes?: number | null;
+  netTxBytes?: number | null;
+  /** @format uint64 */
+  sampledAt: number;
+}
+
 /** Container instance information (Admin) */
 export interface ContainerInstanceModel {
   /** Team */
@@ -1064,6 +1082,8 @@ export interface ContainerInstanceModel {
   port?: number;
   /** Whether the access entry is served by the WebSocket proxy */
   isProxy?: boolean;
+  /** Optional bounded live-runtime sample requested with this page */
+  runtimeStats?: ContainerRuntimeStatsModel;
 }
 
 /** Team information */
@@ -4818,6 +4838,25 @@ export class Api<
         format: "json",
         ...params,
       }),
+
+    /** Paginated inventory with an optional bounded runtime-stat batch. */
+    adminInstancesPage: (
+      query?: {
+        /** @format int32 */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        includeRuntimeStats?: boolean;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfContainerInstanceModel, RequestResponse>({
+        path: `/api/admin/instances`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
     /**
      * @description Use this API to get all container instances, requires Admin permission
      *
@@ -4829,6 +4868,22 @@ export class Api<
     useAdminInstances: (options?: SWRConfiguration, doFetch: boolean = true) =>
       useSWR<ArrayResponseOfContainerInstanceModel, RequestResponse>(
         doFetch ? `/api/admin/instances` : null,
+        options,
+      ),
+
+    useAdminInstancesPage: (
+      query?: {
+        /** @format int32 */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        includeRuntimeStats?: boolean;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfContainerInstanceModel, RequestResponse>(
+        doFetch ? [`/api/admin/instances`, query] : null,
         options,
       ),
 
@@ -4848,6 +4903,25 @@ export class Api<
     ) =>
       mutate<ArrayResponseOfContainerInstanceModel>(
         `/api/admin/instances`,
+        data,
+        options,
+      ),
+
+    mutateAdminInstancesPage: (
+      query?: {
+        /** @format int32 */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        includeRuntimeStats?: boolean;
+      },
+      data?:
+        | ArrayResponseOfContainerInstanceModel
+        | Promise<ArrayResponseOfContainerInstanceModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfContainerInstanceModel>(
+        [`/api/admin/instances`, query],
         data,
         options,
       ),
