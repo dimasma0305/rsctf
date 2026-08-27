@@ -395,12 +395,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 4..],
+            &names[names.len() - 5..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
                 "m0105_manager_autocomplete_indexes",
                 "m0106_submission_idempotency",
+                "m0107_monitor_history_indexes",
             ]
         );
     }

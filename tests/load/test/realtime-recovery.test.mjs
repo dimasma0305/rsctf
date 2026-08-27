@@ -56,7 +56,8 @@ test("fallback ownership pauses hidden/offline clients and unmount cancels both 
     /document\.removeEventListener\('visibilitychange', resume\)/,
   );
   assert.match(hookSource, /window\.removeEventListener\('online', resume\)/);
-  assert.match(hookSource, /void controller\.stop\(\)/);
+  assert.match(hookSource, /stopPromise\.current = controller\.stop\(\)/);
+  assert.match(hookSource, /return \{ state, waitForStop \}/);
   assert.throws(
     () =>
       fallbackRequestUpperBound({
