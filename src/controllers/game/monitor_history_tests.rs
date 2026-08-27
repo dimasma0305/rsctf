@@ -8,8 +8,9 @@ use uuid::Uuid;
 
 use super::{
     monitor_history::{
-        load_events, load_submissions, MONITOR_EVENTS_SEARCH_SQL, MONITOR_EVENTS_SQL,
-        MONITOR_SUBMISSIONS_SEARCH_SQL, MONITOR_SUBMISSIONS_SQL,
+        load_event_page, load_events_legacy, load_submission_page, load_submissions_legacy,
+        MONITOR_EVENTS_SEARCH_SQL, MONITOR_EVENTS_SQL, MONITOR_SUBMISSIONS_SEARCH_SQL,
+        MONITOR_SUBMISSIONS_SQL,
     },
     EventQuery, SubmissionQuery,
 };
@@ -192,7 +193,7 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
         .expect("analyze monitor fixtures");
 
     let event_calls_before = statement_calls(&pool, r#""GameEvents" event"#).await;
-    let events = load_events(
+    let events = load_event_page(
         &pool,
         7,
         &EventQuery {
@@ -222,7 +223,7 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
     }
 
     let submission_calls_before = statement_calls(&pool, r#""Submissions" submission"#).await;
-    let submissions = load_submissions(
+    let submissions = load_submission_page(
         &pool,
         7,
         &SubmissionQuery {
@@ -248,7 +249,44 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
         );
     }
 
-    let literal_wildcard = load_events(
+    let legacy_events = load_events_legacy(
+        &pool,
+        7,
+        &EventQuery {
+            count: Some(0),
+            skip: Some(29_999),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        legacy_events.len(),
+        30_000,
+        "legacy events count=0 must return complete retained history and ignore skip"
+    );
+    drop(legacy_events);
+
+    let legacy_submissions = load_submissions_legacy(
+        &pool,
+        7,
+        &SubmissionQuery {
+            count: Some(0),
+            skip: Some(49_999),
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        legacy_submissions.len(),
+        50_000,
+        "legacy submissions count=0 must return complete retained history and ignore skip"
+    );
+    drop(legacy_submissions);
+
+    let literal_wildcard = load_event_page(
         &pool,
         7,
         &EventQuery {
@@ -261,7 +299,7 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
     .unwrap();
     assert!(literal_wildcard.is_empty(), "wildcards must remain literal");
 
-    let named_team = load_events(
+    let named_team = load_event_page(
         &pool,
         7,
         &EventQuery {
@@ -284,7 +322,7 @@ async fn large_monitor_history_is_bounded_indexed_and_one_query_per_page() {
         concurrent.push(tokio::spawn(async move {
             tokio::time::timeout(
                 Duration::from_secs(5),
-                load_submissions(
+                load_submission_page(
                     &pool,
                     7,
                     &SubmissionQuery {

@@ -528,7 +528,8 @@ pub struct RecentQuery {
     pub limit: usize,
 }
 
-/// RSCTF `GameController.Events` query: `hideContainer`/`count`/`skip`/`search`.
+/// Monitor event query shared by two contracts: legacy `/events` preserves
+/// `count=0` as all retained rows, while `/events/page` applies hard bounds.
 /// Events has no `type` filter (that belongs to `Submissions`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -555,6 +556,8 @@ pub struct SolversQuery {
     pub skip: Option<u64>,
 }
 
+/// Monitor submission query shared by legacy `/submissions` and bounded
+/// `/submissions/page`; only the legacy route treats `count=0` as all rows.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmissionQuery {

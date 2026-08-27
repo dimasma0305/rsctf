@@ -38,8 +38,8 @@ import { ScrollingText } from '@Components/ScrollingText'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { downloadBlob, handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
-import { submissionMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
 import { LatestRequest } from '@Utils/LatestRequest'
+import { submissionMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
 import { OPERATOR_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
 import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
@@ -105,7 +105,7 @@ const Submissions: FC = () => {
   const fetchSubmissions = useCallback(async () => {
     try {
       const res = await submissionRequest.current.run((signal) =>
-        api.game.gameSubmissions(
+        api.game.gameSubmissionPage(
           numId,
           {
             type: type === 'All' ? undefined : type,

@@ -294,8 +294,8 @@ pub async fn notices(
 /// `GET /api/game/{id}/events` — requires Monitor.
 ///
 /// `hideContainer` drops container-lifecycle events and `search` matches the
-/// event-scoped team/user/value projection before pagination. Zero/omitted
-/// counts use the bounded default; no live request can materialize all rows.
+/// event-scoped team/user/value projection before pagination. This compatibility
+/// route preserves `TakeAllIfZero`: an explicit zero returns all retained rows.
 pub async fn events(
     State(st): State<SharedState>,
     MonitorUser(_user): MonitorUser,
@@ -308,7 +308,7 @@ pub async fn events(
         return Err(AppError::game_not_started());
     }
 
-    let data = monitor_history::load_events(st.pg(), id, &q).await?;
+    let data = monitor_history::load_events_legacy(st.pg(), id, &q).await?;
     Ok(RequestResponse::ok(data))
 }
 
@@ -830,7 +830,7 @@ pub async fn submissions(
     let _ = load_game(&st, id).await?;
 
     let status = q.type_filter.as_deref().and_then(parse_answer_result);
-    let data = monitor_history::load_submissions(st.pg(), id, &q, status).await?;
+    let data = monitor_history::load_submissions_legacy(st.pg(), id, &q, status).await?;
     Ok(RequestResponse::ok(data))
 }
 

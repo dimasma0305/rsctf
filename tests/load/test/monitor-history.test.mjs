@@ -11,6 +11,8 @@ test('monitor history and durable backfill use one fixed-rate bounded read per i
   assert.match(scenario, /exec\.scenario\.iterationInTest/);
   assert.equal((scenario.match(/http\.get\(/g) || []).length, 1);
   assert.doesNotMatch(scenario, /http\.(?:post|put|patch|del|delete)\(/);
+  assert.match(scenario, /events\/page\?count=0/);
+  assert.match(scenario, /submissions\/page\?count=0/);
   for (const range of [
     'count=0',
     'count=1',
@@ -52,8 +54,10 @@ test('runner requires a large history and protects minted credentials', () => {
 test('history and reconnect reads use named heavy-query admission', () => {
   for (const path of [
     '/api/game/{id}/events',
+    '/api/game/{id}/events/page',
     '/api/game/{id}/events/backfill',
     '/api/game/{id}/submissions',
+    '/api/game/{id}/submissions/page',
   ]) {
     const escaped = path.replace(/[{}]/g, '\\$&').replaceAll('/', '\\/');
     assert.match(routes, new RegExp(`"${escaped}"\\s*,\\s*limited\\(Policy::Query`));

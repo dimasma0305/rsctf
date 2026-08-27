@@ -152,7 +152,7 @@ const Events: FC = () => {
   const loadSnapshot = useCallback(async () => {
     const requestId = ++latestSnapshotRequest.current
     const res = await eventRequest.current.run((signal) =>
-      api.game.gameEvents(
+      api.game.gameEventPage(
         numId,
         {
           hideContainer: hideContainerEvents,

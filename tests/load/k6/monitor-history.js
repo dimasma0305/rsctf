@@ -14,22 +14,22 @@ if (!/^\d+$/.test(GAME) || TOKENS.length === 0) {
 
 const longSearch = 'needle'.repeat(100);
 const endpoints = [
-  { name: 'events_zero', path: `/api/game/${GAME}/events?count=0`, kind: 'history', maxRows: 100 },
-  { name: 'events_one', path: `/api/game/${GAME}/events?count=1`, kind: 'history', maxRows: 1 },
-  { name: 'events_max', path: `/api/game/${GAME}/events?count=100`, kind: 'history', maxRows: 100 },
-  { name: 'events_clamp', path: `/api/game/${GAME}/events?count=10000`, kind: 'history', maxRows: 100 },
-  { name: 'events_wildcard', path: `/api/game/${GAME}/events?count=100&search=${encodeURIComponent('%_')}`, kind: 'history', maxRows: 100 },
-  { name: 'events_long', path: `/api/game/${GAME}/events?count=100&search=${longSearch}`, kind: 'history', maxRows: 100 },
+  { name: 'events_zero', path: `/api/game/${GAME}/events/page?count=0`, kind: 'history', maxRows: 100 },
+  { name: 'events_one', path: `/api/game/${GAME}/events/page?count=1`, kind: 'history', maxRows: 1 },
+  { name: 'events_max', path: `/api/game/${GAME}/events/page?count=100`, kind: 'history', maxRows: 100 },
+  { name: 'events_clamp', path: `/api/game/${GAME}/events/page?count=10000`, kind: 'history', maxRows: 100 },
+  { name: 'events_wildcard', path: `/api/game/${GAME}/events/page?count=100&search=${encodeURIComponent('%_')}`, kind: 'history', maxRows: 100 },
+  { name: 'events_long', path: `/api/game/${GAME}/events/page?count=100&search=${longSearch}`, kind: 'history', maxRows: 100 },
   { name: 'event_checkpoint', path: `/api/game/${GAME}/events/backfill`, kind: 'checkpoint', maxRows: 0 },
   { name: 'event_backfill_one', path: `/api/game/${GAME}/events/backfill?after=0&limit=1`, kind: 'backfill', maxRows: 1 },
   { name: 'event_backfill_max', path: `/api/game/${GAME}/events/backfill?after=0&limit=100`, kind: 'backfill', maxRows: 100 },
   { name: 'event_backfill_clamp', path: `/api/game/${GAME}/events/backfill?after=0&limit=10000`, kind: 'backfill', maxRows: 100 },
-  { name: 'submissions_zero', path: `/api/game/${GAME}/submissions?count=0`, kind: 'history', maxRows: 100 },
-  { name: 'submissions_one', path: `/api/game/${GAME}/submissions?count=1`, kind: 'history', maxRows: 1 },
-  { name: 'submissions_max', path: `/api/game/${GAME}/submissions?count=100`, kind: 'history', maxRows: 100 },
-  { name: 'submissions_clamp', path: `/api/game/${GAME}/submissions?count=10000`, kind: 'history', maxRows: 100 },
-  { name: 'submissions_wildcard', path: `/api/game/${GAME}/submissions?count=100&search=${encodeURIComponent('%_')}`, kind: 'history', maxRows: 100 },
-  { name: 'submissions_long', path: `/api/game/${GAME}/submissions?count=100&search=${longSearch}`, kind: 'history', maxRows: 100 },
+  { name: 'submissions_zero', path: `/api/game/${GAME}/submissions/page?count=0`, kind: 'history', maxRows: 100 },
+  { name: 'submissions_one', path: `/api/game/${GAME}/submissions/page?count=1`, kind: 'history', maxRows: 1 },
+  { name: 'submissions_max', path: `/api/game/${GAME}/submissions/page?count=100`, kind: 'history', maxRows: 100 },
+  { name: 'submissions_clamp', path: `/api/game/${GAME}/submissions/page?count=10000`, kind: 'history', maxRows: 100 },
+  { name: 'submissions_wildcard', path: `/api/game/${GAME}/submissions/page?count=100&search=${encodeURIComponent('%_')}`, kind: 'history', maxRows: 100 },
+  { name: 'submissions_long', path: `/api/game/${GAME}/submissions/page?count=100&search=${longSearch}`, kind: 'history', maxRows: 100 },
 ];
 
 const invalidResponse = new Rate('monitor_history_invalid');

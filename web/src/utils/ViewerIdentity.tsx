@@ -1,11 +1,9 @@
 import { createContext, FC, Fragment, PropsWithChildren, useContext, useLayoutEffect, useMemo, useRef } from 'react'
 import { useLocation } from 'react-router'
 import { type Cache, type Key, type Middleware, type ScopedMutator, useSWRConfig } from 'swr'
-import { retirePersistentCacheEntry } from '@Utils/Cache'
+import { retirePersistentCacheEntry, retirePersistentCacheScope, VIEWER_SCOPE_MARKER } from '@Utils/Cache'
 import { profileErrorDisposition } from '@Utils/ProfileRetry'
 import { useUser } from '@Hooks/useUser'
-
-const VIEWER_SCOPE_MARKER = 'rsctf-viewer-scope'
 
 type ViewerScopedKey = readonly [typeof VIEWER_SCOPE_MARKER, string, Key]
 
@@ -74,6 +72,7 @@ export const retireViewerScope = async (
   await mutate((key) => isViewerScopedKey(key) && key[1] === scope, undefined, { revalidate: false })
   if (activeScope() === scope) return 0
 
+  retirePersistentCacheScope(cache, scope)
   let deleted = 0
   for (const key of cache.keys()) {
     const originalKey = cachedOriginalKey(cache, key)

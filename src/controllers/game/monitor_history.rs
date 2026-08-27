@@ -8,7 +8,8 @@ use chrono::{DateTime, Utc};
 use serde_json::Value as Json;
 
 use super::{
-    AnswerResult, AppError, AppResult, EventQuery, EventType, GameEventModel, SubmissionModel,
+    load_game, parse_answer_result, AnswerResult, AppError, AppResult, EventQuery, EventType,
+    GameEventModel, MonitorUser, Path, Query, RequestResponse, SharedState, State, SubmissionModel,
     SubmissionQuery,
 };
 
@@ -173,7 +174,9 @@ pub(super) struct MonitorPage {
 }
 
 impl MonitorPage {
-    pub(super) fn from_parts(count: Option<u64>, skip: Option<u64>) -> Self {
+    /// Page contract for interactive clients. Every request has a hard row and
+    /// offset bound, including an explicit zero count.
+    pub(super) fn bounded(count: Option<u64>, skip: Option<u64>) -> Self {
         let requested = count.unwrap_or(MONITOR_PAGE_DEFAULT);
         let limit = if requested == 0 {
             MONITOR_PAGE_DEFAULT
@@ -185,6 +188,28 @@ impl MonitorPage {
             limit: limit as i64,
             offset: skip.min(MONITOR_MAX_SKIP) as i64,
             beyond_interactive_history: skip > MONITOR_MAX_SKIP,
+        }
+    }
+
+    /// Compatibility contract for the original monitor routes. Their
+    /// established `TakeAllIfZero` behavior treats an explicit zero as the
+    /// complete retained history and ignores `skip`; positive pages retain the
+    /// original 100-row count cap without the newer interactive offset cap.
+    pub(super) fn legacy(count: Option<u64>, skip: Option<u64>) -> Self {
+        if count == Some(0) {
+            return Self {
+                limit: i64::MAX,
+                offset: 0,
+                beyond_interactive_history: false,
+            };
+        }
+
+        Self {
+            limit: count
+                .unwrap_or(MONITOR_PAGE_DEFAULT)
+                .clamp(1, MONITOR_PAGE_MAX) as i64,
+            offset: i64::try_from(skip.unwrap_or(0)).unwrap_or(i64::MAX),
+            beyond_interactive_history: false,
         }
     }
 }
@@ -273,12 +298,12 @@ fn answer_result_from_db(value: i16) -> AppResult<AnswerResult> {
     }
 }
 
-pub(super) async fn load_events(
+async fn load_events_window(
     pool: &sqlx::PgPool,
     game_id: i32,
     query: &EventQuery,
+    page: MonitorPage,
 ) -> AppResult<Vec<GameEventModel>> {
-    let page = MonitorPage::from_parts(query.count, query.skip);
     if page.beyond_interactive_history {
         return Ok(Vec::new());
     }
@@ -290,7 +315,7 @@ pub(super) async fn load_events(
             .bind(search)
             .bind(page.offset)
             .bind(page.limit)
-            .bind(page.offset + page.limit)
+            .bind(page.offset.saturating_add(page.limit))
             .fetch_all(pool)
             .await
     } else {
@@ -319,13 +344,41 @@ pub(super) async fn load_events(
         .collect()
 }
 
-pub(super) async fn load_submissions(
+pub(super) async fn load_events_legacy(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    query: &EventQuery,
+) -> AppResult<Vec<GameEventModel>> {
+    load_events_window(
+        pool,
+        game_id,
+        query,
+        MonitorPage::legacy(query.count, query.skip),
+    )
+    .await
+}
+
+pub(super) async fn load_event_page(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    query: &EventQuery,
+) -> AppResult<Vec<GameEventModel>> {
+    load_events_window(
+        pool,
+        game_id,
+        query,
+        MonitorPage::bounded(query.count, query.skip),
+    )
+    .await
+}
+
+async fn load_submissions_window(
     pool: &sqlx::PgPool,
     game_id: i32,
     query: &SubmissionQuery,
     status: Option<AnswerResult>,
+    page: MonitorPage,
 ) -> AppResult<Vec<SubmissionModel>> {
-    let page = MonitorPage::from_parts(query.count, query.skip);
     if page.beyond_interactive_history {
         return Ok(Vec::new());
     }
@@ -338,7 +391,7 @@ pub(super) async fn load_submissions(
             .bind(search)
             .bind(page.offset)
             .bind(page.limit)
-            .bind(page.offset + page.limit)
+            .bind(page.offset.saturating_add(page.limit))
             .fetch_all(pool)
             .await
     } else {
@@ -366,25 +419,97 @@ pub(super) async fn load_submissions(
         .collect()
 }
 
+pub(super) async fn load_submissions_legacy(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    query: &SubmissionQuery,
+    status: Option<AnswerResult>,
+) -> AppResult<Vec<SubmissionModel>> {
+    load_submissions_window(
+        pool,
+        game_id,
+        query,
+        status,
+        MonitorPage::legacy(query.count, query.skip),
+    )
+    .await
+}
+
+pub(super) async fn load_submission_page(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    query: &SubmissionQuery,
+    status: Option<AnswerResult>,
+) -> AppResult<Vec<SubmissionModel>> {
+    load_submissions_window(
+        pool,
+        game_id,
+        query,
+        status,
+        MonitorPage::bounded(query.count, query.skip),
+    )
+    .await
+}
+
+/// `GET /api/game/{id}/events/page` — bounded monitor history for interactive
+/// clients. Zero/omitted counts use the 100-row default and offsets are capped.
+pub(super) async fn event_page(
+    State(st): State<SharedState>,
+    MonitorUser(_user): MonitorUser,
+    Path(id): Path<i32>,
+    Query(q): Query<EventQuery>,
+) -> AppResult<RequestResponse<Vec<GameEventModel>>> {
+    let game = load_game(&st, id).await?;
+    if Utc::now() < game.start_time_utc {
+        return Err(AppError::game_not_started());
+    }
+
+    let data = load_event_page(st.pg(), id, &q).await?;
+    Ok(RequestResponse::ok(data))
+}
+
+/// `GET /api/game/{id}/submissions/page` — bounded monitor history for
+/// interactive clients. The original `/submissions` zero-count contract remains
+/// available to archive consumers.
+pub(super) async fn submission_page(
+    State(st): State<SharedState>,
+    MonitorUser(_user): MonitorUser,
+    Path(id): Path<i32>,
+    Query(q): Query<SubmissionQuery>,
+) -> AppResult<RequestResponse<Vec<SubmissionModel>>> {
+    let _ = load_game(&st, id).await?;
+
+    let status = q.type_filter.as_deref().and_then(parse_answer_result);
+    let data = load_submission_page(st.pg(), id, &q, status).await?;
+    Ok(RequestResponse::ok(data))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn zero_and_oversized_counts_are_bounded() {
-        assert_eq!(MonitorPage::from_parts(None, None).limit, 100);
-        assert_eq!(MonitorPage::from_parts(Some(0), None).limit, 100);
-        assert_eq!(MonitorPage::from_parts(Some(1), None).limit, 1);
-        assert_eq!(MonitorPage::from_parts(Some(10_000), None).limit, 100);
+    fn bounded_and_legacy_windows_keep_distinct_zero_contracts() {
+        assert_eq!(MonitorPage::bounded(None, None).limit, 100);
+        assert_eq!(MonitorPage::bounded(Some(0), None).limit, 100);
+        assert_eq!(MonitorPage::bounded(Some(1), None).limit, 1);
+        assert_eq!(MonitorPage::bounded(Some(10_000), None).limit, 100);
+
+        let legacy_all = MonitorPage::legacy(Some(0), Some(42));
+        assert_eq!(legacy_all.limit, i64::MAX);
+        assert_eq!(legacy_all.offset, 0, "TakeAllIfZero ignores skip");
+        assert!(!legacy_all.beyond_interactive_history);
+        assert_eq!(MonitorPage::legacy(None, Some(42)).limit, 100);
+        assert_eq!(MonitorPage::legacy(None, Some(42)).offset, 42);
     }
 
     #[test]
     fn excessive_offset_ends_the_interactive_feed_without_querying() {
-        let last = MonitorPage::from_parts(Some(100), Some(MONITOR_MAX_SKIP));
+        let last = MonitorPage::bounded(Some(100), Some(MONITOR_MAX_SKIP));
         assert_eq!(last.offset, MONITOR_MAX_SKIP as i64);
         assert!(!last.beyond_interactive_history);
 
-        let beyond = MonitorPage::from_parts(Some(100), Some(MONITOR_MAX_SKIP + 1));
+        let beyond = MonitorPage::bounded(Some(100), Some(MONITOR_MAX_SKIP + 1));
         assert_eq!(beyond.offset, MONITOR_MAX_SKIP as i64);
         assert!(beyond.beyond_interactive_history);
     }

@@ -8071,7 +8071,7 @@ export class Api<
          * @min 0
          * @max 100
          * @default 100
-         * @description Zero is accepted as a bounded 100-row page.
+         * @description Zero returns the complete retained history on this legacy route.
          */
         count?: number;
         /**
@@ -8194,6 +8194,66 @@ export class Api<
       data?: GameEvent[] | Promise<GameEvent[]>,
       options?: MutatorOptions,
     ) => mutate<GameEvent[]>([`/api/game/${id}/events`, query], data, options),
+
+    /**
+     * @description Retrieves a bounded page of game event data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameEventPage
+     * @summary Get a bounded game-event page
+     * @request GET:/api/game/{id}/events/page
+     */
+    gameEventPage: (
+      id: number,
+      query?: {
+        hideContainer?: boolean;
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         * @description Zero uses the bounded 100-row default.
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<GameEvent[], RequestResponse>({
+        path: `/api/game/${id}/events/page`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    useGameEventPage: (
+      id: number,
+      query?: {
+        hideContainer?: boolean;
+        count?: number;
+        skip?: number;
+        search?: string | null;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<GameEvent[], RequestResponse>(
+        doFetch ? [`/api/game/${id}/events/page`, query] : null,
+        options,
+      ),
+    mutateGameEventPage: (
+      id: number,
+      query?: {
+        hideContainer?: boolean;
+        count?: number;
+        skip?: number;
+        search?: string | null;
+      },
+      data?: GameEvent[] | Promise<GameEvent[]>,
+      options?: MutatorOptions,
+    ) => mutate<GameEvent[]>([`/api/game/${id}/events/page`, query], data, options),
 
     /**
      * @description Extends container lifetime; requires User permission and can only be extended two hours within ten minutes before expiration
@@ -9771,6 +9831,71 @@ export class Api<
     ) =>
       mutate<Submission[]>(
         [`/api/game/${id}/submissions`, query],
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieves a bounded page of game submission data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameSubmissionPage
+     * @summary Get a bounded game-submission page
+     * @request GET:/api/game/{id}/submissions/page
+     */
+    gameSubmissionPage: (
+      id: number,
+      query?: {
+        type?: AnswerResult | null;
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         * @description Zero uses the bounded 100-row default.
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<Submission[], RequestResponse>({
+        path: `/api/game/${id}/submissions/page`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    useGameSubmissionPage: (
+      id: number,
+      query?: {
+        type?: AnswerResult | null;
+        count?: number;
+        skip?: number;
+        search?: string | null;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<Submission[], RequestResponse>(
+        doFetch ? [`/api/game/${id}/submissions/page`, query] : null,
+        options,
+      ),
+    mutateGameSubmissionPage: (
+      id: number,
+      query?: {
+        type?: AnswerResult | null;
+        count?: number;
+        skip?: number;
+        search?: string | null;
+      },
+      data?: Submission[] | Promise<Submission[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<Submission[]>(
+        [`/api/game/${id}/submissions/page`, query],
         data,
         options,
       ),

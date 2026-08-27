@@ -30,6 +30,10 @@ fn router_with_domains(
         .route("/api/game/{id}/notices", get(notices))
         .route("/api/game/{id}/events", limited(Policy::Query, get(events)))
         .route(
+            "/api/game/{id}/events/page",
+            limited(Policy::Query, get(monitor_history::event_page)),
+        )
+        .route(
             "/api/game/{id}/events/backfill",
             limited(Policy::Query, get(event_backfill)),
         )
@@ -58,6 +62,10 @@ fn router_with_domains(
         .route(
             "/api/game/{id}/submissions",
             limited(Policy::Query, get(submissions)),
+        )
+        .route(
+            "/api/game/{id}/submissions/page",
+            limited(Policy::Query, get(monitor_history::submission_page)),
         )
         .route("/api/game/{id}/submissionsheet", get(submission_sheet))
         .route("/api/game/{id}/check", get(join_check))
