@@ -316,8 +316,8 @@ struct ContainerInstanceRow {
 
 #[derive(Debug, sqlx::FromRow)]
 struct ContainerInstanceFilterOptionRow {
-    id: i32,
-    label: String,
+    id: Option<i32>,
+    label: Option<String>,
     avatar: Option<String>,
     category: Option<i16>,
     total: i64,
@@ -468,14 +468,24 @@ static INSTANCE_TEAM_FILTER_OPTIONS_SQL: LazyLock<String> = LazyLock::new(|| {
               FROM projected
              WHERE team_id IS NOT NULL
                AND team_name IS NOT NULL
+        ),
+        filtered AS MATERIALIZED (
+            SELECT id, label, avatar, category
+              FROM options
+             WHERE $1 = ''
+                OR label ILIKE '%' || $1 || '%'
+                OR id::TEXT = $1
+        ),
+        page AS (
+            SELECT id, label, avatar, category
+              FROM filtered
+             ORDER BY LOWER(label), id
+             LIMIT $2
         )
-        SELECT id, label, avatar, category, COUNT(*) OVER () AS total
-          FROM options
-         WHERE $1 = ''
-            OR label ILIKE '%' || $1 || '%'
-            OR id::TEXT = $1
-         ORDER BY LOWER(label), id
-         LIMIT $2
+        SELECT page.id, page.label, page.avatar, page.category, summary.total
+          FROM (SELECT COUNT(*)::BIGINT AS total FROM filtered) summary
+     LEFT JOIN page ON TRUE
+         ORDER BY LOWER(page.label) NULLS LAST, page.id NULLS LAST
         "#
     )
 });
@@ -493,14 +503,24 @@ static INSTANCE_CHALLENGE_FILTER_OPTIONS_SQL: LazyLock<String> = LazyLock::new(|
              WHERE challenge_id IS NOT NULL
                AND challenge_title IS NOT NULL
                AND challenge_category IS NOT NULL
+        ),
+        filtered AS MATERIALIZED (
+            SELECT id, label, avatar, category
+              FROM options
+             WHERE $1 = ''
+                OR label ILIKE '%' || $1 || '%'
+                OR id::TEXT = $1
+        ),
+        page AS (
+            SELECT id, label, avatar, category
+              FROM filtered
+             ORDER BY LOWER(label), id
+             LIMIT $2
         )
-        SELECT id, label, avatar, category, COUNT(*) OVER () AS total
-          FROM options
-         WHERE $1 = ''
-            OR label ILIKE '%' || $1 || '%'
-            OR id::TEXT = $1
-         ORDER BY LOWER(label), id
-         LIMIT $2
+        SELECT page.id, page.label, page.avatar, page.category, summary.total
+          FROM (SELECT COUNT(*)::BIGINT AS total FROM filtered) summary
+     LEFT JOIN page ON TRUE
+         ORDER BY LOWER(page.label) NULLS LAST, page.id NULLS LAST
         "#
     )
 });
@@ -564,13 +584,29 @@ fn project_instance(row: ContainerInstanceRow) -> AppResult<ContainerInstanceMod
 
 fn project_filter_option(
     row: ContainerInstanceFilterOptionRow,
-) -> AppResult<ContainerInstanceFilterOptionModel> {
-    Ok(ContainerInstanceFilterOptionModel {
-        id: row.id,
-        label: row.label,
+) -> AppResult<Option<ContainerInstanceFilterOptionModel>> {
+    let (id, label) = match (row.id, row.label) {
+        (Some(id), Some(label)) => (id, label),
+        (None, None) => return Ok(None),
+        _ => return Err(AppError::internal("Incomplete instance filter option")),
+    };
+    Ok(Some(ContainerInstanceFilterOptionModel {
+        id,
+        label,
         avatar: row.avatar,
         category: row.category.map(challenge_category).transpose()?,
-    })
+    }))
+}
+
+fn filter_option_response(
+    rows: Vec<ContainerInstanceFilterOptionRow>,
+) -> AppResult<ArrayResponse<ContainerInstanceFilterOptionModel>> {
+    let total = rows.first().map(|row| row.total).unwrap_or(0);
+    let data = rows
+        .into_iter()
+        .filter_map(|row| project_filter_option(row).transpose())
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(ArrayResponse::new(data, total))
 }
 
 /// `GET /api/admin/instances` — paginated list of managed containers with their
@@ -650,13 +686,7 @@ pub async fn instance_filter_options(
         .fetch_all(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let total = rows.first().map(|row| row.total).unwrap_or(0);
-    let data = rows
-        .into_iter()
-        .map(project_filter_option)
-        .collect::<AppResult<Vec<_>>>()?;
-
-    Ok(ArrayResponse::new(data, total))
+    filter_option_response(rows)
 }
 
 /// `DELETE /api/admin/instances/{id}` — forcibly destroy a container.
@@ -836,6 +866,24 @@ mod tests {
             }),
             50
         );
+        assert_eq!(
+            instance_filter_option_count(&InstanceFilterOptionsQuery {
+                kind: ContainerInstanceFilterKind::Challenge,
+                search: String::new(),
+                count: 0,
+            }),
+            0
+        );
+    }
+
+    #[test]
+    fn filter_option_discovery_retains_backend_admin_authentication() {
+        let source = include_str!("instances.rs");
+        let start = source
+            .find("pub async fn instance_filter_options")
+            .expect("filter-options handler exists");
+        let end = (start + 260).min(source.len());
+        assert!(source[start..end].contains("_admin: AdminUser"));
     }
 
     #[tokio::test]

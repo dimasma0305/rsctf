@@ -125,7 +125,7 @@ test('game notices keep one realtime connection across ordinary rerenders', () =
   assert.doesNotMatch(source, /new signalR\.HubConnectionBuilder/)
   assert.match(owner, /useEffect\(\(\) => \{[\s\S]*?handlersRef\.current = handlers/)
   assert.match(owner, /if \(!disposed\) handlersRef\.current\[name\]/)
-  assert.match(owner, /\}, \[active, pollingIntervalMs, url\]\)/)
+  assert.match(owner, /\}, \[active, ownerKey, pollingIntervalMs, url\]\)/)
   assert.doesNotMatch(owner, /\[active, handlers, revalidate/)
 })
 

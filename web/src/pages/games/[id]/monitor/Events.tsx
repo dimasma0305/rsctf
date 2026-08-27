@@ -41,21 +41,21 @@ import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
+import { LatestRequest } from '@Utils/LatestRequest'
 import {
   currentMonitorBufferRows,
   currentMonitorSnapshotRows,
   gameEventMonitorIdentity,
   mergeGameEventBuffer,
-  monitorPushIsCurrent,
+  monitorEventPushIsCurrent,
   monitorSnapshotIsCurrent,
   rebaseGameEventBuffer,
   type ScopedMonitorSnapshot,
   unreconciledMonitorRows,
 } from '@Utils/MonitorFeed'
-import { LatestRequest } from '@Utils/LatestRequest'
 import { OPERATOR_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
-import { useViewerIdentity } from '@Utils/ViewerIdentity'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { useViewerIdentity } from '@Utils/ViewerIdentity'
 import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import { useRecoveringHub } from '@Hooks/useRecoveringHub'
 import api, { EventType, GameEvent } from '@Api'
@@ -132,7 +132,7 @@ const Events: FC = () => {
   const recoveryRequest = useRef(new LatestRequest())
 
   const { game } = useGame(numId)
-  const { finished } = useGameStatus(game)
+  const { finished, status: gameStatus } = useGameStatus(game)
   const monitorConnectionActive = Boolean(game?.end) && !finished
   const isNarrow = useIsMobile(480)
 
@@ -277,10 +277,21 @@ const Events: FC = () => {
   const { waitForStop: waitForMonitorHubStop } = useRecoveringHub({
     active: monitorConnectionActive,
     url: `/hub/monitor?game=${numId}`,
+    ownerKey: gameStatus,
     handlers: {
       ReceivedGameEvent: (raw) => {
         const message = raw as GameEvent
-        if (!monitorPushIsCurrent(activeFeedScope.current, feedScope, false)) return
+        if (
+          !monitorEventPushIsCurrent(
+            activeFeedScope.current,
+            feedScope,
+            false,
+            cursorInitialized.current,
+            eventCursor.current,
+            message.cursor
+          )
+        )
+          return
         mergeIncomingEvents([message])
       },
     },

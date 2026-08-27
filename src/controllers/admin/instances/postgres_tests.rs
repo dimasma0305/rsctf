@@ -252,8 +252,22 @@ async fn instance_projection_resolves_every_ownership_shape() {
     .await
     .expect("discover team option outside the current page");
     assert_eq!(team_options.len(), 1);
-    assert_eq!(team_options[0].id, 8);
+    assert_eq!(team_options[0].id, Some(8));
     assert_eq!(team_options[0].total, 1);
+
+    let empty_team_page = sqlx::query_as::<_, ContainerInstanceFilterOptionRow>(
+        INSTANCE_TEAM_FILTER_OPTIONS_SQL.as_str(),
+    )
+    .bind("late-page")
+    .bind(0_i64)
+    .fetch_all(&pool)
+    .await
+    .expect("count matching options when the requested page is empty");
+    let empty_team_response =
+        filter_option_response(empty_team_page).expect("project the empty bounded page");
+    assert_eq!(empty_team_response.total, 1);
+    assert_eq!(empty_team_response.length, 0);
+    assert!(empty_team_response.data.is_empty());
 
     let challenge_options = sqlx::query_as::<_, ContainerInstanceFilterOptionRow>(
         INSTANCE_CHALLENGE_FILTER_OPTIONS_SQL.as_str(),
@@ -264,7 +278,7 @@ async fn instance_projection_resolves_every_ownership_shape() {
     .await
     .expect("discover challenge option outside the current page");
     assert_eq!(challenge_options.len(), 1);
-    assert_eq!(challenge_options[0].id, 40);
+    assert_eq!(challenge_options[0].id, Some(40));
     assert_eq!(challenge_options[0].total, 1);
 
     pool.close().await;

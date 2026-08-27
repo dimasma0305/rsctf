@@ -13,6 +13,7 @@ type HubHandler = (...arguments_: unknown[]) => void
 interface RecoveringHubOptions {
   active: boolean
   url: string
+  ownerKey?: string | number
   handlers: Record<string, HubHandler>
   revalidate: () => void | Promise<unknown>
   pollingIntervalMs: number
@@ -24,10 +25,11 @@ const browserCanPoll = () => document.visibilityState !== 'hidden' && navigator.
 
 /** Route-scoped SignalR owner shared by notices and operator feeds. Callback
  * refs may change as filters or translations revalidate, but the transport is
- * owned only by the stable active/url lifecycle primitives. */
+ * owned only by stable active/URL/owner-key lifecycle primitives. */
 export const useRecoveringHub = ({
   active,
   url,
+  ownerKey,
   handlers,
   revalidate,
   pollingIntervalMs,
@@ -107,8 +109,9 @@ export const useRecoveringHub = ({
       stopPromise.current = controller.stop()
     }
     // Deliberately exclude callbacks and full game/filter objects: refs keep
-    // their behavior current while active + URL own the transport lifecycle.
-  }, [active, pollingIntervalMs, url])
+    // their behavior current while active, URL, and an optional primitive key
+    // own the transport lifecycle.
+  }, [active, ownerKey, pollingIntervalMs, url])
 
   return { state, waitForStop }
 }

@@ -1,4 +1,5 @@
-use axum::extract::{Path, State};
+use axum::body::{Body, Bytes};
+use axum::extract::{FromRequest, Path, Request, State};
 use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -23,6 +24,32 @@ const MAX_OBSERVER_REVISION: i64 = 9_007_199_254_740_990;
 pub struct ObserverMutationRequest {
     pub operation_id: Uuid,
     pub expected_revision: i64,
+}
+
+pub struct ObserverMutationInput(Option<ObserverMutationRequest>);
+
+impl<S> FromRequest<S> for ObserverMutationInput
+where
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let headers = request.headers().clone();
+        let bytes = Bytes::from_request(request, state)
+            .await
+            .map_err(|rejection| rejection.into_response())?;
+        if bytes.is_empty() && headers.get(header::CONTENT_TYPE).is_none() {
+            return Ok(Self(None));
+        }
+
+        let mut json_request = Request::new(Body::from(bytes));
+        *json_request.headers_mut() = headers;
+        Json::<ObserverMutationRequest>::from_request(json_request, state)
+            .await
+            .map(|Json(request)| Self(Some(request)))
+            .map_err(|rejection| rejection.into_response())
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -692,10 +719,17 @@ async fn mutate_observer(
     game_id: i32,
     challenge_id: i32,
     kind: ObserverOperationKind,
-    request: ObserverMutationRequest,
+    request: Option<ObserverMutationRequest>,
 ) -> AppResult<Response> {
     require_game_admin(st, user, game_id).await?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?;
+    let request = resolve_observer_mutation_request(
+        control.transaction_mut(),
+        game_id,
+        challenge_id,
+        request,
+    )
+    .await?;
     let outcome = mutate_observer_locked(
         control.transaction_mut(),
         game_id,
@@ -713,12 +747,34 @@ async fn mutate_observer(
     Ok(private_no_store(outcome.model))
 }
 
+async fn resolve_observer_mutation_request(
+    connection: &mut sqlx::PgConnection,
+    game_id: i32,
+    challenge_id: i32,
+    request: Option<ObserverMutationRequest>,
+) -> AppResult<ObserverMutationRequest> {
+    if let Some(request) = request {
+        return Ok(request);
+    }
+
+    // Clients predating the recoverable protocol sent no body. Resolve that
+    // legacy mutation to an opaque operation and the current revision while
+    // holding the same game lock as the mutation, so it cannot bypass or race
+    // the revision fence.
+    require_observer_can_be_enabled(connection, game_id, challenge_id).await?;
+    Ok(ObserverMutationRequest {
+        operation_id: Uuid::new_v4(),
+        expected_revision: ensure_observer_revision(connection, game_id, challenge_id).await?,
+    })
+}
+
 /// Enable or rotate the referee. An exact authorized retry recovers the same secret.
+/// Bodyless requests retain the legacy mutation contract.
 pub async fn rotate_observer(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((game_id, challenge_id)): Path<(i32, i32)>,
-    Json(request): Json<ObserverMutationRequest>,
+    ObserverMutationInput(request): ObserverMutationInput,
 ) -> AppResult<Response> {
     mutate_observer(
         &st,
@@ -735,7 +791,7 @@ pub async fn revoke_observer(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((game_id, challenge_id)): Path<(i32, i32)>,
-    Json(request): Json<ObserverMutationRequest>,
+    ObserverMutationInput(request): ObserverMutationInput,
 ) -> AppResult<Response> {
     mutate_observer(
         &st,

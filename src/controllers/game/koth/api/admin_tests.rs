@@ -2,6 +2,9 @@ use super::*;
 
 use std::str::FromStr;
 
+use axum::body::Body;
+use axum::extract::FromRequest;
+use axum::http::{Method, Request, StatusCode};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::ConnectOptions as _;
 
@@ -37,6 +40,87 @@ fn mutation_results_are_never_cacheable() {
         response.headers().get(header::PRAGMA),
         Some(&HeaderValue::from_static("no-cache"))
     );
+}
+
+async fn extract_mutation_request(
+    method: Method,
+    body: String,
+    content_type: Option<&'static str>,
+) -> Result<Option<ObserverMutationRequest>, StatusCode> {
+    let mut request = Request::builder().method(method).uri("/observer");
+    if let Some(content_type) = content_type {
+        request = request.header(header::CONTENT_TYPE, content_type);
+    }
+    let request = request.body(Body::from(body)).expect("build request");
+    ObserverMutationInput::from_request(request, &())
+        .await
+        .map(|request| request.0)
+        .map_err(|rejection| rejection.into_response().status())
+}
+
+#[tokio::test]
+async fn mutation_wire_accepts_bodyless_legacy_and_exact_revision_requests() {
+    for method in [Method::POST, Method::DELETE] {
+        assert!(extract_mutation_request(method, String::new(), None)
+            .await
+            .expect("bodyless legacy mutation")
+            .is_none());
+    }
+
+    let operation_id = Uuid::new_v4();
+    let body = serde_json::json!({
+        "operationId": operation_id,
+        "expectedRevision": 17,
+    })
+    .to_string();
+    for method in [Method::POST, Method::DELETE] {
+        let request = extract_mutation_request(method, body.clone(), Some("application/json"))
+            .await
+            .expect("revision-fenced mutation")
+            .expect("JSON request");
+        assert_eq!(request.operation_id, operation_id);
+        assert_eq!(request.expected_revision, 17);
+    }
+}
+
+#[tokio::test]
+async fn mutation_wire_rejects_malformed_or_ambiguous_json() {
+    let operation_id = Uuid::new_v4();
+    let unknown_field = serde_json::json!({
+        "operationId": operation_id,
+        "expectedRevision": 0,
+        "unexpected": true,
+    })
+    .to_string();
+    let missing_revision = serde_json::json!({ "operationId": operation_id }).to_string();
+
+    for body in [unknown_field, missing_revision] {
+        let status =
+            match extract_mutation_request(Method::POST, body, Some("application/json")).await {
+                Ok(_) => panic!("invalid JSON contract was accepted"),
+                Err(status) => status,
+            };
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let status =
+        match extract_mutation_request(Method::DELETE, String::new(), Some("application/json"))
+            .await
+        {
+            Ok(_) => panic!("empty declared-JSON body was accepted as a legacy mutation"),
+            Err(status) => status,
+        };
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let status =
+        match extract_mutation_request(Method::POST, "{}".to_string(), Some("text/plain")).await {
+            Ok(_) => panic!("non-JSON mutation body was accepted"),
+            Err(status) => status,
+        };
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let status = match extract_mutation_request(Method::POST, "{}".to_string(), None).await {
+        Ok(_) => panic!("body without a declared JSON contract became a legacy mutation"),
+        Err(status) => status,
+    };
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
 struct RotationHarness {
@@ -292,18 +376,37 @@ async fn mutate_with_game_lock(
     kind: ObserverOperationKind,
     request: ObserverMutationRequest,
 ) -> AppResult<ObserverMutationOutcome> {
+    mutate_compatible_with_game_lock(pool, actor, kind, Some(request)).await
+}
+
+async fn mutate_compatible_with_game_lock(
+    pool: &sqlx::PgPool,
+    actor: Uuid,
+    kind: ObserverOperationKind,
+    request: Option<ObserverMutationRequest>,
+) -> AppResult<ObserverMutationOutcome> {
     let key = crate::services::ad_engine::game_lock_key(GAME_ID);
     let mut lock = crate::utils::single_flight::PgAdvisoryLock::acquire(pool, &key)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    let result = mutate_observer_locked(
-        lock.transaction_mut(),
-        GAME_ID,
-        CHALLENGE_ID,
-        actor,
-        kind,
-        &request,
-    )
+    let result = async {
+        let request = resolve_observer_mutation_request(
+            lock.transaction_mut(),
+            GAME_ID,
+            CHALLENGE_ID,
+            request,
+        )
+        .await?;
+        mutate_observer_locked(
+            lock.transaction_mut(),
+            GAME_ID,
+            CHALLENGE_ID,
+            actor,
+            kind,
+            &request,
+        )
+        .await
+    }
     .await;
     match result {
         Ok(outcome) => {
@@ -372,6 +475,103 @@ fn one_success(
         }
         _ => panic!("exactly one competing observer mutation must succeed"),
     }
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn bodyless_legacy_mutations_use_the_locked_revision_fence() {
+    let harness = RotationHarness::new().await;
+
+    let legacy_rotation = mutate_compatible_with_game_lock(
+        &harness.first,
+        harness.actor,
+        ObserverOperationKind::Rotate,
+        None,
+    )
+    .await
+    .expect("bodyless legacy rotation");
+    assert_eq!(legacy_rotation.model.revision, 1);
+    assert!(legacy_rotation.model.configured);
+    assert!(legacy_rotation.model.secret.is_some());
+    assert!(legacy_rotation
+        .model
+        .operation_id
+        .is_some_and(|operation_id| !operation_id.is_nil()));
+
+    let stale = match mutate_with_game_lock(
+        &harness.second,
+        harness.actor,
+        ObserverOperationKind::Rotate,
+        request(Uuid::new_v4(), 0),
+    )
+    .await
+    {
+        Ok(_) => panic!("stale exact revision crossed the legacy mutation"),
+        Err(error) => error,
+    };
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+
+    let legacy_revoke = mutate_compatible_with_game_lock(
+        &harness.second,
+        harness.actor,
+        ObserverOperationKind::Revoke,
+        None,
+    )
+    .await
+    .expect("bodyless legacy revoke");
+    assert_eq!(legacy_revoke.model.revision, 2);
+    assert!(!legacy_revoke.model.configured);
+    assert!(legacy_revoke.model.secret.is_none());
+
+    let operation_id = Uuid::new_v4();
+    let exact_rotation = mutate_with_game_lock(
+        &harness.first,
+        harness.actor,
+        ObserverOperationKind::Rotate,
+        request(operation_id, 2),
+    )
+    .await
+    .expect("exact revision rotation after legacy clients");
+    let exact_retry = mutate_with_game_lock(
+        &harness.second,
+        harness.actor,
+        ObserverOperationKind::Rotate,
+        request(operation_id, 2),
+    )
+    .await
+    .expect("exact retry after legacy clients");
+    assert_eq!(exact_rotation.model.revision, 3);
+    assert_eq!(exact_retry.model.revision, 3);
+    assert!(exact_rotation.model.secret.is_some());
+    assert!(exact_rotation.model.secret.as_deref() == exact_retry.model.secret.as_deref());
+
+    let invalid = match mutate_with_game_lock(
+        &harness.first,
+        harness.actor,
+        ObserverOperationKind::Rotate,
+        request(Uuid::nil(), 3),
+    )
+    .await
+    {
+        Ok(_) => panic!("nil exact operation identity was accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+    let state: (i64, i64) = sqlx::query_as(
+        r#"SELECT revision,
+                  (SELECT COUNT(*) FROM "KothApiObserverOperations")
+             FROM "KothApiObserverRevisions"
+            WHERE game_id = $1 AND challenge_id = $2"#,
+    )
+    .bind(GAME_ID)
+    .bind(CHALLENGE_ID)
+    .fetch_one(&harness.first)
+    .await
+    .expect("read compatible mutation state");
+    assert_eq!(state, (3, 3));
+
+    harness.cleanup().await;
 }
 
 #[tokio::test]

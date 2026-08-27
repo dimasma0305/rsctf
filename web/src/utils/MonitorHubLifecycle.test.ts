@@ -1,15 +1,18 @@
+import { HubConnectionBuilder, type HubConnection } from '@microsoft/signalr'
 import { Window } from 'happy-dom'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { act, createElement, type FC, useCallback, useEffect, useRef, useState } from 'react'
 import { AnswerResult, EventType, type GameEvent, type Submission } from '../Api'
+import { useRecoveringHub } from '../hooks/useRecoveringHub'
 import { installTestDom } from '../test/installDom'
 import {
   currentMonitorBufferRows,
   currentMonitorSnapshotRows,
   gameEventMonitorIdentity,
   mergeGameEventBuffer,
+  monitorEventPushIsCurrent,
   monitorPushIsCurrent,
   monitorSnapshotIsCurrent,
   rebaseGameEventBuffer,
@@ -42,7 +45,7 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
   for (const { path, fetchName, finalName, identityName, callbackDependencies } of monitorPages) {
     const source = readFileSync(path, 'utf8')
 
-    assert.match(source, /const \{ finished \} = useGameStatus\(game\)/, path)
+    assert.match(source, /const \{ finished(?:, status: gameStatus)? \} = useGameStatus\(game\)/, path)
     assert.match(source, /const monitorConnectionActive = Boolean\(game\?\.end\) && !finished/, path)
     assert.match(
       source,
@@ -55,7 +58,12 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
       assert.match(source, /api\.game\.gameEventBackfill\(numId/, path)
       assert.match(source, /page < MAX_BACKFILL_PAGES/, path)
       assert.match(source, /mergeGameEventBuffer\(incoming, newEvents\.current, MAX_BUFFERED_EVENTS\)/, path)
-      assert.match(source, /monitorPushIsCurrent\(activeFeedScope\.current, feedScope, false\)/, path)
+      assert.match(source, /ownerKey: gameStatus/, path)
+      assert.match(
+        source,
+        /monitorEventPushIsCurrent\([\s\S]*?activeFeedScope\.current,[\s\S]*?cursorInitialized\.current,[\s\S]*?eventCursor\.current,[\s\S]*?message\.cursor/,
+        path
+      )
       assert.match(source, /monitorSnapshotIsCurrent\(/, path)
       assert.match(source, /const \{ scope: viewerScope \} = useViewerIdentity\(\)/, path)
       assert.match(
@@ -86,6 +94,202 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
       source.lastIndexOf('useRevalidateWhenPollingStops(') > source.indexOf('useRecoveringHub({'),
       `${path} must reconcile after the hub ownership effect so cleanup runs first`
     )
+  }
+})
+
+type HookHubHandler = (...arguments_: unknown[]) => void
+
+class HookHub {
+  startCalls = 0
+  stopCalls = 0
+  keepAliveIntervalInMilliseconds = 0
+  serverTimeoutInMilliseconds = 0
+  private readonly handlers = new Map<string, HookHubHandler[]>()
+  private closeHandler: (error?: Error) => void = () => undefined
+  private reconnectingHandler: (error?: Error) => void = () => undefined
+  private reconnectedHandler: (connectionId?: string) => void = () => undefined
+
+  start = async () => {
+    this.startCalls += 1
+  }
+
+  stop = async () => {
+    this.stopCalls += 1
+  }
+
+  on(name: string, handler: HookHubHandler) {
+    const registered = this.handlers.get(name) ?? []
+    registered.push(handler)
+    this.handlers.set(name, registered)
+  }
+
+  onclose(handler: (error?: Error) => void) {
+    this.closeHandler = handler
+  }
+
+  onreconnecting(handler: (error?: Error) => void) {
+    this.reconnectingHandler = handler
+  }
+
+  onreconnected(handler: (connectionId?: string) => void) {
+    this.reconnectedHandler = handler
+  }
+
+  emit(name: string, ...arguments_: unknown[]) {
+    for (const handler of this.handlers.get(name) ?? []) handler(...arguments_)
+  }
+}
+
+const settleHookLifecycle = async () => {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve()
+}
+
+const withFakeHookHubs = async (run: (hubs: HookHub[]) => Promise<void>) => {
+  const hubs: HookHub[] = []
+  const originalBuild = HubConnectionBuilder.prototype.build
+  HubConnectionBuilder.prototype.build = function buildFakeHub() {
+    const hub = new HookHub()
+    hubs.push(hub)
+    return hub as unknown as HubConnection
+  }
+  try {
+    await run(hubs)
+  } finally {
+    HubConnectionBuilder.prototype.build = originalBuild
+  }
+}
+
+test('monitor Events re-arms authoritative recovery when coming becomes ongoing', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1/monitor/events' })
+  const restoreDom = installTestDom(browser)
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  const recoveries: string[] = []
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  const Probe: FC<{ phase: 'coming' | 'ongoing' }> = ({ phase }) => {
+    useRecoveringHub({
+      active: true,
+      url: '/hub/monitor?game=1',
+      ownerKey: phase,
+      handlers: { ReceivedGameEvent: () => undefined },
+      revalidate: () => {
+        recoveries.push(phase)
+        if (phase === 'coming') throw Object.assign(new Error('event has not started'), { statusCode: 400 })
+      },
+      pollingIntervalMs: 0,
+    })
+    return createElement('output', null, phase)
+  }
+
+  try {
+    await withFakeHookHubs(async (hubs) => {
+      await act(async () => {
+        root.render(createElement(Probe, { phase: 'coming' }))
+        await settleHookLifecycle()
+      })
+      assert.deepEqual(recoveries, ['coming'], 'the intentional prestart denial is observed once')
+      assert.equal(hubs.length, 1)
+
+      await act(async () => {
+        root.render(createElement(Probe, { phase: 'ongoing' }))
+        await settleHookLifecycle()
+      })
+      assert.deepEqual(recoveries, ['coming', 'ongoing'], 'the ongoing owner establishes a fresh durable cursor')
+      assert.equal(hubs.length, 2, 'the lifecycle phase replaces the permanently suppressed recovery owner')
+      assert.equal(hubs[0].stopCalls, 1, 'the coming transport is stopped before its replacement owns the feed')
+    })
+  } finally {
+    await act(async () => {
+      root.unmount()
+      await settleHookLifecycle()
+    })
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('monitor Events ignores initialized pushes covered by its durable cursor', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1/monitor/events' })
+  const restoreDom = installTestDom(browser)
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  const event = (cursor: number): GameEvent => ({
+    id: cursor,
+    cursor,
+    time: cursor,
+    type: EventType.Normal,
+    values: [`event-${cursor}`],
+  })
+
+  const Probe: FC = () => {
+    const activeScope = useRef('viewer:1/game:1')
+    const cursorInitialized = useRef(false)
+    const durableCursor = useRef(0)
+    const [visible, setVisible] = useState<GameEvent[]>([])
+
+    useRecoveringHub({
+      active: true,
+      url: '/hub/monitor?game=1',
+      ownerKey: 'ongoing',
+      handlers: {
+        ReceivedGameEvent: (raw) => {
+          const message = raw as GameEvent
+          if (
+            !monitorEventPushIsCurrent(
+              activeScope.current,
+              'viewer:1/game:1',
+              false,
+              cursorInitialized.current,
+              durableCursor.current,
+              message.cursor
+            )
+          )
+            return
+          setVisible((current) => mergeGameEventBuffer([message], current, 500))
+        },
+      },
+      revalidate: () => {
+        durableCursor.current = 10
+        cursorInitialized.current = true
+      },
+      pollingIntervalMs: 0,
+    })
+
+    return createElement('output', null, visible.map(({ cursor }) => cursor).join(','))
+  }
+
+  try {
+    await withFakeHookHubs(async (hubs) => {
+      await act(async () => {
+        root.render(createElement(Probe))
+        await settleHookLifecycle()
+      })
+      assert.equal(hubs.length, 1)
+
+      await act(async () => {
+        hubs[0].emit('ReceivedGameEvent', event(9))
+        hubs[0].emit('ReceivedGameEvent', event(10))
+        hubs[0].emit('ReceivedGameEvent', event(11))
+        await settleHookLifecycle()
+      })
+      assert.equal(container.textContent, '11', 'only a commit newer than the initialized durable cursor is live')
+    })
+  } finally {
+    await act(async () => {
+      root.unmount()
+      await settleHookLifecycle()
+    })
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
   }
 })
 

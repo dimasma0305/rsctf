@@ -73,6 +73,17 @@ export const monitorPushIsCurrent = <Scope extends string | number>(
   cancelled: boolean
 ) => !cancelled && activeScope === connectedScope
 
+/** Reject a delayed event push once its commit is covered by the durable cursor. */
+export const monitorEventPushIsCurrent = <Scope extends string | number>(
+  activeScope: Scope,
+  connectedScope: Scope,
+  cancelled: boolean,
+  cursorInitialized: boolean,
+  durableCursor: number,
+  pushedCursor: number
+) =>
+  monitorPushIsCurrent(activeScope, connectedScope, cancelled) && (!cursorInitialized || pushedCursor > durableCursor)
+
 export interface ScopedMonitorSnapshot<Row> {
   scope: string
   rows: Row[]
