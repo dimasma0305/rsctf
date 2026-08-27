@@ -9,19 +9,22 @@ if (!Number.isSafeInteger(game) || game <= 0) {
   throw new Error('MONITOR_HISTORY_GAME (or GAME) must be a positive integer');
 }
 
-const [eventCount, submissionCount] = sql(
+const [eventCount, durableEventCount, submissionCount] = sql(
   `SELECT (SELECT COUNT(*) FROM "GameEvents" WHERE game_id=${game})::text || '|' || ` +
+    `(SELECT COUNT(*) FROM "GameEvents" WHERE game_id=${game} AND feed_cursor IS NOT NULL)::text || '|' || ` +
     `(SELECT COUNT(*) FROM "Submissions" WHERE game_id=${game})::text`,
 ).split('|').map(Number);
 if (
   !Number.isSafeInteger(eventCount) ||
+  !Number.isSafeInteger(durableEventCount) ||
   !Number.isSafeInteger(submissionCount) ||
   eventCount < 10000 ||
+  durableEventCount !== eventCount ||
   submissionCount < 10000
 ) {
   throw new Error(
-    `monitor-history requires at least 10,000 events and submissions in game ${game}; ` +
-      `found events=${eventCount} submissions=${submissionCount}`,
+    `monitor-history requires at least 10,000 cursor-backed events and submissions in game ${game}; ` +
+      `found events=${eventCount} durableEvents=${durableEventCount} submissions=${submissionCount}`,
   );
 }
 
@@ -39,7 +42,7 @@ const tokenDirectory = mkdtempSync(join(tmpdir(), 'rsctf-monitor-history-'));
 const tokenFile = join(tokenDirectory, 'tokens.json');
 writeFileSync(tokenFile, JSON.stringify(tokens), { mode: 0o600 });
 console.log(
-  `monitor history load → ${TARGET} game=${game} events=${eventCount} ` +
+  `monitor history/read-backfill load → ${TARGET} game=${game} events=${eventCount} ` +
     `submissions=${submissionCount} rate=${process.env.RATE || 1}/s`,
 );
 

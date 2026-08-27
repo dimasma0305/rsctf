@@ -6,9 +6,11 @@ import {
   CappedJitterRetryPolicy,
   GenerationBoundOpener,
   HUB_KEEPALIVE_MS,
+  HUB_REVALIDATE_RETRY_LIMIT,
   HUB_RETRY_CAP_MS,
   HUB_SERVER_TIMEOUT_MS,
   HubRecoveryController,
+  hubRevalidationRetryDelay,
   isRetryableHubFailure,
   type RecoverableHubConnection,
   type RecoveryTimers,
@@ -158,6 +160,63 @@ test('server admission and availability statuses retain the correct retry bounda
   for (const status of [400, 401, 403, 404])
     assert.equal(isRetryableHubFailure(statusError(status)), false, `${status}`)
   assert.equal(isRetryableHubFailure(new Error('WebSocket transport failed')), true)
+  assert.equal(isRetryableHubFailure({ response: { status: 403 } }), false)
+  assert.equal(isRetryableHubFailure({ response: { status: 503 } }), true)
+})
+
+test('HTTP reconciliation retries are finite, status-aware, and honor bounded Retry-After', () => {
+  const limited = { response: { status: 429, headers: { 'retry-after': '12' } } }
+  assert.equal(hubRevalidationRetryDelay(limited, 0, () => 0, 0), 12_000)
+  assert.equal(hubRevalidationRetryDelay({ response: { status: 503 } }, 0, () => 0, 0), 375)
+  assert.equal(hubRevalidationRetryDelay({ response: { status: 403 } }, 0, () => 0, 0), null)
+  assert.equal(hubRevalidationRetryDelay(limited, HUB_REVALIDATE_RETRY_LIMIT, () => 0, 0), null)
+  assert.equal(
+    hubRevalidationRetryDelay(
+      { response: { status: 429, headers: { 'retry-after': '999999999' } } },
+      0,
+      () => 0,
+      0
+    ),
+    null
+  )
+})
+
+test('a failed reconnect backfill owns one Retry-After timer and cancels it on stop', async () => {
+  const hub = new FakeHub()
+  const timers = new ManualTimers()
+  let refreshes = 0
+  const controller = new HubRecoveryController(hub, {
+    revalidate: () => {
+      refreshes += 1
+      if (refreshes === 1) throw { response: { status: 429, headers: { 'retry-after': '12' } } }
+    },
+    random: () => 0,
+    timers,
+  })
+
+  controller.start()
+  await settle()
+  assert.equal(refreshes, 1)
+  assert.equal(timers.count, 1)
+  await timers.advance(11_999)
+  assert.equal(refreshes, 1)
+  await timers.advance(1)
+  assert.equal(refreshes, 2)
+  assert.equal(timers.count, 0)
+
+  const pending = new HubRecoveryController(new FakeHub(), {
+    revalidate: () => {
+      throw { response: { status: 503 } }
+    },
+    random: () => 0,
+    timers,
+  })
+  pending.start()
+  await settle()
+  assert.equal(timers.count, 1)
+  await pending.stop()
+  assert.equal(timers.count, 0)
+  await controller.stop()
 })
 
 test('a permanent initial denial remains terminal for automatic recovery', async () => {

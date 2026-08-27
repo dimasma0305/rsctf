@@ -280,7 +280,7 @@ const Events: FC = () => {
     handlers: {
       ReceivedGameEvent: (raw) => {
         const message = raw as GameEvent
-        if (!monitorPushIsCurrent(activeFeedScope.current === feedScope ? numId : -1, numId, false)) return
+        if (!monitorPushIsCurrent(activeFeedScope.current, feedScope, false)) return
         mergeIncomingEvents([message])
       },
     },

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  durableEventFeedRequestUpperBound,
   fallbackRequestUpperBound,
   steadyFallbackRequestsPerSecond,
 } from "../realtime-recovery-model.js";
@@ -12,6 +13,10 @@ const recoverySource = readFileSync(
 );
 const hookSource = readFileSync(
   new URL("../../../web/src/hooks/useRecoveringHub.ts", import.meta.url),
+  "utf8",
+);
+const eventSource = readFileSync(
+  new URL("../../../web/src/pages/games/[id]/monitor/Events.tsx", import.meta.url),
   "utf8",
 );
 
@@ -66,5 +71,32 @@ test("fallback ownership pauses hidden/offline clients and unmount cancels both 
         pollingIntervalMs: -1,
       }),
     /pollingIntervalMs/,
+  );
+});
+
+test("durable event recovery has a fixed page and request-count ceiling", () => {
+  assert.match(eventSource, /const MAX_BACKFILL_PAGES = 10/);
+  assert.match(eventSource, /page < MAX_BACKFILL_PAGES/);
+  assert.match(eventSource, /const MAX_BUFFERED_EVENTS = 500/);
+  assert.match(eventSource, /api\.game\.gameEventBackfill\(/);
+
+  assert.equal(
+    durableEventFeedRequestUpperBound({
+      clients: 1_000,
+      durationMs: 120_000,
+      pollingIntervalMs: 30_000,
+      maxBackfillPages: 10,
+    }),
+    61_000,
+  );
+  assert.throws(
+    () =>
+      durableEventFeedRequestUpperBound({
+        clients: 1,
+        durationMs: 1,
+        pollingIntervalMs: 30_000,
+        maxBackfillPages: 0,
+      }),
+    /maxBackfillPages/,
   );
 });

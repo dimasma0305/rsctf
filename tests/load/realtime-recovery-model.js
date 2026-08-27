@@ -32,3 +32,36 @@ export function steadyFallbackRequestsPerSecond(clients, pollingIntervalMs) {
   }
   return clients / ((pollingIntervalMs * 0.9) / 1_000);
 }
+
+/** Worst-case HTTP request ceiling for the durable monitor event feed. The
+ * initial visible snapshot costs one read. Each handshake/poll reconciliation
+ * reads at most `maxBackfillPages`, then one checkpoint and one replacement
+ * snapshot when the gap is larger than that fixed page budget. */
+export function durableEventFeedRequestUpperBound({
+  clients,
+  durationMs,
+  pollingIntervalMs,
+  maxBackfillPages,
+}) {
+  for (const [name, value] of Object.entries({
+    clients,
+    durationMs,
+    pollingIntervalMs,
+    maxBackfillPages,
+  })) {
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw new Error(`${name} must be a non-negative integer`);
+  }
+  if (clients === 0 || durationMs === 0) return 0;
+  if (pollingIntervalMs === 0)
+    throw new Error("pollingIntervalMs must be a positive integer");
+  if (maxBackfillPages === 0)
+    throw new Error("maxBackfillPages must be a positive integer");
+
+  const scheduledPolls = Math.floor(durationMs / (pollingIntervalMs * 0.9));
+  const maximumRequestsPerReconciliation = maxBackfillPages + 2;
+  return (
+    clients *
+    (1 + (1 + scheduledPolls) * maximumRequestsPerReconciliation)
+  );
+}

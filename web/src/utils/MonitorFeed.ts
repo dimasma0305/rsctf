@@ -66,9 +66,12 @@ export const monitorSnapshotIsCurrent = (
   requestedAt: number
 ) => activeScope === requestedScope && latestRequest === requestedAt
 
-/** Reject a push from a hub whose game scope is already being torn down. */
-export const monitorPushIsCurrent = (activeGame: number, connectedGame: number, cancelled: boolean) =>
-  !cancelled && activeGame === connectedGame
+/** Reject a push from a hub whose game/account scope is being torn down. */
+export const monitorPushIsCurrent = <Scope extends string | number>(
+  activeScope: Scope,
+  connectedScope: Scope,
+  cancelled: boolean
+) => !cancelled && activeScope === connectedScope
 
 export interface ScopedMonitorSnapshot<Row> {
   scope: string

@@ -55,7 +55,7 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
       assert.match(source, /api\.game\.gameEventBackfill\(numId/, path)
       assert.match(source, /page < MAX_BACKFILL_PAGES/, path)
       assert.match(source, /mergeGameEventBuffer\(incoming, newEvents\.current, MAX_BUFFERED_EVENTS\)/, path)
-      assert.match(source, /activeFeedScope\.current === feedScope/, path)
+      assert.match(source, /monitorPushIsCurrent\(activeFeedScope\.current, feedScope, false\)/, path)
       assert.match(source, /monitorSnapshotIsCurrent\(/, path)
       assert.match(source, /const \{ scope: viewerScope \} = useViewerIdentity\(\)/, path)
       assert.match(

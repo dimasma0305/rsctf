@@ -392,21 +392,26 @@ mod tests {
         })
         .await
         .expect("Redis replica subscription did not become ready");
-    }
 
-    async fn drain_remote_probes(receiver: &mut broadcast::Receiver<HubEvent>) {
+        // A quiet-period drain can pass while an old probe is still in Redis or
+        // the local broadcast queue. One ordered barrier from the same publisher
+        // proves every readiness probe is already consumed before assertions.
+        let mut barrier = probe;
+        barrier.payload = format!("rsctf-ready-barrier:{}", Uuid::new_v4());
+        sender.publish(barrier.clone());
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if tokio::time::timeout(Duration::from_millis(150), receiver.recv())
+                let received = receiver
+                    .recv()
                     .await
-                    .is_err()
-                {
+                    .expect("Redis readiness stream closed");
+                if received.target == barrier.target && received.payload == barrier.payload {
                     return;
                 }
             }
         })
         .await
-        .expect("Redis readiness probes did not reach a quiet point");
+        .expect("Redis readiness barrier was not delivered");
     }
 
     #[test]
@@ -544,7 +549,6 @@ mod tests {
         let mut receiver_remote = receiver_bus.subscribe();
 
         wait_for_remote_subscription(&sender, &mut receiver_remote, hub_event("redis-ready")).await;
-        drain_remote_probes(&mut receiver_remote).await;
         let mut sender_local = sender.subscribe();
         sender.publish(received_log_event());
 
@@ -579,7 +583,6 @@ mod tests {
 
         wait_for_remote_subscription(&first_replica, &mut remote, received_game_event(7, -1, -1))
             .await;
-        drain_remote_probes(&mut remote).await;
         for (id, cursor) in [(31, 101), (32, 102), (33, 103)] {
             first_replica.publish(received_game_event(7, id, cursor));
         }

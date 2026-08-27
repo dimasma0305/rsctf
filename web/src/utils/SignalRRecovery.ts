@@ -1,4 +1,5 @@
 import type { HubConnection, IRetryPolicy, RetryContext } from '@microsoft/signalr'
+import { httpErrorStatus, retryAfterMilliseconds } from '@Utils/ProfileRetry'
 
 /** The server emits SignalR pings every 15 seconds. Two missed pings plus a
  * small scheduling allowance detects a dead transport without treating one
@@ -10,6 +11,8 @@ export const HUB_INITIAL_RETRY_LIMIT = 6
 export const HUB_RETRY_BASE_MS = 750
 export const HUB_RETRY_CAP_MS = 15_000
 export const HUB_EXHAUSTED_RETRY_MS = 60_000
+export const HUB_REVALIDATE_RETRY_LIMIT = 3
+export const HUB_REVALIDATE_RETRY_AFTER_MAX_MS = 2_147_000_000
 export const NOTICE_FALLBACK_POLL_MS = 60_000
 export const OPERATOR_FALLBACK_POLL_MS = 30_000
 
@@ -53,8 +56,10 @@ export class CappedJitterRetryPolicy implements IRetryPolicy {
 }
 
 const statusFromUnknown = (error: unknown): number | undefined => {
+  const responseStatus = httpErrorStatus(error)
+  if (responseStatus !== null) return responseStatus
   if (typeof error === 'object' && error !== null) {
-    for (const property of ['statusCode', 'status']) {
+    for (const property of ['statusCode']) {
       const value = Reflect.get(error, property)
       if (typeof value === 'number') return value
     }
@@ -73,6 +78,20 @@ export const isRetryableHubFailure = (error: unknown) => {
   if (status === undefined) return true
   if ([400, 401, 403, 404].includes(status)) return false
   return status === 408 || status === 425 || status === 429 || status >= 500
+}
+
+/** Use the transport's capped jitter policy for HTTP reconciliation as well,
+ * while respecting a server Retry-After and refusing an unbounded wait. */
+export const hubRevalidationRetryDelay = (
+  error: unknown,
+  retryCount: number,
+  random: () => number = Math.random,
+  now: number = Date.now()
+): number | null => {
+  if (retryCount >= HUB_REVALIDATE_RETRY_LIMIT || !isRetryableHubFailure(error)) return null
+  const retryAfter = retryAfterMilliseconds(error, now)
+  if (retryAfter !== null && retryAfter > HUB_REVALIDATE_RETRY_AFTER_MAX_MS) return null
+  return Math.max(cappedJitterDelay(retryCount, random), retryAfter ?? 0)
 }
 
 export type HubRecoveryState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'exhausted' | 'stopped'
@@ -117,6 +136,10 @@ export class HubRecoveryController {
   private retryTimer: TimerHandle | null = null
   private pollTimer: TimerHandle | null = null
   private refreshInFlight: Promise<void> | null = null
+  private refreshRetryTimer: TimerHandle | null = null
+  private refreshRetryDeferred = false
+  private refreshRetrySuppressed = false
+  private refreshFailures = 0
   private transportGeneration = 0
   private reconnectWave = false
   private automaticRetryAllowed = true
@@ -189,6 +212,7 @@ export class HubRecoveryController {
 
   revalidateNow() {
     if (!this.active || !this.pollingAllowed()) return Promise.resolve()
+    if (this.refreshRetryDeferred) this.refreshRetryDeferred = false
     return this.revalidate()
   }
 
@@ -198,6 +222,7 @@ export class HubRecoveryController {
     this.transportGeneration += 1
     this.reconnectWave = false
     this.cancelRetry()
+    this.cancelRefreshRetry()
     if (this.pollTimer !== null) {
       this.timers.clearTimeout(this.pollTimer)
       this.pollTimer = null
@@ -230,9 +255,30 @@ export class HubRecoveryController {
 
   private revalidate() {
     if (this.refreshInFlight) return this.refreshInFlight
+    if (this.refreshRetryTimer !== null || this.refreshRetryDeferred || this.refreshRetrySuppressed) {
+      return Promise.resolve()
+    }
     const refresh = Promise.resolve()
       .then(() => this.options.revalidate())
-      .catch(() => undefined)
+      .then(() => {
+        this.refreshFailures = 0
+        this.refreshRetrySuppressed = false
+      })
+      .catch((error: unknown) => {
+        if (!this.active) return
+        const delay = hubRevalidationRetryDelay(error, this.refreshFailures, this.random)
+        if (delay === null) {
+          const retryAfter = retryAfterMilliseconds(error)
+          this.refreshRetrySuppressed =
+            isRetryableHubFailure(error) &&
+            retryAfter !== null &&
+            retryAfter > HUB_REVALIDATE_RETRY_AFTER_MAX_MS
+          this.refreshFailures = 0
+          return
+        }
+        this.refreshFailures += 1
+        this.scheduleRefreshRetry(delay)
+      })
       .then(() => undefined)
     this.refreshInFlight = refresh
     void refresh.finally(() => {
@@ -308,6 +354,28 @@ export class HubRecoveryController {
     if (this.retryTimer === null) return
     this.timers.clearTimeout(this.retryTimer)
     this.retryTimer = null
+  }
+
+  private scheduleRefreshRetry(delay: number) {
+    if (this.refreshRetryTimer !== null) this.timers.clearTimeout(this.refreshRetryTimer)
+    this.refreshRetryDeferred = false
+    this.refreshRetryTimer = this.timers.setTimeout(() => {
+      this.refreshRetryTimer = null
+      if (!this.active) return
+      if (!this.pollingAllowed()) {
+        this.refreshRetryDeferred = true
+        return
+      }
+      void this.revalidate()
+    }, delay)
+  }
+
+  private cancelRefreshRetry() {
+    if (this.refreshRetryTimer !== null) this.timers.clearTimeout(this.refreshRetryTimer)
+    this.refreshRetryTimer = null
+    this.refreshRetryDeferred = false
+    this.refreshRetrySuppressed = false
+    this.refreshFailures = 0
   }
 }
 
