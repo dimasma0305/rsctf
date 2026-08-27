@@ -870,21 +870,13 @@ const AdOps: FC = () => {
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
   const [view, setView] = useState<'ad' | 'koth'>('ad')
   const now = useServerNow()
-  const {
-    engineMetadata,
-    error: engineError,
-    mutate: mutateEngines,
-  } = useAdminOperatorEngines(numId)
+  const { engineMetadata, error: engineError, mutate: mutateEngines } = useAdminOperatorEngines(numId)
   const activeView = adminOperatorView(view, engineMetadata)
   const polling = adminOperatorPolling(engineMetadata, now.valueOf())
   const fetchAd = engineMetadata?.hasAttackDefense === true && activeView === 'ad'
   const fetchKoth = engineMetadata?.hasKoth === true && activeView === 'koth'
   const { adminAdState: state, error, mutate } = useAdminAdState(numId, fetchAd, polling)
-  const { adminKothState: koth, error: kothError, mutate: mutateKoth } = useAdminKothState(
-    numId,
-    fetchKoth,
-    polling
-  )
+  const { adminKothState: koth, error: kothError, mutate: mutateKoth } = useAdminKothState(numId, fetchKoth, polling)
   // inspectorSid set ⇒ a throwaway inspector container we must destroy on close.
   const [execTarget, setExecTarget] = useState<{
     guid: string
@@ -1135,9 +1127,7 @@ const AdOps: FC = () => {
   const timerRef = scoringPaused && scoringPausedAt ? dayjs(scoringPausedAt) : now
   const roundEndsIn = roundEndsAt ? Math.max(0, dayjs(roundEndsAt).diff(timerRef, 'second')) : null
   const roundTotal =
-    roundStartedAt && roundEndsAt
-      ? Math.max(1, dayjs(roundEndsAt).diff(roundStartedAt, 'second'))
-      : null
+    roundStartedAt && roundEndsAt ? Math.max(1, dayjs(roundEndsAt).diff(roundStartedAt, 'second')) : null
   const roundPct =
     roundTotal && roundEndsIn !== null ? Math.min(100, Math.max(3, ((roundTotal - roundEndsIn) / roundTotal) * 100)) : 0
   const ringColor =

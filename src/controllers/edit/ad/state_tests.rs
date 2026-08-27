@@ -95,6 +95,10 @@ async fn operator_test_pool() -> sqlx::PgPool {
         .execute(&pool)
         .await
         .expect("install operator-console latest-row indexes");
+    sqlx::raw_sql(crate::migrations::OPERATOR_LATEST_INDEX_SQL)
+        .execute(&pool)
+        .await
+        .expect("operator-console latest-row indexes are idempotent");
     pool
 }
 
@@ -160,20 +164,18 @@ async fn append_check_history(pool: &sqlx::PgPool, first: i32, last: i32) {
     .expect("append checker history");
 }
 
-fn index_work(plan: &Value, index_name: &str) -> Vec<(u64, u64)> {
+fn index_work(plan: &Value, index_name: &str) -> Vec<(f64, f64)> {
+    fn count(value: Option<&Value>) -> f64 {
+        value.and_then(Value::as_f64).unwrap_or(0.0)
+    }
+
     let mut found = Vec::new();
-    fn visit(value: &Value, index_name: &str, found: &mut Vec<(u64, u64)>) {
+    fn visit(value: &Value, index_name: &str, found: &mut Vec<(f64, f64)>) {
         match value {
             Value::Object(object) => {
                 if object.get("Index Name").and_then(Value::as_str) == Some(index_name) {
-                    let rows = object
-                        .get("Actual Rows")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0);
-                    let loops = object
-                        .get("Actual Loops")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0);
+                    let rows = count(object.get("Actual Rows"));
+                    let loops = count(object.get("Actual Loops"));
                     found.push((rows, loops));
                 }
                 object
@@ -245,7 +247,7 @@ async fn latest_verdict_work_and_live_query_count_stay_bounded_as_history_grows(
     assert!(first.values().all(|row| row.last_check_id.is_some()));
     let first_plan = explain_latest(&pool).await;
     let first_work = index_work(&first_plan, "ix_adcheckresults_service_latest");
-    assert_eq!(first_work, vec![(1, SERVICE_COUNT as u64)]);
+    assert_eq!(first_work, vec![(1.0, SERVICE_COUNT as f64)]);
 
     append_check_history(&pool, 5_001, 25_000).await;
     sqlx::raw_sql(r#"VACUUM (ANALYZE) "AdCheckResults""#)
