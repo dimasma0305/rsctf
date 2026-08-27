@@ -352,6 +352,11 @@
     },
     "instances": {
       "destroy": "Apakah kamu yakin ingin menghapus instance {{name}}?",
+      "filter_help": "Pencarian mencakup semua instance aktif, bukan hanya halaman yang terlihat.",
+      "filter_option_status": "Ditemukan {{teams}} opsi tim dan {{challenges}} opsi challenge.",
+      "filter_options_unavailable": "Opsi filter untuk sementara tidak tersedia.",
+      "filtered_stats": " <1>{{count}}</1> instance terdistribusi yang cocok",
+      "no_filtered_results": "Tidak ada instance aktif yang cocok dengan filter ini.",
       "note": "Metrik runtime diambil dalam satu batch terbatas. Metrik yang tidak dapat dilaporkan runtime ditampilkan sebagai tidak tersedia.",
       "stats": " <1>{{count}}</1> instance yang didistribusikan secara total"
     },

@@ -1032,6 +1032,30 @@ export enum ContainerRuntimeAvailability {
   Unavailable = "Unavailable",
 }
 
+/** Active-instance dimension used by the bounded filter-option endpoint */
+export enum ContainerInstanceFilterKind {
+  Team = "Team",
+  Challenge = "Challenge",
+}
+
+/** One authoritative team or challenge option backed by an active instance */
+export interface ContainerInstanceFilterOptionModel {
+  /** @format int32 */
+  id: number;
+  label: string;
+  avatar?: string | null;
+  category?: ChallengeCategory | null;
+}
+
+/** Bounded active-instance filter options plus the matching option count */
+export interface ArrayResponseOfContainerInstanceFilterOptionModel {
+  data: ContainerInstanceFilterOptionModel[];
+  /** @format int32 */
+  length: number;
+  /** @format int32 */
+  total: number;
+}
+
 /** Runtime metrics attached to an admin instance inventory page */
 export interface ContainerRuntimeStatsModel {
   availability: ContainerRuntimeAvailability;
@@ -4847,6 +4871,10 @@ export class Api<
         /** @format int32 */
         skip?: number;
         includeRuntimeStats?: boolean;
+        /** @format int32 */
+        teamId?: number;
+        /** @format int32 */
+        challengeId?: number;
       },
       params: RequestParams = {},
     ) =>
@@ -4854,6 +4882,24 @@ export class Api<
         path: `/api/admin/instances`,
         method: "GET",
         query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /** Discover teams or challenges represented anywhere in active instances. */
+    adminInstanceFilterOptions: (
+      query: {
+        kind: ContainerInstanceFilterKind;
+        search?: string;
+        /** @format int32 */
+        count?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfContainerInstanceFilterOptionModel, RequestResponse>({
+        path: `/api/admin/instances/filter-options`,
+        method: "GET",
+        query,
         format: "json",
         ...params,
       }),
@@ -4878,12 +4924,31 @@ export class Api<
         /** @format int32 */
         skip?: number;
         includeRuntimeStats?: boolean;
+        /** @format int32 */
+        teamId?: number;
+        /** @format int32 */
+        challengeId?: number;
       },
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
       useSWR<ArrayResponseOfContainerInstanceModel, RequestResponse>(
         doFetch ? [`/api/admin/instances`, query] : null,
+        options,
+      ),
+
+    useAdminInstanceFilterOptions: (
+      query: {
+        kind: ContainerInstanceFilterKind;
+        search?: string;
+        /** @format int32 */
+        count?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfContainerInstanceFilterOptionModel, RequestResponse>(
+        doFetch ? [`/api/admin/instances/filter-options`, query] : null,
         options,
       ),
 
@@ -4914,6 +4979,10 @@ export class Api<
         /** @format int32 */
         skip?: number;
         includeRuntimeStats?: boolean;
+        /** @format int32 */
+        teamId?: number;
+        /** @format int32 */
+        challengeId?: number;
       },
       data?:
         | ArrayResponseOfContainerInstanceModel

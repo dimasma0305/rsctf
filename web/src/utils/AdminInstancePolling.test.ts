@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  ADMIN_INSTANCE_FILTER_OPTIONS_CONFIG,
   ADMIN_INSTANCE_STATS_CADENCE_MS,
   adminInstanceRetryDelay,
   createAdminInstancePollingConfig,
 } from './AdminInstancePolling'
+
+test('page and option requests never retain stale data across filter keys', () => {
+  assert.equal(createAdminInstancePollingConfig(true).config.keepPreviousData, false)
+  assert.equal(ADMIN_INSTANCE_FILTER_OPTIONS_CONFIG.keepPreviousData, false)
+  assert.equal(ADMIN_INSTANCE_FILTER_OPTIONS_CONFIG.shouldRetryOnError, false)
+})
 
 test('admin instance polling stops permanent errors and honors Retry-After', () => {
   assert.equal(adminInstanceRetryDelay({ response: { status: 404 } }, ADMIN_INSTANCE_STATS_CADENCE_MS), null)

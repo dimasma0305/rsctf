@@ -147,6 +147,10 @@ export const ADMIN_OPERATIONS = Object.freeze([
     responseKind: "page",
     query: "count=25&skip=0&includeRuntimeStats=true",
   }),
+  operation("admin_instance_filter_options_get", "GET", "/api/admin/instances/filter-options", {
+    responseKind: "page",
+    query: "kind=Team&count=30",
+  }),
   operation("admin_instance_delete", "DELETE", "/api/admin/instances/{id}", {
     mutation: true,
     responseKind: "message",

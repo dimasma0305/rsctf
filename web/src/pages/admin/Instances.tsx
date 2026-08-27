@@ -18,7 +18,7 @@ import {
   Tooltip,
   useMantineTheme,
 } from '@mantine/core'
-import { useClipboard } from '@mantine/hooks'
+import { useClipboard, useDebouncedValue } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import {
   mdiAccountGroupOutline,
@@ -32,48 +32,57 @@ import {
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useReducer, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { ActionIconWithConfirm } from '@Components/ActionIconWithConfirm'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
-import { useAdminInstancePollingConfig } from '@Utils/AdminInstancePolling'
+import {
+  ADMIN_INSTANCE_FILTER_OPTIONS_CONFIG,
+  useAdminInstancePollingConfig,
+} from '@Utils/AdminInstancePolling'
+import {
+  ADMIN_INSTANCE_PAGE_SIZE,
+  INITIAL_ADMIN_INSTANCE_VIEW,
+  adminInstancePageQuery,
+  mergeAdminInstanceFilterOptions,
+  reduceAdminInstanceView,
+} from '@Utils/AdminInstanceFilters'
 import { containerOwnerLabel, hasContainerProxy } from '@Utils/ContainerInstance'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { HunamizeSize, useChallengeCategoryLabelMap, getProxyUrl } from '@Utils/Shared'
 import api, {
-  ChallengeModel,
   ChallengeCategory,
   ContainerInstanceModel,
+  ContainerInstanceFilterKind,
+  ContainerInstanceFilterOptionModel,
   ContainerRuntimeAvailability,
   ContainerRuntimeStatsModel,
-  TeamModel,
 } from '@Api'
 import classes from '@Styles/Instances.module.css'
 import misc from '@Styles/Misc.module.css'
 import tableClasses from '@Styles/Table.module.css'
 
-type SelectTeamItemProps = TeamModel & ComboboxItem
-type SelectChallengeItemProps = ChallengeModel & ComboboxItem
+type SelectFilterItemProps = ContainerInstanceFilterOptionModel & ComboboxItem
 
 const SelectTeamItem: SelectProps['renderOption'] = ({ option }) => {
-  const { name, id, ...others } = option as SelectTeamItemProps
+  const { label, id } = option as SelectFilterItemProps
 
   return (
-    <Group {...others} gap={0} wrap="nowrap">
+    <Group gap={0} wrap="nowrap">
       <Text fw={500} size="sm" lineClamp={1} className={misc.wordBreakAll}>
         <Text span c="dimmed">
           {`#${id} `}
         </Text>
-        {name}
+        {label}
       </Text>
     </Group>
   )
 }
 
 const SelectChallengeItem: SelectProps['renderOption'] = ({ option }) => {
-  const { title, id, category } = option as SelectChallengeItemProps
+  const { label, id, category } = option as SelectFilterItemProps
   const challengeCategoryLabelMap = useChallengeCategoryLabelMap()
   const cateData = challengeCategoryLabelMap.get(category ?? ChallengeCategory.Misc)!
   const theme = useMantineTheme()
@@ -85,7 +94,7 @@ const SelectChallengeItem: SelectProps['renderOption'] = ({ option }) => {
         <Text span c="dimmed">
           {`#${id} `}
         </Text>
-        {title}
+        {label}
       </Text>
     </Group>
   )
@@ -182,21 +191,43 @@ const InstanceStatsCells: FC<{ stats?: ContainerRuntimeStatsModel; live: boolean
   )
 }
 
-const ITEM_COUNT_PER_PAGE = 25
-
 const Instances: FC = () => {
-  const [page, setPage] = useState(1)
+  const [view, dispatchView] = useReducer(reduceAdminInstanceView, INITIAL_ADMIN_INSTANCE_VIEW)
   const [liveStats, setLiveStats] = useState(true)
   const pollingConfig = useAdminInstancePollingConfig(liveStats)
-  const instanceQuery = useMemo(
-    () => ({
-      count: ITEM_COUNT_PER_PAGE,
-      skip: (page - 1) * ITEM_COUNT_PER_PAGE,
-      includeRuntimeStats: liveStats,
-    }),
-    [liveStats, page]
-  )
+  const instanceQuery = useMemo(() => adminInstancePageQuery(view, liveStats), [liveStats, view])
   const { data: instances, mutate } = api.admin.useAdminInstancesPage(instanceQuery, pollingConfig)
+
+  const [teamSearch, setTeamSearch] = useState('')
+  const [challengeSearch, setChallengeSearch] = useState('')
+  const [debouncedTeamSearch] = useDebouncedValue(teamSearch.trim().slice(0, 100), 300)
+  const [debouncedChallengeSearch] = useDebouncedValue(challengeSearch.trim().slice(0, 100), 300)
+  const teamOptionQuery = useMemo(
+    () => ({
+      kind: ContainerInstanceFilterKind.Team,
+      search: debouncedTeamSearch || undefined,
+      count: 50,
+    }),
+    [debouncedTeamSearch]
+  )
+  const challengeOptionQuery = useMemo(
+    () => ({
+      kind: ContainerInstanceFilterKind.Challenge,
+      search: debouncedChallengeSearch || undefined,
+      count: 50,
+    }),
+    [debouncedChallengeSearch]
+  )
+  const {
+    data: teamOptionPage,
+    error: teamOptionsError,
+    isLoading: teamOptionsLoading,
+  } = api.admin.useAdminInstanceFilterOptions(teamOptionQuery, ADMIN_INSTANCE_FILTER_OPTIONS_CONFIG)
+  const {
+    data: challengeOptionPage,
+    error: challengeOptionsError,
+    isLoading: challengeOptionsLoading,
+  } = api.admin.useAdminInstanceFilterOptions(challengeOptionQuery, ADMIN_INSTANCE_FILTER_OPTIONS_CONFIG)
 
   const [disabled, setDisabled] = useState(false)
   const clipBoard = useClipboard()
@@ -205,52 +236,23 @@ const Instances: FC = () => {
   const { t } = useTranslation()
   const { locale } = useLanguage()
 
-  const teams = useMemo(
-    () => [
-      ...new Map(
-        (instances?.data ?? [])
-          .filter((instance): instance is ContainerInstanceModel & { team: TeamModel } => !!instance.team)
-          .map((instance) => [instance.team.id, instance.team])
-      ).values(),
-    ],
-    [instances]
+  const teamOptions = useMemo(
+    () => mergeAdminInstanceFilterOptions(teamOptionPage?.data ?? [], view.team),
+    [teamOptionPage, view.team]
   )
-  const challenges = useMemo(
-    () => [
-      ...new Map(
-        (instances?.data ?? [])
-          .filter(
-            (instance): instance is ContainerInstanceModel & { challenge: ChallengeModel } => !!instance.challenge
-          )
-          .map((instance) => [instance.challenge.id, instance.challenge])
-      ).values(),
-    ],
-    [instances]
+  const challengeOptions = useMemo(
+    () => mergeAdminInstanceFilterOptions(challengeOptionPage?.data ?? [], view.challenge),
+    [challengeOptionPage, view.challenge]
   )
 
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null)
-  const [selectedChallengeId, setSelectedChallengeId] = useState<string | null>(null)
   const [execTarget, setExecTarget] = useState<{ guid: string; title: string } | null>(null)
 
-  const filteredInstances = useMemo(() => {
-    let filtered = instances?.data ?? []
-
-    if (selectedTeamId) {
-      filtered = filtered.filter((instance) => instance.team?.id === Number(selectedTeamId))
-    }
-
-    if (selectedChallengeId) {
-      filtered = filtered.filter((instance) => instance.challenge?.id === Number(selectedChallengeId))
-    }
-
-    return filtered
-  }, [instances, selectedTeamId, selectedChallengeId])
-
   const total = instances?.total ?? 0
-  const totalPages = Math.max(1, Math.ceil(total / ITEM_COUNT_PER_PAGE))
+  const totalPages = Math.max(1, Math.ceil(total / ADMIN_INSTANCE_PAGE_SIZE))
+  const isFiltered = view.team !== null || view.challenge !== null
   useEffect(() => {
-    if (page > totalPages) setPage(totalPages)
-  }, [page, totalPages])
+    if (instances) dispatchView({ type: 'reconcileTotal', total })
+  }, [instances, total])
 
   const onDelete = async (instanceGuid?: string) => {
     if (!instanceGuid) return
@@ -265,7 +267,9 @@ const Instances: FC = () => {
         icon: <Icon path={mdiCheck} size={1} />,
       })
 
-      if (instances?.data.length === 1 && page > 1) setPage(page - 1)
+      if (instances?.data.length === 1 && view.page > 1) {
+        dispatchView({ type: 'setPage', page: view.page - 1 })
+      }
       else await mutate()
     } catch (e: any) {
       showErrorMsg(e, t)
@@ -301,38 +305,72 @@ const Instances: FC = () => {
       head={
         <>
           <Group w={{ base: '100%', md: '60%' }} justify="left" gap="md" wrap="wrap">
+            <Text id="admin-instance-filter-help" className="app-sr-only">
+              {t(
+                'admin.content.instances.filter_help',
+                'Searches include every active instance, not only the visible page.'
+              )}
+            </Text>
+            <Text id="admin-instance-filter-status" className="app-sr-only" role="status" aria-live="polite">
+              {t('admin.content.instances.filter_option_status', {
+                defaultValue: '{{teams}} team options and {{challenges}} challenge options found.',
+                teams: teamOptionPage?.total ?? 0,
+                challenges: challengeOptionPage?.total ?? 0,
+              })}
+            </Text>
             <Select
               w={{ base: '100%', sm: 'calc(50% - var(--mantine-spacing-md) / 2)' }}
               aria-label={t('admin.label.instances.team_filter', 'Filter instances by team')}
+              aria-describedby="admin-instance-filter-help admin-instance-filter-status"
               searchable
               clearable
               placeholder={t('admin.placeholder.instances.teams.select')}
-              value={selectedTeamId}
-              onChange={(id) => setSelectedTeamId(id)}
+              value={view.team === null ? null : String(view.team.id)}
+              searchValue={teamSearch}
+              onSearchChange={setTeamSearch}
+              onChange={(id) => {
+                const option = id === null ? null : teamOptions.find((item) => item.id === Number(id)) ?? null
+                dispatchView({ type: 'setTeam', option })
+                if (id === null) setTeamSearch('')
+              }}
               leftSection={<Icon path={mdiAccountGroupOutline} size={1} />}
-              nothingFoundMessage={t('admin.placeholder.instances.teams.not_found')}
+              nothingFoundMessage={
+                teamOptionsLoading
+                  ? t('common.content.loading', 'Loading…')
+                  : teamOptionsError
+                    ? t('admin.content.instances.filter_options_unavailable', 'Filter options are temporarily unavailable.')
+                  : t('admin.placeholder.instances.teams.not_found')
+              }
               renderOption={SelectTeamItem}
-              data={teams.map((team) => ({ value: String(team.id), label: team.name, ...team }) as ComboboxItem)}
+              filter={({ options }) => options}
+              data={teamOptions.map((option) => ({ ...option, value: String(option.id) }) as ComboboxItem)}
             />
             <Select
               w={{ base: '100%', sm: 'calc(50% - var(--mantine-spacing-md) / 2)' }}
               aria-label={t('admin.label.instances.challenge_filter', 'Filter instances by challenge')}
+              aria-describedby="admin-instance-filter-help admin-instance-filter-status"
               searchable
               clearable
               placeholder={t('admin.placeholder.instances.challenges.select')}
-              value={selectedChallengeId}
-              onChange={(id) => setSelectedChallengeId(id)}
+              value={view.challenge === null ? null : String(view.challenge.id)}
+              searchValue={challengeSearch}
+              onSearchChange={setChallengeSearch}
+              onChange={(id) => {
+                const option = id === null ? null : challengeOptions.find((item) => item.id === Number(id)) ?? null
+                dispatchView({ type: 'setChallenge', option })
+                if (id === null) setChallengeSearch('')
+              }}
               leftSection={<Icon path={mdiPuzzleOutline} size={1} />}
-              nothingFoundMessage={t('admin.placeholder.instances.challenges.not_found')}
+              nothingFoundMessage={
+                challengeOptionsLoading
+                  ? t('common.content.loading', 'Loading…')
+                  : challengeOptionsError
+                    ? t('admin.content.instances.filter_options_unavailable', 'Filter options are temporarily unavailable.')
+                  : t('admin.placeholder.instances.challenges.not_found')
+              }
               renderOption={SelectChallengeItem}
-              data={challenges.map(
-                (challenge) =>
-                  ({
-                    value: String(challenge.id),
-                    label: challenge.title,
-                    ...challenge,
-                  }) as ComboboxItem
-              )}
+              filter={({ options }) => options}
+              data={challengeOptions.map((option) => ({ ...option, value: String(option.id) }) as ComboboxItem)}
             />
           </Group>
 
@@ -343,32 +381,35 @@ const Instances: FC = () => {
               checked={liveStats}
               onChange={(e) => setLiveStats(e.currentTarget.checked)}
             />
-            <Text fw="bold" size="sm">
-              <Trans i18nKey="admin.content.instances.stats" values={{ count: total }}>
+            <Text fw="bold" size="sm" aria-live="polite">
+              <Trans
+                i18nKey={isFiltered ? 'admin.content.instances.filtered_stats' : 'admin.content.instances.stats'}
+                values={{ count: total }}
+              >
                 _<Code>_</Code>_
               </Trans>
             </Text>
             <Group role="group" gap="xs" wrap="nowrap" aria-label={t('common.pagination.label', 'Pagination')}>
               <ActionIcon
                 size={44}
-                disabled={page <= 1}
+                disabled={view.page <= 1}
                 aria-label={t('common.pagination.previous', 'Previous page')}
-                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                onClick={() => dispatchView({ type: 'setPage', page: view.page - 1 })}
               >
                 <Icon path={mdiArrowLeftBold} size={1} />
               </ActionIcon>
               <Text fw="bold" size="sm" aria-live="polite">
                 {t('common.pagination.page_of', {
                   defaultValue: 'Page {{page}} of {{total}}',
-                  page,
+                  page: view.page,
                   total: totalPages,
                 })}
               </Text>
               <ActionIcon
                 size={44}
-                disabled={page >= totalPages}
+                disabled={view.page >= totalPages}
                 aria-label={t('common.pagination.next', 'Next page')}
-                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                onClick={() => dispatchView({ type: 'setPage', page: Math.min(totalPages, view.page + 1) })}
               >
                 <Icon path={mdiArrowRightBold} size={1} />
               </ActionIcon>
@@ -405,7 +446,7 @@ const Instances: FC = () => {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {filteredInstances.map((inst) => {
+              {(instances?.data ?? []).map((inst) => {
                 const color = challengeCategoryLabelMap.get(inst.challenge?.category ?? ChallengeCategory.Misc)!.color
                 const ownerLabel = containerOwnerLabel(inst, {
                   shared: t('admin.label.instances.owner.shared', 'Shared (all teams)'),
@@ -543,6 +584,17 @@ const Instances: FC = () => {
                   </Table.Tr>
                 )
               })}
+              {instances?.data.length === 0 && (
+                <Table.Tr>
+                  <Table.Td colSpan={9}>
+                    <Text ta="center" c="dimmed" py="lg">
+                      {isFiltered
+                        ? t('admin.content.instances.no_filtered_results', 'No active instances match these filters.')
+                        : t('common.content.no_data', 'No data')}
+                    </Text>
+                  </Table.Td>
+                </Table.Tr>
+              )}
             </Table.Tbody>
           </Table>
         </ScrollArea>

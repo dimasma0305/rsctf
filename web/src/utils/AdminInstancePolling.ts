@@ -6,6 +6,16 @@ export const ADMIN_INSTANCE_STATS_CADENCE_MS = 10_000
 export const ADMIN_INSTANCE_LIST_CADENCE_MS = 30_000
 const MIN_RETRY_DELAY_MS = 1_000
 
+export const ADMIN_INSTANCE_FILTER_OPTIONS_CONFIG: SWRConfiguration = {
+  refreshInterval: 0,
+  keepPreviousData: false,
+  refreshWhenHidden: false,
+  refreshWhenOffline: false,
+  revalidateOnFocus: true,
+  revalidateOnReconnect: true,
+  shouldRetryOnError: false,
+}
+
 const transientStatus = (status: number | null) =>
   status === null || status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599)
 
@@ -37,6 +47,9 @@ export const createAdminInstancePollingConfig = (liveStats: boolean, canPoll: ()
 
   const config: SWRConfiguration = {
     refreshInterval: cadence,
+    // Global SWR enables this. Disable it here so an earlier page/filter key
+    // cannot be displayed under a newly selected authoritative filter.
+    keepPreviousData: false,
     refreshWhenHidden: false,
     refreshWhenOffline: false,
     revalidateOnFocus: true,

@@ -85,6 +85,8 @@ const INSTANCE_RUNTIME_CONCURRENCY: usize = 8;
 const INSTANCE_RUNTIME_CACHE_CAPACITY: usize = 2_048;
 const INSTANCE_RUNTIME_CACHE_TTL: StdDuration = StdDuration::from_secs(8);
 const INSTANCE_RUNTIME_QUERY_TIMEOUT: StdDuration = StdDuration::from_secs(2);
+const INSTANCE_FILTER_OPTION_MAX: u64 = 50;
+const INSTANCE_FILTER_SEARCH_MAX_CHARS: usize = 100;
 
 static INSTANCE_RUNTIME_SLOTS: Semaphore = Semaphore::const_new(INSTANCE_RUNTIME_CONCURRENCY);
 static INSTANCE_RUNTIME_CACHE: LazyLock<RuntimeSampleCache> = LazyLock::new(|| {
@@ -242,6 +244,45 @@ pub struct InstanceListQuery {
     skip: u64,
     #[serde(default)]
     include_runtime_stats: bool,
+    #[serde(default)]
+    team_id: Option<i32>,
+    #[serde(default)]
+    challenge_id: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub enum ContainerInstanceFilterKind {
+    Team,
+    Challenge,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceFilterOptionsQuery {
+    kind: ContainerInstanceFilterKind,
+    #[serde(default)]
+    search: String,
+    #[serde(default = "default_filter_option_count")]
+    count: u64,
+}
+
+fn default_filter_option_count() -> u64 {
+    30
+}
+
+fn instance_filter_option_count(query: &InstanceFilterOptionsQuery) -> i64 {
+    query.count.min(INSTANCE_FILTER_OPTION_MAX) as i64
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerInstanceFilterOptionModel {
+    pub id: i32,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<ChallengeCategory>,
 }
 
 fn instance_page_count(query: &InstanceListQuery) -> i64 {
@@ -273,7 +314,16 @@ struct ContainerInstanceRow {
     is_proxy: bool,
 }
 
-const INSTANCE_PAGE_SQL: &str = r#"
+#[derive(Debug, sqlx::FromRow)]
+struct ContainerInstanceFilterOptionRow {
+    id: i32,
+    label: String,
+    avatar: Option<String>,
+    category: Option<i16>,
+    total: i64,
+}
+
+const INSTANCE_PROJECTION_SQL: &str = r#"
     SELECT COALESCE(game_team.id, service_team.id) AS team_id,
            COALESCE(game_team.name, service_team.name) AS team_name,
            COALESCE(game_team.avatar_hash, service_team.avatar_hash) AS team_avatar_hash,
@@ -375,9 +425,85 @@ const INSTANCE_PAGE_SQL: &str = r#"
         ON exercise_challenge.id = exercise_instance.exercise_id
  LEFT JOIN "AspNetUsers" exercise_user
         ON exercise_user.id = exercise_instance.user_id
-  ORDER BY container.started_at, container.id
-     LIMIT $1 OFFSET $2
 "#;
+
+static INSTANCE_COUNT_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        r#"
+        WITH projected AS ({INSTANCE_PROJECTION_SQL})
+        SELECT COUNT(*)
+          FROM projected
+         WHERE ($1::INTEGER IS NULL OR projected.team_id = $1)
+           AND ($2::INTEGER IS NULL OR projected.challenge_id = $2)
+        "#
+    )
+});
+
+static INSTANCE_PAGE_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        r#"
+        WITH projected AS ({INSTANCE_PROJECTION_SQL})
+        SELECT *
+          FROM projected
+         WHERE ($1::INTEGER IS NULL OR projected.team_id = $1)
+           AND ($2::INTEGER IS NULL OR projected.challenge_id = $2)
+         ORDER BY projected.started_at, projected.container_guid
+         LIMIT $3 OFFSET $4
+        "#
+    )
+});
+
+static INSTANCE_TEAM_FILTER_OPTIONS_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        r#"
+        WITH projected AS ({INSTANCE_PROJECTION_SQL}),
+        options AS (
+            SELECT DISTINCT team_id AS id,
+                            team_name AS label,
+                            CASE
+                                WHEN team_avatar_hash IS NULL THEN NULL
+                                ELSE '/assets/' || team_avatar_hash || '/avatar'
+                            END AS avatar,
+                            NULL::SMALLINT AS category
+              FROM projected
+             WHERE team_id IS NOT NULL
+               AND team_name IS NOT NULL
+        )
+        SELECT id, label, avatar, category, COUNT(*) OVER () AS total
+          FROM options
+         WHERE $1 = ''
+            OR label ILIKE '%' || $1 || '%'
+            OR id::TEXT = $1
+         ORDER BY LOWER(label), id
+         LIMIT $2
+        "#
+    )
+});
+
+static INSTANCE_CHALLENGE_FILTER_OPTIONS_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        r#"
+        WITH projected AS ({INSTANCE_PROJECTION_SQL}),
+        options AS (
+            SELECT DISTINCT challenge_id AS id,
+                            challenge_title AS label,
+                            NULL::TEXT AS avatar,
+                            challenge_category AS category
+              FROM projected
+             WHERE challenge_id IS NOT NULL
+               AND challenge_title IS NOT NULL
+               AND challenge_category IS NOT NULL
+        )
+        SELECT id, label, avatar, category, COUNT(*) OVER () AS total
+          FROM options
+         WHERE $1 = ''
+            OR label ILIKE '%' || $1 || '%'
+            OR id::TEXT = $1
+         ORDER BY LOWER(label), id
+         LIMIT $2
+        "#
+    )
+});
 
 fn owner_kind(value: &str) -> AppResult<ContainerOwnerKind> {
     match value {
@@ -436,6 +562,17 @@ fn project_instance(row: ContainerInstanceRow) -> AppResult<ContainerInstanceMod
     })
 }
 
+fn project_filter_option(
+    row: ContainerInstanceFilterOptionRow,
+) -> AppResult<ContainerInstanceFilterOptionModel> {
+    Ok(ContainerInstanceFilterOptionModel {
+        id: row.id,
+        label: row.label,
+        avatar: row.avatar,
+        category: row.category.map(challenge_category).transpose()?,
+    })
+}
+
 /// `GET /api/admin/instances` — paginated list of managed containers with their
 /// concrete team or non-team ownership scope and challenge.
 pub async fn instances(
@@ -445,11 +582,21 @@ pub async fn instances(
 ) -> AppResult<ArrayResponse<ContainerInstanceModel>> {
     let count = instance_page_count(&q);
     let skip = i64::try_from(q.skip).unwrap_or(i64::MAX);
-    let total = sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Containers""#)
-        .fetch_one(st.pg())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let rows = sqlx::query_as::<_, ContainerInstanceRow>(INSTANCE_PAGE_SQL)
+    let total = if q.team_id.is_none() && q.challenge_id.is_none() {
+        sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Containers""#)
+            .fetch_one(st.pg())
+            .await
+    } else {
+        sqlx::query_scalar::<_, i64>(INSTANCE_COUNT_SQL.as_str())
+            .bind(q.team_id)
+            .bind(q.challenge_id)
+            .fetch_one(st.pg())
+            .await
+    }
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let rows = sqlx::query_as::<_, ContainerInstanceRow>(INSTANCE_PAGE_SQL.as_str())
+        .bind(q.team_id)
+        .bind(q.challenge_id)
         .bind(count)
         .bind(skip)
         .fetch_all(st.pg())
@@ -476,6 +623,38 @@ pub async fn instances(
             instance.runtime_stats = samples.remove(&instance.container_guid);
         }
     }
+
+    Ok(ArrayResponse::new(data, total))
+}
+
+/// `GET /api/admin/instances/filter-options` — bounded server-side discovery
+/// of teams or challenges that own at least one active managed container.
+pub async fn instance_filter_options(
+    State(st): State<SharedState>,
+    _admin: AdminUser,
+    Query(q): Query<InstanceFilterOptionsQuery>,
+) -> AppResult<ArrayResponse<ContainerInstanceFilterOptionModel>> {
+    let search = q.search.trim();
+    if search.chars().count() > INSTANCE_FILTER_SEARCH_MAX_CHARS {
+        return Err(AppError::bad_request("Filter search is too long"));
+    }
+
+    let count = instance_filter_option_count(&q);
+    let sql = match q.kind {
+        ContainerInstanceFilterKind::Team => INSTANCE_TEAM_FILTER_OPTIONS_SQL.as_str(),
+        ContainerInstanceFilterKind::Challenge => INSTANCE_CHALLENGE_FILTER_OPTIONS_SQL.as_str(),
+    };
+    let rows = sqlx::query_as::<_, ContainerInstanceFilterOptionRow>(sql)
+        .bind(search)
+        .bind(count)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let total = rows.first().map(|row| row.total).unwrap_or(0);
+    let data = rows
+        .into_iter()
+        .map(project_filter_option)
+        .collect::<AppResult<Vec<_>>>()?;
 
     Ok(ArrayResponse::new(data, total))
 }
@@ -563,11 +742,9 @@ pub async fn instance_stats(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::services::container::{ContainerInfo, ContainerSpec};
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
     struct TrackingRuntime {
         calls: AtomicUsize,
@@ -636,6 +813,8 @@ mod tests {
                 count: 100,
                 skip: 0,
                 include_runtime_stats: true,
+                team_id: None,
+                challenge_id: None,
             }),
             50
         );
@@ -644,8 +823,18 @@ mod tests {
                 count: 1_000,
                 skip: 0,
                 include_runtime_stats: false,
+                team_id: None,
+                challenge_id: None,
             }),
             500
+        );
+        assert_eq!(
+            instance_filter_option_count(&InstanceFilterOptionsQuery {
+                kind: ContainerInstanceFilterKind::Team,
+                search: String::new(),
+                count: 500,
+            }),
+            50
         );
     }
 
@@ -709,198 +898,11 @@ mod tests {
 
         assert_eq!(cache.entries.read().await.len(), 2);
     }
-
-    #[tokio::test]
-    #[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-    async fn instance_projection_resolves_every_ownership_shape() {
-        let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
-            .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
-        let admin = PgPoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await
-            .expect("connect test database");
-        let schema = format!("admin_instances_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
-            .execute(&admin)
-            .await
-            .expect("create isolated schema");
-        let options = PgConnectOptions::from_str(&database_url)
-            .expect("parse test database URL")
-            .options([("search_path", schema.as_str())]);
-        let pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect_with(options)
-            .await
-            .expect("connect isolated pool");
-
-        sqlx::raw_sql(
-            r#"
-            CREATE TABLE "Containers" (
-              id UUID PRIMARY KEY,
-              image TEXT NOT NULL,
-              container_id TEXT NOT NULL,
-              started_at TIMESTAMPTZ NOT NULL,
-              expect_stop_at TIMESTAMPTZ NOT NULL,
-              is_proxy BOOLEAN NOT NULL,
-              ip TEXT NOT NULL,
-              port INTEGER NOT NULL,
-              public_ip TEXT,
-              public_port INTEGER,
-              game_instance_id INTEGER,
-              exercise_instance_id INTEGER,
-              ad_team_service_id INTEGER
-            );
-            CREATE TABLE "GameInstances" (
-              id INTEGER PRIMARY KEY,
-              challenge_id INTEGER NOT NULL,
-              participation_id INTEGER NOT NULL
-            );
-            CREATE TABLE "GameChallenges" (
-              id INTEGER PRIMARY KEY,
-              title TEXT NOT NULL,
-              category SMALLINT NOT NULL,
-              shared_container_id UUID,
-              test_container_id UUID
-            );
-            CREATE TABLE "Participations" (
-              id INTEGER PRIMARY KEY,
-              team_id INTEGER NOT NULL
-            );
-            CREATE TABLE "Teams" (
-              id INTEGER PRIMARY KEY,
-              name TEXT NOT NULL,
-              avatar_hash TEXT
-            );
-            CREATE TABLE "AdTeamServices" (
-              id INTEGER PRIMARY KEY,
-              participation_id INTEGER NOT NULL,
-              challenge_id INTEGER NOT NULL,
-              container_id TEXT
-            );
-            CREATE TABLE "ExerciseInstances" (
-              id INTEGER PRIMARY KEY,
-              exercise_id INTEGER NOT NULL,
-              user_id UUID NOT NULL,
-              container_id UUID
-            );
-            CREATE TABLE "ExerciseChallenges" (
-              id INTEGER PRIMARY KEY,
-              title TEXT NOT NULL,
-              category SMALLINT NOT NULL
-            );
-            CREATE TABLE "AspNetUsers" (
-              id UUID PRIMARY KEY,
-              user_name TEXT,
-              real_name TEXT NOT NULL
-            );
-
-            INSERT INTO "Teams" VALUES (7, 'red', 'red-avatar');
-            INSERT INTO "Participations" VALUES (11, 7);
-            INSERT INTO "GameChallenges"
-                (id, title, category, shared_container_id, test_container_id)
-            VALUES
-                (20, 'per-team', 3, NULL, NULL),
-                (21, 'the-hill', 0, '00000000-0000-0000-0000-000000000002', NULL),
-                (22, 'admin-test', 0, NULL, '00000000-0000-0000-0000-000000000003');
-            INSERT INTO "GameInstances" VALUES (30, 20, 11);
-            INSERT INTO "AspNetUsers"
-            VALUES ('00000000-0000-0000-0000-000000000099', 'alice', 'Alice');
-            INSERT INTO "ExerciseChallenges" VALUES (40, 'practice-web', 3);
-            INSERT INTO "ExerciseInstances"
-            VALUES (
-                41,
-                40,
-                '00000000-0000-0000-0000-000000000099',
-                '00000000-0000-0000-0000-000000000004'
-            );
-            INSERT INTO "Containers"
-                (id, image, container_id, started_at, expect_stop_at, is_proxy,
-                 ip, port, public_ip, public_port, game_instance_id,
-                 exercise_instance_id, ad_team_service_id)
-            VALUES
-                ('00000000-0000-0000-0000-000000000001', 'team-image', 'runtime-1',
-                 now(), now() + interval '1 hour', TRUE, '10.0.0.1', 8080,
-                 NULL, NULL, 30, NULL, NULL),
-                ('00000000-0000-0000-0000-000000000002', 'hill-image', 'runtime-2',
-                 now(), now() + interval '1 hour', FALSE, '10.0.0.2', 8080,
-                 NULL, NULL, NULL, NULL, NULL),
-                ('00000000-0000-0000-0000-000000000003', 'test-image', 'runtime-3',
-                 now(), now() + interval '1 hour', FALSE, '10.0.0.3', 8080,
-                 NULL, NULL, NULL, NULL, NULL),
-                ('00000000-0000-0000-0000-000000000004', 'exercise-image', 'runtime-4',
-                 now(), now() + interval '1 hour', TRUE, '10.0.0.4', 8080,
-                 '203.0.113.4', 443, NULL, 41, NULL),
-                ('00000000-0000-0000-0000-000000000005', 'orphan-image', 'runtime-5',
-                 now(), now() + interval '1 hour', FALSE, '10.0.0.5', 8080,
-                 NULL, NULL, NULL, NULL, NULL);
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .expect("seed ownership shapes");
-
-        let total = sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*) FROM "Containers""#)
-            .fetch_one(&pool)
-            .await
-            .expect("count complete inventory");
-        let page = sqlx::query_as::<_, ContainerInstanceRow>(INSTANCE_PAGE_SQL)
-            .bind(2_i64)
-            .bind(2_i64)
-            .fetch_all(&pool)
-            .await
-            .expect("fetch bounded inventory page");
-        assert_eq!(total, 5);
-        assert_eq!(page.len(), 2);
-
-        let rows = sqlx::query_as::<_, ContainerInstanceRow>(INSTANCE_PAGE_SQL)
-            .bind(100_i64)
-            .bind(0_i64)
-            .fetch_all(&pool)
-            .await
-            .expect("project instances");
-        let models = rows
-            .into_iter()
-            .map(project_instance)
-            .collect::<AppResult<Vec<_>>>()
-            .expect("decode projections");
-
-        let team = &models[0];
-        assert_eq!(team.owner_kind, ContainerOwnerKind::Team);
-        assert_eq!(
-            team.team.as_ref().map(|value| value.name.as_str()),
-            Some("red")
-        );
-        assert_eq!(
-            team.challenge.as_ref().map(|value| value.title.as_str()),
-            Some("per-team")
-        );
-        assert!(team.is_proxy);
-
-        let shared = &models[1];
-        assert_eq!(shared.owner_kind, ContainerOwnerKind::Shared);
-        assert!(shared.team.is_none());
-        assert_eq!(
-            shared.challenge.as_ref().map(|value| value.title.as_str()),
-            Some("the-hill")
-        );
-        assert!(!shared.is_proxy);
-
-        assert_eq!(models[2].owner_kind, ContainerOwnerKind::AdminTest);
-        assert_eq!(models[3].owner_kind, ContainerOwnerKind::Exercise);
-        assert_eq!(models[3].owner_name.as_deref(), Some("alice"));
-        assert_eq!(models[3].ip, "203.0.113.4");
-        assert_eq!(models[3].port, 443);
-        assert_eq!(models[4].owner_kind, ContainerOwnerKind::Unassigned);
-
-        pool.close().await;
-        sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
-            .execute(&admin)
-            .await
-            .expect("drop isolated schema");
-        admin.close().await;
-    }
 }
+
+#[cfg(test)]
+#[path = "instances/postgres_tests.rs"]
+mod postgres_tests;
 
 // ─── Files ─────────────────────────────────────────────────────────────────────
 

@@ -129,6 +129,10 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/logs", get(logs))
         // --- Instances ---
         .route("/api/admin/instances", get(instances))
+        .route(
+            "/api/admin/instances/filter-options",
+            get(instance_filter_options),
+        )
         .route("/api/admin/instances/{id}", delete(destroy_instance))
         .route("/api/admin/instances/{id}/stats", get(instance_stats))
         // --- Files ---

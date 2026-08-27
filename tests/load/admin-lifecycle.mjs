@@ -1584,6 +1584,32 @@ async function observabilityAndRuntime() {
       Number.isFinite(fixtureInstance.runtimeStats?.sampledAt),
     `instance inventory omitted its bounded runtime sample: ${JSON.stringify(fixtureInstance)}`,
   );
+  const filteredInstances = await call(
+    'GET',
+    '/api/admin/instances',
+    `/api/admin/instances?count=50&skip=0&teamId=${fixtureInstance.team.id}` +
+      `&challengeId=${fixtureInstance.challenge.id}`,
+  );
+  requireCondition(
+    filteredInstances.json?.total >= 1 &&
+      filteredInstances.json?.data?.some((instance) => instance.containerGuid === containerGuid),
+    `authoritative instance filters omitted their matching row: ${JSON.stringify(filteredInstances.json)}`,
+  );
+  const teamOptions = await call(
+    'GET',
+    '/api/admin/instances/filter-options',
+    `/api/admin/instances/filter-options?kind=Team&count=30&search=${encodeURIComponent(fixtureInstance.team.name)}`,
+  );
+  const challengeOptions = await call(
+    'GET',
+    '/api/admin/instances/filter-options',
+    `/api/admin/instances/filter-options?kind=Challenge&count=30&search=${encodeURIComponent(fixtureInstance.challenge.title)}`,
+  );
+  requireCondition(
+    teamOptions.json?.data?.some((option) => option.id === fixtureInstance.team.id) &&
+      challengeOptions.json?.data?.some((option) => option.id === fixtureInstance.challenge.id),
+    'active instance filter option discovery omitted the fixture ownership dimensions',
+  );
   const stats = await call(
     'GET',
     '/api/admin/instances/{id}/stats',
