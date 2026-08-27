@@ -13,12 +13,10 @@ const RATE = Number(process.env.RATE || 200);
 const VUS = Number(process.env.VUS || 100);
 const DURATION = String(process.env.DURATION || '60s');
 const durationMatch = DURATION.match(/^([1-9]\d*)(s|m)$/);
-const durationSeconds = durationMatch
-  ? Number(durationMatch[1]) * (durationMatch[2] === 'm' ? 60 : 1)
-  : 0;
+const durationSeconds = durationMatch ? Number(durationMatch[1]) * (durationMatch[2] === 'm' ? 60 : 1) : 0;
 const SUMMARY_JSON = String(process.env.SUMMARY_JSON || '').trim();
 const resourceContainers = String(
-  process.env.SCOREBOARD_RESOURCE_CONTAINERS || 'rsctf-rsctf-1,rsctf-rsctf-2,rsctf-db-1',
+  process.env.SCOREBOARD_RESOURCE_CONTAINERS || 'rsctf-rsctf-1,rsctf-rsctf-2,rsctf-db-1'
 )
   .split(',')
   .map((value) => value.trim())
@@ -39,9 +37,15 @@ if (!Number.isSafeInteger(TOKEN_COUNT) || TOKEN_COUNT < 100 || TOKEN_COUNT > 400
   throw new Error('TOKEN_COUNT must be between 100 and 4000');
 }
 if (
-  !Number.isSafeInteger(RATE) || RATE <= 0 || RATE > 2000 ||
-  !Number.isSafeInteger(VUS) || VUS <= 0 || VUS > 500 ||
-  !Number.isSafeInteger(durationSeconds) || durationSeconds <= 0 || durationSeconds > 600
+  !Number.isSafeInteger(RATE) ||
+  RATE <= 0 ||
+  RATE > 2000 ||
+  !Number.isSafeInteger(VUS) ||
+  VUS <= 0 ||
+  VUS > 500 ||
+  !Number.isSafeInteger(durationSeconds) ||
+  durationSeconds <= 0 ||
+  durationSeconds > 600
 ) {
   throw new Error('RATE must be 1..2000, VUS 1..500, and DURATION 1s..10m');
 }
@@ -52,7 +56,7 @@ const accounts = sql(
     WHERE security_stamp IS NOT NULL
       AND (user_name LIKE 'LT_%' OR user_name LIKE 'LOADTEST%' OR email LIKE '%@load.test')
     ORDER BY id
-    LIMIT ${TOKEN_COUNT}`,
+    LIMIT ${TOKEN_COUNT}`
 )
   .split('\n')
   .filter(Boolean);
@@ -65,7 +69,9 @@ const tokens = accounts.map((entry) => {
 });
 
 const parseBytes = (value) => {
-  const match = String(value).trim().match(/^([0-9.]+)([kmgt]?i?b)$/i);
+  const match = String(value)
+    .trim()
+    .match(/^([0-9.]+)([kmgt]?i?b)$/i);
   if (!match) return 0;
   const power = { b: 0, kb: 1, kib: 1, mb: 2, mib: 2, gb: 3, gib: 3 }[match[2].toLowerCase()];
   return Number(match[1]) * 1024 ** (power ?? 0);
@@ -74,11 +80,9 @@ const parseBytes = (value) => {
 const samples = [];
 const samplingErrors = [];
 const sampleResources = () => {
-  const sampled = spawnSync(
-    'docker',
-    ['stats', '--no-stream', '--format', '{{json .}}', ...resourceContainers],
-    { encoding: 'utf8' },
-  );
+  const sampled = spawnSync('docker', ['stats', '--no-stream', '--format', '{{json .}}', ...resourceContainers], {
+    encoding: 'utf8',
+  });
   if (sampled.status !== 0) {
     throw new Error(`docker stats failed: ${(sampled.stderr || sampled.stdout || '').trim()}`);
   }

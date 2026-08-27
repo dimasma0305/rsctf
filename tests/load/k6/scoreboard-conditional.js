@@ -12,9 +12,7 @@ const RATE = Number(__ENV.RATE || 200);
 const VUS = Number(__ENV.VUS || 100);
 const DURATION = __ENV.DURATION || '60s';
 const durationMatch = DURATION.match(/^([1-9]\d*)(s|m)$/);
-const durationSeconds = durationMatch
-  ? Number(durationMatch[1]) * (durationMatch[2] === 'm' ? 60 : 1)
-  : 0;
+const durationSeconds = durationMatch ? Number(durationMatch[1]) * (durationMatch[2] === 'm' ? 60 : 1) : 0;
 
 if (
   !/^\d+$/.test(STANDARD_GAME) ||
@@ -27,17 +25,20 @@ if (
   throw new Error('STANDARD_GAME, KOTH_GAME, and 100..4000 bounded disposable-user TOKENS are required');
 }
 if (
-  !Number.isSafeInteger(RATE) || RATE <= 0 || RATE > 2000 ||
-  !Number.isSafeInteger(VUS) || VUS <= 0 || VUS > 500 ||
-  !Number.isSafeInteger(durationSeconds) || durationSeconds <= 0 || durationSeconds > 600
+  !Number.isSafeInteger(RATE) ||
+  RATE <= 0 ||
+  RATE > 2000 ||
+  !Number.isSafeInteger(VUS) ||
+  VUS <= 0 ||
+  VUS > 500 ||
+  !Number.isSafeInteger(durationSeconds) ||
+  durationSeconds <= 0 ||
+  durationSeconds > 600
 ) {
   throw new Error('RATE must be 1..2000, VUS 1..500, and DURATION 1s..10m');
 }
 
-const endpoints = [
-  `/api/game/${STANDARD_GAME}/scoreboard`,
-  `/api/game/${KOTH_GAME}/ad/koth/scoreboard`,
-];
+const endpoints = [`/api/game/${STANDARD_GAME}/scoreboard`, `/api/game/${KOTH_GAME}/ad/koth/scoreboard`];
 const validators = Object.create(null);
 const versions = Object.create(null);
 const server5xx = new Rate('server_5xx');
