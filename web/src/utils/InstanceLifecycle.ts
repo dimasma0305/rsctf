@@ -20,10 +20,12 @@ export const isInstanceExtensionWindowOpen = (
 
 type InstanceContext = {
   closeTime?: number | null
+  instanceId?: string | null
   instanceEntry?: string | null
 }
 
 type InstanceRuntimeResponse = {
+  id?: string | null
   entry?: string | null
   expectStopAt?: number | null
 }
@@ -37,30 +39,29 @@ export const mergeInstanceContext = <T extends { context?: InstanceContext }>(
   return { ...latest, context: { ...latest.context, ...patch } }
 }
 
-/** Publish a create response unless the cache already names a different runtime. */
+/** Publish a create response unless the cache already names a different runtime.
+ * Legacy contexts without an ID remain readable, but an active one cannot safely
+ * accept an asynchronous mutation result until a fresh challenge read supplies it. */
 export const mergeCreatedInstanceContext = <T extends { context?: InstanceContext }>(
   latest: T | undefined,
   created: InstanceRuntimeResponse
 ): T | undefined => {
-  if (!created.entry || typeof created.expectStopAt !== 'number') return latest
-  const currentEntry = latest?.context?.instanceEntry
-  if (currentEntry && currentEntry !== created.entry) return latest
+  if (!created.id || !created.entry || typeof created.expectStopAt !== 'number') return latest
+  const currentId = latest?.context?.instanceId
+  if ((currentId && currentId !== created.id) || (!currentId && latest?.context?.instanceEntry)) return latest
   return mergeInstanceContext(latest, {
     closeTime: created.expectStopAt,
+    instanceId: created.id,
     instanceEntry: created.entry,
   })
 }
 
-/** Apply an extension only while the cache still names the runtime in its response. */
+/** Apply an extension only while the cache still names the immutable runtime ID. */
 export const mergeExtendedInstanceContext = <T extends { context?: InstanceContext }>(
   latest: T | undefined,
   extension: InstanceRuntimeResponse
 ): T | undefined => {
-  if (
-    !extension.entry ||
-    typeof extension.expectStopAt !== 'number' ||
-    latest?.context?.instanceEntry !== extension.entry
-  )
+  if (!extension.id || typeof extension.expectStopAt !== 'number' || latest?.context?.instanceId !== extension.id)
     return latest
   return mergeInstanceContext(latest, { closeTime: extension.expectStopAt })
 }
@@ -70,9 +71,9 @@ export const clearDestroyedInstanceContext = <T extends { context?: InstanceCont
   current: T | undefined,
   deleted: T
 ): T | undefined => {
-  const deletedEntry = deleted.context?.instanceEntry
-  if (!deletedEntry || current?.context?.instanceEntry !== deletedEntry) return current
-  return mergeInstanceContext(current, { closeTime: null, instanceEntry: null })
+  const deletedId = deleted.context?.instanceId
+  if (!deletedId || current?.context?.instanceId !== deletedId) return current
+  return mergeInstanceContext(current, { closeTime: null, instanceId: null, instanceEntry: null })
 }
 
 interface DestroyReconciliation<T> {

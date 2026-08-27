@@ -10,6 +10,10 @@ import {
   runInstanceExtension,
 } from './InstanceLifecycle'
 
+const ORIGINAL_ID = '11111111-1111-4111-8111-111111111111'
+const REPLACEMENT_ID = '22222222-2222-4222-8222-222222222222'
+const REUSED_DIRECT_ENTRY = '203.0.113.17:31337'
+
 test('extension success is published only after the authoritative request succeeds', async () => {
   let successes = 0
   await assert.rejects(
@@ -48,46 +52,50 @@ test('instance responses merge into the newest cache without reverting concurren
     attempts: 4,
     hints: ['new hint'],
     solved: true,
-    context: { closeTime: 100, instanceEntry: 'new-entry' },
+    context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: 'new-entry' },
   }
 
   assert.deepEqual(mergeInstanceContext(refreshed, { closeTime: 250 }), {
     attempts: 4,
     hints: ['new hint'],
     solved: true,
-    context: { closeTime: 250, instanceEntry: 'new-entry' },
+    context: { closeTime: 250, instanceId: ORIGINAL_ID, instanceEntry: 'new-entry' },
   })
   assert.equal(mergeInstanceContext(undefined, { closeTime: 250 }), undefined)
 })
 
 test('a create response publishes into empty and matching runtime caches', () => {
-  const created = { entry: 'created-entry', expectStopAt: 200 }
+  const created = { id: ORIGINAL_ID, entry: 'created-entry', expectStopAt: 200 }
   const empty = {
     attempts: 2,
-    context: { closeTime: null, instanceEntry: null },
+    context: { closeTime: null, instanceId: null, instanceEntry: null },
   }
   const matching = {
     attempts: 3,
-    context: { closeTime: 100, instanceEntry: 'created-entry' },
+    context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: 'created-entry' },
   }
 
   assert.deepEqual(mergeCreatedInstanceContext(empty, created), {
     attempts: 2,
-    context: { closeTime: 200, instanceEntry: 'created-entry' },
+    context: { closeTime: 200, instanceId: ORIGINAL_ID, instanceEntry: 'created-entry' },
   })
   assert.deepEqual(mergeCreatedInstanceContext(matching, created), {
     attempts: 3,
-    context: { closeTime: 200, instanceEntry: 'created-entry' },
+    context: { closeTime: 200, instanceId: ORIGINAL_ID, instanceEntry: 'created-entry' },
   })
   assert.equal(mergeCreatedInstanceContext(undefined, created), undefined)
+
+  const legacyActive = { context: { closeTime: 100, instanceEntry: 'created-entry' } }
+  assert.equal(mergeCreatedInstanceContext(legacyActive, created), legacyActive)
+  assert.equal(mergeCreatedInstanceContext(empty, { entry: 'created-entry', expectStopAt: 200 }), empty)
 })
 
 test('a delayed create response cannot replace a destroyed and recreated runtime', async () => {
-  const originalResponse = { entry: 'old-entry', expectStopAt: 100 }
-  const replacementResponse = { entry: 'replacement-entry', expectStopAt: 300 }
+  const originalResponse = { id: ORIGINAL_ID, entry: 'old-entry', expectStopAt: 100 }
+  const replacementResponse = { id: REPLACEMENT_ID, entry: 'replacement-entry', expectStopAt: 300 }
   let cached = {
     attempts: 4,
-    context: { closeTime: null, instanceEntry: null },
+    context: { closeTime: null, instanceId: null, instanceEntry: null },
   }
   let resolveCreate: ((created: typeof originalResponse) => void) | undefined
   const delayedCreate = new Promise<typeof originalResponse>((resolve) => {
@@ -107,15 +115,15 @@ test('a delayed create response cannot replace a destroyed and recreated runtime
 
   assert.deepEqual(cached, {
     attempts: 4,
-    context: { closeTime: 300, instanceEntry: 'replacement-entry' },
+    context: { closeTime: 300, instanceId: REPLACEMENT_ID, instanceEntry: 'replacement-entry' },
   })
 })
 
 test('a delayed extension response cannot stamp a destroyed and recreated runtime', async () => {
-  const original = { context: { closeTime: 100, instanceEntry: 'old-entry' } }
+  const original = { context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: 'old-entry' } }
   let cached = original
-  let resolveExtension: ((extension: { entry: string; expectStopAt: number }) => void) | undefined
-  const delayedExtension = new Promise<{ entry: string; expectStopAt: number }>((resolve) => {
+  let resolveExtension: ((extension: { id: string; entry: string; expectStopAt: number }) => void) | undefined
+  const delayedExtension = new Promise<{ id: string; entry: string; expectStopAt: number }>((resolve) => {
     resolveExtension = resolve
   })
   const publishExtension = delayedExtension.then((extension) => {
@@ -126,26 +134,74 @@ test('a delayed extension response cannot stamp a destroyed and recreated runtim
   cached =
     mergeInstanceContext(cached, {
       closeTime: 300,
+      instanceId: REPLACEMENT_ID,
       instanceEntry: 'replacement-entry',
     }) ?? cached
 
-  resolveExtension?.({ entry: 'old-entry', expectStopAt: 200 })
+  resolveExtension?.({ id: ORIGINAL_ID, entry: 'old-entry', expectStopAt: 200 })
   await publishExtension
 
   assert.deepEqual(cached, {
-    context: { closeTime: 300, instanceEntry: 'replacement-entry' },
+    context: { closeTime: 300, instanceId: REPLACEMENT_ID, instanceEntry: 'replacement-entry' },
   })
   assert.deepEqual(
     mergeExtendedInstanceContext(cached, {
+      id: REPLACEMENT_ID,
       entry: 'replacement-entry',
       expectStopAt: 400,
     }),
-    { context: { closeTime: 400, instanceEntry: 'replacement-entry' } }
+    { context: { closeTime: 400, instanceId: REPLACEMENT_ID, instanceEntry: 'replacement-entry' } }
   )
 })
 
+test('direct-port reuse fences stale create and extension responses by container ID', () => {
+  const replacement = {
+    context: {
+      closeTime: 300,
+      instanceId: REPLACEMENT_ID,
+      instanceEntry: REUSED_DIRECT_ENTRY,
+    },
+  }
+  const staleResponse = {
+    id: ORIGINAL_ID,
+    entry: REUSED_DIRECT_ENTRY,
+    expectStopAt: 900,
+  }
+
+  assert.equal(mergeCreatedInstanceContext(replacement, staleResponse), replacement)
+  assert.equal(mergeExtendedInstanceContext(replacement, staleResponse), replacement)
+})
+
+test('a stale destroy completion cannot clear a replacement that reused its direct port', async () => {
+  const deleted = {
+    context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: REUSED_DIRECT_ENTRY },
+  }
+  const replacement = {
+    context: { closeTime: 300, instanceId: REPLACEMENT_ID, instanceEntry: REUSED_DIRECT_ENTRY },
+  }
+  let cached = deleted
+  let refreshes = 0
+
+  const result = await destroyReconciledInstance({
+    refresh: async () => {
+      refreshes += 1
+      return refreshes === 1 ? deleted : cached
+    },
+    hasInstance: (value) => Boolean(value?.context.instanceEntry),
+    destroy: async () => {
+      cached = replacement
+    },
+    publishAbsent: async (latest) => {
+      cached = clearDestroyedInstanceContext(cached, latest) ?? cached
+    },
+  })
+
+  assert.equal(result, 'destroyed')
+  assert.equal(cached, replacement)
+})
+
 test('destroy preserves a replacement instance published while deletion is in flight', async () => {
-  const deleted = { context: { closeTime: 100, instanceEntry: 'old-entry' } }
+  const deleted = { context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: 'old-entry' } }
   let cached = deleted
   let refreshes = 0
 
@@ -157,7 +213,9 @@ test('destroy preserves a replacement instance published while deletion is in fl
     },
     hasInstance: (value) => Boolean(value?.context.instanceEntry),
     destroy: async () => {
-      cached = { context: { closeTime: 300, instanceEntry: 'replacement-entry' } }
+      cached = {
+        context: { closeTime: 300, instanceId: REPLACEMENT_ID, instanceEntry: 'replacement-entry' },
+      }
     },
     publishAbsent: async (latest) => {
       cached = clearDestroyedInstanceContext(cached, latest) ?? cached
@@ -165,9 +223,11 @@ test('destroy preserves a replacement instance published while deletion is in fl
   })
 
   assert.equal(result, 'destroyed')
-  assert.deepEqual(cached, { context: { closeTime: 300, instanceEntry: 'replacement-entry' } })
+  assert.deepEqual(cached, {
+    context: { closeTime: 300, instanceId: REPLACEMENT_ID, instanceEntry: 'replacement-entry' },
+  })
   assert.deepEqual(clearDestroyedInstanceContext(deleted, deleted), {
-    context: { closeTime: null, instanceEntry: null },
+    context: { closeTime: null, instanceId: null, instanceEntry: null },
   })
 })
 

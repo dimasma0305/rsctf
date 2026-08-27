@@ -822,6 +822,7 @@ pub async fn get_challenge(
                 .one(&st.db)
                 .await?
             {
+                context.instance_id = Some(cont.id);
                 context.instance_entry = Some(cont.entry());
                 context.close_time = Some(cont.expect_stop_at);
                 response_grant.bind_per_team_runtime(instance, cont);
@@ -879,6 +880,7 @@ pub async fn get_challenge(
         context.is_shared_instance = true;
         if let Some(sid) = challenge.shared_container_id {
             if let Some(shared) = container::Entity::find_by_id(sid).one(&st.db).await? {
+                context.instance_id = Some(shared.id);
                 context.instance_entry = Some(shared.entry());
                 context.close_time = Some(shared.expect_stop_at);
                 response_grant.bind_shared_runtime(shared);

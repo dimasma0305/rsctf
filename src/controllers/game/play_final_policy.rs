@@ -220,13 +220,16 @@ impl PreparedChallengeGrant {
         };
         let runtime_matches = match &self.runtime {
             PreparedRuntime::None => {
-                model.context.instance_entry.is_none() && model.context.close_time.is_none()
+                model.context.instance_id.is_none()
+                    && model.context.instance_entry.is_none()
+                    && model.context.close_time.is_none()
             }
             PreparedRuntime::PerTeam {
                 instance: _,
                 container,
             } => {
                 !model.context.is_shared_instance
+                    && model.context.instance_id == Some(container.id)
                     && model
                         .context
                         .instance_entry
@@ -236,6 +239,7 @@ impl PreparedChallengeGrant {
             }
             PreparedRuntime::Shared { container } => {
                 model.context.is_shared_instance
+                    && model.context.instance_id == Some(container.id)
                     && model
                         .context
                         .instance_entry
@@ -695,6 +699,7 @@ pub(super) async fn finish_details_response(
 }
 
 fn strip_live_runtime_context(model: &mut ChallengeDetailModel) {
+    model.context.instance_id = None;
     model.context.instance_entry = None;
     model.context.close_time = None;
     model.context.is_shared_instance = false;

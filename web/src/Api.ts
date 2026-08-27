@@ -3626,6 +3626,8 @@ export interface ClientChallengeVariant {
 }
 
 export interface ClientFlagContext {
+  /** Immutable container UUID used to fence asynchronous lifecycle results. */
+  instanceId?: string | null;
   /**
    * Close time of the challenge instance
    * @format uint64

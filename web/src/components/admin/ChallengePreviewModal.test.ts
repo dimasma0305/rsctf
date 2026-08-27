@@ -9,6 +9,7 @@ const modal = readFileSync('src/components/ChallengeModal.tsx', 'utf8')
 test('admin preview uses the persisted attachment and real test-container lifecycle', () => {
   assert.doesNotMatch(preview, /localhost:2333|\/assets\/attachment\.zip|FakeContext/)
   assert.match(editor, /challenge\?\.attachment\?\.url/)
+  assert.match(editor, /instanceId: challenge\?\.testContainer\?\.id/)
   assert.match(editor, /challenge\?\.testContainer\?\.entry/)
   assert.match(editor, /onCreateInstance=\{onToggleTestContainer\}/)
   assert.match(editor, /onDestroyInstance=\{onToggleTestContainer\}/)

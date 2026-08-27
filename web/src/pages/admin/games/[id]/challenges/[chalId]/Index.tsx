@@ -1014,6 +1014,7 @@ const GameChallengeEdit: FC = () => {
                 disabled={disabled}
                 context={{
                   closeTime: challenge?.testContainer?.expectStopAt,
+                  instanceId: challenge?.testContainer?.id,
                   instanceEntry: challenge?.testContainer?.entry,
                 }}
               />
@@ -1390,6 +1391,7 @@ const GameChallengeEdit: FC = () => {
         }}
         context={{
           closeTime: challenge?.testContainer?.expectStopAt ?? null,
+          instanceId: challenge?.testContainer?.id ?? null,
           instanceEntry: challenge?.testContainer?.entry ?? null,
           url:
             challenge?.attachment?.url ??
