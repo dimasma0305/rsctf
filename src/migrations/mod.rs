@@ -381,7 +381,24 @@ mod tests {
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     use sqlx::{ConnectOptions as _, Connection as _};
 
-    use super::{ensure_no_other_database_clients, migration_ledger_diff};
+    use super::{ensure_no_other_database_clients, migration_ledger_diff, Migrator, MigratorTrait};
+
+    #[test]
+    fn recent_migration_identities_are_contiguous_and_preserve_shipped_m0103() {
+        let names = Migrator::migrations()
+            .into_iter()
+            .map(|migration| migration.name().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            &names[names.len() - 3..],
+            [
+                "m0103_recent_games_candidates",
+                "m0104_post_feed_order",
+                "m0105_manager_autocomplete_indexes",
+            ]
+        );
+    }
 
     #[test]
     fn migration_ledger_requires_an_exact_version_set() {

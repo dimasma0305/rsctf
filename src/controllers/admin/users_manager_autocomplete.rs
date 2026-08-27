@@ -238,16 +238,13 @@ mod tests {
     #[tokio::test]
     async fn endpoint_rejects_anonymous_and_ordinary_users_before_querying() {
         let app = Router::new()
-            .route(
-                "/api/admin/users/manager-autocomplete",
-                get(manager_autocomplete),
-            )
+            .route("/test/manager-autocomplete", get(manager_autocomplete))
             .with_state(test_state());
 
         let anonymous = app
             .clone()
             .oneshot(
-                Request::get("/api/admin/users/manager-autocomplete?query=alice")
+                Request::get("/test/manager-autocomplete?query=alice")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -263,7 +260,7 @@ mod tests {
         };
         let forbidden = app
             .oneshot(
-                Request::get("/api/admin/users/manager-autocomplete?query=alice")
+                Request::get("/test/manager-autocomplete?query=alice")
                     .extension(ordinary_user)
                     .body(Body::empty())
                     .unwrap(),

@@ -91,6 +91,10 @@ export const ADMIN_OPERATIONS = Object.freeze([
     responseKind: "page",
     query: "hint=admin-load",
   }),
+  operation("admin_manager_autocomplete_get", "GET", "/api/admin/users/manager-autocomplete", {
+    responseKind: "array",
+    query: "query=ad",
+  }),
   operation("admin_user_get", "GET", "/api/admin/users/{userid}", {
     poll: true,
     responseKind: "user",
