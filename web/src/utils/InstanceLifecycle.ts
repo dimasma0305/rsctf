@@ -39,21 +39,18 @@ export const mergeInstanceContext = <T extends { context?: InstanceContext }>(
   return { ...latest, context: { ...latest.context, ...patch } }
 }
 
-/** Publish a create response unless the cache already names a different runtime.
- * Legacy contexts without an ID remain readable, but an active one cannot safely
- * accept an asynchronous mutation result until a fresh challenge read supplies it. */
-export const mergeCreatedInstanceContext = <T extends { context?: InstanceContext }>(
-  latest: T | undefined,
-  created: InstanceRuntimeResponse
-): T | undefined => {
-  if (!created.id || !created.entry || typeof created.expectStopAt !== 'number') return latest
-  const currentId = latest?.context?.instanceId
-  if ((currentId && currentId !== created.id) || (!currentId && latest?.context?.instanceEntry)) return latest
-  return mergeInstanceContext(latest, {
-    closeTime: created.expectStopAt,
-    instanceId: created.id,
-    instanceEntry: created.entry,
-  })
+/**
+ * Revalidate exactly once after create and trust only the authoritative runtime ID.
+ * The refresh itself publishes the current server state, so a delayed create response
+ * can never repopulate a cache that passed through a create/destroy cycle.
+ */
+export const confirmCreatedInstance = async <T extends { context?: InstanceContext }>(
+  created: InstanceRuntimeResponse,
+  refresh: () => Promise<T | undefined>
+): Promise<boolean> => {
+  if (!created.id) return false
+  const latest = await refresh()
+  return latest?.context?.instanceId === created.id
 }
 
 /** Apply an extension only while the cache still names the immutable runtime ID. */

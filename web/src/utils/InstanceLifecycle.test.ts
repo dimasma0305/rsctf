@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   clearDestroyedInstanceContext,
+  confirmCreatedInstance,
   destroyReconciledInstance,
   isInstanceExtensionWindowOpen,
-  mergeCreatedInstanceContext,
   mergeExtendedInstanceContext,
   mergeInstanceContext,
   runInstanceExtension,
@@ -13,6 +13,14 @@ import {
 const ORIGINAL_ID = '11111111-1111-4111-8111-111111111111'
 const REPLACEMENT_ID = '22222222-2222-4222-8222-222222222222'
 const REUSED_DIRECT_ENTRY = '203.0.113.17:31337'
+type ChallengeSnapshot = {
+  attempts: number
+  context: {
+    closeTime: number | null
+    instanceId: string | null
+    instanceEntry: string | null
+  }
+}
 
 test('extension success is published only after the authoritative request succeeds', async () => {
   let successes = 0
@@ -64,59 +72,104 @@ test('instance responses merge into the newest cache without reverting concurren
   assert.equal(mergeInstanceContext(undefined, { closeTime: 250 }), undefined)
 })
 
-test('a create response publishes into empty and matching runtime caches', () => {
+test('an initial create is published by one authoritative same-ID refresh', async () => {
   const created = { id: ORIGINAL_ID, entry: 'created-entry', expectStopAt: 200 }
-  const empty = {
+  let cached: ChallengeSnapshot = {
     attempts: 2,
     context: { closeTime: null, instanceId: null, instanceEntry: null },
   }
-  const matching = {
+  const authoritative: ChallengeSnapshot = {
     attempts: 3,
     context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: 'created-entry' },
   }
+  let refreshes = 0
 
-  assert.deepEqual(mergeCreatedInstanceContext(empty, created), {
-    attempts: 2,
-    context: { closeTime: 200, instanceId: ORIGINAL_ID, instanceEntry: 'created-entry' },
+  const confirmed = await confirmCreatedInstance(created, async () => {
+    refreshes += 1
+    cached = authoritative
+    return cached
   })
-  assert.deepEqual(mergeCreatedInstanceContext(matching, created), {
-    attempts: 3,
-    context: { closeTime: 200, instanceId: ORIGINAL_ID, instanceEntry: 'created-entry' },
-  })
-  assert.equal(mergeCreatedInstanceContext(undefined, created), undefined)
 
-  const legacyActive = { context: { closeTime: 100, instanceEntry: 'created-entry' } }
-  assert.equal(mergeCreatedInstanceContext(legacyActive, created), legacyActive)
-  assert.equal(mergeCreatedInstanceContext(empty, { entry: 'created-entry', expectStopAt: 200 }), empty)
+  assert.equal(confirmed, true)
+  assert.equal(refreshes, 1)
+  assert.equal(cached, authoritative)
+
+  let malformedRefreshes = 0
+  assert.equal(
+    await confirmCreatedInstance({ entry: 'created-entry', expectStopAt: 200 }, async () => {
+      malformedRefreshes += 1
+      return authoritative
+    }),
+    false
+  )
+  assert.equal(malformedRefreshes, 0)
 })
 
 test('a delayed create response cannot replace a destroyed and recreated runtime', async () => {
   const originalResponse = { id: ORIGINAL_ID, entry: 'old-entry', expectStopAt: 100 }
-  const replacementResponse = { id: REPLACEMENT_ID, entry: 'replacement-entry', expectStopAt: 300 }
-  let cached = {
+  let cached: ChallengeSnapshot = {
     attempts: 4,
     context: { closeTime: null, instanceId: null, instanceEntry: null },
   }
+  const original: ChallengeSnapshot = {
+    attempts: 4,
+    context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: 'old-entry' },
+  }
+  const replacement: ChallengeSnapshot = {
+    attempts: 4,
+    context: { closeTime: 300, instanceId: REPLACEMENT_ID, instanceEntry: 'replacement-entry' },
+  }
+  let authoritative = original
   let resolveCreate: ((created: typeof originalResponse) => void) | undefined
   const delayedCreate = new Promise<typeof originalResponse>((resolve) => {
     resolveCreate = resolve
   })
-  const publishCreate = delayedCreate.then((created) => {
-    cached = mergeCreatedInstanceContext(cached, created) ?? cached
+  const confirmCreate = delayedCreate.then((created) => {
+    return confirmCreatedInstance(created, async () => {
+      cached = authoritative
+      return cached
+    })
   })
 
-  cached = mergeCreatedInstanceContext(cached, originalResponse) ?? cached
-  const deleted = cached
-  cached = clearDestroyedInstanceContext(cached, deleted) ?? cached
-  cached = mergeCreatedInstanceContext(cached, replacementResponse) ?? cached
+  authoritative = replacement
 
   resolveCreate?.(originalResponse)
-  await publishCreate
+  assert.equal(await confirmCreate, false)
 
-  assert.deepEqual(cached, {
+  assert.equal(cached, replacement)
+})
+
+test('a delayed create cannot republish a runtime destroyed before authoritative confirmation', async () => {
+  const created = { id: ORIGINAL_ID, entry: REUSED_DIRECT_ENTRY, expectStopAt: 100 }
+  const absent: ChallengeSnapshot = {
     attempts: 4,
-    context: { closeTime: 300, instanceId: REPLACEMENT_ID, instanceEntry: 'replacement-entry' },
+    context: { closeTime: null, instanceId: null, instanceEntry: null },
+  }
+  const active: ChallengeSnapshot = {
+    attempts: 4,
+    context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: REUSED_DIRECT_ENTRY },
+  }
+  let cached = absent
+  let authoritative = active
+  let refreshes = 0
+  let resolveCreate: ((response: typeof created) => void) | undefined
+  const delayedCreate = new Promise<typeof created>((resolve) => {
+    resolveCreate = resolve
   })
+  const confirmCreate = delayedCreate.then((response) => {
+    return confirmCreatedInstance(response, async () => {
+      refreshes += 1
+      cached = authoritative
+      return cached
+    })
+  })
+
+  authoritative = absent
+  resolveCreate?.(created)
+
+  assert.equal(await confirmCreate, false)
+  assert.equal(refreshes, 1)
+  assert.equal(cached, absent)
 })
 
 test('a delayed extension response cannot stamp a destroyed and recreated runtime', async () => {
@@ -154,7 +207,7 @@ test('a delayed extension response cannot stamp a destroyed and recreated runtim
   )
 })
 
-test('direct-port reuse fences stale create and extension responses by container ID', () => {
+test('direct-port reuse fences stale create and extension responses by container ID', async () => {
   const replacement = {
     context: {
       closeTime: 300,
@@ -168,7 +221,15 @@ test('direct-port reuse fences stale create and extension responses by container
     expectStopAt: 900,
   }
 
-  assert.equal(mergeCreatedInstanceContext(replacement, staleResponse), replacement)
+  let refreshes = 0
+  assert.equal(
+    await confirmCreatedInstance(staleResponse, async () => {
+      refreshes += 1
+      return replacement
+    }),
+    false
+  )
+  assert.equal(refreshes, 1)
   assert.equal(mergeExtendedInstanceContext(replacement, staleResponse), replacement)
 })
 

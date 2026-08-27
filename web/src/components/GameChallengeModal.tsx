@@ -13,8 +13,8 @@ import { flagVerdictReducer } from '@Utils/FlagVerdict'
 import { resolveChallengeDeliveryGuide } from '@Utils/GuideState'
 import {
   clearDestroyedInstanceContext,
+  confirmCreatedInstance,
   destroyReconciledInstance,
-  mergeCreatedInstanceContext,
   mergeExtendedInstanceContext,
 } from '@Utils/InstanceLifecycle'
 import { showErrorMsg } from '@Utils/Shared'
@@ -145,7 +145,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
     try {
       const res = await api.game.gameCreateContainer(gameId, challengeId)
-      await mutate((latest) => mergeCreatedInstanceContext(latest, res.data), { revalidate: false })
+      if (!(await confirmCreatedInstance(res.data, mutate))) return
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.created.title'),
