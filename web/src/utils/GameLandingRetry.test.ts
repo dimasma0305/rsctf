@@ -80,11 +80,11 @@ test('loaded game survives one transient timing retry and adopts the recovered r
     assert.equal(reads, 2)
     assert.equal(container.textContent, 'loaded event:error:stay')
 
-    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS - 1))
+    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS / 2 - 1))
     assert.equal(reads, 2)
     assert.equal(container.textContent, 'loaded event:error:stay')
 
-    await act(async () => context.mock.timers.tick(1))
+    await act(async () => context.mock.timers.tick(GAME_TIMING_REFRESH_MS / 2 + 1))
     assert.equal(reads, 3)
     assert.equal(container.textContent, 'recovered event:ok:stay')
   } finally {

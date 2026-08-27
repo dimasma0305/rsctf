@@ -142,7 +142,10 @@ test('timing polling owns one retry per subscribed key and cancels it after reco
   const { createGameTimingSWRConfig, GAME_TIMING_REFRESH_MS, shouldRetryGameTimingError } = await import(
     '../hooks/useGame'
   )
-  const owner = createGameTimingSWRConfig()
+  const owner = createGameTimingSWRConfig(
+    () => 0,
+    () => 1
+  )
   const { config } = owner
   const activeConfig = { ...config, isOnline: () => true, isVisible: () => true }
   let supersededReads = 0

@@ -9,6 +9,7 @@ import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ParticipationStatus } from '@Api'
 
 export const GAME_TIMING_REFRESH_MS = 60_000
+export const GAME_TIMING_RETRY_CAP_MS = 5 * 60_000
 export const GAME_ACCESS_READ_READY_MS = 5_000
 const MAX_RECENT_GAME_READS = 128
 
@@ -159,8 +160,23 @@ export const gameTimingSWRConfig: SWRConfiguration = {
   shouldRetryOnError: shouldRetryGameTimingError,
 }
 
+/** Equal jitter avoids immediate retries while spreading clients across each backoff window. */
+export const gameTimingRetryDelay = (retryCount: number, random: () => number = Math.random) => {
+  const normalizedRetryCount = Number.isFinite(retryCount) ? Math.max(1, Math.floor(retryCount)) : 1
+  const cappedExponent = Math.min(
+    normalizedRetryCount - 1,
+    Math.ceil(Math.log2(GAME_TIMING_RETRY_CAP_MS / GAME_TIMING_REFRESH_MS))
+  )
+  const backoffCeiling = Math.min(GAME_TIMING_RETRY_CAP_MS, GAME_TIMING_REFRESH_MS * 2 ** cappedExponent)
+  const jitter = Math.min(1, Math.max(0, random()))
+  return Math.round(backoffCeiling / 2 + (backoffCeiling / 2) * jitter)
+}
+
 /** Own one timing poll leader and one replaceable recovery timer per SWR key. */
-export const createGameTimingSWRConfig = (nowMilliseconds: () => number = monotonicMilliseconds) => {
+export const createGameTimingSWRConfig = (
+  nowMilliseconds: () => number = monotonicMilliseconds,
+  random: () => number = Math.random
+) => {
   type LeadershipListener = (isLeader: boolean) => void
   type DeferredRetry = { isActive: () => boolean; run: () => void }
 
@@ -273,25 +289,28 @@ export const createGameTimingSWRConfig = (nowMilliseconds: () => number = monoto
       cancel(key)
       retryTimers.set(
         key,
-        setTimeout(() => {
-          retryTimers.delete(key)
-          if (!subscribers.has(key)) return
-          const visible = _config.refreshWhenHidden || _config.isVisible()
-          const online = _config.refreshWhenOffline || _config.isOnline()
-          if (!visible || !online) {
-            // Keep no dormant timer chain. One shared listener resumes this
-            // deduplicating revalidator once visibility and connectivity agree.
-            deferredRetries.set(key, {
-              isActive: () =>
-                (_config.refreshWhenHidden || _config.isVisible()) &&
-                (_config.refreshWhenOffline || _config.isOnline()),
-              run: () => void revalidate(options),
-            })
-            listenForActivity()
-            return
-          }
-          void revalidate(options)
-        }, GAME_TIMING_REFRESH_MS)
+        setTimeout(
+          () => {
+            retryTimers.delete(key)
+            if (!subscribers.has(key)) return
+            const visible = _config.refreshWhenHidden || _config.isVisible()
+            const online = _config.refreshWhenOffline || _config.isOnline()
+            if (!visible || !online) {
+              // Keep no dormant timer chain. One shared listener resumes this
+              // deduplicating revalidator once visibility and connectivity agree.
+              deferredRetries.set(key, {
+                isActive: () =>
+                  (_config.refreshWhenHidden || _config.isVisible()) &&
+                  (_config.refreshWhenOffline || _config.isOnline()),
+                run: () => void revalidate(options),
+              })
+              listenForActivity()
+              return
+            }
+            void revalidate(options)
+          },
+          gameTimingRetryDelay(options.retryCount, random)
+        )
       )
     },
   }
