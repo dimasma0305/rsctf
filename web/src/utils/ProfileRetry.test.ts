@@ -94,25 +94,51 @@ test('profile retry timers retain only the latest retry and cancel after recover
     assert.deepEqual(calls, ['latest'])
     assert.equal(retries.pending(), 0)
 
+    retries.schedule(
+      500,
+      () => {
+        calls.push('obsolete deferred scope')
+      },
+      () => false
+    )
+    context.mock.timers.tick(500)
+    assert.equal(retries.pending(), 1)
+    retries.schedule(500, () => {
+      calls.push('replacement scope')
+    })
+    context.mock.timers.tick(500)
+    assert.deepEqual(calls, ['latest', 'replacement scope'])
+    assert.equal(retries.pending(), 0)
+
     const recoveryDelay = profileRetryScheduleDelay({ response: { status: 520 } }, MAX_PROFILE_RETRIES, () => 0, 0)
     assert.equal(recoveryDelay, PROFILE_RECOVERY_PROBE_MS)
     retries.schedule(recoveryDelay ?? 0, () => {
       calls.push('recovered after cap')
     })
     context.mock.timers.tick(PROFILE_RECOVERY_PROBE_MS - 1)
-    assert.deepEqual(calls, ['latest'])
+    assert.deepEqual(calls, ['latest', 'replacement scope'])
     context.mock.timers.tick(1)
-    assert.deepEqual(calls, ['latest', 'recovered after cap'])
+    assert.deepEqual(calls, ['latest', 'replacement scope', 'recovered after cap'])
   } finally {
     retries.cancel()
     context.mock.timers.reset()
   }
 })
 
-test('profile hook recovers from an unlisted 5xx through one bounded retry', async (context) => {
+test('profile hook defers one bounded retry until visible and online', async (context) => {
   const browser = new Window({ url: 'https://rsctf.test/' })
   const restoreDom = installTestDom(browser)
   context.mock.timers.enable({ apis: ['setTimeout'], now: 0 })
+  let visibilityState: DocumentVisibilityState = 'visible'
+  let online = true
+  Object.defineProperty(browser.document, 'visibilityState', {
+    configurable: true,
+    get: () => visibilityState,
+  })
+  Object.defineProperty(browser.navigator, 'onLine', {
+    configurable: true,
+    get: () => online,
+  })
   const { useUser } = await import('../hooks/useUser')
   const { createInstance } = await import('i18next')
   const { I18nextProvider, initReactI18next } = await import('react-i18next')
@@ -135,8 +161,8 @@ test('profile hook recovers from an unlisted 5xx through one bounded retry', asy
     provider: () => new Map(),
     fetcher,
     dedupingInterval: 0,
-    isOnline: () => true,
-    isVisible: () => true,
+    isOnline: () => browser.navigator.onLine,
+    isVisible: () => browser.document.visibilityState !== 'hidden',
   }
   const Probe: FC = () => {
     const { user, error } = useUser()
@@ -155,13 +181,109 @@ test('profile hook recovers from an unlisted 5xx through one bounded retry', asy
     assert.equal(reads, 1)
     assert.equal(container.textContent, 'recovering')
 
+    visibilityState = 'hidden'
     await act(async () => context.mock.timers.tick(3_000))
+    assert.equal(reads, 1)
+    await act(async () => context.mock.timers.tick(PROFILE_RECOVERY_PROBE_MS))
+    assert.equal(reads, 1)
+
+    visibilityState = 'visible'
+    online = false
+    await act(async () => {
+      browser.document.dispatchEvent(new browser.Event('visibilitychange'))
+      browser.dispatchEvent(new browser.Event('focus'))
+    })
+    assert.equal(reads, 1)
+
+    online = true
+    await act(async () => {
+      browser.dispatchEvent(new browser.Event('online'))
+      browser.document.dispatchEvent(new browser.Event('visibilitychange'))
+      browser.dispatchEvent(new browser.Event('focus'))
+    })
     assert.equal(reads, 2)
     assert.equal(container.textContent, 'recovered')
 
     // Recovery clears the hook-owned timer; no stale retry survives it.
     await act(async () => context.mock.timers.tick(PROFILE_RECOVERY_PROBE_MS))
     assert.equal(reads, 2)
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    i18n.off()
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('profile hook cancels a deferred retry when its last consumer unmounts', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/' })
+  const restoreDom = installTestDom(browser)
+  context.mock.timers.enable({ apis: ['setTimeout'], now: 0 })
+  let visibilityState: DocumentVisibilityState = 'visible'
+  let online = true
+  Object.defineProperty(browser.document, 'visibilityState', {
+    configurable: true,
+    get: () => visibilityState,
+  })
+  Object.defineProperty(browser.navigator, 'onLine', {
+    configurable: true,
+    get: () => online,
+  })
+  const { useUser } = await import('../hooks/useUser')
+  const { createInstance } = await import('i18next')
+  const { I18nextProvider, initReactI18next } = await import('react-i18next')
+  const { SWRConfig } = await import('swr')
+  const { MemoryRouter } = await import('react-router')
+  const { createRoot } = await import('react-dom/client')
+  const i18n = createInstance()
+  await i18n.use(initReactI18next).init({ lng: 'en', resources: { en: { translation: {} } } })
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  let reads = 0
+  const fetcher: BareFetcher<ProfileUserInfoModel> = async () => {
+    reads += 1
+    throw { response: { status: 503 } }
+  }
+  const swrConfig: SWRConfiguration = {
+    provider: () => new Map(),
+    fetcher,
+    dedupingInterval: 0,
+    isOnline: () => browser.navigator.onLine,
+    isVisible: () => browser.document.visibilityState !== 'hidden',
+  }
+  const Probe: FC = () => {
+    useUser()
+    return null
+  }
+  const App: FC<{ mounted: boolean }> = ({ mounted }) =>
+    createElement(
+      SWRConfig,
+      { value: swrConfig },
+      createElement(I18nextProvider, { i18n }, createElement(MemoryRouter, null, mounted && createElement(Probe)))
+    )
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => root.render(createElement(App, { mounted: true })))
+    assert.equal(reads, 1)
+
+    visibilityState = 'hidden'
+    await act(async () => context.mock.timers.tick(3_000))
+    assert.equal(reads, 1)
+
+    await act(async () => root.render(createElement(App, { mounted: false })))
+    visibilityState = 'visible'
+    online = true
+    await act(async () => {
+      browser.document.dispatchEvent(new browser.Event('visibilitychange'))
+      browser.dispatchEvent(new browser.Event('online'))
+      browser.dispatchEvent(new browser.Event('focus'))
+      context.mock.timers.tick(PROFILE_RECOVERY_PROBE_MS)
+    })
+    assert.equal(reads, 1)
   } finally {
     await act(async () => root.unmount())
     context.mock.timers.reset()

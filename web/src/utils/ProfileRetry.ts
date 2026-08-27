@@ -2,6 +2,11 @@ import { httpErrorStatus, isRetryableHttpError } from '@Utils/HttpError'
 import { getServerNowMilliseconds } from '@Utils/ServerClock'
 
 type Timer = ReturnType<typeof setTimeout>
+type DeferredRetry = {
+  action: () => void
+  generation: number
+  isActive: () => boolean
+}
 
 export const MAX_PROFILE_RETRIES = 5
 const MAX_BACKOFF_MS = 30_000
@@ -97,23 +102,63 @@ export const profileRetryScheduleDelay = (
 /** Owns the sole pending retry so later errors and successful reads supersede it. */
 export const createProfileRetryTimers = () => {
   let timer: Timer | null = null
+  let deferredRetry: DeferredRetry | null = null
   let generation = 0
+  let removeActivityListeners: (() => void) | null = null
+
+  const stopListeningForActivity = () => {
+    removeActivityListeners?.()
+    removeActivityListeners = null
+  }
+  const resumeDeferredRetry = () => {
+    const retry = deferredRetry
+    if (!retry || generation !== retry.generation || !retry.isActive()) return
+    deferredRetry = null
+    stopListeningForActivity()
+    retry.action()
+  }
+  const listenForActivity = () => {
+    if (removeActivityListeners) return
+    const currentDocument = typeof document === 'undefined' ? null : document
+    const currentWindow = typeof window === 'undefined' ? null : window
+    if (!currentDocument && !currentWindow) return
+    currentDocument?.addEventListener('visibilitychange', resumeDeferredRetry)
+    currentWindow?.addEventListener('focus', resumeDeferredRetry)
+    currentWindow?.addEventListener('online', resumeDeferredRetry)
+    removeActivityListeners = () => {
+      currentDocument?.removeEventListener('visibilitychange', resumeDeferredRetry)
+      currentWindow?.removeEventListener('focus', resumeDeferredRetry)
+      currentWindow?.removeEventListener('online', resumeDeferredRetry)
+    }
+  }
+
+  const clearPending = () => {
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+    deferredRetry = null
+    stopListeningForActivity()
+  }
 
   return {
-    schedule(delay: number, action: () => void) {
+    schedule(delay: number, action: () => void, isActive: () => boolean = () => true) {
       generation += 1
       const scheduledGeneration = generation
-      if (timer !== null) clearTimeout(timer)
+      clearPending()
       timer = setTimeout(() => {
         timer = null
-        if (generation === scheduledGeneration) action()
+        if (generation !== scheduledGeneration) return
+        if (!isActive()) {
+          deferredRetry = { action, generation: scheduledGeneration, isActive }
+          listenForActivity()
+          return
+        }
+        action()
       }, delay)
     },
     cancel() {
       generation += 1
-      if (timer !== null) clearTimeout(timer)
-      timer = null
+      clearPending()
     },
-    pending: () => (timer === null ? 0 : 1),
+    pending: () => (timer === null && deferredRetry === null ? 0 : 1),
   }
 }

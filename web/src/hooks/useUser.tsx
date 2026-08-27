@@ -23,12 +23,18 @@ export const useUser = () => {
     mutate,
   } = api.account.useAccountProfile({
     refreshInterval: 0,
+    refreshWhenHidden: false,
+    refreshWhenOffline: false,
     shouldRetryOnError: (err) => profileErrorDisposition(err) === 'retry',
     revalidateOnFocus: false,
     onErrorRetry: (err, _key, _config, revalidate, { retryCount }) => {
       const delay = profileRetryScheduleDelay(err, retryCount)
       if (delay === null) return
-      retryTimers.current.schedule(delay, () => revalidate({ retryCount }))
+      retryTimers.current.schedule(
+        delay,
+        () => revalidate({ retryCount }),
+        () => (_config.refreshWhenHidden || _config.isVisible()) && (_config.refreshWhenOffline || _config.isOnline())
+      )
     },
   })
 
