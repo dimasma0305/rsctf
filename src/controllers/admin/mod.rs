@@ -93,14 +93,32 @@ pub fn router() -> Router<SharedState> {
                 .merge(delete(logo_delete)),
         )
         // --- Dashboard / trends / reviews / cheat reports / writeups ---
-        .route("/api/admin/dashboard", get(dashboard))
+        .route(
+            "/api/admin/dashboard",
+            limited(Policy::Query, get(dashboard)),
+        )
         .route("/api/admin/Games/{id}/FlagEgress", get(get_flag_egress))
-        .route("/api/admin/submissiontrend", get(submission_trend))
-        .route("/api/admin/reviews", get(reviews))
-        .route("/api/admin/cheat-reports", get(cheat_reports))
-        .route("/api/admin/writeups", get(all_writeups))
-        .route("/api/admin/writeups/{id}", get(game_writeups))
-        .route("/api/admin/writeups/{id}/all", get(download_all_writeups))
+        .route(
+            "/api/admin/submissiontrend",
+            limited(Policy::Query, get(submission_trend)),
+        )
+        .route("/api/admin/reviews", limited(Policy::Query, get(reviews)))
+        .route(
+            "/api/admin/cheat-reports",
+            limited(Policy::Query, get(cheat_reports)),
+        )
+        .route(
+            "/api/admin/writeups",
+            limited(Policy::Query, get(all_writeups)),
+        )
+        .route(
+            "/api/admin/writeups/{id}",
+            limited(Policy::Query, get(game_writeups)),
+        )
+        .route(
+            "/api/admin/writeups/{id}/all",
+            limited(Policy::Query, get(download_all_writeups)),
+        )
         // --- Users ---
         .route("/api/admin/users", get(users).post(add_users))
         .route("/api/admin/users/import", post(import_users))
@@ -217,6 +235,52 @@ pub fn router() -> Router<SharedState> {
         )
         // Admin A&D controller (round advance, service registration) under admin.
         .merge(ad::router())
+}
+
+#[cfg(test)]
+mod dashboard_route_admission_tests {
+    #[test]
+    fn expensive_dashboard_activity_reads_require_admin_and_query_admission() {
+        let router_source = include_str!("mod.rs");
+        let compact_router = router_source
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let handler_sources = [
+            router_source,
+            include_str!("dashboard.rs"),
+            include_str!("anti_cheat.rs"),
+        ]
+        .join("\n");
+
+        for (path, handler) in [
+            ("/api/admin/dashboard", "dashboard"),
+            ("/api/admin/submissiontrend", "submission_trend"),
+            ("/api/admin/reviews", "reviews"),
+            ("/api/admin/cheat-reports", "cheat_reports"),
+            ("/api/admin/writeups", "all_writeups"),
+            ("/api/admin/writeups/{id}", "game_writeups"),
+            ("/api/admin/writeups/{id}/all", "download_all_writeups"),
+        ] {
+            assert!(
+                compact_router.contains(&format!("\"{path}\"")),
+                "missing {path}"
+            );
+            assert!(
+                compact_router.contains(&format!("limited(Policy::Query, get({handler}))")),
+                "{path} must retain named query-work admission"
+            );
+
+            let signature_start = handler_sources
+                .find(&format!("pub async fn {handler}"))
+                .unwrap_or_else(|| panic!("missing handler {handler}"));
+            let signature_end = (signature_start + 320).min(handler_sources.len());
+            assert!(
+                handler_sources[signature_start..signature_end].contains("AdminUser"),
+                "{handler} must retain backend admin authentication"
+            );
+        }
+    }
 }
 
 // ─── Container instances ───────────────────────────────────────────────────────

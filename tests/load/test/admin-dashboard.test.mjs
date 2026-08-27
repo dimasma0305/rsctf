@@ -5,6 +5,8 @@ import test from 'node:test'
 import { DASHBOARD_OPERATIONS, validDashboardResponse } from '../admin-dashboard.js'
 
 const runnerSource = readFileSync(new URL('../admin-dashboard.mjs', import.meta.url), 'utf8')
+const scenarioSource = readFileSync(new URL('../k6/admin-dashboard.js', import.meta.url), 'utf8')
+const adminRouterSource = readFileSync(new URL('../../../src/controllers/admin/mod.rs', import.meta.url), 'utf8')
 
 test('dashboard load catalog covers every range with fixed bucket bounds', () => {
   assert.deepEqual(
@@ -44,4 +46,25 @@ test('dashboard fixture bypasses evidence triggers only inside bounded transacti
   assert.match(runnerSource, /fixtureSql\(\s*`INSERT INTO "Submissions"/)
   assert.match(runnerSource, /`SELECT '\$\{escapedTag\}' \|\| g, 0, `/)
   assert.match(runnerSource, /fixtureSql\(`DELETE FROM "Submissions" WHERE answer LIKE/)
+})
+
+test('dashboard traffic and every expensive activity route retain query-work admission', () => {
+  assert.match(runnerSource, /RATE: process\.env\.RATE \|\| 1/)
+  assert.match(scenarioSource, /RATE !== 1/)
+
+  const compactRouter = adminRouterSource.split(/\s+/).join(' ')
+  for (const handler of [
+    'dashboard',
+    'submission_trend',
+    'reviews',
+    'cheat_reports',
+    'all_writeups',
+    'game_writeups',
+    'download_all_writeups',
+  ]) {
+    assert.ok(
+      compactRouter.includes(`limited(Policy::Query, get(${handler}))`),
+      `${handler} is missing named query-work admission`
+    )
+  }
 })

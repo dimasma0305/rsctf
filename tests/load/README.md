@@ -54,7 +54,7 @@ fixed trend bucket counts, at most five popular games, at most ten activity rows
 zero 5xx/dropped arrivals, and a responsive `healthz`:
 
 ```sh
-ADMIN_DASHBOARD_DISPOSABLE=1 SUBMISSION_ROWS=100000 RATE=2 DURATION=30s \
+ADMIN_DASHBOARD_DISPOSABLE=1 SUBMISSION_ROWS=100000 RATE=1 DURATION=30s \
   RSCTF_LOAD_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1/rsctf_load_test \
   SUMMARY_JSON=/tmp/admin-dashboard.json npm run admin-dashboard
 ```

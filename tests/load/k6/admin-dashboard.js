@@ -5,11 +5,13 @@ import { DASHBOARD_OPERATIONS, validDashboardResponse } from '../admin-dashboard
 
 const TARGET = String(__ENV.TARGET || 'http://127.0.0.1:8080').replace(/\/+$/, '')
 const ADMIN_TOKEN = __ENV.ADMIN_TOKEN || ''
-const RATE = Number(__ENV.RATE || 2)
+const RATE = Number(__ENV.RATE || 1)
 const VUS = Number(__ENV.VUS || Math.max(4, RATE * 2))
 
 if (!ADMIN_TOKEN) throw new Error('ADMIN_TOKEN is required')
-if (!Number.isSafeInteger(RATE) || RATE < 1 || RATE > 2) throw new Error('RATE must be an integer from 1 to 2')
+if (!Number.isSafeInteger(RATE) || RATE !== 1) {
+  throw new Error('RATE must be 1 so one admin identity stays within the named query-work budget')
+}
 if (!Number.isSafeInteger(VUS) || VUS < 1) throw new Error('VUS must be a positive integer')
 
 http.setResponseCallback(http.expectedStatuses(200))

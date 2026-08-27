@@ -79,7 +79,7 @@ try {
   status = runK6('admin-dashboard.js', {
     TARGET: origin,
     ADMIN_TOKEN: adminToken,
-    RATE: process.env.RATE || 2,
+    RATE: process.env.RATE || 1,
     VUS: process.env.VUS || 4,
     DURATION: process.env.DURATION || '30s',
     MAX_P95_MS: process.env.MAX_P95_MS || 1000,

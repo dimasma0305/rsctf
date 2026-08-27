@@ -233,6 +233,52 @@ fn ad_submit_default_allows_four_max_batches_per_participation() {
 }
 
 #[test]
+fn query_work_budget_caps_one_partition_under_concurrency() {
+    assert!(matches!(
+        Policy::Query.kind(),
+        Kind::Bucket {
+            capacity: 30.0,
+            refill_per_sec: 0.1,
+        }
+    ));
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let key = format!("query-work-concurrency-{nonce}");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(64));
+    let results = std::thread::scope(|scope| {
+        let handles = (0..64)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let key = key.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    check(Policy::Query, key)
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("query admission worker panicked"))
+            .collect::<Vec<_>>()
+    });
+
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 30);
+    assert_eq!(results.iter().filter(|result| result.is_err()).count(), 34);
+    assert!(results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .all(|retry_after| (1..=10).contains(retry_after)));
+
+    shard_for(Policy::Query, &key)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(&(Policy::Query, key));
+}
+
+#[test]
 fn redis_result_rounds_retry_after_and_uses_local_fallback() {
     assert_eq!(
         redis_or_local(Ok(1), || panic!("unexpected fallback")),
