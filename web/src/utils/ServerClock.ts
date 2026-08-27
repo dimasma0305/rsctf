@@ -130,9 +130,9 @@ export const useServerClockOffset = () =>
   useSyncExternalStore(subscribe, getAuthoritativeOffsetSnapshot, getAuthoritativeOffsetSnapshot)
 
 /**
- * Schedule one server-time deadline and replace it whenever the shared clock
- * receives its first or a better sample. This is deliberately a one-shot
- * timeout rather than another polling loop.
+ * Schedule one server-time deadline only after the shared clock is live, then
+ * replace it whenever a better sample corrects the offset. This is deliberately
+ * a one-shot timeout rather than another polling loop.
  */
 export const useServerClockTimeout = (
   callback: () => void,
@@ -149,6 +149,7 @@ export const useServerClockTimeout = (
 
   useEffect(() => {
     if (
+      authoritativeOffset === null ||
       typeof targetServerTimeMilliseconds !== 'number' ||
       !Number.isFinite(targetServerTimeMilliseconds) ||
       !Number.isFinite(advanceMilliseconds) ||
@@ -158,7 +159,7 @@ export const useServerClockTimeout = (
     )
       return
 
-    const serverNow = Date.now() + (authoritativeOffset ?? 0)
+    const serverNow = Date.now() + authoritativeOffset
     const delay = Math.max(targetServerTimeMilliseconds - serverNow - advanceMilliseconds, minimumDelayMilliseconds)
     const timeout = setTimeout(() => callbackRef.current(), delay)
     return () => clearTimeout(timeout)
