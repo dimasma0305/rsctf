@@ -123,6 +123,7 @@ mod m0100_container_policy_bounds;
 mod m0101_blood_bonus_default;
 mod m0102_discord_webhook_outbox;
 mod m0103_recent_games_candidates;
+mod m0104_post_feed_order;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -242,6 +243,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0101_blood_bonus_default::Migration),
             Box::new(m0102_discord_webhook_outbox::Migration),
             Box::new(m0103_recent_games_candidates::Migration),
+            Box::new(m0104_post_feed_order::Migration),
         ]
     }
 }

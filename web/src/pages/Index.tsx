@@ -12,6 +12,7 @@ import { RecentGame } from '@Components/RecentGame'
 import { WithNavBar } from '@Components/WithNavbar'
 import { MobilePostCard } from '@Components/mobile/PostCard'
 import { RecentGameCarousel } from '@Components/mobile/RecentGameCarousel'
+import { invalidatePostPageCaches, postFeedSWRConfig } from '@Utils/PostFeed'
 import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
@@ -22,7 +23,7 @@ import classes from '@Styles/Index.module.css'
 
 const Home: FC = () => {
   const { t } = useTranslation()
-  const { data: posts, mutate } = api.info.useInfoGetLatestPosts({ refreshInterval: 5 * 60 * 1000 })
+  const { data: posts, mutate } = api.info.useInfoGetLatestPosts(postFeedSWRConfig)
   const { recentGames } = useRecentGames()
   const now = useServerNow()
   const isMobile = useIsMobile(900)
@@ -34,21 +35,10 @@ const Home: FC = () => {
     setDisabled(true)
 
     try {
-      const res = await api.edit.editUpdatePost(post.id, { isPinned: !post.isPinned })
-      if (post.isPinned) {
-        mutate([
-          ...(posts?.filter((p) => p.id !== post.id && p.isPinned) ?? []),
-          { ...res.data },
-          ...(posts?.filter((p) => p.id !== post.id && !p.isPinned) ?? []),
-        ])
-      } else {
-        mutate([
-          { ...res.data },
-          ...(posts?.filter((p) => p.id !== post.id && p.isPinned) ?? []),
-          ...(posts?.filter((p) => p.id !== post.id && !p.isPinned) ?? []),
-        ])
-      }
-      api.info.mutateInfoGetPosts()
+      await api.edit.editUpdatePost(post.id, { isPinned: !post.isPinned })
+      await mutate()
+      void api.info.mutateInfoGetPosts()
+      void invalidatePostPageCaches()
     } catch (e) {
       showErrorMsg(e, t)
     } finally {

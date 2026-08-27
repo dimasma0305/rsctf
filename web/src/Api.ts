@@ -3812,6 +3812,16 @@ export interface PostInfoModel {
   time: number;
 }
 
+/** Bounded post list response with the complete matching row count. */
+export interface ArrayResponseOfPostInfoModel {
+  /** Selected page, ordered pinned-first and newest-first. */
+  data: PostInfoModel[];
+  /** Number of rows in this page. @format int32 */
+  length: number;
+  /** Total retained posts across every page. @format int64 */
+  total: number;
+}
+
 export interface DonationLeaderboardEntry {
   rank: number;
   supporterName: string;
@@ -9639,6 +9649,73 @@ export class Api<
       data?: PostInfoModel[] | Promise<PostInfoModel[]>,
       options?: MutatorOptions,
     ) => mutate<PostInfoModel[]>(`/api/posts`, data, options),
+
+    /**
+     * @description Get one bounded page of posts with the exact retained total
+     *
+     * @tags Info
+     * @name InfoGetPostsPage
+     * @summary Get a page of posts
+     * @request GET:/api/posts/page
+     */
+    infoGetPostsPage: (
+      query?: {
+        /** @format int32 @min 1 @max 50 @default 10 */
+        count?: number;
+        /** @format int64 @min 0 */
+        skip?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfPostInfoModel, any>({
+        path: `/api/posts/page`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Get one bounded page of posts with the exact retained total
+     *
+     * @tags Info
+     * @name InfoGetPostsPage
+     * @summary Get a page of posts
+     * @request GET:/api/posts/page
+     */
+    useInfoGetPostsPage: (
+      query?: {
+        /** @format int32 @min 1 @max 50 @default 10 */
+        count?: number;
+        /** @format int64 @min 0 */
+        skip?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfPostInfoModel, any>(
+        doFetch ? [`/api/posts/page`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Get one bounded page of posts with the exact retained total
+     *
+     * @tags Info
+     * @name InfoGetPostsPage
+     * @summary Get a page of posts
+     * @request GET:/api/posts/page
+     */
+    mutateInfoGetPostsPage: (
+      query?: {
+        /** @format int32 @min 1 @max 50 @default 10 */
+        count?: number;
+        /** @format int64 @min 0 */
+        skip?: number;
+      },
+      data?: ArrayResponseOfPostInfoModel | Promise<ArrayResponseOfPostInfoModel>,
+      options?: MutatorOptions,
+    ) => mutate<ArrayResponseOfPostInfoModel>([`/api/posts/page`, query], data, options),
 
     /**
      * @description Create Pow Captcha, valid for 5 minutes

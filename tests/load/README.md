@@ -17,6 +17,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
       npm run details-read  # fixed-rate authenticated challenge-details poll
       npm run donations     # fixed-rate, read-only cached donation-feed smoke
+      npm run news-feed     # fixed-rate, conditional homepage-feed smoke
       npm run asset-download # fixed-rate authenticated 1 MiB attachment ranges
       npm run event-security # destructive fixed-rate bounded telemetry/resource comparison
       npm run scoreboard-evidence # isolated fixed-rate canonical FirstSolve query benchmark
@@ -74,6 +75,22 @@ releases. Sample the application and PostgreSQL containers with
 `docker stats --no-stream` during both runs; compare CPU at the held rate, never
 peak requests per second.
 
+### Homepage news feed
+
+The public homepage feed is capped at 20 projected rows and exposes a stable weak
+ETag. This scenario seeds that validator once, then holds a fixed conditional-request
+rate and requires every unchanged response to be HTTP 304 with an empty body. It also
+checks exact health before and after the run:
+
+```sh
+NEWS_FEED_STRESS_ACK=1 TARGET=https://ctf.example RATE=2 DURATION=30s \
+  SUMMARY_JSON=/tmp/news-feed.json npm run news-feed
+```
+
+Use the same retained post history, rate, and duration for before/after comparisons.
+The public-safe default stays below the anonymous-IP admission budget; higher rates
+belong on an isolated stack with the admission limit configured for the test.
+
 ### On-demand image storage
 
 `image-storage` targets one explicitly prepared, disposable challenge that is
@@ -124,6 +141,7 @@ tests/load/
   polled-read.mjs   read-only broad-token fixed-rate polling smoke
   asset-download.mjs fixed-rate range/resume delivery benchmark
   event-security.mjs fixed-rate control-vs-telemetry CPU/RAM/storage benchmark
+  news-feed.mjs     fixed-rate conditional homepage-feed benchmark
   asset-download-model.js shared asset-path and deterministic range rules
   scoreboard-evidence.mjs isolated accepted-history versus FirstSolves DB benchmark
   player.mjs        → runs k6/player.js         (npm run player)
@@ -141,6 +159,7 @@ tests/load/
     polled-read.js     one read per iteration across the dominant polled endpoints
     asset-download.js  one authenticated deterministic attachment range per iteration
     event-security.js  fixed-rate empty-control and aggregate sensor-ingest phases
+    news-feed.js     fixed-rate conditional homepage-feed reads
     player.js         A&D + KotH player: poll format/Overall boards, tokens/state, submit flags
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable
