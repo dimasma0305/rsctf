@@ -4,6 +4,7 @@ import {
   clearDestroyedInstanceContext,
   confirmCreatedInstance,
   destroyReconciledInstance,
+  extendReconciledInstance,
   isInstanceExtensionWindowOpen,
   mergeExtendedInstanceContext,
   mergeInstanceContext,
@@ -205,6 +206,52 @@ test('a delayed extension response cannot stamp a destroyed and recreated runtim
     }),
     { context: { closeTime: 400, instanceId: REPLACEMENT_ID, instanceEntry: 'replacement-entry' } }
   )
+})
+
+test('a delayed extension request remains fenced to the refreshed runtime it displayed', async () => {
+  const original = {
+    context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: 'old-entry' },
+  }
+  const replacement = {
+    context: { closeTime: 300, instanceId: REPLACEMENT_ID, instanceEntry: 'replacement-entry' },
+  }
+  let cached = original
+  let serverRuntimeId = ORIGINAL_ID
+  let requestedId: string | undefined
+  let published = 0
+  let signalRequest: (() => void) | undefined
+  let releaseRequest: (() => void) | undefined
+  const requestStarted = new Promise<void>((resolve) => {
+    signalRequest = resolve
+  })
+  const requestBlocked = new Promise<void>((resolve) => {
+    releaseRequest = resolve
+  })
+
+  const extension = extendReconciledInstance({
+    refresh: async () => cached,
+    extend: async (expectedContainerId) => {
+      requestedId = expectedContainerId
+      signalRequest?.()
+      await requestBlocked
+      if (expectedContainerId !== serverRuntimeId) throw new Error('runtime changed')
+      return { id: expectedContainerId, entry: 'old-entry', expectStopAt: 200 }
+    },
+    publish: async (response) => {
+      published += 1
+      cached = mergeExtendedInstanceContext(cached, response) ?? cached
+    },
+  })
+
+  await requestStarted
+  cached = replacement
+  serverRuntimeId = REPLACEMENT_ID
+  releaseRequest?.()
+
+  await assert.rejects(extension, /runtime changed/)
+  assert.equal(requestedId, ORIGINAL_ID)
+  assert.equal(published, 0)
+  assert.equal(cached, replacement)
 })
 
 test('direct-port reuse fences stale create and extension responses by container ID', async () => {

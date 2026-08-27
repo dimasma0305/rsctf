@@ -30,6 +30,12 @@ type InstanceRuntimeResponse = {
   expectStopAt?: number | null
 }
 
+interface ExtensionReconciliation<T> {
+  refresh: () => Promise<T | undefined>
+  extend: (expectedContainerId: string) => Promise<InstanceRuntimeResponse>
+  publish: (extension: InstanceRuntimeResponse) => Promise<void>
+}
+
 /** Merge a runtime response into the newest SWR value, never a render-time snapshot. */
 export const mergeInstanceContext = <T extends { context?: InstanceContext }>(
   latest: T | undefined,
@@ -61,6 +67,21 @@ export const mergeExtendedInstanceContext = <T extends { context?: InstanceConte
   if (!extension.id || typeof extension.expectStopAt !== 'number' || latest?.context?.instanceId !== extension.id)
     return latest
   return mergeInstanceContext(latest, { closeTime: extension.expectStopAt })
+}
+
+/** Extend the authoritative runtime snapshot and carry its immutable ID to the server. */
+export const extendReconciledInstance = async <T extends { context?: InstanceContext }>({
+  refresh,
+  extend,
+  publish,
+}: ExtensionReconciliation<T>): Promise<void> => {
+  const latest = await refresh()
+  const expectedContainerId = latest?.context?.instanceId
+  if (!expectedContainerId)
+    throw new Error('The refreshed challenge response is missing its instance identity.')
+
+  const extension = await extend(expectedContainerId)
+  await publish(extension)
 }
 
 /** Clear only the runtime identity that the completed delete actually removed. */

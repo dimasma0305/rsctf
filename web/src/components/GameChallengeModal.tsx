@@ -15,6 +15,7 @@ import {
   clearDestroyedInstanceContext,
   confirmCreatedInstance,
   destroyReconciledInstance,
+  extendReconciledInstance,
   mergeExtendedInstanceContext,
 } from '@Utils/InstanceLifecycle'
 import { showErrorMsg } from '@Utils/Shared'
@@ -202,8 +203,18 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     setDisabled(true)
 
     try {
-      const res = await api.game.gameExtendContainerLifetime(gameId, challengeId)
-      await mutate((latest) => mergeExtendedInstanceContext(latest, res.data), { revalidate: false })
+      await extendReconciledInstance({
+        refresh: mutate,
+        extend: async (expectedContainerId) =>
+          (
+            await api.game.gameExtendContainerLifetime(gameId, challengeId, {
+              expectedContainerId,
+            })
+          ).data,
+        publish: async (extension) => {
+          await mutate((latest) => mergeExtendedInstanceContext(latest, extension), { revalidate: false })
+        },
+      })
     } finally {
       setDisabled(false)
     }

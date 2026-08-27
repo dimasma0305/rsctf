@@ -7887,11 +7887,16 @@ export class Api<
     gameExtendContainerLifetime: (
       id: number,
       challengeId: number,
+      query: {
+        /** Immutable container UUID returned by the immediately preceding challenge read. */
+        expectedContainerId: string;
+      },
       params: RequestParams = {},
     ) =>
       this.request<ContainerInfoModel, RequestResponse>({
         path: `/api/game/${id}/container/${challengeId}/extend`,
         method: "POST",
+        query: query,
         format: "json",
         ...params,
       }),

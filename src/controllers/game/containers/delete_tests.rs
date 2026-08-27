@@ -7,6 +7,7 @@ use sea_orm::SqlxPostgresConnector;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use super::deletion::{delete_expected_team_container_locked, DeleteContainerOutcome};
+use super::extension::extend_expected_team_container_locked;
 use crate::app_state::{AppState, SharedState};
 use crate::models::internal::configs::AppConfig;
 use crate::services::cache::InMemoryCache;
@@ -227,6 +228,30 @@ impl Harness {
             .unwrap()
     }
 
+    async fn set_extension_eligible(
+        &self,
+        container_id: uuid::Uuid,
+    ) -> chrono::DateTime<chrono::Utc> {
+        sqlx::query_scalar(
+            r#"UPDATE "Containers"
+                  SET expect_stop_at = clock_timestamp() + interval '1 minute'
+                WHERE id = $1
+            RETURNING expect_stop_at"#,
+        )
+        .bind(container_id)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    async fn expect_stop_at(&self, container_id: uuid::Uuid) -> chrono::DateTime<chrono::Utc> {
+        sqlx::query_scalar(r#"SELECT expect_stop_at FROM "Containers" WHERE id = $1"#)
+            .bind(container_id)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+    }
+
     async fn cleanup(self) {
         let Self {
             admin,
@@ -268,23 +293,100 @@ async fn locked_delete(
     }
 }
 
+async fn locked_extend(
+    state: &SharedState,
+    participation_id: i32,
+    challenge_id: i32,
+    expected_container_id: uuid::Uuid,
+) -> AppResult<super::ContainerInfoModel> {
+    let key = format!("game-container:{participation_id}");
+    let lock = crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(state.pg(), &key)
+        .await
+        .map_err(AppError::from)?;
+    let result = extend_expected_team_container_locked(
+        state,
+        participation_id,
+        challenge_id,
+        expected_container_id,
+        &crate::services::container_policy::ContainerPolicy::default(),
+    )
+    .await;
+    let released = lock.release().await.map_err(AppError::from);
+    match (result, released) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(container), Ok(())) => Ok(container),
+    }
+}
+
 #[test]
-fn delete_contract_requires_one_camel_case_container_uuid() {
+fn lifecycle_contract_requires_one_camel_case_container_uuid() {
     let id = uuid::Uuid::new_v4();
     let uri = format!("/?expectedContainerId={id}").parse().unwrap();
     let axum::extract::Query(parsed) =
-        axum::extract::Query::<super::DeleteContainerQuery>::try_from_uri(&uri).unwrap();
+        axum::extract::Query::<super::ExpectedContainerQuery>::try_from_uri(&uri).unwrap();
     assert_eq!(parsed.expected_container_id, id);
     assert!(
-        axum::extract::Query::<super::DeleteContainerQuery>::try_from_uri(&"/".parse().unwrap())
+        axum::extract::Query::<super::ExpectedContainerQuery>::try_from_uri(&"/".parse().unwrap())
             .is_err()
     );
     assert!(
-        axum::extract::Query::<super::DeleteContainerQuery>::try_from_uri(
+        axum::extract::Query::<super::ExpectedContainerQuery>::try_from_uri(
             &"/?expectedContainerId=not-a-uuid".parse().unwrap()
         )
         .is_err()
     );
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn delayed_extension_cannot_extend_a_replacement_after_waiting_for_its_lock() {
+    let manager = Arc::new(RecordingContainerManager::default());
+    let harness = Harness::new(manager).await;
+    let stale = uuid::Uuid::new_v4();
+    let replacement = uuid::Uuid::new_v4();
+    harness
+        .insert_container(stale, "runtime-stale-extend")
+        .await;
+    harness
+        .insert_container(replacement, "runtime-replacement-extend")
+        .await;
+    harness.insert_instance(31, 81, 91, stale).await;
+    let replacement_expiry = harness.set_extension_eligible(replacement).await;
+
+    // Model request A arriving while the replacement owner holds the exact
+    // provisioning lock. The owner publishes B before releasing it; A must then
+    // compare its immutable precondition against the post-lock row.
+    let key = "game-container:81";
+    let replacement_owner =
+        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(harness.state.pg(), key)
+            .await
+            .unwrap();
+    let (request_started_tx, request_started_rx) = tokio::sync::oneshot::channel();
+    let delayed = tokio::spawn({
+        let state = harness.state.clone();
+        async move {
+            request_started_tx.send(()).unwrap();
+            locked_extend(&state, 81, 91, stale).await
+        }
+    });
+    request_started_rx.await.unwrap();
+    harness.replace(31, replacement).await;
+    replacement_owner.release().await.unwrap();
+
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), delayed)
+        .await
+        .expect("delayed extension did not resume after replacement")
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(error, AppError::Conflict(_)));
+    assert_eq!(harness.current(31).await, Some(replacement));
+    assert_eq!(
+        harness.expect_stop_at(replacement).await,
+        replacement_expiry,
+        "the stale request extended replacement B"
+    );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
