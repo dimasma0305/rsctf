@@ -34,6 +34,12 @@ import {
 import { Icon } from '@mdi/react'
 import { FC, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import {
+  type KothObserverOperationKind,
+  type KothObserverOperationOwner,
+  newKothObserverOperationId,
+  ownsKothObserverResult,
+} from '@Utils/KothObserverOperations'
 import { showErrorMsg } from '@Utils/Shared'
 import { isKothResetTransition } from '@Utils/kothLifecycle'
 import {
@@ -46,12 +52,6 @@ import {
 import api, { ContentType } from '@Api'
 import tableClasses from '@Styles/AdOpsTable.module.css'
 import misc from '@Styles/Misc.module.css'
-import {
-  type KothObserverOperationKind,
-  type KothObserverOperationOwner,
-  newKothObserverOperationId,
-  ownsKothObserverResult,
-} from '@Utils/KothObserverOperations'
 
 const statusMeta = (status?: string | null): { color: string; icon: string } => {
   switch (status) {
@@ -314,9 +314,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
   const observerOperationPath = (operation: KothObserverOperationOwner) =>
     `${observerPath({ challengeId: operation.challengeId })}/operations/${operation.operationId}`
 
-  const requestObserverOperation = async (
-    operation: KothObserverOperationOwner
-  ): Promise<AdminKothObserverModel> => {
+  const requestObserverOperation = async (operation: KothObserverOperationOwner): Promise<AdminKothObserverModel> => {
     const response = await api.request<AdminKothObserverModel>({
       path: observerPath({ challengeId: operation.challengeId }),
       method: operation.kind === 'Rotate' ? 'POST' : 'DELETE',
@@ -331,9 +329,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
     return response.data
   }
 
-  const recoverObserverOperation = async (
-    operation: KothObserverOperationOwner
-  ): Promise<AdminKothObserverModel> => {
+  const recoverObserverOperation = async (operation: KothObserverOperationOwner): Promise<AdminKothObserverModel> => {
     const response = await api.request<AdminKothObserverModel>({
       path: observerOperationPath(operation),
       method: 'GET',
@@ -368,7 +364,7 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
         operation.kind === 'Rotate'
           ? t(
               'admin.notification.ad_ops.koth.observer_rotated',
-              'A new referee secret was created. Copy it now; it can be recovered only with this operation.'
+              'A new referee secret was created. Copy it now; only this authorized operation can recover it for 24 hours.'
             )
           : t('admin.notification.ad_ops.koth.observer_revoked', 'The KotH referee secret was revoked.'),
     })
@@ -988,12 +984,16 @@ export const KothOpsPanel: FC<KothOpsPanelProps> = ({ gameId, koth, onShell, onT
             </Alert>
 
             {observer.secret && (
-              <Alert color="orange" variant="light" title={t('admin.content.ad_ops.koth.secret_once', 'Copy once')}>
+              <Alert
+                color="orange"
+                variant="light"
+                title={t('admin.content.ad_ops.koth.secret_recoverable', 'Copy and store this credential')}
+              >
                 <Stack gap="xs">
                   <Text size="sm">
                     {t(
-                      'admin.content.ad_ops.koth.secret_once_body',
-                      'This HMAC secret is shown only now. Keep it in the independent referee service, never in the player-facing arena or client.'
+                      'admin.content.ad_ops.koth.secret_recoverable_body',
+                      'This HMAC secret is retained for 24 hours only for this authorized operation, so an ambiguous response can recover the exact same result. Copy it into the independent referee service, never the player-facing arena or client.'
                     )}
                   </Text>
                   <Group gap="xs" wrap="nowrap">

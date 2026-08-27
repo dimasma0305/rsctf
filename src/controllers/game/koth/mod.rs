@@ -31,7 +31,7 @@ use std::collections::HashMap;
 
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{DateTime, Utc};
@@ -57,6 +57,7 @@ mod capture;
 mod eligibility;
 mod lifecycle;
 mod listing;
+mod routes;
 mod scoring;
 mod scoring_formula;
 #[cfg(test)]
@@ -76,6 +77,7 @@ pub(crate) use lifecycle::invalidate_live_lifecycle_cache;
 use lifecycle::load_lifecycle_map;
 pub use lifecycle::KothCooldownParticipant;
 pub use listing::{koth_hills, KothHillListItem};
+pub use routes::{router, stateful_router, web_router};
 pub(crate) use scoring::{
     invalidate_rollups_for_end_change, lock_epoch_rollups, refresh_epoch_rollups,
 };
@@ -624,38 +626,6 @@ fn recovery_router() -> Router<SharedState> {
         )
 }
 
-/// Complete monolithic KotH surface. The historical recovery path stays
-/// byte-for-byte compatible when one `all` process owns both HTTP and checker
-/// execution.
-pub fn router() -> Router<SharedState> {
-    common_router().merge(recovery_router())
-}
-
-/// KotH surface for horizontally scaled, unprivileged web replicas.
-///
-/// A proxy that cannot match the parameterized legacy route can send it here;
-/// the temporary same-origin redirect preserves the POST while moving it under
-/// the fixed `/api/stateful` prefix understood by portable Kubernetes Ingress.
-pub fn web_router() -> Router<SharedState> {
-    common_router().route_service(
-        "/api/edit/games/{id}/ad/koth/{challengeId}/recover",
-        post(redirect_recover_hill),
-    )
-}
-
-/// Privileged singleton surface for lifecycle recovery. Custom checker probes
-/// install a short-lived uid-scoped firewall rule, so this must never execute
-/// on a capability-free web replica.
-pub fn stateful_router() -> Router<SharedState> {
-    recovery_router()
-}
-
-async fn redirect_recover_hill(Path((game_id, challenge_id)): Path<(i32, i32)>) -> Redirect {
-    Redirect::temporary(&format!(
-        "/api/stateful/edit/games/{game_id}/ad/koth/{challenge_id}/recover"
-    ))
-}
-
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod token_cache_tests {
@@ -803,7 +773,7 @@ mod recovery_route_tests {
 
     #[tokio::test]
     async fn web_recovery_redirect_preserves_method_and_uses_stateful_prefix() {
-        let response = super::redirect_recover_hill(Path((17, 23)))
+        let response = super::routes::redirect_recover_hill(Path((17, 23)))
             .await
             .into_response();
         assert_eq!(
