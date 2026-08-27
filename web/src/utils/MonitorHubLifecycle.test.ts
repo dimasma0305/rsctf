@@ -23,17 +23,24 @@ const monitorPages = [
 ]
 
 test('monitor hubs survive timing revalidation, stop at the boundary, and reconcile afterward', () => {
+  const recoveringHub = readFileSync('src/hooks/useRecoveringHub.ts', 'utf8')
+  assert.match(recoveringHub, /stopPromise\.current = controller\.stop\(\)/)
+  assert.match(recoveringHub, /return \{ state, waitForStop \}/)
+
   for (const { path, fetchName, identityName, callbackDependencies } of monitorPages) {
     const source = readFileSync(path, 'utf8')
 
     assert.match(source, /const \{ finished \} = useGameStatus\(game\)/, path)
     assert.match(source, /const monitorConnectionActive = Boolean\(game\?\.end\) && !finished/, path)
-    assert.match(source, /if \(monitorConnectionActive\) \{[\s\S]*?new signalR\.HubConnectionBuilder\(\)/, path)
-    assert.match(source, /\}, \[monitorConnectionActive, numId, t\]\)/, path)
-    assert.doesNotMatch(source, /\}, \[game, numId, t\]\)/, path)
+    assert.match(
+      source,
+      /const \{ waitForStop: waitForMonitorHubStop \} = useRecoveringHub\(\{[\s\S]*?active: monitorConnectionActive/,
+      path
+    )
+    assert.match(source, /url: `\/hub\/monitor\?game=\$\{numId\}`/, path)
+    assert.doesNotMatch(source, /new signalR\.HubConnectionBuilder\(\)/, path)
     assert.match(source, new RegExp(`const ${fetchName} = useCallback`), path)
     assert.match(source, callbackDependencies, `${path} must retire stale backfills whenever its query scope changes`)
-    assert.match(source, /monitorHubStop\.current = connection\.stop\(\)/, path)
     assert.match(
       source,
       new RegExp(`useRevalidateWhenPollingStops\\(monitorConnectionActive, ${fetchName}, waitForMonitorHubStop\\)`),
@@ -41,7 +48,7 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
     )
     assert.match(source, new RegExp(`unreconciledMonitorRows\\([^;]+${identityName}\\)`), path)
     assert.ok(
-      source.lastIndexOf('useRevalidateWhenPollingStops(') > source.indexOf('new signalR.HubConnectionBuilder()'),
+      source.lastIndexOf('useRevalidateWhenPollingStops(') > source.indexOf('useRecoveringHub({'),
       `${path} must reconcile after the hub ownership effect so cleanup runs first`
     )
   }

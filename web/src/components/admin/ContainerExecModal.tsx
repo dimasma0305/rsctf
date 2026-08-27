@@ -1,10 +1,17 @@
-import { Alert, Group, Modal, ModalProps, SegmentedControl, Stack, Text } from '@mantine/core'
-import { HubConnection, HubConnectionBuilder } from '@microsoft/signalr'
+import { Alert, Button, Group, Modal, ModalProps, SegmentedControl, Stack, Text } from '@mantine/core'
+import { HubConnection, HubConnectionBuilder, JsonHubProtocol, LogLevel } from '@microsoft/signalr'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { containerExecHubPath } from '@Utils/ContainerExec'
+import {
+  CappedJitterRetryPolicy,
+  configureHubTimeouts,
+  GenerationBoundOpener,
+  HubRecoveryController,
+  type HubRecoveryState,
+} from '@Utils/SignalRRecovery'
 import '@xterm/xterm/css/xterm.css'
 
 interface ContainerExecModalProps extends Omit<ModalProps, 'children'> {
@@ -39,11 +46,13 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
   const [terminalEl, setTerminalEl] = useState<HTMLDivElement | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const hubRef = useRef<HubConnection | null>(null)
+  const recoveryRef = useRef<HubRecoveryController | null>(null)
+  const retryRef = useRef<(() => void) | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const shellRef = useRef<'sh' | 'bash'>('sh')
 
   const [shell, setShell] = useState<'sh' | 'bash'>('sh')
-  const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'closed' | 'error'>('idle')
+  const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'closed' | 'error' | 'exhausted'>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   // The async Clipboard API (and JS-driven paste) only works in a secure
@@ -179,8 +188,18 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
     }
     terminalEl.addEventListener('mouseup', onMouseUp)
 
-    const hub = new HubConnectionBuilder().withUrl(containerExecHubPath(scopedGameId)).withAutomaticReconnect().build()
+    const hub = configureHubTimeouts(
+      new HubConnectionBuilder()
+        .withUrl(containerExecHubPath(scopedGameId))
+        .withHubProtocol(new JsonHubProtocol())
+        .withAutomaticReconnect(new CappedJitterRetryPolicy())
+        .configureLogging(LogLevel.None)
+        .build()
+    )
     hubRef.current = hub
+    let transportConnected = false
+    let transportGeneration = -1
+    const sessionOpener = new GenerationBoundOpener<string>()
 
     // Server pushes terminal output via the "Receive" client method
     // (sessionId, base64Chunk) and signals end-of-session via "Closed"
@@ -197,6 +216,8 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
     })
     hub.on('Closed', (sid: string, reason: string) => {
       if (disposed || sessionIdRef.current !== sid) return
+      sessionIdRef.current = null
+      sessionOpener.retryCurrent()
       setStatus('closed')
       if (reason && reason !== 'eof') setErrorMsg(reason)
     })
@@ -219,55 +240,77 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
     // transport drop — OnDisconnected disposes it — so on reconnect we spawn a
     // FRESH shell rather than leaving a "connected"-looking but dead terminal
     // that silently swallows keystrokes.
-    const openSession = async () => {
-      const sid = await hub.invoke<string>('Open', containerGuid, shellRef.current)
-      if (disposed) {
-        await hub.invoke('Close', sid).catch(() => undefined)
-        return
-      }
-      sessionIdRef.current = sid
-      setStatus('connected')
-      term.focus()
-      fitNow()
-      hub.invoke('Resize', sid, term.cols, term.rows).catch(() => undefined)
-    }
-
-    // While reconnecting, drop the stale id so input isn't posted into the void.
-    hub.onreconnecting(() => {
-      sessionIdRef.current = null
-      if (!disposed) setStatus('connecting')
-    })
-    hub.onreconnected(() => {
-      if (disposed) return
-      term.write('\r\n\x1b[33m[rsctf] reconnected — new shell\x1b[0m\r\n')
-      openSession().catch((e) => {
-        if (!disposed) {
-          setStatus('error')
-          setErrorMsg((e as Error).message)
-        }
-      })
-    })
-    hub.onclose(() => {
-      sessionIdRef.current = null
-      if (!disposed) setStatus((s) => (s === 'error' ? s : 'closed'))
-    })
-
-    const start = async () => {
+    const openSession = (generation: number) => {
+      if (disposed || !transportConnected || generation !== transportGeneration) return Promise.resolve()
       setStatus('connecting')
       setErrorMsg(null)
-      try {
-        await hub.start()
-        if (disposed) return
-        await openSession()
-      } catch (e) {
-        if (!disposed) {
+      return sessionOpener
+        .open(
+          generation,
+          () => hub.invoke<string>('Open', containerGuid, shellRef.current),
+          async (sid) => {
+            sessionIdRef.current = sid
+            setStatus('connected')
+            term.focus()
+            fitNow()
+            await hub.invoke('Resize', sid, term.cols, term.rows).catch(() => undefined)
+          },
+          (sid) => hub.invoke('Close', sid).catch(() => undefined)
+        )
+        .catch((error: unknown) => {
+          if (disposed || generation !== transportGeneration) return
           setStatus('error')
-          setErrorMsg((e as Error).message)
+          setErrorMsg(error instanceof Error ? error.message : String(error))
+        })
+    }
+
+    const recovery = new HubRecoveryController(hub, {
+      revalidate: () => undefined,
+      exhaustedRetryMs: null,
+      onConnected: (generation, recovered) => {
+        if (disposed) return
+        transportConnected = true
+        transportGeneration = generation
+        sessionOpener.beginGeneration(generation)
+        sessionIdRef.current = null
+        if (recovered) term.write('\r\n\x1b[33m[rsctf] reconnected — new shell\x1b[0m\r\n')
+        void openSession(generation)
+      },
+      onReconnecting: () => {
+        transportConnected = false
+        transportGeneration = -1
+        sessionOpener.invalidate()
+        sessionIdRef.current = null
+        if (!disposed) setStatus('connecting')
+      },
+      onExhausted: (error) => {
+        transportConnected = false
+        transportGeneration = -1
+        sessionOpener.invalidate()
+        sessionIdRef.current = null
+        if (!disposed) {
+          setStatus('exhausted')
+          setErrorMsg(error instanceof Error ? error.message : String(error ?? 'Connection retries exhausted'))
         }
+      },
+      onStateChange: (next: HubRecoveryState) => {
+        if (!disposed && (next === 'connecting' || next === 'reconnecting')) setStatus('connecting')
+      },
+    })
+    recoveryRef.current = recovery
+    retryRef.current = () => {
+      if (disposed) return
+      setErrorMsg(null)
+      setStatus('connecting')
+      if (transportConnected && transportGeneration > 0) {
+        sessionOpener.retryCurrent()
+        void openSession(transportGeneration)
+      } else {
+        recovery.retryNow()
       }
     }
 
-    void start()
+    recovery.start()
 
     // Refit on any size change of the terminal box (modal resize, viewport
     // change), not just window resize — keeps cols/rows correct so the shell
@@ -293,11 +336,15 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
       terminalEl.removeEventListener('mouseup', onMouseUp)
       const sid = sessionIdRef.current
       const ref = hubRef.current
+      const owner = recoveryRef.current
+      sessionOpener.invalidate()
       sessionIdRef.current = null
       hubRef.current = null
+      recoveryRef.current = null
+      retryRef.current = null
       fitRef.current = null
       if (ref && sid) ref.invoke('Close', sid).catch(() => undefined)
-      ref?.stop().catch(() => undefined)
+      void owner?.stop()
       term.dispose()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -316,7 +363,12 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
               {containerTitle}
             </Text>
           )}
-          <Text size="xs" c={status === 'connected' ? 'teal' : status === 'error' ? 'red' : 'dimmed'}>
+          <Text
+            size="xs"
+            c={status === 'connected' ? 'teal' : status === 'error' || status === 'exhausted' ? 'red' : 'dimmed'}
+            role="status"
+            aria-live="polite"
+          >
             ({status})
           </Text>
         </Group>
@@ -352,12 +404,32 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
                 )}
           </Text>
         </Group>
-        {status === 'error' && errorMsg && (
+        {(status === 'error' || status === 'exhausted') && errorMsg && (
           <Alert color="red" variant="light" title={t('admin.content.exec.error_title', 'Connection error')}>
-            <Text size="xs" ff="monospace">
-              {errorMsg}
-            </Text>
+            <Stack gap="xs">
+              <Text size="xs" ff="monospace">
+                {errorMsg}
+              </Text>
+              <Button
+                size="xs"
+                variant="light"
+                onClick={() => retryRef.current?.()}
+                aria-label={t('admin.content.exec.retry_label', 'Retry container shell connection')}
+              >
+                {t('admin.content.exec.retry', 'Retry connection')}
+              </Button>
+            </Stack>
           </Alert>
+        )}
+        {status === 'closed' && (
+          <Button
+            size="xs"
+            variant="light"
+            onClick={() => retryRef.current?.()}
+            aria-label={t('admin.content.exec.retry_shell_label', 'Start a replacement container shell')}
+          >
+            {t('admin.content.exec.retry_shell', 'Start another shell')}
+          </Button>
         )}
         <div
           ref={setTerminalEl}

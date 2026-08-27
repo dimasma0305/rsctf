@@ -31,7 +31,6 @@ import {
   mdiEyeOutline,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import * as signalR from '@microsoft/signalr'
 import cx from 'clsx'
 import dayjs from 'dayjs'
 import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -44,8 +43,10 @@ import { handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
 import { gameEventMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
 import { LatestRequest } from '@Utils/LatestRequest'
+import { OPERATOR_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
+import { useRecoveringHub } from '@Hooks/useRecoveringHub'
 import api, { EventType, GameEvent } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 import { formatGameEvent } from '../eventFormat'
@@ -103,8 +104,6 @@ const Events: FC = () => {
   const [, update] = useState(new Date())
   const newEvents = useRef<GameEvent[]>([])
   const [events, setEvents] = useState<GameEvent[]>()
-  const monitorHubStop = useRef<Promise<void>>(Promise.resolve())
-  const waitForMonitorHubStop = useCallback(() => monitorHubStop.current, [])
   const eventRequest = useRef(new LatestRequest())
 
   const { game } = useGame(numId)
@@ -134,7 +133,9 @@ const Events: FC = () => {
           { signal }
         )
       )
-      if (res) setEvents(res.data)
+      if (!res) return
+      newEvents.current = unreconciledMonitorRows(newEvents.current, res.data, gameEventMonitorIdentity)
+      setEvents(res.data)
     } catch (err) {
       showNotification({
         color: 'red',
@@ -155,45 +156,25 @@ const Events: FC = () => {
     return () => eventRequest.current.cancel()
   }, [activePage, fetchEvents])
 
-  useEffect(() => {
-    if (monitorConnectionActive) {
-      const connection = new signalR.HubConnectionBuilder()
-        .withUrl(`/hub/monitor?game=${numId}`)
-        .withHubProtocol(new signalR.JsonHubProtocol())
-        .withAutomaticReconnect()
-        .configureLogging(signalR.LogLevel.None)
-        .build()
-
-      connection.serverTimeoutInMilliseconds = 60 * 1000 * 60 * 2
-
-      connection.on('ReceivedGameEvent', (message: GameEvent) => {
-        console.log(message)
+  const { waitForStop: waitForMonitorHubStop } = useRecoveringHub({
+    active: monitorConnectionActive,
+    url: `/hub/monitor?game=${numId}`,
+    handlers: {
+      ReceivedGameEvent: (raw) => {
+        const message = raw as GameEvent
         newEvents.current = [message, ...newEvents.current]
         update(new Date(message.time!))
-      })
-
-      const startConnection = async () => {
-        try {
-          await connection.start()
-          showNotification({
-            color: 'teal',
-            message: t('game.notification.connected.event'),
-            icon: <Icon path={mdiCheck} size={1} />,
-          })
-        } catch (err) {
-          console.error(err)
-        }
-      }
-
-      startConnection()
-
-      return () => {
-        monitorHubStop.current = connection.stop().catch((err) => {
-          console.error(err)
-        })
-      }
-    }
-  }, [monitorConnectionActive, numId, t])
+      },
+    },
+    revalidate: fetchEvents,
+    pollingIntervalMs: OPERATOR_FALLBACK_POLL_MS,
+    onConnected: () =>
+      showNotification({
+        color: 'teal',
+        message: t('game.notification.connected.event'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      }),
+  })
 
   // The final snapshot starts only after stop() has removed the listener. A
   // pre-close operation that commits during shutdown is then represented by

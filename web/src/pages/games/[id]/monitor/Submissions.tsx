@@ -29,7 +29,6 @@ import {
   mdiReplay,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import * as signalR from '@microsoft/signalr'
 import cx from 'clsx'
 import dayjs from 'dayjs'
 import { FC, useCallback, useEffect, useRef, useState } from 'react'
@@ -41,8 +40,10 @@ import { downloadBlob, handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
 import { submissionMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
 import { LatestRequest } from '@Utils/LatestRequest'
+import { OPERATOR_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
 import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
+import { useRecoveringHub } from '@Hooks/useRecoveringHub'
 import api, { AnswerResult, Submission } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 
@@ -81,8 +82,6 @@ const Submissions: FC = () => {
   const [, update] = useState(new Date())
   const newSubmissions = useRef<Submission[]>([])
   const [submissions, setSubmissions] = useState<Submission[]>()
-  const monitorHubStop = useRef<Promise<void>>(Promise.resolve())
-  const waitForMonitorHubStop = useCallback(() => monitorHubStop.current, [])
   const submissionRequest = useRef(new LatestRequest())
   const [type, setType] = useState<AnswerResult | 'All'>('All')
   const [disabled, setDisabled] = useState(false)
@@ -117,7 +116,9 @@ const Submissions: FC = () => {
           { signal }
         )
       )
-      if (res) setSubmissions(res.data)
+      if (!res) return
+      newSubmissions.current = unreconciledMonitorRows(newSubmissions.current, res.data, submissionMonitorIdentity)
+      setSubmissions(res.data)
     } catch (err) {
       showNotification({
         color: 'red',
@@ -138,45 +139,25 @@ const Submissions: FC = () => {
     return () => submissionRequest.current.cancel()
   }, [activePage, fetchSubmissions])
 
-  useEffect(() => {
-    if (monitorConnectionActive) {
-      const connection = new signalR.HubConnectionBuilder()
-        .withUrl(`/hub/monitor?game=${numId}`)
-        .withHubProtocol(new signalR.JsonHubProtocol())
-        .withAutomaticReconnect()
-        .configureLogging(signalR.LogLevel.None)
-        .build()
-
-      connection.serverTimeoutInMilliseconds = 60 * 1000 * 60 * 2
-
-      connection.on('ReceivedSubmissions', (message: Submission) => {
-        console.log(message)
+  const { waitForStop: waitForMonitorHubStop } = useRecoveringHub({
+    active: monitorConnectionActive,
+    url: `/hub/monitor?game=${numId}`,
+    handlers: {
+      ReceivedSubmissions: (raw) => {
+        const message = raw as Submission
         newSubmissions.current = [message, ...newSubmissions.current]
         update(new Date(message.time!))
-      })
-
-      const startConnection = async () => {
-        try {
-          await connection.start()
-          showNotification({
-            color: 'teal',
-            message: t('game.notification.connected.submission'),
-            icon: <Icon path={mdiCheck} size={1} />,
-          })
-        } catch (err) {
-          console.error(err)
-        }
-      }
-
-      startConnection()
-
-      return () => {
-        monitorHubStop.current = connection.stop().catch((err) => {
-          console.error(err)
-        })
-      }
-    }
-  }, [monitorConnectionActive, numId, t])
+      },
+    },
+    revalidate: fetchSubmissions,
+    pollingIntervalMs: OPERATOR_FALLBACK_POLL_MS,
+    onConnected: () =>
+      showNotification({
+        color: 'teal',
+        message: t('game.notification.connected.submission'),
+        icon: <Icon path={mdiCheck} size={1} />,
+      }),
+  })
 
   // Keep the final request separate from hub ownership and fence it behind the
   // completed stop. A commit whose boundary broadcast loses the listener is

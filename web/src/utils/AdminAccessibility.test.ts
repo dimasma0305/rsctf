@@ -119,9 +119,14 @@ test('repeated mobile action landmarks use entity-specific names', () => {
 
 test('game notices keep one realtime connection across ordinary rerenders', () => {
   const source = readFileSync('src/components/GameNoticePanel.tsx', 'utf8')
+  const owner = readFileSync('src/hooks/useRecoveringHub.ts', 'utf8')
 
-  assert.match(source, /\}, \[id, numId, t, theme\.primaryColor\]\)/)
-  assert.doesNotMatch(source, /\n  \}\)\n\n  const allNotices/)
+  assert.match(source, /useRecoveringHub\(\{[\s\S]*?url: `\/hub\/user\?game=\$\{numId\}`/)
+  assert.doesNotMatch(source, /new signalR\.HubConnectionBuilder/)
+  assert.match(owner, /useEffect\(\(\) => \{[\s\S]*?handlersRef\.current = handlers/)
+  assert.match(owner, /if \(!disposed\) handlersRef\.current\[name\]/)
+  assert.match(owner, /\}, \[active, pollingIntervalMs, url\]\)/)
+  assert.doesNotMatch(owner, /\[active, handlers, revalidate/)
 })
 
 test('the mobile app-shell scroll region remains keyboard accessible', () => {

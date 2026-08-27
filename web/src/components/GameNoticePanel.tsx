@@ -1,7 +1,6 @@
 import { Card, Center, List, ScrollArea, SegmentedControl, Stack, Text, useMantineTheme } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
 import { Icon } from '@mdi/react'
-import * as signalR from '@microsoft/signalr'
 import dayjs from 'dayjs'
 import { TFunction } from 'i18next'
 import { FC, useEffect, useRef, useState } from 'react'
@@ -9,9 +8,12 @@ import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { Empty } from '@Components/Empty'
 import { InlineMarkdown } from '@Components/MarkdownRenderer'
+import { mergeUniqueRows, reconcileLiveRows } from '@Utils/FeedReconciliation'
 import { useLanguage } from '@Utils/I18n'
 import { NoticTypeIconMap } from '@Utils/Shared'
+import { NOTICE_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
 import { OnceSWRConfig } from '@Hooks/useConfig'
+import { useRecoveringHub } from '@Hooks/useRecoveringHub'
 import api, { GameNotice, NoticeType } from '@Api'
 import misc from '@Styles/Misc.module.css'
 import typoClasses from '@Styles/Typography.module.css'
@@ -92,24 +94,18 @@ export const GameNoticePanel: FC = () => {
   const { t } = useTranslation()
   const { locale } = useLanguage()
   const theme = useMantineTheme()
-  const { data: notices } = api.game.useGameNotices(numId, {}, OnceSWRConfig)
+  const { data: notices, mutate: revalidateNotices } = api.game.useGameNotices(numId, {}, OnceSWRConfig)
 
   useEffect(() => {
-    newNotices.current = []
+    if (notices) newNotices.current = reconcileLiveRows(newNotices.current, notices, (notice) => notice.id)
   }, [notices])
 
-  useEffect(() => {
-    if (id) {
-      const connection = new signalR.HubConnectionBuilder()
-        .withUrl(`/hub/user?game=${numId}`)
-        .withHubProtocol(new signalR.JsonHubProtocol())
-        .withAutomaticReconnect()
-        .configureLogging(signalR.LogLevel.None)
-        .build()
-
-      connection.serverTimeoutInMilliseconds = 60 * 1000 * 60 * 2
-
-      connection.on('ReceivedGameNotice', (message: GameNotice) => {
+  useRecoveringHub({
+    active: Boolean(id) && Number.isInteger(numId) && numId > 0,
+    url: `/hub/user?game=${numId}`,
+    handlers: {
+      ReceivedGameNotice: (raw) => {
+        const message = raw as GameNotice
         newNotices.current = [message, ...newNotices.current]
 
         if (message.type === NoticeType.NewChallenge || message.type === NoticeType.NewHint) {
@@ -129,21 +125,13 @@ export const GameNoticePanel: FC = () => {
         }
 
         update(new Date(message.time))
-      })
+      },
+    },
+    revalidate: () => revalidateNotices(),
+    pollingIntervalMs: NOTICE_FALLBACK_POLL_MS,
+  })
 
-      connection.start().catch((error) => {
-        console.error(error)
-      })
-
-      return () => {
-        connection.stop().catch((err) => {
-          console.error(err)
-        })
-      }
-    }
-  }, [id, numId, t, theme.primaryColor])
-
-  const allNotices = [...newNotices.current, ...(notices ?? [])]
+  const allNotices = mergeUniqueRows(newNotices.current, notices ?? [], (notice) => notice.id)
   const filteredNotices = ApplyFilter(allNotices, filter)
 
   filteredNotices.sort((a, b) =>

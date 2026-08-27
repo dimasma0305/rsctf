@@ -16,20 +16,25 @@ import { useDebouncedValue } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiArrowLeftBold, mdiArrowRightBold, mdiCheck, mdiClose, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import * as signalR from '@microsoft/signalr'
 import cx from 'clsx'
 import dayjs from 'dayjs'
-import { FC, useEffect, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { handleAxiosError } from '@Utils/ApiHelper'
+import { mergeUniqueRows, reconcileLiveRows } from '@Utils/FeedReconciliation'
 import { useLanguage } from '@Utils/I18n'
 import { TaskStatusColorMap } from '@Utils/Shared'
+import { OPERATOR_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
+import { useRecoveringHub } from '@Hooks/useRecoveringHub'
 import api, { LogMessageModel, TaskStatus } from '@Api'
 import classes from '@Styles/AdminLogs.module.css'
 import tableClasses from '@Styles/Table.module.css'
 
 const ITEM_COUNT_PER_PAGE = 50
+
+const logIdentity = (item: LogMessageModel) =>
+  JSON.stringify([item.time, item.name, item.level, item.ip, item.msg, item.status, item.fingerprint])
 
 enum LogLevel {
   Info = 'Information',
@@ -63,81 +68,65 @@ const Logs: FC = () => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
   }, [activePage, level, viewport])
 
-  useEffect(() => {
-    const fetchLogs = async () => {
-      try {
-        const res = await api.admin.adminLogs({
-          level,
-          count: ITEM_COUNT_PER_PAGE,
-          skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
-          search: debouncedSearch || undefined,
-        })
-        setLogs(res.data)
-      } catch (err) {
-        showNotification({
-          color: 'red',
-          title: t('admin.notification.logs.fetch_failed'),
-          message: await handleAxiosError(err),
-          icon: <Icon path={mdiClose} size={1} />,
-          closeButtonProps: {
-            'aria-label': t('common.button.close', 'Dismiss notification'),
-          },
-        })
-      }
+  const fetchLogs = useCallback(async () => {
+    try {
+      const res = await api.admin.adminLogs({
+        level,
+        count: ITEM_COUNT_PER_PAGE,
+        skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
+        search: debouncedSearch || undefined,
+      })
+      newLogs.current = reconcileLiveRows(newLogs.current, res.data, logIdentity)
+      setLogs(res.data)
+    } catch (err) {
+      showNotification({
+        color: 'red',
+        title: t('admin.notification.logs.fetch_failed'),
+        message: await handleAxiosError(err),
+        icon: <Icon path={mdiClose} size={1} />,
+        closeButtonProps: {
+          'aria-label': t('common.button.close', 'Dismiss notification'),
+        },
+      })
     }
+  }, [activePage, debouncedSearch, level, t])
 
-    fetchLogs()
+  useEffect(() => {
+    void fetchLogs()
 
     if (activePage === 1) {
       newLogs.current = []
     }
-  }, [activePage, level, debouncedSearch])
+  }, [activePage, fetchLogs])
 
   useEffect(() => {
     setPage(1)
   }, [level, debouncedSearch])
 
-  useEffect(() => {
-    const connection = new signalR.HubConnectionBuilder()
-      .withUrl('/hub/admin')
-      .withHubProtocol(new signalR.JsonHubProtocol())
-      .withAutomaticReconnect()
-      .configureLogging(signalR.LogLevel.None)
-      .build()
+  useRecoveringHub({
+    active: true,
+    url: '/hub/admin',
+    handlers: {
+      ReceivedLog: (raw) => {
+        const message = raw as LogMessageModel
+        newLogs.current = [message, ...newLogs.current]
+        update(new Date(message.time!))
+      },
+    },
+    revalidate: fetchLogs,
+    pollingIntervalMs: OPERATOR_FALLBACK_POLL_MS,
+    onConnected: () =>
+      showNotification({
+        color: 'teal',
+        message: t('admin.notification.logs.connected'),
+        icon: <Icon path={mdiCheck} size={1} />,
+        closeButtonProps: {
+          'aria-label': t('common.button.close', 'Dismiss notification'),
+        },
+      }),
+  })
 
-    connection.serverTimeoutInMilliseconds = 60 * 1000 * 60 * 24
-
-    connection.on('ReceivedLog', (message: LogMessageModel) => {
-      newLogs.current = [message, ...newLogs.current]
-      update(new Date(message.time!))
-    })
-
-    const startConnection = async () => {
-      try {
-        await connection.start()
-        showNotification({
-          color: 'teal',
-          message: t('admin.notification.logs.connected'),
-          icon: <Icon path={mdiCheck} size={1} />,
-          closeButtonProps: {
-            'aria-label': t('common.button.close', 'Dismiss notification'),
-          },
-        })
-      } catch (err) {
-        console.error(err)
-      }
-    }
-
-    startConnection()
-
-    return () => {
-      connection.stop().catch((err) => {
-        console.error(err)
-      })
-    }
-  }, [])
-
-  const visibleLogs = [...(activePage === 1 ? newLogs.current : []), ...(logs ?? [])].filter(
+  const visibleLogs = mergeUniqueRows(activePage === 1 ? newLogs.current : [], logs ?? [], logIdentity).filter(
     (item) => level === 'All' || item.level === level
   )
 
