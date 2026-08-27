@@ -135,6 +135,8 @@ mod m0111_game_event_feed_cursor;
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
 #[cfg(test)]
+pub(crate) use m0107_monitor_history_indexes::UP_SQL as MONITOR_HISTORY_INDEX_SQL;
+#[cfg(test)]
 pub(crate) use m0108_koth_observer_rotation_operations::UP_SQL as KOTH_OBSERVER_ROTATION_SQL;
 #[cfg(test)]
 pub(crate) use m0109_operator_console_latest_rows::UP_SQL as OPERATOR_LATEST_INDEX_SQL;

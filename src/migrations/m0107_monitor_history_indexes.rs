@@ -5,7 +5,7 @@ use sea_orm_migration::prelude::*;
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
-const UP_SQL: &str = r#"
+pub(crate) const UP_SQL: &str = r#"
 -- pg_trgm is a trusted PostgreSQL extension. It keeps literal contains-searches
 -- indexed without changing the established monitor search semantics.
 CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;

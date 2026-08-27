@@ -40,7 +40,15 @@ fn review_query_bounds_every_input_before_postgres() {
         Some(ParticipationStatus::Accepted as i16)
     );
     assert_eq!(normalized.division_id, Some(7));
-    assert_eq!(normalized.search.as_deref(), Some("needle"));
+    assert_eq!(normalized.search.as_deref(), Some("%needle%"));
+
+    let literal_pattern = ParticipationReviewQuery {
+        search: Some("  100%_\\  ".to_owned()),
+        ..ParticipationReviewQuery::default()
+    }
+    .normalized()
+    .unwrap();
+    assert_eq!(literal_pattern.search.as_deref(), Some("%100\\%\\_\\\\%"));
 
     let minimum = ParticipationReviewQuery {
         count: 0,
@@ -128,7 +136,6 @@ fn review_sql_keeps_authorization_filters_and_limits_in_one_bound_statement() {
         "$3::boolean",
         "participation.status = $4",
         "participation.division_id = $5",
-        "LOWER($6)",
         "OFFSET $7 LIMIT $8",
     ] {
         assert!(
@@ -136,6 +143,8 @@ fn review_sql_keeps_authorization_filters_and_limits_in_one_bound_statement() {
             "missing SQL boundary: {predicate}"
         );
     }
+    assert!(PARTICIPATION_REVIEW_SEARCH_PAGE_SQL.contains("LOWER(team.name) LIKE $6 ESCAPE '\\'"));
+    assert!(!PARTICIPATION_REVIEW_SEARCH_PAGE_SQL.contains("STRPOS"));
     assert!(!PARTICIPATION_REVIEW_PAGE_SQL.contains("AspNetUsers"));
     assert!(PARTICIPATION_REVIEW_PAGE_SQL.contains("filtered AS NOT MATERIALIZED"));
     assert!(PARTICIPATION_REVIEW_DETAIL_SQL.contains("participation.id = $4"));
@@ -171,15 +180,20 @@ async fn large_event_page_is_indexed_bounded_authorized_filtered_and_pii_minimal
         .connect(&database_url)
         .await
         .unwrap();
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
+        .execute(&admin)
+        .await
+        .expect("install trusted trigram extension in shared public schema");
     let schema = format!("participation_review_{}", Uuid::new_v4().simple());
     assert!(schema.starts_with("participation_review_"));
     sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
         .execute(&admin)
         .await
         .unwrap();
+    let search_path = format!("{schema},public");
     let options = PgConnectOptions::from_str(&database_url)
         .unwrap()
-        .options([("search_path", schema.as_str())]);
+        .options([("search_path", search_path.as_str())]);
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect_with(options)
@@ -234,11 +248,39 @@ async fn large_event_page_is_indexed_bounded_authorized_filtered_and_pii_minimal
             phone_number TEXT,
             avatar_hash TEXT
         );
+        CREATE TABLE "GameChallenges" (
+            id INTEGER PRIMARY KEY,
+            game_id INTEGER NOT NULL,
+            title TEXT NOT NULL
+        );
+        CREATE TABLE "GameEvents" (
+            id INTEGER PRIMARY KEY,
+            game_id INTEGER NOT NULL,
+            "Type" SMALLINT NOT NULL,
+            values JSONB NOT NULL,
+            publish_time_utc TIMESTAMPTZ NOT NULL,
+            user_id UUID,
+            team_id INTEGER NOT NULL
+        );
+        CREATE TABLE "Submissions" (
+            id INTEGER PRIMARY KEY,
+            answer TEXT NOT NULL,
+            status SMALLINT NOT NULL,
+            submit_time_utc TIMESTAMPTZ NOT NULL,
+            user_id UUID,
+            team_id INTEGER NOT NULL,
+            game_id INTEGER NOT NULL,
+            challenge_id INTEGER NOT NULL
+        );
         "#,
     )
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::raw_sql(crate::migrations::MONITOR_HISTORY_INDEX_SQL)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::raw_sql(crate::migrations::PARTICIPATION_REVIEW_INDEX_SQL)
         .execute(&pool)
         .await
@@ -295,6 +337,10 @@ async fn large_event_page_is_indexed_bounded_authorized_filtered_and_pii_minimal
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query(r#"UPDATE "Teams" SET name = 'Literal 100%_\ Team' WHERE id = 9998"#)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let captain_id = Uuid::parse_str("00000000-0000-0000-0000-00000000270f").unwrap();
     let member_id = Uuid::new_v4();
@@ -314,6 +360,13 @@ async fn large_event_page_is_indexed_bounded_authorized_filtered_and_pii_minimal
     .unwrap();
     sqlx::query(r#"INSERT INTO "TeamMembers" (team_id, user_id) VALUES (9999, $1)"#)
         .bind(member_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // m0107 builds this index over existing production teams. Flush the GIN
+    // pending list so the fixture models that post-migration state instead of
+    // an artificial bulk insert performed after index creation.
+    sqlx::query(r#"VACUUM (ANALYZE) "Teams""#)
         .execute(&pool)
         .await
         .unwrap();
@@ -365,23 +418,23 @@ async fn large_event_page_is_indexed_bounded_authorized_filtered_and_pii_minimal
     assert_eq!(search_page.data[0].id, 9999);
     assert_eq!(search_page.data[0].registered_member_count, 1);
     assert_eq!(search_page.data[0].team_member_count, 2);
-    let literal_wildcard = participation_review_page(
-        &pool,
-        manager_id,
-        false,
-        77,
-        &ParticipationReviewQuery {
-            search: Some("%".to_owned()),
-            ..ParticipationReviewQuery::default()
-        },
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        literal_wildcard.total, 0,
-        "search metacharacters stay literal"
-    );
+    for literal in ["%", "_", "\\"] {
+        let literal_page = participation_review_page(
+            &pool,
+            manager_id,
+            false,
+            77,
+            &ParticipationReviewQuery {
+                search: Some(literal.to_owned()),
+                ..ParticipationReviewQuery::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(literal_page.total, 1, "{literal:?} stays literal");
+        assert_eq!(literal_page.data[0].id, 9998);
+    }
 
     let empty_managed_event = participation_review_page(
         &pool,
@@ -530,6 +583,55 @@ async fn large_event_page_is_indexed_bounded_authorized_filtered_and_pii_minimal
             .and_then(Value::as_f64),
         Some(1.0),
         "each per-page registration lookup must return the exact matching row: {plan_text}"
+    );
+
+    let selective_search = ParticipationReviewQuery {
+        search: Some("needle".to_owned()),
+        ..ParticipationReviewQuery::default()
+    }
+    .normalized()
+    .unwrap()
+    .search
+    .expect("selective search has a normalized LIKE pattern");
+    let search_explain_sql =
+        format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {PARTICIPATION_REVIEW_SEARCH_PAGE_SQL}");
+    let search_plan: Value = sqlx::query_scalar(&search_explain_sql)
+        .bind(77_i32)
+        .bind(manager_id)
+        .bind(false)
+        .bind(None::<i16>)
+        .bind(None::<i32>)
+        .bind(Some(selective_search.as_str()))
+        .bind(0_i64)
+        .bind(10_i64)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let search_plan_text = serde_json::to_string(&search_plan).unwrap();
+    let search_root = search_plan
+        .get(0)
+        .and_then(|entry| entry.get("Plan"))
+        .expect("search EXPLAIN JSON contains a root plan");
+    assert_eq!(
+        search_root.get("Actual Rows").and_then(Value::as_f64),
+        Some(1.0),
+        "selective search must return only its bounded matching page: {search_plan_text}"
+    );
+    let trigram_index = find_plan_node_by_index(search_root, "ix_teams_monitor_name_trgm")
+        .unwrap_or_else(|| {
+            panic!(
+                "selective contains search did not use the team trigram index: {search_plan_text}"
+            )
+        });
+    assert_eq!(
+        trigram_index.get("Actual Loops").and_then(Value::as_f64),
+        Some(1.0),
+        "the trigram index must be scanned once: {search_plan_text}"
+    );
+    assert_eq!(
+        trigram_index.get("Actual Rows").and_then(Value::as_f64),
+        Some(1.0),
+        "the selective trigram lookup must return one team: {search_plan_text}"
     );
 
     pool.close().await;

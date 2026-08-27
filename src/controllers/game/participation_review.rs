@@ -72,7 +72,7 @@ impl ParticipationReviewQuery {
             skip: self.skip.min(MAX_REVIEW_SKIP) as i64,
             status: self.status.map(|status| status as i16),
             division_id: self.division_id,
-            search: search.map(ToOwned::to_owned),
+            search: super::monitor_history::normalized_search_pattern(search),
         })
     }
 }
@@ -130,7 +130,10 @@ struct ParticipationReviewListRow {
     total_count: i64,
 }
 
-pub(crate) const PARTICIPATION_REVIEW_PAGE_SQL: &str = r#"
+macro_rules! participation_review_page_sql {
+    ($search_predicate:literal) => {
+        concat!(
+            r#"
 WITH authorized_game AS (
     SELECT game.id
       FROM "Games" game
@@ -158,7 +161,9 @@ filtered AS NOT MATERIALIZED (
       JOIN "Teams" team ON team.id = participation.team_id
      WHERE ($4::smallint IS NULL OR participation.status = $4)
        AND ($5::integer IS NULL OR participation.division_id = $5)
-       AND ($6::text IS NULL OR STRPOS(LOWER(team.name), LOWER($6)) > 0)
+       AND "#,
+            $search_predicate,
+            r#"
 ),
 page AS (
     SELECT filtered.*, COUNT(*) OVER () AS total_count
@@ -196,7 +201,15 @@ SELECT game.id AS authorized_game_id,
         ) roster_member
   ) roster ON page.id IS NOT NULL
  ORDER BY page.team_id ASC NULLS LAST, page.id ASC NULLS LAST
-"#;
+"#
+        )
+    };
+}
+
+pub(crate) const PARTICIPATION_REVIEW_PAGE_SQL: &str =
+    participation_review_page_sql!("$6::text IS NULL");
+pub(crate) const PARTICIPATION_REVIEW_SEARCH_PAGE_SQL: &str =
+    participation_review_page_sql!(r#"LOWER(team.name) LIKE $6 ESCAPE '\'"#);
 
 async fn participation_review_page(
     pool: &sqlx::PgPool,
@@ -206,7 +219,15 @@ async fn participation_review_page(
     query: &ParticipationReviewQuery,
 ) -> AppResult<Option<ArrayResponse<ParticipationReviewSummaryModel>>> {
     let query = query.normalized()?;
-    let rows = sqlx::query_as::<_, ParticipationReviewListRow>(PARTICIPATION_REVIEW_PAGE_SQL)
+    // Separate statement identities keep PostgreSQL's prepared generic plans
+    // from compromising between an unfiltered page and a selective GIN scan.
+    let has_search = query.search.is_some();
+    let page_sql = if has_search {
+        PARTICIPATION_REVIEW_SEARCH_PAGE_SQL
+    } else {
+        PARTICIPATION_REVIEW_PAGE_SQL
+    };
+    let rows = sqlx::query_as::<_, ParticipationReviewListRow>(page_sql)
         .bind(game_id)
         .bind(user_id)
         .bind(is_admin)
