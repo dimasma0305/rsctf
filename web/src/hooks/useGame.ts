@@ -63,6 +63,10 @@ export const shouldRetryGameTimingError = (error: unknown) => {
   return typeof status !== 'number' || status === 408 || status === 425 || status === 429 || status >= 500
 }
 
+/** Keep an already-rendered landing page through retryable timing read failures. */
+export const shouldRedirectGameLandingError = (error: unknown, hasLoadedGame: boolean) =>
+  error !== undefined && error !== null && (!hasLoadedGame || !shouldRetryGameTimingError(error))
+
 export const gameTimingSWRConfig: SWRConfiguration = {
   ...OnceSWRConfig,
   refreshInterval: GAME_TIMING_REFRESH_MS,
