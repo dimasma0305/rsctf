@@ -329,7 +329,12 @@ pub async fn scoreboard(
     }
 
     let bundle = build_scoreboard_bundle(&st, &g, is_monitor).await?;
-    scoreboard_encoding::response(bundle, &headers)
+    let validator_scope = if is_monitor {
+        "standard-monitor"
+    } else {
+        "standard-public"
+    };
+    scoreboard_encoding::scoped_response(bundle, &headers, validator_scope)
 }
 
 /// `GET /api/game/{id}/challenges/{challengeId}/solvers` — teams that solved one

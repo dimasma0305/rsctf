@@ -375,8 +375,23 @@ pub(super) async fn build_stable_bundle(
     .map_err(|error| AppError::internal(error.to_string()))?
 }
 
-fn etag_for(bundle: &[u8], ranges: &BundleRanges) -> Option<(String, String)> {
-    let version = hex::encode(version_digest(bundle, ranges)?);
+fn etag_for(
+    bundle: &[u8],
+    ranges: &BundleRanges,
+    validator_scope: Option<&str>,
+) -> Option<(String, String)> {
+    let base = version_digest(bundle, ranges)?;
+    let version = match validator_scope {
+        Some(scope) => {
+            let mut hasher = Sha256::new();
+            hasher.update(b"rsctf-scoreboard-validator-view-v1\0");
+            hasher.update(scope.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(base);
+            hex::encode(hasher.finalize())
+        }
+        None => hex::encode(base),
+    };
     Some((format!("W/\"rsctf-scoreboard-{version}\""), version))
 }
 
@@ -418,14 +433,20 @@ fn insert_common_headers(response: &mut Response, etag: Option<&(String, String)
 /// Select a zero-copy body slice from the atomic cache bundle. A legacy raw JSON
 /// entry can remain for its short TTL; established v1 A&D/combined bundles stay
 /// valid. Neither has a semantic validator, while v2 responses do.
-pub(super) fn response(bundle: Bytes, headers: &HeaderMap) -> AppResult<Response> {
+fn response_with_scope(
+    bundle: Bytes,
+    headers: &HeaderMap,
+    validator_scope: Option<&str>,
+) -> AppResult<Response> {
     let ranges = bundle_ranges(&bundle);
     if !valid_bundle(&bundle) {
         return Err(AppError::internal(
             "Corrupt scoreboard cache bundle; retry after cache expiry",
         ));
     }
-    let etag = ranges.as_ref().and_then(|ranges| etag_for(&bundle, ranges));
+    let etag = ranges
+        .as_ref()
+        .and_then(|ranges| etag_for(&bundle, ranges, validator_scope));
     if etag
         .as_ref()
         .is_some_and(|(etag, _)| if_none_match(headers, etag))
@@ -477,6 +498,24 @@ pub(super) fn response(bundle: Bytes, headers: &HeaderMap) -> AppResult<Response
             .insert(header::CONTENT_ENCODING, HeaderValue::from_static(encoding));
     }
     Ok(response)
+}
+
+/// Negotiate an established legacy/A&D/combined response. Versioned bundles
+/// use their build scope directly; legacy bodies have no validator.
+pub(super) fn response(bundle: Bytes, headers: &HeaderMap) -> AppResult<Response> {
+    response_with_scope(bundle, headers, None)
+}
+
+/// Negotiate a standard/KotH response after authorization and lifecycle gates.
+/// The small view salt prevents a validator retained across an account change
+/// from matching another authorization view, while compression and full-body
+/// hashing remain precomputed off the Tokio request path.
+pub(super) fn scoped_response(
+    bundle: Bytes,
+    headers: &HeaderMap,
+    validator_scope: &str,
+) -> AppResult<Response> {
+    response_with_scope(bundle, headers, Some(validator_scope))
 }
 
 #[cfg(test)]
@@ -677,11 +716,33 @@ mod tests {
         .unwrap();
         let etag = |bundle: &Bytes| {
             let ranges = bundle_ranges(bundle).unwrap();
-            etag_for(bundle, &ranges).unwrap().0
+            etag_for(bundle, &ranges, None).unwrap().0
         };
         assert_eq!(etag(&first.bytes), etag(&second.bytes));
         assert_ne!(etag(&second.bytes), etag(&changed.bytes));
         assert_ne!(etag(&second.bytes), etag(&monitor.bytes));
+    }
+
+    #[tokio::test]
+    async fn shared_bundle_validator_is_salted_by_authorization_view() {
+        let built = build_stable_bundle(
+            Bytes::from_static(br#"{"generatedAt":100,"score":7}"#),
+            "koth-live-9".to_owned(),
+            b"\"generatedAt\":",
+        )
+        .await
+        .unwrap();
+        let public =
+            scoped_response(built.bytes.clone(), &headers("identity"), "koth-public").unwrap();
+        let monitor = scoped_response(built.bytes, &headers("identity"), "koth-monitor").unwrap();
+        assert_ne!(
+            public.headers()[header::ETAG],
+            monitor.headers()[header::ETAG]
+        );
+        assert_ne!(
+            public.headers()[SCOREBOARD_VERSION_HEADER],
+            monitor.headers()[SCOREBOARD_VERSION_HEADER]
+        );
     }
 
     #[tokio::test]

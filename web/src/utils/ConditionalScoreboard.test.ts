@@ -83,6 +83,31 @@ test('a browser-normalized 200 with the same validator skips JSON decoding', asy
   assert.strictEqual(unchanged, first)
 })
 
+test('a retained validator cannot bypass an account-view denial or changed view', async () => {
+  let view: 'public' | 'denied' | 'monitor' = 'public'
+  const sentValidators: Array<string | undefined> = []
+  const reader = createConditionalScoreboardReader(async (_path, etag) => {
+    sentValidators.push(etag)
+    if (view === 'denied') return { status: 403, data: null }
+    const currentEtag = `W/"${view}"`
+    return etag === currentEtag
+      ? { status: 304, data: null, etag: currentEtag }
+      : { status: 200, data: JSON.stringify({ view }), etag: currentEtag }
+  })
+
+  const publicBoard = await reader.read<{ view: string }>('/api/game/7/ad/koth/scoreboard')
+  view = 'denied'
+  await assert.rejects(() => reader.read('/api/game/7/ad/koth/scoreboard'), /unexpected.*403/)
+  view = 'monitor'
+  const monitorBoard = await reader.read<{ view: string }>('/api/game/7/ad/koth/scoreboard')
+
+  assert.equal(publicBoard.view, 'public')
+  assert.equal(monitorBoard.view, 'monitor')
+  assert.notStrictEqual(monitorBoard, publicBoard)
+  assert.equal(sentValidators[1], 'W/"public"')
+  assert.equal(sentValidators[2], 'W/"public"')
+})
+
 test('SWR does not render an unchanged maximum-board reference after a 304', async () => {
   const browser = new Window({ url: 'https://rsctf.test/games/17/scoreboard' })
   const restoreDom = installTestDom(browser)

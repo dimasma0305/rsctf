@@ -228,7 +228,12 @@ pub async fn scoreboard(
         return Err(AppError::not_found("Game not found"));
     }
     let bundle = koth_scoreboard_bundle(&st, &game, is_monitor).await?;
-    super::super::scoreboard_encoding::response(bundle, &headers)
+    let validator_scope = if is_monitor {
+        "koth-monitor"
+    } else {
+        "koth-public"
+    };
+    super::super::scoreboard_encoding::scoped_response(bundle, &headers, validator_scope)
 }
 
 #[cfg(test)]
