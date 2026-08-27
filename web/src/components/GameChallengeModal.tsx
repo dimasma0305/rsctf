@@ -3,11 +3,11 @@ import { useInputState } from '@mantine/hooks'
 import { notifications, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import useSWR from 'swr'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
+import { assertJsonResponse, NonJsonResponseError } from '@Utils/ChallengePolling'
 import { encryptApiData } from '@Utils/Crypto'
 import { FlagSubmitAttemptOwner } from '@Utils/FlagSubmitAttempt'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
@@ -20,29 +20,20 @@ import {
   extendReconciledInstance,
   mergeExtendedInstanceContext,
 } from '@Utils/InstanceLifecycle'
+import { httpErrorStatus } from '@Utils/ProfileRetry'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
+import { useChallengePolling } from '@Hooks/useChallengePolling'
 import { useConfig } from '@Hooks/useConfig'
 import api, {
   AnswerResult,
   ChallengeDetailModel,
+  ChallengeSolverPageModel,
   ChallengeType,
   ContainerPortMappingType,
   SubmissionType,
   ReviewRating,
 } from '@Api'
-
-interface ChallengeSolverModel {
-  rank: number
-  teamName: string
-  teamAvatar: string | null
-  userName: string | null
-  type: SubmissionType
-  time: string
-  score: number
-}
-
-const fetcher = (url: string) => fetch(url, { credentials: 'include' }).then((r) => (r.ok ? r.json() : []))
 
 interface GameChallengeModalProps extends ModalProps {
   gameId: number
@@ -78,32 +69,88 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     ...modalProps
   } = props
 
-  const { data: challenge, mutate } = api.game.useGameGetChallenge(gameId, challengeId, {
+  const opened = Boolean(modalProps.opened)
+  const challengeRequest = useCallback(
+    async (signal: AbortSignal) => {
+      const response = await api.game.gameGetChallenge(gameId, challengeId, { signal })
+      return assertJsonResponse(response)
+    },
+    [challengeId, gameId]
+  )
+  const {
+    data: challenge,
+    error: challengeError,
+    mutate,
+  } = useChallengePolling<ChallengeDetailModel>({
+    key: gameId > 0 && challengeId > 0 ? `/api/game/${gameId}/challenges/${challengeId}` : null,
+    active: opened,
     refreshInterval: 120 * 1000,
+    request: challengeRequest,
   })
 
-  const { data: solverData } = useSWR<ChallengeSolverModel[]>(
-    gameId > 0 && challengeId > 0 ? `/api/game/${gameId}/challenges/${challengeId}/solvers` : null,
-    fetcher,
-    { refreshInterval: 30000, revalidateOnFocus: false }
+  const solverRequest = useCallback(
+    async (signal: AbortSignal) => {
+      const response = await api.game.gameGetChallengeSolverPage(
+        gameId,
+        challengeId,
+        { count: 20, skip: 0 },
+        { signal }
+      )
+      return assertJsonResponse(response)
+    },
+    [challengeId, gameId]
   )
+  const { data: solverPage, error: solverError } = useChallengePolling<ChallengeSolverPageModel>({
+    key:
+      gameId > 0 && challengeId > 0
+        ? `/api/game/${gameId}/challenges/${challengeId}/solvers/page?count=20&skip=0`
+        : null,
+    active: opened,
+    refreshInterval: 30_000,
+    request: solverRequest,
+  })
 
   const solvers = useMemo(
     (): SolverInfo[] =>
-      (solverData ?? []).map((s) => ({
-        rank: s.rank,
+      (solverPage?.data ?? []).map((s) => ({
         teamName: s.teamName,
         teamAvatar: s.teamAvatar,
         userName: s.userName,
         type: s.type,
-        time: new Date(s.time).getTime(),
-        score: s.score,
+        time: s.time,
       })),
-    [solverData]
+    [solverPage?.data]
   )
 
   const { config } = useConfig()
   const { t } = useTranslation()
+
+  const pollErrorMessage = (error: unknown, resource: 'challenge' | 'solvers') => {
+    if (!error) return undefined
+    if (error instanceof NonJsonResponseError) {
+      return t(
+        'challenge.error.invalid_response',
+        'The server returned an invalid response. Automatic retries stopped.'
+      )
+    }
+    const status = httpErrorStatus(error)
+    if (status === 401) return t('challenge.error.unauthorized', 'Your session expired. Sign in again to continue.')
+    if (status === 403) {
+      return t(
+        'challenge.error.forbidden',
+        'Challenge access was denied. Connect to the event VPN if it is required, then reopen the challenge.'
+      )
+    }
+    if (status === 404) {
+      return resource === 'challenge'
+        ? t('challenge.error.not_found', 'This challenge is no longer available.')
+        : t('challenge.error.solvers_not_found', 'Solver history is unavailable for this challenge.')
+    }
+    if (status === 429) {
+      return t('challenge.error.rate_limited', 'Too many requests. Reopen the challenge after the server retry window.')
+    }
+    return t('challenge.error.temporary', 'Challenge data could not be loaded. Automatic retries are bounded.')
+  }
 
   const wrongFlagHints = t('challenge.content.wrong_flag_hints', {
     returnObjects: true,
@@ -497,6 +544,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       solved={(status !== SubmissionType.Unaccepted && status !== undefined) || solvedChallengeId === challengeId}
       justSolved={solvedChallengeId === challengeId}
       solvers={solvers}
+      solverTotal={solverPage?.total}
+      loadError={pollErrorMessage(challengeError, 'challenge')}
+      solverError={pollErrorMessage(solverError, 'solvers')}
       flag={flag}
       setFlag={setFlag}
       receiptProof={receiptProof}

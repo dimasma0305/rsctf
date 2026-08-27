@@ -3,14 +3,15 @@ import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiAlertCircleOutline, mdiApi, mdiCheck, mdiCrown, mdiRefresh } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import useSWR from 'swr'
+import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { showErrorMsg } from '@Utils/Shared'
 import { isKothResetTransition, kothConfirmationProgress, maxKothCooldownTicks } from '@Utils/kothLifecycle'
 import { selectCurrentKothTarget } from '@Utils/kothTarget'
+import { useChallengePolling } from '@Hooks/useChallengePolling'
 import type { KothLifecycleFields } from '@Hooks/useGame'
-import api from '@Api'
+import api, { AdTargetsModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
 const KOTH_POLL_INTERVAL_MS = 5_000
@@ -55,6 +56,7 @@ interface KothHillStateModel extends KothLifecycleFields {
 interface KothChallengePanelProps {
   gameId: number
   challengeId: number
+  active: boolean
 }
 
 /**
@@ -66,10 +68,10 @@ interface KothChallengePanelProps {
  *   - marker-holder state, or the Leaderboard play model;
  *   - the latest functional verdict on the hill.
  *
- * Uses useSWR with 5s polling so the holder + status update without manual
- * refresh — same cadence as the A&D panel's adState hook.
+ * Uses modal-owned five-second polling so holder and status updates stop as
+ * soon as the challenge surface closes.
  */
-export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challengeId }) => {
+export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challengeId, active }) => {
   const { t } = useTranslation()
   const modals = useModals()
   const [rotating, setRotating] = useState(false)
@@ -77,14 +79,55 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
   // The Token endpoint requires player auth (cookie session). The token is
   // scoped to this hill. Marker tokens rotate per crown cycle; Leaderboard
   // capabilities remain stable for the event unless the player rotates one.
-  const { data: tokenData, mutate: mutateToken } = useSWR<KothTokenModel>(
-    `/api/game/${gameId}/ad/koth/${challengeId}/token`,
-    { refreshInterval: KOTH_POLL_INTERVAL_MS }
+  const tokenRequest = useCallback(
+    async (signal: AbortSignal) => {
+      const response = await api.request<KothTokenModel>({
+        path: `/api/game/${gameId}/ad/koth/${challengeId}/token`,
+        method: 'GET',
+        format: 'json',
+        signal,
+      })
+      return assertJsonResponse(response)
+    },
+    [challengeId, gameId]
   )
-  const { data: stateData } = useSWR<KothHillStateModel>(`/api/game/${gameId}/ad/koth/${challengeId}/state`, {
+  const { data: tokenData, mutate: mutateToken } = useChallengePolling<KothTokenModel>({
+    key: `/api/game/${gameId}/ad/koth/${challengeId}/token`,
+    active,
     refreshInterval: KOTH_POLL_INTERVAL_MS,
+    request: tokenRequest,
   })
-  const { data: targets } = api.game.useGameAdTargets(gameId, { refreshInterval: KOTH_POLL_INTERVAL_MS })
+  const stateRequest = useCallback(
+    async (signal: AbortSignal) => {
+      const response = await api.request<KothHillStateModel>({
+        path: `/api/game/${gameId}/ad/koth/${challengeId}/state`,
+        method: 'GET',
+        format: 'json',
+        signal,
+      })
+      return assertJsonResponse(response)
+    },
+    [challengeId, gameId]
+  )
+  const { data: stateData } = useChallengePolling<KothHillStateModel>({
+    key: `/api/game/${gameId}/ad/koth/${challengeId}/state`,
+    active,
+    refreshInterval: KOTH_POLL_INTERVAL_MS,
+    request: stateRequest,
+  })
+  const targetsRequest = useCallback(
+    async (signal: AbortSignal) => {
+      const response = await api.game.gameAdTargets(gameId, { signal })
+      return assertJsonResponse(response)
+    },
+    [gameId]
+  )
+  const { data: targets } = useChallengePolling<AdTargetsModel>({
+    key: `/api/Game/${gameId}/Ad/Targets`,
+    active,
+    refreshInterval: KOTH_POLL_INTERVAL_MS,
+    request: targetsRequest,
+  })
 
   const resetPhase = stateData?.resetPhase ?? 'Active'
   const targetSnapshot = targets?.challenges.find((c) => c.challengeId === challengeId)?.hill

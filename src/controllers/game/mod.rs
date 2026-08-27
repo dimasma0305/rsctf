@@ -580,8 +580,7 @@ pub struct EventQuery {
     pub search: Option<String>,
 }
 
-/// RSCTF `GetChallengeSolvers` takes no paging; rsctf adds optional `count`/`skip`
-/// (count omitted or 0 ⇒ the whole solver list).
+/// Bounded solver pagination shared by the compatibility and compact endpoints.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SolversQuery {

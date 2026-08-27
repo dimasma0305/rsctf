@@ -74,6 +74,10 @@ fn router_with_domains(
             get(challenge_solvers),
         )
         .route(
+            "/api/game/{id}/challenges/{challengeId}/solvers/page",
+            get(challenge_solver_page),
+        )
+        .route(
             "/api/game/{id}/challenges/{challengeId}",
             // Only the POST (flag submit) carries the Submit policy, like RSCTF's
             // per-action [EnableRateLimiting]; the GET detail is unthrottled.

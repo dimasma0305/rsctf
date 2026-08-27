@@ -18,6 +18,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
       npm run monitor-history # fixed-rate bounded monitor event/submission history
       npm run details-read  # fixed-rate authenticated challenge-details poll
+      npm run challenge-modal-read # bounded detail + solver modal reads
       npm run donations     # fixed-rate, read-only cached donation-feed smoke
       npm run news-feed     # fixed-rate, conditional homepage-feed smoke
       npm run asset-download # fixed-rate authenticated 1 MiB attachment ranges
@@ -250,6 +251,17 @@ TARGET=https://ctf.example GAME=162 RATE=10 DURATION=30s \
 Set `REQUIRE_FIXED_PROJECTION=0` only when collecting a before-fix baseline; the
 projection mismatch remains visible in the exported metric but does not fail that
 baseline run.
+
+`challenge-modal-read` opens the real challenge-detail and compact solver-page
+reads as one fixed-rate cycle. It discovers the enabled challenge with the largest
+solver roster, caps the visible solver response at 20 rows/64 KiB, and fails on
+non-JSON, authorization, 5xx, dropped-iteration, or pagination-contract errors.
+It performs no mutations:
+
+```sh
+TARGET=https://ctf.example GAME=162 RATE=10 DURATION=30s \
+  SUMMARY_JSON=/tmp/challenge-modal-read.json npm run challenge-modal-read
+```
 
 `scoreboard-evidence` isolates the database work behind a Jeopardy scoreboard
 cache fill. Its default disposable fixture contains 100 teams, 20 challenges,

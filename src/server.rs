@@ -5,8 +5,8 @@ use std::path::Path;
 
 use axum::extract::MatchedPath;
 use axum::http::{header, Request};
-use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get};
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::RequestBodyDeadlineLayer;
@@ -114,6 +114,9 @@ pub fn build_stateful_router(state: SharedState) -> Router {
 }
 
 fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: bool) -> Router {
+    // Reserve API and hub namespaces before the SPA/static fallback is attached.
+    // A miss there must remain a typed transport failure, never HTTP 200 HTML.
+    let app = app.merge(typed_namespace_fallbacks());
     // Serve the built React frontend. When a static directory exists, unmatched
     // routes fall back to its index document so client-side deep links also work
     // after a browser refresh. The web/ client builds to web/build via pnpm.
@@ -184,6 +187,25 @@ fn finish_router(app: Router<SharedState>, state: SharedState, serve_frontend: b
     .with_state(state)
 }
 
+fn typed_namespace_fallbacks<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new()
+        .route("/api", any(unmatched_api_route))
+        .route("/api/{*path}", any(unmatched_api_route))
+        .route("/hub", any(unmatched_hub_route))
+        .route("/hub/{*path}", any(unmatched_hub_route))
+}
+
+async fn unmatched_api_route() -> Response {
+    crate::utils::error::AppError::not_found("API route not found").into_response()
+}
+
+async fn unmatched_hub_route() -> Response {
+    crate::utils::error::AppError::not_found("Hub route not found").into_response()
+}
+
 /// Minimal HTTP surface for a background-only engine replica. Keeping health
 /// probes on the same configured bind address gives orchestrators liveness and
 /// graceful-drain visibility without accidentally exposing application routes
@@ -231,8 +253,8 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{
-        anti_autofill_script, inject_head, trace_route, ANTI_AUTOFILL_SCRIPT, ANTI_AUTOFILL_TAG,
-        UNMATCHED_TRACE_ROUTE,
+        anti_autofill_script, inject_head, trace_route, typed_namespace_fallbacks,
+        ANTI_AUTOFILL_SCRIPT, ANTI_AUTOFILL_TAG, UNMATCHED_TRACE_ROUTE,
     };
 
     const BYOC_IMAGE_ROUTE: &str =
@@ -294,6 +316,75 @@ mod tests {
             response.headers().get(axum::http::header::CONTENT_TYPE),
             Some(&axum::http::HeaderValue::from_static(
                 "text/javascript; charset=utf-8"
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn unmatched_api_and_hub_routes_return_typed_json_404s() {
+        let app = Router::new()
+            .route("/api/known", get(|| async { "known" }))
+            .merge(typed_namespace_fallbacks())
+            .fallback(|| async { axum::response::Html("<!doctype html><title>SPA</title>") });
+
+        for (method, path) in [
+            (axum::http::Method::GET, "/api/missing"),
+            (axum::http::Method::POST, "/api/missing"),
+            (axum::http::Method::GET, "/hub/missing"),
+            (axum::http::Method::POST, "/hub/missing"),
+            (axum::http::Method::GET, "/api"),
+            (axum::http::Method::GET, "/hub"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+            assert_eq!(
+                response.headers().get(axum::http::header::CONTENT_TYPE),
+                Some(&axum::http::HeaderValue::from_static("application/json"))
+            );
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["status"], 404);
+            assert!(json["title"]
+                .as_str()
+                .is_some_and(|title| !title.is_empty()));
+        }
+
+        let known = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/known")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(known.status(), axum::http::StatusCode::OK);
+
+        let spa = app
+            .oneshot(
+                Request::builder()
+                    .uri("/games/1/challenges")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spa.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            spa.headers().get(axum::http::header::CONTENT_TYPE),
+            Some(&axum::http::HeaderValue::from_static(
+                "text/html; charset=utf-8"
             ))
         );
     }

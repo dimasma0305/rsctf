@@ -61,13 +61,11 @@ import misc from '@Styles/Misc.module.css'
 dayjs.extend(relativeTime)
 
 export interface SolverInfo {
-  rank: number
   teamName: string
   teamAvatar: string | null
   userName: string | null
   type: SubmissionType
   time: number
-  score: number
 }
 
 export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stackId' | 'title'> {
@@ -100,6 +98,9 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   /** True only when the flag was accepted in this browser session (not a pre-existing solve). */
   justSolved?: boolean
   solvers?: SolverInfo[]
+  solverTotal?: number
+  loadError?: string
+  solverError?: string
   /** When set, the modal is rendering an A&D challenge — switches the footer
    *  from the flag-submit form to the AdChallengePanel (status + API docs). */
   gameId?: number
@@ -131,6 +132,9 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     onSubmitFlag,
     onReviewSubmit,
     solvers,
+    solverTotal,
+    loadError,
+    solverError,
     gameId,
     flagVerdict,
     onDismissFlagVerdict,
@@ -284,7 +288,11 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       type="scroll"
       data-guide="challenge-material"
     >
-      {challenge?.content === undefined ? (
+      {loadError ? (
+        <Alert color="red" variant="light" icon={<Icon path={mdiAlertCircleOutline} size={0.9} />}>
+          {loadError}
+        </Alert>
+      ) : challenge?.content === undefined ? (
         <ContentPlaceholder />
       ) : (
         <>
@@ -313,7 +321,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
               <Divider
                 label={
                   <Text size="xs" c="dimmed" fw={500}>
-                    Solved by {solvers.length} {solvers.length === 1 ? 'team' : 'teams'}
+                    Solved by {solverTotal ?? solvers.length} {(solverTotal ?? solvers.length) === 1 ? 'team' : 'teams'}
                   </Text>
                 }
                 labelPosition="left"
@@ -359,7 +367,19 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
                   })}
                 </Stack>
               </ScrollArea>
+              {typeof solverTotal === 'number' && solverTotal > solvers.length && (
+                <Text size="xs" c="dimmed">
+                  {t('challenge.content.earliest_solvers', 'Showing the earliest {{count}} solves.', {
+                    count: solvers.length,
+                  })}
+                </Text>
+              )}
             </Stack>
+          )}
+          {solverError && (
+            <Alert mt="md" color="yellow" variant="light" icon={<Icon path={mdiAlertCircleOutline} size={0.8} />}>
+              {solverError}
+            </Alert>
           )}
         </>
       )}
@@ -637,9 +657,9 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           misleading "no service for your team yet" alert. Route to the
           KotH-specific panel that knows about the hill + per-tick token. */}
         {isKoth ? (
-          <KothChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} />
+          <KothChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} active={Boolean(modalProps.opened)} />
         ) : (
-          <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} />
+          <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} active={Boolean(modalProps.opened)} />
         )}
         {eventAction}
       </Stack>
@@ -656,7 +676,12 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         {/* A&D/KotH shown as a post-end practice container: keep the team's
           defended-service backup (snapshot) download available here. */}
         {isPracticeContainer && gameId && (
-          <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} snapshotOnly />
+          <AdChallengePanel
+            gameId={gameId}
+            challengeId={challenge?.id ?? 0}
+            active={Boolean(modalProps.opened)}
+            snapshotOnly
+          />
         )}
         {!readOnlyArchive && (
           <>

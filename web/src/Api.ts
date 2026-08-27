@@ -3672,6 +3672,25 @@ export interface ChallengeDetailModel {
   variant?: ClientChallengeVariant | null;
 }
 
+/** One visible row in the bounded challenge-solver page. */
+export interface ChallengeSolverPreviewModel {
+  teamName: string;
+  teamAvatar: string | null;
+  userName: string | null;
+  type: SubmissionType;
+  /** @format uint64 */
+  time: number;
+}
+
+/** Bounded solver page used by the player challenge modal. */
+export interface ChallengeSolverPageModel {
+  data: ChallengeSolverPreviewModel[];
+  /** @format int64 */
+  total: number;
+  /** @format uint64 */
+  nextSkip: number | null;
+}
+
 export interface ClientChallengeVariant {
   id: string;
   revision: number;
@@ -8334,6 +8353,26 @@ export class Api<
       this.request<ChallengeDetailModel, RequestResponse>({
         path: `/api/game/${id}/challenges/${challengeId}`,
         method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieves one bounded, solve-time-ordered solver page for the challenge.
+     * @tags Game
+     * @name GameGetChallengeSolverPage
+     * @request GET:/api/game/{id}/challenges/{challengeId}/solvers/page
+     */
+    gameGetChallengeSolverPage: (
+      id: number,
+      challengeId: number,
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeSolverPageModel, RequestResponse>({
+        path: `/api/game/${id}/challenges/${challengeId}/solvers/page`,
+        method: "GET",
+        query,
         format: "json",
         ...params,
       }),
