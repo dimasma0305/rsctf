@@ -70,6 +70,9 @@ export interface SolverInfo {
 
 export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stackId' | 'title'> {
   challenge?: ChallengeDetailModel
+  loading?: boolean
+  loadError?: string
+  onRetryLoad?: () => void
   cateData: ChallengeCategoryItemProps
   solved?: boolean
   disabled?: boolean
@@ -99,7 +102,6 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   justSolved?: boolean
   solvers?: SolverInfo[]
   solverTotal?: number
-  loadError?: string
   solverError?: string
   /** When set, the modal is rendering an A&D challenge — switches the footer
    *  from the flag-submit form to the AdChallengePanel (status + API docs). */
@@ -111,6 +113,9 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
 export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const {
     challenge,
+    loading,
+    loadError,
+    onRetryLoad,
     cateData,
     solved,
     justSolved,
@@ -133,7 +138,6 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     onReviewSubmit,
     solvers,
     solverTotal,
-    loadError,
     solverError,
     gameId,
     flagVerdict,
@@ -289,10 +293,22 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       data-guide="challenge-material"
     >
       {loadError ? (
-        <Alert color="red" variant="light" icon={<Icon path={mdiAlertCircleOutline} size={0.9} />}>
-          {loadError}
+        <Alert
+          color="red"
+          icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+          title={t('challenge.content.load_failed.title', 'Challenge could not be loaded')}
+          role="alert"
+        >
+          <Stack gap="sm">
+            <Text size="sm">{loadError}</Text>
+            {onRetryLoad && (
+              <Button variant="outline" onClick={onRetryLoad}>
+                {t('common.button.retry', 'Retry')}
+              </Button>
+            )}
+          </Stack>
         </Alert>
-      ) : challenge?.content === undefined ? (
+      ) : loading || challenge?.content === undefined ? (
         <ContentPlaceholder />
       ) : (
         <>
@@ -518,7 +534,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
 
   // Allow submission if deadline not passed OR (game ended AND practice mode enabled)
   const canSubmitDespiteDeadline = !isDeadlinePassed || (gameEnded && practiceMode)
-  const inputDisabled = disabled || solved || isLimitReached || !canSubmitDespiteDeadline
+  const inputDisabled =
+    disabled || loading || Boolean(loadError) || solved || isLimitReached || !canSubmitDespiteDeadline
 
   // Any SOLVED challenge can be rated/edited (matches the backend upsert), not only
   // one solved in this browser session, and the controls stay visible after
@@ -646,7 +663,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   )
 
   const footer =
-    isAd && gameId && !isPracticeContainer && !readOnlyArchive ? (
+    loading || loadError ? null : isAd && gameId && !isPracticeContainer && !readOnlyArchive ? (
       <Stack gap="xs" className={classes.footer}>
         <Divider />
         {/* A&D/KotH challenges can ship a downloadable attachment (e.g. the

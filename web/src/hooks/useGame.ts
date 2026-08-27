@@ -5,6 +5,7 @@ import useSWR, { type Middleware, type SWRConfiguration, unstable_serialize } fr
 import { GameStatus } from '@Components/GameCard'
 import { isRetryableHttpError } from '@Utils/HttpError'
 import { useServerNow } from '@Utils/ServerClock'
+import { useViewerIdentity, viewerScopedKey } from '@Utils/ViewerIdentity'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ParticipationStatus } from '@Api'
 
@@ -29,12 +30,11 @@ type RecentGameRead = {
 
 const monotonicMilliseconds = () => (typeof performance === 'undefined' ? Date.now() : performance.now())
 
-const gameAccessReadSnapshot = (key: string, data: unknown): GameAccessReadSnapshot | null => {
-  const keyMatch = /^\/api\/game\/(\d+)$/.exec(key)
-  if (!keyMatch || !data || typeof data !== 'object') return null
+const gameAccessReadSnapshot = (data: unknown): GameAccessReadSnapshot | null => {
+  if (!data || typeof data !== 'object') return null
   const record = data as Record<string, unknown>
-  const id = Number(keyMatch[1])
-  if (!Number.isSafeInteger(id) || record.id !== id) return null
+  const id = record.id
+  if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) return null
   return {
     id,
     start: record.start,
@@ -62,7 +62,7 @@ const createRecentGameReads = (nowMilliseconds: () => number) => {
   }
   const invalidate = (key: string) => reads.delete(key)
   const remember = (key: string, data: unknown) => {
-    const snapshot = gameAccessReadSnapshot(key, data)
+    const snapshot = gameAccessReadSnapshot(data)
     if (!snapshot) {
       invalidate(key)
       return
@@ -85,7 +85,7 @@ const createRecentGameReads = (nowMilliseconds: () => number) => {
       reads.delete(key)
       return false
     }
-    const snapshot = gameAccessReadSnapshot(key, data)
+    const snapshot = gameAccessReadSnapshot(data)
     return snapshot !== null && sameGameAccessRead(entry.snapshot, snapshot)
   }
   const clear = () => reads.clear()
@@ -105,7 +105,8 @@ type LiveGameReadGeneration = {
  */
 const useLiveGameReadReady = (
   key: string,
-  gameId: number | undefined,
+  expectedGameId: number,
+  responseGameId: number | undefined,
   isValidating: boolean,
   error: unknown,
   recentSuccessfulRead: boolean
@@ -116,7 +117,7 @@ const useLiveGameReadReady = (
     validationObserved: false,
     ready: recentSuccessfulRead,
   })
-  const responseMatchesKey = gameId !== undefined && key === unstable_serialize(`/api/game/${gameId}`)
+  const responseMatchesKey = expectedGameId > 0 && responseGameId === expectedGameId
 
   useLayoutEffect(() => {
     setState((current) => {
@@ -276,29 +277,32 @@ export const createGameTimingSWRConfig = (
     ...gameTimingSWRConfig,
     use: [...(gameTimingSWRConfig.use ?? []), scopeMiddleware],
     onError: (_error, key) => {
-      cancel(key)
-      recentGameReads.invalidate(key)
+      const serializedKey = unstable_serialize(key)
+      cancel(serializedKey)
+      recentGameReads.invalidate(serializedKey)
     },
     onSuccess: (data, key) => {
-      cancel(key)
-      recentGameReads.remember(key, data)
+      const serializedKey = unstable_serialize(key)
+      cancel(serializedKey)
+      recentGameReads.remember(serializedKey, data)
     },
-    onDiscarded: cancel,
+    onDiscarded: (key) => cancel(unstable_serialize(key)),
     onErrorRetry: (_error, key, _config, revalidate, options) => {
-      if (!subscribers.has(key)) return
-      cancel(key)
+      const serializedKey = unstable_serialize(key)
+      if (!subscribers.has(serializedKey)) return
+      cancel(serializedKey)
       retryTimers.set(
-        key,
+        serializedKey,
         setTimeout(
           () => {
-            retryTimers.delete(key)
-            if (!subscribers.has(key)) return
+            retryTimers.delete(serializedKey)
+            if (!subscribers.has(serializedKey)) return
             const visible = _config.refreshWhenHidden || _config.isVisible()
             const online = _config.refreshWhenOffline || _config.isOnline()
             if (!visible || !online) {
               // Keep no dormant timer chain. One shared listener resumes this
               // deduplicating revalidator once visibility and connectivity agree.
-              deferredRetries.set(key, {
+              deferredRetries.set(serializedKey, {
                 isActive: () =>
                   (_config.refreshWhenHidden || _config.isVisible()) &&
                   (_config.refreshWhenOffline || _config.isOnline()),
@@ -437,10 +441,12 @@ export const useGame = (numId: number) => {
 /** Game data plus a per-route live-read gate for lifecycle/access redirects. */
 export const useGameAccess = (numId: number) => {
   const gameState = useGame(numId)
-  const gameKey = unstable_serialize(numId > 0 ? `/api/game/${numId}` : null)
+  const { scope } = useViewerIdentity()
+  const gameKey = unstable_serialize(viewerScopedKey(numId > 0 ? `/api/game/${numId}` : null, scope))
   const recentSuccessfulRead = sharedGameTimingOwner.hasRecentSuccessfulGameRead(gameKey, gameState.game)
   const liveReadReady = useLiveGameReadReady(
     gameKey,
+    numId,
     gameState.game?.id,
     gameState.isValidating,
     gameState.error,

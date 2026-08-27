@@ -17,6 +17,7 @@ import { shouldRedirectOnUnauthorized } from '@Utils/AuthState'
 import { localCacheProvider } from '@Utils/Cache'
 import { useLanguage } from '@Utils/I18n'
 import { useCustomTheme } from '@Utils/ThemeOverride'
+import { RouteLifecycleBoundary, viewerIdentityMiddleware, ViewerIdentityProvider } from '@Utils/ViewerIdentity'
 import { useBanner } from '@Hooks/useConfig'
 import { fetcher as rawFetcher } from '@Api'
 import '@mantine/core/styles.css'
@@ -110,6 +111,15 @@ const RouteAccessibility: FC = () => {
   )
 }
 
+const RoutedContent: FC = () => {
+  const content = useRoutes(routes)
+
+  // React Router intentionally reuses a route element when only params or the
+  // current account change. The keyed fragment makes those identities a hard
+  // lifecycle boundary for every route-local modal, search, and live buffer.
+  return <RouteLifecycleBoundary>{content}</RouteLifecycleBoundary>
+}
+
 const ThemedApp: FC = () => {
   useBanner()
 
@@ -126,16 +136,18 @@ const ThemedApp: FC = () => {
             <ModalsProvider labels={{ confirm: t('common.modal.confirm'), cancel: t('common.modal.cancel') }}>
               <WsrxProvider>
                 <PlayerGuideProvider>
-                  <RouteAccessibility />
-                  <Suspense
-                    fallback={
-                      <Center h="100vh" w="100vw" role="status" aria-live="polite">
-                        <Loader aria-label={t('common.content.loading', 'Loading')} />
-                      </Center>
-                    }
-                  >
-                    {useRoutes(routes)}
-                  </Suspense>
+                  <ViewerIdentityProvider>
+                    <RouteAccessibility />
+                    <Suspense
+                      fallback={
+                        <Center h="100vh" w="100vw" role="status" aria-live="polite">
+                          <Loader aria-label={t('common.content.loading', 'Loading')} />
+                        </Center>
+                      }
+                    >
+                      <RoutedContent />
+                    </Suspense>
+                  </ViewerIdentityProvider>
                 </PlayerGuideProvider>
               </WsrxProvider>
             </ModalsProvider>
@@ -152,9 +164,10 @@ export const App: FC = () => (
       // Keep the theme/config hooks and every route on one cache. In particular,
       // the admin settings mutation must reach useCustomTheme immediately.
       refreshInterval: 60_000,
-      keepPreviousData: true,
+      keepPreviousData: false,
       provider: localCacheProvider,
       fetcher: authAwareFetcher,
+      use: [viewerIdentityMiddleware],
     }}
   >
     <ThemedApp />

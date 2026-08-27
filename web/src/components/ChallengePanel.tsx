@@ -1,4 +1,5 @@
 import {
+  Alert,
   Button,
   Card,
   Center,
@@ -16,7 +17,14 @@ import {
   VisuallyHidden,
 } from '@mantine/core'
 import { useLocalStorage } from '@mantine/hooks'
-import { mdiCrown, mdiFileUploadOutline, mdiFlagOutline, mdiPuzzle, mdiSwordCross } from '@mdi/js'
+import {
+  mdiAlertCircleOutline,
+  mdiCrown,
+  mdiFileUploadOutline,
+  mdiFlagOutline,
+  mdiPuzzle,
+  mdiSwordCross,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useEffect, useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -36,7 +44,7 @@ export const ChallengePanel: FC = () => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
 
-  const { teamInfo } = useGameTeamInfo(numId)
+  const { teamInfo, error: teamInfoError, mutate: mutateTeamInfo } = useGameTeamInfo(numId)
   const challenges = teamInfo?.challenges
 
   const { game } = useGame(numId)
@@ -181,7 +189,7 @@ export const ChallengePanel: FC = () => {
     ].filter((s) => s.items.length > 0)
   }, [currentChallenges, challengeKind, kindsPresent])
 
-  const [challenge, setChallenge] = useState<ChallengeInfo | null>(null)
+  const [selection, setSelection] = useState<{ gameId: number; challengeId: number } | null>(null)
   const [detailOpened, setDetailOpened] = useState(false)
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
   const [writeupSubmitOpened, setWriteupSubmitOpened] = useState(false)
@@ -218,20 +226,65 @@ export const ChallengePanel: FC = () => {
     )
   }
 
-  useEffect(() => {
-    const challId = hash.slice(1).split('-')[0]
-    if (challId && allChallenges) {
-      const id = parseInt(challId)
-      if (isNaN(id) || id < 0) return
-      if (challenge?.id === id) return
+  const ownedHashChallengeId = useMemo(
+    () =>
+      ownedChallengeIdFromHash(
+        hash,
+        allChallenges.map((item) => item.id)
+      ),
+    [allChallenges, hash]
+  )
+  const challenge =
+    selection?.gameId === numId && selection.challengeId === ownedHashChallengeId
+      ? (allChallenges.find((item) => item.id === selection.challengeId) ?? null)
+      : null
 
-      const chal = allChallenges.find((c) => c.id === id)
-      if (chal) {
-        setChallenge(chal)
-        setDetailOpened(true)
-      }
+  useEffect(() => {
+    setActiveTab('All')
+    setSelection(null)
+    setDetailOpened(false)
+    setWriteupSubmitOpened(false)
+  }, [numId])
+
+  useEffect(() => {
+    const challengeId = ownedHashChallengeId
+    if (challengeId === null) {
+      setSelection(null)
+      setDetailOpened(false)
+      return
     }
-  }, [hash, challenge, allChallenges])
+
+    // A hash is only a request to open a challenge. It becomes authoritative
+    // after this game's current team response proves ownership.
+    setSelection({ gameId: numId, challengeId })
+    setDetailOpened(true)
+  }, [numId, ownedHashChallengeId])
+
+  if (teamInfoError && !teamInfo) {
+    return (
+      <Center h="calc(100vh - 100px)" w="100%" p="md">
+        <Alert
+          color="red"
+          icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+          title={t('game.content.challenge_load_failed.title', 'Challenges could not be loaded')}
+          role="alert"
+          maw="32rem"
+        >
+          <Stack gap="sm">
+            <Text size="sm">
+              {t(
+                'game.content.challenge_load_failed.description',
+                'You may not have access to this event, or the request failed. Try again after checking your membership.'
+              )}
+            </Text>
+            <Button variant="outline" onClick={() => void mutateTeamInfo()}>
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Stack>
+        </Alert>
+      </Center>
+    )
+  }
 
   // skeleton for loading
   if (!challenges) {
@@ -487,7 +540,7 @@ export const ChallengePanel: FC = () => {
                             iconMap={iconMap}
                             colorMap={colorMap}
                             onClick={() => {
-                              setChallenge(chal)
+                              setSelection({ gameId: numId, challengeId: chal.id })
                               setDetailOpened(true)
                               // update hash after modal opened, so don't trigger useEffect
                               window.location.hash = `#${chal.id}-${encodeURIComponent(chal.title?.replace(/ /g, '-') ?? '')}`
@@ -522,15 +575,17 @@ export const ChallengePanel: FC = () => {
           writeupDeadline={teamInfo.writeupDeadline}
         />
       )}
-      {challenge?.id && (
+      {detailOpened && challenge?.id && (
         <GameChallengeModal
           gameId={numId}
           gameTitle={game?.title ?? ''}
           opened={detailOpened}
+          challengeOwned={selection?.gameId === numId && selection.challengeId === challenge.id}
           withCloseButton
           onClose={() => {
             window.location.hash = ''
             setDetailOpened(false)
+            setSelection(null)
           }}
           gameEnded={finished}
           practiceMode={game?.practiceMode}
@@ -546,4 +601,16 @@ export const ChallengePanel: FC = () => {
       )}
     </>
   )
+}
+
+export const challengeIdFromHash = (hash: string): number | null => {
+  const match = /^#([1-9]\d*)(?:-|$)/.exec(hash)
+  if (!match) return null
+  const id = Number(match[1])
+  return Number.isSafeInteger(id) ? id : null
+}
+
+export const ownedChallengeIdFromHash = (hash: string, currentChallengeIds: readonly number[]): number | null => {
+  const id = challengeIdFromHash(hash)
+  return id !== null && currentChallengeIds.includes(id) ? id : null
 }

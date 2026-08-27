@@ -47,6 +47,8 @@ interface GameChallengeModalProps extends ModalProps {
   score: number
   challengeId: number
   status?: SubmissionType
+  /** Proven by the current catalog/team response, not by a retained selection. */
+  challengeOwned?: boolean
 }
 
 interface PendingFlagVerdict extends FlagVerdictIdentity {
@@ -66,10 +68,11 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     status,
     title,
     score,
+    challengeOwned = true,
     ...modalProps
   } = props
 
-  const opened = Boolean(modalProps.opened)
+  const readEnabled = shouldReadChallenge(modalProps.opened, challengeOwned, gameId, challengeId)
   const challengeRequest = useCallback(
     async (signal: AbortSignal) => {
       const response = await api.game.gameGetChallenge(gameId, challengeId, { signal })
@@ -83,7 +86,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     mutate,
   } = useChallengePolling<ChallengeDetailModel>({
     key: gameId > 0 && challengeId > 0 ? `/api/game/${gameId}/challenges/${challengeId}` : null,
-    active: opened,
+    active: readEnabled,
     refreshInterval: 120 * 1000,
     request: challengeRequest,
   })
@@ -105,7 +108,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       gameId > 0 && challengeId > 0
         ? `/api/game/${gameId}/challenges/${challengeId}/solvers/page?count=20&skip=0`
         : null,
-    active: opened,
+    active: readEnabled,
     refreshInterval: 30_000,
     request: solverRequest,
   })
@@ -170,7 +173,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     [challenge?.type, config.portMapping, eventVpnRequired, isDynamic]
   )
 
-  useFeatureGuide(deliveryFeature, Boolean(modalProps.opened && deliveryFeature), {
+  useFeatureGuide(deliveryFeature, Boolean(readEnabled && deliveryFeature), {
     eventVpnRequired,
     hasAttachment: Boolean(challenge?.context?.url),
     instanceActive: Boolean(challenge?.context?.instanceEntry),
@@ -187,8 +190,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     submitAttemptOwnerRef.current = new FlagSubmitAttemptOwner()
   }
   const submitAttemptOwner = submitAttemptOwnerRef.current
-  const currentScope = useRef({ gameId, challengeId, opened: modalProps.opened, mounted: true })
-  currentScope.current = { gameId, challengeId, opened: modalProps.opened, mounted: true }
+  const currentScope = useRef({ gameId, challengeId, opened: readEnabled, mounted: true })
+  currentScope.current = { gameId, challengeId, opened: readEnabled, mounted: true }
 
   useEffect(() => {
     currentScope.current.mounted = true
@@ -199,26 +202,37 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
   useEffect(() => {
     dispatchFlagVerdict({ type: 'reset' })
-  }, [challengeId])
+    setDisabled(false)
+    setPendingSubmission(null)
+    setFlag('')
+    setReceiptProof('')
+    setSolvedChallengeId(null)
+  }, [challengeId, gameId])
 
   useEffect(() => {
-    if (!modalProps.opened) dispatchFlagVerdict({ type: 'reset' })
-  }, [modalProps.opened])
+    if (readEnabled) return
+    dispatchFlagVerdict({ type: 'reset' })
+    setDisabled(false)
+    setPendingSubmission(null)
+    setFlag('')
+    setReceiptProof('')
+    setSolvedChallengeId(null)
+  }, [readEnabled])
 
   useEffect(() => {
     setPendingSubmission((current) => {
-      if (current && modalProps.opened && current.gameId === gameId && current.challengeId === challengeId) {
+      if (current && readEnabled && current.gameId === gameId && current.challengeId === challengeId) {
         return current
       }
       return null
     })
     setDisabled(false)
-  }, [gameId, challengeId, modalProps.opened])
+  }, [gameId, challengeId, readEnabled])
 
   const isLimitReached = (challenge?.limit && (challenge.attempts ?? 0) >= challenge.limit) || false
 
   const onCreate = async () => {
-    if (!challengeId || disabled) return
+    if (!readEnabled || disabled) return
     setDisabled(true)
 
     try {
@@ -266,7 +280,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   const onDestroy = async () => {
-    if (!challengeId || disabled) return
+    if (!readEnabled || disabled) return
     setDisabled(true)
     try {
       await requestDestroy()
@@ -276,7 +290,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   const onExtend = async () => {
-    if (!challengeId || disabled) return
+    if (!readEnabled || disabled) return
     setDisabled(true)
 
     try {
@@ -299,7 +313,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
   const onSubmit = async () => {
     const normalizedFlag = flag.trim()
-    if (!challengeId || !normalizedFlag) {
+    if (!readEnabled || !challengeId || !normalizedFlag) {
       showNotification({
         color: 'red',
         message: t('challenge.notification.flag.empty'),
@@ -392,7 +406,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   useEffect(() => {
-    if (!pendingSubmission || !modalProps.opened) return
+    if (!pendingSubmission || !readEnabled) return
     if (pendingSubmission.gameId !== gameId || pendingSubmission.challengeId !== challengeId) return
 
     const poller = createFlagVerdictPoller({
@@ -450,7 +464,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       poller.cancel()
       if (wasPending && leftSubmission) notifications.hide('flag-submitted')
     }
-  }, [pendingSubmission, gameId, challengeId, modalProps.opened])
+  }, [pendingSubmission, gameId, challengeId, readEnabled])
 
   useEffect(() => {
     if (challengeId !== solvedChallengeId) return
@@ -535,6 +549,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       {...modalProps}
       gameTitle={gameTitle}
       eventHref={eventHref}
+      loading={readEnabled && challenge === undefined && challengeError === undefined}
+      onRetryLoad={readEnabled ? () => void mutate() : undefined}
       challenge={{
         ...(challenge ?? {}),
         title: challenge?.title ?? title,
@@ -555,7 +571,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       onDestroy={onDestroy}
       onSubmitFlag={onSubmit}
       onReviewSubmit={onReviewSubmit}
-      disabled={disabled || isLimitReached}
+      disabled={disabled || isLimitReached || !readEnabled || !challenge}
       // `disabled` covers both the POST and the owned verdict-recovery loop.
       submitting={disabled}
       onExtend={onExtend}
@@ -569,3 +585,10 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     />
   )
 }
+
+export const shouldReadChallenge = (
+  opened: boolean | undefined,
+  challengeOwned: boolean,
+  gameId: number,
+  challengeId: number
+) => Boolean(opened && challengeOwned && gameId > 0 && challengeId > 0)

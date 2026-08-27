@@ -1,4 +1,5 @@
 import {
+  Alert,
   alpha,
   Avatar,
   Box,
@@ -6,6 +7,7 @@ import {
   Center,
   Grid,
   Group,
+  Loader,
   Paper,
   Select,
   Stack,
@@ -18,7 +20,7 @@ import {
   useMantineTheme,
 } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
-import { mdiAccountGroup, mdiCrosshairsGps, mdiMagnify, mdiFlagOutline } from '@mdi/js'
+import { mdiAccountGroup, mdiAlertCircleOutline, mdiCrosshairsGps, mdiMagnify, mdiFlagOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import cx from 'clsx'
 import dayjs from 'dayjs'
@@ -280,7 +282,7 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
   const [keyword, setKeyword] = useState('')
   const [debouncedKeyword] = useDebouncedValue(keyword, 400)
 
-  const { scoreboard } = useGameScoreboard(numId)
+  const { scoreboard, error: scoreboardError } = useGameScoreboard(numId)
   // A&D / KotH challenges live on their own boards — keep them out of the jeopardy
   // columns (the shared payload includes them so the challenge list still works).
   const jeopardyChallenges = useMemo(() => filterJeopardyChallenges(scoreboard?.challenges), [scoreboard?.challenges])
@@ -288,6 +290,8 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
   const myTeamName = game?.teamName ?? null
   // When a "find my team" click lands on a row we highlight it for 2.5s.
   const [highlightedTeam, setHighlightedTeam] = useState<string | null>(null)
+  const [selection, setSelection] = useState<{ gameId: number; itemId: number } | null>(null)
+  const [itemDetailOpened, setItemDetailOpened] = useState(false)
   const divisionMap = useMemo(() => {
     const map = new Map<number, string>()
     scoreboard?.divisions?.forEach((div) => {
@@ -331,13 +335,16 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
     setPage(1)
     setDivisionId(null)
     setKeyword('')
+    setHighlightedTeam(null)
+    setSelection(null)
+    setItemDetailOpened(false)
   }, [id, setDivisionId])
 
   const base = (activePage - 1) * ITEM_COUNT_PER_PAGE
   const currentItems = filteredList?.slice(base, base + ITEM_COUNT_PER_PAGE)
 
-  const [currentItem, setCurrentItem] = useState<ScoreboardItem | null>(null)
-  const [itemDetailOpened, setItemDetailOpened] = useState(false)
+  const currentItem =
+    selection?.gameId === numId ? (scoreboard?.items?.find((item) => item.id === selection.itemId) ?? null) : null
 
   const { t } = useTranslation()
 
@@ -349,6 +356,22 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
 
   const bloodData = useBonusLabels(bloodBonus)
   const hasDivisionFilter = divisionOptions.length > 0
+
+  if (scoreboardError && !scoreboard) {
+    return (
+      <Alert color="red" icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />} role="alert">
+        {t('game.content.scoreboard.load_error', 'The scoreboard could not be loaded for this event.')}
+      </Alert>
+    )
+  }
+
+  if (!scoreboard) {
+    return (
+      <Center py="xl" role="status" aria-live="polite">
+        <Loader aria-label={t('common.content.loading', 'Loading')} />
+      </Center>
+    )
+  }
 
   return (
     <Paper shadow="md" p="md">
@@ -451,7 +474,8 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
                       tableRank={base + idx + 1}
                       item={item}
                       onOpenDetail={() => {
-                        setCurrentItem(item)
+                        if (typeof item.id !== 'number') return
+                        setSelection({ gameId: numId, itemId: item.id })
                         setItemDetailOpened(true)
                       }}
                       challenges={jeopardyChallenges}
@@ -486,10 +510,13 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
         scoreboard={scoreboard}
         divisionMap={divisionMap}
         bloodBonusMap={bloodData}
-        opened={itemDetailOpened}
+        opened={itemDetailOpened && currentItem !== null}
         withCloseButton
         size="45rem"
-        onClose={() => setItemDetailOpened(false)}
+        onClose={() => {
+          setItemDetailOpened(false)
+          setSelection(null)
+        }}
         item={currentItem}
       />
     </Paper>
