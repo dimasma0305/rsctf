@@ -21,15 +21,13 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{ArrayResponse, RequestResponse};
 
 const LATEST_POST_LIMIT: i64 = 20;
-const LEGACY_POST_LIMIT: i64 = 500;
 const DEFAULT_POST_PAGE_SIZE: u64 = 10;
 const MAX_POST_PAGE_SIZE: u64 = 50;
-const MAX_POST_QUERY_LIMIT: i64 = LEGACY_POST_LIMIT;
 const POST_FEED_CACHE_CONTROL: &str = "public, no-cache";
 
-/// Select the ordered page before touching the author table. This keeps both
-/// the post projection and the author lookup bounded by the caller's clamped
-/// page size, regardless of retained post history.
+/// Select posts before touching the author table. Page/latest callers bind a
+/// finite limit, keeping both the post projection and author lookup bounded;
+/// only the compatibility endpoint deliberately binds no limit.
 const ORDERED_POST_PAGE_SQL: &str = r#"
 WITH selected AS MATERIALIZED (
     SELECT post.id, post.title, post.summary, post.is_pinned, post.tags,
@@ -289,12 +287,12 @@ pub async fn get_client_config(
 
 /// `GET /api/Posts` — the legacy array response, pinned first then newest.
 ///
-/// The wire shape remains an array for older clients, but the response is
-/// deliberately capped. New clients use `/api/posts/page` for an exact total.
+/// Compatibility requires both the raw array shape and the complete retained
+/// history. New bounded consumers use `/api/posts/page` instead.
 pub async fn get_posts(
     State(st): State<SharedState>,
 ) -> AppResult<RequestResponse<Vec<PostInfoModel>>> {
-    let data = load_post_page(st.pg(), 0, LEGACY_POST_LIMIT).await?;
+    let data = load_all_posts(st.pg()).await?;
     Ok(RequestResponse::ok(data))
 }
 
@@ -424,17 +422,38 @@ pub async fn get_pow_challenge(
 
 // --- helpers ---
 
+/// Compatibility-only full-history read for the legacy raw-array endpoint.
+/// Interactive clients must use `load_post_page` through `/api/posts/page`.
+async fn load_all_posts(pool: &sqlx::PgPool) -> AppResult<Vec<PostInfoModel>> {
+    load_posts(pool, 0, None).await
+}
+
 async fn load_post_page(
     pool: &sqlx::PgPool,
     offset: i64,
     limit: i64,
 ) -> AppResult<Vec<PostInfoModel>> {
+    load_posts(
+        pool,
+        offset.max(0),
+        Some(limit.clamp(1, MAX_POST_PAGE_SIZE as i64)),
+    )
+    .await
+}
+
+async fn load_posts(
+    pool: &sqlx::PgPool,
+    offset: i64,
+    limit: Option<i64>,
+) -> AppResult<Vec<PostInfoModel>> {
     let rows = sqlx::query_as::<_, PostInfoRow>(ORDERED_POST_PAGE_SQL)
         .bind(offset.max(0))
-        .bind(limit.clamp(1, MAX_POST_QUERY_LIMIT))
+        // PostgreSQL treats LIMIT NULL as no limit. Only the compatibility
+        // endpoint passes None; page/latest callers always bind a finite cap.
+        .bind(limit)
         .fetch_all(pool)
         .await
-        .map_err(|error| AppError::internal(format!("load post page: {error}")))?;
+        .map_err(|error| AppError::internal(format!("load posts: {error}")))?;
     Ok(rows.into_iter().map(PostInfoModel::from).collect())
 }
 
@@ -517,11 +536,13 @@ fn parse_tags(tags: Option<serde_json::Value>) -> Option<Vec<String>> {
 mod tests {
     use axum::body::to_bytes;
     use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+    use axum::response::IntoResponse;
 
     use super::{
         conditional_post_feed_response, effective_port_mapping, etag_list_matches, PostInfoModel,
         PostPageParams, MAX_POST_PAGE_SIZE, POST_FEED_CACHE_CONTROL,
     };
+    use crate::utils::shared::{ArrayResponse, RequestResponse};
 
     #[test]
     fn proxy_required_backend_overrides_direct_port_preference() {
@@ -563,6 +584,23 @@ mod tests {
             .offset(),
             i64::MAX
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_posts_are_a_raw_array_while_bounded_pages_are_explicit() {
+        let legacy = RequestResponse::ok(Vec::<PostInfoModel>::new()).into_response();
+        assert_eq!(legacy.status(), StatusCode::OK);
+        assert_eq!(
+            to_bytes(legacy.into_body(), 64).await.unwrap().as_ref(),
+            b"[]"
+        );
+
+        let bounded = ArrayResponse::new(Vec::<PostInfoModel>::new(), 123).into_response();
+        let body = to_bytes(bounded.into_body(), 128).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["data"], serde_json::json!([]));
+        assert_eq!(value["length"], 0);
+        assert_eq!(value["total"], 123);
     }
 
     #[test]

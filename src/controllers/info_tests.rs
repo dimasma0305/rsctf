@@ -4,7 +4,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use uuid::Uuid;
 
 use super::{
-    count_posts, load_post_page, LATEST_POST_LIMIT, LEGACY_POST_LIMIT, MAX_POST_QUERY_LIMIT,
+    count_posts, load_all_posts, load_post_page, LATEST_POST_LIMIT, MAX_POST_PAGE_SIZE,
     ORDERED_POST_PAGE_SQL,
 };
 
@@ -107,7 +107,7 @@ impl PostFeedHarness {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL via RSCTF_TEST_DATABASE_URL"]
-async fn large_feed_is_indexed_bounded_paginated_and_deterministic() {
+async fn large_feed_preserves_legacy_history_and_bounds_paginated_consumers() {
     let fixture = PostFeedHarness::new().await;
 
     let total = count_posts(&fixture.pool).await.unwrap();
@@ -131,12 +131,17 @@ async fn large_feed_is_indexed_bounded_paginated_and_deterministic() {
         "latest response size must depend on 20 summaries, not retained history"
     );
 
-    let legacy = load_post_page(&fixture.pool, 0, LEGACY_POST_LIMIT)
-        .await
-        .unwrap();
-    assert_eq!(legacy.len(), MAX_POST_QUERY_LIMIT as usize);
+    let legacy = load_all_posts(&fixture.pool).await.unwrap();
+    assert_eq!(
+        legacy.len(),
+        10_002,
+        "legacy array must retain complete history"
+    );
+    assert!(legacy.iter().any(|post| post.id == "00000001"));
+    assert_eq!(legacy.last().map(|post| post.id.as_str()), Some("00000121"));
+
     let over_limit = load_post_page(&fixture.pool, 0, i64::MAX).await.unwrap();
-    assert_eq!(over_limit.len(), MAX_POST_QUERY_LIMIT as usize);
+    assert_eq!(over_limit.len(), MAX_POST_PAGE_SIZE as usize);
 
     let second = load_post_page(&fixture.pool, 20, 10).await.unwrap();
     assert_eq!(second.len(), 10);

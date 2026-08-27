@@ -5,13 +5,43 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::ConnectOptions;
 
 use super::super::SolversQuery;
-use super::{bounded_solver_page, load_challenge_solver_page};
+use super::{bounded_solver_page, legacy_solver_window, load_challenge_solver_page};
+
+#[test]
+fn legacy_solver_query_keeps_all_after_skip_semantics() {
+    assert_eq!(
+        legacy_solver_window(&SolversQuery::default()),
+        (0, usize::MAX)
+    );
+    assert_eq!(
+        legacy_solver_window(&SolversQuery {
+            count: Some(0),
+            skip: Some(7),
+        }),
+        (7, usize::MAX)
+    );
+    assert_eq!(
+        legacy_solver_window(&SolversQuery {
+            count: Some(50_000),
+            skip: Some(10_001),
+        }),
+        (10_001, 50_000)
+    );
+}
 
 #[test]
 fn solver_pages_have_a_small_default_and_hard_bounds() {
     assert_eq!(
         bounded_solver_page(&SolversQuery::default()).unwrap(),
         (0, 20)
+    );
+    assert_eq!(
+        bounded_solver_page(&SolversQuery {
+            count: Some(0),
+            skip: None,
+        })
+        .unwrap(),
+        (0, 1)
     );
     assert_eq!(
         bounded_solver_page(&SolversQuery {
@@ -114,22 +144,28 @@ async fn maximum_roster_solver_page_is_sql_bounded_and_freeze_aware() {
     .await
     .unwrap();
 
-    let last_page = load_challenge_solver_page(&pool, 1, 9, None, 480, 20)
+    let (total, last_page) = load_challenge_solver_page(&pool, 1, 9, None, 480, 20)
         .await
         .unwrap();
+    assert_eq!(total, 500);
     assert_eq!(last_page.len(), 20);
-    assert!(last_page.iter().all(|row| row.total == 500));
     assert_eq!(last_page[0].team_name, "Team-0481");
     assert_eq!(last_page[19].team_name, "Team-0500");
 
-    let frozen =
+    let (frozen_total, frozen) =
         load_challenge_solver_page(&pool, 1, 9, Some(start + Duration::seconds(251)), 240, 20)
             .await
             .unwrap();
+    assert_eq!(frozen_total, 250);
     assert_eq!(frozen.len(), 10);
-    assert!(frozen.iter().all(|row| row.total == 250));
     assert_eq!(frozen[0].team_name, "Team-0241");
     assert_eq!(frozen[9].team_name, "Team-0250");
+
+    let (empty_total, empty_page) = load_challenge_solver_page(&pool, 1, 9, None, 500, 20)
+        .await
+        .unwrap();
+    assert_eq!(empty_total, 500);
+    assert!(empty_page.is_empty());
 
     pool.close().await;
 }

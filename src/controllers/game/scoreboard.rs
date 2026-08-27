@@ -5,7 +5,6 @@ use crate::services::monitor_export::{
     SubmissionExportRow, SubmissionSnapshotError,
 };
 use axum::http::HeaderMap;
-use std::collections::BinaryHeap;
 
 #[cfg(test)]
 #[path = "solver_page_tests.rs"]
@@ -52,6 +51,19 @@ pub(super) fn bounded_solver_page(query: &SolversQuery) -> AppResult<(usize, usi
         return Err(AppError::bad_request("Solver page offset is too large"));
     }
     Ok((skip as usize, count as usize))
+}
+
+/// Preserve the original compatibility-route contract. New clients use the
+/// separately bounded `/solvers/page` endpoint; omission or zero here means
+/// every solver after `skip`, just as it did before that endpoint existed.
+pub(super) fn legacy_solver_window(query: &SolversQuery) -> (usize, usize) {
+    let skip = usize::try_from(query.skip.unwrap_or(0)).unwrap_or(usize::MAX);
+    let count = query
+        .count
+        .filter(|count| *count > 0)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(usize::MAX);
+    (skip, count)
 }
 
 const MAX_SCOREBOARD_EXPORT_ROWS: usize = 10_000;
@@ -342,8 +354,8 @@ pub async fn scoreboard(
 /// gate remains in force after closeout so the read-only challenge archive can show
 /// final solvers. A non-monitor
 /// inside `[FreezeTimeUtc, EndTimeUtc)` gets the FROZEN board, keeping post-freeze solves
-/// hidden. `count` defaults to 20 and is capped at 100; the bounded heap prevents a
-/// client from making this compatibility route clone and sort the full roster.
+/// hidden. For compatibility, an omitted or zero `count` returns every solver after
+/// `skip`; clients that need a bounded response use `/solvers/page`.
 pub async fn challenge_solvers(
     State(st): State<SharedState>,
     user: CurrentUser,
@@ -356,15 +368,13 @@ pub async fn challenge_solvers(
     if !permission.contains(GamePermission::VIEW_CHALLENGE) {
         return Err(AppError::not_found("Challenge not found"));
     }
-    let (skip, count) = bounded_solver_page(&q)?;
+    let (skip, count) = legacy_solver_window(&q);
     let board = build_scoreboard_cached(&st, &ctx.game, user.is_monitor()).await?;
 
-    // Keep only the earliest `skip + count` positions while scanning. The
-    // compatibility DTO still needs the scoreboard rank/score, but memory and
-    // cloning are now bounded by the requested page rather than roster size.
-    let window = skip.saturating_add(count);
-    let mut earliest: BinaryHeap<(DateTime<Utc>, usize, usize)> =
-        BinaryHeap::with_capacity(window.saturating_add(1));
+    // Retain only compact board indexes until the final projection. The legacy
+    // all-solvers contract necessarily scales with the matching roster, but it
+    // does not clone every compatibility DTO before applying `skip`/`count`.
+    let mut solver_positions = Vec::new();
     for (item_index, item) in board.items.iter().enumerate() {
         let Some(solve_index) = item
             .solved_challenges
@@ -373,23 +383,19 @@ pub async fn challenge_solvers(
         else {
             continue;
         };
-        let position = (
+        solver_positions.push((
             item.solved_challenges[solve_index].time,
             item_index,
             solve_index,
-        );
-        if earliest.len() < window {
-            earliest.push(position);
-        } else if earliest.peek().is_some_and(|latest| position < *latest) {
-            earliest.pop();
-            earliest.push(position);
-        }
+        ));
     }
+    // Stable ordering preserves the historical scoreboard order for exact-time ties.
+    solver_positions.sort_by_key(|position| position.0);
 
-    let paged = earliest
-        .into_sorted_vec()
+    let paged = solver_positions
         .into_iter()
         .skip(skip)
+        .take(count)
         .map(|(_, item_index, solve_index)| {
             let item = &board.items[item_index];
             let solve = &item.solved_challenges[solve_index];
@@ -407,7 +413,6 @@ pub async fn challenge_solvers(
     Ok(RequestResponse::ok(paged))
 }
 
-#[derive(sqlx::FromRow)]
 pub(super) struct ChallengeSolverPreviewRow {
     pub(super) team_name: String,
     team_avatar_hash: Option<String>,
@@ -415,7 +420,18 @@ pub(super) struct ChallengeSolverPreviewRow {
     submit_time_utc: DateTime<Utc>,
     blood_eligible: bool,
     blood_position: i64,
-    pub(super) total: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct ChallengeSolverPreviewQueryRow {
+    has_solver: bool,
+    team_name: Option<String>,
+    team_avatar_hash: Option<String>,
+    user_name: Option<String>,
+    submit_time_utc: Option<DateTime<Utc>>,
+    blood_eligible: Option<bool>,
+    blood_position: Option<i64>,
+    total: i64,
 }
 
 const CHALLENGE_SOLVER_PAGE_SQL: &str = r#"
@@ -465,7 +481,6 @@ WITH solver_base AS (
        AND ($6::timestamptz IS NULL OR submission.submit_time_utc < $6)
 ), numbered AS (
     SELECT solver_base.*,
-           COUNT(*) OVER () AS total,
            is_valid AND
              (permissions & $8) <> 0 AND
              (permissions & $9) <> 0 AS blood_eligible,
@@ -478,12 +493,21 @@ WITH solver_base AS (
              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
            ) AS blood_position
       FROM solver_base
+), paged AS (
+    SELECT *
+      FROM numbered
+     ORDER BY submit_time_utc, participation_id
+     LIMIT $10 OFFSET $11
+), totals AS (
+    SELECT COUNT(*)::bigint AS total FROM solver_base
 )
-SELECT team_name, team_avatar_hash, user_name, submit_time_utc,
-       blood_eligible, blood_position, total
-  FROM numbered
- ORDER BY submit_time_utc, participation_id
- LIMIT $10 OFFSET $11
+SELECT paged.participation_id IS NOT NULL AS has_solver,
+       paged.team_name, paged.team_avatar_hash, paged.user_name,
+       paged.submit_time_utc, paged.blood_eligible, paged.blood_position,
+       totals.total
+  FROM totals
+  LEFT JOIN paged ON TRUE
+ ORDER BY paged.submit_time_utc, paged.participation_id
 "#;
 
 pub(super) async fn load_challenge_solver_page(
@@ -493,8 +517,8 @@ pub(super) async fn load_challenge_solver_page(
     cutoff: Option<DateTime<Utc>>,
     skip: usize,
     count: usize,
-) -> AppResult<Vec<ChallengeSolverPreviewRow>> {
-    sqlx::query_as(CHALLENGE_SOLVER_PAGE_SQL)
+) -> AppResult<(i64, Vec<ChallengeSolverPreviewRow>)> {
+    let query_rows: Vec<ChallengeSolverPreviewQueryRow> = sqlx::query_as(CHALLENGE_SOLVER_PAGE_SQL)
         .bind(game_id)
         .bind(challenge_id)
         .bind(AnswerResult::Accepted as i16)
@@ -508,7 +532,34 @@ pub(super) async fn load_challenge_solver_page(
         .bind(skip as i64)
         .fetch_all(pool)
         .await
-        .map_err(|error| AppError::internal(error.to_string()))
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let total = query_rows
+        .first()
+        .ok_or_else(|| AppError::internal("solver page query returned no aggregate row"))?
+        .total;
+    let mut rows = Vec::with_capacity(query_rows.len().min(count));
+    for row in query_rows {
+        if !row.has_solver {
+            continue;
+        }
+        rows.push(ChallengeSolverPreviewRow {
+            team_name: row
+                .team_name
+                .ok_or_else(|| AppError::internal("solver page row has no team name"))?,
+            team_avatar_hash: row.team_avatar_hash,
+            user_name: row.user_name,
+            submit_time_utc: row
+                .submit_time_utc
+                .ok_or_else(|| AppError::internal("solver page row has no submit time"))?,
+            blood_eligible: row
+                .blood_eligible
+                .ok_or_else(|| AppError::internal("solver page row has no blood eligibility"))?,
+            blood_position: row
+                .blood_position
+                .ok_or_else(|| AppError::internal("solver page row has no blood position"))?,
+        });
+    }
+    Ok((total, rows))
 }
 
 /// Compact, SQL-paged solver view used by the modal. This reads one challenge's
@@ -554,7 +605,7 @@ pub async fn challenge_solver_page(
             if let Some(bytes) = state.cache.get(&key).await {
                 return Some(bytes);
             }
-            let rows =
+            let (total, rows) =
                 match load_challenge_solver_page(state.pg(), id, challenge_id, cutoff, skip, count)
                     .await
                 {
@@ -571,7 +622,6 @@ pub async fn challenge_solver_page(
                         return None;
                     }
                 };
-            let total = rows.first().map_or(0, |row| row.total);
             let data = rows
                 .into_iter()
                 .map(|row| ChallengeSolverPreviewModel {

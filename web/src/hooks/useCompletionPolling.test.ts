@@ -125,6 +125,80 @@ test('fake-time warmup stops, lifecycle transitions refresh once, and settlement
   }
 })
 
+test('cached pre-start 400 refreshes once when the same scoreboard becomes ongoing', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/7/scoreboard' })
+  const restoreDom = installTestDom(browser)
+  context.mock.timers.enable({ apis: ['setTimeout'], now: 0 })
+  let visibility: DocumentVisibilityState = 'visible'
+  Object.defineProperty(browser.document, 'visibilityState', { configurable: true, get: () => visibility })
+  const { default: useSWR, SWRConfig } = await import('swr')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  const cache = new Map()
+  let reads = 0
+
+  const Probe: FC<{ lifecycle: 'coming' | 'ongoing' }> = ({ lifecycle }) => {
+    const query = useSWR(
+      '/api/game/7/scoreboard',
+      async () => {
+        reads += 1
+        if (reads === 1) throw { response: { status: 400 } }
+        return { version: reads }
+      },
+      CompletionPollSWRConfig
+    )
+    useCompletionPolling({
+      key: '/api/game/7/scoreboard',
+      phase: lifecycle,
+      enabled: true,
+      data: query.data,
+      error: query.error,
+      isValidating: query.isValidating,
+      mutate: query.mutate,
+      successDelay: () => 1_000,
+      random: () => 0.5,
+    })
+    return null
+  }
+  const Scope: FC<{ lifecycle: 'coming' | 'ongoing' }> = ({ lifecycle }) =>
+    createElement(
+      SWRConfig,
+      { value: { provider: () => cache, dedupingInterval: 0 } },
+      createElement(Probe, { lifecycle })
+    )
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => root.render(createElement(Scope, { lifecycle: 'coming' })))
+    assert.equal(reads, 1)
+    await act(async () => context.mock.timers.tick(60_000))
+    assert.equal(reads, 1, 'a terminal pre-start response must not own an ordinary retry timer')
+
+    visibility = 'hidden'
+    await act(async () => browser.document.dispatchEvent(new browser.Event('visibilitychange')))
+    await act(async () => root.render(createElement(Scope, { lifecycle: 'ongoing' })))
+    await act(async () => context.mock.timers.tick(60_000))
+    assert.equal(reads, 1, 'the phase refresh must remain deferred while the page is hidden')
+
+    visibility = 'visible'
+    await act(async () => browser.document.dispatchEvent(new browser.Event('visibilitychange')))
+    await act(async () => context.mock.timers.tick(0))
+    assert.equal(reads, 2, 'the ongoing phase must supersede and refresh the cached pre-start error once')
+    await act(async () => context.mock.timers.tick(999))
+    assert.equal(reads, 2)
+    await act(async () => context.mock.timers.tick(1))
+    assert.equal(reads, 3, 'a successful phase refresh must resume the bounded ongoing cadence')
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
 test('one completion owner honors Retry-After, recovers, and stops after modal close', async (context) => {
   const browser = new Window({ url: 'https://rsctf.test/games/7/challenges' })
   const restoreDom = installTestDom(browser)

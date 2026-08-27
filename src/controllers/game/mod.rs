@@ -543,7 +543,9 @@ pub struct EventQuery {
     pub search: Option<String>,
 }
 
-/// Bounded solver pagination shared by the compatibility and compact endpoints.
+/// Solver pagination shared by two contracts: the legacy `/solvers` route treats
+/// an omitted or zero `count` as all rows after `skip`, while `/solvers/page`
+/// applies its own default and hard bounds.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SolversQuery {

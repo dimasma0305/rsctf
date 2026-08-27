@@ -209,12 +209,15 @@ export const useCompletionPolling = <T>({
     if (isValidating || !pageActive) return
 
     let delay: number | null = null
-    if (error !== undefined) {
-      const failures = current.immediate ? Math.max(1, current.completedFailures) : current.completedFailures
-      current.immediate = false
-      delay = pollErrorRetryDelay(error, failures, randomRef.current)
+    if (current.immediate) {
+      // A same-key phase change supersedes the previous phase's snapshot or
+      // terminal error. Read once immediately; the completed result then owns
+      // the bounded success/error cadence for the new phase.
+      delay = 0
+    } else if (error !== undefined) {
+      delay = pollErrorRetryDelay(error, current.completedFailures, randomRef.current)
     } else if (data !== undefined) {
-      delay = current.immediate ? 0 : successDelayRef.current(data, current.completedSuccesses)
+      delay = successDelayRef.current(data, current.completedSuccesses)
     }
     if (delay === null) return
 
