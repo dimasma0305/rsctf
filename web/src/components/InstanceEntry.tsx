@@ -11,7 +11,7 @@ import {
   Tooltip,
 } from '@mantine/core'
 import { useClipboard } from '@mantine/hooks'
-import { useDebouncedCallback, useDebouncedState } from '@mantine/hooks'
+import { useDebouncedCallback } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiContentCopy, mdiExclamation, mdiOpenInNew, mdiRefresh, mdiServerNetwork } from '@mdi/js'
 import { Icon } from '@mdi/react'
@@ -22,7 +22,7 @@ import { FC, useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HandleWsrxError, useWsrx } from '@Components/WsrxProvider'
 import { isInstanceExtensionWindowOpen, runInstanceExtension } from '@Utils/InstanceLifecycle'
-import { getServerNowMilliseconds, useServerNow } from '@Utils/ServerClock'
+import { getServerNowMilliseconds, useServerClockOffset, useServerClockTimeout, useServerNow } from '@Utils/ServerClock'
 import { getProxyUrl as getProxyEntry } from '@Utils/Shared'
 import { getWsrxTunnelPhase } from '@Utils/WsrxTunnel'
 import { useConfig } from '@Hooks/useConfig'
@@ -108,7 +108,8 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     instanceEntry.length === 36 &&
     !instanceEntry.includes(':')
 
-  const [canExtend, setCanExtend] = useDebouncedState(false, 500)
+  const [canExtend, setCanExtend] = useState(false)
+  const authoritativeClockOffset = useServerClockOffset()
 
   const { t } = useTranslation()
 
@@ -124,14 +125,14 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
 
   useEffect(() => {
     setWithContainer(!!context.instanceEntry)
-    setCanExtend(
-      isInstanceExtensionWindowOpen(
-        context.closeTime,
-        config.renewalWindow ?? 10,
-        getServerNowMilliseconds()
-      )
+    const extensionWindowOpen = isInstanceExtensionWindowOpen(
+      context.closeTime,
+      config.renewalWindow ?? 10,
+      getServerNowMilliseconds()
     )
-  }, [context, config.renewalWindow])
+    if (!extensionWindowOpen) enableExtend.cancel()
+    setCanExtend(extensionWindowOpen)
+  }, [authoritativeClockOffset, config.renewalWindow, context, enableExtend])
 
   const onExtend = async () => {
     if (!canExtend || !props.onExtend) return
@@ -286,13 +287,12 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     setTunnelRetrying(false)
   }, [doWsrxConnect, isPlatformProxy, localTraffic?.local, proxyEntryMode, t, tunnelRetrying, wsrx, wsrxState])
 
-  useEffect(() => {
-    if (!isPlatformProxy || !capabilityExpiresAt) return
-
-    const refreshIn = Math.max(capabilityExpiresAt - getServerNowMilliseconds() - CAPABILITY_REFRESH_SAFETY_MS, 1000)
-    const refresh = window.setTimeout(() => void onRefreshProxyEntry(), refreshIn)
-    return () => window.clearTimeout(refresh)
-  }, [capabilityExpiresAt, isPlatformProxy, onRefreshProxyEntry])
+  useServerClockTimeout(
+    () => void onRefreshProxyEntry(),
+    isPlatformProxy ? capabilityExpiresAt : null,
+    CAPABILITY_REFRESH_SAFETY_MS,
+    1000
+  )
 
   const tunnelStatusColor = phase === 'ready' ? 'green' : phase === 'unhealthy' ? 'red' : 'orange'
 

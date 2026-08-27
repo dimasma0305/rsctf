@@ -47,10 +47,13 @@ test('players can explicitly switch between a local netcat address and the scope
 test('the scoped WSS capability is renewed before it can leave a stale local listener', () => {
   assert.match(entry, /setCapabilityExpiresAt\(response\.data\.expiresAt\)/)
   assert.match(entry, /CAPABILITY_REFRESH_SAFETY_MS/)
-  assert.match(entry, /setTimeout\(\(\) => void onRefreshProxyEntry\(\), refreshIn\)/)
+  assert.match(entry, /useServerClockTimeout\([\s\S]*?onRefreshProxyEntry\(\)[\s\S]*?CAPABILITY_REFRESH_SAFETY_MS/)
 })
 
-test('extension availability is initialized from the corrected server clock', () => {
+test('extension availability follows initial and corrected server clock samples', () => {
   assert.match(entry, /isInstanceExtensionWindowOpen\([\s\S]*?getServerNowMilliseconds\(\)[\s\S]*?\)/)
+  assert.match(entry, /const authoritativeClockOffset = useServerClockOffset\(\)/)
+  assert.match(entry, /\[authoritativeClockOffset,[\s\S]*?\]/)
+  assert.match(entry, /if \(!extensionWindowOpen\) enableExtend\.cancel\(\)/)
   assert.doesNotMatch(entry, /dayjs\(context\.closeTime \?\? 0\)\.diff\(dayjs\(\)\)/)
 })

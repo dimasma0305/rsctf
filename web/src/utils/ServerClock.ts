@@ -1,5 +1,5 @@
 import type { AxiosInstance, AxiosResponse } from 'axios'
-import { useSyncExternalStore } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { useTicker } from '@Hooks/useTicker'
 
 type Listener = () => void
@@ -21,6 +21,7 @@ const subscribe = (listener: Listener) => {
 
 const getSnapshot = () => offsetMilliseconds
 const getReadySnapshot = () => liveSampleReady
+const getAuthoritativeOffsetSnapshot = () => (liveSampleReady ? offsetMilliseconds : null)
 
 /** Current authoritative-clock estimate for non-React expiry calculations. */
 export const getServerNowMilliseconds = (localNow: number = Date.now()) => localNow + offsetMilliseconds
@@ -119,6 +120,50 @@ export const useServerNow = () => {
 
 /** True only after a live HTTP response supplies an authoritative clock sample. */
 export const useServerClockReady = () => useSyncExternalStore(subscribe, getReadySnapshot, getReadySnapshot)
+
+/**
+ * The latest authoritative offset, or null until a live response supplies one.
+ * Unlike the readiness-only hook, this snapshot also changes after a better
+ * clock sample corrects an earlier estimate.
+ */
+export const useServerClockOffset = () =>
+  useSyncExternalStore(subscribe, getAuthoritativeOffsetSnapshot, getAuthoritativeOffsetSnapshot)
+
+/**
+ * Schedule one server-time deadline and replace it whenever the shared clock
+ * receives its first or a better sample. This is deliberately a one-shot
+ * timeout rather than another polling loop.
+ */
+export const useServerClockTimeout = (
+  callback: () => void,
+  targetServerTimeMilliseconds: number | null | undefined,
+  advanceMilliseconds: number = 0,
+  minimumDelayMilliseconds: number = 0
+) => {
+  const authoritativeOffset = useServerClockOffset()
+  const callbackRef = useRef(callback)
+
+  useEffect(() => {
+    callbackRef.current = callback
+  }, [callback])
+
+  useEffect(() => {
+    if (
+      typeof targetServerTimeMilliseconds !== 'number' ||
+      !Number.isFinite(targetServerTimeMilliseconds) ||
+      !Number.isFinite(advanceMilliseconds) ||
+      advanceMilliseconds < 0 ||
+      !Number.isFinite(minimumDelayMilliseconds) ||
+      minimumDelayMilliseconds < 0
+    )
+      return
+
+    const serverNow = Date.now() + (authoritativeOffset ?? 0)
+    const delay = Math.max(targetServerTimeMilliseconds - serverNow - advanceMilliseconds, minimumDelayMilliseconds)
+    const timeout = setTimeout(() => callbackRef.current(), delay)
+    return () => clearTimeout(timeout)
+  }, [advanceMilliseconds, authoritativeOffset, minimumDelayMilliseconds, targetServerTimeMilliseconds])
+}
 
 export const serverClockTestApi = {
   reset: () => {
