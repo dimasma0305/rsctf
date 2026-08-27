@@ -61,17 +61,18 @@ import misc from '@Styles/Misc.module.css'
 dayjs.extend(relativeTime)
 
 export interface SolverInfo {
-  rank: number
   teamName: string
   teamAvatar: string | null
   userName: string | null
   type: SubmissionType
   time: number
-  score: number
 }
 
 export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stackId' | 'title'> {
   challenge?: ChallengeDetailModel
+  loading?: boolean
+  loadError?: string
+  onRetryLoad?: () => void
   cateData: ChallengeCategoryItemProps
   solved?: boolean
   disabled?: boolean
@@ -100,6 +101,8 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   /** True only when the flag was accepted in this browser session (not a pre-existing solve). */
   justSolved?: boolean
   solvers?: SolverInfo[]
+  solverTotal?: number
+  solverError?: string
   /** When set, the modal is rendering an A&D challenge — switches the footer
    *  from the flag-submit form to the AdChallengePanel (status + API docs). */
   gameId?: number
@@ -110,6 +113,9 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
 export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const {
     challenge,
+    loading,
+    loadError,
+    onRetryLoad,
     cateData,
     solved,
     justSolved,
@@ -131,6 +137,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
     onSubmitFlag,
     onReviewSubmit,
     solvers,
+    solverTotal,
+    solverError,
     gameId,
     flagVerdict,
     onDismissFlagVerdict,
@@ -284,7 +292,23 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       type="scroll"
       data-guide="challenge-material"
     >
-      {challenge?.content === undefined ? (
+      {loadError ? (
+        <Alert
+          color="red"
+          icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+          title={t('challenge.content.load_failed.title', 'Challenge could not be loaded')}
+          role="alert"
+        >
+          <Stack gap="sm">
+            <Text size="sm">{loadError}</Text>
+            {onRetryLoad && (
+              <Button variant="outline" onClick={onRetryLoad}>
+                {t('common.button.retry', 'Retry')}
+              </Button>
+            )}
+          </Stack>
+        </Alert>
+      ) : loading || challenge?.content === undefined ? (
         <ContentPlaceholder />
       ) : (
         <>
@@ -313,7 +337,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
               <Divider
                 label={
                   <Text size="xs" c="dimmed" fw={500}>
-                    Solved by {solvers.length} {solvers.length === 1 ? 'team' : 'teams'}
+                    Solved by {solverTotal ?? solvers.length} {(solverTotal ?? solvers.length) === 1 ? 'team' : 'teams'}
                   </Text>
                 }
                 labelPosition="left"
@@ -359,7 +383,19 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
                   })}
                 </Stack>
               </ScrollArea>
+              {typeof solverTotal === 'number' && solverTotal > solvers.length && (
+                <Text size="xs" c="dimmed">
+                  {t('challenge.content.earliest_solvers', 'Showing the earliest {{count}} solves.', {
+                    count: solvers.length,
+                  })}
+                </Text>
+              )}
             </Stack>
+          )}
+          {solverError && (
+            <Alert mt="md" color="yellow" variant="light" icon={<Icon path={mdiAlertCircleOutline} size={0.8} />}>
+              {solverError}
+            </Alert>
           )}
         </>
       )}
@@ -498,7 +534,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
 
   // Allow submission if deadline not passed OR (game ended AND practice mode enabled)
   const canSubmitDespiteDeadline = !isDeadlinePassed || (gameEnded && practiceMode)
-  const inputDisabled = disabled || solved || isLimitReached || !canSubmitDespiteDeadline
+  const inputDisabled =
+    disabled || loading || Boolean(loadError) || solved || isLimitReached || !canSubmitDespiteDeadline
 
   // Any SOLVED challenge can be rated/edited (matches the backend upsert), not only
   // one solved in this browser session, and the controls stay visible after
@@ -626,7 +663,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   )
 
   const footer =
-    isAd && gameId && !isPracticeContainer && !readOnlyArchive ? (
+    loading || loadError ? null : isAd && gameId && !isPracticeContainer && !readOnlyArchive ? (
       <Stack gap="xs" className={classes.footer}>
         <Divider />
         {/* A&D/KotH challenges can ship a downloadable attachment (e.g. the
@@ -637,9 +674,9 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
           misleading "no service for your team yet" alert. Route to the
           KotH-specific panel that knows about the hill + per-tick token. */}
         {isKoth ? (
-          <KothChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} />
+          <KothChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} active={Boolean(modalProps.opened)} />
         ) : (
-          <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} />
+          <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} active={Boolean(modalProps.opened)} />
         )}
         {eventAction}
       </Stack>
@@ -656,7 +693,12 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
         {/* A&D/KotH shown as a post-end practice container: keep the team's
           defended-service backup (snapshot) download available here. */}
         {isPracticeContainer && gameId && (
-          <AdChallengePanel gameId={gameId} challengeId={challenge?.id ?? 0} snapshotOnly />
+          <AdChallengePanel
+            gameId={gameId}
+            challengeId={challenge?.id ?? 0}
+            active={Boolean(modalProps.opened)}
+            snapshotOnly
+          />
         )}
         {!readOnlyArchive && (
           <>

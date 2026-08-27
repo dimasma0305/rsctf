@@ -1,9 +1,12 @@
 import {
+  Alert,
   Avatar,
   Badge,
   Box,
   Button,
+  Center,
   Group,
+  Loader,
   Paper,
   Select,
   Stack,
@@ -15,7 +18,7 @@ import {
   useMantineTheme,
 } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
-import { mdiCrosshairsGps, mdiMagnify } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiCrosshairsGps, mdiMagnify } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import cx from 'clsx'
 import React, { FC, useEffect, useMemo, useState } from 'react'
@@ -26,7 +29,7 @@ import { ScoreboardProps } from '@Components/ScoreboardTable'
 import { ScrollingText } from '@Components/ScrollingText'
 import { MobileScoreboardItemModal } from '@Components/mobile/ScoreboardItemModal'
 import { BloodBonus, BloodsTypes, useBonusLabels } from '@Utils/Shared'
-import { useGame, useGameScoreboard } from '@Hooks/useGame'
+import { useGame } from '@Hooks/useGame'
 import { ScoreboardItem } from '@Api'
 import classes from '@Styles/ScoreboardTable.module.css'
 
@@ -83,7 +86,7 @@ const TableRow: FC<{
   )
 })
 
-export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId }) => {
+export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId, scoreboard, error }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const [activePage, setPage] = useState(1)
@@ -91,7 +94,8 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
   const [keyword, setKeyword] = useState('')
   const [debouncedKeyword] = useDebouncedValue(keyword, 250)
   const [highlightedTeam, setHighlightedTeam] = useState<string | null>(null)
-  const { scoreboard } = useGameScoreboard(numId)
+  const [selection, setSelection] = useState<{ gameId: number; itemId: number } | null>(null)
+  const [itemDetailOpened, setItemDetailOpened] = useState(false)
   const { game } = useGame(numId)
   const myTeamName = game?.teamName ?? null
   const { t } = useTranslation()
@@ -123,10 +127,19 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
 
   useEffect(() => setPage(1), [divisionId, debouncedKeyword])
 
+  useEffect(() => {
+    setPage(1)
+    setDivisionId(null)
+    setKeyword('')
+    setHighlightedTeam(null)
+    setSelection(null)
+    setItemDetailOpened(false)
+  }, [id, setDivisionId])
+
   const base = (activePage - 1) * ITEM_COUNT_PER_PAGE
   const currentItems = filtered?.slice(base, base + ITEM_COUNT_PER_PAGE)
-  const [currentItem, setCurrentItem] = useState<ScoreboardItem | null>(null)
-  const [itemDetailOpened, setItemDetailOpened] = useState(false)
+  const currentItem =
+    selection?.gameId === numId ? (scoreboard?.items?.find((item) => item.id === selection.itemId) ?? null) : null
 
   useEffect(() => {
     if (scoreboard) setBloodBonus(new BloodBonus(scoreboard.bloodBonus))
@@ -139,6 +152,22 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
   }, [scoreboard?.divisions])
 
   const bloodData = useBonusLabels(bloodBonus)
+
+  if (error && !scoreboard) {
+    return (
+      <Alert color="red" icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />} role="alert">
+        {t('game.content.scoreboard.load_error', 'The scoreboard could not be loaded for this event.')}
+      </Alert>
+    )
+  }
+
+  if (!scoreboard) {
+    return (
+      <Center py="xl" role="status" aria-live="polite">
+        <Loader aria-label={t('common.content.loading', 'Loading')} />
+      </Center>
+    )
+  }
 
   const findMyTeam = () => {
     if (!myTeamName || !filtered) return
@@ -245,7 +274,8 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
                     displayRank={divisionId === null ? item.rank : (item.divisionRank ?? base + index + 1)}
                     highlighted={highlightedTeam === item.name}
                     onOpenDetail={() => {
-                      setCurrentItem(item)
+                      if (typeof item.id !== 'number') return
+                      setSelection({ gameId: numId, itemId: item.id })
                       setItemDetailOpened(true)
                     }}
                   />
@@ -293,10 +323,13 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
         scoreboard={scoreboard}
         divisionMap={divisionMap}
         bloodBonusMap={bloodData}
-        opened={itemDetailOpened}
+        opened={itemDetailOpened && currentItem !== null}
         withCloseButton
         size="40rem"
-        onClose={() => setItemDetailOpened(false)}
+        onClose={() => {
+          setItemDetailOpened(false)
+          setSelection(null)
+        }}
         item={currentItem}
       />
     </Paper>

@@ -3,7 +3,7 @@
 // round engine, the live auth/team/join flow, and namespaced teardown. Everything the
 // harness creates is namespaced (@load.test emails, LT<gid>_ team names, fresh game ids)
 // so the shared host + games 9/10 are never touched.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import {
   TARGET,
@@ -1460,9 +1460,19 @@ export function kothCaptureWrite(container, token) {
 
 /** Select API claim input before the official snapshot and return its one-time secret. */
 export async function configureKothApiObserver(gid, cid) {
+  const metadata = unwrap(await must(
+    await api('GET', `/api/edit/games/${Number(gid)}/ad/koth/${Number(cid)}/observer`, {
+      ...jwtOpt(),
+    }),
+    'read KotH API referee revision',
+  ));
   const response = await must(
     await api('POST', `/api/edit/games/${Number(gid)}/ad/koth/${Number(cid)}/observer`, {
       ...jwtOpt(),
+      body: {
+        operationId: randomUUID(),
+        expectedRevision: Number(metadata.revision),
+      },
     }),
     'configure KotH API referee',
   );

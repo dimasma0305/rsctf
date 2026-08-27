@@ -2,20 +2,82 @@
 //!
 //! Global information APIs: client config, posts, and captcha info.
 
-use axum::extract::{Path, State};
+use axum::body::Body;
+use axum::extract::{Path, Query, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
-use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
-use uuid::Uuid;
+use chrono::{DateTime, Utc};
+use sea_orm::EntityTrait;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::app_state::SharedState;
 use crate::models::data::{config, post, user};
 use crate::services::captcha::CaptchaSettings;
 use crate::utils::codec;
 use crate::utils::error::{AppError, AppResult};
-use crate::utils::shared::RequestResponse;
+use crate::utils::shared::{ArrayResponse, RequestResponse};
+
+const LATEST_POST_LIMIT: i64 = 20;
+const DEFAULT_POST_PAGE_SIZE: u64 = 10;
+const MAX_POST_PAGE_SIZE: u64 = 50;
+const POST_FEED_CACHE_CONTROL: &str = "public, no-cache";
+
+/// Select posts before touching the author table. Page/latest callers bind a
+/// finite limit, keeping both the post projection and author lookup bounded;
+/// only the compatibility endpoint deliberately binds no limit.
+const ORDERED_POST_PAGE_SQL: &str = r#"
+WITH selected AS MATERIALIZED (
+    SELECT post.id, post.title, post.summary, post.is_pinned, post.tags,
+           post.author_id, post.update_time_utc
+      FROM "Posts" post
+     ORDER BY post.is_pinned DESC, post.update_time_utc DESC, post.id DESC
+    OFFSET $1 LIMIT $2
+)
+SELECT selected.id, selected.title, selected.summary, selected.is_pinned,
+       selected.tags, author.avatar_hash AS author_avatar_hash,
+       author.user_name AS author_name, selected.update_time_utc
+  FROM selected
+  LEFT JOIN "AspNetUsers" author ON author.id = selected.author_id
+ ORDER BY selected.is_pinned DESC, selected.update_time_utc DESC, selected.id DESC
+"#;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostPageParams {
+    #[serde(default = "default_post_page_size")]
+    count: u64,
+    #[serde(default)]
+    skip: u64,
+}
+
+fn default_post_page_size() -> u64 {
+    DEFAULT_POST_PAGE_SIZE
+}
+
+impl PostPageParams {
+    fn limit(&self) -> u64 {
+        self.count.clamp(1, MAX_POST_PAGE_SIZE)
+    }
+
+    fn offset(&self) -> i64 {
+        self.skip.min(i64::MAX as u64) as i64
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct PostInfoRow {
+    id: String,
+    title: String,
+    summary: String,
+    is_pinned: bool,
+    tags: Option<serde_json::Value>,
+    author_avatar_hash: Option<String>,
+    author_name: Option<String>,
+    update_time_utc: DateTime<Utc>,
+}
 
 /// Mirrors RSCTF `PostInfoModel`.
 #[derive(Debug, Serialize)]
@@ -104,6 +166,7 @@ pub fn router() -> Router<SharedState> {
         .route("/api/config", get(get_client_config))
         .route("/api/posts", get(get_posts))
         .route("/api/posts/latest", get(get_latest_posts))
+        .route("/api/posts/page", get(get_posts_page))
         .route("/api/posts/{id}", get(get_post))
         .route("/api/captcha", get(get_captcha))
         .route("/api/captcha/powchallenge", get(get_pow_challenge))
@@ -222,25 +285,37 @@ pub async fn get_client_config(
     }))
 }
 
-/// `GET /api/Posts` — all posts, pinned first then newest.
+/// `GET /api/Posts` — the legacy array response, pinned first then newest.
+///
+/// Compatibility requires both the raw array shape and the complete retained
+/// history. New bounded consumers use `/api/posts/page` instead.
 pub async fn get_posts(
     State(st): State<SharedState>,
 ) -> AppResult<RequestResponse<Vec<PostInfoModel>>> {
-    let posts = load_ordered_posts(&st).await?;
-    let authors = load_authors(&st, &posts).await?;
-    let data = posts.into_iter().map(|p| to_info(p, &authors)).collect();
+    let data = load_all_posts(st.pg()).await?;
     Ok(RequestResponse::ok(data))
 }
 
 /// `GET /api/Posts/Latest` — the 20 most recent posts (pinned first).
 pub async fn get_latest_posts(
     State(st): State<SharedState>,
-) -> AppResult<RequestResponse<Vec<PostInfoModel>>> {
-    let mut posts = load_ordered_posts(&st).await?;
-    posts.truncate(20);
-    let authors = load_authors(&st, &posts).await?;
-    let data = posts.into_iter().map(|p| to_info(p, &authors)).collect();
-    Ok(RequestResponse::ok(data))
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let data = load_post_page(st.pg(), 0, LATEST_POST_LIMIT).await?;
+    conditional_post_feed_response(&headers, &data)
+}
+
+/// `GET /api/Posts/Page?count=&skip=` — a bounded page plus its exact total.
+pub async fn get_posts_page(
+    State(st): State<SharedState>,
+    Query(page): Query<PostPageParams>,
+) -> AppResult<ArrayResponse<PostInfoModel>> {
+    // Count and page are intentionally separate: the ordered query can stop at
+    // the requested slice instead of a window count forcing it through every
+    // retained post before LIMIT. Only the scalar count sees full history.
+    let total = count_posts(st.pg()).await?;
+    let data = load_post_page(st.pg(), page.offset(), page.limit() as i64).await?;
+    Ok(ArrayResponse::new(data, total))
 }
 
 /// `GET /api/Posts/{id}` — a single post with full content.
@@ -347,42 +422,110 @@ pub async fn get_pow_challenge(
 
 // --- helpers ---
 
-async fn load_ordered_posts(st: &SharedState) -> AppResult<Vec<post::Model>> {
-    // Pinned posts first, then by newest update time.
-    Ok(post::Entity::find()
-        .order_by_desc(post::Column::IsPinned)
-        .order_by_desc(post::Column::UpdateTimeUtc)
-        .all(&st.db)
-        .await?)
+/// Compatibility-only full-history read for the legacy raw-array endpoint.
+/// Interactive clients must use `load_post_page` through `/api/posts/page`.
+async fn load_all_posts(pool: &sqlx::PgPool) -> AppResult<Vec<PostInfoModel>> {
+    load_posts(pool, 0, None).await
 }
 
-async fn load_authors(
-    st: &SharedState,
-    posts: &[post::Model],
-) -> AppResult<HashMap<Uuid, user::Model>> {
-    let ids: Vec<Uuid> = posts.iter().filter_map(|p| p.author_id).collect();
-    if ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let users = user::Entity::find()
-        .filter(user::Column::Id.is_in(ids))
-        .all(&st.db)
-        .await?;
-    Ok(users.into_iter().map(|u| (u.id, u)).collect())
+async fn load_post_page(
+    pool: &sqlx::PgPool,
+    offset: i64,
+    limit: i64,
+) -> AppResult<Vec<PostInfoModel>> {
+    load_posts(
+        pool,
+        offset.max(0),
+        Some(limit.clamp(1, MAX_POST_PAGE_SIZE as i64)),
+    )
+    .await
 }
 
-fn to_info(post: post::Model, authors: &HashMap<Uuid, user::Model>) -> PostInfoModel {
-    let author = post.author_id.and_then(|id| authors.get(&id));
-    PostInfoModel {
-        id: post.id,
-        title: post.title,
-        summary: post.summary,
-        is_pinned: post.is_pinned,
-        tags: parse_tags(post.tags),
-        author_avatar: author.and_then(|u| u.avatar_url()),
-        author_name: author.and_then(|u| u.user_name.clone()),
-        time: post.update_time_utc,
+async fn load_posts(
+    pool: &sqlx::PgPool,
+    offset: i64,
+    limit: Option<i64>,
+) -> AppResult<Vec<PostInfoModel>> {
+    let rows = sqlx::query_as::<_, PostInfoRow>(ORDERED_POST_PAGE_SQL)
+        .bind(offset.max(0))
+        // PostgreSQL treats LIMIT NULL as no limit. Only the compatibility
+        // endpoint passes None; page/latest callers always bind a finite cap.
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(format!("load posts: {error}")))?;
+    Ok(rows.into_iter().map(PostInfoModel::from).collect())
+}
+
+async fn count_posts(pool: &sqlx::PgPool) -> AppResult<i64> {
+    sqlx::query_scalar::<_, i64>(r#"SELECT COUNT(*)::bigint FROM "Posts""#)
+        .fetch_one(pool)
+        .await
+        .map_err(|error| AppError::internal(format!("count posts: {error}")))
+}
+
+impl From<PostInfoRow> for PostInfoModel {
+    fn from(row: PostInfoRow) -> Self {
+        Self {
+            id: row.id,
+            title: row.title,
+            summary: row.summary,
+            is_pinned: row.is_pinned,
+            tags: parse_tags(row.tags),
+            author_avatar: row
+                .author_avatar_hash
+                .map(|hash| format!("/assets/{hash}/avatar")),
+            author_name: row.author_name,
+            time: row.update_time_utc,
+        }
     }
+}
+
+fn conditional_post_feed_response(
+    request_headers: &HeaderMap,
+    data: &[PostInfoModel],
+) -> AppResult<Response> {
+    let body = serde_json::to_vec(data)
+        .map_err(|error| AppError::internal(format!("serialize latest posts: {error}")))?;
+    // Weak is deliberate: response compression may change the transferred
+    // bytes while the JSON representation and its cache validity are equal.
+    let etag = format!("W/\"{}\"", codec::sha256_hex(&body));
+    let etag_header = HeaderValue::from_str(&etag)
+        .map_err(|error| AppError::internal(format!("build posts ETag: {error}")))?;
+
+    if request_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| etag_list_matches(value, &etag))
+    {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        response.headers_mut().insert(header::ETAG, etag_header);
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(POST_FEED_CACHE_CONTROL),
+        );
+        return Ok(response);
+    }
+
+    let mut response = Body::from(body).into_response();
+    response.headers_mut().insert(header::ETAG, etag_header);
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(POST_FEED_CACHE_CONTROL),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    Ok(response)
+}
+
+fn etag_list_matches(value: &str, current: &str) -> bool {
+    let current = current.strip_prefix("W/").unwrap_or(current);
+    value.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == current
+    })
 }
 
 fn parse_tags(tags: Option<serde_json::Value>) -> Option<Vec<String>> {
@@ -391,7 +534,15 @@ fn parse_tags(tags: Option<serde_json::Value>) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::effective_port_mapping;
+    use axum::body::to_bytes;
+    use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+    use axum::response::IntoResponse;
+
+    use super::{
+        conditional_post_feed_response, effective_port_mapping, etag_list_matches, PostInfoModel,
+        PostPageParams, MAX_POST_PAGE_SIZE, POST_FEED_CACHE_CONTROL,
+    };
+    use crate::utils::shared::{ArrayResponse, RequestResponse};
 
     #[test]
     fn proxy_required_backend_overrides_direct_port_preference() {
@@ -412,4 +563,80 @@ mod tests {
             "PlatformProxy"
         );
     }
+
+    #[test]
+    fn post_pages_clamp_requested_work() {
+        assert_eq!(PostPageParams { count: 0, skip: 0 }.limit(), 1);
+        assert_eq!(PostPageParams { count: 10, skip: 0 }.limit(), 10);
+        assert_eq!(
+            PostPageParams {
+                count: u64::MAX,
+                skip: u64::MAX,
+            }
+            .limit(),
+            MAX_POST_PAGE_SIZE
+        );
+        assert_eq!(
+            PostPageParams {
+                count: 10,
+                skip: u64::MAX,
+            }
+            .offset(),
+            i64::MAX
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_posts_are_a_raw_array_while_bounded_pages_are_explicit() {
+        let legacy = RequestResponse::ok(Vec::<PostInfoModel>::new()).into_response();
+        assert_eq!(legacy.status(), StatusCode::OK);
+        assert_eq!(
+            to_bytes(legacy.into_body(), 64).await.unwrap().as_ref(),
+            b"[]"
+        );
+
+        let bounded = ArrayResponse::new(Vec::<PostInfoModel>::new(), 123).into_response();
+        let body = to_bytes(bounded.into_body(), 128).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["data"], serde_json::json!([]));
+        assert_eq!(value["length"], 0);
+        assert_eq!(value["total"], 123);
+    }
+
+    #[test]
+    fn conditional_validator_accepts_weak_or_strong_equivalents() {
+        assert!(etag_list_matches("W/\"feed\"", "W/\"feed\""));
+        assert!(etag_list_matches("\"old\", \"feed\"", "W/\"feed\""));
+        assert!(etag_list_matches("*", "W/\"feed\""));
+        assert!(!etag_list_matches("\"other\"", "W/\"feed\""));
+    }
+
+    #[tokio::test]
+    async fn unchanged_latest_feed_returns_no_body() {
+        let data = Vec::<PostInfoModel>::new();
+        let first = conditional_post_feed_response(&HeaderMap::new(), &data).unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(
+            first.headers()[header::CACHE_CONTROL],
+            POST_FEED_CACHE_CONTROL
+        );
+        let etag = first.headers()[header::ETAG].clone();
+        assert_eq!(
+            to_bytes(first.into_body(), 16).await.unwrap().as_ref(),
+            b"[]"
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_bytes(etag.as_bytes()).unwrap(),
+        );
+        let unchanged = conditional_post_feed_response(&headers, &data).unwrap();
+        assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(to_bytes(unchanged.into_body(), 16).await.unwrap().len(), 0);
+    }
 }
+
+#[cfg(test)]
+#[path = "info_tests.rs"]
+mod database_tests;

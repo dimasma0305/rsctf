@@ -21,6 +21,27 @@
   font-size: 1rem;
 }
 
+.memberValue {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.filterToolbar {
+  gap: var(--mantine-spacing-sm);
+}
+
+.searchInput {
+  width: min(20rem, 100%);
+}
+
+.filterGroup {
+  min-width: 0;
+}
+
+.resultStatus {
+  padding-block: var(--mantine-spacing-xs);
+}
+
 .memberRow {
   align-items: flex-start;
 }
@@ -56,6 +77,12 @@
 }
 
 @media (max-width: $mantine-breakpoint-sm) {
+  .searchInput,
+  .filterGroup,
+  .filterGroup > * {
+    width: 100%;
+  }
+
   .memberRow {
     align-items: stretch;
     flex-direction: column;

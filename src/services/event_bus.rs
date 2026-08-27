@@ -102,6 +102,7 @@ impl WireEvent {
 fn known_target(target: &str) -> Option<&'static str> {
     match target {
         "ReceivedAttack" => Some("ReceivedAttack"),
+        "ReceivedGameEvent" => Some("ReceivedGameEvent"),
         "ReceivedGameNotice" => Some("ReceivedGameNotice"),
         "ReceivedLog" => Some("ReceivedLog"),
         "ReceivedSubmissions" => Some("ReceivedSubmissions"),
@@ -354,6 +355,65 @@ mod tests {
         }
     }
 
+    fn received_game_event(game_id: i32, id: i32, cursor: i64) -> HubEvent {
+        HubEvent {
+            target: "ReceivedGameEvent",
+            game_id: Some(game_id),
+            payload: serde_json::json!({
+                "id": id,
+                "cursor": cursor,
+                "type": "ChallengeOpened",
+                "values": ["7", "fixture"],
+                "time": 1_787_818_400_123_i64,
+                "user": "player",
+                "team": "team",
+            })
+            .to_string(),
+        }
+    }
+
+    async fn wait_for_remote_subscription(
+        sender: &EventBus,
+        receiver: &mut broadcast::Receiver<HubEvent>,
+        probe: HubEvent,
+    ) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                sender.publish(probe.clone());
+                if let Ok(Ok(received)) =
+                    tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await
+                {
+                    if received.target == probe.target && received.payload == probe.payload {
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Redis replica subscription did not become ready");
+
+        // A quiet-period drain can pass while an old probe is still in Redis or
+        // the local broadcast queue. One ordered barrier from the same publisher
+        // proves every readiness probe is already consumed before assertions.
+        let mut barrier = probe;
+        barrier.payload = format!("rsctf-ready-barrier:{}", Uuid::new_v4());
+        sender.publish(barrier.clone());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let received = receiver
+                    .recv()
+                    .await
+                    .expect("Redis readiness stream closed");
+                if received.target == barrier.target && received.payload == barrier.payload {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("Redis readiness barrier was not delivered");
+    }
+
     #[test]
     fn wire_event_round_trips_and_rejects_unknown_targets_or_versions() {
         let origin = Uuid::new_v4();
@@ -407,6 +467,17 @@ mod tests {
     }
 
     #[test]
+    fn received_game_event_round_trips_through_the_distributed_wire_allowlist() {
+        let event = received_game_event(7, 11, 19);
+        let delivered = WireEvent::from_hub(Uuid::new_v4(), &event)
+            .into_hub()
+            .expect("ReceivedGameEvent must fan out to replicas");
+        assert_eq!(delivered.target, "ReceivedGameEvent");
+        assert_eq!(delivered.game_id, Some(7));
+        assert_eq!(delivered.payload, event.payload);
+    }
+
+    #[test]
     fn inbound_dedup_drops_self_echoes_and_duplicate_remote_ids() {
         let local_origin = Uuid::new_v4();
         let mut dedup = InboundDedup::new(local_origin);
@@ -448,6 +519,24 @@ mod tests {
         assert_eq!(received.payload, event.payload);
     }
 
+    #[tokio::test]
+    async fn local_bus_delivers_received_game_event_once() {
+        let bus = EventBus::local();
+        let mut receiver = bus.subscribe();
+        let event = received_game_event(7, 11, 19);
+        bus.publish(event.clone());
+
+        let received = receiver.recv().await.unwrap();
+        assert_eq!(received.target, "ReceivedGameEvent");
+        assert_eq!(received.game_id, Some(7));
+        assert_eq!(received.payload, event.payload);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), receiver.recv())
+                .await
+                .is_err()
+        );
+    }
+
     /// Run explicitly with `RSCTF_TEST_REDIS_URL=redis://... cargo test
     /// redis_bus_fans_out_once_between_processes -- --ignored --nocapture`.
     #[tokio::test]
@@ -457,11 +546,10 @@ mod tests {
         let channel = format!("rsctf:test:hub-events:{}", Uuid::new_v4());
         let sender = EventBus::distributed_on(&url, &channel).unwrap();
         let receiver_bus = EventBus::distributed_on(&url, &channel).unwrap();
-        let mut sender_local = sender.subscribe();
         let mut receiver_remote = receiver_bus.subscribe();
 
-        // Give both best-effort subscribers time to establish their subscriptions.
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        wait_for_remote_subscription(&sender, &mut receiver_remote, hub_event("redis-ready")).await;
+        let mut sender_local = sender.subscribe();
         sender.publish(received_log_event());
 
         let local = tokio::time::timeout(Duration::from_secs(2), sender_local.recv())
@@ -477,6 +565,79 @@ mod tests {
         assert_eq!(local.payload, remote.payload);
         assert!(
             tokio::time::timeout(Duration::from_millis(100), sender_local.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    /// Run explicitly with `RSCTF_TEST_REDIS_URL=redis://... cargo test
+    /// redis_monitor_feed_preserves_order_dedup_and_scope -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "requires RSCTF_TEST_REDIS_URL and a reachable Redis server"]
+    async fn redis_monitor_feed_preserves_order_dedup_and_scope() {
+        let url = std::env::var("RSCTF_TEST_REDIS_URL").expect("RSCTF_TEST_REDIS_URL");
+        let channel = format!("rsctf:test:monitor-events:{}", Uuid::new_v4());
+        let first_replica = EventBus::distributed_on(&url, &channel).unwrap();
+        let second_replica = EventBus::distributed_on(&url, &channel).unwrap();
+        let mut remote = second_replica.subscribe();
+
+        wait_for_remote_subscription(&first_replica, &mut remote, received_game_event(7, -1, -1))
+            .await;
+        for (id, cursor) in [(31, 101), (32, 102), (33, 103)] {
+            first_replica.publish(received_game_event(7, id, cursor));
+        }
+        for expected_cursor in [101, 102, 103] {
+            let received = tokio::time::timeout(Duration::from_secs(2), remote.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let payload: serde_json::Value = serde_json::from_str(&received.payload).unwrap();
+            assert_eq!(payload["cursor"], expected_cursor);
+            assert!(crate::hubs::signalr::event_matches(
+                &["ReceivedGameEvent"],
+                Some(7),
+                &received,
+            ));
+            assert!(!crate::hubs::signalr::event_matches(
+                &["ReceivedGameEvent"],
+                Some(8),
+                &received,
+            ));
+        }
+
+        // A duplicate Redis wire id must be injected only once on the remote
+        // replica, even if Redis delivers the same payload twice.
+        let duplicate = WireEvent {
+            version: 1,
+            id: Uuid::now_v7(),
+            origin: Uuid::new_v4(),
+            target: "ReceivedGameEvent".to_owned(),
+            game_id: Some(7),
+            payload: received_game_event(7, 34, 104).payload,
+        };
+        let bytes = serde_json::to_vec(&duplicate).unwrap();
+        let client = redis::Client::open(url).unwrap();
+        let mut publisher = crate::utils::redis::connection_manager(&client)
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            redis::cmd("PUBLISH")
+                .arg(&channel)
+                .arg(&bytes)
+                .query_async::<i64>(&mut publisher)
+                .await
+                .unwrap();
+        }
+        let once = tokio::time::timeout(Duration::from_secs(2), remote.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&once.payload).unwrap()["cursor"],
+            104
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), remote.recv())
                 .await
                 .is_err()
         );

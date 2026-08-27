@@ -578,7 +578,7 @@ pub(super) async fn finalize_grant_for_test(
     token: Option<&str>,
     record_download: bool,
 ) -> AppResult<()> {
-    finalize_asset_download(
+    finalize_asset_download_on(
         pool,
         &AuthorizedAsset {
             cache_policy: AssetCachePolicy::PrivateNoStore,
@@ -664,9 +664,9 @@ async fn insert_download_event_on(
     connection: &mut sqlx::PgConnection,
     target: &DownloadEventTarget,
     token: Option<&str>,
-) -> AppResult<()> {
+) -> AppResult<Option<i32>> {
     let challenge_id = target.challenge_id.to_string();
-    sqlx::query(
+    let event_id = sqlx::query_scalar(
         r#"INSERT INTO "GameEvents"
                (game_id, "Type", "values", publish_time_utc, user_id, team_id)
            SELECT $1, $2, jsonb_build_array($3::text, $4::text, $5::text),
@@ -678,7 +678,8 @@ async fn insert_download_event_on(
                      AND existing.team_id = $8
                      AND existing."Type" = $2
                      AND existing."values" ->> 0 = $3
-            )"#,
+            )
+           RETURNING id"#,
     )
     .bind(target.game_id)
     .bind(crate::utils::enums::EventType::Download as i16)
@@ -688,10 +689,10 @@ async fn insert_download_event_on(
     .bind(target.observed_at_utc)
     .bind(target.user_id)
     .bind(target.team_id)
-    .execute(connection)
+    .fetch_optional(connection)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
+    Ok(event_id)
 }
 
 const PUBLIC_ASSET_FINAL_SQL: &str = r#"
@@ -798,25 +799,31 @@ pub(super) async fn finalize_monitor_grant_for_test(
 /// Download event before releasing the fence. The response body is streamed
 /// only after this transaction has committed, so no database guard is retained
 /// for the network lifetime.
-pub(super) async fn finalize_asset_download(
+#[derive(Default)]
+struct FinalizedAssetDownload {
+    vpn_gate_active: bool,
+    event_id: Option<i32>,
+}
+
+async fn finalize_asset_download_on(
     pool: &sqlx::PgPool,
     authorization: &AuthorizedAsset,
     source: Option<Ipv4Addr>,
     token: Option<&str>,
     record_download: bool,
-) -> AppResult<bool> {
+) -> AppResult<FinalizedAssetDownload> {
     let grant = match &authorization.final_grant {
-        AssetFinalGrant::None => return Ok(false),
+        AssetFinalGrant::None => return Ok(FinalizedAssetDownload::default()),
         AssetFinalGrant::Public { content_hash } => {
             finalize_public_asset(pool, content_hash).await?;
-            return Ok(false);
+            return Ok(FinalizedAssetDownload::default());
         }
         AssetFinalGrant::Monitor {
             user_id,
             expected_security_stamp,
         } => {
             finalize_monitor_asset(pool, *user_id, expected_security_stamp).await?;
-            return Ok(false);
+            return Ok(FinalizedAssetDownload::default());
         }
         AssetFinalGrant::Protected(grant) => grant,
     };
@@ -861,6 +868,7 @@ pub(super) async fn finalize_asset_download(
         return Err(AppError::Forbidden);
     };
 
+    let mut event_id = None;
     if record_download {
         if let Some((challenge_id, challenge_title)) =
             grant.target.challenge_id.zip(row.challenge_title)
@@ -877,7 +885,7 @@ pub(super) async fn finalize_asset_download(
                 .acquire_additional(&download_event_lock_key(&event))
                 .await
                 .map_err(|error| AppError::internal(error.to_string()))?;
-            insert_download_event_on(roster.transaction_mut(), &event, token).await?;
+            event_id = insert_download_event_on(roster.transaction_mut(), &event, token).await?;
         }
     }
 
@@ -885,7 +893,29 @@ pub(super) async fn finalize_asset_download(
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(vpn_gate_active)
+    Ok(FinalizedAssetDownload {
+        vpn_gate_active,
+        event_id,
+    })
+}
+
+pub(super) async fn finalize_asset_download(
+    st: &SharedState,
+    authorization: &AuthorizedAsset,
+    source: Option<Ipv4Addr>,
+    token: Option<&str>,
+    record_download: bool,
+) -> AppResult<bool> {
+    let outcome =
+        finalize_asset_download_on(st.pg(), authorization, source, token, record_download).await?;
+    if let Some(event_id) = outcome.event_id {
+        if let Err(error) =
+            crate::services::game_event_feed::publish_committed(st, &[event_id]).await
+        {
+            tracing::warn!(event_id, %error, "asset download event publish failed");
+        }
+    }
+    Ok(outcome.vpn_gate_active)
 }
 
 #[cfg(test)]

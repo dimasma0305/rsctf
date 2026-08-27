@@ -123,9 +123,27 @@ mod m0100_container_policy_bounds;
 mod m0101_blood_bonus_default;
 mod m0102_discord_webhook_outbox;
 mod m0103_recent_games_candidates;
+mod m0104_post_feed_order;
+mod m0105_manager_autocomplete_indexes;
+mod m0106_submission_idempotency;
+mod m0107_monitor_history_indexes;
+mod m0108_koth_observer_rotation_operations;
+mod m0109_operator_console_latest_rows;
+mod m0110_participation_review_indexes;
+mod m0111_game_event_feed_cursor;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
+#[cfg(test)]
+pub(crate) use m0107_monitor_history_indexes::UP_SQL as MONITOR_HISTORY_INDEX_SQL;
+#[cfg(test)]
+pub(crate) use m0108_koth_observer_rotation_operations::UP_SQL as KOTH_OBSERVER_ROTATION_SQL;
+#[cfg(test)]
+pub(crate) use m0109_operator_console_latest_rows::UP_SQL as OPERATOR_LATEST_INDEX_SQL;
+#[cfg(test)]
+pub(crate) use m0110_participation_review_indexes::UP_SQL as PARTICIPATION_REVIEW_INDEX_SQL;
+#[cfg(test)]
+pub(crate) use m0111_game_event_feed_cursor::UP_SQL as GAME_EVENT_FEED_CURSOR_SQL;
 
 pub struct Migrator;
 
@@ -242,6 +260,14 @@ impl MigratorTrait for Migrator {
             Box::new(m0101_blood_bonus_default::Migration),
             Box::new(m0102_discord_webhook_outbox::Migration),
             Box::new(m0103_recent_games_candidates::Migration),
+            Box::new(m0104_post_feed_order::Migration),
+            Box::new(m0105_manager_autocomplete_indexes::Migration),
+            Box::new(m0106_submission_idempotency::Migration),
+            Box::new(m0107_monitor_history_indexes::Migration),
+            Box::new(m0108_koth_observer_rotation_operations::Migration),
+            Box::new(m0109_operator_console_latest_rows::Migration),
+            Box::new(m0110_participation_review_indexes::Migration),
+            Box::new(m0111_game_event_feed_cursor::Migration),
         ]
     }
 }
@@ -377,7 +403,30 @@ mod tests {
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     use sqlx::{ConnectOptions as _, Connection as _};
 
-    use super::{ensure_no_other_database_clients, migration_ledger_diff};
+    use super::{ensure_no_other_database_clients, migration_ledger_diff, Migrator, MigratorTrait};
+
+    #[test]
+    fn recent_migration_identities_are_contiguous_and_preserve_shipped_m0103() {
+        let names = Migrator::migrations()
+            .into_iter()
+            .map(|migration| migration.name().to_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            &names[names.len() - 9..],
+            [
+                "m0103_recent_games_candidates",
+                "m0104_post_feed_order",
+                "m0105_manager_autocomplete_indexes",
+                "m0106_submission_idempotency",
+                "m0107_monitor_history_indexes",
+                "m0108_koth_observer_rotation_operations",
+                "m0109_operator_console_latest_rows",
+                "m0110_participation_review_indexes",
+                "m0111_game_event_feed_cursor",
+            ]
+        );
+    }
 
     #[test]
     fn migration_ledger_requires_an_exact_version_set() {

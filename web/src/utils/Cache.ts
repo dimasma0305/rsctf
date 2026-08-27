@@ -10,11 +10,29 @@ const CACHE_KEY = 'rsctf-cache'
 const IDB_DB_NAME = 'rsctf-cache'
 const IDB_STORE = 'swr'
 const IDB_KEY = 'cache-map'
+const MAX_RETIRED_IN_FLIGHT_KEYS = 512
+const MAX_RETIRED_HYDRATION_SCOPES = 512
+
+export const VIEWER_SCOPE_MARKER = 'rsctf-viewer-scope'
 
 type BinaryLike = Uint8Array | ArrayBuffer
 
+const cachedViewerScope = (value: unknown): string | null => {
+  const originalKey = (value as { _k?: unknown } | null | undefined)?._k
+  return Array.isArray(originalKey) &&
+    originalKey.length === 3 &&
+    originalKey[0] === VIEWER_SCOPE_MARKER &&
+    typeof originalKey[1] === 'string'
+    ? originalKey[1]
+    : null
+}
+
 class PersistentCache implements Cache<any> {
   private map = new Map<any, any>()
+  private retiredInFlightKeys = new Set<string>()
+  private retiredHydrationScopes = new Set<string>()
+  private dropViewerHydrationEntries = false
+  private hydrationOpen = true
 
   get size() {
     return this.map.size
@@ -28,18 +46,58 @@ class PersistentCache implements Cache<any> {
     return this.map.has(key)
   }
   set(key: any, value: any) {
+    const scope = cachedViewerScope(value)
+    if (scope && !this.dropViewerHydrationEntries) this.retiredHydrationScopes.delete(scope)
+    if (this.retiredInFlightKeys.delete(key) && !Object.prototype.hasOwnProperty.call(value ?? {}, '_k')) {
+      return this
+    }
     this.map.set(key, value)
     schedulePersist()
     return this
   }
   delete(key: any) {
+    this.retiredInFlightKeys.delete(key)
     const r = this.map.delete(key)
     schedulePersist()
     return r as any
   }
   clear() {
     this.map.clear()
+    this.retiredInFlightKeys.clear()
+    this.retiredHydrationScopes.clear()
+    this.dropViewerHydrationEntries = false
     schedulePersist()
+  }
+
+  retire(key: string) {
+    const value = this.map.get(key) as { isValidating?: boolean } | undefined
+    const removed = this.map.delete(key)
+    if (value?.isValidating) {
+      if (this.retiredInFlightKeys.size >= MAX_RETIRED_IN_FLIGHT_KEYS) {
+        const oldest = this.retiredInFlightKeys.values().next().value
+        if (oldest !== undefined) this.retiredInFlightKeys.delete(oldest)
+      }
+      this.retiredInFlightKeys.add(key)
+    }
+    schedulePersist()
+    return removed
+  }
+  retireScope(scope: string) {
+    if (!this.hydrationOpen || this.dropViewerHydrationEntries) return
+    if (this.retiredHydrationScopes.size >= MAX_RETIRED_HYDRATION_SCOPES) {
+      this.retiredHydrationScopes.clear()
+      this.dropViewerHydrationEntries = true
+    } else {
+      this.retiredHydrationScopes.add(scope)
+    }
+    // Rewrite the persistent snapshot even when the retired scope had not yet
+    // reached memory. Its stale entries may still be waiting in the IDB read.
+    schedulePersist()
+  }
+  finishHydration() {
+    this.hydrationOpen = false
+    this.retiredHydrationScopes.clear()
+    this.dropViewerHydrationEntries = false
   }
   // Iteration
   keys() {
@@ -62,13 +120,20 @@ class PersistentCache implements Cache<any> {
   bulkAdd(entries: [any, any][]) {
     if (!entries.length) return
     let added = 0
+    let filtered = false
     for (const [k, v] of entries) {
+      const scope = cachedViewerScope(v)
+      if (scope && (this.dropViewerHydrationEntries || this.retiredHydrationScopes.has(scope))) {
+        filtered = true
+        continue
+      }
+      if (this.retiredInFlightKeys.has(k)) continue
       if (!this.map.has(k)) {
         this.map.set(k, v)
         added++
       }
     }
-    if (added) {
+    if (added || filtered) {
       dirty = true
       schedulePersist()
     }
@@ -78,6 +143,23 @@ class PersistentCache implements Cache<any> {
   snapshotEntries() {
     return Array.from(this.map.entries())
   }
+}
+
+/**
+ * Delete through the persistent provider's retirement path when available.
+ * Its bounded in-flight fence drops SWR's final metadata-only write after a
+ * request was invalidated, while an explicit new hook owner (`_k`) can reuse
+ * the same namespace safely.
+ */
+export const retirePersistentCacheEntry = (cache: Cache, key: string) => {
+  if (cache instanceof PersistentCache) return cache.retire(key)
+  cache.delete(key)
+  return true
+}
+
+/** Keep an account namespace retired while its asynchronous IDB snapshot is loading. */
+export const retirePersistentCacheScope = (cache: Cache, scope: string) => {
+  if (cache instanceof PersistentCache) cache.retireScope(scope)
 }
 
 const inMemoryCache = new PersistentCache()
@@ -184,20 +266,26 @@ const hydrateFromIDB = async () => {
           const added = inMemoryCache.bulkAdd(decoded)
           if (added) console.info('[cache] hydrated from IndexedDB, new entries:', added)
         }
-        hydrated = true
       } catch (e) {
         console.warn('[cache] decode failed, attempting legacy migration', e)
         fallbackHydrateLocalStorage()
+      } finally {
+        hydrated = true
+        inMemoryCache.finishHydration()
       }
     }
     req.onerror = () => {
       console.warn('[cache] IndexedDB read failed, using legacy localStorage', req.error)
       fallbackHydrateLocalStorage()
+      hydrated = true
+      inMemoryCache.finishHydration()
     }
   } catch (e) {
     console.warn('[cache] openDB failed, falling back to localStorage', e)
     idbSupported = false
     fallbackHydrateLocalStorage()
+    hydrated = true
+    inMemoryCache.finishHydration()
   }
 }
 
@@ -223,7 +311,11 @@ const setupPersistenceSideEffects = () => {
 
 export const localCacheProvider = (): Cache<any> => {
   setupPersistenceSideEffects()
-  if (!hydrationStarted && !hydrated) fallbackHydrateLocalStorage()
+  if (!hydrationStarted && !hydrated) {
+    fallbackHydrateLocalStorage()
+    hydrated = true
+    inMemoryCache.finishHydration()
+  }
   return inMemoryCache
 }
 

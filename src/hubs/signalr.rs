@@ -225,11 +225,7 @@ pub(super) async fn serve(
             ev = rx.recv() => match ev {
                 Ok(event) => {
                     // Only forward events this hub serves, filtered to its game.
-                    let game_ok = match (event.game_id, game_id) {
-                        (Some(eg), Some(cg)) => eg == cg,
-                        _ => true, // event-wide broadcast, or a connection with no filter
-                    };
-                    if !targets.contains(&event.target) || !game_ok {
+                    if !event_matches(targets, game_id, &event) {
                         continue;
                     }
                     // The payload is a JSON value; wrap it as a hub invocation of
@@ -251,6 +247,18 @@ pub(super) async fn serve(
             }
         }
     }
+}
+
+pub(crate) fn event_matches(
+    targets: &[&str],
+    connection_game_id: Option<i32>,
+    event: &HubEvent,
+) -> bool {
+    let game_ok = match (event.game_id, connection_game_id) {
+        (Some(event_game), Some(connection_game)) => event_game == connection_game,
+        _ => true,
+    };
+    targets.contains(&event.target) && game_ok
 }
 
 #[cfg(test)]
@@ -299,5 +307,17 @@ mod tests {
     fn invalid_explicit_query_token_never_falls_back_to_cookie() {
         let params = HashMap::from([("access_token".to_string(), String::new())]);
         assert_eq!(hub_token(&params, &cookie_headers("valid-cookie")), None);
+    }
+
+    #[test]
+    fn monitor_event_targets_cannot_cross_game_scopes() {
+        let event = HubEvent {
+            target: "ReceivedGameEvent",
+            game_id: Some(7),
+            payload: "{}".to_owned(),
+        };
+        assert!(event_matches(&["ReceivedGameEvent"], Some(7), &event));
+        assert!(!event_matches(&["ReceivedGameEvent"], Some(8), &event));
+        assert!(!event_matches(&["ReceivedSubmissions"], Some(7), &event));
     }
 }

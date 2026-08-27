@@ -578,7 +578,12 @@
     },
     "instances": {
       "destroy": "Are you sure you want to destroy instance {{name}}?",
-      "note": "Note: Container statistics do not include admin test container and destroyed container",
+      "filter_help": "Searches include every active instance, not only the visible page.",
+      "filter_option_status": "{{teams}} team options and {{challenges}} challenge options found.",
+      "filter_options_unavailable": "Filter options are temporarily unavailable.",
+      "filtered_stats": " <1>{{count}}</1> matching distributed instances",
+      "no_filtered_results": "No active instances match these filters.",
+      "note": "Live runtime metrics are sampled in one bounded batch. Metrics the runtime cannot report are shown as unavailable.",
       "stats": " <1>{{count}}</1> distributed instances in total"
     },
     "markdown_inline_support": "Styling with inline Markdown is supported",
@@ -1163,13 +1168,16 @@
       "cpu": "CPU",
       "memory": "Memory",
       "network": "Network",
+      "limit_unavailable": "Limit unavailable",
       "owner": {
         "admin_test": "Admin test",
         "exercise": "Exercise",
         "shared": "Shared (all teams)",
         "unassigned": "Unassigned"
       },
-      "live_stats": "Live stats"
+      "live_stats": "Live stats",
+      "stats_disabled": "Live statistics disabled",
+      "stats_unavailable": "Runtime metric unavailable"
     },
     "logs": {
       "message": "Message",

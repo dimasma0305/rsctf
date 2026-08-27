@@ -457,6 +457,8 @@ pub(super) async fn cleanup_completed_cycle(
     for key in [
         format!("_KothScoreBoard_{}", cycle.game_id),
         format!("_KothScoreBoardFrozen_{}", cycle.game_id),
+        format!("_KothScoreBoardWireV2_{}", cycle.game_id),
+        format!("_KothScoreBoardWireV2Frozen_{}", cycle.game_id),
         format!("_KothTimeline_{}", cycle.game_id),
         format!("_KothTimelineFrozen_{}", cycle.game_id),
         format!("_KothHillState_{}_{}", cycle.game_id, cycle.challenge_id),
@@ -600,6 +602,8 @@ pub(super) async fn terminate_interrupted_cycle(
     for key in [
         format!("_KothScoreBoard_{}", cycle.game_id),
         format!("_KothScoreBoardFrozen_{}", cycle.game_id),
+        format!("_KothScoreBoardWireV2_{}", cycle.game_id),
+        format!("_KothScoreBoardWireV2Frozen_{}", cycle.game_id),
         format!("_KothTimeline_{}", cycle.game_id),
         format!("_KothTimelineFrozen_{}", cycle.game_id),
         format!("_KothHillState_{}_{}", cycle.game_id, cycle.challenge_id),

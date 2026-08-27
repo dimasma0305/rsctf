@@ -434,15 +434,15 @@ function sampleResponse(operation) {
   return { status, body: sampleBody(operation.responseKind, status), headers };
 }
 
-test('catalog covers all 71 HTTP operations and keeps SignalR as separate surfaces', () => {
-  assert.equal(ADMIN_OPERATIONS.length, 71);
-  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 71);
+test('catalog covers all 73 HTTP operations and keeps SignalR as separate surfaces', () => {
+  assert.equal(ADMIN_OPERATIONS.length, 73);
+  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 73);
   assert.deepEqual(
     ADMIN_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 29, PUT: 6, POST: 26, DELETE: 10 },
+    { GET: 31, PUT: 6, POST: 26, DELETE: 10 },
   );
   const enroll = ADMIN_OPERATIONS.find(({ id }) => id === 'worker_enroll');
   assert.deepEqual(
@@ -457,14 +457,22 @@ test('catalog covers all 71 HTTP operations and keeps SignalR as separate surfac
 });
 
 test('read-load subset is GET-only, non-destructive, and includes web and control surfaces', () => {
-  assert.equal(ADMIN_READ_OPERATIONS.length, 26);
+  assert.equal(ADMIN_READ_OPERATIONS.length, 25);
   assert.ok(ADMIN_READ_OPERATIONS.every(({ method, poll, mutation }) => method === 'GET' && poll && !mutation));
   assert.deepEqual(new Set(ADMIN_READ_OPERATIONS.map(({ surface }) => surface)), new Set(['web', 'control']));
   assert.ok(!ADMIN_READ_OPERATIONS.some(({ id }) => id === 'admin_writeups_download'));
 });
 
+test('fixed-rate admin load uses one bounded instance batch and never a per-row stats poll', () => {
+  const instancePolls = ADMIN_READ_OPERATIONS.filter(({ path }) => path.startsWith('/api/admin/instances'));
+  assert.deepEqual(instancePolls.map(({ id }) => id), ['admin_instances_get']);
+  assert.equal(instancePolls[0].query, 'count=25&skip=0&includeRuntimeStats=true');
+  assert.equal(ADMIN_OPERATIONS.find(({ id }) => id === 'admin_instance_stats_get').poll, false);
+  assert.equal(ADMIN_OPERATIONS.find(({ id }) => id === 'admin_instance_filter_options_get').poll, false);
+});
+
 test('authorization classes keep Admin, manager, and enrollment-token surfaces explicit', () => {
-  assert.equal(ADMIN_OPERATIONS.filter(({ auth }) => auth === 'admin').length, 69);
+  assert.equal(ADMIN_OPERATIONS.filter(({ auth }) => auth === 'admin').length, 71);
   assert.deepEqual(
     ADMIN_OPERATIONS.filter(({ auth }) => auth !== 'admin').map(({ id, auth }) => [id, auth]),
     [
@@ -590,7 +598,7 @@ test('read-origin matrix covers every live read on every eligible replica exactl
   const controlOrigins = ['http://public.test', 'http://control.test'];
   const matrix = buildAdminReadOriginMatrix(context, webOrigins, controlOrigins);
 
-  assert.equal(matrix.length, 77);
+  assert.equal(matrix.length, 74);
   assert.equal(new Set(matrix.map(({ operation, selectedOrigin }) =>
     `${operation.id}|${selectedOrigin}`)).size, matrix.length);
   for (const operation of ADMIN_READ_OPERATIONS) {
@@ -608,9 +616,9 @@ test('read-origin matrix covers every live read on every eligible replica exactl
 
 test('repository router source and lifecycle catalog have exact bidirectional coverage', () => {
   const sources = repositoryRouterSources();
-  assert.deepEqual(assertRouterCoverage(sources), { operations: 71, signalR: 2 });
+  assert.deepEqual(assertRouterCoverage(sources), { operations: 73, signalR: 2 });
   const parsed = parseAdminRouterOperations(sources);
-  assert.equal(parsed.operations.length, 71);
+  assert.equal(parsed.operations.length, 73);
   assert.equal(parsed.signalR.length, 2);
 });
 
@@ -651,8 +659,8 @@ test('router parser ignores route-like text in Rust comments and strings', () =>
 
 test('coverage accounting rejects omissions, duplicates, and unknown operations', () => {
   assert.deepEqual(assertCompleteCoverage(ADMIN_OPERATION_IDS), {
-    covered: 71,
-    required: 71,
+    covered: 73,
+    required: 73,
     missing: [],
     extra: [],
   });
@@ -662,8 +670,8 @@ test('coverage accounting rejects omissions, duplicates, and unknown operations'
 
   const allSurfaces = [...ADMIN_OPERATION_IDS, ...ADMIN_SIGNALR_SURFACES.map(({ id }) => id)];
   assert.deepEqual(assertCompleteCoverage(allSurfaces, { includeSignalR: true }), {
-    covered: 73,
-    required: 73,
+    covered: 75,
+    required: 75,
     missing: [],
     extra: [],
   });

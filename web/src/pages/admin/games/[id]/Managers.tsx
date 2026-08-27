@@ -15,12 +15,18 @@ import { useDebouncedValue } from '@mantine/hooks'
 import { useModals } from '@mantine/modals'
 import { mdiDelete, mdiAccountPlus } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState, useEffect } from 'react'
+import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import {
+  createLatestAutocompleteRequests,
+  MANAGER_AUTOCOMPLETE_MAX_CHARS,
+  MANAGER_AUTOCOMPLETE_MIN_CHARS,
+  normalizeManagerAutocompleteQuery,
+} from '@Utils/ManagerAutocomplete'
 import { showErrorMsg, showSuccessMsg } from '@Utils/Shared'
-import api, { UserInfoModel } from '@Api'
+import api, { ManagerAutocompleteUserModel, UserInfoModel } from '@Api'
 
 export const Managers: FC = () => {
   const { id } = useParams()
@@ -35,8 +41,9 @@ export const Managers: FC = () => {
   const [debouncedSearch] = useDebouncedValue(searchValue, 300)
   const [selectedUser, setSelectedUser] = useState<string | null>(null)
 
-  const [users, setUsers] = useState<UserInfoModel[]>()
+  const [users, setUsers] = useState<ManagerAutocompleteUserModel[]>()
   const [isLoadingUsers, setIsLoadingUsers] = useState(false)
+  const autocompleteRequests = useRef(createLatestAutocompleteRequests())
 
   const fetchAdmins = async () => {
     if (!gameId) return
@@ -55,24 +62,36 @@ export const Managers: FC = () => {
     fetchAdmins()
   }, [gameId])
 
+  // Raw input changes invalidate immediately instead of waiting for the next
+  // debounce. This is what makes clearing the field authoritative.
   useEffect(() => {
-    const fetchUsers = async () => {
-      if (!debouncedSearch) {
-        setUsers(undefined)
-        return
+    autocompleteRequests.current.invalidate()
+    setUsers(undefined)
+    setIsLoadingUsers(false)
+  }, [searchValue])
+
+  useEffect(() => {
+    autocompleteRequests.current.invalidate()
+    setUsers(undefined)
+    setIsLoadingUsers(false)
+    setSelectedUser(null)
+    setSearchValue('')
+    return () => autocompleteRequests.current.invalidate()
+  }, [gameId])
+
+  useEffect(() => {
+    const query = normalizeManagerAutocompleteQuery(debouncedSearch)
+    if (!query) return
+
+    void autocompleteRequests.current.run(
+      async (signal) => (await api.admin.adminManagerAutocomplete({ query }, { signal })).data,
+      {
+        setLoading: setIsLoadingUsers,
+        setResults: setUsers,
+        onError: (error) => showErrorMsg(error, t),
       }
-      setIsLoadingUsers(true)
-      try {
-        const res = await api.admin.adminGetUsers({ search: debouncedSearch, count: 10 })
-        setUsers((res.data as any).data || res.data)
-      } catch (e) {
-        showErrorMsg(e, t)
-      } finally {
-        setIsLoadingUsers(false)
-      }
-    }
-    fetchUsers()
-  }, [debouncedSearch])
+    )
+  }, [debouncedSearch, t])
 
   const handleAddAdmin = async () => {
     if (!selectedUser || !gameId) return
@@ -111,18 +130,22 @@ export const Managers: FC = () => {
     })
   }
 
-  const userOptions: ComboboxItem[] = (users ?? [])
-    .filter((u): u is UserInfoModel & { id: string } => !!u.id)
-    .map((u) => ({
-      value: u.id,
-      label: `${u.userName} (${u.email})`,
-    }))
+  const userOptions: ComboboxItem[] = (users ?? []).map((u) => ({
+    value: u.id,
+    label: u.email ? `${u.userName ?? u.email} (${u.email})` : (u.userName ?? u.id),
+  }))
+  const hasInvalidSearch = searchValue.trim().length > 0 && !normalizeManagerAutocompleteQuery(searchValue)
+  const searchStatus = isLoadingUsers
+    ? t('admin.content.games.managers.searching', 'Searching users')
+    : users
+      ? t('admin.content.games.managers.results', '{{count}} matching users', { count: users.length })
+      : ''
 
   return (
     <WithGameEditTab isLoading={isLoadingAdmins && !admins}>
       <Stack>
         <Paper withBorder p="md">
-          <Group align="flex-end">
+          <Group align="flex-end" wrap="wrap">
             <Select
               label={t('admin.content.games.managers.select_user')}
               placeholder={t('admin.content.games.managers.search_placeholder')}
@@ -133,10 +156,24 @@ export const Managers: FC = () => {
               onSearchChange={setSearchValue}
               searchable
               clearable
-              nothingFoundMessage={isLoadingUsers ? <Loader size="xs" /> : t('common.content.no_data')}
-              w={400}
+              nothingFoundMessage={
+                isLoadingUsers ? (
+                  <Loader size="xs" />
+                ) : hasInvalidSearch ? (
+                  t('admin.content.games.managers.search_bounds', 'Enter between {{min}} and {{max}} characters', {
+                    min: MANAGER_AUTOCOMPLETE_MIN_CHARS,
+                    max: MANAGER_AUTOCOMPLETE_MAX_CHARS,
+                  })
+                ) : (
+                  t('common.content.no_data')
+                )
+              }
+              style={{ flex: '1 1 16rem' }}
               filter={({ options }) => options} // Server-side filtering
             />
+            <Text component="span" className="app-sr-only" aria-live="polite">
+              {searchStatus}
+            </Text>
             <Button
               leftSection={<Icon path={mdiAccountPlus} size={1} />}
               onClick={handleAddAdmin}

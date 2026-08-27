@@ -781,6 +781,15 @@ export interface UserInfoModel {
   emailConfirmed?: boolean | null;
 }
 
+/** Compact identity returned by the game-manager autocomplete. */
+export interface ManagerAutocompleteUserModel {
+  /** @format guid */
+  id: string;
+  userName?: string | null;
+  email?: string | null;
+  avatar?: string | null;
+}
+
 /** Batch user creation (Admin) */
 export interface UserCreateModel {
   /**
@@ -1017,6 +1026,48 @@ export enum ContainerOwnerKind {
   Unassigned = "Unassigned",
 }
 
+/** Availability of one bounded container-runtime sample */
+export enum ContainerRuntimeAvailability {
+  Available = "Available",
+  Unavailable = "Unavailable",
+}
+
+/** Active-instance dimension used by the bounded filter-option endpoint */
+export enum ContainerInstanceFilterKind {
+  Team = "Team",
+  Challenge = "Challenge",
+}
+
+/** One authoritative team or challenge option backed by an active instance */
+export interface ContainerInstanceFilterOptionModel {
+  /** @format int32 */
+  id: number;
+  label: string;
+  avatar?: string | null;
+  category?: ChallengeCategory | null;
+}
+
+/** Bounded active-instance filter options plus the matching option count */
+export interface ArrayResponseOfContainerInstanceFilterOptionModel {
+  data: ContainerInstanceFilterOptionModel[];
+  /** @format int32 */
+  length: number;
+  /** @format int32 */
+  total: number;
+}
+
+/** Runtime metrics attached to an admin instance inventory page */
+export interface ContainerRuntimeStatsModel {
+  availability: ContainerRuntimeAvailability;
+  cpuPercent?: number | null;
+  memoryUsedBytes?: number | null;
+  memoryLimitBytes?: number | null;
+  netRxBytes?: number | null;
+  netTxBytes?: number | null;
+  /** @format uint64 */
+  sampledAt: number;
+}
+
 /** Container instance information (Admin) */
 export interface ContainerInstanceModel {
   /** Team */
@@ -1055,6 +1106,8 @@ export interface ContainerInstanceModel {
   port?: number;
   /** Whether the access entry is served by the WebSocket proxy */
   isProxy?: boolean;
+  /** Optional bounded live-runtime sample requested with this page */
+  runtimeStats?: ContainerRuntimeStatsModel;
 }
 
 /** Team information */
@@ -2605,13 +2658,51 @@ export interface AdTeamRowModel {
 /** A&D admin — GET /api/edit/games/{id}/ad/State response. */
 export interface AdGameStateModel {
   currentRound?: number | null;
-  roundStartedAt?: string | null;
-  roundEndsAt?: string | null;
+  /** @format uint64 */
+  roundStartedAt?: number | null;
+  /** @format uint64 */
+  roundEndsAt?: number | null;
   scoringPaused: boolean;
   /** When scoring was paused (null if running) — the UI freezes the round timer at this instant. */
-  scoringPausedAt?: string | null;
+  /** @format uint64 */
+  scoringPausedAt?: number | null;
   challenges: AdChallengeStateModel[];
   teams: AdTeamRowModel[];
+}
+
+/** Lightweight engine/lifecycle metadata for the operator console. */
+export interface AdEngineMetadataModel {
+  hasAttackDefense: boolean;
+  hasKoth: boolean;
+  /** @format uint64 */
+  start: number;
+  /** @format uint64 */
+  end: number;
+  /** @format uint64 */
+  serverTime: number;
+}
+
+/** One mutable service cell in the five-second A&D delta. */
+export interface AdLiveCellModel {
+  adTeamServiceId: number;
+  lastCheckId?: number | null;
+  lastCheckStatus?: string | null;
+  currentFlag?: string | null;
+}
+
+/** Small live projection layered over the separately loaded A&D grid. */
+export interface AdLiveStateModel {
+  currentRound?: number | null;
+  /** @format uint64 */
+  roundStartedAt?: number | null;
+  /** @format uint64 */
+  roundEndsAt?: number | null;
+  scoringPaused: boolean;
+  /** @format uint64 */
+  scoringPausedAt?: number | null;
+  /** @format uint64 */
+  serverTime: number;
+  services: AdLiveCellModel[];
 }
 
 /** A&D admin — body for POST /api/edit/games/{id}/ad/Checks/{checkId}/Override. */
@@ -3155,10 +3246,14 @@ export interface Blood {
 }
 
 /**
- * Game event, recorded but not sent to the client.
+ * Game event shown in the monitor snapshot and real-time feed.
  * Information includes flag submission, container start/stop, cheating, and score changes.
  */
 export type GameEvent = FormattableDataOfEventType & {
+  /** Stable row identity used to deduplicate snapshots, pushes, and backfills. */
+  id: number;
+  /** Commit-ordered reconnect cursor. */
+  cursor: number;
   /**
    * Publish time
    * @format uint64
@@ -3169,6 +3264,13 @@ export type GameEvent = FormattableDataOfEventType & {
   /** Related team name */
   team?: string;
 };
+
+/** One bounded commit-ordered page used to recover a monitor-hub reconnect. */
+export interface GameEventBackfill {
+  events: GameEvent[];
+  nextCursor: number;
+  hasMore: boolean;
+}
 
 /** Formattable data */
 export interface FormattableDataOfEventType {
@@ -3526,48 +3628,82 @@ export interface GameDetailModel {
   writeupDeadline: number;
 }
 
-/** Participation for review (Admin) */
+/** Participation for review (Admin). Kept for the legacy raw-array endpoint. */
 export interface ParticipationInfoModel {
-  /**
-   * Participation ID
-   * @format int32
-   */
+  /** @format int32 */
   id: number;
-  /** Participating team */
   team: TeamWithDetailedUserInfo;
-  /** Registered members */
   registeredMembers: string[];
-  /**
-   * Division of the game
-   * @format int32
-   */
+  /** @format int32 */
   divisionId?: number | null;
-  /** Participation status */
   status: ParticipationStatus;
 }
 
-/** Detailed team information for review (Admin) */
+/** Detailed team information returned by the legacy participation endpoint. */
 export interface TeamWithDetailedUserInfo {
+  /** @format int32 */
+  id?: number;
+  locked?: boolean;
+  /** @format guid */
+  captainId?: string;
+  name?: string | null;
+  bio?: string | null;
+  avatar?: string | null;
+  members?: ProfileUserInfoModel[];
+}
+
+/** Bounded participation review list response (Admin). */
+export interface ArrayResponseOfParticipationReviewSummaryModel {
+  data: ParticipationReviewSummaryModel[];
   /**
-   * Team ID
+   * Returned row count
    * @format int32
    */
-  id?: number;
-  /** Is locked */
-  locked?: boolean;
-  /**
-   * Captain ID
-   * @format guid
-   */
-  captainId?: string;
-  /** Team name */
-  name?: string | null;
-  /** Team bio */
-  bio?: string | null;
-  /** Avatar URL */
+  length: number;
+  /** Total matching rows before pagination. */
+  total: number;
+}
+
+/** Compact, PII-free participation review row (Admin). */
+export interface ParticipationReviewSummaryModel {
+  /** @format int32 */
+  id: number;
+  /** @format int32 */
+  teamId: number;
+  teamName: string;
+  teamAvatar?: string | null;
+  /** @format int64 */
+  registeredMemberCount: number;
+  /** @format int64 */
+  teamMemberCount: number;
+  /** @format int32 */
+  divisionId?: number | null;
+  status: ParticipationStatus;
+}
+
+/** One member in a lazily loaded participation roster (Admin). */
+export interface ParticipationReviewMemberModel {
+  /** @format guid */
+  userId: string;
+  userName?: string | null;
+  email?: string | null;
+  realName?: string | null;
+  stdNumber?: string | null;
+  phone?: string | null;
   avatar?: string | null;
-  /** Team members */
-  members?: ProfileUserInfoModel[];
+  isRegistered: boolean;
+  isCaptain: boolean;
+}
+
+/** Lazily loaded roster/profile detail for one participation (Admin). */
+export interface ParticipationReviewDetailModel {
+  /** @format int32 */
+  id: number;
+  /** @format int32 */
+  teamId: number;
+  teamName: string;
+  teamAvatar?: string | null;
+  members: ParticipationReviewMemberModel[];
 }
 
 /** Challenge detailed information */
@@ -3619,6 +3755,25 @@ export interface ChallengeDetailModel {
   variant?: ClientChallengeVariant | null;
 }
 
+/** One visible row in the bounded challenge-solver page. */
+export interface ChallengeSolverPreviewModel {
+  teamName: string;
+  teamAvatar: string | null;
+  userName: string | null;
+  type: SubmissionType;
+  /** @format uint64 */
+  time: number;
+}
+
+/** Bounded solver page used by the player challenge modal. */
+export interface ChallengeSolverPageModel {
+  data: ChallengeSolverPreviewModel[];
+  /** @format int64 */
+  total: number;
+  /** @format uint64 */
+  nextSkip: number | null;
+}
+
 export interface ClientChallengeVariant {
   id: string;
   revision: number;
@@ -3668,6 +3823,8 @@ export interface FlagSubmitModel {
    * @minLength 1
    */
   flag: string;
+  /** Opaque client-generated identity retained through terminal recovery. */
+  attemptId: string;
   /** Optional one-use proof minted by the challenge's trusted verifier. */
   proof?: string | null;
 }
@@ -3810,6 +3967,16 @@ export interface PostInfoModel {
    * @format uint64
    */
   time: number;
+}
+
+/** Bounded post list response with the complete matching row count. */
+export interface ArrayResponseOfPostInfoModel {
+  /** Selected page, ordered pinned-first and newest-first. */
+  data: PostInfoModel[];
+  /** Number of rows in this page. @format int32 */
+  length: number;
+  /** Total retained posts across every page. @format int64 */
+  total: number;
 }
 
 export interface DonationLeaderboardEntry {
@@ -3961,6 +4128,10 @@ import type {
   ResponseType,
 } from "axios";
 import axios from "axios";
+import {
+  createConditionalScoreboardReader,
+  isConditionalScoreboardPath,
+} from "./utils/ConditionalScoreboard";
 import { installEventVpnProof } from "@Utils/EventVpnProof";
 import { installServerClock } from "@Utils/ServerClock";
 
@@ -4531,6 +4702,24 @@ export class Api<
       }),
 
     /**
+     * @description Prefix-search compact user identities for the game-manager selector.
+     * @tags Admin
+     * @name AdminManagerAutocomplete
+     * @request GET:/api/admin/users/manager-autocomplete
+     */
+    adminManagerAutocomplete: (
+      query: { query: string },
+      params: RequestParams = {},
+    ) =>
+      this.request<ManagerAutocompleteUserModel[], RequestResponse>({
+        path: `/api/admin/users/manager-autocomplete`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
      * @description Use this API to add users in batch, requires Admin permission
      *
      * @tags Admin
@@ -4781,6 +4970,47 @@ export class Api<
         format: "json",
         ...params,
       }),
+
+    /** Paginated inventory with an optional bounded runtime-stat batch. */
+    adminInstancesPage: (
+      query?: {
+        /** @format int32 */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        includeRuntimeStats?: boolean;
+        /** @format int32 */
+        teamId?: number;
+        /** @format int32 */
+        challengeId?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfContainerInstanceModel, RequestResponse>({
+        path: `/api/admin/instances`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /** Discover teams or challenges represented anywhere in active instances. */
+    adminInstanceFilterOptions: (
+      query: {
+        kind: ContainerInstanceFilterKind;
+        search?: string;
+        /** @format int32 */
+        count?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfContainerInstanceFilterOptionModel, RequestResponse>({
+        path: `/api/admin/instances/filter-options`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
     /**
      * @description Use this API to get all container instances, requires Admin permission
      *
@@ -4792,6 +5022,41 @@ export class Api<
     useAdminInstances: (options?: SWRConfiguration, doFetch: boolean = true) =>
       useSWR<ArrayResponseOfContainerInstanceModel, RequestResponse>(
         doFetch ? `/api/admin/instances` : null,
+        options,
+      ),
+
+    useAdminInstancesPage: (
+      query?: {
+        /** @format int32 */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        includeRuntimeStats?: boolean;
+        /** @format int32 */
+        teamId?: number;
+        /** @format int32 */
+        challengeId?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfContainerInstanceModel, RequestResponse>(
+        doFetch ? [`/api/admin/instances`, query] : null,
+        options,
+      ),
+
+    useAdminInstanceFilterOptions: (
+      query: {
+        kind: ContainerInstanceFilterKind;
+        search?: string;
+        /** @format int32 */
+        count?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfContainerInstanceFilterOptionModel, RequestResponse>(
+        doFetch ? [`/api/admin/instances/filter-options`, query] : null,
         options,
       ),
 
@@ -4811,6 +5076,29 @@ export class Api<
     ) =>
       mutate<ArrayResponseOfContainerInstanceModel>(
         `/api/admin/instances`,
+        data,
+        options,
+      ),
+
+    mutateAdminInstancesPage: (
+      query?: {
+        /** @format int32 */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        includeRuntimeStats?: boolean;
+        /** @format int32 */
+        teamId?: number;
+        /** @format int32 */
+        challengeId?: number;
+      },
+      data?:
+        | ArrayResponseOfContainerInstanceModel
+        | Promise<ArrayResponseOfContainerInstanceModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfContainerInstanceModel>(
+        [`/api/admin/instances`, query],
         data,
         options,
       ),
@@ -7783,6 +8071,7 @@ export class Api<
          * @min 0
          * @max 100
          * @default 100
+         * @description Zero returns the complete retained history on this legacy route.
          */
         count?: number;
         /**
@@ -7797,6 +8086,36 @@ export class Api<
     ) =>
       this.request<GameEvent[], RequestResponse>({
         path: `/api/game/${id}/events`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    /**
+     * @description Retrieves a bounded commit-ordered monitor event backfill; omitting after returns a cursor-only checkpoint
+     *
+     * @tags Game
+     * @name GameEventBackfill
+     * @summary Backfill game events after a reconnect
+     * @request GET:/api/game/{id}/events/backfill
+     */
+    gameEventBackfill: (
+      id: number,
+      query?: {
+        /** Commit cursor previously observed by the client. */
+        after?: number;
+        /**
+         * @format int32
+         * @min 1
+         * @max 100
+         * @default 100
+         */
+        limit?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<GameEventBackfill, RequestResponse>({
+        path: `/api/game/${id}/events/backfill`,
         method: "GET",
         query: query,
         format: "json",
@@ -7875,6 +8194,66 @@ export class Api<
       data?: GameEvent[] | Promise<GameEvent[]>,
       options?: MutatorOptions,
     ) => mutate<GameEvent[]>([`/api/game/${id}/events`, query], data, options),
+
+    /**
+     * @description Retrieves a bounded page of game event data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameEventPage
+     * @summary Get a bounded game-event page
+     * @request GET:/api/game/{id}/events/page
+     */
+    gameEventPage: (
+      id: number,
+      query?: {
+        hideContainer?: boolean;
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         * @description Zero uses the bounded 100-row default.
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<GameEvent[], RequestResponse>({
+        path: `/api/game/${id}/events/page`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    useGameEventPage: (
+      id: number,
+      query?: {
+        hideContainer?: boolean;
+        count?: number;
+        skip?: number;
+        search?: string | null;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<GameEvent[], RequestResponse>(
+        doFetch ? [`/api/game/${id}/events/page`, query] : null,
+        options,
+      ),
+    mutateGameEventPage: (
+      id: number,
+      query?: {
+        hideContainer?: boolean;
+        count?: number;
+        skip?: number;
+        search?: string | null;
+      },
+      data?: GameEvent[] | Promise<GameEvent[]>,
+      options?: MutatorOptions,
+    ) => mutate<GameEvent[]>([`/api/game/${id}/events/page`, query], data, options),
 
     /**
      * @description Extends container lifetime; requires User permission and can only be extended two hours within ten minutes before expiration
@@ -8152,6 +8531,26 @@ export class Api<
       this.request<ChallengeDetailModel, RequestResponse>({
         path: `/api/game/${id}/challenges/${challengeId}`,
         method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Retrieves one bounded, solve-time-ordered solver page for the challenge.
+     * @tags Game
+     * @name GameGetChallengeSolverPage
+     * @request GET:/api/game/{id}/challenges/{challengeId}/solvers/page
+     */
+    gameGetChallengeSolverPage: (
+      id: number,
+      challengeId: number,
+      query?: { count?: number; skip?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<ChallengeSolverPageModel, RequestResponse>({
+        path: `/api/game/${id}/challenges/${challengeId}/solvers/page`,
+        method: "GET",
+        query,
         format: "json",
         ...params,
       }),
@@ -8659,7 +9058,7 @@ export class Api<
       mutate<GameNotice[]>([`/api/game/${id}/notices`, query], data, options),
 
     /**
-     * @description Retrieves all participation information of the game; requires Admin permission
+     * @description Retrieves the original raw participation array; requires game-manager or Admin permission
      *
      * @tags Game
      * @name GameParticipations
@@ -8673,14 +9072,7 @@ export class Api<
         format: "json",
         ...params,
       }),
-    /**
-     * @description Retrieves all participation information of the game; requires Admin permission
-     *
-     * @tags Game
-     * @name GameParticipations
-     * @summary Get all game participations
-     * @request GET:/api/game/{id}/participations
-     */
+
     useGameParticipations: (
       id: number,
       options?: SWRConfiguration,
@@ -8691,14 +9083,6 @@ export class Api<
         options,
       ),
 
-    /**
-     * @description Retrieves all participation information of the game; requires Admin permission
-     *
-     * @tags Game
-     * @name GameParticipations
-     * @summary Get all game participations
-     * @request GET:/api/game/{id}/participations
-     */
     mutateGameParticipations: (
       id: number,
       data?: ParticipationInfoModel[] | Promise<ParticipationInfoModel[]>,
@@ -8706,6 +9090,121 @@ export class Api<
     ) =>
       mutate<ParticipationInfoModel[]>(
         `/api/game/${id}/participations`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieves one bounded, server-filtered page of PII-free participation summaries; requires game-manager or Admin permission
+     *
+     * @tags Game
+     * @name GameParticipationPage
+     * @summary Get a participation review page
+     * @request GET:/api/game/{id}/participations/page
+     */
+    gameParticipationPage: (
+      id: number,
+      query?: {
+        /** @format int32 @min 1 @max 50 @default 10 */
+        count?: number;
+        /** @format int32 @min 0 */
+        skip?: number;
+        status?: ParticipationStatus | null;
+        /** @format int32 */
+        divisionId?: number | null;
+        /** Case-insensitive team-name substring, at most 100 characters. */
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfParticipationReviewSummaryModel, RequestResponse>({
+        path: `/api/game/${id}/participations/page`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+
+    useGameParticipationPage: (
+      id: number,
+      query?: {
+        /** @format int32 @min 1 @max 50 @default 10 */
+        count?: number;
+        /** @format int32 @min 0 */
+        skip?: number;
+        status?: ParticipationStatus | null;
+        /** @format int32 */
+        divisionId?: number | null;
+        /** Case-insensitive team-name substring, at most 100 characters. */
+        search?: string | null;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfParticipationReviewSummaryModel, RequestResponse>(
+        doFetch ? [`/api/game/${id}/participations/page`, query] : null,
+        options,
+      ),
+
+    mutateGameParticipationPage: (
+      id: number,
+      query?: {
+        count?: number;
+        skip?: number;
+        status?: ParticipationStatus | null;
+        divisionId?: number | null;
+        search?: string | null;
+      },
+      data?:
+        | ArrayResponseOfParticipationReviewSummaryModel
+        | Promise<ArrayResponseOfParticipationReviewSummaryModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ArrayResponseOfParticipationReviewSummaryModel>(
+        [`/api/game/${id}/participations/page`, query],
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieves the roster/profile detail for one participation after an authorized operator opens it
+     *
+     * @tags Game
+     * @name GameParticipationDetail
+     * @summary Get one participation roster
+     * @request GET:/api/game/{id}/participations/{participationId}
+     */
+    gameParticipationDetail: (
+      id: number,
+      participationId: number,
+      params: RequestParams = {},
+    ) =>
+      this.request<ParticipationReviewDetailModel, RequestResponse>({
+        path: `/api/game/${id}/participations/${participationId}`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useGameParticipationDetail: (
+      id: number,
+      participationId: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ParticipationReviewDetailModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/participations/${participationId}` : null,
+        options,
+      ),
+
+    mutateGameParticipationDetail: (
+      id: number,
+      participationId: number,
+      data?: ParticipationReviewDetailModel | Promise<ParticipationReviewDetailModel>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ParticipationReviewDetailModel>(
+        `/api/game/${id}/participations/${participationId}`,
         data,
         options,
       ),
@@ -9337,6 +9836,71 @@ export class Api<
       ),
 
     /**
+     * @description Retrieves a bounded page of game submission data; requires Monitor permission
+     *
+     * @tags Game
+     * @name GameSubmissionPage
+     * @summary Get a bounded game-submission page
+     * @request GET:/api/game/{id}/submissions/page
+     */
+    gameSubmissionPage: (
+      id: number,
+      query?: {
+        type?: AnswerResult | null;
+        /**
+         * @format int32
+         * @min 0
+         * @max 100
+         * @default 100
+         * @description Zero uses the bounded 100-row default.
+         */
+        count?: number;
+        /** @format int32 */
+        skip?: number;
+        search?: string | null;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<Submission[], RequestResponse>({
+        path: `/api/game/${id}/submissions/page`,
+        method: "GET",
+        query: query,
+        format: "json",
+        ...params,
+      }),
+    useGameSubmissionPage: (
+      id: number,
+      query?: {
+        type?: AnswerResult | null;
+        count?: number;
+        skip?: number;
+        search?: string | null;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<Submission[], RequestResponse>(
+        doFetch ? [`/api/game/${id}/submissions/page`, query] : null,
+        options,
+      ),
+    mutateGameSubmissionPage: (
+      id: number,
+      query?: {
+        type?: AnswerResult | null;
+        count?: number;
+        skip?: number;
+        search?: string | null;
+      },
+      data?: Submission[] | Promise<Submission[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<Submission[]>(
+        [`/api/game/${id}/submissions/page`, query],
+        data,
+        options,
+      ),
+
+    /**
      * @description Downloads all submissions of the game; requires Monitor permission
      *
      * @tags Game
@@ -9639,6 +10203,73 @@ export class Api<
       data?: PostInfoModel[] | Promise<PostInfoModel[]>,
       options?: MutatorOptions,
     ) => mutate<PostInfoModel[]>(`/api/posts`, data, options),
+
+    /**
+     * @description Get one bounded page of posts with the exact retained total
+     *
+     * @tags Info
+     * @name InfoGetPostsPage
+     * @summary Get a page of posts
+     * @request GET:/api/posts/page
+     */
+    infoGetPostsPage: (
+      query?: {
+        /** @format int32 @min 1 @max 50 @default 10 */
+        count?: number;
+        /** @format int64 @min 0 */
+        skip?: number;
+      },
+      params: RequestParams = {},
+    ) =>
+      this.request<ArrayResponseOfPostInfoModel, any>({
+        path: `/api/posts/page`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Get one bounded page of posts with the exact retained total
+     *
+     * @tags Info
+     * @name InfoGetPostsPage
+     * @summary Get a page of posts
+     * @request GET:/api/posts/page
+     */
+    useInfoGetPostsPage: (
+      query?: {
+        /** @format int32 @min 1 @max 50 @default 10 */
+        count?: number;
+        /** @format int64 @min 0 */
+        skip?: number;
+      },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ArrayResponseOfPostInfoModel, any>(
+        doFetch ? [`/api/posts/page`, query] : null,
+        options,
+      ),
+
+    /**
+     * @description Get one bounded page of posts with the exact retained total
+     *
+     * @tags Info
+     * @name InfoGetPostsPage
+     * @summary Get a page of posts
+     * @request GET:/api/posts/page
+     */
+    mutateInfoGetPostsPage: (
+      query?: {
+        /** @format int32 @min 1 @max 50 @default 10 */
+        count?: number;
+        /** @format int64 @min 0 */
+        skip?: number;
+      },
+      data?: ArrayResponseOfPostInfoModel | Promise<ArrayResponseOfPostInfoModel>,
+      options?: MutatorOptions,
+    ) => mutate<ArrayResponseOfPostInfoModel>([`/api/posts/page`, query], data, options),
 
     /**
      * @description Create Pow Captcha, valid for 5 minutes
@@ -10224,10 +10855,33 @@ installEventVpnProof(api.instance);
 installServerClock(api.instance);
 export default api;
 
+const conditionalScoreboards = createConditionalScoreboardReader(
+  async (path, etag) => {
+    const response = await api.request({
+      path,
+      method: "GET",
+      // Defer JSON decoding until the validator is known to have changed. This
+      // also avoids parsing when a browser exposes a revalidated cache hit as 200.
+      format: "text",
+      headers: etag ? { "If-None-Match": etag } : undefined,
+      validateStatus: (status) => status === 304 || (status >= 200 && status < 300),
+    });
+    const responseEtag = response.headers.etag;
+    return {
+      status: response.status,
+      data: response.data,
+      etag: typeof responseEtag === "string" ? responseEtag : undefined,
+    };
+  },
+);
+
 export const fetcher = async (
   args: string | [string, Record<string, unknown>],
 ) => {
   if (typeof args === "string") {
+    if (isConditionalScoreboardPath(args)) {
+      return conditionalScoreboards.read(args);
+    }
     const response = await api.request({ path: args });
     return response.data;
   } else {

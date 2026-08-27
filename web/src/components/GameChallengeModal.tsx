@@ -3,13 +3,15 @@ import { useInputState } from '@mantine/hooks'
 import { notifications, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useMemo, useReducer, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import useSWR from 'swr'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
+import { assertJsonResponse, NonJsonResponseError } from '@Utils/ChallengePolling'
 import { encryptApiData } from '@Utils/Crypto'
+import { FlagSubmitAttemptOwner } from '@Utils/FlagSubmitAttempt'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
+import { createFlagVerdictPoller, sameFlagVerdictIdentity, type FlagVerdictIdentity } from '@Utils/FlagVerdictPolling'
 import { resolveChallengeDeliveryGuide } from '@Utils/GuideState'
 import {
   clearDestroyedInstanceContext,
@@ -18,29 +20,20 @@ import {
   extendReconciledInstance,
   mergeExtendedInstanceContext,
 } from '@Utils/InstanceLifecycle'
+import { httpErrorStatus } from '@Utils/ProfileRetry'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
+import { useChallengePolling } from '@Hooks/useChallengePolling'
 import { useConfig } from '@Hooks/useConfig'
 import api, {
   AnswerResult,
   ChallengeDetailModel,
+  ChallengeSolverPageModel,
   ChallengeType,
   ContainerPortMappingType,
   SubmissionType,
   ReviewRating,
 } from '@Api'
-
-interface ChallengeSolverModel {
-  rank: number
-  teamName: string
-  teamAvatar: string | null
-  userName: string | null
-  type: SubmissionType
-  time: string
-  score: number
-}
-
-const fetcher = (url: string) => fetch(url, { credentials: 'include' }).then((r) => (r.ok ? r.json() : []))
 
 interface GameChallengeModalProps extends ModalProps {
   gameId: number
@@ -54,6 +47,12 @@ interface GameChallengeModalProps extends ModalProps {
   score: number
   challengeId: number
   status?: SubmissionType
+  /** Proven by the current catalog/team response, not by a retained selection. */
+  challengeOwned?: boolean
+}
+
+interface PendingFlagVerdict extends FlagVerdictIdentity {
+  attemptId: string
 }
 
 export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
@@ -69,35 +68,92 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     status,
     title,
     score,
+    challengeOwned = true,
     ...modalProps
   } = props
 
-  const { data: challenge, mutate } = api.game.useGameGetChallenge(gameId, challengeId, {
+  const readEnabled = shouldReadChallenge(modalProps.opened, challengeOwned, gameId, challengeId)
+  const challengeRequest = useCallback(
+    async (signal: AbortSignal) => {
+      const response = await api.game.gameGetChallenge(gameId, challengeId, { signal })
+      return assertJsonResponse(response)
+    },
+    [challengeId, gameId]
+  )
+  const {
+    data: challenge,
+    error: challengeError,
+    mutate,
+  } = useChallengePolling<ChallengeDetailModel>({
+    key: gameId > 0 && challengeId > 0 ? `/api/game/${gameId}/challenges/${challengeId}` : null,
+    active: readEnabled,
     refreshInterval: 120 * 1000,
+    request: challengeRequest,
   })
 
-  const { data: solverData } = useSWR<ChallengeSolverModel[]>(
-    gameId > 0 && challengeId > 0 ? `/api/game/${gameId}/challenges/${challengeId}/solvers` : null,
-    fetcher,
-    { refreshInterval: 30000, revalidateOnFocus: false }
+  const solverRequest = useCallback(
+    async (signal: AbortSignal) => {
+      const response = await api.game.gameGetChallengeSolverPage(
+        gameId,
+        challengeId,
+        { count: 20, skip: 0 },
+        { signal }
+      )
+      return assertJsonResponse(response)
+    },
+    [challengeId, gameId]
   )
+  const { data: solverPage, error: solverError } = useChallengePolling<ChallengeSolverPageModel>({
+    key:
+      gameId > 0 && challengeId > 0
+        ? `/api/game/${gameId}/challenges/${challengeId}/solvers/page?count=20&skip=0`
+        : null,
+    active: readEnabled,
+    refreshInterval: 30_000,
+    request: solverRequest,
+  })
 
   const solvers = useMemo(
     (): SolverInfo[] =>
-      (solverData ?? []).map((s) => ({
-        rank: s.rank,
+      (solverPage?.data ?? []).map((s) => ({
         teamName: s.teamName,
         teamAvatar: s.teamAvatar,
         userName: s.userName,
         type: s.type,
-        time: new Date(s.time).getTime(),
-        score: s.score,
+        time: s.time,
       })),
-    [solverData]
+    [solverPage?.data]
   )
 
   const { config } = useConfig()
   const { t } = useTranslation()
+
+  const pollErrorMessage = (error: unknown, resource: 'challenge' | 'solvers') => {
+    if (!error) return undefined
+    if (error instanceof NonJsonResponseError) {
+      return t(
+        'challenge.error.invalid_response',
+        'The server returned an invalid response. Automatic retries stopped.'
+      )
+    }
+    const status = httpErrorStatus(error)
+    if (status === 401) return t('challenge.error.unauthorized', 'Your session expired. Sign in again to continue.')
+    if (status === 403) {
+      return t(
+        'challenge.error.forbidden',
+        'Challenge access was denied. Connect to the event VPN if it is required, then reopen the challenge.'
+      )
+    }
+    if (status === 404) {
+      return resource === 'challenge'
+        ? t('challenge.error.not_found', 'This challenge is no longer available.')
+        : t('challenge.error.solvers_not_found', 'Solver history is unavailable for this challenge.')
+    }
+    if (status === 429) {
+      return t('challenge.error.rate_limited', 'Too many requests. Reopen the challenge after the server retry window.')
+    }
+    return t('challenge.error.temporary', 'Challenge data could not be loaded. Automatic retries are bounded.')
+  }
 
   const wrongFlagHints = t('challenge.content.wrong_flag_hints', {
     returnObjects: true,
@@ -117,31 +173,66 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     [challenge?.type, config.portMapping, eventVpnRequired, isDynamic]
   )
 
-  useFeatureGuide(deliveryFeature, Boolean(modalProps.opened && deliveryFeature), {
+  useFeatureGuide(deliveryFeature, Boolean(readEnabled && deliveryFeature), {
     eventVpnRequired,
     hasAttachment: Boolean(challenge?.context?.url),
     instanceActive: Boolean(challenge?.context?.instanceEntry),
   })
 
   const [disabled, setDisabled] = useState(false)
-  const [submitId, setSubmitId] = useState(0)
+  const [pendingSubmission, setPendingSubmission] = useState<PendingFlagVerdict | null>(null)
   const [flag, setFlag] = useInputState('')
   const [receiptProof, setReceiptProof] = useInputState('')
   const [solvedChallengeId, setSolvedChallengeId] = useState<number | null>(null)
   const [flagVerdict, dispatchFlagVerdict] = useReducer(flagVerdictReducer, null)
+  const submitAttemptOwnerRef = useRef<FlagSubmitAttemptOwner | null>(null)
+  if (submitAttemptOwnerRef.current === null) {
+    submitAttemptOwnerRef.current = new FlagSubmitAttemptOwner()
+  }
+  const submitAttemptOwner = submitAttemptOwnerRef.current
+  const currentScope = useRef({ gameId, challengeId, opened: readEnabled, mounted: true })
+  currentScope.current = { gameId, challengeId, opened: readEnabled, mounted: true }
+
+  useEffect(() => {
+    currentScope.current.mounted = true
+    return () => {
+      currentScope.current.mounted = false
+    }
+  }, [])
 
   useEffect(() => {
     dispatchFlagVerdict({ type: 'reset' })
-  }, [challengeId])
+    setDisabled(false)
+    setPendingSubmission(null)
+    setFlag('')
+    setReceiptProof('')
+    setSolvedChallengeId(null)
+  }, [challengeId, gameId])
 
   useEffect(() => {
-    if (!modalProps.opened) dispatchFlagVerdict({ type: 'reset' })
-  }, [modalProps.opened])
+    if (readEnabled) return
+    dispatchFlagVerdict({ type: 'reset' })
+    setDisabled(false)
+    setPendingSubmission(null)
+    setFlag('')
+    setReceiptProof('')
+    setSolvedChallengeId(null)
+  }, [readEnabled])
+
+  useEffect(() => {
+    setPendingSubmission((current) => {
+      if (current && readEnabled && current.gameId === gameId && current.challengeId === challengeId) {
+        return current
+      }
+      return null
+    })
+    setDisabled(false)
+  }, [gameId, challengeId, readEnabled])
 
   const isLimitReached = (challenge?.limit && (challenge.attempts ?? 0) >= challenge.limit) || false
 
   const onCreate = async () => {
-    if (!challengeId || disabled) return
+    if (!readEnabled || disabled) return
     setDisabled(true)
 
     try {
@@ -189,7 +280,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   const onDestroy = async () => {
-    if (!challengeId || disabled) return
+    if (!readEnabled || disabled) return
     setDisabled(true)
     try {
       await requestDestroy()
@@ -199,7 +290,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   const onExtend = async () => {
-    if (!challengeId || disabled) return
+    if (!readEnabled || disabled) return
     setDisabled(true)
 
     try {
@@ -221,7 +312,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   const onSubmit = async () => {
-    if (!challengeId || !flag) {
+    const normalizedFlag = flag.trim()
+    if (!readEnabled || !challengeId || !normalizedFlag) {
       showNotification({
         color: 'red',
         message: t('challenge.notification.flag.empty'),
@@ -230,14 +322,37 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       return
     }
 
+    const proof = receiptProof.trim() || undefined
+    const dispatch = submitAttemptOwner.begin(
+      { gameId, challengeId, flag: normalizedFlag, proof },
+      async (attemptId) => ({
+        attemptId,
+        flag: await encryptApiData(t, normalizedFlag, config.apiPublicKey),
+        proof,
+      }),
+      async (payload) => {
+        const response = await api.game.gameSubmit(gameId, challengeId, payload)
+        return response.data
+      }
+    )
+    if (!dispatch.owner) return
+
     setDisabled(true)
+    const submittingScope = { gameId, challengeId }
 
     try {
-      const res = await api.game.gameSubmit(gameId, challengeId, {
-        flag: await encryptApiData(t, flag, config.apiPublicKey),
-        proof: receiptProof.trim() || undefined,
-      })
-      setSubmitId(res.data)
+      const result = await dispatch.result
+      const latestScope = currentScope.current
+      if (
+        !latestScope.mounted ||
+        !latestScope.opened ||
+        latestScope.gameId !== submittingScope.gameId ||
+        latestScope.challengeId !== submittingScope.challengeId
+      ) {
+        return
+      }
+
+      setPendingSubmission({ ...submittingScope, submissionId: result.submissionId, attemptId: result.attemptId })
       notifications.clean()
       showNotification({
         id: 'flag-submitted',
@@ -248,18 +363,29 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         autoClose: false,
       })
 
-      const nxt = (challenge?.attempts ?? 0) + 1
-      const attempts = challenge?.limit && challenge.limit > 0 ? Math.min(nxt, challenge.limit) : nxt
+      if (result.firstAcknowledgement) {
+        const nxt = (challenge?.attempts ?? 0) + 1
+        const attempts = challenge?.limit && challenge.limit > 0 ? Math.min(nxt, challenge.limit) : nxt
 
-      // Spread the existing challenge FIRST, then override attempts — otherwise the
-      // stale attempts value clobbers the increment and the "N remaining" counter
-      // never decrements after a submit on limited-attempt challenges.
-      mutate({
-        ...challenge,
-        attempts,
-      })
+        // Spread the existing challenge FIRST, then override attempts — otherwise the
+        // stale attempts value clobbers the increment and the "N remaining" counter
+        // never decrements after a submit on limited-attempt challenges.
+        mutate({
+          ...challenge,
+          attempts,
+        })
+      }
       return
     } catch (e) {
+      const latestScope = currentScope.current
+      if (
+        !latestScope.mounted ||
+        !latestScope.opened ||
+        latestScope.gameId !== submittingScope.gameId ||
+        latestScope.challengeId !== submittingScope.challengeId
+      ) {
+        return
+      }
       showErrorMsg(e, t)
       setDisabled(false)
       return
@@ -280,31 +406,65 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   useEffect(() => {
-    if (!submitId) return
+    if (!pendingSubmission || !readEnabled) return
+    if (pendingSubmission.gameId !== gameId || pendingSubmission.challengeId !== challengeId) return
 
-    const polling = setInterval(async () => {
-      try {
-        const res = await api.game.gameStatus(gameId, challengeId, submitId)
-        if (res.data !== AnswerResult.FlagSubmitted) {
-          setDisabled(false)
-          setFlag('')
-          setReceiptProof('')
-          checkDataFlag(submitId, res.data)
-          clearInterval(polling)
-          setSubmitId(0) // reset so the next attempt starts clean
+    const poller = createFlagVerdictPoller({
+      identity: pendingSubmission,
+      request: async (identity, signal) => {
+        const res = await api.game.gameStatus(identity.gameId, identity.challengeId, identity.submissionId, { signal })
+        return res.data
+      },
+      onTerminal: (identity, result) => {
+        if (!sameFlagVerdictIdentity(pendingSubmission, identity)) return
+        const scope = currentScope.current
+        if (
+          !scope.mounted ||
+          !scope.opened ||
+          scope.gameId !== identity.gameId ||
+          scope.challengeId !== identity.challengeId
+        ) {
+          return
         }
-      } catch (err) {
+        submitAttemptOwner.complete(identity.gameId, identity.challengeId, pendingSubmission.attemptId)
         setDisabled(false)
         setFlag('')
         setReceiptProof('')
-        showErrorMsg(err, t)
-        clearInterval(polling)
-        setSubmitId(0)
-      }
-    }, 500)
-
-    return () => clearInterval(polling)
-  }, [submitId])
+        setPendingSubmission(null)
+        void checkDataFlag(identity, result)
+      },
+      onFailure: (identity, error) => {
+        if (!sameFlagVerdictIdentity(pendingSubmission, identity)) return
+        const scope = currentScope.current
+        if (
+          !scope.mounted ||
+          !scope.opened ||
+          scope.gameId !== identity.gameId ||
+          scope.challengeId !== identity.challengeId
+        ) {
+          return
+        }
+        // The backend has already committed this submission. Keep the exact
+        // flag/proof available for the player while surfacing recovery failure.
+        setDisabled(false)
+        setPendingSubmission(null)
+        notifications.hide('flag-submitted')
+        showErrorMsg(error, t)
+      },
+    })
+    poller.start()
+    return () => {
+      const scope = currentScope.current
+      const leftSubmission =
+        !scope.mounted ||
+        !scope.opened ||
+        scope.gameId !== pendingSubmission.gameId ||
+        scope.challengeId !== pendingSubmission.challengeId
+      const wasPending = poller.pending()
+      poller.cancel()
+      if (wasPending && leftSubmission) notifications.hide('flag-submitted')
+    }
+  }, [pendingSubmission, gameId, challengeId, readEnabled])
 
   useEffect(() => {
     if (challengeId !== solvedChallengeId) return
@@ -315,11 +475,11 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     }
   }, [status, challengeId, challenge])
 
-  const checkDataFlag = async (id: number, data: string) => {
-    dispatchFlagVerdict({ type: 'show', result: data, sequence: id })
+  const checkDataFlag = async (identity: FlagVerdictIdentity, data: string) => {
+    dispatchFlagVerdict({ type: 'show', result: data, sequence: identity.submissionId })
 
     if (data === AnswerResult.Accepted) {
-      setSolvedChallengeId(challengeId)
+      setSolvedChallengeId(identity.challengeId)
       updateNotification({
         id: 'flag-submitted',
         color: 'teal',
@@ -375,7 +535,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         color: 'yellow',
         title: t('challenge.notification.flag.unknown.title'),
         message: t('challenge.notification.flag.unknown.message', {
-          id,
+          id: identity.submissionId,
         }),
         icon: <Icon path={mdiClose} size={1} />,
         autoClose: false,
@@ -389,6 +549,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       {...modalProps}
       gameTitle={gameTitle}
       eventHref={eventHref}
+      loading={readEnabled && challenge === undefined && challengeError === undefined}
+      onRetryLoad={readEnabled ? () => void mutate() : undefined}
       challenge={{
         ...(challenge ?? {}),
         title: challenge?.title ?? title,
@@ -398,6 +560,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       solved={(status !== SubmissionType.Unaccepted && status !== undefined) || solvedChallengeId === challengeId}
       justSolved={solvedChallengeId === challengeId}
       solvers={solvers}
+      solverTotal={solverPage?.total}
+      loadError={pollErrorMessage(challengeError, 'challenge')}
+      solverError={pollErrorMessage(solverError, 'solvers')}
       flag={flag}
       setFlag={setFlag}
       receiptProof={receiptProof}
@@ -406,11 +571,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       onDestroy={onDestroy}
       onSubmitFlag={onSubmit}
       onReviewSubmit={onReviewSubmit}
-      disabled={disabled || isLimitReached}
-      // `disabled` alone covers both the POST and the 500ms /gameStatus
-      // poll loop (the poll calls setDisabled(false) only when it resolves).
-      // Previously also ORed submitId > 0, but submitId is never reset so
-      // the button would stay in loading state forever after a wrong flag.
+      disabled={disabled || isLimitReached || !readEnabled || !challenge}
+      // `disabled` covers both the POST and the owned verdict-recovery loop.
       submitting={disabled}
       onExtend={onExtend}
       gameEnded={gameEnded}
@@ -423,3 +585,10 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     />
   )
 }
+
+export const shouldReadChallenge = (
+  opened: boolean | undefined,
+  challengeOwned: boolean,
+  gameId: number,
+  challengeId: number
+) => Boolean(opened && challengeOwned && gameId > 0 && challengeId > 0)

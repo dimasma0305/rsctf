@@ -51,8 +51,8 @@ import {
 import { ScoreboardPagination } from '@Components/ScoreboardPagination'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { epochProgress } from '@Utils/epochProgress'
-import { useAdScoreboard, useGame } from '@Hooks/useGame'
-import { AdScoreboardChallenge, AdServiceScoreModel, AdTeamScoreModel } from '@Api'
+import { useGame } from '@Hooks/useGame'
+import { AdScoreboardChallenge, AdScoreboardModel, AdServiceScoreModel, AdTeamScoreModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
 import classes from '@Styles/ScoreboardTable.module.css'
 
@@ -450,16 +450,17 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
 
 interface AdScoreboardTableProps {
   numId: number
+  scoreboard: AdScoreboardModel | undefined
+  error: unknown
 }
 
-export const AdScoreboardTable: FC<AdScoreboardTableProps> = ({ numId }) => {
+export const AdScoreboardTable: FC<AdScoreboardTableProps> = ({ numId, scoreboard, error }) => {
   const { t } = useTranslation()
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
   const dark = colorScheme === 'dark'
   const isMobile = useIsMobile()
   const { game } = useGame(numId)
-  const { adScoreboard: scoreboard, error } = useAdScoreboard(numId)
   const [detailParticipationId, setDetailParticipationId] = useState<number | null>(null)
   const [scoringInfoOpened, setScoringInfoOpened] = useState(false)
 

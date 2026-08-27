@@ -6,19 +6,18 @@ import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
 import { normalizeLanguage, useLanguage } from '@Utils/I18n'
-import { getGameStatus, useGame, useGameScoreboard, useGameStatus } from '@Hooks/useGame'
-import { TimeLine, TopTimeLine } from '@Api'
+import { getGameStatus, useGame, useGameStatus } from '@Hooks/useGame'
+import { ScoreboardModel, TimeLine, TopTimeLine } from '@Api'
 
 interface TimeLineProps {
   divisionId: number | null
+  scoreboard: ScoreboardModel | undefined
 }
 
-export const ScoreTimeLine: FC<TimeLineProps> = ({ divisionId }) => {
+export const ScoreTimeLine: FC<TimeLineProps> = ({ divisionId, scoreboard }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const theme = useMantineTheme()
-
-  const { scoreboard } = useGameScoreboard(numId)
 
   const { game } = useGame(numId)
 

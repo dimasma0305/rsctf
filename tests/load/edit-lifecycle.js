@@ -191,6 +191,12 @@ export const EDIT_OPERATIONS = Object.freeze([
   operation('edit_ad_state', 'GET', '/api/edit/games/{id}/ad/State', {
     params: { id: 'adGameId' }, responseKind: 'ad-state',
   }),
+  operation('edit_ad_engines', 'GET', '/api/edit/games/{id}/ad/Engines', {
+    params: { id: 'adGameId' }, responseKind: 'ad-engines',
+  }),
+  operation('edit_ad_live', 'GET', '/api/edit/games/{id}/ad/Live', {
+    params: { id: 'adGameId' }, responseKind: 'ad-live',
+  }),
   operation('edit_ad_ensure_containers', 'POST', '/api/edit/games/{id}/ad/EnsureContainers', {
     auth: 'admin', params: { id: 'adGameId' }, mutation: true, runtime: true,
     responseKind: 'message',
@@ -245,9 +251,22 @@ export const EDIT_OPERATIONS = Object.freeze([
     params: { id: 'kothGameId', challengeId: 'kothChallengeId' }, mutation: true,
     responseKind: 'koth-observer-secret',
   }),
+  operation(
+    'edit_koth_observer_recover',
+    'GET',
+    '/api/edit/games/{id}/ad/koth/{challengeId}/observer/operations/{operationId}',
+    {
+      params: {
+        id: 'kothGameId',
+        challengeId: 'kothChallengeId',
+        operationId: 'kothObserverOperationId',
+      },
+      responseKind: 'koth-observer-secret',
+    },
+  ),
   operation('edit_koth_observer_revoke', 'DELETE', '/api/edit/games/{id}/ad/koth/{challengeId}/observer', {
     params: { id: 'kothGameId', challengeId: 'kothChallengeId' }, mutation: true,
-    responseKind: 'message',
+    responseKind: 'koth-observer-mutation',
   }),
   operation('edit_koth_recover', 'POST', '/api/edit/games/{id}/ad/koth/{challengeId}/recover', {
     params: { id: 'kothGameId', challengeId: 'kothChallengeId' }, mutation: true, runtime: true,
@@ -506,6 +525,21 @@ export function validateEditResponse(operationOrId, response) {
         throw new Error(`${item.id} invalid A&D state`);
       }
       break;
+    case 'ad-engines':
+      object();
+      if (typeof body.hasAttackDefense !== 'boolean' || typeof body.hasKoth !== 'boolean' ||
+          !Number.isSafeInteger(body.start) || !Number.isSafeInteger(body.end) ||
+          !Number.isSafeInteger(body.serverTime)) {
+        throw new Error(`${item.id} invalid operator-engine metadata`);
+      }
+      break;
+    case 'ad-live':
+      object();
+      if (!Array.isArray(body.services) || typeof body.scoringPaused !== 'boolean' ||
+          !Number.isSafeInteger(body.serverTime)) {
+        throw new Error(`${item.id} invalid A&D live projection`);
+      }
+      break;
     case 'service-file':
       object();
       if (typeof body.path !== 'string' || typeof body.containerRunning !== 'boolean') {
@@ -546,10 +580,12 @@ export function validateEditResponse(operationOrId, response) {
           typeof body.resetPhase !== 'string') throw new Error(`${item.id} invalid KotH recovery`);
       break;
     case 'koth-observer':
-    case 'koth-observer-secret': {
+    case 'koth-observer-secret':
+    case 'koth-observer-mutation': {
       object();
       const timestamps = ['createdAt', 'rotatedAt', 'lastUsedAt', 'lastObservationAt'];
       if (!Number.isSafeInteger(body.challengeId) ||
+          !Number.isSafeInteger(body.revision) || body.revision < 0 ||
           !['Api', 'Marker'].includes(body.claimSource) ||
           typeof body.configured !== 'boolean' ||
           (body.secretHint != null && typeof body.secretHint !== 'string') ||
@@ -560,14 +596,20 @@ export function validateEditResponse(operationOrId, response) {
       }
       if (item.responseKind === 'koth-observer-secret') {
         if (!body.configured || body.claimSource !== 'Api' ||
+            typeof body.operationId !== 'string' ||
             typeof body.secret !== 'string' || !body.secret.startsWith('koth_api_')) {
           throw new Error(`${item.id} omitted the one-time KotH observer secret`);
         }
-        if (!/\bno-store\b/i.test(headerValue(response.headers, 'cache-control'))) {
-          throw new Error(`${item.id} allowed the one-time KotH observer secret to be cached`);
-        }
       } else if (Object.hasOwn(body, 'secret')) {
         throw new Error(`${item.id} leaked the KotH observer secret`);
+      }
+      if (item.responseKind === 'koth-observer-mutation' &&
+          (typeof body.operationId !== 'string' || body.configured !== false)) {
+        throw new Error(`${item.id} returned an invalid KotH observer mutation`);
+      }
+      if (item.responseKind !== 'koth-observer' &&
+          !/\bno-store\b/i.test(headerValue(response.headers, 'cache-control'))) {
+        throw new Error(`${item.id} allowed a recoverable KotH mutation result to be cached`);
       }
       break;
     }

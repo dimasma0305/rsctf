@@ -11,6 +11,7 @@ pub mod ad;
 mod flag_egress;
 #[path = "participation.rs"]
 mod participation_review;
+pub(crate) mod users_manager_autocomplete;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -30,14 +31,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, Duration, Utc};
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::AdminUser;
 use crate::models::data::{
-    api_token, build_record, challenge_review, config, container, division, game, game_challenge,
-    game_manager, local_file, log_entry, participation, repo_binding, repo_binding_scan,
-    submission, team, user,
+    api_token, build_record, config, division, game, game_challenge, game_manager, local_file,
+    log_entry, participation, repo_binding, repo_binding_scan, team, user,
 };
 use crate::utils::crypto_utils::hash_password_async;
 use crate::utils::enums::{
@@ -48,6 +48,7 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{ArrayResponse, MessageResponse, RequestResponse};
 pub use flag_egress::*;
 pub use participation_review::*;
+use users_manager_autocomplete::manager_autocomplete;
 
 // ─── DTOs ──────────────────────────────────────────────────────────────────
 
@@ -92,19 +93,41 @@ pub fn router() -> Router<SharedState> {
                 .merge(delete(logo_delete)),
         )
         // --- Dashboard / trends / reviews / cheat reports / writeups ---
-        .route("/api/admin/dashboard", get(dashboard))
+        .route(
+            "/api/admin/dashboard",
+            limited(Policy::Query, get(dashboard)),
+        )
         .route("/api/admin/Games/{id}/FlagEgress", get(get_flag_egress))
-        .route("/api/admin/submissiontrend", get(submission_trend))
-        .route("/api/admin/reviews", get(reviews))
-        .route("/api/admin/cheat-reports", get(cheat_reports))
-        .route("/api/admin/writeups", get(all_writeups))
-        .route("/api/admin/writeups/{id}", get(game_writeups))
-        .route("/api/admin/writeups/{id}/all", get(download_all_writeups))
+        .route(
+            "/api/admin/submissiontrend",
+            limited(Policy::Query, get(submission_trend)),
+        )
+        .route("/api/admin/reviews", limited(Policy::Query, get(reviews)))
+        .route(
+            "/api/admin/cheat-reports",
+            limited(Policy::Query, get(cheat_reports)),
+        )
+        .route(
+            "/api/admin/writeups",
+            limited(Policy::Query, get(all_writeups)),
+        )
+        .route(
+            "/api/admin/writeups/{id}",
+            limited(Policy::Query, get(game_writeups)),
+        )
+        .route(
+            "/api/admin/writeups/{id}/all",
+            limited(Policy::Query, get(download_all_writeups)),
+        )
         // --- Users ---
         .route("/api/admin/users", get(users).post(add_users))
         .route("/api/admin/users/import", post(import_users))
         .route("/api/admin/users/credentials/send", post(send_credentials))
         .route("/api/admin/users/search", post(search_users))
+        .route(
+            "/api/admin/users/manager-autocomplete",
+            limited(Policy::Query, get(manager_autocomplete)),
+        )
         .route(
             "/api/admin/users/{userid}",
             get(user_info).put(update_user).delete(delete_user),
@@ -123,6 +146,10 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/logs", get(logs))
         // --- Instances ---
         .route("/api/admin/instances", get(instances))
+        .route(
+            "/api/admin/instances/filter-options",
+            get(instance_filter_options),
+        )
         .route("/api/admin/instances/{id}", delete(destroy_instance))
         .route("/api/admin/instances/{id}/stats", get(instance_stats))
         // --- Files ---
@@ -210,128 +237,50 @@ pub fn router() -> Router<SharedState> {
         .merge(ad::router())
 }
 
-// ─── Dashboard ───────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod dashboard_route_admission_tests {
+    #[test]
+    fn expensive_dashboard_activity_reads_require_admin_and_query_admission() {
+        let router_source = include_str!("mod.rs");
+        let compact_router = router_source
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let handler_sources = [
+            router_source,
+            include_str!("dashboard.rs"),
+            include_str!("anti_cheat.rs"),
+        ]
+        .join("\n");
 
-/// RSCTF `SystemStatsModel`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SystemStatsModel {
-    pub user_count: i64,
-    pub team_count: i64,
-    pub active_container_count: i64,
-}
+        for (path, handler) in [
+            ("/api/admin/dashboard", "dashboard"),
+            ("/api/admin/submissiontrend", "submission_trend"),
+            ("/api/admin/reviews", "reviews"),
+            ("/api/admin/cheat-reports", "cheat_reports"),
+            ("/api/admin/writeups", "all_writeups"),
+            ("/api/admin/writeups/{id}", "game_writeups"),
+            ("/api/admin/writeups/{id}/all", "download_all_writeups"),
+        ] {
+            assert!(
+                compact_router.contains(&format!("\"{path}\"")),
+                "missing {path}"
+            );
+            assert!(
+                compact_router.contains(&format!("limited(Policy::Query, get({handler}))")),
+                "{path} must retain named query-work admission"
+            );
 
-/// RSCTF `BasicGameInfoModel`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BasicGameInfoModel {
-    pub id: i32,
-    pub title: String,
-    pub summary: String,
-    pub poster: Option<String>,
-    pub limit: i32,
-    pub team_count: i64,
-    pub user_count: i64,
-    /// Fraction of positive (Like) ratings among decisive (Like/Dislike)
-    /// challenge reviews for the game; `null` when there are none — mirrors
-    /// RSCTF's nullable `AverageRating`.
-    pub average_rating: Option<f64>,
-    /// Total number of challenge-review rows for the game (RSCTF `ReviewCount`).
-    pub review_count: i32,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub start: DateTime<Utc>,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub end: DateTime<Utc>,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub server_time: DateTime<Utc>,
-}
-
-/// RSCTF `AdminDashboardModel`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AdminDashboardModel {
-    pub system_stats: SystemStatsModel,
-    pub top_games: Vec<BasicGameInfoModel>,
-}
-
-/// `GET /api/admin/dashboard` — platform-wide stats + top games by team count.
-pub async fn dashboard(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-) -> AppResult<RequestResponse<AdminDashboardModel>> {
-    let user_count = user::Entity::find().count(&st.db).await? as i64;
-    let team_count = team::Entity::find().count(&st.db).await? as i64;
-    let active_container_count = container::Entity::find().count(&st.db).await? as i64;
-
-    let games = game::Entity::find()
-        .order_by_desc(game::Column::Id)
-        .limit(50)
-        .all(&st.db)
-        .await?;
-
-    let mut top_games = Vec::with_capacity(games.len());
-    for g in games {
-        let tc = participation::Entity::find()
-            .filter(participation::Column::GameId.eq(g.id))
-            .count(&st.db)
-            .await? as i64;
-        top_games.push(BasicGameInfoModel {
-            id: g.id,
-            title: g.title,
-            summary: g.summary,
-            poster: g.poster_hash.map(|h| format!("/assets/{h}/poster")),
-            limit: g.team_member_count_limit,
-            team_count: tc,
-            user_count: tc,
-            average_rating: None,
-            review_count: 0,
-            start: g.start_time_utc,
-            end: g.end_time_utc,
-            server_time: Utc::now(),
-        });
-    }
-    top_games.sort_by_key(|game| std::cmp::Reverse(game.team_count));
-    top_games.truncate(5);
-
-    // Per top game, derive the review stats RSCTF's dashboard reports: the total
-    // review count, and the average rating as the fraction of decisive reviews
-    // that are positive. RSCTF's `ReviewRating` is stored numerically
-    // (Dislike = 1, Like = 2); rsctf's enum shares those discriminants, so we
-    // read the raw `i16` value rather than the (differently-named) variants.
-    for g in top_games.iter_mut() {
-        let reviews = challenge_review::Entity::find()
-            .filter(challenge_review::Column::GameId.eq(g.id))
-            .all(&st.db)
-            .await?;
-        g.review_count = reviews.len() as i32;
-        let mut decisive = 0i64;
-        let mut likes = 0i64;
-        for r in &reviews {
-            match r.rating as i16 {
-                2 => {
-                    likes += 1;
-                    decisive += 1;
-                }
-                1 => decisive += 1,
-                _ => {}
-            }
+            let signature_start = handler_sources
+                .find(&format!("pub async fn {handler}"))
+                .unwrap_or_else(|| panic!("missing handler {handler}"));
+            let signature_end = (signature_start + 320).min(handler_sources.len());
+            assert!(
+                handler_sources[signature_start..signature_end].contains("AdminUser"),
+                "{handler} must retain backend admin authentication"
+            );
         }
-        g.average_rating = (decisive > 0).then(|| likes as f64 / decisive as f64);
     }
-
-    let response_time = Utc::now();
-    for game in &mut top_games {
-        game.server_time = response_time;
-    }
-
-    Ok(RequestResponse::ok(AdminDashboardModel {
-        system_stats: SystemStatsModel {
-            user_count,
-            team_count,
-            active_container_count,
-        },
-        top_games,
-    }))
 }
 
 // ─── Container instances ───────────────────────────────────────────────────────
@@ -365,168 +314,7 @@ pub async fn files(
     Ok(ArrayResponse::new(data, total))
 }
 
-// ─── Challenge reviews ─────────────────────────────────────────────────────────
-
-/// RSCTF `ChallengeReviewDetailModel`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChallengeReviewDetailModel {
-    pub id: i32,
-    pub challenge_id: i32,
-    pub challenge_name: String,
-    pub game_title: String,
-    pub user_id: Uuid,
-    pub user_name: String,
-    pub rating: ReviewRating,
-    pub comment: Option<String>,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub submit_time_utc: DateTime<Utc>,
-}
-
-/// `GET /api/admin/reviews` — recent challenge reviews (raw array), newest first.
-pub async fn reviews(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Query(q): Query<ListQuery>,
-) -> AppResult<RequestResponse<Vec<ChallengeReviewDetailModel>>> {
-    let count = q.count.clamp(0, 1000);
-    let rows = challenge_review::Entity::find()
-        .order_by_desc(challenge_review::Column::SubmitTimeUtc)
-        .offset(q.skip)
-        .limit(count)
-        .all(&st.db)
-        .await?;
-
-    let mut data = Vec::with_capacity(rows.len());
-    for r in rows {
-        let (challenge_name, game_title) = match game_challenge::Entity::find_by_id(r.challenge_id)
-            .one(&st.db)
-            .await?
-        {
-            Some(ch) => {
-                let title = game::Entity::find_by_id(ch.game_id)
-                    .one(&st.db)
-                    .await?
-                    .map(|g| g.title)
-                    .unwrap_or_default();
-                (ch.title, title)
-            }
-            None => (String::new(), String::new()),
-        };
-        let user_name = user::Entity::find_by_id(r.user_id)
-            .one(&st.db)
-            .await?
-            .and_then(|u| u.user_name)
-            .unwrap_or_default();
-
-        data.push(ChallengeReviewDetailModel {
-            id: r.id,
-            challenge_id: r.challenge_id,
-            challenge_name,
-            game_title,
-            user_id: r.user_id,
-            user_name,
-            rating: r.rating,
-            comment: r.comment,
-            submit_time_utc: r.submit_time_utc,
-        });
-    }
-
-    Ok(RequestResponse::ok(data))
-}
-
-// ─── Submission trend ──────────────────────────────────────────────────────────
-
-/// RSCTF `SubmissionTrendModel`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubmissionTrendModel {
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub time: DateTime<Utc>,
-    pub count: i64,
-}
-
-/// Query for `GET /api/admin/submissiontrend`: the RSCTF `range` selector
-/// (`Day` | `Week` | `Month` | `Year`).
-#[derive(Debug, Default, Deserialize)]
-pub struct SubmissionTrendQuery {
-    pub range: Option<String>,
-}
-
-/// `GET /api/admin/submissiontrend` — submissions over a window bucketed per
-/// RSCTF `AdminController.GetSubmissionTrend`:
-///   * `Day` (default) — last 24h, by hour.
-///   * `Week` — last 7 days, by day.
-///   * `Month` — last 30 days, by day.
-///   * `Year` — last 12 months, by month.
-///
-/// Returns a raw array ascending by bucket time.
-pub async fn submission_trend(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Query(q): Query<SubmissionTrendQuery>,
-) -> AppResult<RequestResponse<Vec<SubmissionTrendModel>>> {
-    let range = q.range.unwrap_or_default().to_lowercase();
-    let now = Utc::now();
-    let since = match range.as_str() {
-        "week" => now - Duration::days(7),
-        "month" => now - Duration::days(30),
-        "year" => now - Duration::days(365),
-        // "day" and anything else
-        _ => now - Duration::hours(24),
-    };
-
-    let subs = submission::Entity::find()
-        .filter(submission::Column::SubmitTimeUtc.gte(since))
-        .all(&st.db)
-        .await?;
-
-    let mut buckets: BTreeMap<DateTime<Utc>, i64> = BTreeMap::new();
-    for s in subs {
-        let t = s.submit_time_utc;
-        let key = match range.as_str() {
-            // Group by month (first day of month, midnight UTC).
-            "year" => NaiveDate::from_ymd_opt(t.year(), t.month(), 1)
-                .and_then(|d| d.and_hms_opt(0, 0, 0))
-                .map(|dt| dt.and_utc())
-                .unwrap_or(t),
-            // Group by day (midnight UTC).
-            "week" | "month" => t
-                .date_naive()
-                .and_hms_opt(0, 0, 0)
-                .map(|dt| dt.and_utc())
-                .unwrap_or(t),
-            // Group by hour.
-            _ => t
-                .with_minute(0)
-                .and_then(|t| t.with_second(0))
-                .and_then(|t| t.with_nanosecond(0))
-                .unwrap_or(t),
-        };
-        *buckets.entry(key).or_insert(0) += 1;
-    }
-
-    let data = buckets
-        .into_iter()
-        .map(|(time, count)| SubmissionTrendModel { time, count })
-        .collect();
-    Ok(RequestResponse::ok(data))
-}
-
 // ─── Writeups ──────────────────────────────────────────────────────────────────
-
-/// RSCTF `WriteupInfo`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WriteupInfo {
-    pub id: i32,
-    pub team: TeamInfoModel,
-    pub game_title: String,
-    pub url: String,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub upload_time_utc: DateTime<Utc>,
-    pub division_id: Option<i32>,
-}
 
 /// RSCTF `WriteupInfoModel` (per-game view).
 #[derive(Debug, Serialize)]
@@ -571,30 +359,6 @@ async fn writeup_for(st: &SharedState, p: &participation::Model) -> AppResult<Op
         upload_time_utc: f.upload_time_utc,
         division_id: p.division_id,
     }))
-}
-
-/// `GET /api/admin/writeups` — every submitted writeup across all games (raw array).
-pub async fn all_writeups(
-    State(st): State<SharedState>,
-    _admin: AdminUser,
-    Query(q): Query<ListQuery>,
-) -> AppResult<RequestResponse<Vec<WriteupInfo>>> {
-    let count = q.count.clamp(0, 1000);
-    let parts = participation::Entity::find()
-        .filter(participation::Column::WriteupId.is_not_null())
-        .order_by_desc(participation::Column::Id)
-        .offset(q.skip)
-        .limit(count)
-        .all(&st.db)
-        .await?;
-
-    let mut data = Vec::with_capacity(parts.len());
-    for p in parts {
-        if let Some(w) = writeup_for(&st, &p).await? {
-            data.push(w);
-        }
-    }
-    Ok(RequestResponse::ok(data))
 }
 
 /// `GET /api/admin/writeups/{id}` — writeups submitted for a single game.
@@ -965,6 +729,7 @@ fn generate_password() -> String {
 
 mod anti_cheat;
 mod builds;
+mod dashboard;
 mod diagnostics;
 mod instances;
 mod logs;
@@ -977,6 +742,7 @@ mod users_credentials;
 mod users_mutate;
 pub use anti_cheat::*;
 pub use builds::*;
+pub use dashboard::*;
 pub use diagnostics::*;
 pub use instances::*;
 pub use logs::*;

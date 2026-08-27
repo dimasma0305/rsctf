@@ -20,7 +20,8 @@ import {
   useAdScoreboard,
   useCombinedScoreboard,
   useGame,
-  useGameScoreboard,
+  useGameScoreboardPoll,
+  useGameScoreboardRead,
   useGameTeamInfo,
   useGameStatus,
   useKothScoreboard,
@@ -38,15 +39,16 @@ const Scoreboard: FC = () => {
   const numId = parseInt(id ?? '-1')
   // These two general-game reads are needed once for tab discovery. The visible
   // A&D/KotH board owns live polling, so do not keep unrelated endpoints hot.
-  const { teamInfo, error } = useGameTeamInfo(numId, false)
+  const { teamInfo, error: teamInfoError } = useGameTeamInfo(numId, false)
   const { t } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
   // Keep the public catalog loaded even on direct #ad/#koth links. Anonymous
   // visitors cannot rely on the user-gated /Details response for tab discovery.
-  const { scoreboard } = useGameScoreboard(numId, false)
+  const scoreboardQuery = useGameScoreboardRead(numId)
+  const { scoreboard, error: scoreboardError } = scoreboardQuery
   const { game } = useGame(numId)
-  const { finished } = useGameStatus(game)
+  const { finished, status } = useGameStatus(game)
 
   const [divisionId, setDivisionId] = useState<number | null>(null)
   const isMobile = useIsMobile(1080)
@@ -118,6 +120,8 @@ const Scoreboard: FC = () => {
     (preferredTab === 'koth' && !hasKothChallenges)
       ? defaultTab
       : preferredTab
+  const standardBoardActive = scoreboard === undefined || (hasJeopardyChallenges && effectiveTab === 'jeopardy')
+  useGameScoreboardPoll(numId, status, standardBoardActive, scoreboardQuery)
 
   // Single click handler: update BOTH storage and URL in one go. No useEffect
   // round-trip; clicking 'A&D' immediately renders A&D and writes #ad.
@@ -145,13 +149,17 @@ const Scoreboard: FC = () => {
     }
   }, [effectiveTab, location.pathname, location.search, navigate, requestedTab, setStoredTab, storedTab, tabsResolved])
 
-  // Each live board freezes independently (separate endpoints) — read the
-  // freeze state from whichever board we're currently showing.
-  // These duplicate the table-level reads intentionally: SWR dedupes each key,
-  // while the page needs freeze metadata before rendering its shared banner.
-  const { adScoreboard } = useAdScoreboard(numId, hasAdChallenges && effectiveTab === 'ad')
-  const { kothScoreboard } = useKothScoreboard(numId, hasKothChallenges && effectiveTab === 'koth')
-  const { combinedScoreboard } = useCombinedScoreboard(numId, showTabs && effectiveTab === 'overall')
+  // The route owns each selected board snapshot. Banner and table consumers
+  // receive that snapshot as props instead of mounting drifting timers.
+  const { adScoreboard, error: adScoreboardError } = useAdScoreboard(numId, hasAdChallenges && effectiveTab === 'ad')
+  const { kothScoreboard, error: kothScoreboardError } = useKothScoreboard(
+    numId,
+    hasKothChallenges && effectiveTab === 'koth'
+  )
+  const { combinedScoreboard, error: combinedScoreboardError } = useCombinedScoreboard(
+    numId,
+    showTabs && effectiveTab === 'overall'
+  )
   const onOverallTab = effectiveTab === 'overall' && showTabs
   const onAdTab = effectiveTab === 'ad' && hasAdChallenges
   const onKothTab = effectiveTab === 'koth' && hasKothChallenges
@@ -264,16 +272,21 @@ const Scoreboard: FC = () => {
         {isMobile ? (
           <Stack pt="md">
             {freezeBanner}
-            {teamInfo && !error && showJeopardy && <TeamRank />}
+            {teamInfo && !teamInfoError && showJeopardy && <TeamRank />}
             {tabNavbar}
             {showOverall ? (
-              <CombinedScoreboardTable numId={numId} />
+              <CombinedScoreboardTable numId={numId} scoreboard={combinedScoreboard} error={combinedScoreboardError} />
             ) : showAd ? (
-              <AdScoreboardTable numId={numId} />
+              <AdScoreboardTable numId={numId} scoreboard={adScoreboard} error={adScoreboardError} />
             ) : showKoth ? (
-              <KothScoreboardTable numId={numId} />
+              <KothScoreboardTable numId={numId} scoreboard={kothScoreboard} error={kothScoreboardError} />
             ) : (
-              <MobileScoreboardTable divisionId={divisionId} setDivisionId={setDivisionId} />
+              <MobileScoreboardTable
+                divisionId={divisionId}
+                setDivisionId={setDivisionId}
+                scoreboard={scoreboard}
+                error={scoreboardError}
+              />
             )}
           </Stack>
         ) : (
@@ -281,15 +294,20 @@ const Scoreboard: FC = () => {
             {freezeBanner}
             {tabNavbar}
             {showOverall ? (
-              <CombinedScoreboardTable numId={numId} />
+              <CombinedScoreboardTable numId={numId} scoreboard={combinedScoreboard} error={combinedScoreboardError} />
             ) : showAd ? (
-              <AdScoreboardTable numId={numId} />
+              <AdScoreboardTable numId={numId} scoreboard={adScoreboard} error={adScoreboardError} />
             ) : showKoth ? (
-              <KothScoreboardTable numId={numId} />
+              <KothScoreboardTable numId={numId} scoreboard={kothScoreboard} error={kothScoreboardError} />
             ) : (
               <>
-                {showJeopardy && <ScoreTimeLine divisionId={divisionId} />}
-                <ScoreboardTable divisionId={divisionId} setDivisionId={setDivisionId} />
+                {showJeopardy && <ScoreTimeLine divisionId={divisionId} scoreboard={scoreboard} />}
+                <ScoreboardTable
+                  divisionId={divisionId}
+                  setDivisionId={setDivisionId}
+                  scoreboard={scoreboard}
+                  error={scoreboardError}
+                />
               </>
             )}
           </Stack>

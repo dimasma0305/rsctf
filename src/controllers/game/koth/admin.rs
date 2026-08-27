@@ -137,11 +137,15 @@ async fn load_observer_admin_state(
              LEFT JOIN "KothApiObservers" observer
                ON observer.game_id = challenge.game_id
               AND observer.challenge_id = challenge.id
-             LEFT JOIN "KothTargets" target
-               ON target.game_id = challenge.game_id
-              AND target.challenge_id = challenge.id
-             LEFT JOIN "KothApiSnapshots" snapshot
-               ON snapshot.target_id = target.id
+             LEFT JOIN LATERAL (
+               SELECT snapshot.accepted_at
+                 FROM "KothTargets" target
+                 JOIN "KothApiSnapshots" snapshot ON snapshot.target_id = target.id
+                WHERE target.game_id = challenge.game_id
+                  AND target.challenge_id = challenge.id
+                ORDER BY snapshot.accepted_at DESC, snapshot.target_id DESC
+                LIMIT 1
+             ) snapshot ON TRUE
             WHERE challenge.game_id = $1 AND challenge."Type" = $2"#,
     )
     .bind(game_id)
@@ -167,20 +171,14 @@ pub async fn admin_state(
     // co-manager of this game.
     require_game_admin(&st, &user, game_id).await?;
 
-    let board = compute_koth_board(&st, game_id, None, true).await?;
+    let game = super::super::load_game_cached(&st, game_id).await?;
+    let (scoring, board) = tokio::try_join!(
+        build_koth_scoreboard_cached(&st, &game, true),
+        compute_koth_admin_hill_state(&st, game_id)
+    )?;
     let mut lifecycle = load_lifecycle_map(&st, game_id, board.latest_round, None).await?;
     let mut cycle_champions = load_cycle_champions(&st, game_id).await?;
     let mut observer_state = load_observer_admin_state(&st, game_id).await?;
-    let config = sqlx::query_as::<_, (i32, i32, i32, i32)>(
-        r#"SELECT koth_epoch_ticks, koth_cycle_ticks, koth_champion_cooldown_ticks,
-                  koth_claim_confirmation_ticks
-             FROM "Games" WHERE id = $1"#,
-    )
-    .bind(game_id)
-    .fetch_optional(st.pg())
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Game not found"))?;
 
     // The admin console shows every hill, including disabled ones.
     let all: Vec<&KothHillInfo> = board.hills.iter().collect();
@@ -243,17 +241,19 @@ pub async fn admin_state(
         })
         .collect();
 
-    let teams = build_team_rows(&board, &all);
-    let (epoch_ticks, cycle_ticks, cooldown_ticks, confirmation_ticks) = config;
-
     Ok(RequestResponse::ok(AdminKothStateModel {
-        epoch_ticks,
-        cycle_ticks,
-        champion_cooldown_ticks: cooldown_ticks,
-        claim_confirmation_ticks: confirmation_ticks,
+        epoch_ticks: game.koth_epoch_ticks,
+        cycle_ticks: game.koth_cycle_ticks,
+        champion_cooldown_ticks: game.koth_champion_cooldown_ticks,
+        claim_confirmation_ticks: game.koth_claim_confirmation_ticks,
         tick_seconds: board.tick_seconds,
+        scoring_generated_at: scoring.generated_at,
+        latest_round: scoring.latest_round,
+        current_round_ends_at: scoring.current_round_ends_at,
+        scoring_paused: game.ad_scoring_paused,
+        scoring_paused_at: game.ad_scoring_paused_at,
         hills,
-        teams,
+        teams: scoring.teams,
     }))
 }
 
@@ -279,6 +279,9 @@ pub async fn recover_hill(
     let (cycle_number, phase) =
         crate::services::ad_engine::koth_cycle::recover_cycle(&st, game_id, challenge_id).await?;
     st.cache.remove(&format!("_KothScoreBoard_{game_id}")).await;
+    st.cache
+        .remove(&format!("_KothScoreBoardWireV2_{game_id}"))
+        .await;
     st.cache
         .remove(&format!("_KothHillState_{game_id}_{challenge_id}"))
         .await;

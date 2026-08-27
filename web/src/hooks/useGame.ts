@@ -1,12 +1,24 @@
 import dayjs, { Dayjs } from 'dayjs'
 import { TFunction } from 'i18next'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import useSWR, { type Middleware, type SWRConfiguration, unstable_serialize } from 'swr'
 import { GameStatus } from '@Components/GameCard'
 import { isRetryableHttpError } from '@Utils/HttpError'
 import { useServerNow } from '@Utils/ServerClock'
+import { useViewerIdentity, viewerScopedKey } from '@Utils/ViewerIdentity'
+import {
+  CompletionPollSWRConfig,
+  eventScoreboardPollDelay,
+  jitterPollingDelay,
+  useCompletionPolling,
+} from '@Hooks/useCompletionPolling'
 import { OnceSWRConfig } from '@Hooks/useConfig'
-import api, { ParticipationStatus } from '@Api'
+import api, {
+  type AdEngineMetadataModel,
+  type AdGameStateModel,
+  type AdLiveStateModel,
+  ParticipationStatus,
+} from '@Api'
 
 export const GAME_TIMING_REFRESH_MS = 60_000
 export const GAME_TIMING_RETRY_CAP_MS = 5 * 60_000
@@ -29,12 +41,11 @@ type RecentGameRead = {
 
 const monotonicMilliseconds = () => (typeof performance === 'undefined' ? Date.now() : performance.now())
 
-const gameAccessReadSnapshot = (key: string, data: unknown): GameAccessReadSnapshot | null => {
-  const keyMatch = /^\/api\/game\/(\d+)$/.exec(key)
-  if (!keyMatch || !data || typeof data !== 'object') return null
+const gameAccessReadSnapshot = (data: unknown): GameAccessReadSnapshot | null => {
+  if (!data || typeof data !== 'object') return null
   const record = data as Record<string, unknown>
-  const id = Number(keyMatch[1])
-  if (!Number.isSafeInteger(id) || record.id !== id) return null
+  const id = record.id
+  if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) return null
   return {
     id,
     start: record.start,
@@ -62,7 +73,7 @@ const createRecentGameReads = (nowMilliseconds: () => number) => {
   }
   const invalidate = (key: string) => reads.delete(key)
   const remember = (key: string, data: unknown) => {
-    const snapshot = gameAccessReadSnapshot(key, data)
+    const snapshot = gameAccessReadSnapshot(data)
     if (!snapshot) {
       invalidate(key)
       return
@@ -85,7 +96,7 @@ const createRecentGameReads = (nowMilliseconds: () => number) => {
       reads.delete(key)
       return false
     }
-    const snapshot = gameAccessReadSnapshot(key, data)
+    const snapshot = gameAccessReadSnapshot(data)
     return snapshot !== null && sameGameAccessRead(entry.snapshot, snapshot)
   }
   const clear = () => reads.clear()
@@ -105,7 +116,8 @@ type LiveGameReadGeneration = {
  */
 const useLiveGameReadReady = (
   key: string,
-  gameId: number | undefined,
+  expectedGameId: number,
+  responseGameId: number | undefined,
   isValidating: boolean,
   error: unknown,
   recentSuccessfulRead: boolean
@@ -116,7 +128,7 @@ const useLiveGameReadReady = (
     validationObserved: false,
     ready: recentSuccessfulRead,
   })
-  const responseMatchesKey = gameId !== undefined && key === unstable_serialize(`/api/game/${gameId}`)
+  const responseMatchesKey = expectedGameId > 0 && responseGameId === expectedGameId
 
   useLayoutEffect(() => {
     setState((current) => {
@@ -276,29 +288,32 @@ export const createGameTimingSWRConfig = (
     ...gameTimingSWRConfig,
     use: [...(gameTimingSWRConfig.use ?? []), scopeMiddleware],
     onError: (_error, key) => {
-      cancel(key)
-      recentGameReads.invalidate(key)
+      const serializedKey = unstable_serialize(key)
+      cancel(serializedKey)
+      recentGameReads.invalidate(serializedKey)
     },
     onSuccess: (data, key) => {
-      cancel(key)
-      recentGameReads.remember(key, data)
+      const serializedKey = unstable_serialize(key)
+      cancel(serializedKey)
+      recentGameReads.remember(serializedKey, data)
     },
-    onDiscarded: cancel,
+    onDiscarded: (key) => cancel(unstable_serialize(key)),
     onErrorRetry: (_error, key, _config, revalidate, options) => {
-      if (!subscribers.has(key)) return
-      cancel(key)
+      const serializedKey = unstable_serialize(key)
+      if (!subscribers.has(serializedKey)) return
+      cancel(serializedKey)
       retryTimers.set(
-        key,
+        serializedKey,
         setTimeout(
           () => {
-            retryTimers.delete(key)
-            if (!subscribers.has(key)) return
+            retryTimers.delete(serializedKey)
+            if (!subscribers.has(serializedKey)) return
             const visible = _config.refreshWhenHidden || _config.isVisible()
             const online = _config.refreshWhenOffline || _config.isOnline()
             if (!visible || !online) {
               // Keep no dormant timer chain. One shared listener resumes this
               // deduplicating revalidator once visibility and connectivity agree.
-              deferredRetries.set(key, {
+              deferredRetries.set(serializedKey, {
                 isActive: () =>
                   (_config.refreshWhenHidden || _config.isVisible()) &&
                   (_config.refreshWhenOffline || _config.isOnline()),
@@ -437,10 +452,12 @@ export const useGame = (numId: number) => {
 /** Game data plus a per-route live-read gate for lifecycle/access redirects. */
 export const useGameAccess = (numId: number) => {
   const gameState = useGame(numId)
-  const gameKey = unstable_serialize(numId > 0 ? `/api/game/${numId}` : null)
+  const { scope } = useViewerIdentity()
+  const gameKey = unstable_serialize(viewerScopedKey(numId > 0 ? `/api/game/${numId}` : null, scope))
   const recentSuccessfulRead = sharedGameTimingOwner.hasRecentSuccessfulGameRead(gameKey, gameState.game)
   const liveReadReady = useLiveGameReadReady(
     gameKey,
+    numId,
     gameState.game?.id,
     gameState.isValidating,
     gameState.error,
@@ -450,22 +467,55 @@ export const useGameAccess = (numId: number) => {
   return { ...gameState, liveReadReady }
 }
 
-export const useGameScoreboard = (numId: number, isTabActive: boolean = true) => {
-  const { game } = useGame(numId)
-  const { status } = useGameStatus(game)
-  const polling = status === GameStatus.OnGoing && isTabActive
-
+export const useGameScoreboardRead = (numId: number) => {
   const {
     data: scoreboard,
     error,
+    isValidating,
     mutate,
-  } = api.game.useGameScoreboard(numId, {
-    ...OnceSWRConfig,
-    refreshInterval: polling ? 30 * 1000 : 0,
-  })
-  useRevalidateWhenPollingStops(polling, mutate)
+  } = api.game.useGameScoreboard(
+    numId,
+    {
+      ...CompletionPollSWRConfig,
+      // Conditional 304 reads return the exact retained object. Object identity
+      // avoids a recursive comparison over the full roster/challenge matrix.
+      compare: Object.is,
+    },
+    numId > 0
+  )
 
-  return { scoreboard, error, mutate }
+  return { scoreboard, error, isValidating, mutate }
+}
+
+export const useGameScoreboardPoll = (
+  numId: number,
+  status: GameStatus,
+  isTabActive: boolean,
+  { scoreboard, error, isValidating, mutate }: ReturnType<typeof useGameScoreboardRead>
+) => {
+  useCompletionPolling({
+    key: numId > 0 ? `/api/game/${numId}/scoreboard` : '',
+    // This read remains mounted for tab discovery. Include tab ownership in
+    // the phase so returning to Jeopardy performs one fresh read immediately.
+    phase: `${status}:${isTabActive ? 'active' : 'inactive'}`,
+    enabled: numId > 0 && isTabActive,
+    data: scoreboard,
+    error,
+    isValidating,
+    mutate,
+    // Standard Jeopardy has no asynchronous epoch settlement. A lifecycle
+    // transition still causes one immediate final read before this returns null.
+    successDelay: () => (status === GameStatus.OnGoing ? jitterPollingDelay(30_000) : null),
+  })
+}
+
+export const useGameScoreboard = (numId: number, isTabActive: boolean = true) => {
+  const { game } = useGame(numId)
+  const { status } = useGameStatus(game)
+  const query = useGameScoreboardRead(numId)
+  useGameScoreboardPoll(numId, status, isTabActive, query)
+
+  return query
 }
 
 export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
@@ -517,23 +567,29 @@ export const useAdScoreboard = (numId: number, doFetch: boolean = true) => {
   const {
     data: adScoreboard,
     error,
+    isValidating,
     mutate,
   } = api.game.useGameAdScoreboard(
     numId,
     {
-      ...OnceSWRConfig,
+      ...CompletionPollSWRConfig,
       // Every response has a new generatedAt version, so recursive comparison
       // only scans the full team/service matrix before reaching that difference.
       compare: Object.is,
-      // Poll through warmup and post-event closeout. The final request flips
-      // fullySettled only after every official epoch is durably materialized.
-      refreshInterval: (latest) => {
-        if (!doFetch) return 0
-        return status === GameStatus.OnGoing || latest?.fullySettled !== true ? 10 * 1000 : 60 * 1000
-      },
     },
-    doFetch
+    doFetch && numId > 0
   )
+  useCompletionPolling({
+    key: doFetch && numId > 0 ? `/api/Game/${numId}/Ad/Scoreboard` : '',
+    phase: status,
+    enabled: doFetch && numId > 0,
+    data: adScoreboard,
+    error,
+    isValidating,
+    mutate,
+    successDelay: (latest, completedSuccesses) =>
+      eventScoreboardPollDelay(status, latest.fullySettled, completedSuccesses, 10_000),
+  })
   return { adScoreboard, error, mutate }
 }
 
@@ -661,16 +717,24 @@ export const useKothScoreboard = (numId: number, doFetch: boolean = true) => {
   const {
     data: kothScoreboard,
     error,
+    isValidating,
     mutate,
   } = useSWR<KothScoreboardModel>(doFetch && numId > 0 ? `/api/game/${numId}/ad/koth/scoreboard` : null, {
-    ...OnceSWRConfig,
+    ...CompletionPollSWRConfig,
+    // The conditional reader returns this exact object for a 304, preventing
+    // the large KotH table from rendering an unchanged teams-by-hills matrix.
     compare: Object.is,
-    // Keep polling through event closeout until the final partial epoch has
-    // been durably settled; after that, only refresh occasionally.
-    refreshInterval: (latest) => {
-      if (!doFetch) return 0
-      return status === GameStatus.OnGoing || latest?.fullySettled !== true ? 10 * 1000 : 60 * 1000
-    },
+  })
+  useCompletionPolling({
+    key: doFetch && numId > 0 ? `/api/game/${numId}/ad/koth/scoreboard` : '',
+    phase: status,
+    enabled: doFetch && numId > 0,
+    data: kothScoreboard,
+    error,
+    isValidating,
+    mutate,
+    successDelay: (latest, completedSuccesses) =>
+      eventScoreboardPollDelay(status, latest.fullySettled, completedSuccesses, 10_000),
   })
   return { kothScoreboard, error, mutate }
 }
@@ -731,14 +795,22 @@ export const useCombinedScoreboard = (numId: number, doFetch: boolean = true) =>
   const {
     data: combinedScoreboard,
     error,
+    isValidating,
     mutate,
   } = useSWR<CombinedScoreboardModel>(doFetch && numId > 0 ? `/api/game/${numId}/scoreboard/combined` : null, {
-    ...OnceSWRConfig,
+    ...CompletionPollSWRConfig,
     compare: Object.is,
-    refreshInterval: (latest) => {
-      if (!doFetch) return 0
-      return status === GameStatus.OnGoing || latest?.fullySettled !== true ? 10 * 1000 : 60 * 1000
-    },
+  })
+  useCompletionPolling({
+    key: doFetch && numId > 0 ? `/api/game/${numId}/scoreboard/combined` : '',
+    phase: status,
+    enabled: doFetch && numId > 0,
+    data: combinedScoreboard,
+    error,
+    isValidating,
+    mutate,
+    successDelay: (latest, completedSuccesses) =>
+      eventScoreboardPollDelay(status, latest.fullySettled, completedSuccesses, 10_000),
   })
   return { combinedScoreboard, error, mutate }
 }
@@ -760,21 +832,108 @@ export const useAdTokenHint = (numId: number, doFetch: boolean = true) => {
   return { adTokenHint, error, mutate }
 }
 
-/** A&D admin — operator console state poll. Faster refresh during active games. */
-export const useAdminAdState = (numId: number) => {
-  const { game } = useGame(numId)
-  const { status } = useGameStatus(game)
-  const polling = status === GameStatus.OnGoing
+export const ADMIN_OPERATOR_POLL_MS = 5_000
+export const ADMIN_OPERATOR_GRID_POLL_MS = 30_000
+export const ADMIN_OPERATOR_METADATA_POLL_MS = 60_000
+export const ADMIN_OPERATOR_RETRY_LIMIT = 4
+
+export type AdminOperatorView = 'ad' | 'koth'
+
+export const adminOperatorView = (
+  preferred: AdminOperatorView,
+  metadata?: Pick<AdEngineMetadataModel, 'hasAttackDefense' | 'hasKoth'>
+): AdminOperatorView => {
+  if (!metadata) return preferred
+  if (preferred === 'ad' && metadata.hasAttackDefense) return 'ad'
+  if (preferred === 'koth' && metadata.hasKoth) return 'koth'
+  return metadata.hasAttackDefense ? 'ad' : 'koth'
+}
+
+export const adminOperatorPolling = (
+  metadata: Pick<AdEngineMetadataModel, 'start' | 'end'> | undefined,
+  nowMilliseconds: number
+) =>
+  metadata !== undefined &&
+  Number.isFinite(metadata.start) &&
+  Number.isFinite(metadata.end) &&
+  metadata.start <= nowMilliseconds &&
+  nowMilliseconds < metadata.end
+
+const operatorReadConfig = (refreshInterval: number): SWRConfiguration => ({
+  ...OnceSWRConfig,
+  refreshInterval,
+  refreshWhenHidden: false,
+  refreshWhenOffline: false,
+  revalidateOnFocus: true,
+  revalidateOnReconnect: true,
+  shouldRetryOnError: isRetryableHttpError,
+  errorRetryCount: ADMIN_OPERATOR_RETRY_LIMIT,
+  errorRetryInterval: ADMIN_OPERATOR_POLL_MS,
+})
+
+/** One cheap authorized read decides which engine endpoint may be mounted. */
+export const useAdminOperatorEngines = (numId: number) => {
+  const { data, error, mutate } = useSWR<AdEngineMetadataModel>(
+    numId > 0 ? `/api/edit/games/${numId}/ad/Engines` : null,
+    operatorReadConfig(ADMIN_OPERATOR_METADATA_POLL_MS)
+  )
+  return { engineMetadata: data, error, mutate }
+}
+
+export const mergeAdminAdState = (
+  snapshot: AdGameStateModel | undefined,
+  live: AdLiveStateModel | undefined
+): AdGameStateModel | undefined => {
+  if (!snapshot || !live) return snapshot
+  const liveByService = new Map(live.services.map((cell) => [cell.adTeamServiceId, cell]))
+  return {
+    ...snapshot,
+    currentRound: live.currentRound,
+    roundStartedAt: live.roundStartedAt,
+    roundEndsAt: live.roundEndsAt,
+    scoringPaused: live.scoringPaused,
+    scoringPausedAt: live.scoringPausedAt,
+    teams: snapshot.teams.map((team) => ({
+      ...team,
+      services: team.services.map((cell) => {
+        const delta = liveByService.get(cell.adTeamServiceId)
+        return delta
+          ? {
+              ...cell,
+              lastCheckId: delta.lastCheckId,
+              lastCheckStatus: delta.lastCheckStatus,
+              currentFlag: delta.currentFlag,
+            }
+          : cell
+      }),
+    })),
+  }
+}
+
+/** Refresh grid structure slowly while keeping verdict deltas on the live cadence. */
+export const useAdminAdState = (numId: number, enabled: boolean, polling: boolean) => {
   const {
-    data: adminAdState,
-    error,
-    mutate,
-  } = api.edit.useEditAdState(numId, {
-    ...OnceSWRConfig,
-    refreshInterval: polling ? 5 * 1000 : 0,
-  })
-  useRevalidateWhenPollingStops(polling, mutate)
-  return { adminAdState, error, mutate }
+    data: grid,
+    error: gridError,
+    mutate: mutateGrid,
+  } = api.edit.useEditAdState(
+    numId,
+    operatorReadConfig(polling ? ADMIN_OPERATOR_GRID_POLL_MS : 0),
+    enabled && numId > 0
+  )
+  const {
+    data: live,
+    error: liveError,
+    mutate: mutateLive,
+  } = useSWR<AdLiveStateModel>(
+    enabled && numId > 0 ? `/api/edit/games/${numId}/ad/Live` : null,
+    operatorReadConfig(polling ? ADMIN_OPERATOR_POLL_MS : 0)
+  )
+  useRevalidateWhenPollingStops(enabled && polling, mutateGrid)
+  useRevalidateWhenPollingStops(enabled && polling, mutateLive)
+  const adminAdState = useMemo(() => mergeAdminAdState(grid, live), [grid, live])
+  const mutate = async () => Promise.all([mutateGrid(), mutateLive()])
+  return { adminAdState, error: gridError ?? liveError, mutate }
 }
 
 /** One KotH hill in the operator console — the shared container + its current king + verdict. */
@@ -818,6 +977,14 @@ export interface AdminKothStateModel {
   championCooldownTicks: number
   claimConfirmationTicks: number
   tickSeconds: number
+  /** Unix milliseconds; identical for player/admin readers sharing this version. */
+  scoringGeneratedAt: number
+  latestRound: number
+  /** Unix milliseconds. */
+  currentRoundEndsAt: number | null
+  scoringPaused: boolean
+  /** Unix milliseconds. */
+  scoringPausedAt: number | null
   hills: AdminKothHill[]
   teams: KothTeamScoreRow[]
 }
@@ -840,6 +1007,8 @@ export interface AdminKothReceiptsModel {
 
 export interface AdminKothObserverModel {
   challengeId: number
+  /** Monotonic credential-state revision used by rotate/revoke preconditions. */
+  revision: number
   claimSource: 'Api' | 'Marker' | string
   configured: boolean
   secretHint: string | null
@@ -859,7 +1028,9 @@ export interface AdminKothObserverModel {
   lastObservationAt: number | null
   contextPath: string
   observationPath: string
-  /** Returned exactly once by credential creation/rotation. */
+  /** Identifies a completed recoverable credential mutation result. */
+  operationId?: string
+  /** Returned only by the original authorized mutation/recovery operation. */
   secret?: string
 }
 
@@ -871,19 +1042,15 @@ export interface AdminKothObserverModel {
  * hills for games with no KotH challenges), so callers can branch on
  * `hills.length` without a separate loading guard.
  */
-export const useAdminKothState = (numId: number) => {
-  const { game } = useGame(numId)
-  const { status } = useGameStatus(game)
-  const polling = status === GameStatus.OnGoing
+export const useAdminKothState = (numId: number, enabled: boolean, polling: boolean) => {
   const {
     data: adminKothState,
     error,
     mutate,
-  } = useSWR<AdminKothStateModel>(numId > 0 ? `/api/edit/games/${numId}/ad/koth/state` : null, {
-    ...OnceSWRConfig,
-    shouldRetryOnError: false,
-    refreshInterval: polling ? 5 * 1000 : 0,
-  })
-  useRevalidateWhenPollingStops(polling, mutate)
+  } = useSWR<AdminKothStateModel>(
+    enabled && numId > 0 ? `/api/edit/games/${numId}/ad/koth/state` : null,
+    operatorReadConfig(polling ? ADMIN_OPERATOR_POLL_MS : 0)
+  )
+  useRevalidateWhenPollingStops(enabled && polling, mutate)
   return { adminKothState, error, mutate }
 }

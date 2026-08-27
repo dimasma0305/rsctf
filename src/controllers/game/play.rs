@@ -929,6 +929,7 @@ pub async fn get_challenge(
     // is possible while the roster connection is retained.
     final_policy::finish_challenge_response(
         st.pg(),
+        &st.events,
         &user,
         final_policy::ChallengeResponseScope::new(
             id,

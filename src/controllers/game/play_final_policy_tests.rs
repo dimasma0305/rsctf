@@ -228,7 +228,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
           flag_id INTEGER, container_id UUID
         );
         CREATE TABLE "GameEvents" (
-          id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+          id SERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
           "Type" SMALLINT NOT NULL, "values" JSONB NOT NULL,
           publish_time_utc TIMESTAMPTZ NOT NULL, user_id UUID,
           team_id INTEGER NOT NULL
@@ -325,11 +325,13 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         name: "player".into(),
         security_stamp: "stamp".into(),
     };
+    let events = crate::services::event_bus::EventBus::local();
 
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         finish_challenge_response(
             &pool,
+            &events,
             &user,
             ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
@@ -363,6 +365,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
     assert!(matches!(
         finish_challenge_response(
             &pool,
+            &events,
             &user,
             ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
@@ -391,6 +394,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
     assert!(matches!(
         finish_challenge_response(
             &pool,
+            &events,
             &user,
             ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
@@ -414,6 +418,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
     assert!(matches!(
         finish_challenge_response(
             &pool,
+            &events,
             &user,
             ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
@@ -440,6 +445,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
     assert!(matches!(
         finish_challenge_response(
             &pool,
+            &events,
             &user,
             ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
@@ -459,6 +465,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
     assert!(matches!(
         finish_challenge_response(
             &pool,
+            &events,
             &user,
             ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),
@@ -504,11 +511,13 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         .await
         .unwrap();
     let pending_pool = pool.clone();
+    let pending_events = events.clone();
     let pending_user = user.clone();
     let pending_runtime = runtime.clone();
     let pending = tokio::spawn(async move {
         finish_challenge_response(
             &pending_pool,
+            &pending_events,
             &pending_user,
             ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(pending_runtime.clone()),
@@ -604,6 +613,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
     assert!(matches!(
         finish_challenge_response(
             &pool,
+            &events,
             &user,
             ChallengeResponseScope::new(1, 2, 3, 4),
             response_grant(runtime.clone()),

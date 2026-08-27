@@ -91,6 +91,10 @@ export const ADMIN_OPERATIONS = Object.freeze([
     responseKind: "page",
     query: "hint=admin-load",
   }),
+  operation("admin_manager_autocomplete_get", "GET", "/api/admin/users/manager-autocomplete", {
+    responseKind: "array",
+    query: "query=ad",
+  }),
   operation("admin_user_get", "GET", "/api/admin/users/{userid}", {
     poll: true,
     responseKind: "user",
@@ -145,7 +149,11 @@ export const ADMIN_OPERATIONS = Object.freeze([
   operation("admin_instances_get", "GET", "/api/admin/instances", {
     poll: true,
     responseKind: "page",
-    query: "count=25&skip=0",
+    query: "count=25&skip=0&includeRuntimeStats=true",
+  }),
+  operation("admin_instance_filter_options_get", "GET", "/api/admin/instances/filter-options", {
+    responseKind: "page",
+    query: "kind=Team&count=30",
   }),
   operation("admin_instance_delete", "DELETE", "/api/admin/instances/{id}", {
     mutation: true,
@@ -153,7 +161,6 @@ export const ADMIN_OPERATIONS = Object.freeze([
     params: { id: "instanceId" },
   }),
   operation("admin_instance_stats_get", "GET", "/api/admin/instances/{id}/stats", {
-    poll: true,
     responseKind: "instance-stats",
     params: { id: "instanceId" },
   }),

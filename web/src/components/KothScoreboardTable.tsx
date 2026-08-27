@@ -54,10 +54,10 @@ import { epochProgress } from '@Utils/epochProgress'
 import { isKothResetTransition, kothConfirmationProgress, maxKothCooldownTicks } from '@Utils/kothLifecycle'
 import {
   type KothHillScore,
+  type KothScoreboardModel,
   type KothScoreboardHill,
   type KothTeamScoreRow,
   useGame,
-  useKothScoreboard,
 } from '@Hooks/useGame'
 import misc from '@Styles/Misc.module.css'
 import classes from '@Styles/ScoreboardTable.module.css'
@@ -716,16 +716,17 @@ const ScoringInfoModal: FC<ScoringInfoModalProps> = ({
 
 interface KothScoreboardTableProps {
   numId: number
+  scoreboard: KothScoreboardModel | undefined
+  error: unknown
 }
 
-export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId }) => {
+export const KothScoreboardTable: FC<KothScoreboardTableProps> = ({ numId, scoreboard, error }) => {
   const { t } = useTranslation()
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
   const dark = colorScheme === 'dark'
   const isMobile = useIsMobile()
   const { game } = useGame(numId)
-  const { kothScoreboard: scoreboard, error } = useKothScoreboard(numId)
   const [detailParticipationId, setDetailParticipationId] = useState<number | null>(null)
   const [scoringInfoOpened, setScoringInfoOpened] = useState(false)
 

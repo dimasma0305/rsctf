@@ -140,7 +140,9 @@ and two differently scaled objective channels.
 
 1. Open the game's **A&D / KotH operations** page and select **KotH**.
 2. In the hill's **Claim input** column, choose **Enable Leaderboard**.
-3. Copy the one-time referee secret. RSCTF never returns its plaintext again.
+3. Copy the referee secret. For 24 hours, an ambiguous mutation response can
+   recover the exact result only for that same authorized operation; the
+   operator UI performs that recovery before it permits another change.
 4. Keep scoring paused and provision the official persistent arena lifecycle.
 5. Configure the referee with the game ID, challenge ID, RSCTF origin, stable
    arena URL, secret, and persistent state path.
@@ -161,6 +163,13 @@ Rotating or revoking a live credential clears the current snapshot. Pause
 scoring, rotate, submit fresh evidence, verify it, and resume. Leaderboard
 hills support at most 2,000 accepted teams, 64 waves per snapshot, and 2,000
 total team-wave rows; official start is rejected above the roster bound.
+
+Credential mutations carry an opaque `operationId` and the observer `revision`
+shown to the operator. A retry with that same authorized operation recovers the
+same result; a different operation against a stale revision is rejected. After
+an ambiguous response, recover the known operation before issuing another
+rotation or revocation. Results expire after 24 hours and are removed by bounded
+opportunistic cleanup.
 
 ## Wire contract
 

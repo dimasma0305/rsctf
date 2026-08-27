@@ -833,8 +833,12 @@ pub(crate) async fn flush_scoreboards_for_games(st: &SharedState, game_ids: &[i3
         for key in [
             format!("_ScoreBoard_{game_id}"),
             format!("_ScoreBoardFrozen_{game_id}"),
+            format!("_ScoreBoardWireV2_{game_id}"),
+            format!("_ScoreBoardWireV2Frozen_{game_id}"),
             format!("_KothScoreBoard_{game_id}"),
             format!("_KothScoreBoardFrozen_{game_id}"),
+            format!("_KothScoreBoardWireV2_{game_id}"),
+            format!("_KothScoreBoardWireV2Frozen_{game_id}"),
             format!("_KothTimeline_{game_id}"),
             format!("_KothTimelineFrozen_{game_id}"),
         ] {

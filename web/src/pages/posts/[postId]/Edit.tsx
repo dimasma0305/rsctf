@@ -6,8 +6,10 @@ import { Icon } from '@mdi/react'
 import { FC, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router'
+import { useSWRConfig } from 'swr'
 import { WithNavBar } from '@Components/WithNavbar'
 import { WithRole } from '@Components/WithRole'
+import { invalidatePostPageCaches } from '@Utils/PostFeed'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import api, { PostEditModel, Role } from '@Api'
@@ -15,6 +17,7 @@ import api, { PostEditModel, Role } from '@Api'
 const PostEdit: FC = () => {
   const { postId } = useParams()
   const navigate = useNavigate()
+  const { mutate: mutateCache } = useSWRConfig()
 
   const { t } = useTranslation()
 
@@ -58,6 +61,7 @@ const PostEdit: FC = () => {
         const res = await api.edit.editAddPost(post)
         api.info.mutateInfoGetLatestPosts()
         api.info.mutateInfoGetPosts()
+        void invalidatePostPageCaches(mutateCache)
         showNotification({
           color: 'teal',
           message: t('post.notification.created'),
@@ -82,6 +86,7 @@ const PostEdit: FC = () => {
         api.info.mutateInfoGetPost(postId, res.data)
         api.info.mutateInfoGetLatestPosts()
         api.info.mutateInfoGetPosts()
+        void invalidatePostPageCaches(mutateCache)
         showNotification({
           color: 'teal',
           message: t('post.notification.saved'),
@@ -104,6 +109,7 @@ const PostEdit: FC = () => {
       await api.edit.editDeletePost(postId)
       api.info.mutateInfoGetPosts()
       api.info.mutateInfoGetLatestPosts()
+      void invalidatePostPageCaches(mutateCache)
       navigate('/posts')
     } catch (e) {
       showErrorMsg(e, t)

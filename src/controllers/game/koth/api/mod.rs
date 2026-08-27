@@ -19,7 +19,7 @@ mod admin;
 mod authentication;
 mod submission;
 
-pub use admin::{get_observer, revoke_observer, rotate_observer};
+pub use admin::{get_observer, recover_observer_operation, revoke_observer, rotate_observer};
 pub use authentication::authenticate_capability;
 pub use submission::submit_observation;
 

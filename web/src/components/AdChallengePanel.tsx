@@ -1,12 +1,13 @@
 import { Alert, Badge, Button, CopyButton, Group, Loader, Stack, Text, Tooltip } from '@mantine/core'
 import { showNotification } from '@mantine/notifications'
-import { mdiAlertCircleOutline, mdiConsole, mdiDownload, mdiRestart, mdiServerNetwork } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiConsole, mdiDownload, mdiRefresh, mdiRestart, mdiServerNetwork } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { showErrorMsg } from '@Utils/Shared'
-import { useAdState } from '@Hooks/useGame'
-import api, { AdTeamServiceStateModel } from '@Api'
+import { useChallengePolling } from '@Hooks/useChallengePolling'
+import api, { AdSshKeyInfoModel, AdStateModel, AdTeamServiceStateModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
 const statusColor = (s?: string | null) => {
@@ -27,6 +28,7 @@ const statusColor = (s?: string | null) => {
 interface AdChallengePanelProps {
   gameId: number
   challengeId: number
+  active: boolean
   /**
    * Render ONLY the post-game snapshot (service backup) download, hiding the
    * live defending/SSH/reset state. Used after the game ends in practice mode,
@@ -43,10 +45,38 @@ interface AdChallengePanelProps {
  * Toolkit modal (sidebar button) so this panel only shows live per-team
  * operational state.
  */
-export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeId, snapshotOnly }) => {
+export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeId, active, snapshotOnly }) => {
   const { t } = useTranslation()
-  const { adState, mutate: mutateState } = useAdState(gameId)
-  const { data: sshKey } = api.game.useAdGameGetSshKey(gameId)
+  const stateRequest = useCallback(
+    async (signal: AbortSignal) => {
+      const response = await api.game.gameAdState(gameId, { signal })
+      return assertJsonResponse(response)
+    },
+    [gameId]
+  )
+  const {
+    data: adState,
+    error: stateError,
+    mutate: mutateState,
+  } = useChallengePolling<AdStateModel>({
+    key: gameId > 0 ? `/api/Game/${gameId}/Ad/State` : null,
+    active,
+    refreshInterval: snapshotOnly ? 0 : 10_000,
+    request: stateRequest,
+  })
+  const sshRequest = useCallback(
+    async (signal: AbortSignal) => {
+      const response = await api.game.adGameGetSshKey(gameId, { signal })
+      return assertJsonResponse(response)
+    },
+    [gameId]
+  )
+  const { data: sshKey } = useChallengePolling<AdSshKeyInfoModel>({
+    key: gameId > 0 ? `/api/Game/${gameId}/Ad/Ssh/Key` : null,
+    active: active && !snapshotOnly,
+    refreshInterval: 0,
+    request: sshRequest,
+  })
   const [resetting, setResetting] = useState(false)
 
   const service: AdTeamServiceStateModel | undefined = adState?.services.find((s) => s.challengeId === challengeId)
@@ -74,9 +104,48 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
       </Group>
     ) : null
 
+  const stateFailure = stateError ? (
+    <Alert
+      icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+      color={adState ? 'orange' : 'red'}
+      variant="light"
+      role="alert"
+    >
+      <Stack gap="xs">
+        <Text size="sm">
+          {adState
+            ? t(
+                'game.content.ad.state_refresh_error',
+                'The A&D service information could not be refreshed. Showing the last available data.'
+              )
+            : t('game.content.ad.state_load_error', 'The A&D service information could not be loaded.')}
+        </Text>
+        <Group>
+          <Button
+            size="compact-xs"
+            variant="light"
+            leftSection={<Icon path={mdiRefresh} size={0.7} aria-hidden="true" />}
+            aria-label={t('game.button.ad.retry_state', 'Retry A&D state')}
+            onClick={() => void mutateState()}
+          >
+            {t('common.button.retry', 'Retry')}
+          </Button>
+        </Group>
+      </Stack>
+    </Alert>
+  ) : null
+
   // Post-end practice: the challenge is shown as a standard container, but the
   // team's service backup must still be reachable — render just that.
-  if (snapshotOnly) return snapshotDownload
+  if (snapshotOnly) {
+    if (!stateFailure) return snapshotDownload
+    return (
+      <Stack gap="xs">
+        {stateFailure}
+        {snapshotDownload}
+      </Stack>
+    )
+  }
 
   // Render the `ssh <id>@host -p <port>` snippet the player runs to shell
   // into their container for THIS challenge. Host/port come from the SSH
@@ -156,6 +225,7 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
   }
 
   if (!adState) {
+    if (stateFailure) return stateFailure
     return (
       <Group justify="center" py="md">
         <Loader size="sm" />
@@ -164,9 +234,9 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
   }
 
   if (!service) {
-    return (
+    const noService = (
       <Alert
-        icon={<Icon path={mdiAlertCircleOutline} size={1} />}
+        icon={<Icon path={mdiAlertCircleOutline} size={1} aria-hidden="true" />}
         color="orange"
         title={t('game.content.ad.no_service.title', 'No service for your team yet')}
       >
@@ -176,10 +246,18 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
         )}
       </Alert>
     )
+    if (!stateFailure) return noService
+    return (
+      <Stack gap="xs">
+        {stateFailure}
+        {noService}
+      </Stack>
+    )
   }
 
   return (
     <Stack gap={4}>
+      {stateFailure}
       <Group justify="space-between" wrap="nowrap" align="center">
         <Group gap="xs" wrap="nowrap">
           <Text fw="bold" size="sm">

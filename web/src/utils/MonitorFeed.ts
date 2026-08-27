@@ -39,8 +39,63 @@ export const unreconciledMonitorRows = <T>(
   })
 }
 
-export const gameEventMonitorIdentity = (event: GameEvent) =>
-  JSON.stringify([monitorTimeIdentity(event.time), event.type, event.values, event.user ?? null, event.team ?? null])
+export const gameEventMonitorIdentity = (event: GameEvent) => String(event.id)
+
+/** Merge real-time and HTTP rows by durable identity, newest commit first. */
+export const mergeGameEventBuffer = (incoming: readonly GameEvent[], current: readonly GameEvent[], limit: number) => {
+  const seen = new Set<number>()
+  return [...incoming, ...current]
+    .sort((left, right) => right.cursor - left.cursor)
+    .filter((event) => {
+      if (seen.has(event.id)) return false
+      seen.add(event.id)
+      return true
+    })
+    .slice(0, Math.max(0, limit))
+}
+
+/** Keep only pushes newer than a snapshot's authoritative checkpoint. */
+export const rebaseGameEventBuffer = (current: readonly GameEvent[], checkpoint: number) =>
+  current.filter((event) => event.cursor > checkpoint)
+
+/** Fence delayed HTTP snapshots to the query scope and newest request. */
+export const monitorSnapshotIsCurrent = (
+  activeScope: string,
+  requestedScope: string,
+  latestRequest: number,
+  requestedAt: number
+) => activeScope === requestedScope && latestRequest === requestedAt
+
+/** Reject a push from a hub whose game/account scope is being torn down. */
+export const monitorPushIsCurrent = <Scope extends string | number>(
+  activeScope: Scope,
+  connectedScope: Scope,
+  cancelled: boolean
+) => !cancelled && activeScope === connectedScope
+
+/** Reject a delayed event push once its commit is covered by the durable cursor. */
+export const monitorEventPushIsCurrent = <Scope extends string | number>(
+  activeScope: Scope,
+  connectedScope: Scope,
+  cancelled: boolean,
+  cursorInitialized: boolean,
+  durableCursor: number,
+  pushedCursor: number
+) =>
+  monitorPushIsCurrent(activeScope, connectedScope, cancelled) && (!cursorInitialized || pushedCursor > durableCursor)
+
+export interface ScopedMonitorSnapshot<Row> {
+  scope: string
+  rows: Row[]
+}
+
+/** Hide a prior game's/query's snapshot immediately when the route scope changes. */
+export const currentMonitorSnapshotRows = <Row>(activeScope: string, snapshot?: ScopedMonitorSnapshot<Row>) =>
+  snapshot?.scope === activeScope ? snapshot.rows : undefined
+
+/** Hide buffered pushes from the previous game/account before teardown runs. */
+export const currentMonitorBufferRows = <Row>(activeScope: string, bufferedScope: string, rows: readonly Row[]) =>
+  activeScope === bufferedScope ? rows : []
 
 export const submissionMonitorIdentity = (submission: Submission) =>
   JSON.stringify([

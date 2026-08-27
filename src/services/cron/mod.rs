@@ -684,7 +684,15 @@ async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
             .await;
         state
             .cache
+            .remove(&format!("_KothScoreBoardWireV2_{game_id}"))
+            .await;
+        state
+            .cache
             .remove(&format!("_KothScoreBoardFrozen_{game_id}"))
+            .await;
+        state
+            .cache
+            .remove(&format!("_KothScoreBoardWireV2Frozen_{game_id}"))
             .await;
         state
             .cache
@@ -869,16 +877,20 @@ async fn evict_scoreboard_cache(cache: &dyn crate::services::cache::Cache, game_
 }
 
 /// Scoreboard cache entries whose time-dependent view changes at event close.
-fn scoreboard_cache_keys(game_id: i32) -> [String; 12] {
+fn scoreboard_cache_keys(game_id: i32) -> [String; 16] {
     [
         format!("_ScoreBoard_{game_id}"),
         format!("_ScoreBoardFrozen_{game_id}"),
+        format!("_ScoreBoardWireV2_{game_id}"),
+        format!("_ScoreBoardWireV2Frozen_{game_id}"),
         format!("_AdScoreBoard_{game_id}"),
         format!("_AdScoreBoard_{game_id}:stale"),
         format!("_AdScoreBoardFrozen_{game_id}"),
         format!("_AdScoreBoardFrozen_{game_id}:stale"),
         format!("_KothScoreBoard_{game_id}"),
         format!("_KothScoreBoardFrozen_{game_id}"),
+        format!("_KothScoreBoardWireV2_{game_id}"),
+        format!("_KothScoreBoardWireV2Frozen_{game_id}"),
         format!("_KothTimeline_{game_id}"),
         format!("_KothTimelineFrozen_{game_id}"),
         format!("_CombinedScoreBoardByChallenge_{game_id}"),
@@ -907,10 +919,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ended_event_sweep_removes_the_real_combined_scoreboard_keys() {
+    async fn ended_event_sweep_removes_legacy_and_versioned_scoreboard_keys() {
         let cache = InMemoryCache::new();
         let game_id = 17;
-        for key in scoreboard_cache_keys(game_id) {
+        let keys = scoreboard_cache_keys(game_id);
+        for expected in [
+            "_ScoreBoardWireV2_17",
+            "_ScoreBoardWireV2Frozen_17",
+            "_KothScoreBoardWireV2_17",
+            "_KothScoreBoardWireV2Frozen_17",
+        ] {
+            assert!(keys.iter().any(|key| key == expected), "missing {expected}");
+        }
+        for key in keys {
             cache.set(&key, b"cached", None).await;
         }
         cache.set("unrelated", b"keep", None).await;

@@ -28,8 +28,27 @@ fn router_with_domains(
         )
         .route("/api/game/{id}/details", get(game_details_with_challenges))
         .route("/api/game/{id}/notices", get(notices))
-        .route("/api/game/{id}/events", get(events))
-        .route("/api/game/{id}/participations", get(participations))
+        .route("/api/game/{id}/events", limited(Policy::Query, get(events)))
+        .route(
+            "/api/game/{id}/events/page",
+            limited(Policy::Query, get(monitor_history::event_page)),
+        )
+        .route(
+            "/api/game/{id}/events/backfill",
+            limited(Policy::Query, get(event_backfill)),
+        )
+        .route(
+            "/api/game/{id}/participations",
+            limited(Policy::Query, get(participations)),
+        )
+        .route(
+            "/api/game/{id}/participations/page",
+            limited(Policy::Query, get(participation_page)),
+        )
+        .route(
+            "/api/game/{id}/participations/{participationId}",
+            limited(Policy::Query, get(participation_detail)),
+        )
         // The scoreboard is fully cache-served (cheap), so the always-on Global
         // window is protection enough — dropping the per-route Query decorator
         // halves the limiter work on the single hottest endpoint. A deliberate
@@ -40,7 +59,14 @@ fn router_with_domains(
             get(combined_scoreboard),
         )
         .route("/api/game/{id}/scoreboardsheet", get(scoreboard_sheet))
-        .route("/api/game/{id}/submissions", get(submissions))
+        .route(
+            "/api/game/{id}/submissions",
+            limited(Policy::Query, get(submissions)),
+        )
+        .route(
+            "/api/game/{id}/submissions/page",
+            limited(Policy::Query, get(monitor_history::submission_page)),
+        )
         .route("/api/game/{id}/submissionsheet", get(submission_sheet))
         .route("/api/game/{id}/check", get(join_check))
         .route("/api/game/{id}/vpn/challenge", post(vpn_challenge))
@@ -71,6 +97,10 @@ fn router_with_domains(
             get(challenge_solvers),
         )
         .route(
+            "/api/game/{id}/challenges/{challengeId}/solvers/page",
+            get(challenge_solver_page),
+        )
+        .route(
             "/api/game/{id}/challenges/{challengeId}",
             // Only the POST (flag submit) carries the Submit policy, like RSCTF's
             // per-action [EnableRateLimiting]; the GET detail is unthrottled.
@@ -82,7 +112,7 @@ fn router_with_domains(
         )
         .route(
             "/api/game/{id}/challenges/{challengeId}/status/{submitId}",
-            get(status),
+            limited(Policy::Verdict, get(status)),
         )
         .route(
             "/api/game/{id}/container/{challengeId}",

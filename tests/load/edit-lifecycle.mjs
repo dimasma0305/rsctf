@@ -320,6 +320,8 @@ function authorizationProbeRequest(operation) {
       challengeConfigs: [],
     },
     edit_division_update: { name: `authorization-probe-${runKey}` },
+    edit_koth_observer_rotate: { operationId: randomUUID(), expectedRevision: 0 },
+    edit_koth_observer_revoke: { operationId: randomUUID(), expectedRevision: 0 },
   };
   const body = jsonBodies[operation.id];
   if (body === undefined) return { headers: {}, body: undefined };
@@ -839,10 +841,22 @@ async function prepareKothFixture() {
   });
   await A.rebuildChallengeImage(context.kothGameId, context.kothChallengeId, image, 'edit KotH hill');
   await A.addFlags(context.kothGameId, context.kothChallengeId, [`flag{edit_koth_placeholder_${runKey}}`]);
+  context.kothObserverOperationId = randomUUID();
   const observer = await call('edit_koth_observer_rotate', {
     jwt: identities.managerJwt,
+    body: { operationId: context.kothObserverOperationId, expectedRevision: 0 },
   });
+  const recoveredObserver = await call('edit_koth_observer_recover', {
+    jwt: identities.managerJwt,
+  });
+  requireCondition(
+    recoveredObserver.model.operationId === context.kothObserverOperationId &&
+      recoveredObserver.model.revision === observer.model.revision &&
+      recoveredObserver.model.secret === observer.model.secret,
+    'KotH observer operation recovery did not return the exact committed result',
+  );
   context.kothObserverSecret = observer.model.secret;
+  context.kothObserverRevision = observer.model.revision;
   state.kothObserver = {
     challengeId: context.kothChallengeId,
     source: observer.model.claimSource,
@@ -996,6 +1010,16 @@ async function positiveReadAndMutationSurface() {
 
   const adState = await call('edit_ad_state', { jwt: identities.managerJwt });
   requireCondition(adState.model.challenges.some((challenge) => challenge.challengeId === context.adChallengeId), 'A&D state omitted fixture challenge');
+  const adEngines = await call('edit_ad_engines', { jwt: identities.managerJwt });
+  requireCondition(
+    adEngines.model.hasAttackDefense === true && adEngines.model.hasKoth === false,
+    `pure A&D engine detection was incorrect: ${JSON.stringify(adEngines.model)}`,
+  );
+  const adLive = await call('edit_ad_live', { jwt: identities.managerJwt });
+  requireCondition(
+    adLive.model.services.some((service) => service.adTeamServiceId === context.serviceId),
+    'A&D live projection omitted the fixture service',
+  );
   const serviceFile = await call('edit_ad_service_file', { jwt: identities.managerJwt });
   requireCondition(serviceFile.model.containerRunning === true, 'A&D service file did not inspect a live container');
   const changes = await call('edit_ad_snapshot_changes', { jwt: identities.managerJwt });
@@ -1525,7 +1549,13 @@ async function runReadSimulation() {
 
 async function destructivePositiveSurface() {
   console.log('\npositive delete/review contracts…');
-  await call('edit_koth_observer_revoke', { jwt: identities.managerJwt });
+  await call('edit_koth_observer_revoke', {
+    jwt: identities.managerJwt,
+    body: {
+      operationId: randomUUID(),
+      expectedRevision: context.kothObserverRevision,
+    },
+  });
   const revokedObserverResponse = await uncatalogued(
     'GET',
     `/api/edit/games/${context.kothGameId}/ad/koth/${context.kothChallengeId}/observer`,

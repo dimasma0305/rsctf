@@ -350,8 +350,7 @@ async fn serve_asset(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag))
     {
-        let _ = finalize_asset_download(st.pg(), &authorization, event_vpn_source, token, false)
-            .await?;
+        let _ = finalize_asset_download(st, &authorization, event_vpn_source, token, false).await?;
         return Ok((
             StatusCode::NOT_MODIFIED,
             [
@@ -408,14 +407,9 @@ async fn serve_asset(
             {
                 Ok(range) => Some(range),
                 Err(()) => {
-                    let _ = finalize_asset_download(
-                        st.pg(),
-                        &authorization,
-                        event_vpn_source,
-                        token,
-                        false,
-                    )
-                    .await?;
+                    let _ =
+                        finalize_asset_download(st, &authorization, event_vpn_source, token, false)
+                            .await?;
                     return Ok(range_not_satisfiable(size, &etag, cache_policy));
                 }
             },
@@ -441,7 +435,7 @@ async fn serve_asset(
                 Ok(Some(location)) => match signed_download_response(&location) {
                     Ok(response) => {
                         let vpn_gate_active = finalize_asset_download(
-                            st.pg(),
+                            st,
                             &authorization,
                             event_vpn_source,
                             token,
@@ -512,7 +506,7 @@ async fn serve_asset(
     // Storage preparation can be slow. Revalidate the exact roster, stamp,
     // challenge, and division now; commit the precisely timed Download event
     // under that fence, then release it before Axum begins streaming the body.
-    let _ = finalize_asset_download(st.pg(), &authorization, event_vpn_source, token, true).await?;
+    let _ = finalize_asset_download(st, &authorization, event_vpn_source, token, true).await?;
 
     asset_response(
         body,

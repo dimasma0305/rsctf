@@ -4,6 +4,8 @@
 // 100-team lifecycle event, k6, or container runtime. The explicit isolation
 // gates below prevent it from ever targeting the shared development/production
 // stack.
+import { randomUUID } from "node:crypto";
+
 import * as A from "./applib.mjs";
 import { cohortSeedQuery, parseCohortSeedResult } from "./cohort-seed.js";
 import {
@@ -464,7 +466,7 @@ async function submitFlag(gameId, challengeId, subject, flag, label) {
   const response = await A.api(
     "POST",
     `/api/game/${gameId}/challenges/${challengeId}`,
-    playerOptions(subject, { flag }),
+    playerOptions(subject, { flag, attemptId: randomUUID() }),
   );
   if (response.status !== 200) {
     throw new Error(`${label} submission failed: ${response.status} ${response.text}`);

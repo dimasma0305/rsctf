@@ -1123,7 +1123,7 @@ async function eventFixture() {
   const solve = await A.api(
     'POST',
     `/api/game/${fixtureGame}/challenges/${fixtureChallenge}`,
-    { jwt: playerJwt, ip: '10.252.21.1', body: { flag: fixtureFlag } },
+    { jwt: playerJwt, ip: '10.252.21.1', body: { flag: fixtureFlag, attemptId: randomUUID() } },
   );
   expectStatus(solve, 200, 'fixture challenge solve');
   await adminApi(
@@ -1552,7 +1552,11 @@ async function observabilityAndRuntime() {
     'file inventory omitted the fixture writeup',
   );
 
-  const instances = await call('GET', '/api/admin/instances', '/api/admin/instances?count=100&skip=0');
+  const instances = await call(
+    'GET',
+    '/api/admin/instances',
+    '/api/admin/instances?count=50&skip=0&includeRuntimeStats=true',
+  );
   const fixtureInstance = instances.json?.data?.find(
     (instance) => instance.containerGuid === containerGuid,
   );
@@ -1574,6 +1578,37 @@ async function observabilityAndRuntime() {
   requireCondition(
     typeof fixtureInstance.isProxy === 'boolean',
     `instance inventory omitted its proxy capability: ${JSON.stringify(fixtureInstance)}`,
+  );
+  requireCondition(
+    ['Available', 'Unavailable'].includes(fixtureInstance.runtimeStats?.availability) &&
+      Number.isFinite(fixtureInstance.runtimeStats?.sampledAt),
+    `instance inventory omitted its bounded runtime sample: ${JSON.stringify(fixtureInstance)}`,
+  );
+  const filteredInstances = await call(
+    'GET',
+    '/api/admin/instances',
+    `/api/admin/instances?count=50&skip=0&teamId=${fixtureInstance.team.id}` +
+      `&challengeId=${fixtureInstance.challenge.id}`,
+  );
+  requireCondition(
+    filteredInstances.json?.total >= 1 &&
+      filteredInstances.json?.data?.some((instance) => instance.containerGuid === containerGuid),
+    `authoritative instance filters omitted their matching row: ${JSON.stringify(filteredInstances.json)}`,
+  );
+  const teamOptions = await call(
+    'GET',
+    '/api/admin/instances/filter-options',
+    `/api/admin/instances/filter-options?kind=Team&count=30&search=${encodeURIComponent(fixtureInstance.team.name)}`,
+  );
+  const challengeOptions = await call(
+    'GET',
+    '/api/admin/instances/filter-options',
+    `/api/admin/instances/filter-options?kind=Challenge&count=30&search=${encodeURIComponent(fixtureInstance.challenge.title)}`,
+  );
+  requireCondition(
+    teamOptions.json?.data?.some((option) => option.id === fixtureInstance.team.id) &&
+      challengeOptions.json?.data?.some((option) => option.id === fixtureInstance.challenge.id),
+    'active instance filter option discovery omitted the fixture ownership dimensions',
   );
   const stats = await call(
     'GET',
@@ -1972,7 +2007,7 @@ async function repositoryLifecycle() {
   const solved = await A.api(
     'POST',
     `/api/game/${repoGameId}/challenges/${repoChallengeId}`,
-    { jwt: repoPlayerJwt, ip: '10.252.24.1', body: { flag: repoFlag } },
+    { jwt: repoPlayerJwt, ip: '10.252.24.1', body: { flag: repoFlag, attemptId: randomUUID() } },
   );
   expectStatus(solved, 200, 'repository preservation solve');
   const repoSubmissionId = positiveId(solved.json?.data ?? solved.json, 'repository submission');

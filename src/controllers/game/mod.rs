@@ -1,11 +1,8 @@
-//! Ported from RSCTF `Controllers/GameController.cs` (player-facing surface) plus
-//! `Services/FlagChecker.cs` and the Game/Participation/Submission/GameInstance
-//! repositories.
+//! Player-facing game surface and flag-checking behavior ported from RSCTF.
 //!
 //! Route prefix `/api/game`. Covers game listing/details, notices/events,
 //! participations, scoreboard, join, the challenge view, flag SUBMISSION (judged
-//! synchronously here — rsctf has no background channel worker, so the logic of
-//! `GameInstanceRepository.VerifyAnswer` runs inline in `submit`), submission
+//! synchronously here), submission
 //! status, container lifecycle, immutable cheat evidence/reporting, traffic
 //! capture, and writeups.
 
@@ -13,6 +10,9 @@ pub mod ad;
 mod cheat_capabilities;
 mod cheat_identity;
 pub mod koth;
+mod monitor_history;
+#[cfg(test)]
+mod monitor_history_tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -37,8 +37,8 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser, MonitorUser};
 use crate::models::data::{
     attachment, challenge_review, container, division, division_challenge_config, flag_context,
-    game, game_challenge, game_event, game_instance, game_manager, game_notice, local_file,
-    participation, submission, team, team_member, user, user_participation,
+    game, game_challenge, game_instance, game_notice, local_file, participation, submission, team,
+    team_member, user,
 };
 use crate::services::container::ContainerSpec;
 use crate::utils::crypto_utils::ct_eq;
@@ -169,46 +169,8 @@ pub struct GameNoticeModel {
     pub time: DateTime<Utc>,
 }
 
-/// RSCTF `GameEvent` response (`FormattableDataOfEventType` + time/user/team).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GameEventModel {
-    #[serde(rename = "type")]
-    pub event_type: crate::utils::enums::EventType,
-    pub values: Json,
-    #[serde(with = "crate::utils::datetime::millis")]
-    pub time: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub team: Option<String>,
-}
-
-/// RSCTF `TeamWithDetailedUserInfo`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamWithDetailedUserInfo {
-    pub id: i32,
-    pub locked: bool,
-    pub captain_id: Uuid,
-    pub name: Option<String>,
-    pub bio: Option<String>,
-    pub avatar: Option<String>,
-    pub members: Vec<Json>,
-}
-
-/// RSCTF `ParticipationInfoModel` (Admin review).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ParticipationInfoModel {
-    pub id: i32,
-    pub team: TeamWithDetailedUserInfo,
-    /// User-id GUIDs of the members registered for this participation
-    /// (RSCTF `part.Members.Select(m => m.UserId)`).
-    pub registered_members: Vec<Uuid>,
-    pub division_id: Option<i32>,
-    pub status: ParticipationStatus,
-}
+/// One serializer is shared by polled, backfilled, and pushed monitor events.
+pub type GameEventModel = crate::services::game_event_feed::GameEventMessage;
 
 /// RSCTF `ChallengeItem` (a solved cell on the scoreboard).
 #[derive(Debug, Serialize, Deserialize)]
@@ -538,12 +500,13 @@ pub struct GameJoinModel {
     pub fingerprint_proof: Option<String>,
 }
 
-/// RSCTF `FlagSubmitModel`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlagSubmitModel {
     pub flag: String,
-    /// Optional one-use proof minted by a configured trusted verifier.
+    /// Optional opaque client identity retained until the terminal verdict is recovered.
+    #[serde(default = "Uuid::new_v4")]
+    pub attempt_id: Uuid,
     #[serde(default)]
     pub proof: Option<String>,
 }
@@ -565,7 +528,8 @@ pub struct RecentQuery {
     pub limit: usize,
 }
 
-/// RSCTF `GameController.Events` query: `hideContainer`/`count`/`skip`/`search`.
+/// Monitor event query shared by two contracts: legacy `/events` preserves
+/// `count=0` as all retained rows, while `/events/page` applies hard bounds.
 /// Events has no `type` filter (that belongs to `Submissions`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -580,8 +544,9 @@ pub struct EventQuery {
     pub search: Option<String>,
 }
 
-/// RSCTF `GetChallengeSolvers` takes no paging; rsctf adds optional `count`/`skip`
-/// (count omitted or 0 ⇒ the whole solver list).
+/// Solver pagination shared by two contracts: the legacy `/solvers` route treats
+/// an omitted or zero `count` as all rows after `skip`, while `/solvers/page`
+/// applies its own default and hard bounds.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SolversQuery {
@@ -591,6 +556,8 @@ pub struct SolversQuery {
     pub skip: Option<u64>,
 }
 
+/// Monitor submission query shared by legacy `/submissions` and bounded
+/// `/submissions/page`; only the legacy route treats `count=0` as all rows.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmissionQuery {
@@ -975,6 +942,7 @@ mod combined_scoreboard;
 mod containers;
 mod lookups;
 mod membership;
+mod participation_review;
 mod play;
 mod scoreboard;
 mod scoreboard_board;
@@ -991,6 +959,7 @@ pub use combined_scoreboard::*;
 pub use containers::*;
 pub(crate) use containers::{prepare_queued_image, repair_missing_legacy_image};
 use lookups::*;
+pub use participation_review::*;
 pub use play::*;
 pub use scoreboard::*;
 pub(crate) use scoreboard_board::*;

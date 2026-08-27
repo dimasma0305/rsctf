@@ -1,6 +1,9 @@
 //! Player automation view for all live hills.
 
 use super::*;
+use axum::response::Response;
+
+use crate::middlewares::privilege_authentication::MaybeUser;
 
 /// One hill in the `Koth/Hills` list (field-for-field with the player toolkit's
 /// automation example).
