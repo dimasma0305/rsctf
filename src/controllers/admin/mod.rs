@@ -11,6 +11,7 @@ pub mod ad;
 mod flag_egress;
 #[path = "participation.rs"]
 mod participation_review;
+pub(crate) mod users_manager_autocomplete;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -48,6 +49,7 @@ use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::{ArrayResponse, MessageResponse, RequestResponse};
 pub use flag_egress::*;
 pub use participation_review::*;
+use users_manager_autocomplete::manager_autocomplete;
 
 // ─── DTOs ──────────────────────────────────────────────────────────────────
 
@@ -105,6 +107,10 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/users/import", post(import_users))
         .route("/api/admin/users/credentials/send", post(send_credentials))
         .route("/api/admin/users/search", post(search_users))
+        .route(
+            "/api/admin/users/manager-autocomplete",
+            limited(Policy::Query, get(manager_autocomplete)),
+        )
         .route(
             "/api/admin/users/{userid}",
             get(user_info).put(update_user).delete(delete_user),

@@ -781,6 +781,15 @@ export interface UserInfoModel {
   emailConfirmed?: boolean | null;
 }
 
+/** Compact identity returned by the game-manager autocomplete. */
+export interface ManagerAutocompleteUserModel {
+  /** @format guid */
+  id: string;
+  userName?: string | null;
+  email?: string | null;
+  avatar?: string | null;
+}
+
 /** Batch user creation (Admin) */
 export interface UserCreateModel {
   /**
@@ -4536,6 +4545,24 @@ export class Api<
         path: `/api/admin/users`,
         method: "GET",
         query: query,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Prefix-search compact user identities for the game-manager selector.
+     * @tags Admin
+     * @name AdminManagerAutocomplete
+     * @request GET:/api/admin/users/manager-autocomplete
+     */
+    adminManagerAutocomplete: (
+      query: { query: string },
+      params: RequestParams = {},
+    ) =>
+      this.request<ManagerAutocompleteUserModel[], RequestResponse>({
+        path: `/api/admin/users/manager-autocomplete`,
+        method: "GET",
+        query,
         format: "json",
         ...params,
       }),
