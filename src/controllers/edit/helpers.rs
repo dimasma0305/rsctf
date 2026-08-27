@@ -237,7 +237,13 @@ pub(crate) async fn flush_ad_scoreboard(st: &SharedState, game_id: i32) {
     crate::controllers::game::koth::invalidate_live_hill_cache(st.cache.as_ref(), game_id).await;
     st.cache.remove(&format!("_KothScoreBoard_{game_id}")).await;
     st.cache
+        .remove(&format!("_KothScoreBoardWireV2_{game_id}"))
+        .await;
+    st.cache
         .remove(&format!("_KothScoreBoardFrozen_{game_id}"))
+        .await;
+    st.cache
+        .remove(&format!("_KothScoreBoardWireV2Frozen_{game_id}"))
         .await;
     st.cache.remove(&format!("_KothTimeline_{game_id}")).await;
     st.cache
@@ -359,7 +365,13 @@ pub(crate) async fn reopen_latest_round_for_end_extension(
 pub(crate) async fn flush_game_scoreboards(st: &SharedState, game_id: i32) {
     st.cache.remove(&format!("_ScoreBoard_{game_id}")).await;
     st.cache
+        .remove(&format!("_ScoreBoardWireV2_{game_id}"))
+        .await;
+    st.cache
         .remove(&format!("_ScoreBoardFrozen_{game_id}"))
+        .await;
+    st.cache
+        .remove(&format!("_ScoreBoardWireV2Frozen_{game_id}"))
         .await;
     flush_ad_scoreboard(st, game_id).await;
 }

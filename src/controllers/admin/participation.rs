@@ -504,8 +504,12 @@ pub async fn update_participation(
     for key in [
         format!("_ScoreBoard_{}", identity.game_id),
         format!("_ScoreBoardFrozen_{}", identity.game_id),
+        format!("_ScoreBoardWireV2_{}", identity.game_id),
+        format!("_ScoreBoardWireV2Frozen_{}", identity.game_id),
         format!("_KothScoreBoard_{}", identity.game_id),
         format!("_KothScoreBoardFrozen_{}", identity.game_id),
+        format!("_KothScoreBoardWireV2_{}", identity.game_id),
+        format!("_KothScoreBoardWireV2Frozen_{}", identity.game_id),
         format!("_KothTimeline_{}", identity.game_id),
         format!("_KothTimelineFrozen_{}", identity.game_id),
     ] {

@@ -4,6 +4,7 @@ use crate::services::monitor_export::{
     load_submission_export_snapshot, MonitorExportAdmissionError, MonitorExportPermit,
     SubmissionExportRow, SubmissionSnapshotError,
 };
+use axum::http::HeaderMap;
 use std::collections::BinaryHeap;
 
 #[cfg(test)]
@@ -315,6 +316,7 @@ pub async fn scoreboard(
     State(st): State<SharedState>,
     MaybeUser(maybe): MaybeUser,
     Path(id): Path<i32>,
+    headers: HeaderMap,
 ) -> AppResult<Response> {
     let g = load_game_cached(&st, id).await?;
     let is_monitor = maybe.as_ref().is_some_and(|u| u.is_monitor());
@@ -326,8 +328,8 @@ pub async fn scoreboard(
         return Err(AppError::game_not_started());
     }
 
-    let json = build_scoreboard_json(&st, &g, is_monitor).await?;
-    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
+    let bundle = build_scoreboard_bundle(&st, &g, is_monitor).await?;
+    scoreboard_encoding::response(bundle, &headers)
 }
 
 /// `GET /api/game/{id}/challenges/{challengeId}/solvers` — teams that solved one

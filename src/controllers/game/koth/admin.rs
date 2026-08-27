@@ -280,6 +280,9 @@ pub async fn recover_hill(
         crate::services::ad_engine::koth_cycle::recover_cycle(&st, game_id, challenge_id).await?;
     st.cache.remove(&format!("_KothScoreBoard_{game_id}")).await;
     st.cache
+        .remove(&format!("_KothScoreBoardWireV2_{game_id}"))
+        .await;
+    st.cache
         .remove(&format!("_KothHillState_{game_id}_{challenge_id}"))
         .await;
     crate::controllers::game::invalidate_combined_scoreboard(&st, game_id).await;

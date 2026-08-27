@@ -26,6 +26,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run monitor-exports # fixed-rate bounded monitor XLSX exports + health
       npm run event-security # destructive fixed-rate bounded telemetry/resource comparison
       npm run scoreboard-evidence # isolated fixed-rate canonical FirstSolve query benchmark
+      npm run scoreboard-conditional # read-only fixed-rate scoreboard encoding/304 benchmark
       npm run player        # A&D + KotH player poll/submit load
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
       npm run redis-outage  # disposable Redis failure/recovery micro-harness
@@ -242,6 +243,7 @@ tests/load/
   news-feed.mjs     fixed-rate conditional homepage-feed benchmark
   asset-download-model.js shared asset-path and deterministic range rules
   scoreboard-evidence.mjs isolated accepted-history versus FirstSolves DB benchmark
+  scoreboard-conditional.mjs read-only standard/KotH encoding, validator, CPU/RAM benchmark
   player.mjs        → runs k6/player.js         (npm run player)
   ad-submit-batch.mjs → runs k6/ad-submit-batch.js (npm run ad-submit-batch)
   redis-outage.mjs  → stops/restores one acknowledged disposable Redis + runs k6/redis-outage.js
@@ -257,6 +259,7 @@ tests/load/
     organizer-hubs.js  fixed-rate privileged negotiate, WebSocket, and exec traffic
     polled-read.js     one read per iteration across the dominant polled endpoints
     monitor-history.js one bounded history, checkpoint, or backfill read per iteration
+    scoreboard-conditional.js conditional standard/KotH spectators at a fixed arrival rate
     asset-download.js  one authenticated deterministic attachment range per iteration
     monitor-exports.js fixed-rate monitor exports plus independent health arrivals
     participation-review.js fixed-rate bounded organizer review plus independent health arrivals
@@ -294,6 +297,29 @@ query bucket. One iteration is exactly one HTTP request. Supply both game IDs:
 TARGET=https://ctf.example JEO_GAME=162 AD_GAME=163 RATE=300 \
   DURATION=60s npm run polled-read
 ```
+
+`scoreboard-conditional` focuses on the maximum-roster standard and KotH
+fixtures. Each VU retains the validator returned by each authorized endpoint,
+advertises Brotli/gzip, and sends `If-None-Match` on later polls. The gate accepts
+only compressed 200 or empty 304 responses, requires the ETag/version on both
+and an exact encoded `Content-Length` on 200, then reports encoded bytes, JSON
+parse time, 304 ratio, latency, dropped arrivals, and sampled application/PostgreSQL
+CPU and RAM. It is read-only and uses a broad
+disposable-user cohort; use the same fixture, rate, VUs, duration, and container
+set for before/after comparisons. The runner caps the direct and orchestrated
+scenario at 2,000 requests/s, 500 preallocated VUs, 4,000 credentials, and ten
+minutes so retained samples and accidental load stay bounded.
+
+```sh
+TARGET=https://ctf.example STANDARD_GAME=162 KOTH_GAME=163 RATE=200 \
+  VUS=100 DURATION=60s SUMMARY_JSON=/tmp/scoreboard-conditional.json \
+  npm run scoreboard-conditional
+```
+
+The k6 summary is written to `SUMMARY_JSON`; resource samples are written beside
+it as `SUMMARY_JSON.resources.json`. Override `SCOREBOARD_RESOURCE_CONTAINERS`
+with a comma-separated list when the selected stack uses different container
+names.
 
 `details-read` is the focused companion for the authenticated ten-second player
 challenge poll. It uses only accepted-participation users from the selected event,

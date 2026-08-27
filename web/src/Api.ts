@@ -4104,6 +4104,10 @@ import type {
   ResponseType,
 } from "axios";
 import axios from "axios";
+import {
+  createConditionalScoreboardReader,
+  isConditionalScoreboardPath,
+} from "./utils/ConditionalScoreboard";
 import { installEventVpnProof } from "@Utils/EventVpnProof";
 import { installServerClock } from "@Utils/ServerClock";
 
@@ -10680,10 +10684,33 @@ installEventVpnProof(api.instance);
 installServerClock(api.instance);
 export default api;
 
+const conditionalScoreboards = createConditionalScoreboardReader(
+  async (path, etag) => {
+    const response = await api.request({
+      path,
+      method: "GET",
+      // Defer JSON decoding until the validator is known to have changed. This
+      // also avoids parsing when a browser exposes a revalidated cache hit as 200.
+      format: "text",
+      headers: etag ? { "If-None-Match": etag } : undefined,
+      validateStatus: (status) => status === 304 || (status >= 200 && status < 300),
+    });
+    const responseEtag = response.headers.etag;
+    return {
+      status: response.status,
+      data: response.data,
+      etag: typeof responseEtag === "string" ? responseEtag : undefined,
+    };
+  },
+);
+
 export const fetcher = async (
   args: string | [string, Record<string, unknown>],
 ) => {
   if (typeof args === "string") {
+    if (isConditionalScoreboardPath(args)) {
+      return conditionalScoreboards.read(args);
+    }
     const response = await api.request({ path: args });
     return response.data;
   } else {

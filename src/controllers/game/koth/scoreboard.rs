@@ -1,8 +1,8 @@
 //! Cached KotH scoreboard rendering shared by player and operator reads.
 
 use super::*;
-use axum::http::header;
-use axum::response::{IntoResponse, Response};
+use axum::http::HeaderMap;
+use axum::response::Response;
 
 use crate::controllers::game::load_game_cached;
 use crate::middlewares::privilege_authentication::MaybeUser;
@@ -27,9 +27,9 @@ fn koth_cache_key(
     is_monitor: bool,
 ) -> String {
     if crate::utils::scoring::public_scoreboard_frozen(freeze, end, now, is_monitor) {
-        format!("_KothScoreBoardFrozen_{game_id}")
+        format!("_KothScoreBoardWireV2Frozen_{game_id}")
     } else {
-        format!("_KothScoreBoard_{game_id}")
+        format!("_KothScoreBoardWireV2_{game_id}")
     }
 }
 
@@ -131,7 +131,7 @@ async fn build_koth_scoreboard(
     })
 }
 
-async fn koth_scoreboard_json(
+async fn koth_scoreboard_bundle(
     st: &SharedState,
     game: &game::Model,
     is_monitor: bool,
@@ -145,35 +145,52 @@ async fn koth_scoreboard_json(
         is_monitor,
     );
     let (st2, game2) = (st.clone(), game.clone());
-    cached_koth_json(st.cache.clone(), key, move || async move {
+    cached_koth_bundle(st.cache.clone(), key.clone(), move || async move {
         let model = build_koth_scoreboard(&st2, &game2, is_monitor, now)
             .await
             .ok()?;
-        serde_json::to_vec(&model).ok().map(bytes::Bytes::from)
+        let raw = bytes::Bytes::from(serde_json::to_vec(&model).ok()?);
+        let built =
+            super::super::scoreboard_encoding::build_stable_bundle(raw, key, b"\"generatedAt\":")
+                .await
+                .ok()?;
+        Some((built.bytes, built.cacheable))
     })
     .await
 }
 
-async fn cached_koth_json<Build, BuildFuture>(
+async fn cached_koth_bundle<Build, BuildFuture>(
     cache: std::sync::Arc<dyn crate::services::cache::Cache>,
     key: String,
     build: Build,
 ) -> AppResult<bytes::Bytes>
 where
     Build: FnOnce() -> BuildFuture + Send + 'static,
-    BuildFuture: std::future::Future<Output = Option<bytes::Bytes>> + Send + 'static,
+    BuildFuture: std::future::Future<Output = Option<(bytes::Bytes, bool)>> + Send + 'static,
 {
     if let Some(bytes) = cache.get(&key).await {
-        return Ok(bytes);
+        if super::super::scoreboard_encoding::valid_bundle(&bytes) {
+            return Ok(bytes);
+        }
+        tracing::warn!(
+            cache_key = key,
+            "evicting corrupt KotH scoreboard cache entry"
+        );
+        cache.remove(&key).await;
     }
     let (cache2, key2) = (cache, key.clone());
     let coalesced = KOTH_SF
         .run(&key, move || async move {
             if let Some(bytes) = cache2.get(&key2).await {
-                return Some(bytes);
+                if super::super::scoreboard_encoding::valid_bundle(&bytes) {
+                    return Some(bytes);
+                }
+                cache2.remove(&key2).await;
             }
-            let bytes = build().await?;
-            cache2.set(&key2, &bytes, Some(KOTH_CACHE_TTL)).await;
+            let (bytes, cacheable) = build().await?;
+            if cacheable {
+                cache2.set(&key2, &bytes, Some(KOTH_CACHE_TTL)).await;
+            }
             Some(bytes)
         })
         .await;
@@ -188,8 +205,9 @@ pub(crate) async fn build_koth_scoreboard_cached(
     game: &game::Model,
     is_monitor: bool,
 ) -> AppResult<KothScoreboardModel> {
-    let bytes = koth_scoreboard_json(st, game, is_monitor).await?;
-    serde_json::from_slice(&bytes).map_err(|error| AppError::internal(error.to_string()))
+    let bundle = koth_scoreboard_bundle(st, game, is_monitor).await?;
+    let raw = super::super::scoreboard_encoding::identity_body(bundle)?;
+    serde_json::from_slice(&raw).map_err(|error| AppError::internal(error.to_string()))
 }
 
 /// `GET /api/game/{id}/ad/koth/scoreboard` — the player KotH board: one column per
@@ -200,6 +218,7 @@ pub async fn scoreboard(
     State(st): State<SharedState>,
     MaybeUser(maybe): MaybeUser,
     Path(game_id): Path<i32>,
+    headers: HeaderMap,
 ) -> AppResult<Response> {
     // Keep hidden events undiscoverable to ordinary callers while allowing the
     // authenticated monitor to operate the private event. 1s-cached game row.
@@ -208,13 +227,13 @@ pub async fn scoreboard(
     if !can_view_koth_standings(game.hidden, is_monitor) {
         return Err(AppError::not_found("Game not found"));
     }
-    let json = koth_scoreboard_json(&st, &game, is_monitor).await?;
-    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
+    let bundle = koth_scoreboard_bundle(&st, &game, is_monitor).await?;
+    super::super::scoreboard_encoding::response(bundle, &headers)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{cached_koth_json, can_view_koth_standings, koth_cache_key};
+    use super::{cached_koth_bundle, can_view_koth_standings, koth_cache_key};
     use chrono::{TimeZone, Utc};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -262,10 +281,10 @@ mod tests {
             let builds = builds.clone();
             let key = key.clone();
             async move {
-                cached_koth_json(cache, key, move || async move {
+                cached_koth_bundle(cache, key, move || async move {
                     builds.fetch_add(1, Ordering::SeqCst);
                     tokio::task::yield_now().await;
-                    Some(bytes::Bytes::from_static(b"{\"version\":41}"))
+                    Some((bytes::Bytes::from_static(b"{\"version\":41}"), true))
                 })
                 .await
                 .unwrap()
@@ -277,9 +296,9 @@ mod tests {
             .all(|response| response.as_ref() == b"{\"version\":41}"));
         assert_eq!(builds.load(Ordering::SeqCst), 1);
         let second_version_builds = builds.clone();
-        let cached = cached_koth_json(cache, key, move || async move {
+        let cached = cached_koth_bundle(cache, key, move || async move {
             second_version_builds.fetch_add(1, Ordering::SeqCst);
-            Some(bytes::Bytes::from_static(b"unexpected"))
+            Some((bytes::Bytes::from_static(b"unexpected"), true))
         })
         .await
         .unwrap();

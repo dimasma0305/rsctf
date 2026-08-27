@@ -179,31 +179,31 @@ fn build_timeline_series(item: &ScoreboardItem) -> Json {
 /// full recompute per variant per window (they were recomputed on every request).
 const SCOREBOARD_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Cache keys keyed on `(game, is_monitor)`: `_ScoreBoard_{id}` (monitor/live) and
-/// `_ScoreBoardFrozen_{id}` (public, freeze-aware) — exactly the keys the cron /
-/// team / admin paths already invalidate.
+/// Versioned cache keys keep a rolling old standard-scoreboard replica (which
+/// expects raw JSON) from serving the new atomic bundle as JSON. Cron/team/admin
+/// invalidation removes both this namespace and the preceding raw namespace.
 fn scoreboard_cache_key(g: &game::Model, is_monitor: bool) -> String {
     if is_monitor {
-        format!("_ScoreBoard_{}", g.id)
+        format!("_ScoreBoardWireV2_{}", g.id)
     } else {
-        format!("_ScoreBoardFrozen_{}", g.id)
+        format!("_ScoreBoardWireV2Frozen_{}", g.id)
     }
 }
 
-/// The scoreboard's wire body as a raw JSON string, from cache or freshly built.
+/// The scoreboard's wire body as one atomic raw/gzip/Brotli cache bundle.
 ///
-/// Our success responses are the **raw model** (no envelope), so the cached JSON
-/// string *is* the response body — on a hit it's returned verbatim, skipping the
-/// `deserialize -> Model -> re-serialize` round-trip a 2–3 KB board would
-/// otherwise pay on every request. The hot `/scoreboard` handler ships these
-/// bytes straight to the client. The public variant is freeze-aware *inside*
+/// Our success responses are the **raw model** (no envelope), so the bundle's
+/// identity slice remains the exact response body. A hit skips both the
+/// `deserialize -> Model -> re-serialize` round-trip and compression; the hot
+/// `/scoreboard` handler selects a zero-copy identity/gzip/Brotli slice. The
+/// public variant is freeze-aware *inside*
 /// [`build_scoreboard`], so a cached copy can never leak post-freeze solves (only
 /// ever up to `SCOREBOARD_CACHE_TTL` stale).
 /// Coalesces concurrent scoreboard recomputes so a cache-TTL-expiry stampede
 /// doesn't dogpile the DB — at 500 clients, every request in flight when the 5s
 /// cache expired used to rebuild the board (an all-submissions scan + scoring)
 /// simultaneously, spiking Postgres. Now one caller rebuilds per key, the rest
-/// await its JSON.
+/// await its bundle.
 static SCOREBOARD_SF: std::sync::LazyLock<
     crate::utils::single_flight::SingleFlight<Option<bytes::Bytes>>,
 > = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
@@ -244,16 +244,29 @@ pub(crate) fn invalidate_game_row_cache(id: i32) {
     }
 }
 
-/// The scoreboard's wire body as raw bytes, from cache or freshly built. On a hit
-/// the returned `Bytes` is a refcount clone (no copy) and the handler ships it as
-/// the response body with zero copy.
-pub(crate) async fn build_scoreboard_json(
+async fn cached_scoreboard_bundle(st: &SharedState, key: &str) -> Option<bytes::Bytes> {
+    let bytes = st.cache.get(key).await?;
+    if super::scoreboard_encoding::valid_bundle(&bytes) {
+        return Some(bytes);
+    }
+    tracing::warn!(
+        cache_key = key,
+        "evicting corrupt standard scoreboard cache entry"
+    );
+    st.cache.remove(key).await;
+    None
+}
+
+/// The scoreboard's atomic encoding bundle, from cache or freshly built. On a
+/// hit the returned `Bytes` is a refcount clone and the handler selects the
+/// negotiated representation without hashing or recompressing it.
+pub(crate) async fn build_scoreboard_bundle(
     st: &SharedState,
     g: &game::Model,
     is_monitor: bool,
 ) -> AppResult<bytes::Bytes> {
     let key = scoreboard_cache_key(g, is_monitor);
-    if let Some(bytes) = st.cache.get(&key).await {
+    if let Some(bytes) = cached_scoreboard_bundle(st, &key).await {
         return Ok(bytes);
     }
     // Miss: single-flight the rebuild. A failed leader is broadcast as one
@@ -262,18 +275,39 @@ pub(crate) async fn build_scoreboard_json(
     let coalesced = SCOREBOARD_SF
         .run(&key, move || async move {
             // Another leader may have just populated the cache.
-            if let Some(bytes) = st2.cache.get(&key2).await {
+            if let Some(bytes) = cached_scoreboard_bundle(&st2, &key2).await {
                 return Some(bytes);
             }
             let model = build_scoreboard(&st2, &g2, is_monitor).await.ok()?;
-            let json = serde_json::to_vec(&model).ok()?;
-            st2.cache
-                .set(&key2, &json, Some(SCOREBOARD_CACHE_TTL))
-                .await;
-            Some(bytes::Bytes::from(json))
+            let raw = bytes::Bytes::from(serde_json::to_vec(&model).ok()?);
+            let built = super::scoreboard_encoding::build_stable_bundle(
+                raw,
+                key2.clone(),
+                b"\"updateTimeUtc\":",
+            )
+            .await
+            .ok()?;
+            if built.cacheable {
+                st2.cache
+                    .set(&key2, &built.bytes, Some(SCOREBOARD_CACHE_TTL))
+                    .await;
+            }
+            Some(built.bytes)
         })
         .await;
     coalesced.ok_or_else(|| AppError::internal("scoreboard cache fill failed"))
+}
+
+/// Identity JSON for internal projections. The body slice is zero-copy even
+/// though the shared cache entry also carries negotiated encodings and a stable
+/// validator.
+pub(crate) async fn build_scoreboard_json(
+    st: &SharedState,
+    g: &game::Model,
+    is_monitor: bool,
+) -> AppResult<bytes::Bytes> {
+    let bundle = build_scoreboard_bundle(st, g, is_monitor).await?;
+    super::scoreboard_encoding::identity_body(bundle)
 }
 
 /// [`build_scoreboard_json`] as a deserialized [`ScoreboardModel`], for callers
@@ -361,6 +395,7 @@ pub(crate) async fn build_scoreboard(
     // The game's divisions (top-level `divisions` list; RSCTF `DivisionItem`: id + name).
     let divisions = division::Entity::find()
         .filter(division::Column::GameId.eq(game_id))
+        .order_by_asc(division::Column::Id)
         .all(&st.db)
         .await?;
     let divisions_json: Vec<Json> = divisions
@@ -484,7 +519,11 @@ pub(crate) async fn build_scoreboard(
     let bonus = g.blood_bonus_value;
 
     // Assign blood tiers + per-solve contributions in submit-time order.
-    solve_list.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    solve_list.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
     let mut per_part_items: HashMap<i32, Vec<ChallengeItem>> = HashMap::new();
     // Last SCORE-ELIGIBLE solve time per participation (RSCTF only advances
     // LastSubmissionTime for scoring solves, so ineligible late solves can't push a
@@ -651,6 +690,10 @@ pub(crate) async fn build_scoreboard(
         is_frozen_view,
     })
 }
+
+#[cfg(test)]
+#[path = "scoreboard_wire_tests.rs"]
+mod scoreboard_wire_tests;
 
 #[cfg(test)]
 mod tests {

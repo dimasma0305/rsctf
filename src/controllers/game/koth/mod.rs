@@ -55,6 +55,9 @@ mod lifecycle;
 mod listing;
 mod routes;
 mod scoreboard;
+#[cfg(test)]
+#[path = "scoreboard_wire_tests.rs"]
+mod scoreboard_wire_tests;
 mod scoring;
 mod scoring_formula;
 #[cfg(test)]

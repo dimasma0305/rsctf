@@ -887,7 +887,15 @@ pub(super) async fn finish_prepared_round(
         .await;
     state
         .cache
+        .remove(&format!("_KothScoreBoardWireV2_{}", game.id))
+        .await;
+    state
+        .cache
         .remove(&format!("_KothScoreBoardFrozen_{}", game.id))
+        .await;
+    state
+        .cache
+        .remove(&format!("_KothScoreBoardWireV2Frozen_{}", game.id))
         .await;
     state
         .cache

@@ -473,7 +473,16 @@ export const useGameScoreboardRead = (numId: number) => {
     error,
     isValidating,
     mutate,
-  } = api.game.useGameScoreboard(numId, CompletionPollSWRConfig, numId > 0)
+  } = api.game.useGameScoreboard(
+    numId,
+    {
+      ...CompletionPollSWRConfig,
+      // Conditional 304 reads return the exact retained object. Object identity
+      // avoids a recursive comparison over the full roster/challenge matrix.
+      compare: Object.is,
+    },
+    numId > 0
+  )
 
   return { scoreboard, error, isValidating, mutate }
 }
@@ -712,6 +721,8 @@ export const useKothScoreboard = (numId: number, doFetch: boolean = true) => {
     mutate,
   } = useSWR<KothScoreboardModel>(doFetch && numId > 0 ? `/api/game/${numId}/ad/koth/scoreboard` : null, {
     ...CompletionPollSWRConfig,
+    // The conditional reader returns this exact object for a 304, preventing
+    // the large KotH table from rendering an unchanged teams-by-hills matrix.
     compare: Object.is,
   })
   useCompletionPolling({
