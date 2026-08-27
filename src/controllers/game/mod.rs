@@ -37,8 +37,8 @@ use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser, MonitorUser};
 use crate::models::data::{
     attachment, challenge_review, container, division, division_challenge_config, flag_context,
-    game, game_challenge, game_event, game_instance, game_manager, game_notice, local_file,
-    participation, submission, team, team_member, user, user_participation,
+    game, game_challenge, game_event, game_instance, game_notice, local_file, participation,
+    submission, team, team_member, user,
 };
 use crate::services::container::ContainerSpec;
 use crate::utils::crypto_utils::ct_eq;
@@ -182,32 +182,6 @@ pub struct GameEventModel {
     pub user: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
-}
-
-/// RSCTF `TeamWithDetailedUserInfo`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamWithDetailedUserInfo {
-    pub id: i32,
-    pub locked: bool,
-    pub captain_id: Uuid,
-    pub name: Option<String>,
-    pub bio: Option<String>,
-    pub avatar: Option<String>,
-    pub members: Vec<Json>,
-}
-
-/// RSCTF `ParticipationInfoModel` (Admin review).
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ParticipationInfoModel {
-    pub id: i32,
-    pub team: TeamWithDetailedUserInfo,
-    /// User-id GUIDs of the members registered for this participation
-    /// (RSCTF `part.Members.Select(m => m.UserId)`).
-    pub registered_members: Vec<Uuid>,
-    pub division_id: Option<i32>,
-    pub status: ParticipationStatus,
 }
 
 /// RSCTF `ChallengeItem` (a solved cell on the scoreboard).
@@ -974,6 +948,7 @@ mod combined_scoreboard;
 mod containers;
 mod lookups;
 mod membership;
+mod participation_review;
 mod play;
 mod scoreboard;
 mod scoreboard_board;
@@ -990,6 +965,7 @@ pub use combined_scoreboard::*;
 pub use containers::*;
 pub(crate) use containers::{prepare_queued_image, repair_missing_legacy_image};
 use lookups::*;
+pub use participation_review::*;
 pub use play::*;
 pub use scoreboard::*;
 pub(crate) use scoreboard_board::*;
