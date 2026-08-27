@@ -12,16 +12,18 @@ const monitorPages = [
     path: 'src/pages/games/[id]/monitor/Events.tsx',
     fetchName: 'fetchEvents',
     identityName: 'gameEventMonitorIdentity',
+    callbackDependencies: /\[activePage, hideContainerEvents, debouncedSearch, numId, t\]/,
   },
   {
     path: 'src/pages/games/[id]/monitor/Submissions.tsx',
     fetchName: 'fetchSubmissions',
     identityName: 'submissionMonitorIdentity',
+    callbackDependencies: /\[activePage, type, debouncedSearch, numId, t\]/,
   },
 ]
 
 test('monitor hubs survive timing revalidation, stop at the boundary, and reconcile afterward', () => {
-  for (const { path, fetchName, identityName } of monitorPages) {
+  for (const { path, fetchName, identityName, callbackDependencies } of monitorPages) {
     const source = readFileSync(path, 'utf8')
 
     assert.match(source, /const \{ finished \} = useGameStatus\(game\)/, path)
@@ -30,12 +32,11 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
     assert.match(source, /\}, \[monitorConnectionActive, numId, t\]\)/, path)
     assert.doesNotMatch(source, /\}, \[game, numId, t\]\)/, path)
     assert.match(source, new RegExp(`const ${fetchName} = useCallback`), path)
+    assert.match(source, callbackDependencies, `${path} must retire stale backfills whenever its query scope changes`)
     assert.match(source, /monitorHubStop\.current = connection\.stop\(\)/, path)
     assert.match(
       source,
-      new RegExp(
-        `useRevalidateWhenPollingStops\\(monitorConnectionActive, ${fetchName}, waitForMonitorHubStop\\)`
-      ),
+      new RegExp(`useRevalidateWhenPollingStops\\(monitorConnectionActive, ${fetchName}, waitForMonitorHubStop\\)`),
       path
     )
     assert.match(source, new RegExp(`unreconciledMonitorRows\\([^;]+${identityName}\\)`), path)
@@ -43,6 +44,143 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
       source.lastIndexOf('useRevalidateWhenPollingStops(') > source.indexOf('new signalR.HubConnectionBuilder()'),
       `${path} must reconcile after the hub ownership effect so cleanup runs first`
     )
+  }
+})
+
+class ScopedMonitorFeed {
+  readonly requests: string[] = []
+  private readonly pending = new Map<string, Array<(rows: string[]) => void>>()
+
+  read(scope: string) {
+    this.requests.push(scope)
+    return new Promise<string[]>((resolve) => {
+      const resolvers = this.pending.get(scope) ?? []
+      resolvers.push(resolve)
+      this.pending.set(scope, resolvers)
+    })
+  }
+
+  complete(scope: string, rows: string[]) {
+    const resolvers = this.pending.get(scope)
+    const resolve = resolvers?.shift()
+    if (resolvers?.length === 0) this.pending.delete(scope)
+    resolve?.(rows)
+  }
+
+  completeAll(scope: string, rows: string[]) {
+    while (this.pending.has(scope)) this.complete(scope, rows)
+  }
+}
+
+test('query changes cancel pending final backfills for both monitor feeds', async (context) => {
+  const cases = [
+    {
+      name: 'events filter, page, and search',
+      initialScope: JSON.stringify({ game: 1, page: 1, hideContainer: false, search: '' }),
+      nextScope: JSON.stringify({ game: 1, page: 2, hideContainer: true, search: 'operator' }),
+    },
+    {
+      name: 'submissions type, page, and search',
+      initialScope: JSON.stringify({ game: 1, page: 1, type: 'All', search: '' }),
+      nextScope: JSON.stringify({ game: 1, page: 2, type: AnswerResult.WrongAnswer, search: 'team' }),
+    },
+  ]
+
+  for (const { name, initialScope, nextScope } of cases) {
+    await context.test(name, async () => {
+      const browser = new Window({ url: 'https://rsctf.test/games/1/monitor' })
+      const restoreDom = installTestDom(browser)
+      const { useRevalidateWhenPollingStops } = await import('../hooks/useGame')
+      const { createRoot } = await import('react-dom/client')
+      const container = browser.document.createElement('div')
+      browser.document.body.append(container)
+      const root = createRoot(container)
+      const feed = new ScopedMonitorFeed()
+      let finishStop: (() => void) | undefined
+      const pendingStop = new Promise<void>((resolve) => {
+        finishStop = resolve
+      })
+      ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+      const Probe: FC<{ active: boolean; scope: string }> = ({ active, scope }) => {
+        const [rows, setRows] = useState<string[]>([])
+        const hubStop = useRef<Promise<void>>(Promise.resolve())
+        const waitForHubStop = useCallback(() => hubStop.current, [])
+        const refresh = useCallback(async () => setRows(await feed.read(scope)), [feed, scope])
+
+        useEffect(() => {
+          void refresh()
+        }, [refresh])
+
+        useEffect(() => {
+          if (!active) return
+          return () => {
+            hubStop.current = pendingStop
+          }
+        }, [active])
+
+        useRevalidateWhenPollingStops(active, refresh, waitForHubStop)
+        return createElement('output', null, rows.join(','))
+      }
+
+      try {
+        await act(async () => {
+          root.render(createElement(Probe, { active: true, scope: initialScope }))
+          await Promise.resolve()
+        })
+        assert.deepEqual(feed.requests, [initialScope])
+        await act(async () => {
+          feed.complete(initialScope, ['initial rows'])
+          await Promise.resolve()
+        })
+
+        await act(async () => {
+          root.render(createElement(Probe, { active: false, scope: initialScope }))
+          await Promise.resolve()
+        })
+        assert.deepEqual(feed.requests, [initialScope], 'the closeout read must remain behind pending stop()')
+
+        await act(async () => {
+          root.render(createElement(Probe, { active: false, scope: nextScope }))
+          await Promise.resolve()
+        })
+        assert.deepEqual(feed.requests, [initialScope, nextScope])
+
+        await act(async () => {
+          feed.complete(nextScope, ['new scope rows'])
+          await Promise.resolve()
+        })
+        assert.equal(container.textContent, 'new scope rows', 'the newer query completes before hub shutdown')
+
+        await act(async () => {
+          finishStop?.()
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        feed.completeAll(initialScope, ['stale final rows'])
+        await act(async () => {
+          await Promise.resolve()
+        })
+
+        assert.deepEqual(
+          feed.requests,
+          [initialScope, nextScope],
+          'the obsolete post-stop callback must not issue its old-scope HTTP request'
+        )
+        assert.equal(container.textContent, 'new scope rows', 'an obsolete final snapshot must not replace newer rows')
+      } finally {
+        finishStop?.()
+        feed.completeAll(initialScope, [])
+        feed.completeAll(nextScope, [])
+        await act(async () => {
+          root.unmount()
+          await Promise.resolve()
+        })
+        delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+        await browser.happyDOM.close()
+        restoreDom()
+      }
+    })
   }
 })
 

@@ -339,6 +339,7 @@ export const useRevalidateWhenPollingStops = (
   const wasPolling = useRef(polling)
 
   useEffect(() => {
+    let cancelled = false
     const stopped = wasPolling.current && !polling
     wasPolling.current = polling
     if (!stopped) return
@@ -346,7 +347,15 @@ export const useRevalidateWhenPollingStops = (
     void Promise.resolve()
       .then(() => waitForStop?.())
       .catch(() => undefined)
-      .then(revalidate)
+      .then(() => {
+        if (!cancelled) return revalidate()
+      })
+
+    // Query-scoped callbacks change with their page, filter, type, or search.
+    // Retire an older post-stop chain before it can publish into that new scope.
+    return () => {
+      cancelled = true
+    }
   }, [polling, revalidate, waitForStop])
 }
 
