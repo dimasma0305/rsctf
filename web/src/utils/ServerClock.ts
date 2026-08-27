@@ -7,12 +7,18 @@ type Listener = () => void
 const listeners = new Set<Listener>()
 let offsetMilliseconds = 0
 let liveSampleReady = false
-let latestServerTime = Number.NEGATIVE_INFINITY
+let nextRequestSequence = 0
+let latestAcceptedRequestSequence = 0
 let bestRoundTripMilliseconds = Number.POSITIVE_INFINITY
 let sampleWindowStartedAt = Number.NEGATIVE_INFINITY
 const installedInstances = new WeakSet<AxiosInstance>()
-const requestStartedAt = new WeakMap<object, number>()
+const requestTiming = new WeakMap<object, { sequence: number; startedAt: number }>()
 const CLOCK_SAMPLE_WINDOW_MS = 5 * 60_000
+
+const allocateRequestSequence = () => {
+  nextRequestSequence += 1
+  return nextRequestSequence
+}
 
 const subscribe = (listener: Listener) => {
   listeners.add(listener)
@@ -43,25 +49,33 @@ const modelServerTime = (value: unknown): number | null => {
   return null
 }
 
-/** Accept a response-stamped sample at receipt, preferring the lowest RTT in a bounded window. */
+/**
+ * Accept a response-stamped sample at receipt, preferring the lowest RTT in a
+ * bounded window. The sequence is captured before dispatch so a late response
+ * is fenced without assuming clocks are monotonic across API replicas.
+ */
 export const observeServerTime = (
   serverTime: number,
   receivedAt: number = Date.now(),
-  startedAt: number = receivedAt
+  startedAt: number = receivedAt,
+  requestSequence: number = allocateRequestSequence()
 ): boolean => {
   if (
     !Number.isFinite(serverTime) ||
     serverTime <= 0 ||
     !Number.isFinite(receivedAt) ||
     !Number.isFinite(startedAt) ||
-    startedAt > receivedAt
+    startedAt > receivedAt ||
+    !Number.isSafeInteger(requestSequence) ||
+    requestSequence <= 0
   )
     return false
-  if (serverTime < latestServerTime) return false
+  nextRequestSequence = Math.max(nextRequestSequence, requestSequence)
+  if (requestSequence <= latestAcceptedRequestSequence) return false
 
   const readinessChanged = !liveSampleReady
   liveSampleReady = true
-  latestServerTime = serverTime
+  latestAcceptedRequestSequence = requestSequence
   if (
     !Number.isFinite(sampleWindowStartedAt) ||
     receivedAt < sampleWindowStartedAt ||
@@ -93,10 +107,13 @@ export const observeServerTime = (
 
 const observeResponse = (response: AxiosResponse) => {
   const receivedAt = Date.now()
-  const startedAt = requestStartedAt.get(response.config) ?? receivedAt
-  requestStartedAt.delete(response.config)
+  const timing = requestTiming.get(response.config) ?? {
+    sequence: allocateRequestSequence(),
+    startedAt: receivedAt,
+  }
+  requestTiming.delete(response.config)
   const serverTime = modelServerTime(response.data)
-  if (serverTime !== null) observeServerTime(serverTime, receivedAt, startedAt)
+  if (serverTime !== null) observeServerTime(serverTime, receivedAt, timing.startedAt, timing.sequence)
   return response
 }
 
@@ -105,7 +122,7 @@ export const installServerClock = (instance: AxiosInstance) => {
   if (installedInstances.has(instance)) return
   installedInstances.add(instance)
   instance.interceptors.request.use((config) => {
-    requestStartedAt.set(config, Date.now())
+    requestTiming.set(config, { sequence: allocateRequestSequence(), startedAt: Date.now() })
     return config
   })
   instance.interceptors.response.use(observeResponse)
@@ -170,7 +187,8 @@ export const serverClockTestApi = {
   reset: () => {
     offsetMilliseconds = 0
     liveSampleReady = false
-    latestServerTime = Number.NEGATIVE_INFINITY
+    nextRequestSequence = 0
+    latestAcceptedRequestSequence = 0
     bestRoundTripMilliseconds = Number.POSITIVE_INFINITY
     sampleWindowStartedAt = Number.NEGATIVE_INFINITY
   },

@@ -159,8 +159,8 @@ test('a later clock correction replaces a behind-browser capability timer', asyn
     })
 
     // Eleven local minutes later, a newer response corrects the first estimate
-    // ten minutes backward. Its serverTime is still monotonic, so it models the
-    // same response ordering used by the production observer.
+    // ten minutes backward. The later observation models a newer request, so
+    // the production observer may safely replace the earlier estimate.
     await act(async () => context.mock.timers.tick(11 * 60_000))
     await act(async () => {
       assert.equal(observeServerTime(serverStart + 60_000, localStart + 11 * 60_000), true)

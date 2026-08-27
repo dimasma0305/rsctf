@@ -33,7 +33,7 @@ test('server-corrected lifecycle crosses kickoff and close without navigation', 
 
   try {
     serverClockTestApi.reset()
-    assert.equal(observeServerTime(serverStart, localStart), true)
+    assert.equal(observeServerTime(serverStart, localStart, localStart, 2), true)
     assert.equal(serverClockTestApi.offset(), -60 * 60 * 1000)
     assert.equal(getServerNowMilliseconds(localStart), serverStart)
     assert.equal(serverClockTestApi.modelServerTime({ data: [{ serverTime: serverStart }] }), serverStart)
@@ -56,7 +56,7 @@ test('server-corrected lifecycle crosses kickoff and close without navigation', 
     game = { ...game, end: serverStart + 10_000 }
     await act(async () => root.render(createElement(Probe)))
     assert.equal(container.textContent, 'ongoing:1:1')
-    assert.equal(observeServerTime(serverStart - 1, localStart + 3_000), false)
+    assert.equal(observeServerTime(serverStart - 1, localStart + 3_000, localStart - 1_000, 1), false)
     assert.equal(serverClockTestApi.offset(), -60 * 60 * 1000)
 
     await act(async () => root.unmount())
@@ -80,6 +80,73 @@ test('server-corrected lifecycle crosses kickoff and close without navigation', 
     assert.equal(observeServerTime(serverStart + 10_000, localStart + 10_020, localStart), true)
     assert.equal(serverClockTestApi.offset(), -60 * 60 * 1000 - 20)
   } finally {
+    serverClockTestApi.reset()
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('newer cross-replica samples correct backward while stale responses stay fenced', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1/challenges' })
+  const restoreDom = installTestDom(browser)
+  const localStart = 2_000_010_000_000
+  context.mock.timers.enable({
+    apis: ['Date', 'setInterval', 'setTimeout'],
+    now: new Date(localStart),
+  })
+  const { observeServerTime, serverClockTestApi, useServerClockOffset } = await import('./ServerClock')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  const Probe: FC = () => {
+    const offset = useServerClockOffset()
+    return createElement('output', null, offset === null ? 'waiting' : offset)
+  }
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    serverClockTestApi.reset()
+    await act(async () => root.render(createElement(Probe)))
+    assert.equal(container.textContent, 'waiting')
+
+    // Request 1 remains in flight while request 2 reaches a replica whose
+    // wall clock is two minutes fast.
+    await act(async () => context.mock.timers.tick(10))
+    await act(async () => {
+      assert.equal(observeServerTime(localStart + 120_010, Date.now(), localStart + 5, 2), true)
+    })
+    assert.equal(serverClockTestApi.offset(), 120_000)
+    assert.equal(container.textContent, '120000')
+
+    // A newer, lower-latency response from a synchronized replica has a lower
+    // absolute serverTime. Request ordering must let it correct the offset.
+    await act(async () => context.mock.timers.tick(10))
+    await act(async () => {
+      assert.equal(observeServerTime(localStart + 20, Date.now(), localStart + 19, 3), true)
+    })
+    assert.equal(serverClockTestApi.offset(), 0)
+    assert.equal(container.textContent, '0')
+
+    // The first request finally returns from the fast replica. Even its higher
+    // absolute serverTime cannot overwrite the newer response.
+    await act(async () => context.mock.timers.tick(10))
+    assert.equal(observeServerTime(localStart + 120_030, Date.now(), localStart, 1), false)
+    assert.equal(serverClockTestApi.offset(), 0)
+    assert.equal(container.textContent, '0')
+
+    // A later authoritative response also recovers when time synchronization
+    // steps the server clock backward instead of waiting for wall time to catch up.
+    await act(async () => context.mock.timers.tick(10))
+    await act(async () => {
+      assert.equal(observeServerTime(Date.now() - 60_000, Date.now(), Date.now(), 4), true)
+    })
+    assert.equal(serverClockTestApi.offset(), -60_000)
+    assert.equal(container.textContent, '-60000')
+  } finally {
+    await act(async () => root.unmount())
     serverClockTestApi.reset()
     context.mock.timers.reset()
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
