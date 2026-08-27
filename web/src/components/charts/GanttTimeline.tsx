@@ -1,11 +1,12 @@
 import { Badge, Box, Group, ScrollArea, Stack, Text, Title } from '@mantine/core'
 import { mdiCalendarBlankOutline, mdiGestureSwipeHorizontal } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import dayjs, { Dayjs } from 'dayjs'
+import dayjs, { type Dayjs } from 'dayjs'
 import { CSSProperties, FC, ReactNode, useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import { useLanguage } from '@Utils/I18n'
+import { useServerNow } from '@Utils/ServerClock'
 import classes from '@Styles/GanttTimeline.module.css'
 
 interface GanttTimeLineProps {
@@ -43,6 +44,7 @@ interface DateData {
 }
 
 const DAY_COUNT = 49
+const TIMELINE_CLOCK_BUCKET = 'minute'
 
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value))
 
@@ -51,10 +53,16 @@ export const GanttTimeLine: FC<GanttTimeLineProps> = ({ items }) => {
   const todayMarker = useRef<HTMLSpanElement>(null)
   const { t } = useTranslation()
   const { locale } = useLanguage()
+  const now = useServerNow()
+  // Keep the schedule model current without rebuilding its 49-day grid on
+  // every shared one-second clock tick. Because this bucket is derived from
+  // the server-corrected clock, the first live response also replaces a model
+  // that may have rendered from persistent SWR data and a skewed browser clock.
+  const timelineNowMs = now.startOf(TIMELINE_CLOCK_BUCKET).valueOf()
 
   const dateData = useMemo<DateData>(() => {
-    const now = dayjs()
-    const start = now.startOf('week').subtract(3, 'week').startOf('day')
+    const timelineNow = dayjs(timelineNowMs).locale(locale)
+    const start = timelineNow.startOf('week').subtract(3, 'week').startOf('day')
     const end = start.add(DAY_COUNT, 'day')
     const durationSeconds = end.diff(start, 'second')
     const days: TimelineDay[] = []
@@ -67,7 +75,7 @@ export const GanttTimeLine: FC<GanttTimeLineProps> = ({ items }) => {
 
       days.push({
         time: current,
-        isToday: current.isSame(now, 'day'),
+        isToday: current.isSame(timelineNow, 'day'),
         isWeekend: current.day() === 0 || current.day() === 6,
       })
 
@@ -84,11 +92,11 @@ export const GanttTimeLine: FC<GanttTimeLineProps> = ({ items }) => {
       start,
       end,
       durationSeconds,
-      nowPosition: clamp((now.diff(start, 'second') / durationSeconds) * 100, 0, 100),
+      nowPosition: clamp((timelineNow.diff(start, 'second') / durationSeconds) * 100, 0, 100),
       days,
       months,
     }
-  }, [locale])
+  }, [timelineNowMs, locale])
 
   useEffect(() => {
     const element = viewport.current

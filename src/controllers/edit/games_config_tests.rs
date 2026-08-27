@@ -34,6 +34,44 @@ fn game_creation_keeps_every_supplied_ad_timing_field() {
 }
 
 #[test]
+fn game_info_server_time_is_response_owned_and_uses_unix_milliseconds() {
+    let now = chrono::Utc::now();
+    let mut model: GameInfoModel = serde_json::from_value(serde_json::json!({
+        "serverTime": now.timestamp_millis()
+    }))
+    .unwrap();
+
+    assert_eq!(model.server_time, None);
+    model.server_time = Some(now);
+    let serialized = serde_json::to_value(model).unwrap();
+    assert_eq!(serialized["serverTime"], now.timestamp_millis());
+}
+
+#[test]
+fn game_delete_stamps_server_time_after_delayed_teardown() {
+    let source = include_str!("games.rs");
+    let delete_start = source
+        .find("pub async fn delete_game(")
+        .expect("delete_game controller exists");
+    let delete_end = source[delete_start..]
+        .find("/// `GET /api/edit/games/{id}/HashSalt`")
+        .map(|offset| delete_start + offset)
+        .expect("delete_game controller boundary exists");
+    let delete = &source[delete_start..delete_end];
+    let final_teardown = delete
+        .rfind("flush_game_scoreboards(&st, id).await;")
+        .expect("delete_game completes its final cache teardown");
+    let response_stamp = delete
+        .rfind("GameInfoModel::from_game(&g)")
+        .expect("delete_game stamps its response model");
+
+    assert!(
+        response_stamp > final_teardown,
+        "delete_game captured serverTime before its slow teardown completed"
+    );
+}
+
+#[test]
 fn clone_challenge_defaults_match_non_nullable_schema_defaults() {
     use crate::models::data::game_challenge;
     use crate::utils::enums::{

@@ -4,10 +4,14 @@ use super::*;
 mod eligibility;
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::utils::enums::NetworkMode;
+mod deletion;
+use deletion::{delete_expected_team_container_locked, DeleteContainerOutcome};
+mod extension;
 use eligibility::{
     authorize_on_demand_build, ineligible_container_start_error, load_eligible_shared_challenge,
     player_container_request_is_eligible, ContainerRequestMode,
 };
+use extension::extend_expected_team_container_locked;
 mod image_repair;
 pub(crate) use image_repair::{prepare_queued_image, repair_missing_legacy_image};
 mod publication;
@@ -27,6 +31,13 @@ use workload_fence::{
     acquire_playable_publication_lock, acquire_shared_publication_lock,
     load_playable_definition_snapshot, load_shared_definition_snapshot,
 };
+
+/// Immutable identity precondition for a player container lifecycle mutation.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpectedContainerQuery {
+    pub expected_container_id: Uuid,
+}
 
 /// `POST /api/game/{id}/container/{challengeId}` — provision a per-team dynamic
 /// container (mirrors RSCTF `GameInstanceRepository.CreateContainer`).
@@ -528,6 +539,7 @@ pub async fn delete_container(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, cid)): Path<(i32, i32)>,
+    Query(query): Query<ExpectedContainerQuery>,
 ) -> AppResult<StatusCode> {
     let ctx = context_info(&st, &user, id, false).await?;
     let guard_challenge = load_scoped_challenge(&st, id, cid).await?;
@@ -576,29 +588,20 @@ pub async fn delete_container(
         distributed.release().await?;
         return Err(AppError::Forbidden);
     }
-    let instance = game_instance::Entity::find()
-        .filter(game_instance::Column::ParticipationId.eq(ctx.participation.id))
-        .filter(game_instance::Column::ChallengeId.eq(cid))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("No instance for this challenge"))?;
-    let Some(cuuid) = instance.container_id else {
-        return Err(AppError::bad_request("No running container"));
+    let outcome = delete_expected_team_container_locked(
+        &st,
+        ctx.participation.id,
+        cid,
+        query.expected_container_id,
+    )
+    .await?;
+    let DeleteContainerOutcome::Destroyed {
+        audit_id: destroy_id,
+    } = outcome
+    else {
+        distributed.release().await?;
+        return Ok(StatusCode::OK);
     };
-    // Per-instance frequency gate (RSCTF `DeleteContainer`, GameController.cs:2113):
-    // reject a teardown within the cooldown of this instance's last container operation,
-    // AFTER the ContainerNotCreated check and BEFORE actually destroying the container.
-    if let Some(err) = container_op_too_frequent(&instance) {
-        return Err(err);
-    }
-    let c = container::Entity::find_by_id(cuuid)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| {
-            AppError::conflict("container bookkeeping is missing; retry after reconciliation")
-        })?;
-    let destroy_id = format!("<{}> {}", &c.id.simple().to_string()[..12], c.container_id);
-    revoke_published_team_container(&st, &c.container_id, c.id, instance.id, None, None).await?;
 
     let team_name = team::Entity::find_by_id(ctx.participation.team_id)
         .one(&st.db)
@@ -648,6 +651,7 @@ pub async fn extend_container(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, cid)): Path<(i32, i32)>,
+    Query(query): Query<ExpectedContainerQuery>,
 ) -> AppResult<RequestResponse<ContainerInfoModel>> {
     let ctx = context_info(&st, &user, id, true).await?;
     let caller = LiveParticipationIdentity {
@@ -701,6 +705,11 @@ pub async fn extend_container(
             let sid = current_challenge
                 .shared_container_id
                 .ok_or_else(|| AppError::bad_request("No running container"))?;
+            if sid != query.expected_container_id {
+                return Err(AppError::conflict(
+                    "The challenge instance changed; refresh and retry.",
+                ));
+            }
             let shared = container::Entity::find_by_id(sid)
                 .one(&st.db)
                 .await?
@@ -755,45 +764,27 @@ pub async fn extend_container(
         {
             return Err(AppError::Forbidden);
         }
-        // Creation, deletion, and the reaper all use this participation lock. Re-read
-        // both links after acquisition so an expired pre-lock row is never revived.
-        let instance = game_instance::Entity::find()
-            .filter(game_instance::Column::ParticipationId.eq(ctx.participation.id))
-            .filter(game_instance::Column::ChallengeId.eq(cid))
-            .one(&st.db)
-            .await?
-            .ok_or_else(|| AppError::not_found("No instance for this challenge"))?;
-        let cuuid = instance
-            .container_id
-            .ok_or_else(|| AppError::bad_request("No running container"))?;
-        let c = container::Entity::find_by_id(cuuid)
-            .one(&st.db)
-            .await?
-            .ok_or_else(|| AppError::not_found("Container not found"))?;
-
-        // Proximity gate: RSCTF ExtendContainerLifetime only permits renewal once the
-        // container is within the RenewalWindow (10 min) of its expiry — otherwise it
-        // returns 400 Game_ContainerExtensionNotAvailable.
-        if c.expect_stop_at - Utc::now()
-            > chrono::Duration::minutes(i64::from(container_policy.renewal_window))
-        {
-            return Err(AppError::bad_request(
-                "The container is not yet eligible for extension",
-            ));
-        }
-
-        let stop_at = c.expect_stop_at
-            + chrono::Duration::minutes(i64::from(container_policy.extension_duration));
-        let mut am: container::ActiveModel = c.into();
-        am.expect_stop_at = Set(stop_at);
-        let c = am.update(&st.db).await?;
-        Ok(RequestResponse::ok(ContainerInfoModel::from(&c)))
+        // Creation, deletion, and the reaper all use this participation lock. The
+        // helper re-reads and checks the immutable link after acquisition, so a
+        // delayed request for runtime A can never extend replacement B.
+        let response = extend_expected_team_container_locked(
+            &st,
+            ctx.participation.id,
+            cid,
+            query.expected_container_id,
+            &container_policy,
+        )
+        .await?;
+        Ok(RequestResponse::ok(response))
     }
     .await;
     distributed.release().await?;
     result
 }
 
+#[cfg(test)]
+#[path = "containers/delete_tests.rs"]
+mod delete_tests;
 #[cfg(test)]
 #[path = "containers/reaping_tests.rs"]
 mod reaping_tests;

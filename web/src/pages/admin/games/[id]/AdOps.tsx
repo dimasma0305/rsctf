@@ -62,12 +62,12 @@ import { useLocation, useNavigate, useParams } from 'react-router'
 import { ContainerExecModal } from '@Components/admin/ContainerExecModal'
 import { KothOpsPanel } from '@Components/admin/KothOpsPanel'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
+import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { highlight } from '@Utils/marked/ShikiExtension'
 import { sanitizeMarkdownHtml } from '@Utils/sanitize'
 import { useAdminAdState, useAdminKothState, type AdminKothHill } from '@Hooks/useGame'
-import { useTicker } from '@Hooks/useTicker'
 import api, {
   AdCheckStatus,
   AdFileBlob,
@@ -909,7 +909,7 @@ const AdOps: FC = () => {
   }, [snapSid, state])
   const [search, setSearch] = useState('')
   const [debouncedSearch] = useDebouncedValue(search, 200)
-  const now = useTicker()
+  const now = useServerNow()
   const isMobile = useIsMobile(1080)
 
   // Wait for BOTH consoles' first load — the A&D state always resolves (even

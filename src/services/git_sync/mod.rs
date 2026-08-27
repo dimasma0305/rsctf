@@ -107,6 +107,8 @@ pub use manifest::{
 };
 mod discovery;
 pub use discovery::{discover_challenges, discover_events};
+mod build_matrix;
+pub use build_matrix::{RepositoryContainerBuild, RepositoryContainerKind};
 mod validation;
 use validation::resolve_challenge_scoring;
 pub use validation::{

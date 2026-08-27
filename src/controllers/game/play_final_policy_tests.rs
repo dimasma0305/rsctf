@@ -16,6 +16,7 @@ fn challenge_model() -> ChallengeDetailModel {
         hints: None,
         score: 100,
         context: ClientFlagContext {
+            instance_id: Some(Uuid::from_u128(4)),
             instance_entry: Some("tcp://private.example:31337".into()),
             close_time: Some(Utc::now()),
             is_shared_instance: true,
@@ -86,6 +87,7 @@ fn response_grant(container: container::Model) -> PreparedChallengeGrant {
 
 fn prepared_response(container: &container::Model) -> ChallengeDetailModel {
     let mut model = challenge_model();
+    model.context.instance_id = Some(container.id);
     model.context.instance_entry = Some(container.entry());
     model.context.close_time = Some(container.expect_stop_at);
     model.context.url = Some("https://old.example/secret".into());
@@ -122,6 +124,7 @@ fn archive_keeps_attachment_metadata_but_removes_runtime_coordinates() {
     strip_live_runtime_context(&mut model);
 
     assert_eq!(model.context.instance_entry, None);
+    assert_eq!(model.context.instance_id, None);
     assert_eq!(model.context.close_time, None);
     assert!(!model.context.is_shared_instance);
     assert_eq!(model.context.url.as_deref(), Some("/assets/hash/file"));
@@ -340,6 +343,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         .await
         .unwrap();
     let live_json: serde_json::Value = serde_json::from_slice(&live_body).unwrap();
+    assert_eq!(live_json["context"]["instanceId"], runtime.id.to_string());
     assert_eq!(live_json["context"]["instanceEntry"], "203.0.113.4:41337");
     let event_count: i64 = sqlx::query_scalar(r#"SELECT COUNT(*) FROM "GameEvents""#)
         .fetch_one(&pool)
@@ -567,6 +571,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         .await
         .unwrap();
     let archived_json: serde_json::Value = serde_json::from_slice(&archived_body).unwrap();
+    assert!(archived_json["context"]["instanceId"].is_null());
     assert!(archived_json["context"]["instanceEntry"].is_null());
     assert!(archived_json["context"]["closeTime"].is_null());
     assert_eq!(archived_json["context"]["isSharedInstance"], false);

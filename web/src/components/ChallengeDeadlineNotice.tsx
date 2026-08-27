@@ -4,7 +4,7 @@ import duration from 'dayjs/plugin/duration'
 import localizedFormat from 'dayjs/plugin/localizedFormat'
 import { FC, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useTicker } from '@Hooks/useTicker'
+import { useServerNow } from '@Utils/ServerClock'
 
 dayjs.extend(duration)
 dayjs.extend(localizedFormat)
@@ -17,8 +17,7 @@ export interface ChallengeDeadlineNoticeProps {
 
 export const ChallengeDeadlineNotice: FC<ChallengeDeadlineNoticeProps> = ({ deadline, locale, onExpiredChange }) => {
   const { t } = useTranslation()
-  // Shared 1s ticker so multiple deadline widgets share one interval.
-  const now = useTicker()
+  const now = useServerNow()
   const expired = now.isAfter(deadline)
   const formattedDeadline = useMemo(() => deadline.locale(locale).format('L LTS'), [deadline, locale])
 

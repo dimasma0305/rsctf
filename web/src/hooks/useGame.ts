@@ -1,17 +1,367 @@
 import dayjs, { Dayjs } from 'dayjs'
 import { TFunction } from 'i18next'
-import useSWR from 'swr'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import useSWR, { type Middleware, type SWRConfiguration, unstable_serialize } from 'swr'
 import { GameStatus } from '@Components/GameCard'
+import { isRetryableHttpError } from '@Utils/HttpError'
+import { useServerNow } from '@Utils/ServerClock'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ParticipationStatus } from '@Api'
 
-export const useRecentGames = () => {
-  const { data, mutate, error } = api.game.useGameRecentGames(
-    { limit: 7 },
-    {
-      refreshInterval: 30 * 60 * 1000,
+export const GAME_TIMING_REFRESH_MS = 60_000
+export const GAME_TIMING_RETRY_CAP_MS = 5 * 60_000
+export const GAME_ACCESS_READ_READY_MS = 5_000
+const MAX_RECENT_GAME_READS = 128
+
+type GameAccessReadSnapshot = {
+  id: number
+  start: unknown
+  end: unknown
+  status: unknown
+  practiceMode: unknown
+  serverTime: unknown
+}
+
+type RecentGameRead = {
+  expiresAt: number
+  snapshot: GameAccessReadSnapshot
+}
+
+const monotonicMilliseconds = () => (typeof performance === 'undefined' ? Date.now() : performance.now())
+
+const gameAccessReadSnapshot = (key: string, data: unknown): GameAccessReadSnapshot | null => {
+  const keyMatch = /^\/api\/game\/(\d+)$/.exec(key)
+  if (!keyMatch || !data || typeof data !== 'object') return null
+  const record = data as Record<string, unknown>
+  const id = Number(keyMatch[1])
+  if (!Number.isSafeInteger(id) || record.id !== id) return null
+  return {
+    id,
+    start: record.start,
+    end: record.end,
+    status: record.status,
+    practiceMode: record.practiceMode,
+    serverTime: record.serverTime,
+  }
+}
+
+const sameGameAccessRead = (left: GameAccessReadSnapshot, right: GameAccessReadSnapshot) =>
+  left.id === right.id &&
+  Object.is(left.start, right.start) &&
+  Object.is(left.end, right.end) &&
+  Object.is(left.status, right.status) &&
+  Object.is(left.practiceMode, right.practiceMode) &&
+  Object.is(left.serverTime, right.serverTime)
+
+const createRecentGameReads = (nowMilliseconds: () => number) => {
+  const reads = new Map<string, RecentGameRead>()
+  const prune = (now: number) => {
+    reads.forEach((entry, key) => {
+      if (entry.expiresAt <= now) reads.delete(key)
+    })
+  }
+  const invalidate = (key: string) => reads.delete(key)
+  const remember = (key: string, data: unknown) => {
+    const snapshot = gameAccessReadSnapshot(key, data)
+    if (!snapshot) {
+      invalidate(key)
+      return
     }
+    const now = nowMilliseconds()
+    prune(now)
+    reads.delete(key)
+    reads.set(key, { expiresAt: now + GAME_ACCESS_READ_READY_MS, snapshot })
+    while (reads.size > MAX_RECENT_GAME_READS) {
+      const oldestKey = reads.keys().next().value
+      if (oldestKey === undefined) break
+      reads.delete(oldestKey)
+    }
+  }
+  const matches = (key: string, data: unknown) => {
+    const now = nowMilliseconds()
+    const entry = reads.get(key)
+    if (!entry) return false
+    if (entry.expiresAt <= now) {
+      reads.delete(key)
+      return false
+    }
+    const snapshot = gameAccessReadSnapshot(key, data)
+    return snapshot !== null && sameGameAccessRead(entry.snapshot, snapshot)
+  }
+  const clear = () => reads.clear()
+  return { clear, invalidate, matches, remember }
+}
+
+type LiveGameReadGeneration = {
+  key: string
+  generation: number
+  validationObserved: boolean
+  ready: boolean
+}
+
+/**
+ * A persisted SWR value may paint immediately, but it is not authoritative
+ * enough for redirects until this mounted game key completes a live read.
+ */
+const useLiveGameReadReady = (
+  key: string,
+  gameId: number | undefined,
+  isValidating: boolean,
+  error: unknown,
+  recentSuccessfulRead: boolean
+) => {
+  const [state, setState] = useState<LiveGameReadGeneration>({
+    key,
+    generation: 0,
+    validationObserved: false,
+    ready: recentSuccessfulRead,
+  })
+  const responseMatchesKey = gameId !== undefined && key === unstable_serialize(`/api/game/${gameId}`)
+
+  useLayoutEffect(() => {
+    setState((current) => {
+      const active =
+        current.key === key
+          ? current
+          : {
+              key,
+              generation: current.generation + 1,
+              validationObserved: false,
+              ready: false,
+            }
+      const validationObserved = active.validationObserved || isValidating
+      const ready =
+        active.ready ||
+        recentSuccessfulRead ||
+        (validationObserved && !isValidating && error === undefined && key.length > 0 && responseMatchesKey)
+
+      if (active === current && validationObserved === current.validationObserved && ready === current.ready)
+        return current
+      return { ...active, validationObserved, ready }
+    })
+  }, [error, isValidating, key, recentSuccessfulRead, responseMatchesKey])
+
+  return responseMatchesKey && ((state.key === key && state.ready) || recentSuccessfulRead)
+}
+
+export const shouldRetryGameTimingError = (error: unknown) => isRetryableHttpError(error)
+
+/** Keep an already-rendered landing page through retryable timing read failures. */
+export const shouldRedirectGameLandingError = (error: unknown, hasLoadedGame: boolean) =>
+  error !== undefined && error !== null && (!hasLoadedGame || !shouldRetryGameTimingError(error))
+
+export const gameTimingSWRConfig: SWRConfiguration = {
+  ...OnceSWRConfig,
+  refreshInterval: GAME_TIMING_REFRESH_MS,
+  refreshWhenHidden: false,
+  refreshWhenOffline: false,
+  revalidateOnFocus: true,
+  revalidateOnReconnect: true,
+  shouldRetryOnError: shouldRetryGameTimingError,
+}
+
+/** Equal jitter avoids immediate retries while spreading clients across each backoff window. */
+export const gameTimingRetryDelay = (retryCount: number, random: () => number = Math.random) => {
+  const normalizedRetryCount = Number.isFinite(retryCount) ? Math.max(1, Math.floor(retryCount)) : 1
+  const cappedExponent = Math.min(
+    normalizedRetryCount - 1,
+    Math.ceil(Math.log2(GAME_TIMING_RETRY_CAP_MS / GAME_TIMING_REFRESH_MS))
   )
+  const backoffCeiling = Math.min(GAME_TIMING_RETRY_CAP_MS, GAME_TIMING_REFRESH_MS * 2 ** cappedExponent)
+  const jitter = Math.min(1, Math.max(0, random()))
+  return Math.round(backoffCeiling / 2 + (backoffCeiling / 2) * jitter)
+}
+
+/** Own one timing poll leader and one replaceable recovery timer per SWR key. */
+export const createGameTimingSWRConfig = (
+  nowMilliseconds: () => number = monotonicMilliseconds,
+  random: () => number = Math.random
+) => {
+  type LeadershipListener = (isLeader: boolean) => void
+  type DeferredRetry = { isActive: () => boolean; run: () => void }
+
+  const subscribers = new Map<string, Map<symbol, LeadershipListener>>()
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const deferredRetries = new Map<string, DeferredRetry>()
+  const recentGameReads = createRecentGameReads(nowMilliseconds)
+  let removeActivityListeners: (() => void) | null = null
+  const stopListeningForActivity = () => {
+    removeActivityListeners?.()
+    removeActivityListeners = null
+  }
+  const resumeDeferredRetries = () => {
+    deferredRetries.forEach((retry, key) => {
+      if (!subscribers.has(key)) {
+        deferredRetries.delete(key)
+      } else if (retry.isActive()) {
+        deferredRetries.delete(key)
+        retry.run()
+      }
+    })
+    if (deferredRetries.size === 0) stopListeningForActivity()
+  }
+  const listenForActivity = () => {
+    if (removeActivityListeners) return
+    const currentDocument = typeof document === 'undefined' ? null : document
+    const currentWindow = typeof window === 'undefined' ? null : window
+    if (!currentDocument && !currentWindow) return
+    currentDocument?.addEventListener('visibilitychange', resumeDeferredRetries)
+    currentWindow?.addEventListener('focus', resumeDeferredRetries)
+    currentWindow?.addEventListener('online', resumeDeferredRetries)
+    removeActivityListeners = () => {
+      currentDocument?.removeEventListener('visibilitychange', resumeDeferredRetries)
+      currentWindow?.removeEventListener('focus', resumeDeferredRetries)
+      currentWindow?.removeEventListener('online', resumeDeferredRetries)
+    }
+  }
+  const cancel = (key: string) => {
+    const timer = retryTimers.get(key)
+    if (timer !== undefined) clearTimeout(timer)
+    retryTimers.delete(key)
+    deferredRetries.delete(key)
+    if (deferredRetries.size === 0) stopListeningForActivity()
+  }
+  const subscribe = (key: string, listener: LeadershipListener) => {
+    const token = Symbol(key)
+    const members = subscribers.get(key) ?? new Map<symbol, LeadershipListener>()
+    const isFirst = members.size === 0
+    members.set(token, listener)
+    subscribers.set(key, members)
+    if (isFirst) listener(true)
+
+    return () => {
+      const current = subscribers.get(key)
+      if (!current) return
+      const wasLeader = current.keys().next().value === token
+      current.delete(token)
+      if (current.size === 0) {
+        subscribers.delete(key)
+        cancel(key)
+      } else if (wasLeader) {
+        current.values().next().value?.(true)
+      }
+    }
+  }
+  const cancelAll = () => {
+    retryTimers.forEach((timer) => clearTimeout(timer))
+    retryTimers.clear()
+    deferredRetries.clear()
+    recentGameReads.clear()
+    stopListeningForActivity()
+  }
+  const scopeMiddleware: Middleware = (useSWRNext) =>
+    function useSharedGameTimingPoll(key, fetcher, swrConfig) {
+      const serializedKey = unstable_serialize(key)
+      const [leaderKey, setLeaderKey] = useState<string | null>(null)
+
+      useLayoutEffect(() => {
+        if (!serializedKey) {
+          setLeaderKey(null)
+          return
+        }
+        return subscribe(serializedKey, (isLeader) => {
+          setLeaderKey((current) => {
+            const next = isLeader ? serializedKey : null
+            return current === next ? current : next
+          })
+        })
+      }, [serializedKey])
+
+      return useSWRNext(key, fetcher, {
+        ...swrConfig,
+        refreshInterval: leaderKey === serializedKey ? GAME_TIMING_REFRESH_MS : 0,
+      })
+    }
+  const config: SWRConfiguration = {
+    ...gameTimingSWRConfig,
+    use: [...(gameTimingSWRConfig.use ?? []), scopeMiddleware],
+    onError: (_error, key) => {
+      cancel(key)
+      recentGameReads.invalidate(key)
+    },
+    onSuccess: (data, key) => {
+      cancel(key)
+      recentGameReads.remember(key, data)
+    },
+    onDiscarded: cancel,
+    onErrorRetry: (_error, key, _config, revalidate, options) => {
+      if (!subscribers.has(key)) return
+      cancel(key)
+      retryTimers.set(
+        key,
+        setTimeout(
+          () => {
+            retryTimers.delete(key)
+            if (!subscribers.has(key)) return
+            const visible = _config.refreshWhenHidden || _config.isVisible()
+            const online = _config.refreshWhenOffline || _config.isOnline()
+            if (!visible || !online) {
+              // Keep no dormant timer chain. One shared listener resumes this
+              // deduplicating revalidator once visibility and connectivity agree.
+              deferredRetries.set(key, {
+                isActive: () =>
+                  (_config.refreshWhenHidden || _config.isVisible()) &&
+                  (_config.refreshWhenOffline || _config.isOnline()),
+                run: () => void revalidate(options),
+              })
+              listenForActivity()
+              return
+            }
+            void revalidate(options)
+          },
+          gameTimingRetryDelay(options.retryCount, random)
+        )
+      )
+    },
+  }
+  return {
+    config,
+    cancelAll,
+    subscribe,
+    hasRecentSuccessfulGameRead: (key: string, data: unknown) => recentGameReads.matches(key, data),
+  }
+}
+
+const sharedGameTimingOwner = createGameTimingSWRConfig()
+
+export const useGameTimingSWRConfig = () => sharedGameTimingOwner.config
+
+/**
+ * Publish one authoritative final snapshot when a lifecycle-owned poller stops.
+ * A push feed can provide its shutdown fence so the snapshot cannot race ahead
+ * of listener removal and miss a commit whose boundary broadcast is discarded.
+ */
+export const useRevalidateWhenPollingStops = (
+  polling: boolean,
+  revalidate: () => unknown,
+  waitForStop?: () => Promise<unknown>
+) => {
+  const wasPolling = useRef(polling)
+
+  useEffect(() => {
+    let cancelled = false
+    const stopped = wasPolling.current && !polling
+    wasPolling.current = polling
+    if (!stopped) return
+
+    void Promise.resolve()
+      .then(() => waitForStop?.())
+      .catch(() => undefined)
+      .then(() => {
+        if (!cancelled) return revalidate()
+      })
+
+    // Query-scoped callbacks change with their page, filter, type, or search.
+    // Retire an older post-stop chain before it can publish into that new scope.
+    return () => {
+      cancelled = true
+    }
+  }, [polling, revalidate, waitForStop])
+}
+
+export const useRecentGames = () => {
+  const timingConfig = useGameTimingSWRConfig()
+  const { data, mutate, error } = api.game.useGameRecentGames({ limit: 7 }, timingConfig)
 
   // Guard against SWR hydrating a stale non-array value from persistent
   // cache (e.g. an old 302/HTML response from a misconfigured proxy).
@@ -49,6 +399,16 @@ export const getGameStatus = (game?: { start?: number; end?: number }, now: Dayj
   }
 }
 
+/** Reactive lifecycle projection driven by the shared, server-corrected clock. */
+export const useGameStatus = (game?: { start?: number; end?: number }) => {
+  const now = useServerNow()
+  return { ...getGameStatus(game, now), now }
+}
+
+/** Duration shown beside a lifecycle status, using the same corrected clock. */
+export const getGameDurationMinutes = (status: GameStatus, startTime: Dayjs, endTime: Dayjs, now: Dayjs) =>
+  Math.max(0, status === GameStatus.OnGoing ? endTime.diff(now, 'minute') : endTime.diff(startTime, 'minute'))
+
 export const toLimitTag = (t: TFunction, limit?: number) => {
   if (!limit || limit === 0) return t('game.tag.multiplayer')
   if (limit === 1) return t('game.tag.individual')
@@ -68,14 +428,32 @@ export const useAdminDivisions = (numId: number) => {
 }
 
 export const useGame = (numId: number) => {
-  const { data: game, error, mutate } = api.game.useGameGame(numId, OnceSWRConfig, numId > 0)
+  const timingConfig = useGameTimingSWRConfig()
+  const { data: game, error, isValidating, mutate } = api.game.useGameGame(numId, timingConfig, numId > 0)
 
-  return { game, error, mutate, status: game?.status ?? ParticipationStatus.Unsubmitted }
+  return { game, error, isValidating, mutate, status: game?.status ?? ParticipationStatus.Unsubmitted }
+}
+
+/** Game data plus a per-route live-read gate for lifecycle/access redirects. */
+export const useGameAccess = (numId: number) => {
+  const gameState = useGame(numId)
+  const gameKey = unstable_serialize(numId > 0 ? `/api/game/${numId}` : null)
+  const recentSuccessfulRead = sharedGameTimingOwner.hasRecentSuccessfulGameRead(gameKey, gameState.game)
+  const liveReadReady = useLiveGameReadReady(
+    gameKey,
+    gameState.game?.id,
+    gameState.isValidating,
+    gameState.error,
+    recentSuccessfulRead
+  )
+
+  return { ...gameState, liveReadReady }
 }
 
 export const useGameScoreboard = (numId: number, isTabActive: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
+  const polling = status === GameStatus.OnGoing && isTabActive
 
   const {
     data: scoreboard,
@@ -83,15 +461,17 @@ export const useGameScoreboard = (numId: number, isTabActive: boolean = true) =>
     mutate,
   } = api.game.useGameScoreboard(numId, {
     ...OnceSWRConfig,
-    refreshInterval: status === GameStatus.OnGoing && isTabActive ? 30 * 1000 : 0,
+    refreshInterval: polling ? 30 * 1000 : 0,
   })
+  useRevalidateWhenPollingStops(polling, mutate)
 
   return { scoreboard, error, mutate }
 }
 
 export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
+  const polling = status === GameStatus.OnGoing && shouldPoll
 
   const {
     data: teamInfo,
@@ -100,8 +480,9 @@ export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
   } = api.game.useGameChallengesWithTeamInfo(numId, {
     ...OnceSWRConfig,
     shouldRetryOnError: false,
-    refreshInterval: status === GameStatus.OnGoing && shouldPoll ? 10 * 1000 : 0,
+    refreshInterval: polling ? 10 * 1000 : 0,
   })
+  useRevalidateWhenPollingStops(polling, mutate)
 
   return { teamInfo, game, error, mutate }
 }
@@ -110,7 +491,8 @@ export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
  *  to skip the request entirely (e.g. on pages that only conditionally need it). */
 export const useAdState = (numId: number, doFetch: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
+  const polling = doFetch && status === GameStatus.OnGoing
   const {
     data: adState,
     error,
@@ -120,17 +502,18 @@ export const useAdState = (numId: number, doFetch: boolean = true) => {
     {
       ...OnceSWRConfig,
       shouldRetryOnError: false,
-      refreshInterval: status === GameStatus.OnGoing ? 10 * 1000 : 0,
+      refreshInterval: polling ? 10 * 1000 : 0,
     },
     doFetch
   )
+  useRevalidateWhenPollingStops(polling, mutate)
   return { adState, error, mutate }
 }
 
 /** Official A&D epoch scoreboard poll. */
 export const useAdScoreboard = (numId: number, doFetch: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
   const {
     data: adScoreboard,
     error,
@@ -274,7 +657,7 @@ export interface KothScoreboardModel {
 
 export const useKothScoreboard = (numId: number, doFetch: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
   const {
     data: kothScoreboard,
     error,
@@ -344,7 +727,7 @@ export interface CombinedScoreboardModel {
 /** Fixed, challenge-count-weighted 0-100 board across every active competition format. */
 export const useCombinedScoreboard = (numId: number, doFetch: boolean = true) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
   const {
     data: combinedScoreboard,
     error,
@@ -380,15 +763,17 @@ export const useAdTokenHint = (numId: number, doFetch: boolean = true) => {
 /** A&D admin — operator console state poll. Faster refresh during active games. */
 export const useAdminAdState = (numId: number) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
+  const polling = status === GameStatus.OnGoing
   const {
     data: adminAdState,
     error,
     mutate,
   } = api.edit.useEditAdState(numId, {
     ...OnceSWRConfig,
-    refreshInterval: status === GameStatus.OnGoing ? 5 * 1000 : 0,
+    refreshInterval: polling ? 5 * 1000 : 0,
   })
+  useRevalidateWhenPollingStops(polling, mutate)
   return { adminAdState, error, mutate }
 }
 
@@ -488,7 +873,8 @@ export interface AdminKothObserverModel {
  */
 export const useAdminKothState = (numId: number) => {
   const { game } = useGame(numId)
-  const { status } = getGameStatus(game)
+  const { status } = useGameStatus(game)
+  const polling = status === GameStatus.OnGoing
   const {
     data: adminKothState,
     error,
@@ -496,7 +882,8 @@ export const useAdminKothState = (numId: number) => {
   } = useSWR<AdminKothStateModel>(numId > 0 ? `/api/edit/games/${numId}/ad/koth/state` : null, {
     ...OnceSWRConfig,
     shouldRetryOnError: false,
-    refreshInterval: status === GameStatus.OnGoing ? 5 * 1000 : 0,
+    refreshInterval: polling ? 5 * 1000 : 0,
   })
+  useRevalidateWhenPollingStops(polling, mutate)
   return { adminKothState, error, mutate }
 }

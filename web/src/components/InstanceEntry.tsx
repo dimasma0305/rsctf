@@ -11,7 +11,7 @@ import {
   Tooltip,
 } from '@mantine/core'
 import { useClipboard } from '@mantine/hooks'
-import { useDebouncedCallback, useDebouncedState } from '@mantine/hooks'
+import { useDebouncedCallback } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiContentCopy, mdiExclamation, mdiOpenInNew, mdiRefresh, mdiServerNetwork } from '@mdi/js'
 import { Icon } from '@mdi/react'
@@ -21,10 +21,11 @@ import duration from 'dayjs/plugin/duration'
 import { FC, useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HandleWsrxError, useWsrx } from '@Components/WsrxProvider'
+import { isInstanceExtensionWindowOpen, runInstanceExtension } from '@Utils/InstanceLifecycle'
+import { getServerNowMilliseconds, useServerClockOffset, useServerClockTimeout, useServerNow } from '@Utils/ServerClock'
 import { getProxyUrl as getProxyEntry } from '@Utils/Shared'
 import { getWsrxTunnelPhase } from '@Utils/WsrxTunnel'
 import { useConfig } from '@Hooks/useConfig'
-import { useTicker } from '@Hooks/useTicker'
 import api, { ClientFlagContext, ContainerPortMappingType } from '@Api'
 import classes from '@Styles/InstanceEntry.module.css'
 import misc from '@Styles/Misc.module.css'
@@ -45,7 +46,7 @@ interface InstanceEntryProps {
   context: ClientFlagContext
   disabled?: boolean
   onCreate?: () => void
-  onExtend?: () => void
+  onExtend?: () => void | Promise<void>
   onDestroy?: () => void
 }
 
@@ -59,7 +60,7 @@ interface CountdownProps {
 const Countdown: FC<CountdownProps> = (props) => {
   const { time, onTimeout, extendEnabled, enableExtend } = props
   const { config } = useConfig()
-  const now = useTicker()
+  const now = useServerNow()
   const [timeoutExecuted, setTimeoutExecuted] = useState(false)
   const end = time ? dayjs(time) : now.add(config.defaultLifetime ?? 120, 'minutes')
 
@@ -107,7 +108,8 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     instanceEntry.length === 36 &&
     !instanceEntry.includes(':')
 
-  const [canExtend, setCanExtend] = useDebouncedState(false, 500)
+  const [canExtend, setCanExtend] = useState(false)
+  const authoritativeClockOffset = useServerClockOffset()
 
   const { t } = useTranslation()
 
@@ -123,24 +125,28 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
 
   useEffect(() => {
     setWithContainer(!!context.instanceEntry)
-    const countdown = dayjs.duration(dayjs(context.closeTime ?? 0).diff(dayjs()))
-    setCanExtend(countdown.asMinutes() < (config.renewalWindow ?? 10))
-  }, [context, config.renewalWindow])
+    const extensionWindowOpen = isInstanceExtensionWindowOpen(
+      context.closeTime,
+      config.renewalWindow ?? 10,
+      getServerNowMilliseconds()
+    )
+    if (!extensionWindowOpen) enableExtend.cancel()
+    setCanExtend(extensionWindowOpen)
+  }, [authoritativeClockOffset, config.renewalWindow, context, enableExtend])
 
   const onExtend = async () => {
     if (!canExtend || !props.onExtend) return
 
     try {
-      await Promise.resolve(props.onExtend())
-
-      showNotification({
-        color: 'teal',
-        title: t('challenge.notification.instance.extend.success.title'),
-        message: t('challenge.notification.instance.extend.success.message'),
-        icon: <Icon path={mdiCheck} size={1} />,
+      await runInstanceExtension(props.onExtend, () => {
+        showNotification({
+          color: 'teal',
+          title: t('challenge.notification.instance.extend.success.title'),
+          message: t('challenge.notification.instance.extend.success.message'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        setCanExtend(false)
       })
-
-      setCanExtend(false)
     } catch (err) {
       showNotification({
         color: 'red',
@@ -281,13 +287,12 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     setTunnelRetrying(false)
   }, [doWsrxConnect, isPlatformProxy, localTraffic?.local, proxyEntryMode, t, tunnelRetrying, wsrx, wsrxState])
 
-  useEffect(() => {
-    if (!isPlatformProxy || !capabilityExpiresAt) return
-
-    const refreshIn = Math.max(capabilityExpiresAt - Date.now() - CAPABILITY_REFRESH_SAFETY_MS, 1000)
-    const refresh = window.setTimeout(() => void onRefreshProxyEntry(), refreshIn)
-    return () => window.clearTimeout(refresh)
-  }, [capabilityExpiresAt, isPlatformProxy, onRefreshProxyEntry])
+  useServerClockTimeout(
+    () => void onRefreshProxyEntry(),
+    isPlatformProxy ? capabilityExpiresAt : null,
+    CAPABILITY_REFRESH_SAFETY_MS,
+    1000
+  )
 
   const tunnelStatusColor = phase === 'ready' ? 'green' : phase === 'unhealthy' ? 'red' : 'orange'
 

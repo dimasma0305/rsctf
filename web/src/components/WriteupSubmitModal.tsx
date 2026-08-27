@@ -23,10 +23,10 @@ import { FC, useEffect, useMemo, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Markdown } from '@Components/MarkdownRenderer'
 import { useLanguage } from '@Utils/I18n'
+import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { HunamizeSize } from '@Utils/Shared'
 import { OnceSWRConfig } from '@Hooks/useConfig'
-import { useTicker } from '@Hooks/useTicker'
 import api from '@Api'
 import misc from '@Styles/Misc.module.css'
 import uploadClasses from '@Styles/Upload.module.css'
@@ -41,7 +41,7 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
 
   const theme = useMantineTheme()
   const ddl = useMemo(() => dayjs(wpddl), [wpddl])
-  const now = useTicker()
+  const now = useServerNow()
   const { locale } = useLanguage()
   const [uploading, setUploading] = useState(false)
   const [deadlineRejected, setDeadlineRejected] = useState(false)
@@ -82,7 +82,7 @@ export const WriteupSubmitModal: FC<WriteupSubmitModalProps> = ({ gameId, writeu
       })
       mutate()
     } catch (err) {
-      if (isWriteupDeadlineError(err) || dayjs().isAfter(ddl)) setDeadlineRejected(true)
+      if (isWriteupDeadlineError(err) || now.isAfter(ddl)) setDeadlineRejected(true)
       showErrorMsg(err, t)
     } finally {
       setProgress(0)

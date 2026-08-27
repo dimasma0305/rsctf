@@ -1567,6 +1567,11 @@ export interface GameInfoModel {
   vpnSourceAsnTelemetryEnabled?: boolean;
   /** Record when one event peer appears from several endpoint identities. */
   vpnDeviceSharingTelemetryEnabled?: boolean;
+  /**
+   * Response-owned server clock sample for lifecycle display.
+   * @format uint64
+   */
+  serverTime?: number;
   /** Required audit reason when any VPN/security switch changes. */
   vpnPolicyChangeReason?: string | null;
 }
@@ -2745,6 +2750,11 @@ export interface BasicGameInfoModel {
    * @format uint64
    */
   end: number;
+  /**
+   * Server clock sample for lifecycle display
+   * @format uint64
+   */
+  serverTime: number;
 }
 
 /** List response */
@@ -2864,6 +2874,11 @@ export interface DetailedGameInfoModel {
    * @format uint64
    */
   end?: number;
+  /**
+   * Server clock sample for lifecycle display
+   * @format uint64
+   */
+  serverTime?: number;
 }
 
 export interface DivisionInfo {
@@ -3611,6 +3626,8 @@ export interface ClientChallengeVariant {
 }
 
 export interface ClientFlagContext {
+  /** Immutable container UUID used to fence asynchronous lifecycle results. */
+  instanceId?: string | null;
   /**
    * Close time of the challenge instance
    * @format uint64
@@ -3945,6 +3962,7 @@ import type {
 } from "axios";
 import axios from "axios";
 import { installEventVpnProof } from "@Utils/EventVpnProof";
+import { installServerClock } from "@Utils/ServerClock";
 
 export type QueryParamsType = Record<string | number, any>;
 
@@ -7711,11 +7729,16 @@ export class Api<
     gameDeleteContainer: (
       id: number,
       challengeId: number,
+      query: {
+        /** Immutable container UUID returned by the immediately preceding challenge read. */
+        expectedContainerId: string;
+      },
       params: RequestParams = {},
     ) =>
       this.request<void, RequestResponse>({
         path: `/api/game/${id}/container/${challengeId}`,
         method: "DELETE",
+        query: query,
         ...params,
       }),
 
@@ -7864,11 +7887,16 @@ export class Api<
     gameExtendContainerLifetime: (
       id: number,
       challengeId: number,
+      query: {
+        /** Immutable container UUID returned by the immediately preceding challenge read. */
+        expectedContainerId: string;
+      },
       params: RequestParams = {},
     ) =>
       this.request<ContainerInfoModel, RequestResponse>({
         path: `/api/game/${id}/container/${challengeId}/extend`,
         method: "POST",
+        query: query,
         format: "json",
         ...params,
       }),
@@ -10193,6 +10221,7 @@ export class Api<
 
 const api = new Api();
 installEventVpnProof(api.instance);
+installServerClock(api.instance);
 export default api;
 
 export const fetcher = async (

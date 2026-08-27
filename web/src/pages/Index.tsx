@@ -12,6 +12,7 @@ import { RecentGame } from '@Components/RecentGame'
 import { WithNavBar } from '@Components/WithNavbar'
 import { MobilePostCard } from '@Components/mobile/PostCard'
 import { RecentGameCarousel } from '@Components/mobile/RecentGameCarousel'
+import { useServerNow } from '@Utils/ServerClock'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { getGameStatus, useRecentGames } from '@Hooks/useGame'
@@ -23,10 +24,11 @@ const Home: FC = () => {
   const { t } = useTranslation()
   const { data: posts, mutate } = api.info.useInfoGetLatestPosts({ refreshInterval: 5 * 60 * 1000 })
   const { recentGames } = useRecentGames()
+  const now = useServerNow()
   const isMobile = useIsMobile(900)
   const showGames = isMobile ? recentGames : recentGames?.slice(0, 5)
-  const liveCount = recentGames?.filter((game) => getGameStatus(game).status === GameStatus.OnGoing).length ?? 0
-  const upcomingCount = recentGames?.filter((game) => getGameStatus(game).status === GameStatus.Coming).length ?? 0
+  const liveCount = recentGames?.filter((game) => getGameStatus(game, now).status === GameStatus.OnGoing).length ?? 0
+  const upcomingCount = recentGames?.filter((game) => getGameStatus(game, now).status === GameStatus.Coming).length ?? 0
 
   const onTogglePinned = async (post: PostInfoModel, setDisabled: (value: boolean) => void) => {
     setDisabled(true)

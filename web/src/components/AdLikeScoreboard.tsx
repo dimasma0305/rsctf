@@ -23,6 +23,7 @@ import cx from 'clsx'
 import { CSSProperties, FC, ReactNode, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ScrollingText } from '@Components/ScrollingText'
+import { useServerNow } from '@Utils/ServerClock'
 import { useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { ChallengeCategory } from '@Api'
 import misc from '@Styles/Misc.module.css'
@@ -214,16 +215,10 @@ const TickIndicator: FC<{
 }> = ({ round, endsAt, tickSeconds, frozen }) => {
   const { t } = useTranslation()
   const { colorScheme } = useMantineColorScheme()
-  const [nowMs, setNowMs] = useState(() => Date.now())
-
-  useEffect(() => {
-    if (frozen || !endsAt) return
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [frozen, endsAt])
+  const now = useServerNow()
 
   const deadlineMs = endsAt ? new Date(endsAt).getTime() : 0
-  const remaining = Number.isFinite(deadlineMs) ? Math.max(0, Math.ceil((deadlineMs - nowMs) / 1000)) : 0
+  const remaining = Number.isFinite(deadlineMs) ? Math.max(0, Math.ceil((deadlineMs - now.valueOf()) / 1000)) : 0
   const mmss = `${Math.floor(remaining / 60)}:${(remaining % 60).toString().padStart(2, '0')}`
   const accessibleStatus = frozen
     ? t('game.content.scoreboard.ad.round_frozen_status', {

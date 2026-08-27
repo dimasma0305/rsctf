@@ -138,9 +138,9 @@ jobs:
       - name: Run database regressions and enforce coverage floor
         # Migration fixtures share database-scoped catalog state even though
         # their data lives in isolated schemas, so this half is deterministic
-        # only when serialized. Live S3 checks remain explicit environment
-        # tests rather than pretending to pass. The A&D scoring regressions
-        # provision their own fully migrated event fixture here.
+        # only when serialized. Live S3 and real-Docker checks remain explicit
+        # environment tests rather than pretending to pass. The A&D scoring
+        # regressions provision their own fully migrated event fixture here.
         run: >-
           cargo llvm-cov
           --no-clean
@@ -154,6 +154,7 @@ jobs:
           --ignored
           --test-threads=1
           --skip s3_round_trip
+          --skip stale_conditional_delete_cannot_destroy_a_real_replacement_runtime
           --skip target_fk_deletes_scoped_tokens
           --skip ownership_constraints_are_validated_cascades
 

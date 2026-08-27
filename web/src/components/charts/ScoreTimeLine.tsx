@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
 import { normalizeLanguage, useLanguage } from '@Utils/I18n'
-import { getGameStatus, useGame, useGameScoreboard } from '@Hooks/useGame'
+import { getGameStatus, useGame, useGameScoreboard, useGameStatus } from '@Hooks/useGame'
 import { TimeLine, TopTimeLine } from '@Api'
 
 interface TimeLineProps {
@@ -22,7 +22,12 @@ export const ScoreTimeLine: FC<TimeLineProps> = ({ divisionId }) => {
 
   const { game } = useGame(numId)
 
-  const { startTime, endTime, progress, finished } = getGameStatus(game)
+  const { startTime, endTime, finished, now } = useGameStatus(game)
+  const startTimeMs = startTime.valueOf()
+  const endTimeMs = endTime.valueOf()
+  const timelineNowMs = now.startOf('minute').valueOf()
+  const timelineNow = dayjs(timelineNowMs)
+  const progress = getGameStatus(game, timelineNow).progress
 
   const totDuration = endTime.diff(startTime, 'd')
   const longGame = totDuration > 14
@@ -71,18 +76,18 @@ export const ScoreTimeLine: FC<TimeLineProps> = ({ divisionId }) => {
     if (!activeTeams || !game) return []
 
     const timeLine = activeTeams
-    const current = dayjs()
-    const last = endTime.diff(current, 's') < 0 ? endTime : current
+    const current = timelineNow
+    const eventEnd = dayjs(endTimeMs)
+    const last = finished || eventEnd.diff(current, 's') < 0 ? eventEnd : current
 
     return [
       {
         type: 'line',
         step: 'end',
         data: [],
-        markLine:
-          dayjs(game.end).diff(dayjs(), 's') < 0
-            ? undefined
-            : {
+        markLine: finished
+          ? undefined
+          : {
               symbol: 'none',
               // https://echarts.apache.org/en/option.html#series-line.markLine.data
               data: [
@@ -109,14 +114,14 @@ export const ScoreTimeLine: FC<TimeLineProps> = ({ divisionId }) => {
             step: 'end',
             name: team.name,
             data: [
-              [dayjs(game.start).toDate(), 0],
+              [dayjs(startTimeMs).toDate(), 0],
               ...(team.items?.map((timeline: TimeLine) => [timeline.time, timeline.score]) ?? []),
               [last.toDate(), (team.items && team.items[team.items.length - 1]?.score) ?? 0],
             ],
           }) satisfies SeriesOption
       ) ?? []),
     ]
-  }, [activeTeams, game, endTime, colorScheme, theme])
+  }, [activeTeams, colorScheme, endTimeMs, finished, startTimeMs, theme, timelineNowMs])
 
   const staticOption: EChartsOption = useMemo(() => {
     const isDark = colorScheme === 'dark'
@@ -137,8 +142,8 @@ export const ScoreTimeLine: FC<TimeLineProps> = ({ divisionId }) => {
       },
       xAxis: {
         type: 'time',
-        min: dayjs(game?.start).toDate(),
-        max: dayjs(game?.end).toDate(),
+        min: dayjs(startTimeMs).toDate(),
+        max: dayjs(endTimeMs).toDate(),
         axisLine: {
           show: false,
         },
@@ -262,14 +267,19 @@ export const ScoreTimeLine: FC<TimeLineProps> = ({ divisionId }) => {
         },
       ],
     } satisfies EChartsOption
-  }, [t, game?.start, game?.end, colorScheme, theme, drawStart, drawEnd])
+  }, [colorScheme, drawEnd, drawStart, endTimeMs, startTimeMs, t, theme])
+
+  const option = useMemo<EChartsOption>(
+    () => ({
+      ...staticOption,
+      series: chartData,
+    }),
+    [chartData, staticOption]
+  )
 
   return (
     <EchartsContainer
-      option={{
-        ...staticOption,
-        series: chartData,
-      }}
+      option={option}
       opts={{
         renderer: 'svg',
         locale,

@@ -32,15 +32,16 @@ import { Icon } from '@mdi/react'
 import * as signalR from '@microsoft/signalr'
 import cx from 'clsx'
 import dayjs from 'dayjs'
-import { FC, useEffect, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { ScrollingText } from '@Components/ScrollingText'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { downloadBlob, handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
+import { submissionMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
-import { useGame } from '@Hooks/useGame'
+import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import api, { AnswerResult, Submission } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 
@@ -79,10 +80,14 @@ const Submissions: FC = () => {
   const [, update] = useState(new Date())
   const newSubmissions = useRef<Submission[]>([])
   const [submissions, setSubmissions] = useState<Submission[]>()
+  const monitorHubStop = useRef<Promise<void>>(Promise.resolve())
+  const waitForMonitorHubStop = useCallback(() => monitorHubStop.current, [])
   const [type, setType] = useState<AnswerResult | 'All'>('All')
   const [disabled, setDisabled] = useState(false)
 
   const { game } = useGame(numId)
+  const { finished } = useGameStatus(game)
+  const monitorConnectionActive = Boolean(game?.end) && !finished
 
   const iconMap = AnswerResultIconMap(0.8)
   const { classes: inputClasses } = useDisplayInputStyles({ ff: 'monospace' })
@@ -96,35 +101,35 @@ const Submissions: FC = () => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
   }, [activePage, viewport])
 
-  useEffect(() => {
-    const fetchSubmissions = async () => {
-      try {
-        const res = await api.game.gameSubmissions(numId, {
-          type: type === 'All' ? undefined : type,
-          count: ITEM_COUNT_PER_PAGE,
-          skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
-          search: debouncedSearch || undefined,
-        })
-        setSubmissions(res.data)
-      } catch (err) {
-        showNotification({
-          color: 'red',
-          title: t('game.notification.fetch_failed.submission'),
-          message: await handleAxiosError(err),
-          icon: <Icon path={mdiClose} size={1} />,
-        })
-      }
-    }
-
-    fetchSubmissions()
-
-    if (activePage === 1) {
-      newSubmissions.current = []
+  const fetchSubmissions = useCallback(async () => {
+    try {
+      const res = await api.game.gameSubmissions(numId, {
+        type: type === 'All' ? undefined : type,
+        count: ITEM_COUNT_PER_PAGE,
+        skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
+        search: debouncedSearch || undefined,
+      })
+      setSubmissions(res.data)
+    } catch (err) {
+      showNotification({
+        color: 'red',
+        title: t('game.notification.fetch_failed.submission'),
+        message: await handleAxiosError(err),
+        icon: <Icon path={mdiClose} size={1} />,
+      })
     }
   }, [activePage, type, debouncedSearch, numId, t])
 
   useEffect(() => {
-    if (game?.end && new Date() < new Date(game.end)) {
+    void fetchSubmissions()
+
+    if (activePage === 1) {
+      newSubmissions.current = []
+    }
+  }, [activePage, fetchSubmissions])
+
+  useEffect(() => {
+    if (monitorConnectionActive) {
       const connection = new signalR.HubConnectionBuilder()
         .withUrl(`/hub/monitor?game=${numId}`)
         .withHubProtocol(new signalR.JsonHubProtocol())
@@ -156,19 +161,26 @@ const Submissions: FC = () => {
       startConnection()
 
       return () => {
-        connection.stop().catch((err) => {
+        monitorHubStop.current = connection.stop().catch((err) => {
           console.error(err)
         })
       }
     }
-  }, [game, numId, t])
+  }, [monitorConnectionActive, numId, t])
+
+  // Keep the final request separate from hub ownership and fence it behind the
+  // completed stop. A commit whose boundary broadcast loses the listener is
+  // therefore present in the one post-stop authoritative reconciliation.
+  useRevalidateWhenPollingStops(monitorConnectionActive, fetchSubmissions, waitForMonitorHubStop)
 
   const filteredSubs = newSubmissions.current.filter((item) => type === 'All' || item.status === type)
+  const bufferedSubmissions =
+    activePage === 1 ? unreconciledMonitorRows(filteredSubs, submissions ?? [], submissionMonitorIdentity) : []
 
-  const rows = [...(activePage === 1 ? filteredSubs : []), ...(submissions ?? [])].map((item, i) => (
+  const rows = [...bufferedSubmissions, ...(submissions ?? [])].map((item, i) => (
     <Table.Tr
       key={`${item.time}@${i}`}
-      className={cx({ [tableClasses.fade]: i === 0 && activePage === 1 && filteredSubs.length > 0 })}
+      className={cx({ [tableClasses.fade]: i === 0 && bufferedSubmissions.length > 0 })}
     >
       <Table.Td>
         <Icon {...iconMap.get(item.status ?? AnswerResult.FlagSubmitted)!} />

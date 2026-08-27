@@ -77,6 +77,8 @@ pub struct BasicGameInfoModel {
     pub start: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
     pub end: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub server_time: DateTime<Utc>,
 }
 
 impl From<&game::Model> for BasicGameInfoModel {
@@ -95,6 +97,7 @@ impl From<&game::Model> for BasicGameInfoModel {
             participation_status: None,
             start: g.start_time_utc,
             end: g.end_time_utc,
+            server_time: Utc::now(),
         }
     }
 }
@@ -150,6 +153,8 @@ pub struct DetailedGameInfoModel {
     pub start: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
     pub end: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub server_time: DateTime<Utc>,
 }
 
 /// RSCTF `GameNotice` response.
@@ -332,22 +337,22 @@ pub struct GameJoinCheckInfoModel {
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientFlagContext {
+    /// Immutable container UUID used to fence asynchronous lifecycle results.
+    pub instance_id: Option<Uuid>,
     pub instance_entry: Option<String>,
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub close_time: Option<DateTime<Utc>>,
     pub is_shared_instance: bool,
     pub url: Option<String>,
     pub file_size: Option<i64>,
-    /// SHA-256 of a local attachment. Clients can display/copy this before
-    /// downloading without making a separate metadata request.
+    /// SHA-256 displayed before downloading without another metadata request.
     pub sha256: Option<String>,
 }
 
 /// Port of RSCTF `GameChallenge.UsesSharedContainer`: true when a challenge serves
 /// ONE challenge-owned container to every team — a `StaticContainer` with
-/// `enable_shared_container` and a valid image/port. Such a challenge never gets a
-/// per-team `GameInstance`/container; the single shared container's id lives on
-/// `game_challenge.shared_container_id`.
+/// `enable_shared_container` and a valid image/port. It has no per-team
+/// `GameInstance`; its container id lives on `game_challenge.shared_container_id`.
 pub(crate) fn uses_shared_container(c: &game_challenge::Model) -> bool {
     c.challenge_type == ChallengeType::StaticContainer
         && c.enable_shared_container

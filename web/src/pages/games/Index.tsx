@@ -26,8 +26,9 @@ import { GameCard, GameColorMap, GameStatus, getGameStatusLabel } from '@Compone
 import { PageHeader } from '@Components/PageHeader'
 import { WithNavBar } from '@Components/WithNavbar'
 import { GanttTimeLine } from '@Components/charts/GanttTimeline'
+import { useServerNow } from '@Utils/ServerClock'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { getGameStatus, toLimitTag, useRecentGames } from '@Hooks/useGame'
+import { getGameStatus, toLimitTag, useGameTimingSWRConfig, useRecentGames } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUser } from '@Hooks/useUser'
 import api, { GameMembershipFilter } from '@Api'
@@ -39,6 +40,7 @@ const ITEM_PER_PAGE = 12
 const Games: FC = () => {
   const { t } = useTranslation()
   const { recentGames } = useRecentGames()
+  const now = useServerNow()
   const [activePage, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [membership, setMembership] = useState<GameMembershipFilter>(GameMembershipFilter.All)
@@ -48,6 +50,7 @@ const Games: FC = () => {
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
   const { user } = useUser()
+  const timingConfig = useGameTimingSWRConfig()
 
   const { data: games, isLoading } = api.game.useGameGames(
     {
@@ -56,9 +59,7 @@ const Games: FC = () => {
       search: debouncedSearch || undefined,
       membership: user ? membership : GameMembershipFilter.All,
     },
-    {
-      refreshInterval: 5 * 60 * 1000,
-    }
+    timingConfig
   )
 
   const clearSearch = () => {
@@ -71,7 +72,7 @@ const Games: FC = () => {
 
   const recents =
     recentGames?.map((game) => {
-      const { startTime, endTime, status } = getGameStatus(game)
+      const { startTime, endTime, status } = getGameStatus(game, now)
       const color = GameColorMap.get(status) ?? 'gray'
       const colorHex = theme.colors[color][colorScheme === 'dark' ? 5 : 6]
       const title = game.title || t('game.content.untitled', 'Untitled event')
@@ -119,7 +120,7 @@ const Games: FC = () => {
     },
   ].map((section) => ({
     ...section,
-    events: games?.data.filter((game) => getGameStatus(game).status === section.status) ?? [],
+    events: games?.data.filter((game) => getGameStatus(game, now).status === section.status) ?? [],
   }))
 
   const pageCount = Math.ceil((games?.total ?? 0) / ITEM_PER_PAGE)

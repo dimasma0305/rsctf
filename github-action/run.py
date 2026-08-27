@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 import stat
@@ -28,6 +28,9 @@ VERSION_LABEL_PATTERN = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$"
 )
+MATRIX_TAG_PATTERN = re.compile(r"^[a-z0-9_][a-z0-9_.-]{0,127}$")
+MAX_MATRIX_BYTES = 1024 * 1024
+MAX_MATRIX_ENTRIES = 1024
 
 
 class ActionError(RuntimeError):
@@ -303,6 +306,66 @@ def github_escape(value: str) -> str:
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
+def has_control_characters(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def normalize_container_matrix(value: str) -> tuple[str, int]:
+    if len(value.encode("utf-8")) > MAX_MATRIX_BYTES:
+        raise ActionError("rsctf container matrix exceeds the action size limit")
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ActionError("rsctf returned malformed container-matrix JSON") from error
+    if not isinstance(payload, dict) or set(payload) != {"include"}:
+        raise ActionError("rsctf container matrix must contain only include")
+    entries = payload["include"]
+    if not isinstance(entries, list) or len(entries) > MAX_MATRIX_ENTRIES:
+        raise ActionError("rsctf container matrix include must be a bounded array")
+    names: set[str] = set()
+    contexts: set[str] = set()
+    tags: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {
+            "name",
+            "context",
+            "tag",
+            "kind",
+        }:
+            raise ActionError("rsctf container matrix entry has an invalid shape")
+        name = entry["name"]
+        context = entry["context"]
+        tag = entry["tag"]
+        kind = entry["kind"]
+        if (
+            not isinstance(name, str)
+            or not name
+            or len(name) > 1024
+            or has_control_characters(name)
+        ):
+            raise ActionError("rsctf container matrix entry has an invalid name")
+        if not isinstance(context, str) or not context or "\\" in context:
+            raise ActionError("rsctf container matrix entry has an invalid context")
+        path = PurePosixPath(context)
+        if (
+            path.is_absolute()
+            or path.as_posix() != context
+            or any(part in {"", ".", ".."} for part in context.split("/"))
+            or has_control_characters(context)
+        ):
+            raise ActionError("rsctf container matrix context must be a safe relative path")
+        if not isinstance(tag, str) or not MATRIX_TAG_PATTERN.fullmatch(tag):
+            raise ActionError("rsctf container matrix entry has an invalid Docker tag")
+        if kind not in {"service", "generator"}:
+            raise ActionError("rsctf container matrix entry has an invalid kind")
+        if name in names or context in contexts or tag in tags:
+            raise ActionError("rsctf container matrix entries must be unique")
+        names.add(name)
+        contexts.add(context)
+        tags.add(tag)
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True), len(entries)
+
+
 def write_output(name: str, value: str) -> None:
     output = os.environ.get("GITHUB_OUTPUT")
     if not output:
@@ -376,8 +439,25 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
 
+        matrix_result = require_success(
+            run_process(
+                docker_run_command(
+                    docker, image, root, ["challenge", "matrix", "/repository"]
+                ),
+                root,
+                timeout=300,
+                capture_output=True,
+            ),
+            "running rsctf challenge matrix",
+        )
+        container_matrix, container_count = normalize_container_matrix(
+            matrix_result.stdout.strip()
+        )
+
         write_output("image", image)
         write_output("version", cli_version)
+        write_output("container_matrix", container_matrix)
+        write_output("container_count", str(container_count))
         return 0
     except ActionError as error:
         message = github_escape(str(error))

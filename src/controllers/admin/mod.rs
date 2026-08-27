@@ -242,6 +242,8 @@ pub struct BasicGameInfoModel {
     pub start: DateTime<Utc>,
     #[serde(with = "crate::utils::datetime::millis")]
     pub end: DateTime<Utc>,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub server_time: DateTime<Utc>,
 }
 
 /// RSCTF `AdminDashboardModel`.
@@ -285,6 +287,7 @@ pub async fn dashboard(
             review_count: 0,
             start: g.start_time_utc,
             end: g.end_time_utc,
+            server_time: Utc::now(),
         });
     }
     top_games.sort_by_key(|game| std::cmp::Reverse(game.team_count));
@@ -314,6 +317,11 @@ pub async fn dashboard(
             }
         }
         g.average_rating = (decisive > 0).then(|| likes as f64 / decisive as f64);
+    }
+
+    let response_time = Utc::now();
+    for game in &mut top_games {
+        game.server_time = response_time;
     }
 
     Ok(RequestResponse::ok(AdminDashboardModel {

@@ -18,7 +18,6 @@ import {
 import { useLocalStorage } from '@mantine/hooks'
 import { mdiCrown, mdiFileUploadOutline, mdiFlagOutline, mdiPuzzle, mdiSwordCross } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import dayjs from 'dayjs'
 import { FC, useEffect, useState, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useParams } from 'react-router'
@@ -29,7 +28,7 @@ import { GameChallengeModal } from '@Components/GameChallengeModal'
 import { WriteupSubmitModal } from '@Components/WriteupSubmitModal'
 import { useChallengeCategoryLabelMap, SubmissionTypeIconMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { useGame, useGameTeamInfo } from '@Hooks/useGame'
+import { useGame, useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
 import { ChallengeInfo, ChallengeCategory, ChallengeType, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengePanel.module.css'
 
@@ -50,6 +49,7 @@ export const ChallengePanel: FC = () => {
   const challenges = teamInfo?.challenges
 
   const { game } = useGame(numId)
+  const { finished } = useGameStatus(game)
   const isCompact = useIsMobile()
 
   const { data: ratingsData } = useSWR<RatingSummary[]>(
@@ -517,7 +517,7 @@ export const ChallengePanel: FC = () => {
                             }}
                             solved={solved}
                             teamId={teamInfo?.rank?.id}
-                            rating={solved || dayjs(game?.end) < dayjs() ? ratingMap.get(chal.id) : undefined}
+                            rating={solved || finished ? ratingMap.get(chal.id) : undefined}
                           />
                         )
                       })}
@@ -556,7 +556,7 @@ export const ChallengePanel: FC = () => {
             window.location.hash = ''
             setDetailOpened(false)
           }}
-          gameEnded={dayjs(game?.end) < dayjs()}
+          gameEnded={finished}
           practiceMode={game?.practiceMode}
           eventVpnRequired={game?.vpnAccessRequired}
           status={teamInfo?.rank?.solvedChallenges?.find((c) => c.id === challenge?.id)?.type}

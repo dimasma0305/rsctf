@@ -7,20 +7,17 @@ import { Link } from 'react-router'
 import { GameColorMap, GameStatus, getGameStatusLabel } from '@Components/GameCard'
 import { RecentGameProps } from '@Components/RecentGame'
 import { useLanguage } from '@Utils/I18n'
-import { getGameStatus, toLimitTag } from '@Hooks/useGame'
+import { getGameDurationMinutes, toLimitTag, useGameStatus } from '@Hooks/useGame'
 import classes from '@Styles/RecentGameSlide.module.css'
 
 export const RecentGameSlide: FC<RecentGameProps> = ({ game, ...others }) => {
   const { title, poster, summary, limit } = game
-  const { startTime, endTime, status } = getGameStatus(game)
+  const { startTime, endTime, status, now } = useGameStatus(game)
   const { t } = useTranslation()
   const { locale } = useLanguage()
   const theme = useMantineTheme()
   const color = GameColorMap.get(status)
-  const durationMinutes = Math.max(
-    0,
-    status === GameStatus.OnGoing ? endTime.diff(Date.now(), 'minute') : endTime.diff(startTime, 'minute')
-  )
+  const durationMinutes = getGameDurationMinutes(status, startTime, endTime, now)
   const compactDuration =
     durationMinutes < 60
       ? `${Math.max(1, durationMinutes)}m`

@@ -12,8 +12,9 @@ export function buildGameInfoUpdatePayload(
   schedule: GameInfoScheduleDraft,
   vpnPolicyChanged: boolean
 ): GameInfoModel {
+  const { serverTime: _serverTime, ...editableGame } = game
   return {
-    ...game,
+    ...editableGame,
     inviteCode: (game.inviteCode?.length ?? 0) > 6 ? game.inviteCode : null,
     vpnPolicyChangeReason: vpnPolicyChanged ? game.vpnPolicyChangeReason : undefined,
     ...schedule,

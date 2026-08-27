@@ -17,12 +17,12 @@ import { ScoreTimeLine } from '@Components/charts/ScoreTimeLine'
 import { MobileScoreboardTable } from '@Components/mobile/ScoreboardTable'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import {
-  getGameStatus,
   useAdScoreboard,
   useCombinedScoreboard,
   useGame,
   useGameScoreboard,
   useGameTeamInfo,
+  useGameStatus,
   useKothScoreboard,
 } from '@Hooks/useGame'
 import classes from '@Styles/GameScoreboard.module.css'
@@ -46,7 +46,7 @@ const Scoreboard: FC = () => {
   // visitors cannot rely on the user-gated /Details response for tab discovery.
   const { scoreboard } = useGameScoreboard(numId, false)
   const { game } = useGame(numId)
-  const { finished } = getGameStatus(game)
+  const { finished } = useGameStatus(game)
 
   const [divisionId, setDivisionId] = useState<number | null>(null)
   const isMobile = useIsMobile(1080)

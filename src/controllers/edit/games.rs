@@ -105,6 +105,8 @@ pub struct GameInfoModel {
     pub vpn_source_asn_telemetry_enabled: bool,
     #[serde(default)]
     pub vpn_device_sharing_telemetry_enabled: bool,
+    #[serde(skip_deserializing, with = "crate::utils::datetime::millis_opt")]
+    pub server_time: Option<DateTime<Utc>>,
     /// Required only when an existing event's VPN/telemetry policy changes.
     #[serde(default, skip_serializing)]
     pub vpn_policy_change_reason: Option<String>,
@@ -155,6 +157,7 @@ impl GameInfoModel {
             vpn_provider_dns_telemetry_enabled: g.vpn_provider_dns_telemetry_enabled,
             vpn_source_asn_telemetry_enabled: g.vpn_source_asn_telemetry_enabled,
             vpn_device_sharing_telemetry_enabled: g.vpn_device_sharing_telemetry_enabled,
+            server_time: Some(Utc::now()),
             vpn_policy_change_reason: None,
         }
     }
@@ -895,7 +898,6 @@ pub async fn delete_game(
     let deletion_admission = super::deletion_locks::acquire_hard_deletion_admission().await?;
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     let g = load_game(&st, id).await?;
-    let model = GameInfoModel::from_game(&g);
     // Reject irreversible deletion before touching event state. The marker and
     // history predicate share the game transaction and all challenge submission
     // fences, so an accepted submit cannot slip between the check and commit.
@@ -971,7 +973,9 @@ pub async fn delete_game(
     }
     crate::controllers::game::invalidate_game_row_cache(id);
     flush_game_scoreboards(&st, id).await;
-    Ok(RequestResponse::ok(model))
+    // `serverTime` is a response-creation sample. Build the response model only
+    // after every potentially slow container, VPN, and blob teardown completes.
+    Ok(RequestResponse::ok(GameInfoModel::from_game(&g)))
 }
 
 /// `GET /api/edit/games/{id}/HashSalt` — the per-game team-hash salt

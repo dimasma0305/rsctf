@@ -10,11 +10,11 @@ import { useLocation, useNavigate, useParams } from 'react-router'
 import { GameProgress } from '@Components/GameProgress'
 import { IconTabs } from '@Components/IconTabs'
 import { RequireRole } from '@Components/WithRole'
+import { useServerClockReady } from '@Utils/ServerClock'
 import { DEFAULT_LOADING_OVERLAY } from '@Utils/Shared'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
-import { getGameStatus, useGame } from '@Hooks/useGame'
+import { useGameAccess, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
-import { useTicker } from '@Hooks/useTicker'
 import { useUserRole } from '@Hooks/useUser'
 import { DetailedGameInfoModel, ParticipationStatus, Role } from '@Api'
 import misc from '@Styles/Misc.module.css'
@@ -22,9 +22,7 @@ import misc from '@Styles/Misc.module.css'
 dayjs.extend(duration)
 
 const GameCountdown: FC<{ game?: DetailedGameInfoModel }> = ({ game }) => {
-  const { endTime, progress, started, finished } = getGameStatus(game)
-  // Shared 1s ticker: single global interval for every countdown on the page.
-  const now = useTicker()
+  const { endTime, progress, started, finished, now } = useGameStatus(game)
 
   const { t } = useTranslation()
 
@@ -66,10 +64,12 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
   const navigate = useNavigate()
 
   const { role } = useUserRole()
-  const { game, status } = useGame(numId)
+  const { game, liveReadReady, status } = useGameAccess(numId)
+  const { started, finished, now } = useGameStatus(game)
+  const clockReady = useServerClockReady()
   const { t } = useTranslation()
 
-  const archived = isReadOnlyGameArchive(game)
+  const archived = isReadOnlyGameArchive(game, now.valueOf())
 
   const pages = [
     {
@@ -125,11 +125,10 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
   usePageTitle(game?.title)
 
   useEffect(() => {
-    if (game) {
+    if (game && clockReady && liveReadReady) {
       if (location.pathname.includes('monitor') && role === undefined) return
 
-      const now = dayjs()
-      if (now < dayjs(game.start)) {
+      if (!started) {
         navigate(`/games/${numId}`)
         showNotification({
           id: 'no-access',
@@ -160,7 +159,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
       // before the visitor has even signed in.
       if (role === undefined) return
 
-      if (now < dayjs(game.end)) {
+      if (!finished) {
         if (status === ParticipationStatus.Suspended) {
           navigate(`/games/${numId}`)
           showNotification({
@@ -191,7 +190,7 @@ export const WithGameTab: FC<React.PropsWithChildren> = ({ children }) => {
         })
       }
     }
-  }, [game, status, role, location])
+  }, [clockReady, finished, game, liveReadReady, location, navigate, numId, role, started, status, t])
 
   return (
     <Stack pos="relative" mt="md" style={{ containerType: 'inline-size' }}>

@@ -34,7 +34,7 @@ import { Icon } from '@mdi/react'
 import * as signalR from '@microsoft/signalr'
 import cx from 'clsx'
 import dayjs from 'dayjs'
-import { FC, useEffect, useMemo, useRef, useState } from 'react'
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
 import { ScrollingText } from '@Components/ScrollingText'
@@ -42,8 +42,9 @@ import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { handleAxiosError } from '@Utils/ApiHelper'
 import { useLanguage } from '@Utils/I18n'
+import { gameEventMonitorIdentity, unreconciledMonitorRows } from '@Utils/MonitorFeed'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { useGame } from '@Hooks/useGame'
+import { useGame, useGameStatus, useRevalidateWhenPollingStops } from '@Hooks/useGame'
 import api, { EventType, GameEvent } from '@Api'
 import tableClasses from '@Styles/Table.module.css'
 import { formatGameEvent } from '../eventFormat'
@@ -101,8 +102,12 @@ const Events: FC = () => {
   const [, update] = useState(new Date())
   const newEvents = useRef<GameEvent[]>([])
   const [events, setEvents] = useState<GameEvent[]>()
+  const monitorHubStop = useRef<Promise<void>>(Promise.resolve())
+  const waitForMonitorHubStop = useCallback(() => monitorHubStop.current, [])
 
   const { game } = useGame(numId)
+  const { finished } = useGameStatus(game)
+  const monitorConnectionActive = Boolean(game?.end) && !finished
   const isNarrow = useIsMobile(480)
 
   const iconMap = EventTypeIconMap(1.15)
@@ -113,35 +118,35 @@ const Events: FC = () => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
   }, [activePage, viewport])
 
-  useEffect(() => {
-    const fetchEvents = async () => {
-      try {
-        const res = await api.game.gameEvents(numId, {
-          hideContainer: hideContainerEvents,
-          count: ITEM_COUNT_PER_PAGE,
-          skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
-          search: debouncedSearch || undefined,
-        })
-        setEvents(res.data)
-      } catch (err) {
-        showNotification({
-          color: 'red',
-          title: t('game.notification.fetch_failed.event'),
-          message: await handleAxiosError(err),
-          icon: <Icon path={mdiClose} size={1} />,
-        })
-      }
-    }
-
-    fetchEvents()
-
-    if (activePage === 1) {
-      newEvents.current = []
+  const fetchEvents = useCallback(async () => {
+    try {
+      const res = await api.game.gameEvents(numId, {
+        hideContainer: hideContainerEvents,
+        count: ITEM_COUNT_PER_PAGE,
+        skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
+        search: debouncedSearch || undefined,
+      })
+      setEvents(res.data)
+    } catch (err) {
+      showNotification({
+        color: 'red',
+        title: t('game.notification.fetch_failed.event'),
+        message: await handleAxiosError(err),
+        icon: <Icon path={mdiClose} size={1} />,
+      })
     }
   }, [activePage, hideContainerEvents, debouncedSearch, numId, t])
 
   useEffect(() => {
-    if (game?.end && new Date() < new Date(game.end)) {
+    void fetchEvents()
+
+    if (activePage === 1) {
+      newEvents.current = []
+    }
+  }, [activePage, fetchEvents])
+
+  useEffect(() => {
+    if (monitorConnectionActive) {
       const connection = new signalR.HubConnectionBuilder()
         .withUrl(`/hub/monitor?game=${numId}`)
         .withHubProtocol(new signalR.JsonHubProtocol())
@@ -173,16 +178,24 @@ const Events: FC = () => {
       startConnection()
 
       return () => {
-        connection.stop().catch((err) => {
+        monitorHubStop.current = connection.stop().catch((err) => {
           console.error(err)
         })
       }
     }
-  }, [game, numId, t])
+  }, [monitorConnectionActive, numId, t])
+
+  // The final snapshot starts only after stop() has removed the listener. A
+  // pre-close operation that commits during shutdown is then represented by
+  // either its push or this one authoritative backfill, never by neither.
+  useRevalidateWhenPollingStops(monitorConnectionActive, fetchEvents, waitForMonitorHubStop)
 
   const filteredEvents = newEvents.current.filter(
     (e) => !hideContainerEvents || (e.type !== EventType.ContainerStart && e.type !== EventType.ContainerDestroy)
   )
+  const bufferedEvents =
+    activePage === 1 ? unreconciledMonitorRows(filteredEvents, events ?? [], gameEventMonitorIdentity) : []
+  const visibleEvents = [...bufferedEvents, ...(events ?? [])]
 
   return (
     <WithGameMonitor isLoading={!events}>
@@ -244,12 +257,12 @@ const Events: FC = () => {
         }}
       >
         <Stack gap="xs" pr={10} w="100%">
-          {[...(activePage === 1 ? filteredEvents : []), ...(events ?? [])]?.map((event, i) => (
+          {visibleEvents.map((event, i) => (
             <Card
               shadow="sm"
               p="xs"
               key={`${event.time}@${i}`}
-              className={cx({ [tableClasses.fade]: i === 0 && activePage === 1 && filteredEvents.length > 0 })}
+              className={cx({ [tableClasses.fade]: i === 0 && bufferedEvents.length > 0 })}
             >
               <Group wrap="nowrap" align="flex-start" justify="right" gap="sm" w="100%">
                 <Icon {...iconMap.get(event.type)!} />

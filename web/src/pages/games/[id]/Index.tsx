@@ -39,7 +39,7 @@ import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useConfig } from '@Hooks/useConfig'
-import { getGameStatus, useGame } from '@Hooks/useGame'
+import { shouldRedirectGameLandingError, useGame, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useTeams, useUser } from '@Hooks/useUser'
 import api, { GameJoinModel, ParticipationStatus } from '@Api'
@@ -100,7 +100,7 @@ const GameDetail: FC = () => {
 
   const theme = useMantineTheme()
 
-  const { startTime, endTime, finished, started, progress, status: gameStatus } = getGameStatus(game)
+  const { startTime, endTime, finished, started, progress, status: gameStatus } = useGameStatus(game)
 
   const { locale } = useLanguage()
   const { config } = useConfig()
@@ -114,13 +114,14 @@ const GameDetail: FC = () => {
   const { t } = useTranslation()
 
   usePageTitle(game?.title)
+  const hasLoadedGame = game !== undefined
 
   useEffect(() => {
-    if (error) {
+    if (shouldRedirectGameLandingError(error, hasLoadedGame)) {
       showErrorMsg(error, t)
       navigate('/games')
     }
-  }, [error, navigate])
+  }, [error, hasLoadedGame, navigate, t])
 
   const [joinModalOpen, setJoinModalOpen] = useState(false)
 

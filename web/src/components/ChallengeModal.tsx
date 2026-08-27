@@ -40,7 +40,7 @@ import {
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
-import { FC, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { FC, MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdChallengePanel } from '@Components/AdChallengePanel'
 import { ChallengeDeadlineNotice } from '@Components/ChallengeDeadlineNotice'
@@ -52,6 +52,7 @@ import { ScrollingText } from '@Components/ScrollingText'
 import { abbreviatedSha256, attachmentDownloadInfo } from '@Utils/AttachmentDownload'
 import { FlagVerdictKind, FlagVerdictState } from '@Utils/FlagVerdict'
 import { useLanguage } from '@Utils/I18n'
+import { getServerNowMilliseconds, useServerClockTimeout } from '@Utils/ServerClock'
 import { ChallengeCategoryItemProps, HunamizeSize } from '@Utils/Shared'
 import { ChallengeDetailModel, ChallengeType, ReviewRating, SolveReceiptMode, SubmissionType } from '@Api'
 import classes from '@Styles/ChallengeModal.module.css'
@@ -91,7 +92,7 @@ export interface ChallengeModalProps extends Omit<ModalProps, 'children' | 'stac
   receiptProof: string
   setReceiptProof: (value: string | React.ChangeEvent<any> | null | undefined) => void
   onCreate: () => void
-  onExtend?: () => void
+  onExtend?: () => void | Promise<void>
   onDestroy: () => void
   onSubmitFlag: () => void
   onDownload?: () => void
@@ -226,11 +227,12 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   }
 
   const deadlineTime = useMemo(() => (challenge?.deadline ? dayjs(challenge.deadline) : null), [challenge?.deadline])
-  const [isDeadlinePassed, setIsDeadlinePassed] = useState(() => (deadlineTime ? dayjs().isAfter(deadlineTime) : false))
-
-  useEffect(() => {
-    setIsDeadlinePassed(deadlineTime ? dayjs().isAfter(deadlineTime) : false)
-  }, [deadlineTime])
+  // ChallengePanel retains this component after close. Keep the full modal off
+  // the one-second ticker and wake it only at an active deadline boundary.
+  const [, setDeadlineRevision] = useState(0)
+  const requestDeadlineCheck = useCallback(() => setDeadlineRevision((revision) => revision + 1), [])
+  useServerClockTimeout(requestDeadlineCheck, modalProps.opened && deadlineTime ? deadlineTime.valueOf() : null)
+  const isDeadlinePassed = deadlineTime ? dayjs(getServerNowMilliseconds()).isAfter(deadlineTime) : false
 
   const isLimitReached = (challenge?.limit && (challenge.attempts ?? 0) >= challenge.limit) || false
 
@@ -365,8 +367,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   )
 
   const withDeadline = deadlineTime && !isDeadlinePassed
-  const deadline = withDeadline && (
-    <ChallengeDeadlineNotice deadline={deadlineTime} locale={locale} onExpiredChange={setIsDeadlinePassed} />
+  const deadline = modalProps.opened && withDeadline && (
+    <ChallengeDeadlineNotice deadline={deadlineTime} locale={locale} onExpiredChange={requestDeadlineCheck} />
   )
 
   const withAttachment = !!challenge?.context?.url || onDownload

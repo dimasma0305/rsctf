@@ -22,7 +22,7 @@ fn challenge_help_and_version_do_not_start_the_server() {
         .output()
         .unwrap();
     assert!(help.status.success());
-    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: rsctf challenge check"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("rsctf challenge check"));
 
     let version = rsctf()
         .args(["challenge", "check", "--version"])
@@ -75,4 +75,64 @@ fn challenge_check_returns_usage_status_for_unknown_options() {
         .status()
         .unwrap();
     assert_eq!(status.code(), Some(2));
+}
+
+#[test]
+fn challenge_matrix_is_emitted_by_the_main_binary() {
+    let root = test_root();
+    write(
+        &root.join(".gzevent"),
+        "title: Matrix fixture\nhidden: true\n",
+    );
+    write(
+        &root.join("challenges/Jeopardy/Web/example/challenge.yaml"),
+        "name: Example service\ntype: StaticContainer\ncategory: Web\nflags:\n  - rsctf{fixture}\ncontainer:\n  exposePort: 8080\n",
+    );
+    write(
+        &root.join("challenges/Jeopardy/Web/example/src/Dockerfile"),
+        "FROM scratch\n",
+    );
+
+    let output = rsctf()
+        .args(["challenge", "matrix"])
+        .arg(&root)
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let matrix: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        matrix,
+        serde_json::json!({
+            "include": [{
+                "name": "Jeopardy/Web/example",
+                "context": "challenges/Jeopardy/Web/example/src",
+                "tag": "jeopardy-web-example",
+                "kind": "service",
+            }]
+        })
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn challenge_matrix_refuses_an_invalid_repository() {
+    let root = test_root();
+    std::fs::create_dir_all(&root).unwrap();
+
+    let output = rsctf()
+        .args(["challenge", "matrix"])
+        .arg(&root)
+        .env_clear()
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("repository contains no .gzevent manifest"));
+    std::fs::remove_dir_all(root).unwrap();
 }

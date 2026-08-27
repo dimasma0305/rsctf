@@ -22,7 +22,7 @@ import { useNavigate, useParams } from 'react-router'
 import { ErrorCodes } from '@Utils/Shared'
 import { visibleChallengeSolveProgress } from '@Utils/challengeProgress'
 import { isReadOnlyGameArchive } from '@Utils/gameArchive'
-import { useGameTeamInfo } from '@Hooks/useGame'
+import { useGameStatus, useGameTeamInfo } from '@Hooks/useGame'
 import misc from '@Styles/Misc.module.css'
 
 export const TeamRank: FC<CardProps> = (props) => {
@@ -30,7 +30,8 @@ export const TeamRank: FC<CardProps> = (props) => {
   const numId = parseInt(id ?? '-1')
   const navigate = useNavigate()
   const { teamInfo, game, error } = useGameTeamInfo(numId)
-  const archived = isReadOnlyGameArchive(game)
+  const { now: serverNow } = useGameStatus(game)
+  const archived = isReadOnlyGameArchive(game, serverNow.valueOf())
 
   const clipboard = useClipboard()
   const { t } = useTranslation()

@@ -36,8 +36,10 @@ The composite action selects the rsctf image corresponding to its action ref,
 resolves the pull to an immutable digest, verifies the image source and version
 labels, and runs `rsctf challenge check` against the caller's checkout. The manifest
 tree is mounted read-only; the validator container has no network, capabilities, or
-writable root filesystem. Pin the action to a matching rsctf release tag once that
-release includes the action. A commit-pinned action may instead receive its matching
+writable root filesystem. It then runs `rsctf challenge matrix` and exposes the
+validated `container_matrix` and `container_count` outputs for a dynamic Docker job.
+Pin the action to a matching rsctf release tag once that release includes the action.
+A commit-pinned action may instead receive its matching
 `ghcr.io/dimasma0305/rsctf@sha256:...` through the `image` input.
 
 ## Import it on your rsctf instance
@@ -94,24 +96,18 @@ The Dockerfiles currently use `python:3.12-alpine`, so Docker may still pull tha
 ## Exercise provenance automation
 
 Repository Bindings imports the policy from
-`Jeopardy/Misc/deterministic-variant/challenge.yaml`; it does not generate rows
-as part of a scan. An administrator's pre-event automation performs that
-separate, idempotent step:
+`challenges/Jeopardy/Misc/deterministic-variant/challenge.yaml`; it does not generate rows
+as part of a scan. Trusted pre-event automation performs that separate,
+idempotent step by posting to `/api/edit/games/{gameId}/variants/generate` and
+checking `/api/edit/games/{gameId}/variants` with an administrator JWT.
 
-```sh
-RSCTF_URL=https://ctf.example \
-RSCTF_GAME_ID=42 \
-RSCTF_EXPECTED_VARIANTS=24 \
-RSCTF_ADMIN_TOKEN='ADMIN_JWT' \
-node scripts/generate-variants.mjs
-```
-
-The sample also includes `issue-solve-receipt.mjs` for an independently
-operated trusted verifier. That adapter belongs on a protected control network
-and uses `RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN`; it is not a player-facing exploit
-uploader. Players upload neither a solver nor an exploit to rsctf. They submit
-a flag and, only when the challenge requires it, the short-lived platform proof
-returned after the external verifier confirms their action.
+An independently operated trusted verifier can issue proofs through
+`/api/internal/event-security/solve-receipts` using
+`RSCTF_SOLVE_RECEIPT_ISSUER_TOKEN` on a protected control network. The sample
+ships neither an admin-token client nor a receipt adapter. Players upload neither
+a solver nor an exploit to rsctf; they submit a flag and, only when required, the
+short-lived platform proof returned after the external verifier confirms their
+action.
 
 ## Understand rescans
 
@@ -128,12 +124,11 @@ Removing a manifest does not silently erase played history. rsctf retains the ch
 - `checker/lib.py` — protocol-neutral contexts, verdict mapping, `@checker`, shuffled A&D/KotH suite runners, and the legacy single-checker decorators
 - `checker/run.py` — the challenge's protocol and focused, order-independent check suite; compare the hosted Pwn raw TCP checker with the self-hosted Web HTTP checker
 - `checker/requirements.txt` — optional exact PyPI pins; Pwn uses `pwntools==4.15.0` and Web uses `httpx==0.28.1`
-- `scripts/validate.mjs` — strict challenge-repository convention validation used
-  in addition to rsctf's official imported action
-- `scripts/test-checkers.py` — live checker smoke tests for all four verdict classes
+- `.github/workflows/validate.yml` — imports the rsctf action, consumes its dynamic
+  build matrix, and gates each service on Docker health
+- `Makefile` — thin local aliases for `rsctf challenge check` and
+  `rsctf challenge matrix`
 - `generator/Dockerfile` and `generator/generate.py` — auto-built deterministic `RSCTF_VARIANT_INPUT` to manifest contract
-- `scripts/generate-variants.mjs` — administrator pre-event generation and inventory call
-- `scripts/issue-solve-receipt.mjs` — protected verifier-to-control receipt adapter
 - `docs/provenance.md` — automatic build, registry fallback, configuration, API,
   and trust-boundary guide
 
