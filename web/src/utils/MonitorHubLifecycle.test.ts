@@ -30,7 +30,14 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
     assert.match(source, /\}, \[monitorConnectionActive, numId, t\]\)/, path)
     assert.doesNotMatch(source, /\}, \[game, numId, t\]\)/, path)
     assert.match(source, new RegExp(`const ${fetchName} = useCallback`), path)
-    assert.match(source, new RegExp(`useRevalidateWhenPollingStops\\(monitorConnectionActive, ${fetchName}\\)`), path)
+    assert.match(source, /monitorHubStop\.current = connection\.stop\(\)/, path)
+    assert.match(
+      source,
+      new RegExp(
+        `useRevalidateWhenPollingStops\\(monitorConnectionActive, ${fetchName}, waitForMonitorHubStop\\)`
+      ),
+      path
+    )
     assert.match(source, new RegExp(`unreconciledMonitorRows\\([^;]+${identityName}\\)`), path)
     assert.ok(
       source.lastIndexOf('useRevalidateWhenPollingStops(') > source.indexOf('new signalR.HubConnectionBuilder()'),
@@ -44,8 +51,7 @@ class BoundaryFeed<Row> {
   requests = 0
   stops = 0
   private listener: ((message: Row) => void) | undefined
-  private deferRead = false
-  private resolveRead: (() => void) | undefined
+  private resolveStop: (() => void) | undefined
 
   constructor(
     initial: Row,
@@ -57,9 +63,14 @@ class BoundaryFeed<Row> {
   connect(listener: (message: Row) => void) {
     this.listener = listener
     return () => {
-      // SignalR stop is asynchronous. Keep the listener until completeStop so
-      // the test can exercise a callback racing the final REST response.
       this.stops += 1
+      return new Promise<void>((resolve) => {
+        this.resolveStop = () => {
+          this.listener = undefined
+          this.resolveStop = undefined
+          resolve()
+        }
+      })
     }
   }
 
@@ -72,30 +83,14 @@ class BoundaryFeed<Row> {
     this.authoritative.unshift(message)
   }
 
-  deferNextRead() {
-    this.deferRead = true
-  }
-
   read() {
     this.requests += 1
-    const snapshot = this.authoritative.map(this.restProjection)
-    if (!this.deferRead) return Promise.resolve(snapshot)
-
-    this.deferRead = false
-    return new Promise<Row[]>((resolve) => {
-      this.resolveRead = () => {
-        this.resolveRead = undefined
-        resolve(snapshot)
-      }
-    })
-  }
-
-  resolveDeferredRead() {
-    this.resolveRead?.()
+    return Promise.resolve(this.authoritative.map(this.restProjection))
   }
 
   completeStop() {
-    this.listener = undefined
+    if (this.resolveStop) this.resolveStop()
+    else this.listener = undefined
   }
 }
 
@@ -104,7 +99,7 @@ interface BoundaryCase<Row> {
   initial: Row
   received: Row
   inFlight: Row
-  postFetch: Row
+  postStop: Row
   identity: (row: Row) => string
   label: (row: Row) => string
   restProjection: (row: Row) => Row
@@ -126,13 +121,13 @@ test('monitor reconciliation consumes snapshot identities as an occurrence-aware
   assert.equal(unreconciledMonitorRows(pushed, snapshot, gameEventMonitorIdentity).length, 1)
 })
 
-test('each monitor feed reconciles received, in-flight, and post-fetch boundary messages once', async (context) => {
+test('each browser feed serializes stop and backfill across received, in-flight, and post-stop commits', async (context) => {
   const runCase = async <Row>({
     name,
     initial,
     received,
     inFlight,
-    postFetch,
+    postStop,
     identity,
     label,
     restProjection,
@@ -152,6 +147,8 @@ test('each monitor feed reconciles received, in-flight, and post-fetch boundary 
         const pushedRows = useRef<Row[]>([])
         const [snapshotRows, setSnapshotRows] = useState<Row[]>([])
         const [, publishPush] = useState(0)
+        const hubStop = useRef<Promise<void>>(Promise.resolve())
+        const waitForHubStop = useCallback(() => hubStop.current, [])
         const refresh = useCallback(async () => setSnapshotRows(await feed.read()), [feed])
 
         useEffect(() => {
@@ -160,15 +157,16 @@ test('each monitor feed reconciles received, in-flight, and post-fetch boundary 
 
         useEffect(() => {
           if (!active) return
-          return feed.connect((message) => {
+          const stop = feed.connect((message) => {
             pushedRows.current = [message, ...pushedRows.current]
             publishPush((version) => version + 1)
           })
+          return () => {
+            hubStop.current = stop()
+          }
         }, [active, feed])
 
-        // Match the production pages: hub ownership is declared first, so its
-        // cleanup happens before this one-shot final reconciliation effect.
-        useRevalidateWhenPollingStops(active, refresh)
+        useRevalidateWhenPollingStops(active, refresh, waitForHubStop)
 
         const visibleRows = [...unreconciledMonitorRows(pushedRows.current, snapshotRows, identity), ...snapshotRows]
         return createElement('output', null, visibleRows.map(label).join(','))
@@ -185,29 +183,29 @@ test('each monitor feed reconciles received, in-flight, and post-fetch boundary 
         await act(async () => feed.acceptAndBroadcast(received))
         assert.equal(container.textContent, `${label(received)},${label(initial)}`)
 
-        feed.acceptWhileBroadcastIsInFlight(inFlight)
-        feed.deferNextRead()
-
         await act(async () => {
           root.render(createElement(Probe, { active: false }))
           await Promise.resolve()
         })
         assert.equal(feed.stops, 1)
-        assert.equal(feed.requests, 2, 'initial snapshot plus exactly one final reconciliation')
+        assert.equal(feed.requests, 1, 'the final read must wait for asynchronous listener removal')
 
-        // stop() is still settling and this callback was already queued. The
-        // final REST request captured its snapshot just before this row landed.
-        await act(async () => feed.acceptAndBroadcast(postFetch))
+        // This pre-close operation commits while stop() is still in flight,
+        // but its queued boundary broadcast never reaches the listener.
+        feed.acceptWhileBroadcastIsInFlight(inFlight)
         feed.completeStop()
+        // The listener is gone. This committed operation's attempted broadcast
+        // is therefore lost, but it lands before the serialized HTTP snapshot.
+        feed.acceptAndBroadcast(postStop)
         await act(async () => {
-          feed.resolveDeferredRead()
           await Promise.resolve()
         })
+        assert.equal(feed.requests, 2, 'one initial read plus exactly one serialized final backfill')
 
         assert.equal(
           container.textContent,
-          [postFetch, inFlight, received, initial].map(label).join(','),
-          'REST overlap is emitted once, in-flight data is recovered, and the post-fetch push keeps newest-first order'
+          [postStop, inFlight, received, initial].map(label).join(','),
+          'already-received rows stay unique and both lost boundary broadcasts are recovered newest-first'
         )
 
         await act(async () => {
@@ -216,12 +214,11 @@ test('each monitor feed reconciles received, in-flight, and post-fetch boundary 
         })
         assert.equal(feed.requests, 2, 'remaining stopped must not add polling')
       } finally {
-        feed.completeStop()
         await act(async () => {
-          feed.resolveDeferredRead()
           root.unmount()
           await Promise.resolve()
         })
+        feed.completeStop()
         delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
         await browser.happyDOM.close()
         restoreDom()
@@ -240,10 +237,10 @@ test('each monitor feed reconciles received, in-flight, and post-fetch boundary 
       user: 'three',
       team: 'gamma',
     },
-    postFetch: {
+    postStop: {
       time: hubTime(4_000),
       type: EventType.Download,
-      values: ['post-fetch'],
+      values: ['post-stop'],
       user: 'four',
       team: 'delta',
     },
@@ -277,10 +274,10 @@ test('each monitor feed reconciles received, in-flight, and post-fetch boundary 
       team: 'gamma',
       challenge: 'C',
     },
-    postFetch: {
+    postStop: {
       time: hubTime(4_000),
       status: AnswerResult.NotFound,
-      answer: 'post-fetch',
+      answer: 'post-stop',
       user: 'four',
       team: 'delta',
       challenge: 'D',

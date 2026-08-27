@@ -102,6 +102,8 @@ const Events: FC = () => {
   const [, update] = useState(new Date())
   const newEvents = useRef<GameEvent[]>([])
   const [events, setEvents] = useState<GameEvent[]>()
+  const monitorHubStop = useRef<Promise<void>>(Promise.resolve())
+  const waitForMonitorHubStop = useCallback(() => monitorHubStop.current, [])
 
   const { game } = useGame(numId)
   const { finished } = useGameStatus(game)
@@ -176,17 +178,17 @@ const Events: FC = () => {
       startConnection()
 
       return () => {
-        connection.stop().catch((err) => {
+        monitorHubStop.current = connection.stop().catch((err) => {
           console.error(err)
         })
       }
     }
   }, [monitorConnectionActive, numId, t])
 
-  // This effect is intentionally declared after hub ownership. React tears
-  // down the live connection first, then publishes one authoritative REST
-  // snapshot for a mounted active -> stopped lifecycle transition.
-  useRevalidateWhenPollingStops(monitorConnectionActive, fetchEvents)
+  // The final snapshot starts only after stop() has removed the listener. A
+  // pre-close operation that commits during shutdown is then represented by
+  // either its push or this one authoritative backfill, never by neither.
+  useRevalidateWhenPollingStops(monitorConnectionActive, fetchEvents, waitForMonitorHubStop)
 
   const filteredEvents = newEvents.current.filter(
     (e) => !hideContainerEvents || (e.type !== EventType.ContainerStart && e.type !== EventType.ContainerDestroy)

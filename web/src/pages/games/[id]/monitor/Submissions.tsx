@@ -80,6 +80,8 @@ const Submissions: FC = () => {
   const [, update] = useState(new Date())
   const newSubmissions = useRef<Submission[]>([])
   const [submissions, setSubmissions] = useState<Submission[]>()
+  const monitorHubStop = useRef<Promise<void>>(Promise.resolve())
+  const waitForMonitorHubStop = useCallback(() => monitorHubStop.current, [])
   const [type, setType] = useState<AnswerResult | 'All'>('All')
   const [disabled, setDisabled] = useState(false)
 
@@ -159,16 +161,17 @@ const Submissions: FC = () => {
       startConnection()
 
       return () => {
-        connection.stop().catch((err) => {
+        monitorHubStop.current = connection.stop().catch((err) => {
           console.error(err)
         })
       }
     }
   }, [monitorConnectionActive, numId, t])
 
-  // Keep the final request separate from hub ownership: stopping a retained
-  // monitor performs one REST reconciliation without reopening the connection.
-  useRevalidateWhenPollingStops(monitorConnectionActive, fetchSubmissions)
+  // Keep the final request separate from hub ownership and fence it behind the
+  // completed stop. A commit whose boundary broadcast loses the listener is
+  // therefore present in the one post-stop authoritative reconciliation.
+  useRevalidateWhenPollingStops(monitorConnectionActive, fetchSubmissions, waitForMonitorHubStop)
 
   const filteredSubs = newSubmissions.current.filter((item) => type === 'All' || item.status === type)
   const bufferedSubmissions =

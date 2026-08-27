@@ -206,15 +206,28 @@ const sharedGameTimingOwner = createGameTimingSWRConfig()
 
 export const useGameTimingSWRConfig = () => sharedGameTimingOwner.config
 
-/** Publish one authoritative final snapshot when a lifecycle-owned poller stops. */
-export const useRevalidateWhenPollingStops = (polling: boolean, revalidate: () => unknown) => {
+/**
+ * Publish one authoritative final snapshot when a lifecycle-owned poller stops.
+ * A push feed can provide its shutdown fence so the snapshot cannot race ahead
+ * of listener removal and miss a commit whose boundary broadcast is discarded.
+ */
+export const useRevalidateWhenPollingStops = (
+  polling: boolean,
+  revalidate: () => unknown,
+  waitForStop?: () => Promise<unknown>
+) => {
   const wasPolling = useRef(polling)
 
   useEffect(() => {
     const stopped = wasPolling.current && !polling
     wasPolling.current = polling
-    if (stopped) void revalidate()
-  }, [polling, revalidate])
+    if (!stopped) return
+
+    void Promise.resolve()
+      .then(() => waitForStop?.())
+      .catch(() => undefined)
+      .then(revalidate)
+  }, [polling, revalidate, waitForStop])
 }
 
 export const useRecentGames = () => {
