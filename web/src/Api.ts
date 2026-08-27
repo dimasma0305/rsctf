@@ -3721,6 +3721,8 @@ export interface FlagSubmitModel {
    * @minLength 1
    */
   flag: string;
+  /** Opaque client-generated identity retained through terminal recovery. */
+  attemptId: string;
   /** Optional one-use proof minted by the challenge's trusted verifier. */
   proof?: string | null;
 }

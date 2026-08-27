@@ -3,12 +3,13 @@ import { useInputState } from '@mantine/hooks'
 import { notifications, showNotification, updateNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useEffect, useMemo, useReducer, useState } from 'react'
+import { FC, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { encryptApiData } from '@Utils/Crypto'
+import { FlagSubmitAttemptOwner } from '@Utils/FlagSubmitAttempt'
 import { flagVerdictReducer } from '@Utils/FlagVerdict'
 import { resolveChallengeDeliveryGuide } from '@Utils/GuideState'
 import {
@@ -129,6 +130,12 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const [receiptProof, setReceiptProof] = useInputState('')
   const [solvedChallengeId, setSolvedChallengeId] = useState<number | null>(null)
   const [flagVerdict, dispatchFlagVerdict] = useReducer(flagVerdictReducer, null)
+  const submitAttemptOwnerRef = useRef<FlagSubmitAttemptOwner | null>(null)
+  const submittedAttemptIdRef = useRef<string | null>(null)
+  if (submitAttemptOwnerRef.current === null) {
+    submitAttemptOwnerRef.current = new FlagSubmitAttemptOwner()
+  }
+  const submitAttemptOwner = submitAttemptOwnerRef.current
 
   useEffect(() => {
     dispatchFlagVerdict({ type: 'reset' })
@@ -221,7 +228,8 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   const onSubmit = async () => {
-    if (!challengeId || !flag) {
+    const normalizedFlag = flag.trim()
+    if (!challengeId || !normalizedFlag) {
       showNotification({
         color: 'red',
         message: t('challenge.notification.flag.empty'),
@@ -230,14 +238,27 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       return
     }
 
+    const proof = receiptProof.trim() || undefined
+    const dispatch = submitAttemptOwner.begin(
+      { gameId, challengeId, flag: normalizedFlag, proof },
+      async (attemptId) => ({
+        attemptId,
+        flag: await encryptApiData(t, normalizedFlag, config.apiPublicKey),
+        proof,
+      }),
+      async (payload) => {
+        const response = await api.game.gameSubmit(gameId, challengeId, payload)
+        return response.data
+      }
+    )
+    if (!dispatch.owner) return
+
     setDisabled(true)
 
     try {
-      const res = await api.game.gameSubmit(gameId, challengeId, {
-        flag: await encryptApiData(t, flag, config.apiPublicKey),
-        proof: receiptProof.trim() || undefined,
-      })
-      setSubmitId(res.data)
+      const result = await dispatch.result
+      submittedAttemptIdRef.current = result.attemptId
+      setSubmitId(result.submissionId)
       notifications.clean()
       showNotification({
         id: 'flag-submitted',
@@ -248,16 +269,18 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         autoClose: false,
       })
 
-      const nxt = (challenge?.attempts ?? 0) + 1
-      const attempts = challenge?.limit && challenge.limit > 0 ? Math.min(nxt, challenge.limit) : nxt
+      if (result.firstAcknowledgement) {
+        const nxt = (challenge?.attempts ?? 0) + 1
+        const attempts = challenge?.limit && challenge.limit > 0 ? Math.min(nxt, challenge.limit) : nxt
 
-      // Spread the existing challenge FIRST, then override attempts — otherwise the
-      // stale attempts value clobbers the increment and the "N remaining" counter
-      // never decrements after a submit on limited-attempt challenges.
-      mutate({
-        ...challenge,
-        attempts,
-      })
+        // Spread the existing challenge FIRST, then override attempts — otherwise the
+        // stale attempts value clobbers the increment and the "N remaining" counter
+        // never decrements after a submit on limited-attempt challenges.
+        mutate({
+          ...challenge,
+          attempts,
+        })
+      }
       return
     } catch (e) {
       showErrorMsg(e, t)
@@ -286,6 +309,9 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
       try {
         const res = await api.game.gameStatus(gameId, challengeId, submitId)
         if (res.data !== AnswerResult.FlagSubmitted) {
+          const attemptId = submittedAttemptIdRef.current
+          if (attemptId) submitAttemptOwner.complete(gameId, challengeId, attemptId)
+          submittedAttemptIdRef.current = null
           setDisabled(false)
           setFlag('')
           setReceiptProof('')
@@ -295,10 +321,10 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
         }
       } catch (err) {
         setDisabled(false)
-        setFlag('')
-        setReceiptProof('')
         showErrorMsg(err, t)
         clearInterval(polling)
+        // Preserve the semantic input and attempt owner. Retrying the form
+        // recovers the already-committed submission ID without another grade.
         setSubmitId(0)
       }
     }, 500)

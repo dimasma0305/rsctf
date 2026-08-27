@@ -12,6 +12,7 @@ import { SharedArray } from 'k6/data';
 import { lifecycleStateOpenPath } from '../lifecycle-state-file.js';
 import { validCombinedBoard } from '../combined-scoreboard.js';
 import { validKothEventScoreBasis } from '../koth-score-basis.js';
+import { submitAttemptId } from '../submit-attempt-id.js';
 import {
   buildLifecycleFleet,
   fixedRateExecutorCapacity,
@@ -693,7 +694,8 @@ export function jeopardy() {
     rec(get(`/assets/${S.attachHash}/${S.attachName}`, ip, jwt), 'jeo attachment', assetMs);
   if (__ITER % 5 === 0) {
     const flag = __ITER % 10 === 0 ? S.staticFlags[cid] : `flag{wrong_${__VU}_${__ITER}}`;
-    const r = post(`/api/game/${S.jeoGame}/challenges/${cid}`, { flag }, ip, jwt);
+    const attemptId = submitAttemptId(`lifecycle:${__VU}:${__ITER}:${cid}:${flag}`);
+    const r = post(`/api/game/${S.jeoGame}/challenges/${cid}`, { flag, attemptId }, ip, jwt);
     rec(r, 'jeo submit', jeoSubmit);
   }
   playerThink();

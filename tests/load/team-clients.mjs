@@ -694,6 +694,7 @@ export async function startVpnTeamClients({
   const playerModel = new URL('./player-model.js', import.meta.url).pathname;
   const kothScoreBasis = new URL('./koth-score-basis.js', import.meta.url).pathname;
   const teamEvidence = new URL('./team-evidence.js', import.meta.url).pathname;
+  const submitAttemptIds = new URL('./submit-attempt-id.js', import.meta.url).pathname;
   const configs = [];
   const bots = [];
   const peerPublicKeys = [];
@@ -858,6 +859,8 @@ export async function startVpnTeamClients({
           `${kothScoreBasis}:/koth-score-basis.js:ro`,
           '-v',
           `${teamEvidence}:/team-evidence.js:ro`,
+          '-v',
+          `${submitAttemptIds}:/submit-attempt-id.js:ro`,
           '-v',
           `${
             realisticCompetition

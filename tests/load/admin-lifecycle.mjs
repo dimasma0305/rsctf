@@ -1123,7 +1123,7 @@ async function eventFixture() {
   const solve = await A.api(
     'POST',
     `/api/game/${fixtureGame}/challenges/${fixtureChallenge}`,
-    { jwt: playerJwt, ip: '10.252.21.1', body: { flag: fixtureFlag } },
+    { jwt: playerJwt, ip: '10.252.21.1', body: { flag: fixtureFlag, attemptId: randomUUID() } },
   );
   expectStatus(solve, 200, 'fixture challenge solve');
   await adminApi(
@@ -2007,7 +2007,7 @@ async function repositoryLifecycle() {
   const solved = await A.api(
     'POST',
     `/api/game/${repoGameId}/challenges/${repoChallengeId}`,
-    { jwt: repoPlayerJwt, ip: '10.252.24.1', body: { flag: repoFlag } },
+    { jwt: repoPlayerJwt, ip: '10.252.24.1', body: { flag: repoFlag, attemptId: randomUUID() } },
   );
   expectStatus(solved, 200, 'repository preservation solve');
   const repoSubmissionId = positiveId(solved.json?.data ?? solved.json, 'repository submission');

@@ -125,6 +125,7 @@ mod m0102_discord_webhook_outbox;
 mod m0103_recent_games_candidates;
 mod m0104_post_feed_order;
 mod m0105_manager_autocomplete_indexes;
+mod m0106_submission_idempotency;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -246,6 +247,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0103_recent_games_candidates::Migration),
             Box::new(m0104_post_feed_order::Migration),
             Box::new(m0105_manager_autocomplete_indexes::Migration),
+            Box::new(m0106_submission_idempotency::Migration),
         ]
     }
 }
@@ -391,11 +393,12 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 3..],
+            &names[names.len() - 4..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
                 "m0105_manager_autocomplete_indexes",
+                "m0106_submission_idempotency",
             ]
         );
     }

@@ -538,12 +538,12 @@ pub struct GameJoinModel {
     pub fingerprint_proof: Option<String>,
 }
 
-/// RSCTF `FlagSubmitModel`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlagSubmitModel {
     pub flag: String,
-    /// Optional one-use proof minted by a configured trusted verifier.
+    /// Opaque client identity retained until the terminal verdict is recovered.
+    pub attempt_id: Uuid,
     #[serde(default)]
     pub proof: Option<String>,
 }

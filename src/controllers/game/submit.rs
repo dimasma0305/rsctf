@@ -7,6 +7,12 @@ mod observations;
 use observations::{
     load_first_positive_interactions, lock_game_timing_at_grade, lock_submit_scope_at_grade,
 };
+#[path = "submit_idempotency.rs"]
+mod idempotency;
+use idempotency::{
+    complete_attempt, find_completed_attempt, reserve_attempt, submission_request_fingerprint,
+    AttemptReservation,
+};
 #[path = "submit_review.rs"]
 mod review;
 pub use review::{review_challenge, status};
@@ -294,21 +300,91 @@ pub async fn submit(
     if answer.len() > MAX_FLAG_LENGTH {
         return Err(AppError::bad_request("Flag is too long"));
     }
+    if model.attempt_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid submission attempt ID is required",
+        ));
+    }
+    let proof = model.proof.as_deref();
+    if proof.is_some_and(|proof| proof.len() > 4096) {
+        return Err(AppError::bad_request("Solve receipt is too large"));
+    }
     let submit_remote_ip_hash = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()))
         .and_then(|ip| {
             crate::services::anti_cheat::hash_ip_identity(st.config.as_ref(), &ip)
                 .map(|identity| identity.exact)
         });
 
-    let ctx = context_info(&st, &user, id, true).await?;
+    // An exact committed replay is a read of the caller's own durable result,
+    // not a second submit. Resolve accepted membership without the end-time
+    // mutation gate so a response lost at the deadline remains recoverable.
+    let ctx = context_info(&st, &user, id, false).await?;
+    let request_fingerprint = submission_request_fingerprint(user.id, &answer, proof);
+    if ctx.archived {
+        if let Some(replay) = find_completed_attempt(
+            st.pg(),
+            ctx.participation.id,
+            challenge_id,
+            model.attempt_id,
+            &request_fingerprint,
+        )
+        .await?
+        {
+            tracing::debug!(
+                submission_id = replay.submission_id,
+                status = replay.status,
+                "recovered post-event idempotent flag submission"
+            );
+            return Ok(RequestResponse::ok(replay.submission_id));
+        }
+        return Err(AppError::game_ended());
+    }
 
-    let challenge = load_playable_challenge(&st, id, challenge_id).await?;
+    let challenge = match load_playable_challenge(&st, id, challenge_id).await {
+        Ok(challenge) => challenge,
+        Err(error @ AppError::NotFound(_)) => {
+            if let Some(replay) = find_completed_attempt(
+                st.pg(),
+                ctx.participation.id,
+                challenge_id,
+                model.attempt_id,
+                &request_fingerprint,
+            )
+            .await?
+            {
+                tracing::debug!(
+                    submission_id = replay.submission_id,
+                    status = replay.status,
+                    "recovered disabled-challenge idempotent flag submission"
+                );
+                return Ok(RequestResponse::ok(replay.submission_id));
+            }
+            return Err(error);
+        }
+        Err(error) => return Err(error),
+    };
 
     // Division may restrict viewing/submitting this challenge (RSCTF Submit gate).
     let perm = effective_permission(&st, &ctx.participation, challenge_id).await?;
     if !perm.contains(GamePermission::VIEW_CHALLENGE)
         || !perm.contains(GamePermission::SUBMIT_FLAGS)
     {
+        if let Some(replay) = find_completed_attempt(
+            st.pg(),
+            ctx.participation.id,
+            challenge_id,
+            model.attempt_id,
+            &request_fingerprint,
+        )
+        .await?
+        {
+            tracing::debug!(
+                submission_id = replay.submission_id,
+                status = replay.status,
+                "recovered permission-changed idempotent flag submission"
+            );
+            return Ok(RequestResponse::ok(replay.submission_id));
+        }
         return Err(AppError::Forbidden);
     }
 
@@ -345,6 +421,30 @@ pub async fn submit(
         .execute(&mut *transaction)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+
+    match reserve_attempt(
+        &mut transaction,
+        ctx.participation.id,
+        challenge_id,
+        model.attempt_id,
+        &request_fingerprint,
+    )
+    .await?
+    {
+        AttemptReservation::Fresh => {}
+        AttemptReservation::Replay(replay) => {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            tracing::debug!(
+                submission_id = replay.submission_id,
+                status = replay.status,
+                "recovered concurrent idempotent flag submission"
+            );
+            return Ok(RequestResponse::ok(replay.submission_id));
+        }
+    }
 
     // Read the authoritative grading policy after the per-team lock. Deliberately
     // do not lock the challenge row here: the late conditional counter UPDATE is
@@ -462,7 +562,7 @@ pub async fn submit(
     let receipt = crate::services::event_security::validate_receipt_for_submission(
         &mut transaction,
         &st.config.event_vpn_credential_key,
-        model.proof.as_deref(),
+        proof,
         solve_receipt_mode,
         id,
         challenge_id,
@@ -830,6 +930,16 @@ pub async fn submit(
         ));
     }
 
+    complete_attempt(
+        &mut transaction,
+        ctx.participation.id,
+        challenge_id,
+        model.attempt_id,
+        &request_fingerprint,
+        sub_id,
+    )
+    .await?;
+
     transaction
         .commit()
         .await
@@ -872,126 +982,8 @@ pub async fn submit(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        blood_notice_type, blood_recognition_eligible, normal_flag_submit_type_allowed,
-        ChallengeType, GamePermission, NoticeType, FINALIZE_SUBMISSION_SQL,
-        LOAD_GRADING_POLICY_SQL,
-    };
-    use chrono::{Duration, Utc};
-
-    #[test]
-    fn challenge_policy_read_does_not_hold_the_hot_row() {
-        assert!(
-            !LOAD_GRADING_POLICY_SQL.contains("FOR UPDATE"),
-            "authoritative policy reads must rely on the late optimistic fence"
-        );
-    }
-
-    #[test]
-    fn finalization_fences_every_authoritative_challenge_input() {
-        for predicate in [
-            "AND game_id = $3",
-            "AND is_enabled",
-            "AND review_status = $4",
-            "AND submission_limit = $5",
-            "AND deadline_utc IS NOT DISTINCT FROM $6",
-            "AND disable_blood_bonus = $7",
-            "AND \"Type\" = $8",
-        ] {
-            assert!(
-                FINALIZE_SUBMISSION_SQL.contains(predicate),
-                "missing optimistic grading fence predicate: {predicate}"
-            );
-        }
-    }
-
-    #[test]
-    fn disabling_bonus_points_does_not_disable_blood_recognition() {
-        let start = Utc::now() - Duration::minutes(5);
-        let end = Utc::now() + Duration::minutes(5);
-        let permissions = GamePermission(GamePermission::GET_BLOOD | GamePermission::GET_SCORE);
-        assert!(blood_recognition_eligible(
-            Utc::now(),
-            start,
-            end,
-            None,
-            permissions,
-        ));
-        assert_eq!(
-            blood_notice_type(true, true, 0),
-            Some(NoticeType::FirstBlood)
-        );
-        assert_eq!(
-            blood_notice_type(true, true, 1),
-            Some(NoticeType::SecondBlood)
-        );
-        assert_eq!(
-            blood_notice_type(true, true, 2),
-            Some(NoticeType::ThirdBlood)
-        );
-        assert_eq!(blood_notice_type(true, true, 3), None);
-    }
-
-    #[test]
-    fn live_engine_types_cannot_enter_jeopardy_scoring() {
-        let end = Utc::now() + Duration::hours(1);
-        let live = end - Duration::minutes(30);
-        for challenge_type in [
-            ChallengeType::StaticAttachment,
-            ChallengeType::StaticContainer,
-            ChallengeType::DynamicAttachment,
-            ChallengeType::DynamicContainer,
-        ] {
-            assert!(normal_flag_submit_type_allowed(
-                challenge_type as i16,
-                false,
-                live,
-                end
-            ));
-        }
-        for challenge_type in [ChallengeType::AttackDefense, ChallengeType::KingOfTheHill] {
-            assert!(!normal_flag_submit_type_allowed(
-                challenge_type as i16,
-                false,
-                live,
-                end
-            ));
-            assert!(!normal_flag_submit_type_allowed(
-                challenge_type as i16,
-                true,
-                live,
-                end
-            ));
-        }
-    }
-
-    #[test]
-    fn post_game_practice_keeps_the_normal_container_fallback() {
-        let end = Utc::now();
-        let after_end = end + Duration::seconds(1);
-        for challenge_type in [ChallengeType::AttackDefense, ChallengeType::KingOfTheHill] {
-            assert!(!normal_flag_submit_type_allowed(
-                challenge_type as i16,
-                false,
-                after_end,
-                end
-            ));
-            assert!(normal_flag_submit_type_allowed(
-                challenge_type as i16,
-                true,
-                after_end,
-                end
-            ));
-        }
-        assert!(!normal_flag_submit_type_allowed(
-            i16::MAX,
-            true,
-            after_end,
-            end
-        ));
-    }
-}
+#[path = "submit_unit_tests.rs"]
+mod tests;
 
 #[cfg(test)]
 #[path = "submit_evidence_tests.rs"]
