@@ -1,6 +1,7 @@
 import { createContext, FC, Fragment, PropsWithChildren, useContext, useLayoutEffect, useMemo, useRef } from 'react'
 import { useLocation } from 'react-router'
-import { type Key, type Middleware, useSWRConfig } from 'swr'
+import { type Cache, type Key, type Middleware, type ScopedMutator, useSWRConfig } from 'swr'
+import { retirePersistentCacheEntry } from '@Utils/Cache'
 import { profileErrorDisposition } from '@Utils/ProfileRetry'
 import { useUser } from '@Hooks/useUser'
 
@@ -26,7 +27,7 @@ const viewerScope = (userId?: string, role?: string, anonymous = false) => {
 
 export const ViewerIdentityProvider: FC<PropsWithChildren> = ({ children }) => {
   const { user, error } = useUser()
-  const { mutate } = useSWRConfig()
+  const { cache, mutate } = useSWRConfig()
   const anonymous = ['anonymous', 'banned'].includes(profileErrorDisposition(error))
   const scope = viewerScope(user?.userId, user?.role, anonymous)
   const previousScope = useRef<string | null>(null)
@@ -36,11 +37,10 @@ export const ViewerIdentityProvider: FC<PropsWithChildren> = ({ children }) => {
     previousScope.current = scope
     if (!previous || previous === scope) return
 
-    // Retire the old namespace as the account changes. This bounds persistent
-    // browser storage and fences late old-session requests through SWR's mutate
-    // timestamp instead of leaving dormant account copies indefinitely.
-    void mutate((key) => isViewerScopedKey(key) && key[1] === previous, undefined, { revalidate: false })
-  }, [mutate, scope])
+    // Retire the old namespace as the account changes. The SWR mutation fences
+    // late old-session requests before the provider keys are actually removed.
+    void retireViewerScope(cache, mutate, previous, () => previousScope.current ?? scope)
+  }, [cache, mutate, scope])
 
   return <ViewerIdentityScope scope={scope}>{children}</ViewerIdentityScope>
 }
@@ -57,6 +57,32 @@ export const viewerScopedKey = (key: Key, scope: string | null): Key =>
 
 const isViewerScopedKey = (key: unknown): key is ViewerScopedKey =>
   Array.isArray(key) && key.length === 3 && key[0] === VIEWER_SCOPE_MARKER && typeof key[1] === 'string'
+
+const cachedOriginalKey = (cache: Cache, key: string): unknown => (cache.get(key) as { _k?: unknown } | undefined)?._k
+
+/**
+ * Fence the retired namespace before removing it from the configured provider.
+ * The active-scope check prevents a delayed retirement from deleting a viewer
+ * namespace that was reactivated by a rapid account switch.
+ */
+export const retireViewerScope = async (
+  cache: Cache,
+  mutate: ScopedMutator,
+  scope: string,
+  activeScope: () => string
+) => {
+  await mutate((key) => isViewerScopedKey(key) && key[1] === scope, undefined, { revalidate: false })
+  if (activeScope() === scope) return 0
+
+  let deleted = 0
+  for (const key of cache.keys()) {
+    const originalKey = cachedOriginalKey(cache, key)
+    if (!isViewerScopedKey(originalKey) || originalKey[1] !== scope) continue
+    retirePersistentCacheEntry(cache, key)
+    deleted += 1
+  }
+  return deleted
+}
 
 export const unwrapViewerScopedKey = (key: Key): Key => (isViewerScopedKey(key) ? key[2] : key)
 

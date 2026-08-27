@@ -60,6 +60,7 @@ export const useChallengePolling = <T>({ key, active, refreshInterval, request }
     shouldRetryOnError: isChallengePollRetryable,
     onSuccess: () => {
       failureCount.current = 0
+      setPausedKey((paused) => (paused === key ? null : paused))
       // A focus/reconnect revalidation can recover before the owned backoff
       // expires. Do not let that stale timer create one extra request later.
       owner.cancel()

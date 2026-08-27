@@ -70,6 +70,51 @@ const MAX_SCOREBOARD_EXPORT_ROWS: usize = 10_000;
 const MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const EXPORT_RETRY_AFTER_SECONDS: u64 = 3;
 
+#[derive(Default)]
+struct ScoreboardExportSizeWriter {
+    bytes: usize,
+    exceeded: bool,
+}
+
+impl std::io::Write for ScoreboardExportSizeWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        match self.bytes.checked_add(buffer.len()) {
+            Some(bytes) if bytes <= MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES => {
+                self.bytes = bytes;
+                Ok(buffer.len())
+            }
+            _ => {
+                self.exceeded = true;
+                Err(std::io::Error::other(
+                    "scoreboard export snapshot is too large",
+                ))
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn scoreboard_export_snapshot_size(board: &ScoreboardModel) -> AppResult<usize> {
+    if board.items.len() > MAX_SCOREBOARD_EXPORT_ROWS {
+        return Err(AppError::payload_too_large(format!(
+            "Scoreboard export is limited to {MAX_SCOREBOARD_EXPORT_ROWS} teams"
+        )));
+    }
+    let mut writer = ScoreboardExportSizeWriter::default();
+    let result = serde_json::to_writer(&mut writer, board);
+    if writer.exceeded {
+        return Err(AppError::payload_too_large(format!(
+            "Scoreboard export snapshot is limited to {} MiB",
+            MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES / 1024 / 1024
+        )));
+    }
+    result.map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(writer.bytes)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExportOverloadBody {
@@ -725,28 +770,11 @@ pub async fn scoreboard_sheet(
         return Ok(export_overload_response(error));
     }
 
-    // Monitor-only export: always the live (unfrozen) board.
-    let board_json = build_scoreboard_json(&st, &g, true).await?;
-    if board_json.len() > MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES {
-        return Err(AppError::payload_too_large(format!(
-            "Scoreboard export snapshot is limited to {} MiB",
-            MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES / 1024 / 1024
-        )));
-    }
-    let board: ScoreboardModel = serde_json::from_slice(&board_json)
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if board.items.len() > MAX_SCOREBOARD_EXPORT_ROWS {
-        return Err(AppError::payload_too_large(format!(
-            "Scoreboard export is limited to {MAX_SCOREBOARD_EXPORT_ROWS} teams"
-        )));
-    }
-    let bytes = build_xlsx_off_thread(
-        board,
-        export_permit,
-        build_scoreboard_xlsx,
-        "Failed to build scoreboard sheet",
-    )
-    .await?;
+    // Monitor-only export: always build the live (unfrozen) model directly.
+    // The public scoreboard's 8 MiB wire/cache limit must not override this
+    // endpoint's separately admitted 32 MiB snapshot contract.
+    let board = build_scoreboard(&st, &g, true).await?;
+    let bytes = build_scoreboard_xlsx_off_thread(board, export_permit).await?;
 
     let filename = format!(
         "{}-Scoreboard-{}.xlsx",
@@ -772,6 +800,20 @@ fn build_scoreboard_xlsx(board: ScoreboardModel) -> Result<Vec<u8>, rust_xlsxwri
         sheet.write_number(row, 3, item.solved_count as f64)?;
     }
     workbook.save_to_buffer()
+}
+
+async fn build_scoreboard_xlsx_off_thread(
+    board: ScoreboardModel,
+    permit: MonitorExportPermit,
+) -> AppResult<Vec<u8>> {
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        scoreboard_export_snapshot_size(&board)?;
+        build_scoreboard_xlsx(board)
+            .map_err(|_| AppError::bad_request("Failed to build scoreboard sheet"))
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("spreadsheet task failed: {error}")))?
 }
 
 // ---------------------------------------------------------------------------

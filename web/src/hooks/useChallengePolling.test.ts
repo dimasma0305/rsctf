@@ -200,3 +200,81 @@ test('permanent challenge failures stop while 429 honors Retry-After with one re
     restoreDom()
   }
 })
+
+test('an explicit recovery clears the terminal latch for a later bounded transient retry', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/1/challenges' })
+  const restoreDom = installTestDom(browser)
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 })
+  context.mock.method(Math, 'random', () => 0.5)
+  const { useChallengePolling } = await import('./useChallengePolling')
+  const { SWRConfig } = await import('swr')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  const cache = new Map()
+  let calls = 0
+  let retry: (() => Promise<unknown>) | null = null
+
+  const Probe: FC = () => {
+    const { error, mutate } = useChallengePolling({
+      key: '/detail/recoverable',
+      active: true,
+      refreshInterval: 120_000,
+      request: async () => {
+        calls += 1
+        if (calls === 1) throw { response: { status: 404 } }
+        if (calls === 3) throw { response: { status: 503 } }
+        return { ok: true }
+      },
+    })
+    retry = () => mutate()
+    const responseStatus = (error as { response?: { status?: number } } | undefined)?.response?.status
+    return createElement('output', null, responseStatus === undefined ? 'ok' : String(responseStatus))
+  }
+  const Scope: FC = () =>
+    createElement(
+      SWRConfig,
+      {
+        value: {
+          provider: () => cache,
+          dedupingInterval: 0,
+          isVisible: () => true,
+          isOnline: () => true,
+        },
+      },
+      createElement(Probe)
+    )
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => root.render(createElement(Scope)))
+    assert.equal(calls, 1)
+    assert.equal(container.textContent, '404')
+    await act(async () => context.mock.timers.tick(60_000))
+    assert.equal(calls, 1, 'the permanent failure must remain paused until an explicit retry')
+
+    await act(async () => {
+      await retry?.()
+    })
+    assert.equal(calls, 2)
+    assert.equal(container.textContent, 'ok')
+
+    await act(async () => {
+      await retry?.().catch(() => undefined)
+    })
+    assert.equal(calls, 3)
+    assert.equal(container.textContent, '503')
+    await act(async () => context.mock.timers.tick(1_999))
+    assert.equal(calls, 3)
+    await act(async () => context.mock.timers.tick(1))
+    assert.equal(calls, 4, 'the recovered key must regain its bounded automatic retry')
+    assert.equal(container.textContent, 'ok')
+  } finally {
+    await act(async () => root.unmount())
+    context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})

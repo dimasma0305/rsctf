@@ -6,7 +6,13 @@ import type { Key, SWRConfiguration } from 'swr'
 import { challengeIdFromHash, ownedChallengeIdFromHash } from '../components/ChallengePanel'
 import { shouldReadChallenge } from '../components/GameChallengeModal'
 import { installTestDom } from '../test/installDom'
-import { RouteLifecycleBoundary, viewerIdentityMiddleware, ViewerIdentityScope } from './ViewerIdentity'
+import {
+  RouteLifecycleBoundary,
+  viewerIdentityMiddleware,
+  ViewerIdentityProvider,
+  ViewerIdentityScope,
+  viewerScopedKey,
+} from './ViewerIdentity'
 
 type Deferred<T> = {
   promise: Promise<T>
@@ -47,10 +53,7 @@ test('challenge hashes require ownership in the current response before any read
   schedule(2, 7, true, false)
   schedule(2, 99, true, false)
   schedule(2, 7, false, true)
-  assert.deepEqual(reads, [
-    '/api/game/1/challenges/7',
-    '/api/game/1/challenges/7/solvers/page?count=20&skip=0',
-  ])
+  assert.deepEqual(reads, ['/api/game/1/challenges/7', '/api/game/1/challenges/7/solvers/page?count=20&skip=0'])
   assert.equal(
     reads.some((path) => path.includes('/api/game/2/')),
     false,
@@ -251,6 +254,127 @@ test('SWR never publishes previous game, query, or account data while a replacem
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
     await browser.happyDOM.close()
     restoreDom()
+  }
+})
+
+test('account replacement fences and deletes retired namespaces from the persistent provider', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/games/17' })
+  const restoreDom = installTestDom(browser)
+  const previousLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: browser.localStorage,
+  })
+  const { default: useSWR, SWRConfig, unstable_serialize, useSWRConfig } = await import('swr')
+  const { localCacheProvider } = await import('./Cache')
+  const { MemoryRouter } = await import('react-router')
+  const { createRoot } = await import('react-dom/client')
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const root = createRoot(container)
+  const cache = localCacheProvider()
+  const requests: Deferred<{ label: string }>[] = []
+  let mutateCache: ReturnType<typeof useSWRConfig>['mutate'] | undefined
+  let refreshProbe: (() => Promise<unknown>) | undefined
+  const profileA = { userId: 'a', userName: 'account A', role: 'User' }
+  const profileB = { userId: 'b', userName: 'account B', role: 'User' }
+  const requestKey = '/api/game/17/details'
+
+  cache.set('/api/account/profile', { data: profileA } as never)
+
+  const fetcher = (key: Key) => {
+    assert.equal(key, requestKey, 'the viewer namespace must never reach HTTP')
+    const request = deferred<{ label: string }>()
+    requests.push(request)
+    return request.promise
+  }
+  const Controls: FC = () => {
+    mutateCache = useSWRConfig().mutate
+    return null
+  }
+  const Probe: FC = () => {
+    const { data, mutate } = useSWR<{ label: string }>(requestKey)
+    refreshProbe = () => mutate()
+    return createElement('output', null, data?.label ?? 'loading')
+  }
+  const App: FC = () =>
+    createElement(
+      SWRConfig,
+      {
+        value: {
+          provider: () => cache,
+          fetcher,
+          dedupingInterval: 0,
+          revalidateOnMount: false,
+          shouldRetryOnError: false,
+          use: [viewerIdentityMiddleware],
+        },
+      },
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(Controls),
+        createElement(ViewerIdentityProvider, null, createElement(Probe))
+      )
+    )
+  const accountAKey = unstable_serialize(viewerScopedKey(requestKey, 'user:a:User'))
+  const accountBKey = unstable_serialize(viewerScopedKey(requestKey, 'user:b:User'))
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  try {
+    await act(async () => {
+      root.render(createElement(App))
+      await new Promise((resolve) => browser.setTimeout(resolve, 0))
+    })
+    if (requests.length === 0) {
+      await act(async () => {
+        void refreshProbe?.()
+        await Promise.resolve()
+      })
+    }
+    assert.equal(requests.length, 1)
+    assert.equal(
+      cache.has(accountAKey),
+      true,
+      `expected account A provider key ${accountAKey}; found ${JSON.stringify(Array.from(cache.keys()))}`
+    )
+
+    await act(async () => {
+      await mutateCache?.('/api/account/profile', profileB, { revalidate: false })
+      await Promise.resolve()
+    })
+    if (requests.length === 1) {
+      await act(async () => {
+        void refreshProbe?.()
+        await Promise.resolve()
+      })
+    }
+    assert.equal(requests.length, 2)
+    assert.equal(cache.has(accountAKey), false, 'the retired account must be removed, not stored with undefined data')
+    assert.equal(cache.has(accountBKey), true)
+    assert.equal(container.textContent, 'loading', 'account B cannot paint account A data')
+
+    await act(async () => {
+      requests[0].resolve({ label: 'private account A data' })
+      await requests[0].promise
+      await Promise.resolve()
+    })
+    assert.equal(cache.has(accountAKey), false, 'a fenced late response must not recreate the retired namespace')
+    assert.equal(container.textContent, 'loading')
+
+    await act(async () => {
+      requests[1].resolve({ label: 'account B data' })
+      await requests[1].promise
+    })
+    assert.equal(container.textContent, 'account B data')
+  } finally {
+    await act(async () => root.unmount())
+    for (const key of cache.keys()) cache.delete(key)
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+    if (previousLocalStorage) Object.defineProperty(globalThis, 'localStorage', previousLocalStorage)
+    else delete (globalThis as typeof globalThis & { localStorage?: Storage }).localStorage
   }
 })
 

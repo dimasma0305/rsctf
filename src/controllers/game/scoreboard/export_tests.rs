@@ -13,6 +13,76 @@ use super::*;
 use crate::services::monitor_export::MonitorExportAdmission;
 use crate::services::monitor_export::MAX_SUBMISSION_EXPORT_ROWS;
 
+fn scoreboard_export_fixture(timeline_bytes: usize, team_count: usize) -> ScoreboardModel {
+    let now = Utc::now();
+    let items = (0..team_count)
+        .map(|index| ScoreboardItem {
+            id: i32::try_from(index).unwrap_or(i32::MAX),
+            name: format!("Export team {index}"),
+            bio: None,
+            division_id: None,
+            avatar: None,
+            score: 100,
+            rank: i32::try_from(index + 1).unwrap_or(i32::MAX),
+            division_rank: None,
+            last_submission_time: now,
+            solved_challenges: Vec::new(),
+            solved_count: 0,
+        })
+        .collect();
+    ScoreboardModel {
+        update_time_utc: now,
+        blood_bonus: 0,
+        timelines: vec![serde_json::Value::String("x".repeat(timeline_bytes))],
+        items,
+        divisions: Vec::new(),
+        challenges: BTreeMap::new(),
+        challenge_count: 0,
+        freeze: None,
+        is_frozen_view: false,
+    }
+}
+
+#[tokio::test]
+async fn scoreboard_export_uses_its_own_snapshot_cap_instead_of_the_public_wire_cap() {
+    const PUBLIC_WIRE_CAP: usize = 8 * 1024 * 1024;
+    let board = scoreboard_export_fixture(PUBLIC_WIRE_CAP, 1);
+    let snapshot_bytes = scoreboard_export_snapshot_size(&board).unwrap();
+    assert!(snapshot_bytes > PUBLIC_WIRE_CAP);
+    assert!(snapshot_bytes < MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES);
+
+    let admission = MonitorExportAdmission::new();
+    let mut permit = admission.try_begin().unwrap();
+    permit
+        .try_reserve_work(
+            MAX_SCOREBOARD_EXPORT_ROWS,
+            MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES,
+        )
+        .unwrap();
+    let workbook = build_scoreboard_xlsx_off_thread(board, permit)
+        .await
+        .unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(workbook)).unwrap();
+    let mut worksheet = String::new();
+    archive
+        .by_name("xl/worksheets/sheet1.xml")
+        .unwrap()
+        .read_to_string(&mut worksheet)
+        .unwrap();
+    assert_eq!(worksheet.matches("<row ").count(), 2);
+}
+
+#[test]
+fn scoreboard_export_snapshot_and_roster_limits_are_payload_too_large() {
+    let oversized = scoreboard_export_fixture(MAX_SCOREBOARD_EXPORT_SNAPSHOT_BYTES, 1);
+    let error = scoreboard_export_snapshot_size(&oversized).unwrap_err();
+    assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let too_many_teams = scoreboard_export_fixture(0, MAX_SCOREBOARD_EXPORT_ROWS + 1);
+    let error = scoreboard_export_snapshot_size(&too_many_teams).unwrap_err();
+    assert_eq!(error.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn workbook_builder_runs_outside_the_tokio_request_thread() {
     let request_thread = std::thread::current().id();

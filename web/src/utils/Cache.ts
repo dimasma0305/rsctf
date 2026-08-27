@@ -10,11 +10,13 @@ const CACHE_KEY = 'rsctf-cache'
 const IDB_DB_NAME = 'rsctf-cache'
 const IDB_STORE = 'swr'
 const IDB_KEY = 'cache-map'
+const MAX_RETIRED_IN_FLIGHT_KEYS = 512
 
 type BinaryLike = Uint8Array | ArrayBuffer
 
 class PersistentCache implements Cache<any> {
   private map = new Map<any, any>()
+  private retiredInFlightKeys = new Set<string>()
 
   get size() {
     return this.map.size
@@ -28,18 +30,37 @@ class PersistentCache implements Cache<any> {
     return this.map.has(key)
   }
   set(key: any, value: any) {
+    if (this.retiredInFlightKeys.delete(key) && !Object.prototype.hasOwnProperty.call(value ?? {}, '_k')) {
+      return this
+    }
     this.map.set(key, value)
     schedulePersist()
     return this
   }
   delete(key: any) {
+    this.retiredInFlightKeys.delete(key)
     const r = this.map.delete(key)
     schedulePersist()
     return r as any
   }
   clear() {
     this.map.clear()
+    this.retiredInFlightKeys.clear()
     schedulePersist()
+  }
+
+  retire(key: string) {
+    const value = this.map.get(key) as { isValidating?: boolean } | undefined
+    const removed = this.map.delete(key)
+    if (value?.isValidating) {
+      if (this.retiredInFlightKeys.size >= MAX_RETIRED_IN_FLIGHT_KEYS) {
+        const oldest = this.retiredInFlightKeys.values().next().value
+        if (oldest !== undefined) this.retiredInFlightKeys.delete(oldest)
+      }
+      this.retiredInFlightKeys.add(key)
+    }
+    schedulePersist()
+    return removed
   }
   // Iteration
   keys() {
@@ -63,6 +84,7 @@ class PersistentCache implements Cache<any> {
     if (!entries.length) return
     let added = 0
     for (const [k, v] of entries) {
+      if (this.retiredInFlightKeys.has(k)) continue
       if (!this.map.has(k)) {
         this.map.set(k, v)
         added++
@@ -78,6 +100,18 @@ class PersistentCache implements Cache<any> {
   snapshotEntries() {
     return Array.from(this.map.entries())
   }
+}
+
+/**
+ * Delete through the persistent provider's retirement path when available.
+ * Its bounded in-flight fence drops SWR's final metadata-only write after a
+ * request was invalidated, while an explicit new hook owner (`_k`) can reuse
+ * the same namespace safely.
+ */
+export const retirePersistentCacheEntry = (cache: Cache, key: string) => {
+  if (cache instanceof PersistentCache) return cache.retire(key)
+  cache.delete(key)
+  return true
 }
 
 const inMemoryCache = new PersistentCache()
