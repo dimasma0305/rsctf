@@ -8,8 +8,12 @@ const shell = readFileSync('src/components/ChallengeModal.tsx', 'utf8')
 const hook = readFileSync('src/hooks/useChallengePolling.ts', 'utf8')
 
 test('closed challenge modals own no detail, solver, A&D, or KotH polling key', () => {
-  assert.match(modal, /active: opened,[\s\S]*refreshInterval: 120 \* 1000/)
-  assert.match(modal, /solvers\/page\?count=20&skip=0`[\s\S]*active: opened/)
+  assert.match(modal, /active: readEnabled,[\s\S]*refreshInterval: 120 \* 1000/)
+  assert.match(modal, /solvers\/page\?count=20&skip=0`[\s\S]*active: readEnabled/)
+  assert.match(
+    modal,
+    /const readEnabled = shouldReadChallenge\(modalProps\.opened, challengeOwned, gameId, challengeId\)/
+  )
   assert.match(shell, /KothChallengePanel[\s\S]*active=\{Boolean\(modalProps\.opened\)\}/)
   assert.match(shell, /AdChallengePanel[\s\S]*active=\{Boolean\(modalProps\.opened\)\}/)
   assert.match(hook, /const liveKey = active && key \? key : null/)

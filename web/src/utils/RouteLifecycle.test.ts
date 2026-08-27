@@ -40,14 +40,17 @@ test('challenge hashes require ownership in the current response before any read
   const schedule = (gameId: number, challengeId: number, opened: boolean, owned: boolean) => {
     if (!shouldReadChallenge(opened, owned, gameId, challengeId)) return
     reads.push(`/api/game/${gameId}/challenges/${challengeId}`)
-    reads.push(`/api/game/${gameId}/challenges/${challengeId}/solvers`)
+    reads.push(`/api/game/${gameId}/challenges/${challengeId}/solvers/page?count=20&skip=0`)
   }
 
   schedule(1, 7, true, true)
   schedule(2, 7, true, false)
   schedule(2, 99, true, false)
   schedule(2, 7, false, true)
-  assert.deepEqual(reads, ['/api/game/1/challenges/7', '/api/game/1/challenges/7/solvers'])
+  assert.deepEqual(reads, [
+    '/api/game/1/challenges/7',
+    '/api/game/1/challenges/7/solvers/page?count=20&skip=0',
+  ])
   assert.equal(
     reads.some((path) => path.includes('/api/game/2/')),
     false,
