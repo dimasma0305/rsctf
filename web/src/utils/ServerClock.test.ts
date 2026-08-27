@@ -1,8 +1,24 @@
+import axios, { AxiosHeaders, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
 import { Window } from 'happy-dom'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { act, createElement, type FC } from 'react'
 import { installTestDom } from '../test/installDom'
+
+const clockResponse = (
+  config: InternalAxiosRequestConfig,
+  serverTime: number,
+  finalUrl: string | null,
+  adapter: 'browser' | 'node' = 'browser'
+): AxiosResponse => ({
+  data: { serverTime },
+  status: 200,
+  statusText: 'OK',
+  headers: new AxiosHeaders(),
+  config,
+  request:
+    finalUrl === null ? {} : adapter === 'browser' ? { responseURL: finalUrl } : { res: { responseUrl: finalUrl } },
+})
 
 test('server-corrected lifecycle crosses kickoff and close without navigation', async (context) => {
   const browser = new Window({ url: 'https://rsctf.test/games/1' })
@@ -85,6 +101,127 @@ test('server-corrected lifecycle crosses kickoff and close without navigation', 
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
     await browser.happyDOM.close()
     restoreDom()
+  }
+})
+
+test('shared Axios clock ignores external proof responses and redirected API responses', async (context) => {
+  const browser = new Window({ url: 'https://rsctf.test/games/19/challenges' })
+  const restoreDom = installTestDom(browser)
+  const localNow = 2_000_020_000_000
+  context.mock.timers.enable({ apis: ['Date'], now: new Date(localNow) })
+  const { hasLiveServerClockSample, installServerClock, serverClockTestApi } = await import('./ServerClock')
+  const client = axios.create()
+
+  try {
+    serverClockTestApi.reset()
+    installServerClock(client)
+
+    // Event VPN proof calls intentionally share the generated Axios instance.
+    // Their provider controls this JSON and must never become a clock authority.
+    await client.post('https://event-vpn.test/proof', undefined, {
+      adapter: async (config) => ({
+        ...clockResponse(config, localNow + 24 * 60 * 60_000, 'https://event-vpn.test/proof'),
+        data: {
+          proof: 'provider-controlled-proof',
+          proofHeader: 'X-RSCTF-VPN-Proof',
+          expiresAtUtc: localNow + 60_000,
+          serverTime: localNow + 24 * 60 * 60_000,
+        },
+      }),
+    })
+    assert.equal(hasLiveServerClockSample(), false)
+
+    // Same-origin pages outside the RSCTF API contract are not authoritative.
+    await client.get('/event-vpn/proof', {
+      adapter: async (config) =>
+        clockResponse(config, localNow + 12 * 60 * 60_000, 'https://rsctf.test/event-vpn/proof'),
+    })
+    assert.equal(hasLiveServerClockSample(), false)
+
+    // Both the configured URL and the redirect-resolved response URL must be
+    // canonical. This rejects redirects away from the trusted API origin and
+    // adapters that cannot prove where the response ultimately came from.
+    await client.get('/api/game/19', {
+      adapter: async (config) => clockResponse(config, localNow + 8 * 60 * 60_000, 'https://event-vpn.test/proof'),
+    })
+    await client.get('/api/game/19', {
+      adapter: async (config) => clockResponse(config, localNow + 8 * 60 * 60_000, null),
+    })
+    await client.get('https://event-vpn.test/api/proof', {
+      adapter: async (config) => clockResponse(config, localNow + 8 * 60 * 60_000, 'https://rsctf.test/api/proof'),
+    })
+    assert.equal(hasLiveServerClockSample(), false)
+
+    await client.get('/api/game/19', {
+      adapter: async (config) => clockResponse(config, localNow + 1_000, 'https://rsctf.test/api/game/19'),
+    })
+    assert.equal(hasLiveServerClockSample(), true)
+    assert.equal(serverClockTestApi.offset(), 1_000)
+
+    // Axios baseURL joining remains supported for canonical API clients.
+    await client.get('game/20', {
+      baseURL: 'https://rsctf.test/api',
+      adapter: async (config) => clockResponse(config, localNow + 2_000, 'https://rsctf.test/api/game/20'),
+    })
+    assert.equal(serverClockTestApi.offset(), 2_000)
+
+    // A stale canonical response still cannot overwrite a newer canonical
+    // sample after the trust check has run.
+    let releaseOlder: (() => void) | undefined
+    let markOlderStarted: (() => void) | undefined
+    const olderStarted = new Promise<void>((resolve) => {
+      markOlderStarted = resolve
+    })
+    const older = client.get('/api/game/21', {
+      adapter: async (config) => {
+        markOlderStarted?.()
+        await new Promise<void>((resolve) => {
+          releaseOlder = resolve
+        })
+        return clockResponse(config, localNow + 30_000, 'https://rsctf.test/api/game/21')
+      },
+    })
+    await olderStarted
+    await client.get('https://rsctf.test/api/game/22', {
+      adapter: async (config) => clockResponse(config, localNow + 3_000, 'https://rsctf.test/api/game/22'),
+    })
+    assert.equal(serverClockTestApi.offset(), 3_000)
+    assert.ok(releaseOlder)
+    releaseOlder()
+    await older
+    assert.equal(serverClockTestApi.offset(), 3_000)
+  } finally {
+    serverClockTestApi.reset()
+    context.mock.timers.reset()
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('non-browser clock authority requires an absolute API base URL', async (context) => {
+  const localNow = 2_000_030_000_000
+  context.mock.timers.enable({ apis: ['Date'], now: new Date(localNow) })
+  const { hasLiveServerClockSample, installServerClock, serverClockTestApi } = await import('./ServerClock')
+
+  try {
+    serverClockTestApi.reset()
+    const ambiguousClient = axios.create()
+    installServerClock(ambiguousClient)
+    await ambiguousClient.get('/api/game/31', {
+      adapter: async (config) => clockResponse(config, localNow + 30_000, 'https://rsctf.test/api/game/31', 'node'),
+    })
+    assert.equal(hasLiveServerClockSample(), false)
+
+    const canonicalClient = axios.create({ baseURL: 'https://rsctf.test/api' })
+    installServerClock(canonicalClient)
+    await canonicalClient.get('game/31', {
+      adapter: async (config) => clockResponse(config, localNow + 500, 'https://rsctf.test/api/game/31', 'node'),
+    })
+    assert.equal(hasLiveServerClockSample(), true)
+    assert.equal(serverClockTestApi.offset(), 500)
+  } finally {
+    serverClockTestApi.reset()
+    context.mock.timers.reset()
   }
 })
 

@@ -15,6 +15,69 @@ const installedInstances = new WeakSet<AxiosInstance>()
 const requestTiming = new WeakMap<object, { sequence: number; startedAt: number }>()
 const CLOCK_SAMPLE_WINDOW_MS = 5 * 60_000
 
+const httpUrl = (value: string, base?: string): URL | null => {
+  try {
+    const parsed = base === undefined ? new URL(value) : new URL(value, base)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+const canonicalApiOrigin = (instance: AxiosInstance): string | null => {
+  if (typeof window !== 'undefined') return httpUrl(window.location.href)?.origin ?? null
+  const baseUrl = instance.defaults.baseURL
+  return typeof baseUrl === 'string' ? (httpUrl(baseUrl)?.origin ?? null) : null
+}
+
+const stringProperty = (value: unknown, property: string): string | null => {
+  if (!value || typeof value !== 'object') return null
+  try {
+    const candidate = (value as Record<string, unknown>)[property]
+    return typeof candidate === 'string' && candidate.length > 0 ? candidate : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Axios exposes the redirect-resolved URL as XHR.responseURL in browsers and
+ * IncomingMessage.responseUrl when its Node adapter uses follow-redirects.
+ * Request.url from the fetch adapter is deliberately excluded because it is
+ * the pre-redirect URL and cannot prove which origin supplied the response.
+ */
+const finalResponseUrl = (response: AxiosResponse): string | null => {
+  const request = response.request as unknown
+  const browserUrl = stringProperty(request, 'responseURL')
+  if (browserUrl !== null) return browserUrl
+  const incomingResponse = request && typeof request === 'object' ? (request as Record<string, unknown>).res : null
+  return stringProperty(incomingResponse, 'responseUrl')
+}
+
+const isCanonicalApiUrl = (value: string, origin: string): boolean => {
+  const parsed = httpUrl(value, origin)
+  return (
+    parsed !== null && parsed.origin === origin && (parsed.pathname === '/api' || parsed.pathname.startsWith('/api/'))
+  )
+}
+
+const isTrustedApiResponse = (instance: AxiosInstance, origin: string | null, response: AxiosResponse): boolean => {
+  if (origin === null) return false
+  try {
+    const configuredUrl = instance.getUri(response.config)
+    const resolvedUrl = finalResponseUrl(response)
+    return (
+      typeof configuredUrl === 'string' &&
+      configuredUrl.length > 0 &&
+      resolvedUrl !== null &&
+      isCanonicalApiUrl(configuredUrl, origin) &&
+      isCanonicalApiUrl(resolvedUrl, origin)
+    )
+  } catch {
+    return false
+  }
+}
+
 const allocateRequestSequence = () => {
   nextRequestSequence += 1
   return nextRequestSequence
@@ -105,13 +168,14 @@ export const observeServerTime = (
   return true
 }
 
-const observeResponse = (response: AxiosResponse) => {
+const observeResponse = (instance: AxiosInstance, origin: string | null, response: AxiosResponse) => {
   const receivedAt = Date.now()
   const timing = requestTiming.get(response.config) ?? {
     sequence: allocateRequestSequence(),
     startedAt: receivedAt,
   }
   requestTiming.delete(response.config)
+  if (!isTrustedApiResponse(instance, origin, response)) return response
   const serverTime = modelServerTime(response.data)
   if (serverTime !== null) observeServerTime(serverTime, receivedAt, timing.startedAt, timing.sequence)
   return response
@@ -121,11 +185,12 @@ const observeResponse = (response: AxiosResponse) => {
 export const installServerClock = (instance: AxiosInstance) => {
   if (installedInstances.has(instance)) return
   installedInstances.add(instance)
+  const origin = canonicalApiOrigin(instance)
   instance.interceptors.request.use((config) => {
     requestTiming.set(config, { sequence: allocateRequestSequence(), startedAt: Date.now() })
     return config
   })
-  instance.interceptors.response.use(observeResponse)
+  instance.interceptors.response.use((response) => observeResponse(instance, origin, response))
 }
 
 /** One server-corrected shared clock for lifecycle labels, progress, and poll ownership. */
