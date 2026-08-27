@@ -9,6 +9,28 @@ pub(super) struct ManagedContainerOwner {
     pub exercise_instance_id: Option<i32>,
 }
 
+/// Minimal immutable identity needed to enter the established managed-runtime
+/// teardown path. Maintenance claims this projection directly so a bounded
+/// batch never hydrates every expired container row.
+#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
+pub(crate) struct ManagedContainerCandidate {
+    pub id: uuid::Uuid,
+    pub backend_id: String,
+    pub game_instance_id: Option<i32>,
+    pub exercise_instance_id: Option<i32>,
+}
+
+impl From<&container::Model> for ManagedContainerCandidate {
+    fn from(container: &container::Model) -> Self {
+        Self {
+            id: container.id,
+            backend_id: container.container_id.clone(),
+            game_instance_id: container.game_instance_id,
+            exercise_instance_id: container.exercise_instance_id,
+        }
+    }
+}
+
 /// Resolve only an owner whose reverse pointer still names this exact container.
 /// The forward ids on a stale Containers row are hints used to prioritize a
 /// match; they never authorize detaching an instance that already points at a
@@ -190,25 +212,82 @@ pub(crate) async fn destroy_managed_container_row(
     candidate: &container::Model,
     honor_refresh: bool,
 ) -> AppResult<bool> {
-    let owner = resolve_managed_container_owner(
-        st.pg(),
+    destroy_managed_container_candidate(
+        st,
+        &ManagedContainerCandidate::from(candidate),
+        honor_refresh,
+    )
+    .await
+}
+
+type ManagedLifecycleGuard = (
+    Option<ManagedContainerOwner>,
+    crate::utils::single_flight::CoalesceGuard,
+    crate::utils::single_flight::PgAdvisoryLock,
+);
+
+/// Resolve and stabilize the candidate's lifecycle lock. If ownership appears
+/// while an ownerless row is waiting on its fallback key, hand off before any
+/// endpoint or runtime mutation.
+pub(super) async fn acquire_managed_container_lifecycle(
+    pool: &sqlx::PgPool,
+    candidate: &ManagedContainerCandidate,
+) -> AppResult<ManagedLifecycleGuard> {
+    let mut owner = resolve_managed_container_owner(
+        pool,
         candidate.id,
-        &candidate.container_id,
+        &candidate.backend_id,
         candidate.game_instance_id,
         candidate.exercise_instance_id,
     )
     .await?;
-    let flight_key = owner.as_ref().map(|owner| owner.lock_key.as_str());
-    let _flight = if let Some(key) = flight_key {
-        Some(crate::utils::single_flight::coalesce(key).await)
-    } else {
-        None
-    };
-    let distributed = if let Some(key) = flight_key {
-        Some(crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(st.pg(), key).await?)
-    } else {
-        None
-    };
+    let fallback_key = format!("container-row:{}", candidate.id);
+    loop {
+        let flight_key = owner
+            .as_ref()
+            .map(|owner| owner.lock_key.clone())
+            .unwrap_or_else(|| fallback_key.clone());
+        let flight = crate::utils::single_flight::coalesce(&flight_key).await;
+        let distributed =
+            crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning(pool, &flight_key)
+                .await?;
+        let refreshed_owner = resolve_managed_container_owner(
+            pool,
+            candidate.id,
+            &candidate.backend_id,
+            candidate.game_instance_id,
+            candidate.exercise_instance_id,
+        )
+        .await?;
+        let refreshed_key = refreshed_owner
+            .as_ref()
+            .map(|owner| owner.lock_key.as_str())
+            .unwrap_or(&fallback_key);
+        if refreshed_key == flight_key {
+            return Ok((refreshed_owner, flight, distributed));
+        }
+
+        distributed.release().await.map_err(AppError::from)?;
+        drop(flight);
+        owner = refreshed_owner;
+    }
+}
+
+/// Revoke and destroy a lightweight candidate returned by the maintenance
+/// claim. The full row is always re-read after the lifecycle lock, so an
+/// extension, replacement, or manual teardown that won the race remains
+/// authoritative.
+pub(crate) async fn destroy_managed_container_candidate(
+    st: &SharedState,
+    candidate: &ManagedContainerCandidate,
+    honor_refresh: bool,
+) -> AppResult<bool> {
+    // Ownerless rows still need a stable lock. They can be reached by the
+    // periodic claim and an administrator at the same time, and duplicate
+    // backend deletion must remain an idempotent fallback rather than normal
+    // load during a backlog.
+    let (owner, _flight, distributed) =
+        acquire_managed_container_lifecycle(st.pg(), candidate).await?;
 
     let result = async {
         let Some(current) = container::Entity::find_by_id(candidate.id)
@@ -259,11 +338,7 @@ pub(crate) async fn destroy_managed_container_row(
     }
     .await;
 
-    let released = if let Some(lock) = distributed {
-        lock.release().await.map_err(AppError::from)
-    } else {
-        Ok(())
-    };
+    let released = distributed.release().await.map_err(AppError::from);
     match (result, released) {
         (Err(error), _) => Err(error),
         (Ok(_), Err(error)) => Err(error),

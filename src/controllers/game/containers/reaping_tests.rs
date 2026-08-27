@@ -2,7 +2,10 @@ use std::str::FromStr;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-use super::reaping::{clear_destroyed_managed_container, resolve_managed_container_owner};
+use super::reaping::{
+    acquire_managed_container_lifecycle, clear_destroyed_managed_container,
+    resolve_managed_container_owner, ManagedContainerCandidate,
+};
 
 struct Harness {
     admin: sqlx::PgPool,
@@ -30,7 +33,7 @@ impl Harness {
             .unwrap()
             .options([("search_path", schema.as_str())]);
         let pool = PgPoolOptions::new()
-            .max_connections(1)
+            .max_connections(6)
             .connect_with(options)
             .await
             .unwrap();
@@ -100,6 +103,55 @@ impl Harness {
             .await
             .unwrap();
     }
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn ownerless_fallback_hands_off_when_ownership_appears() {
+    let harness = Harness::new().await;
+    let fallback_key = format!("container-row:{}", harness.stale);
+    let fallback =
+        crate::utils::single_flight::PgAdvisoryLock::acquire(&harness.pool, &fallback_key)
+            .await
+            .unwrap();
+    let candidate = ManagedContainerCandidate {
+        id: harness.stale,
+        backend_id: "runtime-stale".to_string(),
+        game_instance_id: None,
+        exercise_instance_id: None,
+    };
+    let pool = harness.pool.clone();
+    let mut acquiring =
+        tokio::spawn(async move { acquire_managed_container_lifecycle(&pool, &candidate).await });
+
+    // The candidate resolved as ownerless and is now waiting on its fallback.
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    sqlx::query(
+        r#"INSERT INTO "GameInstances"
+              (id, participation_id, container_id, is_loaded)
+            VALUES (29, 41, $1, TRUE)"#,
+    )
+    .bind(harness.stale)
+    .execute(&harness.pool)
+    .await
+    .unwrap();
+    let owner_lock =
+        crate::utils::single_flight::PgAdvisoryLock::acquire(&harness.pool, "game-container:41")
+            .await
+            .unwrap();
+
+    fallback.release().await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(40), &mut acquiring)
+            .await
+            .is_err(),
+        "reaper must hand off from the fallback to the new owner lock"
+    );
+    owner_lock.release().await.unwrap();
+    let (owner, _local, distributed) = acquiring.await.unwrap().unwrap();
+    assert_eq!(owner.unwrap().lock_key, "game-container:41");
+    distributed.release().await.unwrap();
+    harness.cleanup().await;
 }
 
 #[tokio::test]

@@ -23,7 +23,9 @@ use publication::{
 mod policy;
 use policy::{allows_practice_container, container_op_too_frequent};
 mod reaping;
-pub(crate) use reaping::destroy_managed_container_row;
+pub(crate) use reaping::{
+    destroy_managed_container_candidate, destroy_managed_container_row, ManagedContainerCandidate,
+};
 mod shared;
 pub(crate) use shared::get_or_create_shared_container_locked;
 mod workload_fence;

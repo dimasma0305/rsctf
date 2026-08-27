@@ -137,6 +137,7 @@ mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
 mod m0117_final_scoreboard_materialization;
+mod m0118_container_reap_claims;
 mod m0133_ad_control_revisions;
 mod m0135_control_plane_jobs;
 mod m0143_challenge_import_jobs;
@@ -291,6 +292,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0115_flag_egress_feed_cursor::Migration),
             Box::new(m0116_game_event_feed_pending::Migration),
             Box::new(m0117_final_scoreboard_materialization::Migration),
+            Box::new(m0118_container_reap_claims::Migration),
             Box::new(m0133_ad_control_revisions::Migration),
             Box::new(m0135_control_plane_jobs::Migration),
             Box::new(m0143_challenge_import_jobs::Migration),
@@ -441,7 +443,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 20..],
+            &names[names.len() - 21..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -458,6 +460,7 @@ mod tests {
                 "m0115_flag_egress_feed_cursor",
                 "m0116_game_event_feed_pending",
                 "m0117_final_scoreboard_materialization",
+                "m0118_container_reap_claims",
                 "m0133_ad_control_revisions",
                 "m0135_control_plane_jobs",
                 "m0143_challenge_import_jobs",

@@ -31,6 +31,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run ad-submit-batch # explicit fixed-rate, max-batch A&D submit micro-harness
       npm run redis-outage  # disposable Redis failure/recovery micro-harness
 N=8   npm run image-storage # disposable queued-image first-start burst
+ROWS=256 RUNTIME_N=4 npm run container-maintenance # bounded reaper + fixed-rate reads
 N=120 npm run worst-case    # mass BYOC reconnect storm (restarts rsctf)
 FLEET=10 npm run worker      # trusted worker create/proxy/destroy + lease gate
 FLEET=5  npm run worker-local # isolated current-tree rsctf + native Linux agent
@@ -208,6 +209,28 @@ remote target. A remote disposable target additionally requires
 fixture, `N`, and Docker host for before/after comparisons; compare sampled CPU,
 RAM, free bytes, and `image_start_ms` percentiles at that held arrival schedule.
 
+### Bounded container maintenance
+
+`container-maintenance` is a destructive disposable-stack regression for the
+30-second maintenance owner. It inserts an expired backlog, optionally starts a
+small fleet of real installation-scoped Docker containers, and holds `/healthz`
+plus the public event catalog at a constant arrival rate while the backlog is
+drained. It fails on dropped arrivals, non-200/invalid responses, p95 above 800
+ms, a stalled backlog, or divergence between runtime and database cleanup.
+
+```sh
+CONTAINER_REAP_STRESS_ACK=1 \
+RSCTF_REAP_TEST_IMAGE=<already-present-small-image> \
+ROWS=2000 RUNTIME_N=8 RATE=20 DURATION=70s \
+SUMMARY_JSON=/tmp/container-maintenance.json \
+npm run container-maintenance
+```
+
+Use only an acknowledged disposable database/runtime. Remote targets require
+`ALLOW_REMOTE_CONTAINER_REAP_STRESS` to equal the exact target origin. Keep the
+same row count, runtime image, arrival rate, duration, and host for before/after
+comparisons; sample rsctf/PostgreSQL CPU and RAM during both runs.
+
 ## Layout
 
 ```
@@ -249,6 +272,7 @@ tests/load/
   ad-submit-batch.mjs → runs k6/ad-submit-batch.js (npm run ad-submit-batch)
   redis-outage.mjs  → stops/restores one acknowledged disposable Redis + runs k6/redis-outage.js
   image-storage.mjs → validates a queued fixture + runs k6/image-storage.js
+  container-maintenance.mjs → expired rows + real runtime cleanup under fixed-rate reads
   byoc.mjs          → runs k6/byoc-requests.js  (npm run byoc)
   worst-case.mjs    → reconnect-storm harness   (npm run worst-case)
   worker-plane.mjs  → trusted worker lifecycle  (npm run worker)
@@ -270,6 +294,7 @@ tests/load/
     ad-submit-batch.js fixed-rate 100-entry repeated/distinct A&D submit batches
     redis-outage.js   fixed-rate malformed requests while Redis is unavailable
     image-storage.js  fixed-rate first-demand build burst + continuous health probes
+    container-maintenance.js fixed-rate health/catalog reads during maintenance
     byoc-requests.js  flood BYOC tunnel listeners
     worker-plane.js   fixed-rate trusted-worker TCP proxy streams + health polls
     team-event.js     one isolated, VPN-connected player process per team

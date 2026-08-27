@@ -12,7 +12,7 @@
 //! `tokio::time::interval`, a best-effort Redis `SET NX` leader lock, and a
 //! fixed set of DB-backed jobs run every tick:
 //!
-//!   * [`reap_expired_containers`] — destroy container rows whose
+//!   * [`container_reaper::reap_expired_containers`] — destroy container rows whose
 //!     `expect_stop_at` has passed (mirrors `RuntimeCronJobs.ContainerChecker`
 //!     + `ContainerRepository.DestroyContainer`).
 //!   * [`scoreboard_finalization::materialize_pending`] — claim, invalidate, and
@@ -33,12 +33,15 @@ use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use crate::app_state::SharedState;
-use crate::models::data::{ad_team_service, container, koth_target};
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::AppResult;
 
 mod backend_reaper;
+mod cleanup;
+mod container_reaper;
 mod delivery_health;
+mod orphan_identity;
+mod orphan_tracking;
 mod round_finish;
 mod scheduler;
 mod scoreboard_finalization;
@@ -70,10 +73,6 @@ const MAINTENANCE_TICK_SECONDS: u64 = 30;
 /// KotH). A game with many hung/offline services can make its checker pass take
 /// minutes; this stops it blocking every other game, the reaper, and the next tick (#5).
 pub(super) const ADVANCE_BUDGET_SECS: u64 = 240;
-const ORPHAN_GRACE_SECS: u64 = 60;
-static ORPHAN_FIRST_SEEN: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 /// Which games one round-scheduler replica is eligible to drive.
 ///
@@ -272,9 +271,20 @@ async fn run_jobs(state: &SharedState) {
         Err(error) => tracing::warn!(%error, "cron: Docker storage cleanup failed"),
     }
 
-    match reap_expired_containers(state).await {
-        Ok(n) if n > 0 => tracing::info!("cron: reaped {n} expired container(s)"),
-        Ok(_) => {}
+    match container_reaper::reap_expired_containers(state).await {
+        Ok(report) => tracing::info!(
+            job = "expired_containers",
+            scanned = report.scanned,
+            claimed = report.claimed,
+            destroyed = report.destroyed,
+            deferred = report.deferred,
+            failed = report.failed,
+            backlog = report.backlog,
+            backlog_capped = report.backlog_capped,
+            deadline_reached = report.deadline_reached,
+            duration_ms = report.duration_ms,
+            "cron: completed bounded container maintenance pass"
+        ),
         Err(e) => tracing::warn!("cron: container reaper failed: {e}"),
     }
 
@@ -312,12 +322,24 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: ended-game A&D teardown failed: {e}"),
     }
 
-    match sweep_orphan_containers(state).await {
-        Ok(n) if n > 0 => tracing::info!("cron: swept {n} orphan container(s) (no DB row)"),
-        Ok(_) => {}
+    match container_reaper::sweep_orphan_containers(state).await {
+        Ok(report) => tracing::info!(
+            job = "orphan_containers",
+            scanned = report.scanned,
+            claimed = report.claimed,
+            destroyed = report.destroyed,
+            deferred = report.deferred,
+            failed = report.failed,
+            backlog = report.backlog,
+            backlog_capped = report.backlog_capped,
+            deadline_reached = report.deadline_reached,
+            duration_ms = report.duration_ms,
+            "cron: completed bounded orphan maintenance pass"
+        ),
         Err(e) => tracing::warn!("cron: orphan sweep failed: {e}"),
     }
 
+    cleanup::run(state).await;
     // KotH accrual needs no dedicated job: the live holder snapshot on
     // `koth_target` (`holder_participation_id` + `held_since`) is authoritative,
     // and the scoreboard builder in `controllers::koth` credits the current
@@ -593,43 +615,6 @@ impl LeaderLock {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Job 1 — container reaper (RSCTF `RuntimeCronJobs.ContainerChecker`).
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Destroy every container whose `expect_stop_at` has passed: clear the owning
-/// `game_instance` link, tear down the backing runtime workload, then delete the
-/// row. Returns the number of containers reaped.
-///
-/// This mirrors `admin.rs::destroy_instance` per row so the periodic reaper and
-/// the manual admin teardown can't drift apart. A backend `destroy` failure is
-/// best-effort (logged, not fatal): the row is still deleted so a vanished
-/// daemon can't wedge the table.
-async fn reap_expired_containers(state: &SharedState) -> AppResult<u64> {
-    let now = Utc::now();
-
-    let expired = container::Entity::find()
-        .filter(container::Column::ExpectStopAt.lt(now))
-        .all(&state.db)
-        .await?;
-
-    let mut reaped = 0u64;
-    for c in expired {
-        match crate::controllers::game::destroy_managed_container_row(state, &c, true).await {
-            Ok(true) => reaped += 1,
-            Ok(false) => {}
-            Err(error) => tracing::warn!(
-                container = %c.id,
-                backend_id = %c.container_id,
-                %error,
-                "cron: endpoint revocation failed; retaining expired container"
-            ),
-        }
-    }
-
-    Ok(reaped)
-}
-
 async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
     let game_ids: Vec<i32> = sqlx::query_scalar(
         r#"SELECT game.id
@@ -691,183 +676,11 @@ async fn complete_ended_ad_checks(state: &SharedState) -> AppResult<u64> {
             continue;
         }
         completed += 1;
-        crate::controllers::game::ad::hard_invalidate_ad_scoreboard(state, game_id).await;
-        state
-            .cache
-            .remove(&format!("_KothScoreBoard_{game_id}"))
-            .await;
-        state
-            .cache
-            .remove(&format!("_KothScoreBoardWireV2_{game_id}"))
-            .await;
-        state
-            .cache
-            .remove(&format!("_KothScoreBoardFrozen_{game_id}"))
-            .await;
-        state
-            .cache
-            .remove(&format!("_KothScoreBoardWireV2Frozen_{game_id}"))
-            .await;
-        state
-            .cache
-            .remove(&format!("_KothTimeline_{game_id}"))
-            .await;
-        state
-            .cache
-            .remove(&format!("_KothTimelineFrozen_{game_id}"))
-            .await;
-        if let Ok(challenge_ids) = sqlx::query_scalar::<_, i32>(
-            r#"SELECT challenge_id FROM "KothTargets" WHERE game_id = $1"#,
-        )
-        .bind(game_id)
-        .fetch_all(state.pg())
-        .await
-        {
-            for challenge_id in challenge_ids {
-                state
-                    .cache
-                    .remove(&format!("_KothHillState_{game_id}_{challenge_id}"))
-                    .await;
-            }
-        }
     }
     Ok(completed)
-}
-
-/// Destroy every platform-managed container still running on the backend whose
-/// owning `Containers` row has vanished — the leak the reaper above can't catch
-/// because it only walks DB rows. Covers a create that started the container but
-/// failed to persist its row, and a row deleted without a backend destroy. Match
-/// is by id prefix (the DB stores the full 64-char id; the daemon may report
-/// either), so a live tracked container is never swept.
-async fn sweep_orphan_containers(state: &SharedState) -> AppResult<u64> {
-    let managed = state.containers.list_managed().await;
-    if managed.is_empty() {
-        return Ok(0);
-    }
-    let mut known: Vec<String> = container::Entity::find()
-        .filter(container::Column::ContainerId.ne(""))
-        .all(&state.db)
-        .await?
-        .into_iter()
-        .map(|c| c.container_id)
-        .collect();
-    // A&D / KotH per-team service containers live in `ad_team_service`, NOT the
-    // `container` table — without this they look orphaned and the sweep destroys
-    // them every tick, leaving every platform-hosted service permanently Offline.
-    known.extend(
-        ad_team_service::Entity::find()
-            .filter(ad_team_service::Column::ContainerId.is_not_null())
-            .filter(ad_team_service::Column::ContainerId.ne(""))
-            .all(&state.db)
-            .await?
-            .into_iter()
-            .filter_map(|s| s.container_id),
-    );
-    known.extend(
-        koth_target::Entity::find()
-            .filter(koth_target::Column::ContainerId.is_not_null())
-            .filter(koth_target::Column::ContainerId.ne(""))
-            .all(&state.db)
-            .await?
-            .into_iter()
-            .filter_map(|target| target.container_id),
-    );
-    // During a crown reset, runtime ownership is persisted on the cycle before
-    // publication to KothTargets, and old ownership remains there while audit
-    // snapshot/destruction retries. Protect both crash-recovery windows. Ended
-    // cycles have completed their explicit cleanup and no longer own runtimes.
-    known.extend(
-        sqlx::query_scalar::<_, String>(
-            r#"SELECT DISTINCT runtime_id
-                 FROM "KothCrownCycles" cycle
-                 CROSS JOIN LATERAL unnest(ARRAY[
-                   cycle.old_container_id, cycle.replacement_container_id
-                 ]) runtime(runtime_id)
-                WHERE cycle.phase <> 'Ended'
-                  AND NULLIF(BTRIM(runtime_id), '') IS NOT NULL"#,
-        )
-        .fetch_all(state.pg())
-        .await
-        .map_err(|error| crate::utils::error::AppError::internal(error.to_string()))?,
-    );
-    let is_known = |id: &str| container_id_is_known(id, &known);
-    // A backend is visible just before its bookkeeping transaction commits.
-    // Require it to remain unowned for a full grace window so the orphan sweep
-    // cannot destroy an in-flight shared/A&D container between create and insert.
-    let now = std::time::Instant::now();
-    let managed_set: std::collections::HashSet<&str> = managed.iter().map(String::as_str).collect();
-    let mut ready = Vec::new();
-    {
-        let mut first_seen = ORPHAN_FIRST_SEEN
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        first_seen.retain(|id, _| managed_set.contains(id.as_str()) && !is_known(id));
-        for id in &managed {
-            if is_known(id) {
-                continue;
-            }
-            let seen = first_seen.entry(id.clone()).or_insert(now);
-            if now.duration_since(*seen) >= StdDuration::from_secs(ORPHAN_GRACE_SECS) {
-                ready.push(id.clone());
-            }
-        }
-    }
-    let mut swept = 0u64;
-    for id in ready {
-        if let Err(error) =
-            crate::services::ad_vpn::deactivate_backend_endpoint(&state.db, &id).await
-        {
-            tracing::warn!(backend_id = %id, %error, "cron: orphan endpoint revocation failed");
-            continue;
-        }
-        if let Err(e) = state.containers.destroy(&id).await {
-            tracing::warn!(backend_id = %id, "cron: orphan destroy failed: {e}");
-        } else {
-            ORPHAN_FIRST_SEEN
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&id);
-            swept += 1;
-        }
-    }
-    Ok(swept)
-}
-
-fn container_id_is_known(id: &str, known: &[String]) -> bool {
-    known.iter().any(|candidate| {
-        candidate == id
-            || (docker_id_shape(id)
-                && docker_id_shape(candidate)
-                && (id.starts_with(candidate) || candidate.starts_with(id)))
-    })
-}
-
-fn docker_id_shape(value: &str) -> bool {
-    (12..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Job 2 — scoreboard cache maintenance
 //   (RSCTF `CacheHelper.FlushScoreboardCache` / `FlushRecentGamesCache`).
 // ─────────────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::container_id_is_known;
-
-    #[test]
-    fn orphan_identity_matching_accepts_full_and_daemon_short_ids_only() {
-        let known = vec!["abcdef1234567890".to_string()];
-        assert!(container_id_is_known("abcdef1234567890", &known));
-        assert!(container_id_is_known("abcdef123456", &known));
-        assert!(container_id_is_known("abcdef1234567890ffff", &known));
-        assert!(!container_id_is_known("fedcba123456", &known));
-        assert!(!container_id_is_known("abc", &known));
-
-        let named = vec!["rsctf-koth-cycle-17".to_string()];
-        assert!(container_id_is_known("rsctf-koth-cycle-17", &named));
-        assert!(!container_id_is_known("rsctf-koth-cycle", &named));
-        assert!(!container_id_is_known("rsctf-koth-cycle-17-extra", &named));
-    }
-}
