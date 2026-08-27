@@ -32,7 +32,7 @@ const statusColor = (s?: string | null) => {
 }
 
 // These KotH-only shapes are not in the generated SDK yet, so the two direct
-// endpoints remain typed locally. Ad/Targets uses the exported SDK model below.
+// endpoints remain typed locally.
 interface KothTokenModel {
   round: number
   token: string | null
