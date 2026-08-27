@@ -1,5 +1,4 @@
-import { mutate } from 'swr'
-import type { SWRConfiguration } from 'swr'
+import type { ScopedMutator, SWRConfiguration } from 'swr'
 
 export const POST_PAGE_PATH = '/api/posts/page'
 export const POST_FEED_REFRESH_MS = 5 * 60 * 1000
@@ -20,8 +19,8 @@ export const isPostPageCacheKey = (key: unknown): boolean =>
   Array.isArray(key) && key.length > 0 && key[0] === POST_PAGE_PATH
 
 /** Revalidate every page already visited in this browser after an admin write. */
-export const invalidatePostPageCaches = () =>
-  mutate(isPostPageCacheKey, undefined, {
+export const invalidatePostPageCaches = (mutateCache: ScopedMutator) =>
+  mutateCache(isPostPageCacheKey, undefined, {
     populateCache: false,
     revalidate: true,
   })

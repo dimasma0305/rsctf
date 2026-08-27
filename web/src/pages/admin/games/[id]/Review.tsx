@@ -296,8 +296,8 @@ const GameTeamReview: FC = () => {
   const {
     data: participationPage,
     error: participationError,
-    mutate: mutateParticipations,
-  } = api.game.useGameParticipations(numId, participationQuery, OnceSWRConfig, numId > 0)
+    mutate: mutateParticipationPage,
+  } = api.game.useGameParticipationPage(numId, participationQuery, OnceSWRConfig, numId > 0)
 
   const participations = participationPage?.data
   const totalCount = participationPage?.total ?? 0
@@ -328,7 +328,7 @@ const GameTeamReview: FC = () => {
     setDisabled(true)
     try {
       await api.admin.adminParticipation(participationId, model)
-      await mutateParticipations()
+      await mutateParticipationPage()
       showNotification({
         color: 'teal',
         message: t('admin.notification.games.participation.updated'),
@@ -429,7 +429,13 @@ const GameTeamReview: FC = () => {
             icon={<Icon path={mdiAlertCircleOutline} size={1} aria-hidden />}
             title={t('common.error.fetch_failed', 'Could not load participations')}
           >
-            <Button mt="xs" size="compact-sm" variant="light" color="red" onClick={() => void mutateParticipations()}>
+            <Button
+              mt="xs"
+              size="compact-sm"
+              variant="light"
+              color="red"
+              onClick={() => void mutateParticipationPage()}
+            >
               {t('common.button.retry', 'Retry')}
             </Button>
           </Alert>

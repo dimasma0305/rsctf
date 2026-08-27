@@ -4,6 +4,7 @@ import { Icon } from '@mdi/react'
 import { FC } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
+import { useSWRConfig } from 'swr'
 import { Empty } from '@Components/Empty'
 import { GameStatus } from '@Components/GameCard'
 import { PageHeader } from '@Components/PageHeader'
@@ -23,6 +24,7 @@ import classes from '@Styles/Index.module.css'
 
 const Home: FC = () => {
   const { t } = useTranslation()
+  const { mutate: mutateCache } = useSWRConfig()
   const { data: posts, mutate } = api.info.useInfoGetLatestPosts(postFeedSWRConfig)
   const { recentGames } = useRecentGames()
   const now = useServerNow()
@@ -38,7 +40,7 @@ const Home: FC = () => {
       await api.edit.editUpdatePost(post.id, { isPinned: !post.isPinned })
       await mutate()
       void api.info.mutateInfoGetPosts()
-      void invalidatePostPageCaches()
+      void invalidatePostPageCaches(mutateCache)
     } catch (e) {
       showErrorMsg(e, t)
     } finally {

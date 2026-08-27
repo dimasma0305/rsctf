@@ -4,6 +4,7 @@ import { Icon } from '@mdi/react'
 import { FC, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
+import { useSWRConfig } from 'swr'
 import { Empty } from '@Components/Empty'
 import { PageHeader } from '@Components/PageHeader'
 import { PostCard } from '@Components/PostCard'
@@ -23,6 +24,7 @@ import classes from '@Styles/PostsIndex.module.css'
 const ITEMS_PER_PAGE = 10
 
 const Posts: FC = () => {
+  const { mutate: mutateCache } = useSWRConfig()
   const [activePage, setPage] = useState(1)
   const pageQuery = useMemo(() => ({ count: ITEMS_PER_PAGE, skip: (activePage - 1) * ITEMS_PER_PAGE }), [activePage])
   const { data: postPage } = api.info.useInfoGetPostsPage(pageQuery, OnceSWRConfig)
@@ -47,7 +49,7 @@ const Posts: FC = () => {
       await api.edit.editUpdatePost(post.id, {
         isPinned: !post.isPinned,
       })
-      await invalidatePostPageCaches()
+      await invalidatePostPageCaches(mutateCache)
       void api.info.mutateInfoGetLatestPosts()
       void api.info.mutateInfoGetPosts()
     } catch (e) {

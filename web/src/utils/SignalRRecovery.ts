@@ -205,6 +205,7 @@ export class HubRecoveryController {
   retryNow() {
     if (!this.active || this.startInFlight) return
     this.cancelRetry()
+    this.cancelRefreshRetry()
     this.startFailures = 0
     this.automaticRetryAllowed = true
     this.beginStart()
@@ -270,9 +271,7 @@ export class HubRecoveryController {
         if (delay === null) {
           const retryAfter = retryAfterMilliseconds(error)
           this.refreshRetrySuppressed =
-            isRetryableHubFailure(error) &&
-            retryAfter !== null &&
-            retryAfter > HUB_REVALIDATE_RETRY_AFTER_MAX_MS
+            !isRetryableHubFailure(error) || (retryAfter !== null && retryAfter > HUB_REVALIDATE_RETRY_AFTER_MAX_MS)
           this.refreshFailures = 0
           return
         }

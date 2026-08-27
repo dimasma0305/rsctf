@@ -31,9 +31,9 @@ interface ContainerExecModalProps extends Omit<ModalProps, 'children'> {
  * instead of waiting for the connection timeout.
  *
  * The `shell` state is intentionally NOT a useEffect dependency —
- * toggling the segmented control after a failed connection shouldn't
- * tear down & rebuild the hub. Pick the shell BEFORE clicking Open;
- * to switch, close the modal and reopen.
+ * toggling the segmented control after a failed or closed session shouldn't
+ * tear down & rebuild the hub. The selector writes through to `shellRef` so
+ * the next explicit retry opens the latest selection.
  */
 export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
   const { containerGuid, containerTitle, scopedGameId, opened, onClose, ...rest } = props
@@ -54,6 +54,12 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
   const [shell, setShell] = useState<'sh' | 'bash'>('sh')
   const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'closed' | 'error' | 'exhausted'>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+
+  const onShellChange = (value: string) => {
+    const nextShell = value as 'sh' | 'bash'
+    shellRef.current = nextShell
+    setShell(nextShell)
+  }
 
   // The async Clipboard API (and JS-driven paste) only works in a secure
   // context — HTTPS or localhost. On plain HTTP the hint must not promise
@@ -382,7 +388,7 @@ export const ContainerExecModal: FC<ContainerExecModalProps> = (props) => {
               size="xs"
               data={['sh', 'bash']}
               value={shell}
-              onChange={(v) => setShell(v as 'sh' | 'bash')}
+              onChange={onShellChange}
               disabled={status === 'connecting' || status === 'connected'}
               aria-label={t('admin.content.exec.shell_label', 'Shell to launch')}
             />

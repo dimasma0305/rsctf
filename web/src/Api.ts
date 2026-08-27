@@ -3628,6 +3628,30 @@ export interface GameDetailModel {
   writeupDeadline: number;
 }
 
+/** Participation for review (Admin). Kept for the legacy raw-array endpoint. */
+export interface ParticipationInfoModel {
+  /** @format int32 */
+  id: number;
+  team: TeamWithDetailedUserInfo;
+  registeredMembers: string[];
+  /** @format int32 */
+  divisionId?: number | null;
+  status: ParticipationStatus;
+}
+
+/** Detailed team information returned by the legacy participation endpoint. */
+export interface TeamWithDetailedUserInfo {
+  /** @format int32 */
+  id?: number;
+  locked?: boolean;
+  /** @format guid */
+  captainId?: string;
+  name?: string | null;
+  bio?: string | null;
+  avatar?: string | null;
+  members?: ProfileUserInfoModel[];
+}
+
 /** Bounded participation review list response (Admin). */
 export interface ArrayResponseOfParticipationReviewSummaryModel {
   data: ParticipationReviewSummaryModel[];
@@ -8974,14 +8998,51 @@ export class Api<
       mutate<GameNotice[]>([`/api/game/${id}/notices`, query], data, options),
 
     /**
-     * @description Retrieves one bounded, server-filtered page of PII-free participation summaries; requires game-manager or Admin permission
+     * @description Retrieves the original raw participation array; requires game-manager or Admin permission
      *
      * @tags Game
      * @name GameParticipations
-     * @summary Get a participation review page
+     * @summary Get all game participations
      * @request GET:/api/game/{id}/participations
      */
-    gameParticipations: (
+    gameParticipations: (id: number, params: RequestParams = {}) =>
+      this.request<ParticipationInfoModel[], RequestResponse>({
+        path: `/api/game/${id}/participations`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    useGameParticipations: (
+      id: number,
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<ParticipationInfoModel[], RequestResponse>(
+        doFetch ? `/api/game/${id}/participations` : null,
+        options,
+      ),
+
+    mutateGameParticipations: (
+      id: number,
+      data?: ParticipationInfoModel[] | Promise<ParticipationInfoModel[]>,
+      options?: MutatorOptions,
+    ) =>
+      mutate<ParticipationInfoModel[]>(
+        `/api/game/${id}/participations`,
+        data,
+        options,
+      ),
+
+    /**
+     * @description Retrieves one bounded, server-filtered page of PII-free participation summaries; requires game-manager or Admin permission
+     *
+     * @tags Game
+     * @name GameParticipationPage
+     * @summary Get a participation review page
+     * @request GET:/api/game/{id}/participations/page
+     */
+    gameParticipationPage: (
       id: number,
       query?: {
         /** @format int32 @min 1 @max 50 @default 10 */
@@ -8997,21 +9058,14 @@ export class Api<
       params: RequestParams = {},
     ) =>
       this.request<ArrayResponseOfParticipationReviewSummaryModel, RequestResponse>({
-        path: `/api/game/${id}/participations`,
+        path: `/api/game/${id}/participations/page`,
         method: "GET",
         query: query,
         format: "json",
         ...params,
       }),
-    /**
-     * @description Retrieves one bounded, server-filtered page of PII-free participation summaries; requires game-manager or Admin permission
-     *
-     * @tags Game
-     * @name GameParticipations
-     * @summary Get a participation review page
-     * @request GET:/api/game/{id}/participations
-     */
-    useGameParticipations: (
+
+    useGameParticipationPage: (
       id: number,
       query?: {
         /** @format int32 @min 1 @max 50 @default 10 */
@@ -9028,19 +9082,11 @@ export class Api<
       doFetch: boolean = true,
     ) =>
       useSWR<ArrayResponseOfParticipationReviewSummaryModel, RequestResponse>(
-        doFetch ? [`/api/game/${id}/participations`, query] : null,
+        doFetch ? [`/api/game/${id}/participations/page`, query] : null,
         options,
       ),
 
-    /**
-     * @description Retrieves one bounded, server-filtered page of PII-free participation summaries; requires game-manager or Admin permission
-     *
-     * @tags Game
-     * @name GameParticipations
-     * @summary Get a participation review page
-     * @request GET:/api/game/{id}/participations
-     */
-    mutateGameParticipations: (
+    mutateGameParticipationPage: (
       id: number,
       query?: {
         count?: number;
@@ -9055,7 +9101,7 @@ export class Api<
       options?: MutatorOptions,
     ) =>
       mutate<ArrayResponseOfParticipationReviewSummaryModel>(
-        [`/api/game/${id}/participations`, query],
+        [`/api/game/${id}/participations/page`, query],
         data,
         options,
       ),

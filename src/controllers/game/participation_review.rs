@@ -1,15 +1,177 @@
-//! Bounded event-participation review projections.
+//! Event-participation review projections and compatibility API.
 //!
-//! The list deliberately excludes member identities and profile fields. An
-//! authorized operator receives those fields for one team only after opening
-//! that participation in the review UI.
+//! The bounded page deliberately excludes member identities and profile fields;
+//! the admin UI loads those fields for one team only after opening it. The
+//! original raw-array endpoint remains available for external API compatibility.
 
 use super::*;
+use crate::models::data::{game_manager, user_participation};
 
 const DEFAULT_REVIEW_PAGE_SIZE: u64 = 10;
 const MAX_REVIEW_PAGE_SIZE: u64 = 50;
 const MAX_REVIEW_SEARCH_CHARS: usize = 100;
 const MAX_REVIEW_SKIP: u64 = 1_000_000;
+
+/// RSCTF `TeamWithDetailedUserInfo` used by the legacy participation endpoint.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamWithDetailedUserInfo {
+    pub id: i32,
+    pub locked: bool,
+    pub captain_id: Uuid,
+    pub name: Option<String>,
+    pub bio: Option<String>,
+    pub avatar: Option<String>,
+    pub members: Vec<Json>,
+}
+
+/// RSCTF `ParticipationInfoModel` returned by the compatibility endpoint.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParticipationInfoModel {
+    pub id: i32,
+    pub team: TeamWithDetailedUserInfo,
+    /// User-id GUIDs of the members registered for this participation.
+    pub registered_members: Vec<Uuid>,
+    pub division_id: Option<i32>,
+    pub status: ParticipationStatus,
+}
+
+/// `GET /api/game/{id}/participations` — the existing RSCTF-compatible raw
+/// participation array. The admin UI uses the separate bounded `/page` route,
+/// while this endpoint remains stable for existing API consumers.
+pub async fn participations(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path(id): Path<i32>,
+) -> AppResult<RequestResponse<Vec<ParticipationInfoModel>>> {
+    let _ = load_game(&st, id).await?;
+
+    if !user.is_admin()
+        && game_manager::Entity::find()
+            .filter(game_manager::Column::GameId.eq(id))
+            .filter(game_manager::Column::UserId.eq(user.id))
+            .count(&st.db)
+            .await?
+            == 0
+    {
+        return Err(AppError::Forbidden);
+    }
+
+    let parts = participation::Entity::find()
+        .filter(participation::Column::GameId.eq(id))
+        .order_by_asc(participation::Column::TeamId)
+        .all(&st.db)
+        .await?;
+    let team_ids: Vec<i32> = parts.iter().map(|part| part.team_id).collect();
+    let teams: HashMap<i32, team::Model> = if team_ids.is_empty() {
+        HashMap::new()
+    } else {
+        team::Entity::find()
+            .filter(team::Column::Id.is_in(team_ids))
+            .all(&st.db)
+            .await?
+            .into_iter()
+            .map(|team| (team.id, team))
+            .collect()
+    };
+
+    let links = user_participation::Entity::find()
+        .filter(user_participation::Column::GameId.eq(id))
+        .all(&st.db)
+        .await?;
+    let mut members_by_part: HashMap<i32, Vec<Uuid>> = HashMap::new();
+    for link in &links {
+        members_by_part
+            .entry(link.participation_id)
+            .or_default()
+            .push(link.user_id);
+    }
+
+    let roster_rows = if teams.is_empty() {
+        Vec::new()
+    } else {
+        team_member::Entity::find()
+            .filter(team_member::Column::TeamId.is_in(teams.keys().copied().collect::<Vec<_>>()))
+            .all(&st.db)
+            .await?
+    };
+    let mut roster_by_team: HashMap<i32, Vec<Uuid>> = HashMap::new();
+    for row in &roster_rows {
+        roster_by_team
+            .entry(row.team_id)
+            .or_default()
+            .push(row.user_id);
+    }
+    let mut member_ids: HashSet<Uuid> = roster_rows.iter().map(|row| row.user_id).collect();
+    for team in teams.values() {
+        member_ids.insert(team.captain_id);
+    }
+    let member_users: HashMap<Uuid, user::Model> = if member_ids.is_empty() {
+        HashMap::new()
+    } else {
+        user::Entity::find()
+            .filter(user::Column::Id.is_in(member_ids.into_iter().collect::<Vec<_>>()))
+            .all(&st.db)
+            .await?
+            .into_iter()
+            .map(|user| (user.id, user))
+            .collect()
+    };
+    let member_info = |user: &user::Model| -> Json {
+        serde_json::json!({
+            "userId": user.id,
+            "role": user.role,
+            "userName": user.user_name,
+            "email": user.email,
+            "bio": user.bio,
+            "phone": user.phone_number,
+            "realName": user.real_name,
+            "stdNumber": user.std_number,
+            "avatar": user.avatar_url(),
+            "hasManagedGames": false,
+        })
+    };
+
+    let data = parts
+        .into_iter()
+        .map(|part| {
+            let team = teams.get(&part.team_id);
+            let mut member_user_ids = Vec::new();
+            let mut seen = HashSet::new();
+            if let Some(team) = team {
+                if seen.insert(team.captain_id) {
+                    member_user_ids.push(team.captain_id);
+                }
+            }
+            for user_id in roster_by_team.get(&part.team_id).into_iter().flatten() {
+                if seen.insert(*user_id) {
+                    member_user_ids.push(*user_id);
+                }
+            }
+            let members = member_user_ids
+                .into_iter()
+                .filter_map(|user_id| member_users.get(&user_id).map(member_info))
+                .collect();
+            ParticipationInfoModel {
+                id: part.id,
+                team: TeamWithDetailedUserInfo {
+                    id: part.team_id,
+                    locked: team.map(|team| team.locked).unwrap_or(false),
+                    captain_id: team.map(|team| team.captain_id).unwrap_or_default(),
+                    name: team.map(|team| team.name.clone()),
+                    bio: team.and_then(|team| team.bio.clone()),
+                    avatar: team.and_then(|team| team.avatar_url()),
+                    members,
+                },
+                registered_members: members_by_part.remove(&part.id).unwrap_or_default(),
+                division_id: part.division_id,
+                status: part.status,
+            }
+        })
+        .collect();
+    Ok(RequestResponse::ok(data))
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -275,8 +437,8 @@ async fn participation_review_page(
     Ok(Some(ArrayResponse::new(data, total)))
 }
 
-/// `GET /api/game/{id}/participations` — one authorized, filtered SQL page.
-pub async fn participations(
+/// `GET /api/game/{id}/participations/page` — one authorized, filtered SQL page.
+pub async fn participation_page(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path(id): Path<i32>,

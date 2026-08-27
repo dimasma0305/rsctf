@@ -33,3 +33,19 @@ test('game-owned terminal callsites use scoped hubs while Instances stays platfo
   assert.equal(platformModals.length, 1, 'Instances has one terminal modal')
   assert.doesNotMatch(platformModals[0], /scopedGameId=/, 'Instances keeps the platform Admin hub')
 })
+
+test('replacement sessions use the shell selected after an error or closed PTY', () => {
+  const modal = readFileSync('src/components/admin/ContainerExecModal.tsx', 'utf8')
+
+  assert.match(
+    modal,
+    /const onShellChange = \(value: string\) => \{\s*const nextShell = value as 'sh' \| 'bash'\s*shellRef\.current = nextShell\s*setShell\(nextShell\)\s*\}/,
+    'the enabled selector must synchronously update the ref read by retry before React state settles'
+  )
+  assert.match(modal, /onChange=\{onShellChange\}/, 'the shell selector must use the write-through callback')
+  assert.match(
+    modal,
+    /hub\.invoke<string>\('Open', containerGuid, shellRef\.current\)/,
+    'replacement Open calls must read the latest selected shell'
+  )
+})

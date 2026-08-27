@@ -9,7 +9,7 @@ const styles = readFileSync('src/styles/pages/Review.module.css', 'utf8')
 
 test('participation review sends every list filter and page boundary to the server', () => {
   assert.match(page, /useDebouncedValue\(search\.trim\(\), 300\)/)
-  assert.match(page, /useGameParticipations\(numId, participationQuery, OnceSWRConfig, numId > 0\)/)
+  assert.match(page, /useGameParticipationPage\(numId, participationQuery, OnceSWRConfig, numId > 0\)/)
   assert.match(page, /count: PART_NUM_PER_PAGE/)
   assert.match(page, /skip: \(activePage - 1\) \* PART_NUM_PER_PAGE/)
   assert.match(page, /status: selectedStatus \?\? undefined/)
@@ -19,13 +19,31 @@ test('participation review sends every list filter and page boundary to the serv
   assert.doesNotMatch(page, /filteredParticipations/)
   assert.doesNotMatch(page, /pagedParticipations/)
 
-  assert.match(api, /gameParticipations:[\s\S]*query: query/)
-  assert.match(api, /useGameParticipations:[\s\S]*\[\x60?\/api\/game\/\$\{id\}\/participations\x60?, query\]/)
+  assert.match(api, /gameParticipationPage:[\s\S]*\/participations\/page[\s\S]*query: query/)
+  assert.match(api, /useGameParticipationPage:[\s\S]*\[\x60?\/api\/game\/\$\{id\}\/participations\/page\x60?, query\]/)
   assert.match(api, /count\?: number;[\s\S]*skip\?: number;[\s\S]*status\?: ParticipationStatus/)
 })
 
+test('legacy participation endpoint retains its raw array contract', () => {
+  const legacyStart = api.indexOf('gameParticipations:')
+  const pageStart = api.indexOf('gameParticipationPage:', legacyStart)
+  assert.ok(legacyStart >= 0 && pageStart > legacyStart)
+  const legacy = api.slice(legacyStart, pageStart)
+
+  assert.match(legacy, /request<ParticipationInfoModel\[\], RequestResponse>/)
+  assert.match(legacy, /path: \x60\/api\/game\/\$\{id\}\/participations\x60/)
+  assert.match(legacy, /useSWR<ParticipationInfoModel\[\], RequestResponse>/)
+  assert.match(legacy, /doFetch \? \x60\/api\/game\/\$\{id\}\/participations\x60 : null/)
+  assert.doesNotMatch(legacy, /ArrayResponseOfParticipationReviewSummaryModel/)
+  assert.doesNotMatch(legacy, /query: query/)
+})
+
 test('participation review keys are fenced by game, query, detail, route, and account', () => {
-  for (const key of [['/api/game/17/participations', { count: 10, skip: 0 }], '/api/game/17/participations/23']) {
+  for (const key of [
+    '/api/game/17/participations',
+    ['/api/game/17/participations/page', { count: 10, skip: 0 }],
+    '/api/game/17/participations/23',
+  ]) {
     assert.equal(isViewerScopedRequest(key), true)
   }
 

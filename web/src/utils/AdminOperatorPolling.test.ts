@@ -5,6 +5,7 @@ import { act, createElement, type FC, useState } from 'react'
 import type { BareFetcher, SWRConfiguration } from 'swr'
 import type { AdEngineMetadataModel, AdGameStateModel } from '../Api'
 import {
+  ADMIN_OPERATOR_GRID_POLL_MS,
   ADMIN_OPERATOR_POLL_MS,
   adminOperatorPolling,
   adminOperatorView,
@@ -197,6 +198,60 @@ test('pure events request only their configured operator engine on fake five-sec
   )
 })
 
+test('A&D refreshes mutable grid structure slowly while live verdicts remain five-second reads', async (context) => {
+  await runPollingScenario(
+    context,
+    { hasAttackDefense: true, hasKoth: false, start: START, end: END, serverTime: START },
+    async ({ counts, tick, setNow }) => {
+      assert.deepEqual(counts, { engines: 1, grid: 1, live: 1, koth: 0 })
+
+      await tick(ADMIN_OPERATOR_GRID_POLL_MS - ADMIN_OPERATOR_POLL_MS)
+      assert.equal(counts.grid, 1, 'large grid does not follow the five-second verdict cadence')
+      assert.equal(counts.live, ADMIN_OPERATOR_GRID_POLL_MS / ADMIN_OPERATOR_POLL_MS)
+
+      await tick(ADMIN_OPERATOR_POLL_MS)
+      assert.equal(counts.grid, 2, 'grid structure is refreshed on the bounded slow cadence')
+      assert.equal(counts.live, ADMIN_OPERATOR_GRID_POLL_MS / ADMIN_OPERATOR_POLL_MS + 1)
+
+      const beforeStop = { grid: counts.grid, live: counts.live }
+      await setNow(END)
+      assert.ok(counts.grid === beforeStop.grid || counts.grid === beforeStop.grid + 1)
+      assert.ok(counts.live === beforeStop.live || counts.live === beforeStop.live + 1)
+      const stopped = { grid: counts.grid, live: counts.live }
+
+      await tick(ADMIN_OPERATOR_GRID_POLL_MS * 2)
+      assert.deepEqual(
+        { grid: counts.grid, live: counts.live },
+        stopped,
+        'ended events retain their final snapshots without more polling'
+      )
+    }
+  )
+})
+
+test('A&D grid and live reads pause for the whole hidden interval', async (context) => {
+  await runPollingScenario(
+    context,
+    { hasAttackDefense: true, hasKoth: false, start: START, end: END, serverTime: START },
+    async ({ counts, tick, setHidden }) => {
+      assert.deepEqual(counts, { engines: 1, grid: 1, live: 1, koth: 0 })
+      await setHidden(true)
+      await tick(ADMIN_OPERATOR_GRID_POLL_MS * 2)
+      assert.deepEqual(
+        { grid: counts.grid, live: counts.live },
+        { grid: 1, live: 1 },
+        'hidden operator tabs issue neither structural nor live reads'
+      )
+
+      await setHidden(false)
+      const resumed = { grid: counts.grid, live: counts.live }
+      await tick(ADMIN_OPERATOR_GRID_POLL_MS)
+      assert.ok(counts.grid > resumed.grid, 'visible A&D grid polling resumes')
+      assert.ok(counts.live > resumed.live, 'visible A&D live polling resumes')
+    }
+  )
+})
+
 test('hybrid operator polling follows the selected view and stops hidden or ended reads', async (context) => {
   await runPollingScenario(
     context,
@@ -208,12 +263,14 @@ test('hybrid operator polling follows the selected view and stops hidden or ende
 
       await setView('koth')
       assert.deepEqual(counts, { engines: 1, grid: 1, live: 2, koth: 1 })
-      await tick(ADMIN_OPERATOR_POLL_MS * 2)
-      assert.deepEqual(counts, { engines: 1, grid: 1, live: 2, koth: 3 })
+      await tick(ADMIN_OPERATOR_GRID_POLL_MS)
+      assert.equal(counts.grid, 1, 'inactive A&D grid stays unmounted for a full grid cadence')
+      assert.equal(counts.live, 2, 'inactive A&D live delta stays unmounted')
+      assert.equal(counts.koth, ADMIN_OPERATOR_GRID_POLL_MS / ADMIN_OPERATOR_POLL_MS + 1)
 
       await setHidden(true)
       await tick(ADMIN_OPERATOR_POLL_MS * 2)
-      assert.equal(counts.koth, 3)
+      assert.equal(counts.koth, ADMIN_OPERATOR_GRID_POLL_MS / ADMIN_OPERATOR_POLL_MS + 1)
       await setHidden(false)
 
       const beforeOffline = counts.koth

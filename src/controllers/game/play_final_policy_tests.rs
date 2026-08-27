@@ -228,7 +228,7 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
           flag_id INTEGER, container_id UUID
         );
         CREATE TABLE "GameEvents" (
-          id BIGSERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
+          id SERIAL PRIMARY KEY, game_id INTEGER NOT NULL,
           "Type" SMALLINT NOT NULL, "values" JSONB NOT NULL,
           publish_time_utc TIMESTAMPTZ NOT NULL, user_id UUID,
           team_id INTEGER NOT NULL

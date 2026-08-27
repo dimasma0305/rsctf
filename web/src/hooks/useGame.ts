@@ -833,6 +833,7 @@ export const useAdTokenHint = (numId: number, doFetch: boolean = true) => {
 }
 
 export const ADMIN_OPERATOR_POLL_MS = 5_000
+export const ADMIN_OPERATOR_GRID_POLL_MS = 30_000
 export const ADMIN_OPERATOR_METADATA_POLL_MS = 60_000
 export const ADMIN_OPERATOR_RETRY_LIMIT = 4
 
@@ -909,13 +910,17 @@ export const mergeAdminAdState = (
   }
 }
 
-/** Load the large grid once, then poll only its small mutable delta. */
+/** Refresh grid structure slowly while keeping verdict deltas on the live cadence. */
 export const useAdminAdState = (numId: number, enabled: boolean, polling: boolean) => {
   const {
     data: grid,
     error: gridError,
     mutate: mutateGrid,
-  } = api.edit.useEditAdState(numId, operatorReadConfig(0), enabled && numId > 0)
+  } = api.edit.useEditAdState(
+    numId,
+    operatorReadConfig(polling ? ADMIN_OPERATOR_GRID_POLL_MS : 0),
+    enabled && numId > 0
+  )
   const {
     data: live,
     error: liveError,
@@ -924,6 +929,7 @@ export const useAdminAdState = (numId: number, enabled: boolean, polling: boolea
     enabled && numId > 0 ? `/api/edit/games/${numId}/ad/Live` : null,
     operatorReadConfig(polling ? ADMIN_OPERATOR_POLL_MS : 0)
   )
+  useRevalidateWhenPollingStops(enabled && polling, mutateGrid)
   useRevalidateWhenPollingStops(enabled && polling, mutateLive)
   const adminAdState = useMemo(() => mergeAdminAdState(grid, live), [grid, live])
   const mutate = async () => Promise.all([mutateGrid(), mutateLive()])

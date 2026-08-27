@@ -22,7 +22,7 @@ import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { handleAxiosError } from '@Utils/ApiHelper'
-import { mergeUniqueRows, reconcileLiveRows } from '@Utils/FeedReconciliation'
+import { mergeReconciledRows, prependBoundedRow, reconcileLiveRows } from '@Utils/FeedReconciliation'
 import { useLanguage } from '@Utils/I18n'
 import { TaskStatusColorMap } from '@Utils/Shared'
 import { OPERATOR_FALLBACK_POLL_MS } from '@Utils/SignalRRecovery'
@@ -32,6 +32,8 @@ import classes from '@Styles/AdminLogs.module.css'
 import tableClasses from '@Styles/Table.module.css'
 
 const ITEM_COUNT_PER_PAGE = 50
+const MAX_BUFFERED_LOGS = ITEM_COUNT_PER_PAGE
+const MAX_VISIBLE_LOGS = ITEM_COUNT_PER_PAGE * 2
 
 const logIdentity = (item: LogMessageModel) =>
   JSON.stringify([item.time, item.name, item.level, item.ip, item.msg, item.status, item.fingerprint])
@@ -76,7 +78,7 @@ const Logs: FC = () => {
         skip: (activePage - 1) * ITEM_COUNT_PER_PAGE,
         search: debouncedSearch || undefined,
       })
-      newLogs.current = reconcileLiveRows(newLogs.current, res.data, logIdentity)
+      newLogs.current = reconcileLiveRows(newLogs.current, res.data, logIdentity).slice(0, MAX_BUFFERED_LOGS)
       setLogs(res.data)
     } catch (err) {
       showNotification({
@@ -109,7 +111,7 @@ const Logs: FC = () => {
     handlers: {
       ReceivedLog: (raw) => {
         const message = raw as LogMessageModel
-        newLogs.current = [message, ...newLogs.current]
+        newLogs.current = prependBoundedRow(message, newLogs.current, MAX_BUFFERED_LOGS)
         update(new Date(message.time!))
       },
     },
@@ -126,7 +128,7 @@ const Logs: FC = () => {
       }),
   })
 
-  const visibleLogs = mergeUniqueRows(activePage === 1 ? newLogs.current : [], logs ?? [], logIdentity).filter(
+  const visibleLogs = mergeReconciledRows(activePage === 1 ? newLogs.current : [], logs ?? [], MAX_VISIBLE_LOGS).filter(
     (item) => level === 'All' || item.level === level
   )
 

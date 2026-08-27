@@ -1,6 +1,7 @@
 use super::{
     blood_notice_type, blood_recognition_eligible, normal_flag_submit_type_allowed, ChallengeType,
-    FlagSubmitModel, GamePermission, NoticeType, FINALIZE_SUBMISSION_SQL, LOAD_GRADING_POLICY_SQL,
+    FlagSubmitModel, GamePermission, NoticeType, Uuid, FINALIZE_SUBMISSION_SQL,
+    LOAD_GRADING_POLICY_SQL,
 };
 use chrono::{Duration, Utc};
 
@@ -31,20 +32,33 @@ fn finalization_fences_every_authoritative_challenge_input() {
 }
 
 #[test]
-fn submit_wire_requires_the_camel_case_opaque_attempt_id() {
-    let attempt = "00000000-0000-4000-8000-000000000001";
+fn submit_wire_accepts_legacy_omission_and_preserves_a_supplied_attempt_id() {
+    let attempt = Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
     let parsed: FlagSubmitModel = serde_json::from_value(serde_json::json!({
         "flag": "flag{ok}",
-        "attemptId": attempt,
+        "attemptId": attempt.to_string(),
     }))
     .unwrap();
-    assert_eq!(parsed.attempt_id.to_string(), attempt);
-    assert!(
-        serde_json::from_value::<FlagSubmitModel>(serde_json::json!({
-            "flag": "flag{legacy-client}"
-        }))
-        .is_err()
-    );
+    assert_eq!(parsed.attempt_id, attempt);
+
+    let legacy: FlagSubmitModel = serde_json::from_value(serde_json::json!({
+        "flag": "flag{legacy-client}"
+    }))
+    .unwrap();
+    assert!(!legacy.attempt_id.is_nil());
+
+    let second_legacy: FlagSubmitModel = serde_json::from_value(serde_json::json!({
+        "flag": "flag{second-legacy-client}"
+    }))
+    .unwrap();
+    assert_ne!(legacy.attempt_id, second_legacy.attempt_id);
+
+    let explicit_nil: FlagSubmitModel = serde_json::from_value(serde_json::json!({
+        "flag": "flag{invalid}",
+        "attemptId": Uuid::nil(),
+    }))
+    .unwrap();
+    assert!(explicit_nil.attempt_id.is_nil());
 }
 
 #[test]

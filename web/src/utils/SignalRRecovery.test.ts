@@ -166,17 +166,24 @@ test('server admission and availability statuses retain the correct retry bounda
 
 test('HTTP reconciliation retries are finite, status-aware, and honor bounded Retry-After', () => {
   const limited = { response: { status: 429, headers: { 'retry-after': '12' } } }
-  assert.equal(hubRevalidationRetryDelay(limited, 0, () => 0, 0), 12_000)
-  assert.equal(hubRevalidationRetryDelay({ response: { status: 503 } }, 0, () => 0, 0), 375)
-  assert.equal(hubRevalidationRetryDelay({ response: { status: 403 } }, 0, () => 0, 0), null)
-  assert.equal(hubRevalidationRetryDelay(limited, HUB_REVALIDATE_RETRY_LIMIT, () => 0, 0), null)
   assert.equal(
-    hubRevalidationRetryDelay(
-      { response: { status: 429, headers: { 'retry-after': '999999999' } } },
-      0,
-      () => 0,
-      0
-    ),
+    hubRevalidationRetryDelay(limited, 0, () => 0, 0),
+    12_000
+  )
+  assert.equal(
+    hubRevalidationRetryDelay({ response: { status: 503 } }, 0, () => 0, 0),
+    375
+  )
+  assert.equal(
+    hubRevalidationRetryDelay({ response: { status: 403 } }, 0, () => 0, 0),
+    null
+  )
+  assert.equal(
+    hubRevalidationRetryDelay(limited, HUB_REVALIDATE_RETRY_LIMIT, () => 0, 0),
+    null
+  )
+  assert.equal(
+    hubRevalidationRetryDelay({ response: { status: 429, headers: { 'retry-after': '999999999' } } }, 0, () => 0, 0),
     null
   )
 })
@@ -216,6 +223,72 @@ test('a failed reconnect backfill owns one Retry-After timer and cancels it on s
   assert.equal(timers.count, 1)
   await pending.stop()
   assert.equal(timers.count, 0)
+  await controller.stop()
+})
+
+test('permanent reconciliation denials suppress fallback polls and reconnect backfills', async () => {
+  for (const status of [401, 403, 404]) {
+    const hub = new FakeHub()
+    const timers = new ManualTimers()
+    let refreshes = 0
+    const controller = new HubRecoveryController(hub, {
+      revalidate: () => {
+        refreshes += 1
+        throw statusError(status)
+      },
+      exhaustedRetryMs: null,
+      pollingIntervalMs: 1_000,
+      random: () => 0,
+      timers,
+    })
+
+    controller.start()
+    await settle()
+    assert.equal(refreshes, 1, `${status} initial reconciliation`)
+
+    await timers.advance(9_000)
+    assert.equal(refreshes, 1, `${status} fallback polling remains suppressed`)
+
+    hub.reconnecting(new Error('transport interrupted'))
+    hub.reconnected('replacement-transport')
+    await settle()
+    assert.equal(refreshes, 1, `${status} reconnect backfill remains suppressed`)
+
+    await controller.stop()
+    assert.equal(timers.count, 0, `${status} cleanup`)
+  }
+})
+
+test('explicit transport retry clears permanent reconciliation suppression', async () => {
+  const hub = new FakeHub()
+  const timers = new ManualTimers()
+  let refreshes = 0
+  const controller = new HubRecoveryController(hub, {
+    revalidate: () => {
+      refreshes += 1
+      if (refreshes === 1) throw statusError(403)
+    },
+    exhaustedRetryMs: null,
+    pollingIntervalMs: 1_000,
+    random: () => 0,
+    timers,
+  })
+
+  controller.start()
+  await settle()
+  await timers.advance(1_800)
+  assert.equal(refreshes, 1)
+
+  hub.close(statusError(503))
+  assert.equal(controller.currentState, 'exhausted')
+  controller.retryNow()
+  await settle()
+
+  assert.equal(hub.startCalls, 2)
+  assert.equal(controller.currentState, 'connected')
+  assert.equal(refreshes, 2, 'explicit retry performs a fresh authoritative backfill')
+  await timers.advance(900)
+  assert.equal(refreshes, 3, 'successful explicit retry restores fallback polling')
   await controller.stop()
 })
 

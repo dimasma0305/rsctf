@@ -504,7 +504,8 @@ pub struct GameJoinModel {
 #[serde(rename_all = "camelCase")]
 pub struct FlagSubmitModel {
     pub flag: String,
-    /// Opaque client identity retained until the terminal verdict is recovered.
+    /// Optional opaque client identity retained until the terminal verdict is recovered.
+    #[serde(default = "Uuid::new_v4")]
     pub attempt_id: Uuid,
     #[serde(default)]
     pub proof: Option<String>,

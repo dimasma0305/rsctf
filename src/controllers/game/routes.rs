@@ -38,6 +38,10 @@ fn router_with_domains(
             limited(Policy::Query, get(participations)),
         )
         .route(
+            "/api/game/{id}/participations/page",
+            limited(Policy::Query, get(participation_page)),
+        )
+        .route(
             "/api/game/{id}/participations/{participationId}",
             limited(Policy::Query, get(participation_detail)),
         )

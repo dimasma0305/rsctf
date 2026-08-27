@@ -104,6 +104,43 @@ fn list_projection_is_compact_and_contains_no_member_pii_fields() {
 }
 
 #[test]
+fn legacy_participation_projection_keeps_original_wire_shape() {
+    let captain_id = Uuid::new_v4();
+    let member_id = Uuid::new_v4();
+    let value = serde_json::to_value(ParticipationInfoModel {
+        id: 11,
+        team: TeamWithDetailedUserInfo {
+            id: 22,
+            locked: false,
+            captain_id,
+            name: Some("legacy team".to_owned()),
+            bio: Some("legacy bio".to_owned()),
+            avatar: None,
+            members: vec![serde_json::json!({ "userId": member_id })],
+        },
+        registered_members: vec![member_id],
+        division_id: Some(3),
+        status: ParticipationStatus::Pending,
+    })
+    .unwrap();
+    let object = value.as_object().unwrap();
+
+    assert_eq!(
+        object.keys().map(String::as_str).collect::<HashSet<_>>(),
+        HashSet::from(["id", "team", "registeredMembers", "divisionId", "status"])
+    );
+    let team = object["team"].as_object().unwrap();
+    assert_eq!(team["id"], 22);
+    assert_eq!(team["captainId"], captain_id.to_string());
+    assert_eq!(team["members"][0]["userId"], member_id.to_string());
+}
+
+#[test]
+fn legacy_detail_and_static_page_routes_can_coexist() {
+    let _: axum::Router<crate::app_state::SharedState> = crate::controllers::game::routes::router();
+}
+
+#[test]
 fn roster_detail_is_private_and_not_cacheable() {
     let response = private_no_store_detail(ParticipationReviewDetailModel {
         id: 1,
