@@ -76,6 +76,7 @@ cargo llvm-cov \
   --ignored \
   --test-threads=1 \
   --skip s3_round_trip \
+  --skip stale_conditional_delete_cannot_destroy_a_real_replacement_runtime \
   --skip target_fk_deletes_scoped_tokens \
   --skip ownership_constraints_are_validated_cascades \
   --skip database_board_is_finite_bounded_and_serializable \
@@ -84,10 +85,12 @@ cargo llvm-cov \
   --skip database_rollup_invalidation_keeps_only_the_safe_prefix
 ```
 
-The skipped S3 test requires a live disposable object store. Two migration
-inspection checks require an already fully migrated installation, and the
-other four checks require a pre-provisioned A&D game. They remain explicit
-environment tests rather than self-contained CI fixtures.
+The skipped S3 test requires a live disposable object store. The conditional
+delete test requires a local Docker daemon and an immutable image ID through
+`RSCTF_TEST_CONTAINER_IMAGE`. Two migration inspection checks require an
+already fully migrated installation, and the other four checks require a
+pre-provisioned A&D game. They remain explicit environment tests rather than
+self-contained CI fixtures.
 
 ## Event-scale validation
 
