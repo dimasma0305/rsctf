@@ -3,6 +3,7 @@ import { TFunction } from 'i18next'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import useSWR, { type Middleware, type SWRConfiguration, unstable_serialize } from 'swr'
 import { GameStatus } from '@Components/GameCard'
+import { isRetryableHttpError } from '@Utils/HttpError'
 import { useServerNow } from '@Utils/ServerClock'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ParticipationStatus } from '@Api'
@@ -54,14 +55,7 @@ const useLiveGameReadReady = (key: string, gameId: number | undefined, isValidat
   return state.key === key && state.ready && responseMatchesKey
 }
 
-type HttpError = { status?: unknown; response?: { status?: unknown } }
-
-export const shouldRetryGameTimingError = (error: unknown) => {
-  if (!error || typeof error !== 'object') return true
-  const candidate = error as HttpError
-  const status = candidate.response?.status ?? candidate.status
-  return typeof status !== 'number' || status === 408 || status === 425 || status === 429 || status >= 500
-}
+export const shouldRetryGameTimingError = (error: unknown) => isRetryableHttpError(error)
 
 /** Keep an already-rendered landing page through retryable timing read failures. */
 export const shouldRedirectGameLandingError = (error: unknown, hasLoadedGame: boolean) =>

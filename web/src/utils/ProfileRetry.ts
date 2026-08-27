@@ -1,43 +1,36 @@
+import { httpErrorStatus, isRetryableHttpError } from '@Utils/HttpError'
 import { getServerNowMilliseconds } from '@Utils/ServerClock'
 
 type Timer = ReturnType<typeof setTimeout>
 
-const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504])
 export const MAX_PROFILE_RETRIES = 5
 const MAX_BACKOFF_MS = 30_000
 const MAX_RETRY_AFTER_MS = 5 * 60_000
 export const PROFILE_RECOVERY_PROBE_MS = 5 * 60_000
 const MAX_TIMER_DELAY_MS = 2_147_000_000
 
-type ErrorWithResponse = {
-  status?: unknown
+type ErrorWithResponseHeaders = {
   response?: {
-    status?: unknown
     headers?: unknown
   }
 }
 
 export type ProfileErrorDisposition = 'anonymous' | 'banned' | 'retry' | 'stop'
 
-export const httpErrorStatus = (error: unknown): number | null => {
-  if (!error || typeof error !== 'object') return null
-  const candidate = error as ErrorWithResponse
-  const status = candidate.response?.status ?? candidate.status
-  return typeof status === 'number' && Number.isInteger(status) ? status : null
-}
+export { httpErrorStatus } from '@Utils/HttpError'
 
 export const profileErrorDisposition = (error: unknown): ProfileErrorDisposition => {
   if (error === null || error === undefined) return 'stop'
   const status = httpErrorStatus(error)
   if (status === 401) return 'anonymous'
   if (status === 403) return 'banned'
-  if (status === null || TRANSIENT_STATUSES.has(status)) return 'retry'
+  if (isRetryableHttpError(error)) return 'retry'
   return 'stop'
 }
 
 const responseHeader = (error: unknown, name: string): string | null => {
   if (!error || typeof error !== 'object') return null
-  const headers = (error as ErrorWithResponse).response?.headers
+  const headers = (error as ErrorWithResponseHeaders).response?.headers
   if (!headers || typeof headers !== 'object') return null
 
   const getter = (headers as { get?: unknown }).get
@@ -88,10 +81,7 @@ export const profileRetryDelay = (
 }
 
 /** Keep one low-frequency recovery probe after the fast retry budget is exhausted. */
-export const profileRecoveryProbeDelay = (
-  error: unknown,
-  now: number = getServerNowMilliseconds()
-): number | null => {
+export const profileRecoveryProbeDelay = (error: unknown, now: number = getServerNowMilliseconds()): number | null => {
   if (profileErrorDisposition(error) !== 'retry') return null
   const retryAfter = retryAfterMilliseconds(error, now) ?? 0
   return Math.min(MAX_TIMER_DELAY_MS, Math.max(PROFILE_RECOVERY_PROBE_MS, retryAfter))
