@@ -39,13 +39,7 @@ import { adLikeRowHighlight, fmtPts, useAdLikeScoreboardState } from '@Component
 import { ScoreboardPagination } from '@Components/ScoreboardPagination'
 import { ScrollingText } from '@Components/ScrollingText'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import {
-  CombinedScoreComponent,
-  CombinedScoreboardItem,
-  CombinedScoreboardModel,
-  useCombinedScoreboard,
-  useGame,
-} from '@Hooks/useGame'
+import { CombinedScoreComponent, CombinedScoreboardItem, CombinedScoreboardModel, useGame } from '@Hooks/useGame'
 import classes from '@Styles/CombinedScoreboard.module.css'
 import misc from '@Styles/Misc.module.css'
 
@@ -234,12 +228,15 @@ const MobileTeamCard: FC<{
   )
 }
 
-export const CombinedScoreboardTable: FC<{ numId: number }> = ({ numId }) => {
+export const CombinedScoreboardTable: FC<{
+  numId: number
+  scoreboard: CombinedScoreboardModel | undefined
+  error: unknown
+}> = ({ numId, scoreboard, error }) => {
   const { t } = useTranslation()
   const theme = useMantineTheme()
   const isMobile = useIsMobile()
   const { game } = useGame(numId)
-  const { combinedScoreboard: scoreboard, error } = useCombinedScoreboard(numId)
   const [infoOpened, setInfoOpened] = useState(false)
 
   const modes = useMemo<ModeDefinition[]>(() => {

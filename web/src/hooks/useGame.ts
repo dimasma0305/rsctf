@@ -6,6 +6,12 @@ import { GameStatus } from '@Components/GameCard'
 import { isRetryableHttpError } from '@Utils/HttpError'
 import { useServerNow } from '@Utils/ServerClock'
 import { useViewerIdentity, viewerScopedKey } from '@Utils/ViewerIdentity'
+import {
+  CompletionPollSWRConfig,
+  eventScoreboardPollDelay,
+  jitterPollingDelay,
+  useCompletionPolling,
+} from '@Hooks/useCompletionPolling'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { ParticipationStatus } from '@Api'
 
@@ -456,22 +462,46 @@ export const useGameAccess = (numId: number) => {
   return { ...gameState, liveReadReady }
 }
 
-export const useGameScoreboard = (numId: number, isTabActive: boolean = true) => {
-  const { game } = useGame(numId)
-  const { status } = useGameStatus(game)
-  const polling = status === GameStatus.OnGoing && isTabActive
-
+export const useGameScoreboardRead = (numId: number) => {
   const {
     data: scoreboard,
     error,
+    isValidating,
     mutate,
-  } = api.game.useGameScoreboard(numId, {
-    ...OnceSWRConfig,
-    refreshInterval: polling ? 30 * 1000 : 0,
-  })
-  useRevalidateWhenPollingStops(polling, mutate)
+  } = api.game.useGameScoreboard(numId, CompletionPollSWRConfig, numId > 0)
 
-  return { scoreboard, error, mutate }
+  return { scoreboard, error, isValidating, mutate }
+}
+
+export const useGameScoreboardPoll = (
+  numId: number,
+  status: GameStatus,
+  isTabActive: boolean,
+  { scoreboard, error, isValidating, mutate }: ReturnType<typeof useGameScoreboardRead>
+) => {
+  useCompletionPolling({
+    key: numId > 0 ? `/api/game/${numId}/scoreboard` : '',
+    // This read remains mounted for tab discovery. Include tab ownership in
+    // the phase so returning to Jeopardy performs one fresh read immediately.
+    phase: `${status}:${isTabActive ? 'active' : 'inactive'}`,
+    enabled: numId > 0 && isTabActive,
+    data: scoreboard,
+    error,
+    isValidating,
+    mutate,
+    // Standard Jeopardy has no asynchronous epoch settlement. A lifecycle
+    // transition still causes one immediate final read before this returns null.
+    successDelay: () => (status === GameStatus.OnGoing ? jitterPollingDelay(30_000) : null),
+  })
+}
+
+export const useGameScoreboard = (numId: number, isTabActive: boolean = true) => {
+  const { game } = useGame(numId)
+  const { status } = useGameStatus(game)
+  const query = useGameScoreboardRead(numId)
+  useGameScoreboardPoll(numId, status, isTabActive, query)
+
+  return query
 }
 
 export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
@@ -523,23 +553,29 @@ export const useAdScoreboard = (numId: number, doFetch: boolean = true) => {
   const {
     data: adScoreboard,
     error,
+    isValidating,
     mutate,
   } = api.game.useGameAdScoreboard(
     numId,
     {
-      ...OnceSWRConfig,
+      ...CompletionPollSWRConfig,
       // Every response has a new generatedAt version, so recursive comparison
       // only scans the full team/service matrix before reaching that difference.
       compare: Object.is,
-      // Poll through warmup and post-event closeout. The final request flips
-      // fullySettled only after every official epoch is durably materialized.
-      refreshInterval: (latest) => {
-        if (!doFetch) return 0
-        return status === GameStatus.OnGoing || latest?.fullySettled !== true ? 10 * 1000 : 60 * 1000
-      },
     },
-    doFetch
+    doFetch && numId > 0
   )
+  useCompletionPolling({
+    key: doFetch && numId > 0 ? `/api/Game/${numId}/Ad/Scoreboard` : '',
+    phase: status,
+    enabled: doFetch && numId > 0,
+    data: adScoreboard,
+    error,
+    isValidating,
+    mutate,
+    successDelay: (latest, completedSuccesses) =>
+      eventScoreboardPollDelay(status, latest.fullySettled, completedSuccesses, 10_000),
+  })
   return { adScoreboard, error, mutate }
 }
 
@@ -667,16 +703,22 @@ export const useKothScoreboard = (numId: number, doFetch: boolean = true) => {
   const {
     data: kothScoreboard,
     error,
+    isValidating,
     mutate,
   } = useSWR<KothScoreboardModel>(doFetch && numId > 0 ? `/api/game/${numId}/ad/koth/scoreboard` : null, {
-    ...OnceSWRConfig,
+    ...CompletionPollSWRConfig,
     compare: Object.is,
-    // Keep polling through event closeout until the final partial epoch has
-    // been durably settled; after that, only refresh occasionally.
-    refreshInterval: (latest) => {
-      if (!doFetch) return 0
-      return status === GameStatus.OnGoing || latest?.fullySettled !== true ? 10 * 1000 : 60 * 1000
-    },
+  })
+  useCompletionPolling({
+    key: doFetch && numId > 0 ? `/api/game/${numId}/ad/koth/scoreboard` : '',
+    phase: status,
+    enabled: doFetch && numId > 0,
+    data: kothScoreboard,
+    error,
+    isValidating,
+    mutate,
+    successDelay: (latest, completedSuccesses) =>
+      eventScoreboardPollDelay(status, latest.fullySettled, completedSuccesses, 10_000),
   })
   return { kothScoreboard, error, mutate }
 }
@@ -737,14 +779,22 @@ export const useCombinedScoreboard = (numId: number, doFetch: boolean = true) =>
   const {
     data: combinedScoreboard,
     error,
+    isValidating,
     mutate,
   } = useSWR<CombinedScoreboardModel>(doFetch && numId > 0 ? `/api/game/${numId}/scoreboard/combined` : null, {
-    ...OnceSWRConfig,
+    ...CompletionPollSWRConfig,
     compare: Object.is,
-    refreshInterval: (latest) => {
-      if (!doFetch) return 0
-      return status === GameStatus.OnGoing || latest?.fullySettled !== true ? 10 * 1000 : 60 * 1000
-    },
+  })
+  useCompletionPolling({
+    key: doFetch && numId > 0 ? `/api/game/${numId}/scoreboard/combined` : '',
+    phase: status,
+    enabled: doFetch && numId > 0,
+    data: combinedScoreboard,
+    error,
+    isValidating,
+    mutate,
+    successDelay: (latest, completedSuccesses) =>
+      eventScoreboardPollDelay(status, latest.fullySettled, completedSuccesses, 10_000),
   })
   return { combinedScoreboard, error, mutate }
 }

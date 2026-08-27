@@ -59,6 +59,8 @@ mod lifecycle;
 mod listing;
 mod scoring;
 mod scoring_formula;
+#[cfg(test)]
+mod state_tests;
 mod timeline;
 mod tokens;
 pub use admin::{admin_state, audit_receipts, recover_hill};
@@ -277,6 +279,10 @@ pub struct AdminKothStateModel {
 #[serde(rename_all = "camelCase")]
 pub struct KothHillStateModel {
     pub round: i32,
+    /// The one currently published endpoint for this hill. Managed hills hide
+    /// it during resets or an identity handoff to a replacement container.
+    pub ip: Option<String>,
+    pub port: Option<i32>,
     /// Marker is exclusive boot2root control; Api is normalized arena evidence.
     pub claim_source: String,
     pub holder_participation_id: Option<i32>,
@@ -308,6 +314,9 @@ pub struct KothHillStateModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct KothHillBase {
     container_id: Option<String>,
+    ip: Option<String>,
+    port: Option<i32>,
+    managed_crown_cycle: bool,
     claim_source: String,
     holder_participation_id: Option<i32>,
     holder_team_name: Option<String>,
@@ -315,6 +324,60 @@ struct KothHillBase {
     #[serde(with = "crate::utils::datetime::millis_opt")]
     checked_at: Option<DateTime<Utc>>,
 }
+
+#[derive(Debug, sqlx::FromRow)]
+struct KothHillBaseRow {
+    container_id: Option<String>,
+    ip: Option<String>,
+    port: Option<i32>,
+    claim_source: String,
+    holder_participation_id: Option<i32>,
+    holder_team_name: Option<String>,
+    evidence_container_id: Option<String>,
+    status_raw: Option<i16>,
+    checked_at: Option<DateTime<Utc>>,
+    managed_crown_cycle: bool,
+}
+
+const KOTH_HILL_BASE_SQL: &str = r#"SELECT
+         t.container_id,
+         NULLIF(t.host, '') AS ip,
+         NULLIF(t.port, 0) AS port,
+         COALESCE((
+           SELECT frozen.item->>'claimSource'
+             FROM "KothOfficialConfigs" config,
+                  LATERAL jsonb_array_elements(config.hills_snapshot) frozen(item)
+            WHERE config.game_id = $1
+              AND (frozen.item->>'challengeId')::integer = $2
+            LIMIT 1
+         ), CASE WHEN EXISTS (
+           SELECT 1 FROM "KothApiObservers" observer
+            WHERE observer.game_id = $1
+              AND observer.challenge_id = $2
+         ) THEN 'Api' ELSE 'Marker' END) AS claim_source,
+         p.id AS holder_participation_id,
+         tm.name AS holder_team_name,
+         cr.container_id AS evidence_container_id,
+         cr.status AS status_raw,
+         cr.checked_at,
+         EXISTS (
+           SELECT 1 FROM "KothCrownCycles" crown
+            WHERE crown.game_id = $1
+              AND crown.challenge_id = $2
+         ) AS managed_crown_cycle
+       FROM "Games" g
+       LEFT JOIN "KothTargets" t    ON t.game_id = $1 AND t.challenge_id = $2
+       LEFT JOIN "Participations" p ON p.id = t.holder_participation_id
+                                       AND p.game_id = $1
+                                       AND p.status = 1
+       LEFT JOIN "Teams" tm         ON tm.id = p.team_id
+       LEFT JOIN LATERAL (
+         SELECT result.container_id, result.status, result.checked_at
+           FROM "KothControlResults" result
+          WHERE result.game_id = $1 AND result.challenge_id = $2
+          ORDER BY result.ad_round_id DESC, result.id DESC LIMIT 1
+       ) cr ON TRUE
+       WHERE g.id = $1"#;
 
 fn holder_identity_is_current(
     cycle_number: i32,
@@ -326,6 +389,25 @@ fn holder_identity_is_current(
             (target_container_id, cycle_container_id),
             (Some(target), Some(cycle)) if !target.is_empty() && target == cycle
         )
+}
+
+fn endpoint_identity_is_current(
+    round: i32,
+    managed_crown_cycle: bool,
+    cycle_number: i32,
+    reset_phase: &str,
+    target_container_id: Option<&str>,
+    cycle_container_id: Option<&str>,
+) -> bool {
+    round > 0
+        && (!managed_crown_cycle
+            || (cycle_number > 0
+                && reset_phase == "Active"
+                && holder_identity_is_current(
+                    cycle_number,
+                    target_container_id,
+                    cycle_container_id,
+                )))
 }
 
 pub(crate) fn control_evidence_is_current(
@@ -363,72 +445,12 @@ async fn load_hill_base(st: &SharedState, id: i32, challenge_id: i32) -> AppResu
                     return Some(base);
                 }
             }
-            let row = sqlx::query_as::<
-                _,
-                (
-                    Option<String>,
-                    String,
-                    Option<i32>,
-                    Option<String>,
-                    Option<String>,
-                    Option<i16>,
-                    Option<DateTime<Utc>>,
-                    bool,
-                ),
-            >(
-                r#"SELECT
-                         t.container_id,
-                         COALESCE((
-                           SELECT frozen.item->>'claimSource'
-                             FROM "KothOfficialConfigs" config,
-                                  LATERAL jsonb_array_elements(config.hills_snapshot)
-                                    frozen(item)
-                            WHERE config.game_id = $1
-                              AND (frozen.item->>'challengeId')::integer = $2
-                            LIMIT 1
-                         ), CASE WHEN EXISTS (
-                           SELECT 1 FROM "KothApiObservers" observer
-                            WHERE observer.game_id = $1
-                              AND observer.challenge_id = $2
-                         ) THEN 'Api' ELSE 'Marker' END) AS claim_source,
-                         p.id,
-                         tm.name,
-                         cr.container_id,
-                         cr.status,
-                         cr.checked_at,
-                         EXISTS (
-                           SELECT 1 FROM "KothCrownCycles" crown
-                            WHERE crown.game_id = $1
-                              AND crown.challenge_id = $2
-                         ) AS managed_crown_cycle
-                       FROM "Games" g
-                       LEFT JOIN "KothTargets" t    ON t.game_id = $1 AND t.challenge_id = $2
-                       LEFT JOIN "Participations" p ON p.id = t.holder_participation_id
-                                                       AND p.game_id = $1
-                                                       AND p.status = 1
-                       LEFT JOIN "Teams" tm         ON tm.id = p.team_id
-                       LEFT JOIN LATERAL (
-                         SELECT result.container_id, result.status, result.checked_at
-                           FROM "KothControlResults" result
-                          WHERE result.game_id = $1 AND result.challenge_id = $2
-                          ORDER BY result.ad_round_id DESC, result.id DESC LIMIT 1
-                       ) cr ON TRUE
-                       WHERE g.id = $1"#,
-            )
+            let row = sqlx::query_as::<_, KothHillBaseRow>(KOTH_HILL_BASE_SQL)
             .bind(id)
             .bind(challenge_id)
             .fetch_one(st.pg())
             .await;
-            let (
-                container_id,
-                claim_source,
-                holder_pid,
-                holder_team,
-                evidence_container_id,
-                status_raw,
-                checked_at,
-                managed_crown_cycle,
-            ) = match row {
+            let row = match row {
                 Ok(row) => row,
                 Err(error) => {
                     tracing::warn!(game = id, challenge = challenge_id, %error, "KotH hill state cache fill failed");
@@ -436,19 +458,25 @@ async fn load_hill_base(st: &SharedState, id: i32, challenge_id: i32) -> AppResu
                 }
             };
             let evidence_is_current = control_evidence_is_current(
-                managed_crown_cycle,
-                evidence_container_id.as_deref(),
-                container_id.as_deref(),
+                row.managed_crown_cycle,
+                row.evidence_container_id.as_deref(),
+                row.container_id.as_deref(),
             );
             let base = KothHillBase {
-                container_id,
-                claim_source,
-                holder_participation_id: holder_pid,
-                holder_team_name: holder_team,
+                container_id: row.container_id,
+                ip: row.ip,
+                port: row.port,
+                managed_crown_cycle: row.managed_crown_cycle,
+                claim_source: row.claim_source,
+                holder_participation_id: row.holder_participation_id,
+                holder_team_name: row.holder_team_name,
                 status: evidence_is_current
-                    .then(|| status_raw.map(|status| koth_check_status_label(status).to_string()))
+                    .then(|| {
+                        row.status_raw
+                            .map(|status| koth_check_status_label(status).to_string())
+                    })
                     .flatten(),
-                checked_at: evidence_is_current.then_some(checked_at).flatten(),
+                checked_at: evidence_is_current.then_some(row.checked_at).flatten(),
             };
             let json = match serde_json::to_vec(&base) {
                 Ok(json) => json,
@@ -494,12 +522,24 @@ pub async fn koth_hill_state(
     let holder_team_name = holder_is_current.then_some(base.holder_team_name).flatten();
     let status = holder_is_current.then_some(base.status).flatten();
     let checked_at = holder_is_current.then_some(base.checked_at).flatten();
+    let endpoint_is_current = endpoint_identity_is_current(
+        round,
+        base.managed_crown_cycle,
+        view.cycle_number,
+        &view.reset_phase,
+        base.container_id.as_deref(),
+        view.replacement_container_id.as_deref(),
+    );
+    let ip = endpoint_is_current.then_some(base.ip).flatten();
+    let port = endpoint_is_current.then_some(base.port).flatten();
     let is_you_cooldown = view
         .cooldown_participants
         .iter()
         .any(|cooldown| cooldown.participation_id == part.id);
     Ok(RequestResponse::ok(KothHillStateModel {
         round,
+        ip,
+        port,
         claim_source: base.claim_source,
         holder_participation_id,
         holder_team_name,
@@ -616,8 +656,8 @@ async fn redirect_recover_hill(Path((game_id, challenge_id)): Path<(i32, i32)>) 
 #[allow(clippy::items_after_test_module)]
 mod token_cache_tests {
     use super::{
-        can_view_koth_standings, control_evidence_is_current, holder_identity_is_current,
-        koth_token_cache_key, KothHillBase,
+        can_view_koth_standings, control_evidence_is_current, endpoint_identity_is_current,
+        holder_identity_is_current, koth_token_cache_key, KothHillBase,
     };
 
     #[test]
@@ -640,6 +680,9 @@ mod token_cache_tests {
     fn lifecycle_round_is_not_part_of_cached_hill_state() {
         let cached = serde_json::to_value(KothHillBase {
             container_id: Some("container-a".to_string()),
+            ip: Some("10.0.0.7".to_string()),
+            port: Some(31337),
+            managed_crown_cycle: true,
             claim_source: "Marker".to_string(),
             holder_participation_id: Some(7),
             holder_team_name: Some("red".to_string()),
@@ -668,6 +711,61 @@ mod token_cache_tests {
         assert!(holder_identity_is_current(
             0,
             Some("legacy-container"),
+            None
+        ));
+    }
+
+    #[test]
+    fn scoped_endpoint_tracks_managed_identity_and_fails_closed_without_a_live_cycle() {
+        assert!(endpoint_identity_is_current(
+            7,
+            true,
+            4,
+            "Active",
+            Some("container-a"),
+            Some("container-a")
+        ));
+        assert!(!endpoint_identity_is_current(
+            7,
+            true,
+            4,
+            "Readiness",
+            Some("container-a"),
+            Some("container-a")
+        ));
+        assert!(!endpoint_identity_is_current(
+            7,
+            true,
+            4,
+            "Active",
+            Some("container-a"),
+            Some("container-b")
+        ));
+        assert!(!endpoint_identity_is_current(
+            7,
+            true,
+            0,
+            "Readiness",
+            None,
+            None
+        ));
+        assert!(!endpoint_identity_is_current(
+            7,
+            true,
+            0,
+            "Active",
+            Some("stale-container"),
+            None
+        ));
+        assert!(endpoint_identity_is_current(
+            7, false, 0, "Active", None, None
+        ));
+        assert!(!endpoint_identity_is_current(
+            0,
+            false,
+            0,
+            "Active",
+            Some("pre-start-target"),
             None
         ));
     }

@@ -3,15 +3,15 @@ import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiAlertCircleOutline, mdiApi, mdiCheck, mdiCrown, mdiRefresh } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useCallback, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import useSWR from 'swr'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { showErrorMsg } from '@Utils/Shared'
 import { isKothResetTransition, kothConfirmationProgress, maxKothCooldownTicks } from '@Utils/kothLifecycle'
-import { selectCurrentKothTarget } from '@Utils/kothTarget'
-import { useChallengePolling } from '@Hooks/useChallengePolling'
+import { CompletionPollSWRConfig, jitterPollingDelay, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import type { KothLifecycleFields } from '@Hooks/useGame'
-import api, { AdTargetsModel } from '@Api'
+import api from '@Api'
 import misc from '@Styles/Misc.module.css'
 
 const KOTH_POLL_INTERVAL_MS = 5_000
@@ -41,6 +41,8 @@ interface KothTokenModel {
 
 interface KothHillStateModel extends KothLifecycleFields {
   round: number
+  ip: string | null
+  port: number | null
   claimSource: 'Api' | 'Marker' | string
   holderParticipationId: number | null
   holderTeamName: string | null
@@ -59,6 +61,34 @@ interface KothChallengePanelProps {
   active: boolean
 }
 
+/** Abort the one request owned by a modal key when that modal closes. */
+const useAbortableApiRead = <T,>(enabled: boolean) => {
+  const pending = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    if (!enabled) {
+      pending.current?.abort()
+      pending.current = null
+    }
+    return () => {
+      pending.current?.abort()
+      pending.current = null
+    }
+  }, [enabled])
+
+  return useCallback(async (path: string) => {
+    pending.current?.abort()
+    const controller = new AbortController()
+    pending.current = controller
+    try {
+      const response = await api.request<T>({ path, method: 'GET', format: 'json', signal: controller.signal })
+      return assertJsonResponse(response)
+    } finally {
+      if (pending.current === controller) pending.current = null
+    }
+  }, [])
+}
+
 /**
  * Per-challenge King of the Hill status block. Mirrors the layout of
  * <see cref="AdChallengePanel"/> but for the shared hill model:
@@ -68,8 +98,8 @@ interface KothChallengePanelProps {
  *   - marker-holder state, or the Leaderboard play model;
  *   - the latest functional verdict on the hill.
  *
- * Uses modal-owned five-second polling so holder and status updates stop as
- * soon as the challenge surface closes.
+ * Each key uses a completion-scheduled five-second cadence so the holder and
+ * status update without overlapping slow requests or SWR's error retries.
  */
 export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challengeId, active }) => {
   const { t } = useTranslation()
@@ -79,65 +109,46 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
   // The Token endpoint requires player auth (cookie session). The token is
   // scoped to this hill. Marker tokens rotate per crown cycle; Leaderboard
   // capabilities remain stable for the event unless the player rotates one.
-  const tokenRequest = useCallback(
-    async (signal: AbortSignal) => {
-      const response = await api.request<KothTokenModel>({
-        path: `/api/game/${gameId}/ad/koth/${challengeId}/token`,
-        method: 'GET',
-        format: 'json',
-        signal,
-      })
-      return assertJsonResponse(response)
-    },
-    [challengeId, gameId]
-  )
-  const { data: tokenData, mutate: mutateToken } = useChallengePolling<KothTokenModel>({
-    key: `/api/game/${gameId}/ad/koth/${challengeId}/token`,
-    active,
-    refreshInterval: KOTH_POLL_INTERVAL_MS,
-    request: tokenRequest,
+  const enabled = active && gameId > 0 && challengeId > 0
+  const tokenKey = enabled ? `/api/game/${gameId}/ad/koth/${challengeId}/token` : null
+  const stateKey = enabled ? `/api/game/${gameId}/ad/koth/${challengeId}/state` : null
+  const tokenFetcher = useAbortableApiRead<KothTokenModel>(enabled)
+  const stateFetcher = useAbortableApiRead<KothHillStateModel>(enabled)
+  const {
+    data: tokenData,
+    error: tokenError,
+    isValidating: tokenValidating,
+    mutate: mutateToken,
+  } = useSWR<KothTokenModel>(tokenKey, tokenFetcher, CompletionPollSWRConfig)
+  const {
+    data: stateData,
+    error: stateError,
+    isValidating: stateValidating,
+    mutate: mutateState,
+  } = useSWR<KothHillStateModel>(stateKey, stateFetcher, CompletionPollSWRConfig)
+  useCompletionPolling({
+    key: tokenKey ?? '',
+    phase: 'open',
+    enabled,
+    data: tokenData,
+    error: tokenError,
+    isValidating: tokenValidating,
+    mutate: mutateToken,
+    successDelay: () => jitterPollingDelay(KOTH_POLL_INTERVAL_MS),
   })
-  const stateRequest = useCallback(
-    async (signal: AbortSignal) => {
-      const response = await api.request<KothHillStateModel>({
-        path: `/api/game/${gameId}/ad/koth/${challengeId}/state`,
-        method: 'GET',
-        format: 'json',
-        signal,
-      })
-      return assertJsonResponse(response)
-    },
-    [challengeId, gameId]
-  )
-  const { data: stateData } = useChallengePolling<KothHillStateModel>({
-    key: `/api/game/${gameId}/ad/koth/${challengeId}/state`,
-    active,
-    refreshInterval: KOTH_POLL_INTERVAL_MS,
-    request: stateRequest,
-  })
-  const targetsRequest = useCallback(
-    async (signal: AbortSignal) => {
-      const response = await api.game.gameAdTargets(gameId, { signal })
-      return assertJsonResponse(response)
-    },
-    [gameId]
-  )
-  const { data: targets } = useChallengePolling<AdTargetsModel>({
-    key: `/api/Game/${gameId}/Ad/Targets`,
-    active,
-    refreshInterval: KOTH_POLL_INTERVAL_MS,
-    request: targetsRequest,
+  useCompletionPolling({
+    key: stateKey ?? '',
+    phase: 'open',
+    enabled,
+    data: stateData,
+    error: stateError,
+    isValidating: stateValidating,
+    mutate: mutateState,
+    successDelay: () => jitterPollingDelay(KOTH_POLL_INTERVAL_MS),
   })
 
   const resetPhase = stateData?.resetPhase ?? 'Active'
-  const targetSnapshot = targets?.challenges.find((c) => c.challengeId === challengeId)?.hill
-  const hill = selectCurrentKothTarget(
-    targetSnapshot,
-    stateData && { cycleNumber: stateData.cycleNumber, resetPhase: stateData.resetPhase }
-  )
-  // The state response binds its verdict to the same exact lifecycle/container
-  // view as the holder. Use the Targets verdict only before state has loaded.
-  const displayedStatus = stateData ? stateData.status : hill?.lastCheckStatus
+  const displayedStatus = stateData?.status
   const isResetting = (stateData?.cycleNumber ?? 0) > 0 && isKothResetTransition(resetPhase)
   const [confirmationCurrent, confirmationRequired] = kothConfirmationProgress(
     stateData?.provisionalConfirmationTicks,
@@ -191,6 +202,28 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
   // Loading: neither came back yet → show a single spinner so the modal
   // doesn't flash empty.
   if (!tokenData && !stateData) {
+    if (tokenError || stateError) {
+      return (
+        <Alert icon={<Icon path={mdiAlertCircleOutline} size={0.9} />} color="red" variant="light">
+          <Stack gap="xs">
+            <Text size="sm">
+              {t('game.content.koth.live_load_error', 'The live hill information could not be loaded.')}
+            </Text>
+            <Button
+              size="compact-xs"
+              variant="light"
+              leftSection={<Icon path={mdiRefresh} size={0.7} />}
+              onClick={() => {
+                void mutateToken()
+                void mutateState()
+              }}
+            >
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Stack>
+        </Alert>
+      )
+    }
     return (
       <Group justify="center" py="md">
         <Loader size="sm" />
@@ -200,6 +233,26 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
 
   return (
     <Stack gap={6}>
+      {(tokenError || stateError) && (
+        <Alert icon={<Icon path={mdiAlertCircleOutline} size={0.9} />} color="orange" variant="light" p="xs">
+          <Group justify="space-between" gap="xs" wrap="wrap">
+            <Text size="xs">
+              {t('game.content.koth.live_partial_error', 'Some live hill information could not be refreshed.')}
+            </Text>
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              leftSection={<Icon path={mdiRefresh} size={0.65} />}
+              onClick={() => {
+                if (tokenError) void mutateToken()
+                if (stateError) void mutateState()
+              }}
+            >
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Group>
+        </Alert>
+      )}
       {/* Hill state — who holds it right now + functional verdict */}
       <Group justify="space-between" wrap="wrap" align="center">
         <Group gap="xs" wrap="nowrap">
@@ -331,12 +384,12 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
       )}
 
       {/* Hill IP:port — copy-button to drop into curl */}
-      {hill?.ip && (
+      {stateData?.ip && (
         <Group gap={6} align="center" wrap="nowrap">
           <Text size="xs" c="dimmed">
             {t('game.content.ad.target', 'Target')}:
           </Text>
-          <CopyButton value={`${hill.ip}:${hill.port ?? ''}`}>
+          <CopyButton value={`${stateData.ip}:${stateData.port ?? ''}`}>
             {({ copied, copy }) => (
               <Tooltip
                 label={
@@ -359,8 +412,8 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
                     }
                   }}
                 >
-                  {hill.ip}
-                  {hill.port ? `:${hill.port}` : ''}
+                  {stateData.ip}
+                  {stateData.port ? `:${stateData.port}` : ''}
                 </Text>
               </Tooltip>
             )}
@@ -464,7 +517,7 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
 
       {/* No hill rendered yet — the operator has not ensured containers, or a
           lifecycle transition is rebuilding it. Surface a hint instead of silence. */}
-      {!hill?.ip && targets && stateData && (
+      {!stateData?.ip && stateData && (
         <Alert icon={<Icon path={mdiAlertCircleOutline} size={0.9} />} color="orange" variant="light" p="xs">
           <Text size="xs">
             {t(

@@ -40,8 +40,8 @@ import {
   PartialIconProps,
 } from '@Utils/Shared'
 import { filterJeopardyChallenges } from '@Utils/scoreboard'
-import { useGame, useGameScoreboard } from '@Hooks/useGame'
-import { ChallengeInfo, ChallengeCategory, ScoreboardItem, SubmissionType } from '@Api'
+import { useGame } from '@Hooks/useGame'
+import { ChallengeInfo, ChallengeCategory, ScoreboardItem, ScoreboardModel, SubmissionType } from '@Api'
 import misc from '@Styles/Misc.module.css'
 import classes from '@Styles/ScoreboardTable.module.css'
 
@@ -270,9 +270,11 @@ const ITEM_COUNT_PER_PAGE = 30
 export interface ScoreboardProps {
   divisionId: number | null
   setDivisionId: (div: number | null) => void
+  scoreboard: ScoreboardModel | undefined
+  error: unknown
 }
 
-export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId }) => {
+export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId, scoreboard, error }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const { iconMap } = SubmissionTypeIconMap(1)
@@ -282,7 +284,6 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
   const [keyword, setKeyword] = useState('')
   const [debouncedKeyword] = useDebouncedValue(keyword, 400)
 
-  const { scoreboard, error: scoreboardError } = useGameScoreboard(numId)
   // A&D / KotH challenges live on their own boards — keep them out of the jeopardy
   // columns (the shared payload includes them so the challenge list still works).
   const jeopardyChallenges = useMemo(() => filterJeopardyChallenges(scoreboard?.challenges), [scoreboard?.challenges])
@@ -357,7 +358,7 @@ export const ScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId
   const bloodData = useBonusLabels(bloodBonus)
   const hasDivisionFilter = divisionOptions.length > 0
 
-  if (scoreboardError && !scoreboard) {
+  if (error && !scoreboard) {
     return (
       <Alert color="red" icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />} role="alert">
         {t('game.content.scoreboard.load_error', 'The scoreboard could not be loaded for this event.')}

@@ -29,7 +29,7 @@ import { ScoreboardProps } from '@Components/ScoreboardTable'
 import { ScrollingText } from '@Components/ScrollingText'
 import { MobileScoreboardItemModal } from '@Components/mobile/ScoreboardItemModal'
 import { BloodBonus, BloodsTypes, useBonusLabels } from '@Utils/Shared'
-import { useGame, useGameScoreboard } from '@Hooks/useGame'
+import { useGame } from '@Hooks/useGame'
 import { ScoreboardItem } from '@Api'
 import classes from '@Styles/ScoreboardTable.module.css'
 
@@ -86,7 +86,7 @@ const TableRow: FC<{
   )
 })
 
-export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId }) => {
+export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivisionId, scoreboard, error }) => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const [activePage, setPage] = useState(1)
@@ -96,7 +96,6 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
   const [highlightedTeam, setHighlightedTeam] = useState<string | null>(null)
   const [selection, setSelection] = useState<{ gameId: number; itemId: number } | null>(null)
   const [itemDetailOpened, setItemDetailOpened] = useState(false)
-  const { scoreboard, error: scoreboardError } = useGameScoreboard(numId)
   const { game } = useGame(numId)
   const myTeamName = game?.teamName ?? null
   const { t } = useTranslation()
@@ -154,7 +153,7 @@ export const MobileScoreboardTable: FC<ScoreboardProps> = ({ divisionId, setDivi
 
   const bloodData = useBonusLabels(bloodBonus)
 
-  if (scoreboardError && !scoreboard) {
+  if (error && !scoreboard) {
     return (
       <Alert color="red" icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />} role="alert">
         {t('game.content.scoreboard.load_error', 'The scoreboard could not be loaded for this event.')}
