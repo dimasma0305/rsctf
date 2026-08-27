@@ -245,12 +245,12 @@ const ParticipationItem: FC<ParticipationItemProps> = (props) => {
               </Button>
             </Alert>
           )}
-          {detail && detail.members.length === 0 && (
+          {!detailError && detail && detail.members.length === 0 && (
             <Text c="dimmed" role="status">
               {t('admin.content.games.review.participation.no_members', 'This team has no roster members.')}
             </Text>
           )}
-          {detail && detail.members.length > 0 && (
+          {!detailError && detail && detail.members.length > 0 && (
             <Stack>
               {detail.members.map((member) => (
                 <MemberItem key={member.userId} user={member} />
@@ -381,6 +381,7 @@ const GameTeamReview: FC = () => {
               placeholder={t('admin.placeholder.teams.search')}
               value={search}
               onChange={setSearch}
+              maxLength={100}
               rightSection={<Icon path={mdiAccountGroupOutline} size={1} aria-hidden />}
             />
             <Group justify="right" wrap="wrap" className={reviewClasses.filterGroup}>

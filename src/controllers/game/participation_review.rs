@@ -398,16 +398,29 @@ async fn participation_review_detail(
     }))
 }
 
+fn private_no_store_detail(detail: ParticipationReviewDetailModel) -> Response {
+    let mut response = RequestResponse::ok(detail).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, no-store"),
+    );
+    response.headers_mut().insert(
+        header::PRAGMA,
+        axum::http::HeaderValue::from_static("no-cache"),
+    );
+    response
+}
+
 /// `GET /api/game/{id}/participations/{participationId}` — lazy roster detail.
 pub async fn participation_detail(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((game_id, participation_id)): Path<(i32, i32)>,
-) -> AppResult<RequestResponse<ParticipationReviewDetailModel>> {
+) -> AppResult<Response> {
     match participation_review_detail(st.pg(), user.id, user.is_admin(), game_id, participation_id)
         .await?
     {
-        Some(detail) => Ok(RequestResponse::ok(detail)),
+        Some(detail) => Ok(private_no_store_detail(detail)),
         None if user.is_admin() => Err(AppError::not_found("Participation not found")),
         None => Err(AppError::Forbidden),
     }

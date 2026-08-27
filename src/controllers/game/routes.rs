@@ -29,10 +29,13 @@ fn router_with_domains(
         .route("/api/game/{id}/details", get(game_details_with_challenges))
         .route("/api/game/{id}/notices", get(notices))
         .route("/api/game/{id}/events", limited(Policy::Query, get(events)))
-        .route("/api/game/{id}/participations", get(participations))
+        .route(
+            "/api/game/{id}/participations",
+            limited(Policy::Query, get(participations)),
+        )
         .route(
             "/api/game/{id}/participations/{participationId}",
-            get(participation_detail),
+            limited(Policy::Query, get(participation_detail)),
         )
         // The scoreboard is fully cache-served (cheap), so the always-on Global
         // window is protection enough — dropping the per-route Query decorator

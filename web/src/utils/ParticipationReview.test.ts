@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { isViewerScopedRequest, routeLifecycleKey } from './ViewerIdentity'
 
 const page = readFileSync('src/pages/admin/games/[id]/Review.tsx', 'utf8')
 const api = readFileSync('src/Api.ts', 'utf8')
@@ -14,12 +15,28 @@ test('participation review sends every list filter and page boundary to the serv
   assert.match(page, /status: selectedStatus \?\? undefined/)
   assert.match(page, /divisionId: selectedDivisionId/)
   assert.match(page, /search: debouncedSearch \|\| undefined/)
+  assert.match(page, /maxLength=\{100\}/)
   assert.doesNotMatch(page, /filteredParticipations/)
   assert.doesNotMatch(page, /pagedParticipations/)
 
   assert.match(api, /gameParticipations:[\s\S]*query: query/)
   assert.match(api, /useGameParticipations:[\s\S]*\[\x60?\/api\/game\/\$\{id\}\/participations\x60?, query\]/)
   assert.match(api, /count\?: number;[\s\S]*skip\?: number;[\s\S]*status\?: ParticipationStatus/)
+})
+
+test('participation review keys are fenced by game, query, detail, route, and account', () => {
+  for (const key of [['/api/game/17/participations', { count: 10, skip: 0 }], '/api/game/17/participations/23']) {
+    assert.equal(isViewerScopedRequest(key), true)
+  }
+
+  assert.notEqual(
+    routeLifecycleKey('/admin/games/17/review', '', 'user:a:Admin'),
+    routeLifecycleKey('/admin/games/18/review', '', 'user:a:Admin')
+  )
+  assert.notEqual(
+    routeLifecycleKey('/admin/games/17/review', '', 'user:a:Admin'),
+    routeLifecycleKey('/admin/games/17/review', '', 'user:b:Admin')
+  )
 })
 
 test('roster PII is lazy-loaded only for the opened participation', () => {

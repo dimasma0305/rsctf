@@ -1,5 +1,26 @@
 use super::*;
 
+fn find_plan_node_by_index<'a>(
+    node: &'a serde_json::Value,
+    index_name: &str,
+) -> Option<&'a serde_json::Value> {
+    if node.get("Index Name").and_then(serde_json::Value::as_str) == Some(index_name)
+        && node
+            .get("Actual Loops")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|loops| loops > 0.0)
+    {
+        return Some(node);
+    }
+    node.get("Plans")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|plans| {
+            plans
+                .iter()
+                .find_map(|child| find_plan_node_by_index(child, index_name))
+        })
+}
+
 #[test]
 fn review_query_bounds_every_input_before_postgres() {
     let normalized = ParticipationReviewQuery {
@@ -72,6 +93,32 @@ fn list_projection_is_compact_and_contains_no_member_pii_fields() {
     ] {
         assert!(!object.contains_key(forbidden), "list leaked {forbidden}");
     }
+}
+
+#[test]
+fn roster_detail_is_private_and_not_cacheable() {
+    let response = private_no_store_detail(ParticipationReviewDetailModel {
+        id: 1,
+        team_id: 2,
+        team_name: "team".to_owned(),
+        team_avatar: None,
+        members: Vec::new(),
+    });
+
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("private, no-store")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(header::PRAGMA)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-cache")
+    );
 }
 
 #[test]
@@ -236,6 +283,14 @@ async fn large_event_page_is_indexed_bounded_authorized_filtered_and_pii_minimal
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "UserParticipations" (user_id, game_id, team_id, participation_id)
+           SELECT LPAD(TO_HEX(value::bigint), 32, '0')::uuid, 77, value, value
+             FROM GENERATE_SERIES(1, 12000) value"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query(r#"UPDATE "Teams" SET name = 'Special Needle Team' WHERE id = 9999"#)
         .execute(&pool)
         .await
@@ -262,14 +317,6 @@ async fn large_event_page_is_indexed_bounded_authorized_filtered_and_pii_minimal
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(
-        r#"INSERT INTO "UserParticipations" (user_id, game_id, team_id, participation_id)
-           VALUES ($1, 77, 9999, 9999)"#,
-    )
-    .bind(captain_id)
-    .execute(&pool)
-    .await
-    .unwrap();
     sqlx::query("ANALYZE").execute(&pool).await.unwrap();
 
     let first_page = participation_review_page(
@@ -366,6 +413,7 @@ async fn large_event_page_is_indexed_bounded_authorized_filtered_and_pii_minimal
     .fetch_one(&pool)
     .await
     .unwrap();
+    assert_eq!(expected_total, 600, "the 12k fixture shape changed");
     assert_eq!(filtered_page.total, expected_total);
     assert_eq!(filtered_page.length, 7);
     assert!(filtered_page
@@ -445,6 +493,43 @@ async fn large_event_page_is_indexed_bounded_authorized_filtered_and_pii_minimal
     assert!(
         plan_text.contains("ix_participations_review_filter"),
         "large-event plan did not use the review filter index: {plan_text}"
+    );
+    let root = plan
+        .get(0)
+        .and_then(|entry| entry.get("Plan"))
+        .expect("EXPLAIN JSON contains a root plan");
+    assert_eq!(
+        root.get("Actual Rows").and_then(Value::as_f64),
+        Some(10.0),
+        "the filtered query must return exactly one bounded page: {plan_text}"
+    );
+    let filter_index = find_plan_node_by_index(root, "ix_participations_review_filter")
+        .expect("the filter index node is present");
+    assert_eq!(
+        filter_index.get("Actual Loops").and_then(Value::as_f64),
+        Some(1.0),
+        "the participation index must be scanned once: {plan_text}"
+    );
+    assert_eq!(
+        filter_index.get("Actual Rows").and_then(Value::as_f64),
+        Some(expected_total as f64),
+        "the index must read exactly the matching cohort: {plan_text}"
+    );
+    let registration_index = find_plan_node_by_index(root, "ix_userparticipations_review_count")
+        .expect("the per-page registration count uses its covering index");
+    assert_eq!(
+        registration_index
+            .get("Actual Loops")
+            .and_then(Value::as_f64),
+        Some(10.0),
+        "registration lookup work must stay proportional to the returned page: {plan_text}"
+    );
+    assert_eq!(
+        registration_index
+            .get("Actual Rows")
+            .and_then(Value::as_f64),
+        Some(1.0),
+        "each per-page registration lookup must return the exact matching row: {plan_text}"
     );
 
     pool.close().await;

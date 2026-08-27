@@ -17,6 +17,7 @@ cd tests/load
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
       npm run monitor-history # fixed-rate bounded monitor event/submission history
+      npm run participation-review # fixed-rate bounded 12k-team organizer review
       npm run details-read  # fixed-rate authenticated challenge-details poll
       npm run challenge-modal-read # bounded detail + solver modal reads
       npm run donations     # fixed-rate, read-only cached donation-feed smoke
@@ -77,6 +78,27 @@ Its baseline gate is zero 5xx, 429, invalid responses, oversized bodies,
 row-limit violations, or dropped iterations, with p95 below 800 ms. Use a
 disposable/local stack when raising `RATE`; the Query policy deliberately limits
 sustained work per monitor identity.
+
+### Bounded participation review
+
+`participation-review` is read-only and requires a disposable/local event with at
+least 12,000 participation rows plus one authorized game manager or Admin. It rotates
+through default, maximum, tail, status, division, literal-search, and lazy roster-detail
+reads while probing exact `healthz` independently:
+
+```sh
+PARTICIPATION_REVIEW_GAME=92001 RATE=2 DURATION=30s \
+  RSCTF_LOAD_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1/rsctf_load_test \
+  SUMMARY_JSON=/tmp/participation-review.json npm run participation-review
+```
+
+The gate rejects an oversized page, any undeclared/PII summary field, an undeclared
+detail field, 5xx, 429, invalid bodies, health failures, or dropped arrivals, and keeps
+read p95 below 1 second. A non-loopback target additionally requires
+`ALLOW_REMOTE_PARTICIPATION_REVIEW` to equal the exact origin. Retain the first live
+fixed-rate distributions and matching application/PostgreSQL resource samples in
+`REPORT.md` during the final performance gate; this contract-only batch does not claim
+an unmeasured runtime baseline.
 
 ### Bounded event-security telemetry
 
@@ -210,6 +232,8 @@ tests/load/
   asset-download.mjs fixed-rate range/resume delivery benchmark
   monitor-exports.mjs bounded XLSX row-integrity/resource acceptance
   monitor-export-model.js shared export response and row-bound contracts
+  participation-review.mjs read-only 12k-team organizer review acceptance
+  participation-review.js bounded PII-free page and lazy-detail contracts
   event-security.mjs fixed-rate control-vs-telemetry CPU/RAM/storage benchmark
   news-feed.mjs     fixed-rate conditional homepage-feed benchmark
   asset-download-model.js shared asset-path and deterministic range rules
@@ -230,6 +254,7 @@ tests/load/
     polled-read.js     one read per iteration across the dominant polled endpoints
     asset-download.js  one authenticated deterministic attachment range per iteration
     monitor-exports.js fixed-rate monitor exports plus independent health arrivals
+    participation-review.js fixed-rate bounded organizer review plus independent health arrivals
     event-security.js  fixed-rate empty-control and aggregate sensor-ingest phases
     news-feed.js     fixed-rate conditional homepage-feed reads
     player.js         A&D + KotH player: poll format/Overall boards, tokens/state, submit flags
