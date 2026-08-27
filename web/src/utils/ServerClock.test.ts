@@ -225,7 +225,7 @@ test('non-browser clock authority requires an absolute API base URL', async (con
   }
 })
 
-test('newer cross-replica samples correct backward while stale responses stay fenced', async (context) => {
+test('meaningful slower clock corrections beat RTT noise while stale responses stay fenced', async (context) => {
   const browser = new Window({ url: 'https://rsctf.test/games/1/challenges' })
   const restoreDom = installTestDom(browser)
   const localStart = 2_000_010_000_000
@@ -249,21 +249,38 @@ test('newer cross-replica samples correct backward while stale responses stay fe
     await act(async () => root.render(createElement(Probe)))
     assert.equal(container.textContent, 'waiting')
 
-    // Request 1 remains in flight while request 2 reaches a replica whose
-    // wall clock is two minutes fast.
+    // Request 1 remains in flight while request 2 reaches a low-latency replica
+    // whose wall clock is two minutes fast.
     await act(async () => context.mock.timers.tick(10))
     await act(async () => {
-      assert.equal(observeServerTime(localStart + 120_010, Date.now(), localStart + 5, 2), true)
+      assert.equal(observeServerTime(localStart + 120_010, Date.now(), localStart + 9, 2), true)
     })
     assert.equal(serverClockTestApi.offset(), 120_000)
+    assert.equal(serverClockTestApi.bestRoundTrip(), 1)
     assert.equal(container.textContent, '120000')
 
-    // A newer, lower-latency response from a synchronized replica has a lower
-    // absolute serverTime. Request ordering must let it correct the offset.
+    // A newer response from a synchronized replica is slightly slower and has
+    // a lower absolute serverTime. Its minutes-scale disagreement is far
+    // outside either sample's RTT uncertainty, so it must correct the offset.
     await act(async () => context.mock.timers.tick(10))
     await act(async () => {
-      assert.equal(observeServerTime(localStart + 20, Date.now(), localStart + 19, 3), true)
+      assert.equal(observeServerTime(localStart + 20, Date.now(), localStart + 18, 3), true)
     })
+    assert.equal(serverClockTestApi.offset(), 0)
+    assert.equal(serverClockTestApi.bestRoundTrip(), 1)
+    assert.equal(container.textContent, '0')
+
+    // A fresh, slightly slower sample whose offset differs only by ordinary
+    // response-path jitter must not move lifecycle consumers.
+    await act(async () => context.mock.timers.tick(10))
+    assert.equal(observeServerTime(Date.now() - 25, Date.now(), Date.now() - 5, 4), true)
+    assert.equal(serverClockTestApi.offset(), 0)
+    assert.equal(container.textContent, '0')
+
+    // Even a high-latency sample is ignored when its apparent shift fits
+    // inside that sample's own RTT uncertainty and the fixed noise margin.
+    await act(async () => context.mock.timers.tick(5_000))
+    assert.equal(observeServerTime(Date.now() - 4_000, Date.now(), Date.now() - 5_000, 5), true)
     assert.equal(serverClockTestApi.offset(), 0)
     assert.equal(container.textContent, '0')
 
@@ -278,7 +295,7 @@ test('newer cross-replica samples correct backward while stale responses stay fe
     // steps the server clock backward instead of waiting for wall time to catch up.
     await act(async () => context.mock.timers.tick(10))
     await act(async () => {
-      assert.equal(observeServerTime(Date.now() - 60_000, Date.now(), Date.now(), 4), true)
+      assert.equal(observeServerTime(Date.now() - 60_000, Date.now(), Date.now() - 3, 6), true)
     })
     assert.equal(serverClockTestApi.offset(), -60_000)
     assert.equal(container.textContent, '-60000')

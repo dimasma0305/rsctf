@@ -10,10 +10,12 @@ let liveSampleReady = false
 let nextRequestSequence = 0
 let latestAcceptedRequestSequence = 0
 let bestRoundTripMilliseconds = Number.POSITIVE_INFINITY
+let offsetSampleRoundTripMilliseconds = Number.POSITIVE_INFINITY
 let sampleWindowStartedAt = Number.NEGATIVE_INFINITY
 const installedInstances = new WeakSet<AxiosInstance>()
 const requestTiming = new WeakMap<object, { sequence: number; startedAt: number }>()
 const CLOCK_SAMPLE_WINDOW_MS = 5 * 60_000
+const CLOCK_CORRECTION_NOISE_MARGIN_MS = 1_000
 
 const httpUrl = (value: string, base?: string): URL | null => {
   try {
@@ -113,9 +115,11 @@ const modelServerTime = (value: unknown): number | null => {
 }
 
 /**
- * Accept a response-stamped sample at receipt, preferring the lowest RTT in a
- * bounded window. The sequence is captured before dispatch so a late response
- * is fenced without assuming clocks are monotonic across API replicas.
+ * Accept a response-stamped sample at receipt, normally preferring the lowest
+ * RTT in a bounded window. A slower sample may replace the offset only when
+ * its disagreement exceeds both samples' RTT uncertainty plus a noise margin.
+ * The sequence is captured before dispatch so a late response is fenced
+ * without assuming clocks are monotonic across API replicas.
  */
 export const observeServerTime = (
   serverTime: number,
@@ -149,16 +153,24 @@ export const observeServerTime = (
   }
 
   const roundTripMilliseconds = receivedAt - startedAt
-  if (roundTripMilliseconds > bestRoundTripMilliseconds) {
-    if (readinessChanged) listeners.forEach((listener) => listener())
-    return true
-  }
-  bestRoundTripMilliseconds = roundTripMilliseconds
-
   // API serverTime values are sampled near response creation, after handler
   // work. Anchoring them at the request midpoint would mistake server-side
   // processing for clock skew and can move lifecycle controls early.
   const nextOffset = serverTime - receivedAt
+  const improvesRoundTrip = roundTripMilliseconds <= bestRoundTripMilliseconds
+  const correctionUncertaintyMilliseconds =
+    Math.max(roundTripMilliseconds, offsetSampleRoundTripMilliseconds) + CLOCK_CORRECTION_NOISE_MARGIN_MS
+  const isMeaningfulCorrection =
+    liveSampleReady &&
+    Number.isFinite(offsetSampleRoundTripMilliseconds) &&
+    Math.abs(nextOffset - offsetMilliseconds) > correctionUncertaintyMilliseconds
+  if (!improvesRoundTrip && !isMeaningfulCorrection) {
+    if (readinessChanged) listeners.forEach((listener) => listener())
+    return true
+  }
+  if (improvesRoundTrip) bestRoundTripMilliseconds = roundTripMilliseconds
+  offsetSampleRoundTripMilliseconds = roundTripMilliseconds
+
   if (nextOffset === offsetMilliseconds) {
     if (readinessChanged) listeners.forEach((listener) => listener())
     return true
@@ -255,6 +267,7 @@ export const serverClockTestApi = {
     nextRequestSequence = 0
     latestAcceptedRequestSequence = 0
     bestRoundTripMilliseconds = Number.POSITIVE_INFINITY
+    offsetSampleRoundTripMilliseconds = Number.POSITIVE_INFINITY
     sampleWindowStartedAt = Number.NEGATIVE_INFINITY
   },
   offset: getSnapshot,

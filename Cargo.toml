@@ -1,6 +1,6 @@
 [package]
 name = "rsctf"
-version = "0.1.90"
+version = "0.1.91"
 edition = "2021"
 license = "MIT"
 authors = ["rsctf contributors"]

@@ -25,6 +25,11 @@ if (!Number.isSafeInteger(RATE) || RATE <= 0 || !Number.isSafeInteger(VUS) || VU
 const endpoints = [
   { name: 'game_catalog', path: '/api/game', trend: new Trend('game_catalog_ms', true) },
   {
+    name: 'recent_games',
+    path: '/api/game/recent?limit=7',
+    trend: new Trend('recent_games_ms', true),
+  },
+  {
     name: 'jeo_scoreboard',
     path: `/api/game/${JEO_GAME}/scoreboard`,
     trend: new Trend('jeo_scoreboard_ms', true),

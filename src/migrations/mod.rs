@@ -122,6 +122,10 @@ mod m0099_variant_generator_builds;
 mod m0100_container_policy_bounds;
 mod m0101_blood_bonus_default;
 mod m0102_discord_webhook_outbox;
+mod m0103_recent_games_candidates;
+
+#[cfg(test)]
+pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
 
 pub struct Migrator;
 
@@ -237,6 +241,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0100_container_policy_bounds::Migration),
             Box::new(m0101_blood_bonus_default::Migration),
             Box::new(m0102_discord_webhook_outbox::Migration),
+            Box::new(m0103_recent_games_candidates::Migration),
         ]
     }
 }
