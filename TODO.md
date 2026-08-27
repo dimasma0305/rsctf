@@ -7,7 +7,7 @@ on 2026-08-25.
 
 ### P0 — Fix before the next live event
 
-- [ ] Make event start and end transitions reactive across the event detail, challenge,
+- [x] Make event start and end transitions reactive across the event detail, challenge,
   scoreboard, catalog, and home pages.
   - Drive `getGameStatus` consumers from a shared clock instead of relying on unrelated
     React renders.
@@ -39,7 +39,7 @@ on 2026-08-25.
     `web/src/pages/games/[id]/Challenges.tsx`, and
     `web/src/pages/admin/games/[id]/AdOps.tsx`.
 
-- [ ] Make SignalR notices and operator feeds recover without silently losing events.
+- [x] Make SignalR notices and operator feeds recover without silently losing events.
   - Retry failed initial connections, handle exhausted reconnects, and cancel retry work
     during unmount.
   - Use capped exponential backoff with jitter instead of SignalR's deterministic default
@@ -97,7 +97,7 @@ on 2026-08-25.
     `web/src/pages/games/[id]/monitor/Events.tsx`, `web/src/pages/admin/Logs.tsx`,
     and `web/src/pages/admin/games/[id]/FlagEgress.tsx`.
 
-- [ ] Serialize flag-verdict retrieval and make it resilient to transient failures.
+- [x] Serialize flag-verdict retrieval and make it resilient to transient failures.
   - Do not start overlapping asynchronous status requests every 500 ms.
   - Preserve the submitted flag and pending state while retrying recoverable failures.
   - Use bounded backoff and cancellation, noting that the backend grades and commits the
@@ -117,7 +117,7 @@ on 2026-08-25.
     `src/controllers/game/routes.rs`, and
     `src/middlewares/rate_limiter.rs`.
 
-- [ ] Make normal flag submission idempotent across duplicate dispatch and lost
+- [x] Make normal flag submission idempotent across duplicate dispatch and lost
   responses.
   - The grading transaction inserts and commits the submission, consumes a one-use
     solve receipt, increments the attempt count, and may claim the solve before the
@@ -145,7 +145,7 @@ on 2026-08-25.
     `src/controllers/game/submit_review.rs`, and a new forward migration for the
     idempotency key.
 
-- [ ] Replace the admin Instances page's per-row runtime polling before it
+- [x] Replace the admin Instances page's per-row runtime polling before it
   self-rate-limits or overloads the container backend.
   - The default page mounts as many as 100 independent five-second stats pollers:
     1,200 requests per minute from one tab, versus the authenticated global allowance
@@ -169,7 +169,7 @@ on 2026-08-25.
     `src/controllers/admin/instances.rs`, `src/controllers/admin/mod.rs`, and
     `src/middlewares/rate_limiter.rs`.
 
-- [ ] Stop challenge pages from generating background and permanently failing
+- [x] Stop challenge pages from generating background and permanently failing
   request loops.
   - Gate the challenge-detail and solver SWR keys on `modalProps.opened`; the parent
     retains the selected challenge after close, so the top-level modal hooks continue
@@ -238,7 +238,7 @@ on 2026-08-25.
     `src/controllers/game/play.rs`, `src/controllers/game/play_final_policy.rs`, and
     `src/controllers/game/scoreboard_board.rs`.
 
-- [ ] Make scoreboard and KotH polling error-aware instead of treating every missing
+- [x] Make scoreboard and KotH polling error-aware instead of treating every missing
   response as an unsettled live event.
   - The A&D, KotH, and combined-scoreboard interval callbacks return ten seconds when
     `latest` is absent. A permanent 401/403/404/429 or repeated server failure therefore
@@ -311,7 +311,7 @@ on 2026-08-25.
     `src/controllers/game/containers.rs`, and
     `src/controllers/game/containers/reaping.rs`.
 
-- [ ] Make the A&D/KotH operator console's five-second refresh cost independent of
+- [x] Make the A&D/KotH operator console's five-second refresh cost independent of
   event history.
   - The page polls both engine state endpoints throughout every ongoing event, even for
     a pure A&D or pure KotH game and regardless of which view is selected.
@@ -377,7 +377,7 @@ on 2026-08-25.
     `src/controllers/game/koth/api/submission/evidence.rs`, and
     `src/controllers/game/koth/mod.rs`.
 
-- [ ] Make KotH referee-secret rotation recoverable and exactly once.
+- [x] Make KotH referee-secret rotation recoverable and exactly once.
   - `rotateObserver` uses component-local `observerBusy` as its only duplicate guard,
     while the POST has no operation identity or expected observer version. Rapid
     activation, another operator/tab, or a retry after a lost response can submit two
@@ -485,7 +485,7 @@ on 2026-08-25.
     `src/controllers/game/ad/submit.rs`, `src/server.rs`,
     `web/src/utils/SubmitTemplates.ts`, and `docs/players/attack-defense.md`.
 
-- [ ] Collapse the admin dashboard's periodic query amplification into bounded SQL
+- [x] Collapse the admin dashboard's periodic query amplification into bounded SQL
   aggregates.
   - Every dashboard SWR inherits the global one-minute refresh. One dashboard refresh
     currently performs roughly 59 queries before the activity tables: 50 sequential
@@ -548,7 +548,7 @@ on 2026-08-25.
     `web/src/hooks/useUser.tsx`, `src/controllers/game/ad/token.rs`, and
     `src/services/ad/api_token.rs`.
 
-- [ ] Bound the monitor event/submission queries so a client regression cannot request
+- [x] Bound the monitor event/submission queries so a client regression cannot request
   or search the entire history repeatedly.
   - Both live endpoints interpret `count=0` as “return every row” on tables that grow
     throughout an event. Their search path also materializes matching users/teams
@@ -3043,7 +3043,7 @@ on 2026-08-25.
   - Relevant code: `web/src/components/admin/KothOpsPanel.tsx` and
     `src/controllers/game/koth/admin.rs`, `src/controllers/game/koth/api/admin.rs`.
 
-- [ ] Propagate container-extension failures to `InstanceEntry`.
+- [x] Propagate container-extension failures to `InstanceEntry`.
   - Do not display a success notification or disable retry when the extension request
     failed.
   - Base destroy on the value returned by `mutate()`. `requestDestroy` currently awaits
@@ -3075,7 +3075,7 @@ on 2026-08-25.
   - Relevant code: `web/src/components/InstanceEntry.tsx` and
     `web/src/components/WsrxProvider.tsx`.
 
-- [ ] Repair account-profile error handling.
+- [x] Repair account-profile error handling.
   - Resolve the contradiction between `shouldRetryOnError: false` and `onErrorRetry`.
     In the installed SWR behavior, the false predicate prevents `onErrorRetry` from
     being called at all, so its 403 logout/ban notification and intended five-attempt
@@ -3186,7 +3186,7 @@ on 2026-08-25.
     `src/controllers/game/catalog.rs`, `src/controllers/game/routes.rs`, and the next
     idempotent forward index migration if plan evidence requires one.
 
-- [ ] Cancel superseded game-manager autocomplete reads and bound their database search.
+- [x] Cancel superseded game-manager autocomplete reads and bound their database search.
   - The manager selector starts a new `/api/admin/users` request after every 300-ms typing
     pause but never aborts or generation-checks the previous request. Clearing the field
     does not cancel it, so a slow old response can repopulate an empty/new query and its
@@ -3209,7 +3209,7 @@ on 2026-08-25.
     `src/controllers/admin/users.rs`, `src/controllers/admin/mod.rs`, and an idempotent
     forward index migration if query-plan evidence requires one.
 
-- [ ] Keep previous SWR data from crossing game, query, or account boundaries.
+- [x] Keep previous SWR data from crossing game, query, or account boundaries.
   - Global `keepPreviousData: true` lets a reused route component render game A's
     challenge/team/scoreboard response under game B's URL until the new request
     settles—and can leave the stale view in place when the new request is rejected.
@@ -3256,7 +3256,7 @@ on 2026-08-25.
   - Relevant code: `src/controllers/game/play.rs` and
     `src/controllers/edit/ad/provision.rs`.
 
-- [ ] Publish the monitor event feed that the UI subscribes to.
+- [x] Publish the monitor event feed that the UI subscribes to.
   - Emit `ReceivedGameEvent` when `GameEvents` rows are committed, with a stable event
     identity for deduplication and an HTTP backfill cursor.
   - Add the target to the Redis event-bus allowlist so cross-replica delivery is not
@@ -3310,7 +3310,7 @@ on 2026-08-25.
     `web/src/utils/AuthState.ts`, `src/controllers/game/vpn_access.rs`, and
     `src/middlewares/rate_limiter.rs`.
 
-- [ ] Bound the news feed before normal homepage refreshes become full-table work.
+- [x] Bound the news feed before normal homepage refreshes become full-table work.
   - `/api/posts/latest` sorts and loads every post model and only then truncates the
     vector to 20. Every open homepage requests that endpoint every five minutes, so
     old post growth increases PostgreSQL rows, Rust allocations, and sort/transfer
@@ -3331,7 +3331,7 @@ on 2026-08-25.
   - Relevant code: `src/controllers/info.rs`, `web/src/pages/Index.tsx`, and
     `web/src/pages/posts/Index.tsx`, plus a new forward index migration.
 
-- [ ] Bound recent-game selection in PostgreSQL instead of loading and sorting every
+- [x] Bound recent-game selection in PostgreSQL instead of loading and sorting every
   public game in Rust.
   - `GET /api/game/recent` currently fetches every non-hidden game, sorts the full set
     in memory, and truncates afterward; every client revisits the endpoint periodically.
@@ -3343,7 +3343,7 @@ on 2026-08-25.
   - Relevant code: `src/controllers/game/play.rs` and
     `web/src/hooks/useGame.ts`.
 
-- [ ] Bound public scoreboard bandwidth and client parse work for large events.
+- [x] Bound public scoreboard bandwidth and client parse work for large events.
   - A&D and combined boards use the negotiated precompressed cache bundle, but the
     standard and KotH endpoints repeatedly return raw JSON. The KotH body grows with
     teams × hills (plus epoch detail) and is polled every ten seconds, so legitimate
@@ -3359,7 +3359,7 @@ on 2026-08-25.
     `src/controllers/game/scoreboard_encoding.rs`, `web/src/hooks/useGame.ts`, and
     `web/src/components/KothScoreboardTable.tsx`.
 
-- [ ] Paginate and minimize the participation-review payload on the server.
+- [x] Paginate and minimize the participation-review payload on the server.
   - The admin page downloads every participation, every registration link, every team
     roster, and every referenced user—including full profile fields—then filters and
     slices one visible page in the browser. Large registration rounds therefore create
@@ -3372,7 +3372,7 @@ on 2026-08-25.
   - Relevant code: `web/src/pages/admin/games/[id]/Review.tsx` and
     `src/controllers/game/scoreboard.rs`.
 
-- [ ] Bound and offload monitor spreadsheet generation and make downloads single-flight.
+- [x] Bound and offload monitor spreadsheet generation and make downloads single-flight.
   - The submission export loads every submission into both model and projected vectors;
     both it and the scoreboard export run `rust_xlsxwriter::save_to_buffer`
     synchronously on a Tokio request worker. Neither GET route has weighted query/work
