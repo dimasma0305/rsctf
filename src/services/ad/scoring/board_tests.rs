@@ -25,6 +25,24 @@ fn negative_database_counts_saturate_at_zero() {
 }
 
 #[test]
+fn ended_unstarted_ad_board_is_settled_zero_without_rounds() {
+    assert!(final_scoreboard_is_settled(
+        false, true, None, None, 0, None
+    ));
+    assert!(!final_scoreboard_is_settled(
+        false,
+        true,
+        None,
+        Some(1),
+        0,
+        None
+    ));
+    assert!(!final_scoreboard_is_settled(
+        true, true, None, None, 0, None
+    ));
+}
+
+#[test]
 fn detail_limit_stays_small_and_nonzero() {
     assert!((1..=3).contains(&TEAM_DETAIL_EPOCH_LIMIT));
 }

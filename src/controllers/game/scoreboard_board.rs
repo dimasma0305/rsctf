@@ -182,6 +182,14 @@ const SCOREBOARD_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs
 /// Versioned cache keys keep a rolling old standard-scoreboard replica (which
 /// expects raw JSON) from serving the new atomic bundle as JSON. Cron/team/admin
 /// invalidation removes both this namespace and the preceding raw namespace.
+fn standard_scoreboard_is_immutable(
+    practice_mode: bool,
+    end_time: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    !practice_mode && now >= end_time
+}
+
 fn scoreboard_cache_key(g: &game::Model, is_monitor: bool) -> String {
     if is_monitor {
         format!("_ScoreBoardWireV2_{}", g.id)
@@ -278,21 +286,62 @@ pub(crate) async fn build_scoreboard_bundle(
             if let Some(bytes) = cached_scoreboard_bundle(&st2, &key2).await {
                 return Some(bytes);
             }
-            let model = build_scoreboard(&st2, &g2, is_monitor).await.ok()?;
-            let raw = bytes::Bytes::from(serde_json::to_vec(&model).ok()?);
-            let built = super::scoreboard_encoding::build_stable_bundle(
-                raw,
-                key2.clone(),
-                b"\"updateTimeUtc\":",
-            )
-            .await
-            .ok()?;
-            if built.cacheable {
-                st2.cache
-                    .set(&key2, &built.bytes, Some(SCOREBOARD_CACHE_TTL))
-                    .await;
+            for _ in 0..2 {
+                let (game, revision) = match super::load_scoreboard_game_revision(
+                    &st2,
+                    g2.id,
+                    is_monitor,
+                )
+                .await
+                {
+                    Ok(Some(snapshot)) => snapshot,
+                    Ok(None) => return None,
+                    Err(error) => {
+                        tracing::warn!(game = g2.id, %error, "scoreboard revision preflight failed");
+                        return None;
+                    }
+                };
+                let model = build_scoreboard(&st2, &game, is_monitor).await.ok()?;
+                let raw = bytes::Bytes::from(serde_json::to_vec(&model).ok()?);
+                let built = super::scoreboard_encoding::build_stable_bundle(
+                    raw,
+                    key2.clone(),
+                    b"\"updateTimeUtc\":",
+                )
+                .await
+                .ok()?;
+                if !built.cacheable {
+                    return Some(built.bytes);
+                }
+                let immutable = standard_scoreboard_is_immutable(
+                    game.practice_mode,
+                    game.end_time_utc,
+                    Utc::now(),
+                );
+                let ttl = super::scoreboard_cache_ttl(SCOREBOARD_CACHE_TTL, immutable);
+                match super::publish_scoreboard_render(
+                    &st2,
+                    game.id,
+                    is_monitor,
+                    &revision,
+                    &key2,
+                    &built.bytes,
+                    ttl,
+                )
+                .await
+                {
+                    Ok(super::ScoreboardPublish::Published) => {
+                        return Some(built.bytes);
+                    }
+                    Ok(super::ScoreboardPublish::RevisionChanged) => continue,
+                    Ok(super::ScoreboardPublish::GameMissing) => return None,
+                    Err(error) => {
+                        tracing::warn!(game = g2.id, %error, "scoreboard publication failed");
+                        return None;
+                    }
+                }
             }
-            Some(built.bytes)
+            None
         })
         .await;
     coalesced.ok_or_else(|| AppError::internal("scoreboard cache fill failed"))
@@ -728,6 +777,13 @@ mod tests {
             rows.into_iter().map(|r| r.0.id).collect::<Vec<_>>(),
             [2, 5, 9]
         );
+    }
+
+    #[test]
+    fn ended_practice_scoreboard_remains_short_lived() {
+        let end = Utc::now() - chrono::Duration::minutes(1);
+        assert!(standard_scoreboard_is_immutable(false, end, Utc::now()));
+        assert!(!standard_scoreboard_is_immutable(true, end, Utc::now()));
     }
 
     #[test]

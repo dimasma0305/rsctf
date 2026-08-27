@@ -6,6 +6,7 @@ use crate::services::ad_engine::AdScoringConfig;
 #[derive(sqlx::FromRow)]
 struct BoardGameRow {
     end_time_utc: DateTime<Utc>,
+    practice_mode: bool,
     freeze_time_utc: Option<DateTime<Utc>>,
     ad_tick_seconds: Option<i32>,
     koth_scoring_start_round: Option<i32>,
@@ -55,6 +56,10 @@ fn challenge_category(value: i16) -> AppResult<ChallengeCategory> {
         .map_err(|error| AppError::internal(error.to_string()))
 }
 
+fn final_scoring_is_immutable(practice_mode: bool, fully_settled: bool) -> bool {
+    !practice_mode && fully_settled
+}
+
 /// Compute the shared KotH board state for a game.
 ///
 /// Combines the latest hill state with the bounded epoch scoring snapshot used by
@@ -96,7 +101,7 @@ async fn compute_koth_board_inner(
     let cfg = AdScoringConfig::from_env();
 
     let game = sqlx::query_as::<_, BoardGameRow>(
-        r#"SELECT game.end_time_utc, game.freeze_time_utc,
+        r#"SELECT game.end_time_utc, game.practice_mode, game.freeze_time_utc,
                   game.ad_tick_seconds, game.koth_scoring_start_round,
                   game.koth_epoch_ticks
              FROM "Games" game
@@ -345,7 +350,7 @@ async fn compute_koth_board_inner(
             epoch_ticks: game.koth_epoch_ticks.clamp(2, 64),
             scoring_start_round: koth_scoring_start_round,
             scoring: KothScoringSnapshot {
-                fully_settled: event_ended,
+                fully_settled: final_scoring_is_immutable(game.practice_mode, event_ended),
                 ..KothScoringSnapshot::default()
             },
             holder_by_challenge,
@@ -381,7 +386,10 @@ async fn compute_koth_board_inner(
         division: row.division,
     })
     .collect();
-    let scoring = load_koth_scoring(st.pg(), game_id, cutoff, event_ended).await?;
+    let mut scoring = load_koth_scoring(st.pg(), game_id, cutoff, event_ended).await?;
+    // Practice submissions remain mutable after the scheduled end, so their
+    // scoreboards must never receive the immutable final-cache policy.
+    scoring.fully_settled = final_scoring_is_immutable(game.practice_mode, scoring.fully_settled);
 
     Ok(KothBoard {
         tick_seconds,
@@ -566,6 +574,13 @@ mod tests {
         assert_eq!(challenge_category(9).unwrap(), ChallengeCategory::Ppc);
         assert_eq!(challenge_category(12).unwrap(), ChallengeCategory::Osint);
         assert!(challenge_category(13).is_err());
+    }
+
+    #[test]
+    fn practice_koth_scoreboard_never_becomes_immutable() {
+        assert!(final_scoring_is_immutable(false, true));
+        assert!(!final_scoring_is_immutable(true, true));
+        assert!(!final_scoring_is_immutable(false, false));
     }
 
     fn team_row(

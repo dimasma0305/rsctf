@@ -5,8 +5,8 @@
 //! across replicas through a Redis/`IDistributedCache` lock, and — on each tick
 //! — fires any `[CronJob]`-attributed job in `RuntimeCronJobs` whose `Cronos`
 //! expression is due. The concrete jobs there are the container reaper
-//! (`ContainerChecker`), the scoreboard-cache maintenance
-//! (`BootstrapCache` / `FlushRecentGames`), and assorted pruners.
+//! (`ContainerChecker`), one-time final-scoreboard materialization, and assorted
+//! pruners.
 //!
 //! Here we reproduce that shape with Tokio: a single supervisor task driven by a
 //! `tokio::time::interval`, a best-effort Redis `SET NX` leader lock, and a
@@ -15,9 +15,8 @@
 //!   * [`reap_expired_containers`] — destroy container rows whose
 //!     `expect_stop_at` has passed (mirrors `RuntimeCronJobs.ContainerChecker`
 //!     + `ContainerRepository.DestroyContainer`).
-//!   * [`flush_stale_scoreboards`] — evict the live scoreboard cache keys for
-//!     recently-ended games plus the recent-games list (mirrors
-//!     `CacheHelper.FlushScoreboardCache` / `FlushRecentGamesCache`).
+//!   * [`scoreboard_finalization::materialize_pending`] — claim, invalidate, and
+//!     publish each immutable final scoreboard version once.
 //!   * the round scheduler — for every running Attack-Defense game whose
 //!     current round has ended, advance it: finalize the round, open round
 //!     `N+1` sized from `ad_tick_seconds`, and plant a fresh rotating `ad_flag`
@@ -30,11 +29,11 @@
 
 use std::time::Duration as StdDuration;
 
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use crate::app_state::SharedState;
-use crate::models::data::{ad_team_service, container, game, koth_target};
+use crate::models::data::{ad_team_service, container, koth_target};
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::AppResult;
 
@@ -42,6 +41,9 @@ mod backend_reaper;
 mod delivery_health;
 mod round_finish;
 mod scheduler;
+mod scoreboard_finalization;
+
+pub(crate) use scoreboard_finalization::request_repair as request_scoreboard_finalization_repair;
 
 /// Cache key for cross-replica maintenance ownership.
 ///
@@ -72,10 +74,6 @@ const ORPHAN_GRACE_SECS: u64 = 60;
 static ORPHAN_FIRST_SEEN: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
-/// How far back a game counts as "recently ended" for the stale-scoreboard
-/// sweep. Bounds the flush work so it doesn't re-touch every game forever.
-const RECENT_ENDED_HOURS: i64 = 6;
 
 /// Which games one round-scheduler replica is eligible to drive.
 ///
@@ -296,6 +294,18 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: ended KotH crown-cycle recovery failed: {e}"),
     }
 
+    match scoreboard_finalization::materialize_pending(state).await {
+        Ok(report) if report.claimed > 0 || report.dead_lettered > 0 => tracing::info!(
+            claimed = report.claimed,
+            completed = report.completed,
+            retried = report.retried,
+            dead_lettered = report.dead_lettered,
+            "cron: processed final scoreboard materialization"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "cron: final scoreboard materialization failed"),
+    }
+
     match backend_reaper::reap_ended_backends(state).await {
         Ok(n) if n > 0 => tracing::info!("cron: reaped {n} ended-game A&D backend(s)"),
         Ok(_) => {}
@@ -306,12 +316,6 @@ async fn run_jobs(state: &SharedState) {
         Ok(n) if n > 0 => tracing::info!("cron: swept {n} orphan container(s) (no DB row)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: orphan sweep failed: {e}"),
-    }
-
-    match flush_stale_scoreboards(state).await {
-        Ok(n) if n > 0 => tracing::debug!("cron: flushed scoreboard cache for {n} game(s)"),
-        Ok(_) => {}
-        Err(e) => tracing::warn!("cron: scoreboard flush failed: {e}"),
     }
 
     // KotH accrual needs no dedicated job: the live holder snapshot on
@@ -848,70 +852,9 @@ fn docker_id_shape(value: &str) -> bool {
 //   (RSCTF `CacheHelper.FlushScoreboardCache` / `FlushRecentGamesCache`).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Evict stale scoreboard cache so it recomputes on next read. Drops the global
-/// recent-games list plus the LIVE scoreboard keys for games that ended within
-/// the last [`RECENT_ENDED_HOURS`] hours.
-///
-/// Only the live boards are evicted, never the frozen variants — matching
-/// RSCTF's `FlushAdScoreboardCache`, which leaves the frozen boards to rebuild
-/// lazily on read. In-game boards are kept fresh by the event-driven flushes in
-/// the controllers, so this sweep deliberately targets only recently-ended games
-/// (whose final standings no longer receive those events). Returns the number of
-/// games whose keys were flushed.
-async fn flush_stale_scoreboards(state: &SharedState) -> AppResult<u64> {
-    let now = Utc::now();
-    let cutoff = now - Duration::hours(RECENT_ENDED_HOURS);
-
-    // Recent-games list (RSCTF `CacheKey.RecentGames`) — cheap, always refreshed.
-    state.cache.remove("_RecentGames").await;
-
-    let ended = game::Entity::find()
-        .filter(game::Column::EndTimeUtc.lt(now))
-        .filter(game::Column::EndTimeUtc.gte(cutoff))
-        .all(&state.db)
-        .await?;
-
-    let mut flushed = 0u64;
-    for g in &ended {
-        evict_scoreboard_cache(state.cache.as_ref(), g.id).await;
-        flushed += 1;
-    }
-
-    Ok(flushed)
-}
-
-async fn evict_scoreboard_cache(cache: &dyn crate::services::cache::Cache, game_id: i32) {
-    for key in scoreboard_cache_keys(game_id) {
-        cache.remove(&key).await;
-    }
-}
-
-/// Scoreboard cache entries whose time-dependent view changes at event close.
-fn scoreboard_cache_keys(game_id: i32) -> [String; 16] {
-    [
-        format!("_ScoreBoard_{game_id}"),
-        format!("_ScoreBoardFrozen_{game_id}"),
-        format!("_ScoreBoardWireV2_{game_id}"),
-        format!("_ScoreBoardWireV2Frozen_{game_id}"),
-        format!("_AdScoreBoard_{game_id}"),
-        format!("_AdScoreBoard_{game_id}:stale"),
-        format!("_AdScoreBoardFrozen_{game_id}"),
-        format!("_AdScoreBoardFrozen_{game_id}:stale"),
-        format!("_KothScoreBoard_{game_id}"),
-        format!("_KothScoreBoardFrozen_{game_id}"),
-        format!("_KothScoreBoardWireV2_{game_id}"),
-        format!("_KothScoreBoardWireV2Frozen_{game_id}"),
-        format!("_KothTimeline_{game_id}"),
-        format!("_KothTimelineFrozen_{game_id}"),
-        format!("_CombinedScoreBoardByChallenge_{game_id}"),
-        format!("_CombinedScoreBoardByChallengeFrozen_{game_id}"),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{container_id_is_known, evict_scoreboard_cache, scoreboard_cache_keys};
-    use crate::services::cache::{Cache, InMemoryCache};
+    use super::container_id_is_known;
 
     #[test]
     fn orphan_identity_matching_accepts_full_and_daemon_short_ids_only() {
@@ -926,42 +869,5 @@ mod tests {
         assert!(container_id_is_known("rsctf-koth-cycle-17", &named));
         assert!(!container_id_is_known("rsctf-koth-cycle", &named));
         assert!(!container_id_is_known("rsctf-koth-cycle-17-extra", &named));
-    }
-
-    #[tokio::test]
-    async fn ended_event_sweep_removes_legacy_and_versioned_scoreboard_keys() {
-        let cache = InMemoryCache::new();
-        let game_id = 17;
-        let keys = scoreboard_cache_keys(game_id);
-        for expected in [
-            "_ScoreBoardWireV2_17",
-            "_ScoreBoardWireV2Frozen_17",
-            "_KothScoreBoardWireV2_17",
-            "_KothScoreBoardWireV2Frozen_17",
-        ] {
-            assert!(keys.iter().any(|key| key == expected), "missing {expected}");
-        }
-        for key in keys {
-            cache.set(&key, b"cached", None).await;
-        }
-        cache.set("unrelated", b"keep", None).await;
-
-        evict_scoreboard_cache(&cache, game_id).await;
-
-        assert!(cache
-            .get("_CombinedScoreBoardByChallenge_17")
-            .await
-            .is_none());
-        assert!(cache
-            .get("_CombinedScoreBoardByChallengeFrozen_17")
-            .await
-            .is_none());
-        for key in scoreboard_cache_keys(game_id) {
-            assert!(cache.get(&key).await.is_none(), "{key} survived");
-        }
-        assert_eq!(
-            cache.get("unrelated").await.as_deref(),
-            Some(b"keep".as_slice())
-        );
     }
 }

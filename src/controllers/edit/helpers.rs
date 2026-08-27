@@ -233,22 +233,7 @@ pub(crate) fn ensure_ad_roster_status_mutable(
 }
 
 pub(crate) async fn flush_ad_scoreboard(st: &SharedState, game_id: i32) {
-    crate::controllers::game::ad::hard_invalidate_ad_scoreboard(st, game_id).await;
-    crate::controllers::game::koth::invalidate_live_hill_cache(st.cache.as_ref(), game_id).await;
-    st.cache.remove(&format!("_KothScoreBoard_{game_id}")).await;
-    st.cache
-        .remove(&format!("_KothScoreBoardWireV2_{game_id}"))
-        .await;
-    st.cache
-        .remove(&format!("_KothScoreBoardFrozen_{game_id}"))
-        .await;
-    st.cache
-        .remove(&format!("_KothScoreBoardWireV2Frozen_{game_id}"))
-        .await;
-    st.cache.remove(&format!("_KothTimeline_{game_id}")).await;
-    st.cache
-        .remove(&format!("_KothTimelineFrozen_{game_id}"))
-        .await;
+    flush_game_scoreboards(st, game_id).await;
 }
 
 const AD_EVENT_CLOSEOUT_MESSAGE: &str =
@@ -363,17 +348,17 @@ pub(crate) async fn reopen_latest_round_for_end_extension(
 }
 
 pub(crate) async fn flush_game_scoreboards(st: &SharedState, game_id: i32) {
-    st.cache.remove(&format!("_ScoreBoard_{game_id}")).await;
-    st.cache
-        .remove(&format!("_ScoreBoardWireV2_{game_id}"))
-        .await;
-    st.cache
-        .remove(&format!("_ScoreBoardFrozen_{game_id}"))
-        .await;
-    st.cache
-        .remove(&format!("_ScoreBoardWireV2Frozen_{game_id}"))
-        .await;
-    flush_ad_scoreboard(st, game_id).await;
+    if let Err(error) =
+        crate::controllers::game::invalidate_scoreboard_render_version(st, game_id).await
+    {
+        tracing::warn!(game = game_id, %error, "scoreboard render invalidation failed");
+    }
+    crate::controllers::game::koth::invalidate_live_hill_cache(st.cache.as_ref(), game_id).await;
+    if let Err(error) =
+        crate::services::cron::request_scoreboard_finalization_repair(st.pg(), game_id).await
+    {
+        tracing::warn!(game = game_id, %error, "final scoreboard repair scheduling failed");
+    }
 }
 
 #[cfg(test)]

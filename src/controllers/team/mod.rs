@@ -817,11 +817,8 @@ pub(crate) async fn team_game_ids(st: &SharedState, team_id: i32) -> AppResult<V
     Ok(ids)
 }
 
-/// Evict the live scoreboard renderings for every game the team is in — RSCTF
-/// `FlushScoreboardsForGames`. We drop the full key family (standard + frozen,
-/// A&D + KotH) per game unconditionally: removing an absent key is a no-op, and
-/// this keeps us in step with `edit::flush_scoreboard`. Best-effort by design —
-/// the cache is a soft dependency, so a miss never fails the request.
+/// Evict the scoreboard renderings for every game the team is in and schedule
+/// durable repair for any ended immutable board.
 pub(crate) async fn flush_scoreboard_for_team(st: &SharedState, team_id: i32) -> AppResult<()> {
     let game_ids = team_game_ids(st, team_id).await?;
     flush_scoreboards_for_games(st, &game_ids).await;
@@ -830,21 +827,7 @@ pub(crate) async fn flush_scoreboard_for_team(st: &SharedState, team_id: i32) ->
 
 pub(crate) async fn flush_scoreboards_for_games(st: &SharedState, game_ids: &[i32]) {
     for &game_id in game_ids {
-        for key in [
-            format!("_ScoreBoard_{game_id}"),
-            format!("_ScoreBoardFrozen_{game_id}"),
-            format!("_ScoreBoardWireV2_{game_id}"),
-            format!("_ScoreBoardWireV2Frozen_{game_id}"),
-            format!("_KothScoreBoard_{game_id}"),
-            format!("_KothScoreBoardFrozen_{game_id}"),
-            format!("_KothScoreBoardWireV2_{game_id}"),
-            format!("_KothScoreBoardWireV2Frozen_{game_id}"),
-            format!("_KothTimeline_{game_id}"),
-            format!("_KothTimelineFrozen_{game_id}"),
-        ] {
-            st.cache.remove(&key).await;
-        }
-        crate::controllers::game::ad::hard_invalidate_ad_scoreboard(st, game_id).await;
+        crate::controllers::edit::flush_game_scoreboards(st, game_id).await;
     }
 }
 

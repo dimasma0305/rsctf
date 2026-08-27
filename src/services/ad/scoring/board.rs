@@ -22,6 +22,7 @@ const TICK_SECONDS_DEFAULT: i64 = 60;
 #[derive(Debug, sqlx::FromRow)]
 struct AdScoreboardGameRow {
     hidden: bool,
+    practice_mode: bool,
     epoch_ticks: i32,
     scoring_start_round: Option<i32>,
     flag_lifetime_ticks: Option<i32>,
@@ -186,6 +187,26 @@ pub struct AdScoreboard {
 
 fn count(value: i64) -> u64 {
     value.max(0) as u64
+}
+
+fn final_scoreboard_is_settled(
+    practice_mode: bool,
+    acceptance_closed: bool,
+    latest_round_finalized: Option<bool>,
+    scoring_start_round: Option<i32>,
+    current_epoch: i32,
+    rollup_epoch: Option<i32>,
+) -> bool {
+    if practice_mode || !acceptance_closed {
+        return false;
+    }
+    let final_round_sealed = match (latest_round_finalized, scoring_start_round) {
+        (Some(true), _) | (None, None) => true,
+        _ => false,
+    };
+    final_round_sealed
+        && scoring_start_round
+            .is_none_or(|_| current_epoch > 0 && rollup_epoch.is_some_and(|e| e >= current_epoch))
 }
 
 fn scoreboard_evidence_cutoff(
@@ -400,7 +421,7 @@ pub async fn build_ad_scoreboard(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     let game = sqlx::query_as::<_, AdScoreboardGameRow>(
-        r#"SELECT hidden, ad_epoch_ticks AS epoch_ticks,
+        r#"SELECT hidden, practice_mode, ad_epoch_ticks AS epoch_ticks,
                   ad_scoring_start_round AS scoring_start_round,
                   ad_flag_lifetime_ticks AS flag_lifetime_ticks,
                   ad_tick_seconds AS tick_seconds,
@@ -579,15 +600,14 @@ pub async fn build_ad_scoreboard(
     let current_epoch = scoring_start_round
         .filter(|start| current_round >= *start)
         .map_or(0, |start| ((current_round - start) / epoch_ticks) + 1);
-    let final_round_sealed =
-        acceptance_closed && round_clock.as_ref().is_some_and(|round| round.finalized);
-    let fully_settled = final_round_sealed
-        && scoring_start_round.is_none_or(|_| {
-            current_epoch > 0
-                && rollup_header
-                    .as_ref()
-                    .is_some_and(|header| header.epoch >= current_epoch)
-        });
+    let fully_settled = final_scoreboard_is_settled(
+        game.practice_mode,
+        acceptance_closed,
+        round_clock.as_ref().map(|round| round.finalized),
+        scoring_start_round,
+        current_epoch,
+        rollup_header.as_ref().map(|header| header.epoch),
+    );
     let teams: BTreeMap<i32, (i32, String, Option<String>)> = services
         .iter()
         .map(|service| {

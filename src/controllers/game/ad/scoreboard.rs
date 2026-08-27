@@ -144,24 +144,6 @@ fn scoreboard_cache_key(game_id: i32, is_monitor: bool) -> String {
     }
 }
 
-/// Remove every A&D board representation after a destructive, visibility, or
-/// configuration mutation. Routine round/submit invalidations intentionally
-/// remove only the five-second fresh key so SWR can bridge an expensive rebuild.
-pub(crate) async fn hard_invalidate_ad_scoreboard(st: &SharedState, game_id: i32) {
-    // A board fill fences publication with Games.xmin. Most scoring inputs live
-    // in child tables, so advance that revision before eviction: an older
-    // detached fill can no longer republish stale data after this returns.
-    if let Err(error) = sqlx::query(r#"UPDATE "Games" SET id = id WHERE id = $1"#)
-        .bind(game_id)
-        .execute(st.pg())
-        .await
-    {
-        tracing::warn!(game = game_id, %error, "A&D scoreboard revision barrier failed");
-    }
-    hard_invalidate_ad_scoreboard_cache(st.cache.as_ref(), game_id).await;
-    crate::controllers::game::invalidate_combined_scoreboard(st, game_id).await;
-}
-
 async fn hard_invalidate_ad_scoreboard_cache(
     cache: &dyn crate::services::cache::Cache,
     game_id: i32,
@@ -249,6 +231,7 @@ async fn build_scoreboard_bundle_attempt(
             return ScoreboardBuildAttempt::Complete(ScoreboardFillResult::Failed);
         }
     };
+    let immutable = model.fully_settled;
     let raw = match serde_json::to_vec(&model) {
         Ok(raw) => bytes::Bytes::from(raw),
         Err(error) => {
@@ -287,12 +270,14 @@ async fn build_scoreboard_bundle_attempt(
     }
 
     if built.cacheable {
+        let fresh_ttl =
+            crate::controllers::game::scoreboard_cache_ttl(AD_SCOREBOARD_FRESH_TTL, immutable);
+        let stale_ttl =
+            crate::controllers::game::scoreboard_cache_ttl(AD_SCOREBOARD_STALE_TTL, immutable);
         st.cache
-            .set(current_key, &built.bytes, Some(AD_SCOREBOARD_FRESH_TTL))
+            .set(current_key, &built.bytes, Some(fresh_ttl))
             .await;
-        st.cache
-            .set(stale_key, &built.bytes, Some(AD_SCOREBOARD_STALE_TTL))
-            .await;
+        st.cache.set(stale_key, &built.bytes, Some(stale_ttl)).await;
 
         // Close the post-check/publication race: if a mutation committed and
         // hard-invalidated between validation and either SET, discard both

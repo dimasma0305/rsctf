@@ -45,7 +45,7 @@ pub(in crate::controllers::game) fn can_view_koth_standings(
 
 /// Compute the rendered KotH board for `(game, is_monitor)`: derive the ICPC
 /// freeze / post-end cutoff, run [`compute_koth_board`], and shape the wire model.
-async fn build_koth_scoreboard(
+pub(crate) async fn build_koth_scoreboard(
     st: &SharedState,
     game: &game::Model,
     is_monitor: bool,

@@ -78,9 +78,9 @@ use lifecycle::load_lifecycle_map;
 pub use lifecycle::KothCooldownParticipant;
 pub use listing::{koth_hills, KothHillListItem};
 pub use routes::{router, stateful_router, web_router};
-pub(crate) use scoreboard::build_koth_scoreboard_cached;
 pub(super) use scoreboard::can_view_koth_standings;
 pub use scoreboard::scoreboard;
+pub(crate) use scoreboard::{build_koth_scoreboard, build_koth_scoreboard_cached};
 pub(crate) use scoring::{
     invalidate_rollups_for_end_change, lock_epoch_rollups, refresh_epoch_rollups,
 };

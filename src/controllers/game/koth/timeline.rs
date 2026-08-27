@@ -51,8 +51,42 @@ pub struct KothScoreTimelineModel {
     pub teams: Vec<KothTeamTimeline>,
 }
 static KOTH_TIMELINE_SF: std::sync::LazyLock<
-    crate::utils::single_flight::SingleFlight<Option<KothScoreTimelineModel>>,
+    crate::utils::single_flight::SingleFlight<Option<CachedTimeline>>,
 > = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+
+#[derive(Clone)]
+struct CachedTimeline {
+    model: KothScoreTimelineModel,
+    immutable: bool,
+}
+
+fn timeline_cache_key(game_id: i32, is_monitor: bool) -> String {
+    if is_monitor {
+        format!("_KothTimeline_{game_id}")
+    } else {
+        format!("_KothTimelineFrozen_{game_id}")
+    }
+}
+
+async fn publish_timeline(
+    st: &SharedState,
+    game_id: i32,
+    is_monitor: bool,
+    revision: &str,
+    key: &str,
+    timeline: &CachedTimeline,
+) -> AppResult<crate::controllers::game::ScoreboardPublish> {
+    let json = serde_json::to_vec(&timeline.model)
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let ttl = crate::controllers::game::scoreboard_cache_ttl(
+        std::time::Duration::from_secs(5),
+        timeline.immutable,
+    );
+    crate::controllers::game::publish_scoreboard_render(
+        st, game_id, is_monitor, revision, key, &json, ttl,
+    )
+    .await
+}
 
 /// Return the same bounded epoch score used by the leaderboard, sampled at each
 /// epoch boundary. The removed additive hold-credit total is never exposed as a
@@ -67,55 +101,121 @@ pub async fn timeline(
     if !super::can_view_koth_standings(game.hidden, is_monitor) {
         return Err(AppError::not_found("Game not found"));
     }
-    let key = if is_monitor {
-        format!("_KothTimeline_{game_id}")
-    } else {
-        format!("_KothTimelineFrozen_{game_id}")
-    };
+    let key = timeline_cache_key(game_id, is_monitor);
     if let Some(bytes) = st.cache.get(&key).await {
         if let Ok(model) = serde_json::from_slice::<KothScoreTimelineModel>(&bytes) {
             return Ok(RequestResponse::ok(model));
         }
     }
     let st_for_fill = st.clone();
-    let game_for_fill = game.clone();
     let key_for_fill = key.clone();
     let model = KOTH_TIMELINE_SF
         .run(&key, move || async move {
             if let Some(bytes) = st_for_fill.cache.get(&key_for_fill).await {
                 if let Ok(model) = serde_json::from_slice::<KothScoreTimelineModel>(&bytes) {
-                    return Some(model);
+                    return Some(CachedTimeline {
+                        model,
+                        immutable: false,
+                    });
                 }
             }
-            let model =
-                match build_timeline_model(&st_for_fill, &game_for_fill, game_id, is_monitor).await
+            for _ in 0..2 {
+                let (game, revision) = match crate::controllers::game::load_scoreboard_game_revision(
+                    &st_for_fill,
+                    game_id,
+                    is_monitor,
+                )
+                .await
                 {
-                    Ok(model) => model,
+                    Ok(Some(snapshot)) => snapshot,
+                    Ok(None) => return None,
+                    Err(error) => {
+                        tracing::warn!(game = game_id, %error, "KotH timeline revision preflight failed");
+                        return None;
+                    }
+                };
+                let timeline = match build_timeline_model(
+                    &st_for_fill,
+                    &game,
+                    game_id,
+                    is_monitor,
+                )
+                .await
+                {
+                    Ok(timeline) => timeline,
                     Err(error) => {
                         tracing::warn!(game = game_id, %error, "KotH timeline cache fill failed");
                         return None;
                     }
                 };
-            let json = match serde_json::to_vec(&model) {
-                Ok(json) => json,
-                Err(error) => {
-                    tracing::warn!(game = game_id, %error, "KotH timeline serialization failed");
-                    return None;
-                }
-            };
-            st_for_fill
-                .cache
-                .set(
+                match publish_timeline(
+                    &st_for_fill,
+                    game_id,
+                    is_monitor,
+                    &revision,
                     &key_for_fill,
-                    &json,
-                    Some(std::time::Duration::from_secs(5)),
+                    &timeline,
                 )
-                .await;
-            Some(model)
+                .await
+                {
+                    Ok(crate::controllers::game::ScoreboardPublish::Published) => {
+                        return Some(timeline);
+                    }
+                    Ok(crate::controllers::game::ScoreboardPublish::RevisionChanged) => continue,
+                    Ok(crate::controllers::game::ScoreboardPublish::GameMissing) => return None,
+                    Err(error) => {
+                        tracing::warn!(game = game_id, %error, "KotH timeline publication failed");
+                        return None;
+                    }
+                }
+            }
+            None
         })
         .await
         .ok_or_else(|| AppError::internal("KotH timeline cache fill failed"))?;
-    Ok(RequestResponse::ok(model))
+    Ok(RequestResponse::ok(model.model))
+}
+
+/// Publish every authorized final KotH timeline variant during closeout.
+pub(crate) async fn materialize_final_timelines(
+    st: &SharedState,
+    game: &crate::models::data::game::Model,
+) -> AppResult<bool> {
+    for is_monitor in [true, false] {
+        if game.hidden && !is_monitor {
+            continue;
+        }
+        let key = timeline_cache_key(game.id, is_monitor);
+        let mut published = false;
+        for _ in 0..2 {
+            let Some(revision) =
+                crate::controllers::game::scoreboard_render_revision(st, game.id, is_monitor)
+                    .await?
+            else {
+                return Err(AppError::not_found("Game not found"));
+            };
+            let timeline = build_timeline_model(st, game, game.id, is_monitor).await?;
+            if !timeline.immutable {
+                return Ok(false);
+            }
+            match publish_timeline(st, game.id, is_monitor, &revision, &key, &timeline).await? {
+                crate::controllers::game::ScoreboardPublish::Published => {
+                    published = true;
+                    break;
+                }
+                crate::controllers::game::ScoreboardPublish::RevisionChanged => continue,
+                crate::controllers::game::ScoreboardPublish::GameMissing => {
+                    return Err(AppError::not_found("Game not found"));
+                }
+            }
+        }
+        if !published {
+            return Err(AppError::internal(
+                "KotH timeline changed during final publication",
+            ));
+        }
+    }
+    Ok(true)
 }
 
 async fn build_timeline_model(
@@ -123,7 +223,7 @@ async fn build_timeline_model(
     game: &crate::models::data::game::Model,
     game_id: i32,
     is_monitor: bool,
-) -> AppResult<KothScoreTimelineModel> {
+) -> AppResult<CachedTimeline> {
     let now = Utc::now();
     let event_ended = now >= game.end_time_utc;
     let mut cutoff = crate::utils::scoring::public_scoreboard_frozen(
@@ -233,10 +333,13 @@ async fn build_timeline_model(
     }
     teams.sort_by_key(|team| team.participation_id);
 
-    Ok(KothScoreTimelineModel {
-        latest_round,
-        started_at,
-        ends_at,
-        teams,
+    Ok(CachedTimeline {
+        immutable: board.scoring.fully_settled,
+        model: KothScoreTimelineModel {
+            latest_round,
+            started_at,
+            ends_at,
+            teams,
+        },
     })
 }

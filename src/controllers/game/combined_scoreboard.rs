@@ -8,6 +8,10 @@
 use super::*;
 use axum::http::HeaderMap;
 
+mod finalization;
+
+pub(crate) use finalization::materialize_final_scoreboards;
+
 const SCORE_UNITS_PER_POINT: i64 = 10_000;
 const MAX_COMPONENT_UNITS: i64 = 100 * SCORE_UNITS_PER_POINT;
 const COMBINED_SCOREBOARD_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -178,7 +182,14 @@ fn combined_cache_key(game_id: i32, is_monitor: bool) -> String {
 /// Do not let this derived cache add another full five seconds on top of an
 /// already-aged component snapshot. A one-second floor retains single-flight
 /// protection while a stale A&D SWR entry is being repaired.
-fn combined_cache_ttl(generated_at: DateTime<Utc>, now: DateTime<Utc>) -> std::time::Duration {
+fn combined_cache_ttl(
+    generated_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+    immutable: bool,
+) -> std::time::Duration {
+    if immutable {
+        return super::FINAL_SCOREBOARD_CACHE_TTL;
+    }
     let age_ms = now
         .signed_duration_since(generated_at)
         .num_milliseconds()
@@ -590,15 +601,57 @@ async fn build_combined_scoreboard_bundle(
             if let Some(bytes) = cached_combined_scoreboard_bundle(&st2, &key2).await {
                 return Some(bytes);
             }
-            let model = build_combined_scoreboard(&st2, &game2, is_monitor)
+            for _ in 0..2 {
+                let (game, revision) = match super::load_scoreboard_game_revision(
+                    &st2,
+                    game2.id,
+                    is_monitor,
+                )
                 .await
-                .ok()?;
-            let ttl = combined_cache_ttl(model.generated_at, Utc::now());
-            let built = encode_combined_scoreboard(&model).await.ok()?;
-            if built.cacheable {
-                st2.cache.set(&key2, &built.bytes, Some(ttl)).await;
+                {
+                    Ok(Some(snapshot)) => snapshot,
+                    Ok(None) => return None,
+                    Err(error) => {
+                        tracing::warn!(game = game2.id, %error, "combined scoreboard revision preflight failed");
+                        return None;
+                    }
+                };
+                let model = build_combined_scoreboard(&st2, &game, is_monitor)
+                    .await
+                    .ok()?;
+                let now = Utc::now();
+                let ttl = combined_cache_ttl(
+                    model.generated_at,
+                    now,
+                    !game.practice_mode
+                        && model.fully_settled
+                        && now >= game.end_time_utc,
+                );
+                let built = encode_combined_scoreboard(&model).await.ok()?;
+                if !built.cacheable {
+                    return Some(built.bytes);
+                }
+                match super::publish_scoreboard_render(
+                    &st2,
+                    game.id,
+                    is_monitor,
+                    &revision,
+                    &key2,
+                    &built.bytes,
+                    ttl,
+                )
+                .await
+                {
+                    Ok(super::ScoreboardPublish::Published) => return Some(built.bytes),
+                    Ok(super::ScoreboardPublish::RevisionChanged) => continue,
+                    Ok(super::ScoreboardPublish::GameMissing) => return None,
+                    Err(error) => {
+                        tracing::warn!(game = game2.id, %error, "combined scoreboard publication failed");
+                        return None;
+                    }
+                }
             }
-            Some(built.bytes)
+            None
         })
         .await;
     result.ok_or_else(|| AppError::internal("combined scoreboard cache fill failed"))
@@ -651,14 +704,21 @@ mod tests {
     #[test]
     fn derived_cache_never_doubles_component_staleness() {
         let now = Utc::now();
-        assert_eq!(combined_cache_ttl(now, now), COMBINED_SCOREBOARD_CACHE_TTL);
         assert_eq!(
-            combined_cache_ttl(now - chrono::Duration::milliseconds(4_500), now),
+            combined_cache_ttl(now, now, false),
+            COMBINED_SCOREBOARD_CACHE_TTL
+        );
+        assert_eq!(
+            combined_cache_ttl(now - chrono::Duration::milliseconds(4_500), now, false),
             COMBINED_SCOREBOARD_MIN_CACHE_TTL
         );
         assert_eq!(
-            combined_cache_ttl(now - chrono::Duration::seconds(30), now),
+            combined_cache_ttl(now - chrono::Duration::seconds(30), now, false),
             COMBINED_SCOREBOARD_MIN_CACHE_TTL
+        );
+        assert_eq!(
+            combined_cache_ttl(now - chrono::Duration::days(1), now, true),
+            super::FINAL_SCOREBOARD_CACHE_TTL
         );
     }
 

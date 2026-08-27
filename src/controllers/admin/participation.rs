@@ -499,23 +499,9 @@ pub async fn update_participation(
         release?;
     }
 
-    // Participation status is a scoring and access input. Evict every live and
-    // frozen board family plus each member's accepted-participation cache.
-    for key in [
-        format!("_ScoreBoard_{}", identity.game_id),
-        format!("_ScoreBoardFrozen_{}", identity.game_id),
-        format!("_ScoreBoardWireV2_{}", identity.game_id),
-        format!("_ScoreBoardWireV2Frozen_{}", identity.game_id),
-        format!("_KothScoreBoard_{}", identity.game_id),
-        format!("_KothScoreBoardFrozen_{}", identity.game_id),
-        format!("_KothScoreBoardWireV2_{}", identity.game_id),
-        format!("_KothScoreBoardWireV2Frozen_{}", identity.game_id),
-        format!("_KothTimeline_{}", identity.game_id),
-        format!("_KothTimelineFrozen_{}", identity.game_id),
-    ] {
-        st.cache.remove(&key).await;
-    }
-    crate::controllers::game::ad::hard_invalidate_ad_scoreboard(&st, identity.game_id).await;
+    // Participation status is a scoring and access input. Advance the shared
+    // revision, evict the complete family, and durably repair an ended board.
+    crate::controllers::edit::flush_game_scoreboards(&st, identity.game_id).await;
     crate::controllers::game::ad::flush_participation_cache(&st, identity.game_id, identity.id)
         .await;
 

@@ -86,7 +86,9 @@ pub async fn flush_scoreboard(
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
     load_game(&st, id).await?;
-    flush_game_scoreboards(&st, id).await;
+    crate::services::cron::request_scoreboard_finalization_repair(st.pg(), id).await?;
+    crate::controllers::game::invalidate_scoreboard_render_version(&st, id).await?;
+    crate::controllers::game::koth::invalidate_live_hill_cache(st.cache.as_ref(), id).await;
     Ok(MessageResponse::ok(""))
 }
 

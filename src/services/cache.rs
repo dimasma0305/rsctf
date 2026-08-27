@@ -39,17 +39,42 @@ pub enum CacheBackendHealth {
 #[async_trait]
 pub trait Cache: Send + Sync {
     async fn get(&self, key: &str) -> Option<Bytes>;
+    /// Read from the authoritative backing tier. Tiered caches bypass their
+    /// process-local L1 so maintenance jobs cannot mistake a stale local copy
+    /// for a successfully published distributed value.
+    async fn get_authoritative(&self, key: &str) -> Option<Bytes> {
+        self.get(key).await
+    }
     /// Atomically return and remove a value. One-time credentials must use this
     /// instead of a racy `get` followed by `remove`.
     async fn get_and_remove(&self, key: &str) -> Option<Bytes>;
     /// Atomically remove `key` only when its value matches `expected`.
     async fn compare_and_remove(&self, key: &str, expected: &[u8]) -> bool;
+    /// The acknowledged form of [`Cache::compare_and_remove`]. `None` means
+    /// the authoritative backend did not confirm the operation; `Some(false)`
+    /// means it answered and the current value did not match.
+    async fn compare_and_remove_confirmed(&self, key: &str, expected: &[u8]) -> Option<bool> {
+        Some(self.compare_and_remove(key, expected).await)
+    }
     /// Atomically insert `key` only when no live value exists. This is used
     /// when a failed one-time operation restores its reservation without
     /// overwriting a newer value created concurrently.
     async fn set_if_absent(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool;
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>);
+    /// Store a value only when the authoritative tier acknowledges the write.
+    async fn set_confirmed(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool {
+        self.set(key, value, ttl).await;
+        self.get_authoritative(key)
+            .await
+            .is_some_and(|stored| stored.as_ref() == value)
+    }
     async fn remove(&self, key: &str);
+    /// Remove a key only when the authoritative tier acknowledges the command.
+    /// An already-absent key is a successful removal.
+    async fn remove_confirmed(&self, key: &str) -> bool {
+        self.remove(key).await;
+        self.get_authoritative(key).await.is_none()
+    }
 
     /// Probe the authoritative shared cache backend. Local-only caches return
     /// [`CacheBackendHealth::Local`] without doing I/O.
@@ -236,6 +261,10 @@ impl Cache for InMemoryCache {
         matches
     }
 
+    async fn compare_and_remove_confirmed(&self, key: &str, expected: &[u8]) -> Option<bool> {
+        Some(self.compare_and_remove(key, expected).await)
+    }
+
     async fn set_if_absent(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool {
         let now = Instant::now();
         let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
@@ -311,11 +340,23 @@ impl Cache for InMemoryCache {
         state.evict_to_limits(self.max_entries, self.max_bytes);
     }
 
+    async fn set_confirmed(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool {
+        self.set(key, value, ttl).await;
+        self.get(key)
+            .await
+            .is_some_and(|stored| stored.as_ref() == value)
+    }
+
     async fn remove(&self, key: &str) {
         self.state
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(key);
+    }
+
+    async fn remove_confirmed(&self, key: &str) -> bool {
+        self.remove(key).await;
+        true
     }
 }
 
@@ -439,6 +480,12 @@ impl Cache for RedisCache {
     }
 
     async fn compare_and_remove(&self, key: &str, expected: &[u8]) -> bool {
+        self.compare_and_remove_confirmed(key, expected)
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn compare_and_remove_confirmed(&self, key: &str, expected: &[u8]) -> Option<bool> {
         const SCRIPT: &str = r#"
             if redis.call('GET', KEYS[1]) == ARGV[1] then
                 redis.call('DEL', KEYS[1])
@@ -447,7 +494,7 @@ impl Cache for RedisCache {
             return 0
         "#;
         let Some(mut conn) = self.connection().await else {
-            return false;
+            return None;
         };
         tokio::time::timeout(
             REDIS_IO_TIMEOUT,
@@ -457,7 +504,9 @@ impl Cache for RedisCache {
                 .invoke_async::<i64>(&mut conn),
         )
         .await
-        .is_ok_and(|result| result.is_ok_and(|removed| removed == 1))
+        .ok()?
+        .ok()
+        .map(|removed| removed == 1)
     }
 
     async fn set_if_absent(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool {
@@ -478,26 +527,37 @@ impl Cache for RedisCache {
     }
 
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
+        let _ = self.set_confirmed(key, value, ttl).await;
+    }
+
+    async fn set_confirmed(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool {
         let Some(mut conn) = self.connection().await else {
-            return;
+            return false;
         };
         let mut cmd = redis::cmd("SET");
         cmd.arg(key).arg(value);
         if let Some(ttl) = ttl {
             cmd.arg("EX").arg(ttl.as_secs().max(1));
         }
-        let _ = tokio::time::timeout(REDIS_IO_TIMEOUT, cmd.query_async::<()>(&mut conn)).await;
+        tokio::time::timeout(REDIS_IO_TIMEOUT, cmd.query_async::<String>(&mut conn))
+            .await
+            .is_ok_and(|result| result.is_ok_and(|response| response == "OK"))
     }
 
     async fn remove(&self, key: &str) {
+        let _ = self.remove_confirmed(key).await;
+    }
+
+    async fn remove_confirmed(&self, key: &str) -> bool {
         let Some(mut conn) = self.connection().await else {
-            return;
+            return false;
         };
-        let _ = tokio::time::timeout(
+        tokio::time::timeout(
             REDIS_IO_TIMEOUT,
             redis::cmd("DEL").arg(key).query_async::<i64>(&mut conn),
         )
-        .await;
+        .await
+        .is_ok_and(|result| result.is_ok())
     }
 
     async fn backend_health(&self) -> CacheBackendHealth {
@@ -558,6 +618,10 @@ impl Cache for TieredCache {
         Some(v)
     }
 
+    async fn get_authoritative(&self, key: &str) -> Option<Bytes> {
+        self.l2.get_authoritative(key).await
+    }
+
     async fn get_and_remove(&self, key: &str) -> Option<Bytes> {
         // L2 is authoritative for a distributed one-time consume. Clear L1 even
         // when L2 misses so a stale local copy can never resurrect the value.
@@ -567,7 +631,13 @@ impl Cache for TieredCache {
     }
 
     async fn compare_and_remove(&self, key: &str, expected: &[u8]) -> bool {
-        let removed = self.l2.compare_and_remove(key, expected).await;
+        self.compare_and_remove_confirmed(key, expected)
+            .await
+            .unwrap_or(false)
+    }
+
+    async fn compare_and_remove_confirmed(&self, key: &str, expected: &[u8]) -> Option<bool> {
+        let removed = self.l2.compare_and_remove_confirmed(key, expected).await;
         // Always evict L1: on a failed comparison it may contain the stale value
         // that caused the mismatch and must be refreshed from authoritative L2.
         self.l1.remove(key).await;
@@ -586,13 +656,27 @@ impl Cache for TieredCache {
     }
 
     async fn set(&self, key: &str, value: &[u8], ttl: Option<Duration>) {
-        self.l1.set(key, value, self.l1_ttl(ttl)).await;
-        self.l2.set(key, value, ttl).await;
+        let _ = self.set_confirmed(key, value, ttl).await;
+    }
+
+    async fn set_confirmed(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> bool {
+        let stored = self.l2.set_confirmed(key, value, ttl).await;
+        if stored {
+            self.l1.set(key, value, self.l1_ttl(ttl)).await;
+        } else {
+            self.l1.remove(key).await;
+        }
+        stored
     }
 
     async fn remove(&self, key: &str) {
+        let _ = self.remove_confirmed(key).await;
+    }
+
+    async fn remove_confirmed(&self, key: &str) -> bool {
+        let removed = self.l2.remove_confirmed(key).await;
         self.l1.remove(key).await;
-        self.l2.remove(key).await;
+        removed
     }
 
     async fn backend_health(&self) -> CacheBackendHealth {

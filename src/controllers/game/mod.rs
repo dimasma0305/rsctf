@@ -823,7 +823,7 @@ fn parse_answer_result(name: &str) -> Option<AnswerResult> {
     }
 }
 
-async fn load_game(st: &SharedState, id: i32) -> AppResult<game::Model> {
+pub(crate) async fn load_game(st: &SharedState, id: i32) -> AppResult<game::Model> {
     game::Entity::find_by_id(id)
         .one(&st.db)
         .await?
@@ -949,6 +949,7 @@ mod participation_review;
 mod play;
 mod scoreboard;
 mod scoreboard_board;
+mod scoreboard_cache;
 mod scoreboard_encoding;
 mod submission_backfill;
 mod submit;
@@ -967,6 +968,7 @@ pub use participation_review::*;
 pub use play::*;
 pub use scoreboard::*;
 pub(crate) use scoreboard_board::*;
+pub(crate) use scoreboard_cache::*;
 pub use submission_backfill::*;
 pub use submit::*;
 pub use traffic::*;
