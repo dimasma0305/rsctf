@@ -76,6 +76,15 @@ pub(super) async fn compute_koth_hill_state(
     compute_koth_board_inner(st, game_id, None, false, false).await
 }
 
+/// Operational hill metadata including disabled/unreviewed challenges, without
+/// rebuilding the epoch scoring projection used by the shared player board.
+pub(super) async fn compute_koth_admin_hill_state(
+    st: &SharedState,
+    game_id: i32,
+) -> AppResult<KothBoard> {
+    compute_koth_board_inner(st, game_id, None, true, false).await
+}
+
 async fn compute_koth_board_inner(
     st: &SharedState,
     game_id: i32,
@@ -129,44 +138,55 @@ async fn compute_koth_board_inner(
     let latest_round = round_clock.as_ref().map_or(0, |round| round.number);
     let current_round_ends_at = round_clock.as_ref().map(|round| round.end_time_utc);
     let latest_controls = sqlx::query_as::<_, LatestControlRow>(
-        r#"SELECT DISTINCT ON (result.challenge_id)
-                  result.challenge_id,
-                  result.status,
-                  round.number AS round_number,
+        r#"SELECT challenge.id AS challenge_id,
+                  latest.status,
+                  latest.round_number,
                   confirmed.id AS confirmed_participation_id,
                   confirmed_team.name AS confirmed_team_name
-             FROM "KothControlResults" result
-             JOIN "AdRounds" round ON round.id = result.ad_round_id
-             JOIN "KothCrownCycles" cycle
-               ON cycle.id = result.cycle_id
-              AND cycle.game_id = result.game_id
-              AND cycle.challenge_id = result.challenge_id
-              AND $6 BETWEEN cycle.planned_start_round AND cycle.planned_end_round
+             FROM "GameChallenges" challenge
              JOIN LATERAL (
-                  SELECT audit.attempt
-                    FROM "KothCycleAuditReceipts" audit
-                   WHERE audit.cycle_id = cycle.id
-                     AND ($3::timestamptz IS NULL OR audit.created_at <= $3)
-                   ORDER BY audit.attempt DESC, audit.created_at DESC, audit.id DESC
+                  SELECT result.status, round.number AS round_number,
+                         result.confirmed_participation_id
+                    FROM "KothControlResults" result
+                    JOIN "AdRounds" round
+                      ON round.id = result.ad_round_id
+                     AND round.game_id = result.game_id
+                    JOIN "KothCrownCycles" cycle
+                      ON cycle.id = result.cycle_id
+                     AND cycle.game_id = result.game_id
+                     AND cycle.challenge_id = result.challenge_id
+                     AND $6 BETWEEN cycle.planned_start_round AND cycle.planned_end_round
+                    JOIN LATERAL (
+                         SELECT audit.attempt
+                           FROM "KothCycleAuditReceipts" audit
+                          WHERE audit.cycle_id = cycle.id
+                            AND ($3::timestamptz IS NULL OR audit.created_at <= $3)
+                          ORDER BY audit.attempt DESC, audit.created_at DESC, audit.id DESC
+                          LIMIT 1
+                    ) capability_window
+                      ON capability_window.attempt = result.token_window_attempt
+                    JOIN "KothCycleAuditReceipts" activation
+                      ON activation.cycle_id = cycle.id
+                     AND activation.phase = 'FirewallPending'
+                     AND activation.attempt = capability_window.attempt
+                     AND ($3::timestamptz IS NULL OR activation.created_at <= $3)
+                   WHERE result.game_id = $1
+                     AND result.challenge_id = challenge.id
+                     AND ($2::timestamptz IS NULL
+                          OR (NOT $4 AND round.start_time_utc <= $2)
+                          OR ($4 AND round.start_time_utc < $2))
+                     AND ($3::timestamptz IS NULL OR result.checked_at <= $3)
+                   ORDER BY result.checked_at DESC, result.id DESC
                    LIMIT 1
-             ) capability_window
-               ON capability_window.attempt = result.token_window_attempt
-             JOIN "KothCycleAuditReceipts" activation
-               ON activation.cycle_id = cycle.id
-              AND activation.phase = 'FirewallPending'
-              AND activation.attempt = capability_window.attempt
-              AND ($3::timestamptz IS NULL OR activation.created_at <= $3)
+             ) latest ON TRUE
         LEFT JOIN "Participations" confirmed
-               ON confirmed.id = result.confirmed_participation_id
-              AND confirmed.game_id = result.game_id
+               ON confirmed.id = latest.confirmed_participation_id
+              AND confirmed.game_id = challenge.game_id
               AND confirmed.status = $5
         LEFT JOIN "Teams" confirmed_team ON confirmed_team.id = confirmed.team_id
-            WHERE result.game_id = $1 AND round.game_id = result.game_id
-              AND ($2::timestamptz IS NULL
-                   OR (NOT $4 AND round.start_time_utc <= $2)
-                   OR ($4 AND round.start_time_utc < $2))
-              AND ($3::timestamptz IS NULL OR result.checked_at <= $3)
-            ORDER BY result.challenge_id, round.number DESC, result.id DESC"#,
+            WHERE challenge.game_id = $1 AND challenge."Type" = $7
+              AND ($8 OR challenge.review_status = $9)
+            ORDER BY challenge.id"#,
     )
     .bind(game_id)
     .bind(cutoff)
@@ -174,6 +194,9 @@ async fn compute_koth_board_inner(
     .bind(event_ended)
     .bind(ParticipationStatus::Accepted as i16)
     .bind(latest_round)
+    .bind(ChallengeType::KingOfTheHill as i16)
+    .bind(include_unreviewed)
+    .bind(ChallengeReviewStatus::Active as i16)
     .fetch_all(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;

@@ -67,11 +67,19 @@ import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { highlight } from '@Utils/marked/ShikiExtension'
 import { sanitizeMarkdownHtml } from '@Utils/sanitize'
-import { useAdminAdState, useAdminKothState, type AdminKothHill } from '@Hooks/useGame'
+import {
+  adminOperatorPolling,
+  adminOperatorView,
+  useAdminAdState,
+  useAdminKothState,
+  useAdminOperatorEngines,
+  type AdminKothHill,
+} from '@Hooks/useGame'
 import api, {
   AdCheckStatus,
   AdFileBlob,
   AdFileViewModel,
+  AdGameStateModel,
   AdSnapshotChange,
   AdSnapshotPointModel,
   AdSnapshotTimeDiffModel,
@@ -856,13 +864,27 @@ const AdOps: FC = () => {
   const numId = parseInt(id ?? '-1', 10)
   const { t } = useTranslation()
   const modals = useModals()
-  const { adminAdState: state, error, mutate } = useAdminAdState(numId)
-  const { adminKothState: koth, error: kothError, mutate: mutateKoth } = useAdminKothState(numId)
   const [busy, setBusy] = useState(false)
   const [busyHill, setBusyHill] = useState<number | null>(null)
   // Which side of the console is showing. A&D vs KotH challenges are disjoint
   // sets in a game; the switch only appears when both exist (see showViewSwitch).
   const [view, setView] = useState<'ad' | 'koth'>('ad')
+  const now = useServerNow()
+  const {
+    engineMetadata,
+    error: engineError,
+    mutate: mutateEngines,
+  } = useAdminOperatorEngines(numId)
+  const activeView = adminOperatorView(view, engineMetadata)
+  const polling = adminOperatorPolling(engineMetadata, now.valueOf())
+  const fetchAd = engineMetadata?.hasAttackDefense === true && activeView === 'ad'
+  const fetchKoth = engineMetadata?.hasKoth === true && activeView === 'koth'
+  const { adminAdState: state, error, mutate } = useAdminAdState(numId, fetchAd, polling)
+  const { adminKothState: koth, error: kothError, mutate: mutateKoth } = useAdminKothState(
+    numId,
+    fetchKoth,
+    polling
+  )
   // inspectorSid set ⇒ a throwaway inspector container we must destroy on close.
   const [execTarget, setExecTarget] = useState<{
     guid: string
@@ -909,21 +931,16 @@ const AdOps: FC = () => {
   }, [snapSid, state])
   const [search, setSearch] = useState('')
   const [debouncedSearch] = useDebouncedValue(search, 200)
-  const now = useServerNow()
   const isMobile = useIsMobile(1080)
 
-  // Wait for BOTH consoles' first load — the A&D state always resolves (even
-  // empty) for any game, and the KotH state resolves to an object too, so a
-  // KotH-only game doesn't flash the "no A&D challenges" empty state.
-  const isLoading = (!state && !error) || (koth === undefined && !kothError)
-
-  // A&D and KotH challenges are disjoint within a game. Derive which sides
-  // exist + which to render. showKoth is flash-free (doesn't wait for an
-  // effect): a KotH-only game renders KotH immediately even before any toggle.
-  const hasAd = (state?.challenges.length ?? 0) > 0
-  const hasKoth = (koth?.hills.length ?? 0) > 0
+  const hasAd = engineMetadata?.hasAttackDefense === true
+  const hasKoth = engineMetadata?.hasKoth === true
   const showViewSwitch = hasAd && hasKoth
-  const showKoth = hasKoth && (view === 'koth' || !hasAd)
+  const showKoth = hasKoth && activeView === 'koth'
+  const isLoading =
+    (!engineMetadata && !engineError) ||
+    (fetchAd && !state && !error) ||
+    (fetchKoth && koth === undefined && !kothError)
 
   const toggleHill = async (hill: AdminKothHill) => {
     setBusyHill(hill.challengeId)
@@ -1045,10 +1062,9 @@ const AdOps: FC = () => {
     )
   }
 
-  // A transient fetch error must not masquerade as "no challenges". The A&D /state
-  // is required for the shared header; if it failed — or both states are empty only
-  // because the KotH fetch failed — show an error + retry rather than the empty card.
-  if (!state || (!hasAd && !hasKoth && (error || kothError))) {
+  // A transient fetch error must not masquerade as "no challenges". Only the
+  // selected engine is mounted, so an inactive engine cannot fail this view.
+  if (engineError || (fetchAd && !state && error) || (fetchKoth && !koth && kothError)) {
     return (
       <WithGameEditTab>
         <Center h="40vh">
@@ -1061,6 +1077,7 @@ const AdOps: FC = () => {
               variant="default"
               leftSection={<Icon path={mdiRefresh} size={0.9} />}
               onClick={() => {
+                mutateEngines()
                 mutate()
                 mutateKoth()
               }}
@@ -1094,13 +1111,32 @@ const AdOps: FC = () => {
     )
   }
 
+  const adState: AdGameStateModel = state ?? {
+    currentRound: null,
+    roundStartedAt: null,
+    roundEndsAt: null,
+    scoringPaused: false,
+    scoringPausedAt: null,
+    challenges: [],
+    teams: [],
+  }
+
   // While paused, freeze the countdown at the pause instant — the round isn't
   // burning time (resume shifts its end forward), so the timer must stop too.
-  const timerRef = state.scoringPaused && state.scoringPausedAt ? dayjs(state.scoringPausedAt) : now
-  const roundEndsIn = state.roundEndsAt ? Math.max(0, dayjs(state.roundEndsAt).diff(timerRef, 'second')) : null
+  const scoringPaused = showKoth ? (koth?.scoringPaused ?? false) : adState.scoringPaused
+  const scoringPausedAt = showKoth ? koth?.scoringPausedAt : adState.scoringPausedAt
+  const currentRound = showKoth ? koth?.latestRound : adState.currentRound
+  const roundEndsAt = showKoth ? koth?.currentRoundEndsAt : adState.roundEndsAt
+  const roundStartedAt = showKoth
+    ? roundEndsAt != null
+      ? dayjs(roundEndsAt).subtract(koth?.tickSeconds ?? 60, 'second')
+      : null
+    : adState.roundStartedAt
+  const timerRef = scoringPaused && scoringPausedAt ? dayjs(scoringPausedAt) : now
+  const roundEndsIn = roundEndsAt ? Math.max(0, dayjs(roundEndsAt).diff(timerRef, 'second')) : null
   const roundTotal =
-    state.roundStartedAt && state.roundEndsAt
-      ? Math.max(1, dayjs(state.roundEndsAt).diff(state.roundStartedAt, 'second'))
+    roundStartedAt && roundEndsAt
+      ? Math.max(1, dayjs(roundEndsAt).diff(roundStartedAt, 'second'))
       : null
   const roundPct =
     roundTotal && roundEndsIn !== null ? Math.min(100, Math.max(3, ((roundTotal - roundEndsIn) / roundTotal) * 100)) : 0
@@ -1111,7 +1147,7 @@ const AdOps: FC = () => {
         ? 'orange'
         : 'teal'
   const ringLabel =
-    state.currentRound == null
+    currentRound == null
       ? '—'
       : roundEndsIn === null
         ? '∞'
@@ -1121,7 +1157,7 @@ const AdOps: FC = () => {
 
   // Aggregate every (team × challenge) cell into a fleet-wide health summary.
   const counts = { Ok: 0, Mumble: 0, Offline: 0, InternalError: 0, unchecked: 0 }
-  state.teams.forEach((r) =>
+  adState.teams.forEach((r) =>
     r.services.forEach((c) => {
       const k = c.lastCheckStatus
       if (k === 'Ok' || k === 'Mumble' || k === 'Offline' || k === 'InternalError') counts[k]++
@@ -1129,8 +1165,8 @@ const AdOps: FC = () => {
     })
   )
 
-  const enabledChallenges = state.challenges.filter((c) => c.isEnabled).length
-  const visibleTeams = state.teams.filter(
+  const enabledChallenges = adState.challenges.filter((c) => c.isEnabled).length
+  const visibleTeams = adState.teams.filter(
     (r) => debouncedSearch === '' || r.teamName.toLowerCase().includes(debouncedSearch.toLowerCase())
   )
 
@@ -1147,8 +1183,8 @@ const AdOps: FC = () => {
   // View-aware header values (A&D grid vs KotH hills).
   const headerCounts = showKoth ? kothCounts : counts
   const headerEnabled = showKoth ? kothEnabledHills : enabledChallenges
-  const headerTotal = showKoth ? kothHills.length : state.challenges.length
-  const tickSeconds = state.challenges[0]?.tickSeconds ?? koth?.tickSeconds ?? 60
+  const headerTotal = showKoth ? kothHills.length : adState.challenges.length
+  const tickSeconds = showKoth ? (koth?.tickSeconds ?? 60) : (adState.challenges[0]?.tickSeconds ?? 60)
 
   return (
     <WithGameEditTab>
@@ -1191,9 +1227,9 @@ const AdOps: FC = () => {
                   </Text>
                   <Group gap={6} align="center" wrap="nowrap">
                     <Text fw="bold" size="xl" lh={1}>
-                      {state.currentRound ?? '—'}
+                      {currentRound ?? '—'}
                     </Text>
-                    {state.scoringPaused ? (
+                    {scoringPaused ? (
                       <Badge
                         color="orange"
                         variant="light"
@@ -1205,7 +1241,7 @@ const AdOps: FC = () => {
                       // Stay "Live" between ticks too (countdown hitting 0 is a
                       // ~5s gap before the scheduler advances) — toggling the
                       // badge there reflowed the whole header row.
-                      state.currentRound != null && (
+                      currentRound != null && (
                         <Badge color="teal" variant="dot">
                           {t('admin.content.ad_ops.live', 'Live')}
                         </Badge>
@@ -1243,7 +1279,7 @@ const AdOps: FC = () => {
                       })
                     : t('admin.content.ad_ops.tick_summary', {
                         tick: tickSeconds,
-                        lifetime: state.challenges[0]?.flagLifetimeTicks ?? 5,
+                        lifetime: adState.challenges[0]?.flagLifetimeTicks ?? 5,
                         defaultValue: 'tick {{tick}}s · lifetime {{lifetime}} ticks',
                       })}
                 </Text>
@@ -1296,14 +1332,14 @@ const AdOps: FC = () => {
                 {t('admin.button.ad_ops.ensure_containers', 'Ensure containers')}
               </Button>
               <Button
-                leftSection={<Icon path={state.scoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
+                leftSection={<Icon path={scoringPaused ? mdiPlayCircle : mdiPauseCircleOutline} size={0.9} />}
                 variant="default"
-                color={state.scoringPaused ? 'teal' : 'orange'}
+                color={scoringPaused ? 'teal' : 'orange'}
                 size={isMobile ? 'xs' : 'sm'}
                 disabled={busy}
                 onClick={toggleScoringPause}
               >
-                {state.scoringPaused
+                {scoringPaused
                   ? t('admin.button.ad_ops.resume_scoring', 'Resume scoring')
                   : t('admin.button.ad_ops.pause_scoring', 'Pause scoring')}
               </Button>
@@ -1376,7 +1412,7 @@ const AdOps: FC = () => {
               busyHill={busyHill}
               onMutate={() => mutateKoth()}
             />
-          ) : state.teams.length === 0 ? (
+          ) : adState.teams.length === 0 ? (
             <Alert color="orange" icon={<Icon path={mdiAlertCircleOutline} size={1} />}>
               {t(
                 'admin.content.ad_ops.no_teams',
@@ -1394,7 +1430,7 @@ const AdOps: FC = () => {
                     <Table.Th scope="col" className={tableClasses.corner}>
                       {t('admin.content.ad_ops.column_team', 'Team')}
                     </Table.Th>
-                    {state.challenges.map((c) => (
+                    {adState.challenges.map((c) => (
                       <Table.Th scope="col" key={c.challengeId}>
                         <Group gap={6} wrap="nowrap" justify="space-between">
                           <Text
@@ -1444,7 +1480,7 @@ const AdOps: FC = () => {
                           {row.teamName}
                         </Text>
                       </Table.Td>
-                      {state.challenges.map((c) => {
+                      {adState.challenges.map((c) => {
                         const cell = row.services.find((s) => s.challengeId === c.challengeId)
                         const sm = statusMeta(cell?.lastCheckStatus)
                         return (
@@ -1646,7 +1682,7 @@ const AdOps: FC = () => {
                   ))}
                   {visibleTeams.length === 0 && (
                     <Table.Tr>
-                      <Table.Td colSpan={state.challenges.length + 1}>
+                      <Table.Td colSpan={adState.challenges.length + 1}>
                         <Text ta="center" c="dimmed" py="md" size="sm">
                           {t('admin.content.ad_ops.no_team_match', 'No teams match the filter.')}
                         </Text>

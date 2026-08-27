@@ -128,11 +128,14 @@ mod m0105_manager_autocomplete_indexes;
 mod m0106_submission_idempotency;
 mod m0107_monitor_history_indexes;
 mod m0108_koth_observer_rotation_operations;
+mod m0109_operator_console_latest_rows;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
 #[cfg(test)]
 pub(crate) use m0108_koth_observer_rotation_operations::UP_SQL as KOTH_OBSERVER_ROTATION_SQL;
+#[cfg(test)]
+pub(crate) use m0109_operator_console_latest_rows::UP_SQL as OPERATOR_LATEST_INDEX_SQL;
 
 pub struct Migrator;
 
@@ -254,6 +257,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0106_submission_idempotency::Migration),
             Box::new(m0107_monitor_history_indexes::Migration),
             Box::new(m0108_koth_observer_rotation_operations::Migration),
+            Box::new(m0109_operator_console_latest_rows::Migration),
         ]
     }
 }
@@ -399,7 +403,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 6..],
+            &names[names.len() - 7..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -407,6 +411,7 @@ mod tests {
                 "m0106_submission_idempotency",
                 "m0107_monitor_history_indexes",
                 "m0108_koth_observer_rotation_operations",
+                "m0109_operator_console_latest_rows",
             ]
         );
     }

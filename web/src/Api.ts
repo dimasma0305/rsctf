@@ -2658,13 +2658,51 @@ export interface AdTeamRowModel {
 /** A&D admin — GET /api/edit/games/{id}/ad/State response. */
 export interface AdGameStateModel {
   currentRound?: number | null;
-  roundStartedAt?: string | null;
-  roundEndsAt?: string | null;
+  /** @format uint64 */
+  roundStartedAt?: number | null;
+  /** @format uint64 */
+  roundEndsAt?: number | null;
   scoringPaused: boolean;
   /** When scoring was paused (null if running) — the UI freezes the round timer at this instant. */
-  scoringPausedAt?: string | null;
+  /** @format uint64 */
+  scoringPausedAt?: number | null;
   challenges: AdChallengeStateModel[];
   teams: AdTeamRowModel[];
+}
+
+/** Lightweight engine/lifecycle metadata for the operator console. */
+export interface AdEngineMetadataModel {
+  hasAttackDefense: boolean;
+  hasKoth: boolean;
+  /** @format uint64 */
+  start: number;
+  /** @format uint64 */
+  end: number;
+  /** @format uint64 */
+  serverTime: number;
+}
+
+/** One mutable service cell in the five-second A&D delta. */
+export interface AdLiveCellModel {
+  adTeamServiceId: number;
+  lastCheckId?: number | null;
+  lastCheckStatus?: string | null;
+  currentFlag?: string | null;
+}
+
+/** Small live projection layered over the separately loaded A&D grid. */
+export interface AdLiveStateModel {
+  currentRound?: number | null;
+  /** @format uint64 */
+  roundStartedAt?: number | null;
+  /** @format uint64 */
+  roundEndsAt?: number | null;
+  scoringPaused: boolean;
+  /** @format uint64 */
+  scoringPausedAt?: number | null;
+  /** @format uint64 */
+  serverTime: number;
+  services: AdLiveCellModel[];
 }
 
 /** A&D admin — body for POST /api/edit/games/{id}/ad/Checks/{checkId}/Override. */

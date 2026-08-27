@@ -33,10 +33,9 @@ use crate::controllers::game::ContainerInfoModel;
 use crate::middlewares::privilege_authentication::{AdminUser, CurrentUser};
 use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::{
-    ad_check_result, ad_flag, ad_round, ad_team_service, attachment, build_record,
-    challenge_review, container, division, division_challenge_config, flag_context, game,
-    game_challenge, game_instance, game_manager, game_notice, koth_target, local_file,
-    participation, post, team, user,
+    ad_flag, ad_round, ad_team_service, attachment, build_record, challenge_review, container,
+    division, division_challenge_config, flag_context, game, game_challenge, game_instance,
+    game_manager, game_notice, koth_target, local_file, participation, post, team, user,
 };
 use crate::services::container::{ContainerResourceLimits, ContainerSpec};
 use crate::utils::codec::sha256_str;
@@ -780,7 +779,9 @@ pub fn router() -> Router<SharedState> {
             "/api/edit/games/{id}/ad/AdvanceRound",
             post(ad_advance_round),
         )
+        .route("/api/edit/games/{id}/ad/Engines", get(ad_engine_metadata))
         .route("/api/edit/games/{id}/ad/State", get(ad_state))
+        .route("/api/edit/games/{id}/ad/Live", get(ad_live_state))
         .route(
             "/api/edit/games/{id}/ad/EnsureContainers",
             post(ad_ensure_containers),

@@ -1,12 +1,9 @@
 //! King-of-the-Hill (KotH) gameplay, scoring, and lifecycle endpoints.
 //!
-//! Three read endpoints back the React KotH board + operator console (paths and
-//! shapes match `web/src/hooks/useGame.ts` verbatim):
 //!   * `GET  /api/game/{id}/ad/koth/scoreboard`      → [`KothScoreboardModel`]
 //!   * `GET  /api/game/{id}/ad/koth/timeline`        → [`KothScoreTimelineModel`]
 //!   * `GET  /api/edit/games/{id}/ad/koth/state`     → [`AdminKothStateModel`] (admin)
 //!
-//! plus the per-team token endpoint (the string a team writes into a hill to claim it):
 //!   * `GET  /api/game/{id}/ad/koth/{challengeId}/token` → the team's minted token
 //!
 //! # King-of-the-Hill — flow overview
@@ -272,6 +269,15 @@ pub struct AdminKothStateModel {
     pub champion_cooldown_ticks: i32,
     pub claim_confirmation_ticks: i32,
     pub tick_seconds: i64,
+    /// Version of the shared, single-flight scoring snapshot overlaid below.
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub scoring_generated_at: DateTime<Utc>,
+    pub latest_round: i32,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub current_round_ends_at: Option<DateTime<Utc>>,
+    pub scoring_paused: bool,
+    #[serde(with = "crate::utils::datetime::millis_opt")]
+    pub scoring_paused_at: Option<DateTime<Utc>>,
     pub hills: Vec<AdminKothHill>,
     pub teams: Vec<KothTeamScoreRow>,
 }
@@ -630,8 +636,14 @@ fn recovery_router() -> Router<SharedState> {
 #[allow(clippy::items_after_test_module)]
 mod token_cache_tests {
     use super::{
-        can_view_koth_standings, control_evidence_is_current, endpoint_identity_is_current,
-        holder_identity_is_current, koth_token_cache_key, KothHillBase,
+        cached_koth_json, can_view_koth_standings, control_evidence_is_current,
+        endpoint_identity_is_current, holder_identity_is_current, koth_cache_key,
+        koth_token_cache_key, KothHillBase,
+    };
+    use chrono::{TimeZone, Utc};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
     };
 
     #[test]
@@ -648,6 +660,64 @@ mod token_cache_tests {
         assert!(can_view_koth_standings(false, true));
         assert!(can_view_koth_standings(true, true));
         assert!(!can_view_koth_standings(true, false));
+    }
+
+    #[test]
+    fn live_player_and_operator_views_share_one_scoring_version() {
+        let start = Utc.with_ymd_and_hms(2026, 8, 27, 8, 0, 0).unwrap();
+        let freeze = start + chrono::Duration::hours(1);
+        let end = start + chrono::Duration::hours(2);
+        assert_eq!(
+            koth_cache_key(9, Some(freeze), end, start, false),
+            koth_cache_key(9, Some(freeze), end, start, true)
+        );
+        assert_ne!(
+            koth_cache_key(9, Some(freeze), end, freeze, false),
+            koth_cache_key(9, Some(freeze), end, freeze, true)
+        );
+        assert_eq!(
+            koth_cache_key(9, Some(freeze), end, end, false),
+            koth_cache_key(9, Some(freeze), end, end, true)
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_operator_tabs_build_one_cold_scoring_version() {
+        let cache: Arc<dyn crate::services::cache::Cache> =
+            Arc::new(crate::services::cache::InMemoryCache::new());
+        let builds = Arc::new(AtomicUsize::new(0));
+        let key = format!(
+            "koth-scoreboard-single-flight-test:{}",
+            uuid::Uuid::new_v4()
+        );
+        let readers = (0..32).map(|_| {
+            let cache = cache.clone();
+            let builds = builds.clone();
+            let key = key.clone();
+            async move {
+                cached_koth_json(cache, key, move || async move {
+                    builds.fetch_add(1, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    Some(bytes::Bytes::from_static(b"{\"version\":41}"))
+                })
+                .await
+                .unwrap()
+            }
+        });
+        let responses = futures::future::join_all(readers).await;
+        assert!(responses
+            .iter()
+            .all(|response| response.as_ref() == b"{\"version\":41}"));
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+        let second_version_builds = builds.clone();
+        let cached = cached_koth_json(cache, key, move || async move {
+            second_version_builds.fetch_add(1, Ordering::SeqCst);
+            Some(bytes::Bytes::from_static(b"unexpected"))
+        })
+        .await
+        .unwrap();
+        assert_eq!(cached.as_ref(), b"{\"version\":41}");
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -797,8 +867,8 @@ mod recovery_route_tests {
 /// Cache + coalesce the KotH board like the jeopardy + A&D boards. Its recompute
 /// (`compute_koth_board` — a per-hill/-team scan of the control-result history)
 /// otherwise ran on EVERY poll (measured ~26× slower than the cached boards, with
-/// Postgres pinned at ~216% under a poll flood). Keyed on `(game, is_monitor)` and
-/// freeze-aware (the frozen variant bakes the cutoff), so a cached copy is only
+/// Postgres pinned at ~216% under a poll flood). Live player/operator reads share
+/// one game key; the public freeze variant bakes the cutoff, so a cached copy is only
 /// ever `KOTH_CACHE_TTL` stale across the freeze/end boundary — the same tradeoff
 /// the other cached boards accept.
 static KOTH_SF: std::sync::LazyLock<
@@ -806,11 +876,17 @@ static KOTH_SF: std::sync::LazyLock<
 > = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 const KOTH_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
-fn koth_cache_key(game_id: i32, is_monitor: bool) -> String {
-    if is_monitor {
-        format!("_KothScoreBoard_{game_id}")
-    } else {
+fn koth_cache_key(
+    game_id: i32,
+    freeze: Option<DateTime<Utc>>,
+    end: DateTime<Utc>,
+    now: DateTime<Utc>,
+    is_monitor: bool,
+) -> String {
+    if crate::utils::scoring::public_scoreboard_frozen(freeze, end, now, is_monitor) {
         format!("_KothScoreBoardFrozen_{game_id}")
+    } else {
+        format!("_KothScoreBoard_{game_id}")
     }
 }
 
@@ -827,10 +903,10 @@ async fn build_koth_scoreboard(
     st: &SharedState,
     game: &game::Model,
     is_monitor: bool,
+    now: DateTime<Utc>,
 ) -> AppResult<KothScoreboardModel> {
     // ICPC freeze: a non-monitor inside `[FreezeTimeUtc, EndTimeUtc)` sees the
     // FROZEN board; monitors always see it live.
-    let now = Utc::now();
     let is_frozen_view = crate::utils::scoring::public_scoreboard_frozen(
         game.freeze_time_utc,
         game.end_time_utc,
@@ -909,27 +985,50 @@ async fn build_koth_scoreboard(
     })
 }
 
-/// The KotH board's wire body as raw JSON, from the two-tier cache or freshly
-/// built, with single-flight coalescing — mirrors `build_scoreboard_json`.
 async fn koth_scoreboard_json(
     st: &SharedState,
     game: &game::Model,
     is_monitor: bool,
 ) -> AppResult<bytes::Bytes> {
-    let key = koth_cache_key(game.id, is_monitor);
-    if let Some(bytes) = st.cache.get(&key).await {
+    let now = Utc::now();
+    let key = koth_cache_key(
+        game.id,
+        game.freeze_time_utc,
+        game.end_time_utc,
+        now,
+        is_monitor,
+    );
+    let (st2, game2) = (st.clone(), game.clone());
+    cached_koth_json(st.cache.clone(), key, move || async move {
+        let model = build_koth_scoreboard(&st2, &game2, is_monitor, now)
+            .await
+            .ok()?;
+        serde_json::to_vec(&model).ok().map(bytes::Bytes::from)
+    })
+    .await
+}
+
+async fn cached_koth_json<Build, BuildFuture>(
+    cache: std::sync::Arc<dyn crate::services::cache::Cache>,
+    key: String,
+    build: Build,
+) -> AppResult<bytes::Bytes>
+where
+    Build: FnOnce() -> BuildFuture + Send + 'static,
+    BuildFuture: std::future::Future<Output = Option<bytes::Bytes>> + Send + 'static,
+{
+    if let Some(bytes) = cache.get(&key).await {
         return Ok(bytes);
     }
-    let (st2, game2, key2) = (st.clone(), game.clone(), key.clone());
+    let (cache2, key2) = (cache, key.clone());
     let coalesced = KOTH_SF
         .run(&key, move || async move {
-            if let Some(bytes) = st2.cache.get(&key2).await {
+            if let Some(bytes) = cache2.get(&key2).await {
                 return Some(bytes);
             }
-            let model = build_koth_scoreboard(&st2, &game2, is_monitor).await.ok()?;
-            let json = serde_json::to_vec(&model).ok()?;
-            st2.cache.set(&key2, &json, Some(KOTH_CACHE_TTL)).await;
-            Some(bytes::Bytes::from(json))
+            let bytes = build().await?;
+            cache2.set(&key2, &bytes, Some(KOTH_CACHE_TTL)).await;
+            Some(bytes)
         })
         .await;
     match coalesced {
@@ -938,8 +1037,6 @@ async fn koth_scoreboard_json(
     }
 }
 
-/// Cached KotH board as a model for internal projections such as the combined
-/// multi-format standings. The dedicated endpoint remains the zero-copy path.
 pub(crate) async fn build_koth_scoreboard_cached(
     st: &SharedState,
     game: &game::Model,

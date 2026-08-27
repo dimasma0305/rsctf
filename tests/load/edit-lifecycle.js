@@ -191,6 +191,12 @@ export const EDIT_OPERATIONS = Object.freeze([
   operation('edit_ad_state', 'GET', '/api/edit/games/{id}/ad/State', {
     params: { id: 'adGameId' }, responseKind: 'ad-state',
   }),
+  operation('edit_ad_engines', 'GET', '/api/edit/games/{id}/ad/Engines', {
+    params: { id: 'adGameId' }, responseKind: 'ad-engines',
+  }),
+  operation('edit_ad_live', 'GET', '/api/edit/games/{id}/ad/Live', {
+    params: { id: 'adGameId' }, responseKind: 'ad-live',
+  }),
   operation('edit_ad_ensure_containers', 'POST', '/api/edit/games/{id}/ad/EnsureContainers', {
     auth: 'admin', params: { id: 'adGameId' }, mutation: true, runtime: true,
     responseKind: 'message',
@@ -517,6 +523,21 @@ export function validateEditResponse(operationOrId, response) {
       object();
       if (!Array.isArray(body.challenges) || !Array.isArray(body.teams) || typeof body.scoringPaused !== 'boolean') {
         throw new Error(`${item.id} invalid A&D state`);
+      }
+      break;
+    case 'ad-engines':
+      object();
+      if (typeof body.hasAttackDefense !== 'boolean' || typeof body.hasKoth !== 'boolean' ||
+          !Number.isSafeInteger(body.start) || !Number.isSafeInteger(body.end) ||
+          !Number.isSafeInteger(body.serverTime)) {
+        throw new Error(`${item.id} invalid operator-engine metadata`);
+      }
+      break;
+    case 'ad-live':
+      object();
+      if (!Array.isArray(body.services) || typeof body.scoringPaused !== 'boolean' ||
+          !Number.isSafeInteger(body.serverTime)) {
+        throw new Error(`${item.id} invalid A&D live projection`);
       }
       break;
     case 'service-file':

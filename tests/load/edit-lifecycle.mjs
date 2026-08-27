@@ -1010,6 +1010,16 @@ async function positiveReadAndMutationSurface() {
 
   const adState = await call('edit_ad_state', { jwt: identities.managerJwt });
   requireCondition(adState.model.challenges.some((challenge) => challenge.challengeId === context.adChallengeId), 'A&D state omitted fixture challenge');
+  const adEngines = await call('edit_ad_engines', { jwt: identities.managerJwt });
+  requireCondition(
+    adEngines.model.hasAttackDefense === true && adEngines.model.hasKoth === false,
+    `pure A&D engine detection was incorrect: ${JSON.stringify(adEngines.model)}`,
+  );
+  const adLive = await call('edit_ad_live', { jwt: identities.managerJwt });
+  requireCondition(
+    adLive.model.services.some((service) => service.adTeamServiceId === context.serviceId),
+    'A&D live projection omitted the fixture service',
+  );
   const serviceFile = await call('edit_ad_service_file', { jwt: identities.managerJwt });
   requireCondition(serviceFile.model.containerRunning === true, 'A&D service file did not inspect a live container');
   const changes = await call('edit_ad_snapshot_changes', { jwt: identities.managerJwt });

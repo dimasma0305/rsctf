@@ -57,7 +57,9 @@ const endpoints = [
   { name: 'pending', path: `/api/edit/games/${gameId}/pendingchallenges`, token: managerToken, shape: 'array' },
   { name: 'notices', path: `/api/edit/games/${gameId}/notices`, token: managerToken, shape: 'array' },
   { name: 'divisions', path: `/api/edit/games/${gameId}/divisions`, token: managerToken, shape: 'array' },
+  { name: 'ad_engines', path: `/api/edit/games/${adGameId}/ad/Engines`, token: adminToken, shape: 'ad-engines' },
   { name: 'ad_state', path: `/api/edit/games/${adGameId}/ad/State`, token: adminToken, shape: 'ad-state' },
+  { name: 'ad_live', path: `/api/edit/games/${adGameId}/ad/Live`, token: adminToken, shape: 'ad-live' },
   {
     name: 'ad_file',
     path: `/api/edit/games/${adGameId}/ad/Services/${adServiceId}/File?path=%2Fetc%2Fhostname`,
@@ -70,6 +72,7 @@ const endpoints = [
     token: adminToken,
     shape: 'changes',
   },
+  { name: 'koth_engines', path: `/api/edit/games/${kothGameId}/ad/Engines`, token: adminToken, shape: 'koth-engines' },
   { name: 'koth_state', path: `/api/edit/games/${kothGameId}/ad/koth/state`, token: adminToken, shape: 'koth-state' },
   {
     name: 'koth_receipts',
@@ -101,6 +104,9 @@ function validShape(shape, value) {
   if (shape === 'object') return value !== null && typeof value === 'object' && !Array.isArray(value);
   if (shape === 'page') return value && Array.isArray(value.data) && Number.isInteger(value.total);
   if (shape === 'ad-state') return value && Array.isArray(value.challenges) && Array.isArray(value.teams);
+  if (shape === 'ad-live') return value && Array.isArray(value.services) && typeof value.scoringPaused === 'boolean';
+  if (shape === 'ad-engines') return value && value.hasAttackDefense === true && value.hasKoth === false;
+  if (shape === 'koth-engines') return value && value.hasAttackDefense === false && value.hasKoth === true;
   if (shape === 'changes') return value && typeof value.snapshotAvailable === 'boolean' && Array.isArray(value.changes);
   if (shape === 'koth-state') return value && Array.isArray(value.hills) && Array.isArray(value.teams);
   if (shape === 'receipts') return value && Array.isArray(value.receipts);

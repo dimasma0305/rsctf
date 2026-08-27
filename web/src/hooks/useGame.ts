@@ -1,6 +1,6 @@
 import dayjs, { Dayjs } from 'dayjs'
 import { TFunction } from 'i18next'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import useSWR, { type Middleware, type SWRConfiguration, unstable_serialize } from 'swr'
 import { GameStatus } from '@Components/GameCard'
 import { isRetryableHttpError } from '@Utils/HttpError'
@@ -13,7 +13,12 @@ import {
   useCompletionPolling,
 } from '@Hooks/useCompletionPolling'
 import { OnceSWRConfig } from '@Hooks/useConfig'
-import api, { ParticipationStatus } from '@Api'
+import api, {
+  type AdEngineMetadataModel,
+  type AdGameStateModel,
+  type AdLiveStateModel,
+  ParticipationStatus,
+} from '@Api'
 
 export const GAME_TIMING_REFRESH_MS = 60_000
 export const GAME_TIMING_RETRY_CAP_MS = 5 * 60_000
@@ -816,21 +821,102 @@ export const useAdTokenHint = (numId: number, doFetch: boolean = true) => {
   return { adTokenHint, error, mutate }
 }
 
-/** A&D admin — operator console state poll. Faster refresh during active games. */
-export const useAdminAdState = (numId: number) => {
-  const { game } = useGame(numId)
-  const { status } = useGameStatus(game)
-  const polling = status === GameStatus.OnGoing
+export const ADMIN_OPERATOR_POLL_MS = 5_000
+export const ADMIN_OPERATOR_METADATA_POLL_MS = 60_000
+export const ADMIN_OPERATOR_RETRY_LIMIT = 4
+
+export type AdminOperatorView = 'ad' | 'koth'
+
+export const adminOperatorView = (
+  preferred: AdminOperatorView,
+  metadata?: Pick<AdEngineMetadataModel, 'hasAttackDefense' | 'hasKoth'>
+): AdminOperatorView => {
+  if (!metadata) return preferred
+  if (preferred === 'ad' && metadata.hasAttackDefense) return 'ad'
+  if (preferred === 'koth' && metadata.hasKoth) return 'koth'
+  return metadata.hasAttackDefense ? 'ad' : 'koth'
+}
+
+export const adminOperatorPolling = (
+  metadata: Pick<AdEngineMetadataModel, 'start' | 'end'> | undefined,
+  nowMilliseconds: number
+) =>
+  metadata !== undefined &&
+  Number.isFinite(metadata.start) &&
+  Number.isFinite(metadata.end) &&
+  metadata.start <= nowMilliseconds &&
+  nowMilliseconds < metadata.end
+
+const operatorReadConfig = (refreshInterval: number): SWRConfiguration => ({
+  ...OnceSWRConfig,
+  refreshInterval,
+  refreshWhenHidden: false,
+  refreshWhenOffline: false,
+  revalidateOnFocus: true,
+  revalidateOnReconnect: true,
+  shouldRetryOnError: isRetryableHttpError,
+  errorRetryCount: ADMIN_OPERATOR_RETRY_LIMIT,
+  errorRetryInterval: ADMIN_OPERATOR_POLL_MS,
+})
+
+/** One cheap authorized read decides which engine endpoint may be mounted. */
+export const useAdminOperatorEngines = (numId: number) => {
+  const { data, error, mutate } = useSWR<AdEngineMetadataModel>(
+    numId > 0 ? `/api/edit/games/${numId}/ad/Engines` : null,
+    operatorReadConfig(ADMIN_OPERATOR_METADATA_POLL_MS)
+  )
+  return { engineMetadata: data, error, mutate }
+}
+
+export const mergeAdminAdState = (
+  snapshot: AdGameStateModel | undefined,
+  live: AdLiveStateModel | undefined
+): AdGameStateModel | undefined => {
+  if (!snapshot || !live) return snapshot
+  const liveByService = new Map(live.services.map((cell) => [cell.adTeamServiceId, cell]))
+  return {
+    ...snapshot,
+    currentRound: live.currentRound,
+    roundStartedAt: live.roundStartedAt,
+    roundEndsAt: live.roundEndsAt,
+    scoringPaused: live.scoringPaused,
+    scoringPausedAt: live.scoringPausedAt,
+    teams: snapshot.teams.map((team) => ({
+      ...team,
+      services: team.services.map((cell) => {
+        const delta = liveByService.get(cell.adTeamServiceId)
+        return delta
+          ? {
+              ...cell,
+              lastCheckId: delta.lastCheckId,
+              lastCheckStatus: delta.lastCheckStatus,
+              currentFlag: delta.currentFlag,
+            }
+          : cell
+      }),
+    })),
+  }
+}
+
+/** Load the large grid once, then poll only its small mutable delta. */
+export const useAdminAdState = (numId: number, enabled: boolean, polling: boolean) => {
   const {
-    data: adminAdState,
-    error,
-    mutate,
-  } = api.edit.useEditAdState(numId, {
-    ...OnceSWRConfig,
-    refreshInterval: polling ? 5 * 1000 : 0,
-  })
-  useRevalidateWhenPollingStops(polling, mutate)
-  return { adminAdState, error, mutate }
+    data: grid,
+    error: gridError,
+    mutate: mutateGrid,
+  } = api.edit.useEditAdState(numId, operatorReadConfig(0), enabled && numId > 0)
+  const {
+    data: live,
+    error: liveError,
+    mutate: mutateLive,
+  } = useSWR<AdLiveStateModel>(
+    enabled && numId > 0 ? `/api/edit/games/${numId}/ad/Live` : null,
+    operatorReadConfig(polling ? ADMIN_OPERATOR_POLL_MS : 0)
+  )
+  useRevalidateWhenPollingStops(enabled && polling, mutateLive)
+  const adminAdState = useMemo(() => mergeAdminAdState(grid, live), [grid, live])
+  const mutate = async () => Promise.all([mutateGrid(), mutateLive()])
+  return { adminAdState, error: gridError ?? liveError, mutate }
 }
 
 /** One KotH hill in the operator console — the shared container + its current king + verdict. */
@@ -874,6 +960,14 @@ export interface AdminKothStateModel {
   championCooldownTicks: number
   claimConfirmationTicks: number
   tickSeconds: number
+  /** Unix milliseconds; identical for player/admin readers sharing this version. */
+  scoringGeneratedAt: number
+  latestRound: number
+  /** Unix milliseconds. */
+  currentRoundEndsAt: number | null
+  scoringPaused: boolean
+  /** Unix milliseconds. */
+  scoringPausedAt: number | null
   hills: AdminKothHill[]
   teams: KothTeamScoreRow[]
 }
@@ -931,19 +1025,15 @@ export interface AdminKothObserverModel {
  * hills for games with no KotH challenges), so callers can branch on
  * `hills.length` without a separate loading guard.
  */
-export const useAdminKothState = (numId: number) => {
-  const { game } = useGame(numId)
-  const { status } = useGameStatus(game)
-  const polling = status === GameStatus.OnGoing
+export const useAdminKothState = (numId: number, enabled: boolean, polling: boolean) => {
   const {
     data: adminKothState,
     error,
     mutate,
-  } = useSWR<AdminKothStateModel>(numId > 0 ? `/api/edit/games/${numId}/ad/koth/state` : null, {
-    ...OnceSWRConfig,
-    shouldRetryOnError: false,
-    refreshInterval: polling ? 5 * 1000 : 0,
-  })
-  useRevalidateWhenPollingStops(polling, mutate)
+  } = useSWR<AdminKothStateModel>(
+    enabled && numId > 0 ? `/api/edit/games/${numId}/ad/koth/state` : null,
+    operatorReadConfig(polling ? ADMIN_OPERATOR_POLL_MS : 0)
+  )
+  useRevalidateWhenPollingStops(enabled && polling, mutate)
   return { adminKothState, error, mutate }
 }
