@@ -10,6 +10,7 @@ scenarios. Run via npm:
 ```sh
 cd tests/load
       npm run admin-lifecycle # destructive, disposable-stack admin acceptance
+      npm run admin-dashboard # disposable 100k-submission fixed-rate dashboard read gate
       npm run edit-lifecycle  # destructive, disposable-stack organizer acceptance
       npm run multi-domain    # destructive 2×A&D + 2×KotH isolation/recovery acceptance
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
@@ -34,6 +35,30 @@ Requires `k6`, `node`, and `docker exec <PG>` / `docker` access; the stack up wi
 running game (default `GAME=10`, BYOC challenge `CID=68`). BYOC runs require at least
 `N` distinct Accepted participations; the harness fails before spawning when fewer are
 available rather than fabricating participation IDs that production authorization rejects.
+
+### Admin dashboard aggregates
+
+The focused dashboard gate seeds a tagged neutral submission history into an explicitly
+disposable database, exercises the summary, all four trend ranges, and the three
+activity feeds at a fixed arrival rate, then deletes every tagged row. Its PostgreSQL
+account must be allowed to use transaction-local `session_replication_role=replica`;
+this prevents disposable rows from enqueueing immutable anti-cheat evidence and makes
+exact cleanup possible without weakening production triggers. The gate also requires
+an Admin token (or a local Admin plus `RSCTF_JWT_SECRET`), exact healthy responses,
+fixed trend bucket counts, at most five popular games, at most ten activity rows,
+zero 5xx/dropped arrivals, and a responsive `healthz`:
+
+```sh
+ADMIN_DASHBOARD_DISPOSABLE=1 SUBMISSION_ROWS=100000 RATE=2 DURATION=30s \
+  RSCTF_LOAD_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1/rsctf_load_test \
+  SUMMARY_JSON=/tmp/admin-dashboard.json npm run admin-dashboard
+```
+
+The database name must contain `test`, `acceptance`, or `load`; a non-loopback
+target additionally requires `ALLOW_REMOTE_ADMIN_DASHBOARD` to equal the exact
+origin. Use identical row count, rate, duration, host, and summary settings for a
+before/after comparison. Retain the first reportable distributions alongside
+application/PostgreSQL resource samples in `REPORT.md`; do not compare peak rps.
 
 ### Bounded event-security telemetry
 
@@ -126,6 +151,8 @@ tests/load/
   admin-fixtures.mjs focused SQL, HTTP, Docker-image, CSR, and recovery helpers for admin acceptance
   admin-lifecycle.js pure 62-operation admin catalog, response contracts, and target-safety rules
   admin-lifecycle.mjs destructive disposable admin lifecycle (npm run admin-lifecycle)
+  admin-dashboard.js bounded dashboard/trend/activity response contracts
+  admin-dashboard.mjs tagged large-history fixture and cleanup (npm run admin-dashboard)
   edit-lifecycle.js exact 67-operation `/api/edit` catalog + wire validators
   edit-lifecycle.mjs future/A&D/KotH organizer lifecycle (npm run edit-lifecycle)
   multi-domain-acceptance.js pure two-service/two-hill isolation contracts
@@ -154,6 +181,7 @@ tests/load/
   worker-plane-local.mjs → isolated native-agent acceptance wrapper (npm run worker-local)
   k6/
     admin-lifecycle.js fixed-rate admin reads, SignalR connection, replica/control health
+    admin-dashboard.js fixed-rate bounded dashboard/trend/activity reads plus health
     edit-lifecycle.js  fixed-rate organizer reads across future/A&D/KotH fixtures
     organizer-hubs.js  fixed-rate privileged negotiate, WebSocket, and exec traffic
     polled-read.js     one read per iteration across the dominant polled endpoints

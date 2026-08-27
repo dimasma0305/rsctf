@@ -25,10 +25,11 @@ import {
   mdiThumbDown,
   mdiArrowLeftBold,
   mdiArrowRightBold,
+  mdiRefresh,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import type { EChartsOption } from 'echarts'
-import { FC, useState } from 'react'
+import { FC, useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router'
 import useSWR from 'swr'
@@ -36,6 +37,7 @@ import { Empty } from '@Components/Empty'
 import { ScrollingText } from '@Components/ScrollingText'
 import { AdminPage } from '@Components/admin/AdminPage'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
+import { startAdminDashboardRefresh } from '@Utils/AdminDashboardRefresh'
 import { showErrorMsg } from '@Utils/Shared'
 import api, {
   AdminDashboardModel,
@@ -48,6 +50,12 @@ import classes from '@Styles/AdminDashboard.module.css'
 
 const STATS_ICON_SIZE = 1.5
 const TABLE_PAGE_SIZE = 10
+const DASHBOARD_SWR_CONFIG = {
+  refreshInterval: 0,
+  revalidateOnFocus: false,
+  revalidateOnReconnect: false,
+} as const
+type ActivityTab = 'reviews' | 'writeups' | 'cheats'
 
 const StatCard: FC<{
   title: string
@@ -92,16 +100,29 @@ const Dashboard: FC = () => {
   const theme = useMantineTheme()
   const { colorScheme } = useMantineColorScheme()
   const [trendRange, setTrendRange] = useState<string>('Day')
+  const [activityTab, setActivityTab] = useState<ActivityTab>('reviews')
 
   const {
     data: dashboard,
     error,
     isLoading,
-  } = useSWR<AdminDashboardModel>('/api/admin/dashboard', () => api.admin.adminGetDashboard().then((r) => r.data))
+    isValidating: isDashboardValidating,
+    mutate: refreshDashboard,
+  } = useSWR<AdminDashboardModel>(
+    '/api/admin/dashboard',
+    () => api.admin.adminGetDashboard().then((r) => r.data),
+    DASHBOARD_SWR_CONFIG
+  )
 
-  const { data: trends, isLoading: isTrendLoading } = useSWR<SubmissionTrendModel[]>(
+  const {
+    data: trends,
+    isLoading: isTrendLoading,
+    isValidating: isTrendValidating,
+    mutate: refreshTrend,
+  } = useSWR<SubmissionTrendModel[]>(
     `/api/admin/submissiontrend?range=${trendRange}`,
-    () => api.admin.adminGetSubmissionTrend({ range: trendRange }).then((r) => r.data)
+    () => api.admin.adminGetSubmissionTrend({ range: trendRange }).then((r) => r.data),
+    DASHBOARD_SWR_CONFIG
   )
 
   if (error) showErrorMsg(error, t)
@@ -143,24 +164,65 @@ const Dashboard: FC = () => {
   const [cheatPage, setCheatPage] = useState(1)
 
   // Fetch Reviews
-  const { data: reviewsData } = useSWR<ChallengeReviewDetailModel[]>(['/api/admin/reviews', reviewPage], () =>
-    api.admin
-      .adminGetReviews({ count: TABLE_PAGE_SIZE, skip: (reviewPage - 1) * TABLE_PAGE_SIZE })
-      .then((r) => (Array.isArray(r.data) ? r.data : (r.data as any).data))
+  const { data: reviewsData, mutate: refreshReviews } = useSWR<ChallengeReviewDetailModel[]>(
+    activityTab === 'reviews' ? ['/api/admin/reviews', reviewPage] : null,
+    () =>
+      api.admin
+        .adminGetReviews({ count: TABLE_PAGE_SIZE, skip: (reviewPage - 1) * TABLE_PAGE_SIZE })
+        .then((r) => (Array.isArray(r.data) ? r.data : (r.data as any).data)),
+    DASHBOARD_SWR_CONFIG
   )
 
   // Fetch Writeups
-  const { data: writeupsData } = useSWR<WriteupInfo[]>(['/api/admin/writeups', writeupPage], () =>
-    api.admin
-      .adminGetAllWriteups({ count: TABLE_PAGE_SIZE, skip: (writeupPage - 1) * TABLE_PAGE_SIZE })
-      .then((r) => (Array.isArray(r.data) ? r.data : (r.data as any).data))
+  const { data: writeupsData, mutate: refreshWriteups } = useSWR<WriteupInfo[]>(
+    activityTab === 'writeups' ? ['/api/admin/writeups', writeupPage] : null,
+    () =>
+      api.admin
+        .adminGetAllWriteups({ count: TABLE_PAGE_SIZE, skip: (writeupPage - 1) * TABLE_PAGE_SIZE })
+        .then((r) => (Array.isArray(r.data) ? r.data : (r.data as any).data)),
+    DASHBOARD_SWR_CONFIG
   )
 
   // Fetch Cheat Reports
-  const { data: cheatsData } = useSWR<CheatInfoModel[]>(['/api/admin/cheat-reports', cheatPage], () =>
-    api.admin
-      .adminGetCheatReports({ count: TABLE_PAGE_SIZE, skip: (cheatPage - 1) * TABLE_PAGE_SIZE })
-      .then((r) => (Array.isArray(r.data) ? r.data : (r.data as any).data))
+  const { data: cheatsData, mutate: refreshCheats } = useSWR<CheatInfoModel[]>(
+    activityTab === 'cheats' ? ['/api/admin/cheat-reports', cheatPage] : null,
+    () =>
+      api.admin
+        .adminGetCheatReports({ count: TABLE_PAGE_SIZE, skip: (cheatPage - 1) * TABLE_PAGE_SIZE })
+        .then((r) => (Array.isArray(r.data) ? r.data : (r.data as any).data)),
+    DASHBOARD_SWR_CONFIG
+  )
+
+  const refreshVisibleDashboard = useCallback(async () => {
+    const refreshActivity =
+      activityTab === 'reviews' ? refreshReviews : activityTab === 'writeups' ? refreshWriteups : refreshCheats
+    await Promise.all([refreshDashboard(), refreshTrend(), refreshActivity()])
+  }, [activityTab, refreshCheats, refreshDashboard, refreshReviews, refreshTrend, refreshWriteups])
+
+  useEffect(
+    () =>
+      startAdminDashboardRefresh({
+        refresh: refreshVisibleDashboard,
+        onError: (error) => showErrorMsg(error, t),
+        isActive: () => document.visibilityState === 'visible' && document.hasFocus() && window.navigator.onLine,
+        subscribe: (listener) => {
+          document.addEventListener('visibilitychange', listener)
+          window.addEventListener('focus', listener)
+          window.addEventListener('blur', listener)
+          window.addEventListener('online', listener)
+          window.addEventListener('offline', listener)
+          return () => {
+            document.removeEventListener('visibilitychange', listener)
+            window.removeEventListener('focus', listener)
+            window.removeEventListener('blur', listener)
+            window.removeEventListener('online', listener)
+            window.removeEventListener('offline', listener)
+          }
+        },
+        setTimer: window.setTimeout.bind(window),
+        clearTimer: window.clearTimeout.bind(window),
+      }),
+    [refreshVisibleDashboard, t]
   )
 
   const SimplePagination = ({
@@ -198,6 +260,17 @@ const Dashboard: FC = () => {
   return (
     <AdminPage isLoading={isLoading && !dashboard}>
       <Stack gap="md">
+        <Group justify="flex-end">
+          <ActionIcon
+            variant="subtle"
+            size="lg"
+            loading={isDashboardValidating || isTrendValidating}
+            aria-label={t('admin.dashboard.refresh', 'Refresh dashboard')}
+            onClick={() => void refreshVisibleDashboard().catch((error) => showErrorMsg(error, t))}
+          >
+            <Icon path={mdiRefresh} size={1} aria-hidden />
+          </ActionIcon>
+        </Group>
         {/* Stats Row */}
         <Grid>
           <Grid.Col span={{ base: 12, sm: 6, md: 4 }}>
@@ -433,7 +506,7 @@ const Dashboard: FC = () => {
 
         {/* Recent Activity Tabs */}
         <Card withBorder radius="lg" p="lg">
-          <Tabs defaultValue="reviews">
+          <Tabs value={activityTab} onChange={(value) => value && setActivityTab(value as ActivityTab)}>
             <Tabs.List>
               <Tabs.Tab value="reviews">{t('admin.dashboard.recent_reviews', 'Recent Reviews')}</Tabs.Tab>
               <Tabs.Tab value="writeups">{t('admin.dashboard.recent_writeups', 'Recent Writeups')}</Tabs.Tab>
