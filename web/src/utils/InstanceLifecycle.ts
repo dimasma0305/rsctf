@@ -76,7 +76,7 @@ export const clearDestroyedInstanceContext = <T extends { context?: InstanceCont
 interface DestroyReconciliation<T> {
   refresh: () => Promise<T | undefined>
   hasInstance: (value: T | undefined) => boolean
-  destroy: () => Promise<void>
+  destroy: (latest: T) => Promise<void>
   publishAbsent: (latest: T) => Promise<void>
 }
 
@@ -91,7 +91,7 @@ export const destroyReconciledInstance = async <T>({
   if (!latest || !hasInstance(latest)) return 'alreadyAbsent'
 
   try {
-    await destroy()
+    await destroy(latest)
   } catch (error) {
     try {
       const reconciled = await refresh()

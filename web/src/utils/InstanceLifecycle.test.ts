@@ -261,6 +261,43 @@ test('a stale destroy completion cannot clear a replacement that reused its dire
   assert.equal(cached, replacement)
 })
 
+test('a conditional delete conflict refreshes the replacement and preserves the failure', async () => {
+  const original = {
+    context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: REUSED_DIRECT_ENTRY },
+  }
+  const replacement = {
+    context: { closeTime: 300, instanceId: REPLACEMENT_ID, instanceEntry: REUSED_DIRECT_ENTRY },
+  }
+  let cached = original
+  let refreshes = 0
+  let published = 0
+  let requestedId: string | null | undefined
+
+  await assert.rejects(
+    destroyReconciledInstance({
+      refresh: async () => {
+        refreshes += 1
+        cached = refreshes === 1 ? original : replacement
+        return cached
+      },
+      hasInstance: (value) => Boolean(value?.context.instanceId),
+      destroy: async (latest) => {
+        requestedId = latest.context.instanceId
+        throw new Error('409 runtime changed')
+      },
+      publishAbsent: async () => {
+        published += 1
+      },
+    }),
+    /runtime changed/
+  )
+
+  assert.equal(requestedId, ORIGINAL_ID)
+  assert.equal(refreshes, 2)
+  assert.equal(published, 0)
+  assert.equal(cached, replacement)
+})
+
 test('destroy preserves a replacement instance published while deletion is in flight', async () => {
   const deleted = { context: { closeTime: 100, instanceId: ORIGINAL_ID, instanceEntry: 'old-entry' } }
   let cached = deleted
@@ -299,7 +336,8 @@ test('destroy uses the refreshed instance and revalidates after success', async 
   const result = await destroyReconciledInstance({
     refresh: async () => snapshots.shift(),
     hasInstance: (value) => value?.active === true,
-    destroy: async () => {
+    destroy: async (latest) => {
+      assert.equal(latest.active, true)
       destroys += 1
     },
     publishAbsent: async (latest) => {

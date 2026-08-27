@@ -163,9 +163,14 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     try {
       await destroyReconciledInstance<ChallengeDetailModel>({
         refresh: mutate,
-        hasInstance: (latest) => Boolean(latest?.context?.instanceEntry),
-        destroy: async () => {
-          await api.game.gameDeleteContainer(gameId, challengeId)
+        hasInstance: (latest) => Boolean(latest?.context?.instanceId || latest?.context?.instanceEntry),
+        destroy: async (latest) => {
+          const expectedContainerId = latest.context?.instanceId
+          if (!expectedContainerId)
+            throw new Error('The refreshed challenge response is missing its instance identity.')
+          await api.game.gameDeleteContainer(gameId, challengeId, {
+            expectedContainerId,
+          })
         },
         publishAbsent: async (deleted) => {
           await mutate((current) => clearDestroyedInstanceContext(current, deleted), { revalidate: false })

@@ -7729,11 +7729,16 @@ export class Api<
     gameDeleteContainer: (
       id: number,
       challengeId: number,
+      query: {
+        /** Immutable container UUID returned by the immediately preceding challenge read. */
+        expectedContainerId: string;
+      },
       params: RequestParams = {},
     ) =>
       this.request<void, RequestResponse>({
         path: `/api/game/${id}/container/${challengeId}`,
         method: "DELETE",
+        query: query,
         ...params,
       }),
 
