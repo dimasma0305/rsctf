@@ -14,8 +14,11 @@ export const normalizeFlagEgressSearch = (search: string) => {
   let normalized = ''
   let scalarCount = 0
   let pendingSpace = false
-  const inspected = [...search].slice(0, MAX_FLAG_EGRESS_SEARCH_INSPECT_CHARS)
-  for (const character of inspected) {
+  const characters = search[Symbol.iterator]()
+  for (let inspected = 0; inspected < MAX_FLAG_EGRESS_SEARCH_INSPECT_CHARS; inspected += 1) {
+    const next = characters.next()
+    if (next.done) break
+    const character = next.value
     if (/\s/u.test(character)) {
       pendingSpace = scalarCount > 0
       continue
@@ -35,6 +38,12 @@ export const normalizeFlagEgressSearch = (search: string) => {
   return normalized
 }
 
+const flagEgressMatchesNormalizedSearch = (event: FlagEgressEventModel, normalizedSearch: string) =>
+  !normalizedSearch ||
+  [event.teamName, event.challengeTitle, event.remoteIp]
+    .map((value) => value.toLowerCase())
+    .some((value) => value.includes(normalizedSearch))
+
 /** Merge aggregate updates by stable row id, keeping the newest committed
  * cursor even when an older HTTP response completes after a live push. */
 export const mergeFlagEgressRows = (
@@ -52,6 +61,19 @@ export const mergeFlagEgressRows = (
     .slice(0, finiteLimit(limit))
 }
 
+/** Keep a query-scoped live buffer bounded after filtering. Nonmatching traffic
+ * returns the existing buffer verbatim so it cannot evict rows or churn React. */
+export const mergeMatchingFlagEgressRows = (
+  incoming: readonly FlagEgressEventModel[],
+  current: readonly FlagEgressEventModel[],
+  normalizedSearch: string,
+  limit: number
+) => {
+  const matching = incoming.filter((event) => flagEgressMatchesNormalizedSearch(event, normalizedSearch))
+  if (matching.length === 0) return current
+  return mergeFlagEgressRows(matching, current, limit)
+}
+
 /** Drop buffered states covered by an authoritative cursor checkpoint. */
 export const rebaseFlagEgressRows = (current: readonly FlagEgressEventModel[], checkpoint: number) =>
   current.filter((event) => event.cursor > checkpoint)
@@ -65,7 +87,7 @@ export interface ScopedFlagEgressPage {
 export const currentFlagEgressPage = (scope: string, snapshot?: ScopedFlagEgressPage) =>
   snapshot?.scope === scope ? snapshot.page : undefined
 
-/** Hide a previous viewer/game buffer synchronously on scope change. */
+/** Hide a previous viewer/game/query buffer synchronously on scope change. */
 export const currentFlagEgressBuffer = (
   scope: string,
   bufferedScope: string,
@@ -88,10 +110,7 @@ export const flagEgressPushIsCurrent = (
 
 export const flagEgressMatchesSearch = (event: FlagEgressEventModel, search: string) => {
   const normalized = normalizeFlagEgressSearch(search)
-  if (!normalized) return true
-  return [event.teamName, event.challengeTitle, event.remoteIp]
-    .map((value) => value.toLowerCase())
-    .some((value) => value.includes(normalized))
+  return flagEgressMatchesNormalizedSearch(event, normalized)
 }
 
 /** Keep the relative-time plugin next to the formatter so this feed cannot

@@ -30,6 +30,7 @@ import {
   flagEgressSnapshotIsCurrent,
   formatFlagEgressAge,
   mergeFlagEgressRows,
+  mergeMatchingFlagEgressRows,
   normalizeFlagEgressSearch,
   rebaseFlagEgressRows,
   type ScopedFlagEgressPage,
@@ -59,12 +60,13 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
   const [search, setSearch] = useState('')
   const [debouncedSearch] = useDebouncedValue(search, 300)
   const normalizedSearch = normalizeFlagEgressSearch(debouncedSearch)
+  const filterScope = JSON.stringify([feedScope, normalizedSearch])
   const snapshotScope = JSON.stringify([feedScope, activePage, normalizedSearch])
   const reducedMotion = useReducedMotion()
 
   const [, update] = useState(0)
-  const buffered = useRef<FlagEgressEventModel[]>([])
-  const bufferedFeedScope = useRef(feedScope)
+  const buffered = useRef<readonly FlagEgressEventModel[]>([])
+  const bufferedFilterScope = useRef(filterScope)
   const cursor = useRef(0)
   const cursorInitialized = useRef(false)
   const activeFeedScope = useRef(feedScope)
@@ -136,22 +138,38 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
 
   useEffect(() => () => recoveryRequest.current.cancel(), [snapshotScope])
 
-  const mergeIncoming = useCallback((incoming: readonly FlagEgressEventModel[]) => {
-    if (incoming.length === 0) return
-    buffered.current = mergeFlagEgressRows(incoming, buffered.current, MAX_BUFFERED_EVENTS)
-    update((version) => version + 1)
-  }, [])
+  const mergeIncoming = useCallback(
+    (incoming: readonly FlagEgressEventModel[]) => {
+      if (incoming.length === 0) return
+      const current = currentFlagEgressBuffer(filterScope, bufferedFilterScope.current, buffered.current)
+      const next = mergeMatchingFlagEgressRows(incoming, current, normalizedSearch, MAX_BUFFERED_EVENTS)
+      if (next === current) return
+      bufferedFilterScope.current = filterScope
+      buffered.current = next
+      update((version) => version + 1)
+    },
+    [filterScope, normalizedSearch]
+  )
 
-  const rebaseAtCheckpoint = useCallback((checkpoint: number) => {
-    buffered.current = rebaseFlagEgressRows(buffered.current, checkpoint)
-    update((version) => version + 1)
-  }, [])
+  const rebaseAtCheckpoint = useCallback(
+    (checkpoint: number) => {
+      const current = currentFlagEgressBuffer(filterScope, bufferedFilterScope.current, buffered.current)
+      bufferedFilterScope.current = filterScope
+      buffered.current = rebaseFlagEgressRows(current, checkpoint)
+      update((version) => version + 1)
+    },
+    [filterScope]
+  )
 
   const reconcile = useCallback(
     () =>
       recoveryRequest.current.run(async (signal) => {
         const requestedFeedScope = feedScope
-        const isCurrent = () => activeFeedScope.current === requestedFeedScope && !signal.aborted
+        const requestedSnapshotScope = snapshotScope
+        const isCurrent = () =>
+          activeFeedScope.current === requestedFeedScope &&
+          activeSnapshotScope.current === requestedSnapshotScope &&
+          !signal.aborted
 
         if (!cursorInitialized.current) {
           const checkpoint = await api.admin.adminFlagEgressBackfill(gameId, {}, { signal })
@@ -193,7 +211,7 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
         rebaseAtCheckpoint(checkpoint.data.nextCursor)
         cursor.current = Math.max(cursor.current, checkpoint.data.nextCursor)
       }),
-    [feedScope, gameId, loadSnapshot, mergeIncoming, rebaseAtCheckpoint]
+    [feedScope, gameId, loadSnapshot, mergeIncoming, rebaseAtCheckpoint, snapshotScope]
   )
 
   useRecoveringHub({
@@ -216,7 +234,7 @@ const FlagEgressView: FC<FlagEgressViewProps> = ({ gameId, feedScope }) => {
     pollingIntervalMs: OPERATOR_FALLBACK_POLL_MS,
   })
 
-  const currentBuffer = currentFlagEgressBuffer(feedScope, bufferedFeedScope.current, buffered.current)
+  const currentBuffer = currentFlagEgressBuffer(filterScope, bufferedFilterScope.current, buffered.current)
   const filteredLive = currentBuffer.filter((event) => flagEgressMatchesSearch(event, normalizedSearch))
   const visibleEvents =
     activePage === 1

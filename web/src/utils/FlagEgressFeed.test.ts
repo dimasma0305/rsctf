@@ -9,6 +9,7 @@ import {
   flagEgressPushIsCurrent,
   flagEgressSnapshotIsCurrent,
   mergeFlagEgressRows,
+  mergeMatchingFlagEgressRows,
   normalizeFlagEgressSearch,
   rebaseFlagEgressRows,
 } from './FlagEgressFeed'
@@ -101,6 +102,49 @@ test('live Flag Egress search mirrors server whitespace and scalar bounds', () =
   assert.equal(flagEgressMatchesSearch(event(9, 9, 1, { teamName: 'x'.repeat(128) }), 'x'.repeat(128) + 'suffix'), true)
 })
 
+test('Flag Egress search inspection does not materialize input beyond its bounded prefix', () => {
+  let inspected = 0
+  const boundedWhitespace = {
+    [Symbol.iterator]() {
+      return {
+        next() {
+          inspected += 1
+          if (inspected > 512) throw new Error('search inspected beyond its bounded prefix')
+          return { done: false as const, value: ' ' }
+        },
+      }
+    },
+  } as unknown as string
+
+  assert.equal(normalizeFlagEgressSearch(boundedWhitespace), '')
+  assert.equal(inspected, 512)
+
+  const source = readFileSync('src/utils/FlagEgressFeed.ts', 'utf8')
+  assert.doesNotMatch(source, /\[\.\.\.search\]/)
+})
+
+test('nonmatching traffic cannot evict a matching query-scoped Flag Egress row', () => {
+  const search = normalizeFlagEgressSearch('keep-me')
+  let buffered = mergeMatchingFlagEgressRows([event(1, 1, 1, { teamName: 'keep-me' })], [], search, 200)
+
+  for (let cursor = 2; cursor <= 5_000; cursor += 1) {
+    const previous = buffered
+    buffered = mergeMatchingFlagEgressRows([event(cursor, cursor, 1, { teamName: 'unrelated' })], buffered, search, 200)
+    assert.equal(buffered, previous, 'nonmatching traffic must not churn the scoped buffer')
+  }
+
+  assert.deepEqual(
+    buffered.map(({ id }) => id),
+    [1]
+  )
+
+  for (let cursor = 5_001; cursor <= 5_300; cursor += 1) {
+    buffered = mergeMatchingFlagEgressRows([event(cursor, cursor, 1, { teamName: 'keep-me' })], buffered, search, 200)
+  }
+  assert.equal(buffered.length, 200)
+  assert.deepEqual([buffered[0].cursor, buffered.at(-1)?.cursor], [5_300, 5_101])
+})
+
 test('relative timestamps initialize their own Day.js plugin', () => {
   assert.match(formatFlagEgressAge(Date.now() - 60_000, 'en'), /minute/)
 })
@@ -115,4 +159,12 @@ test('Flag Egress first page uses the same row limit as later pages', () => {
   const source = readFileSync('src/pages/admin/games/[id]/FlagEgress.tsx', 'utf8')
   assert.match(source, /mergeFlagEgressRows\(filteredLive, page\?\.data \?\? \[\], ITEMS_PER_PAGE\)/)
   assert.doesNotMatch(source, /MAX_VISIBLE_EVENTS/)
+})
+
+test('Flag Egress live rows are query-scoped while pagination retains the active buffer', () => {
+  const source = readFileSync('src/pages/admin/games/[id]/FlagEgress.tsx', 'utf8')
+  assert.match(source, /const filterScope = JSON\.stringify\(\[feedScope, normalizedSearch\]\)/)
+  assert.match(source, /currentFlagEgressBuffer\(filterScope, bufferedFilterScope\.current, buffered\.current\)/)
+  assert.match(source, /mergeMatchingFlagEgressRows\(incoming, current, normalizedSearch, MAX_BUFFERED_EVENTS\)/)
+  assert.match(source, /activeSnapshotScope\.current === requestedSnapshotScope/)
 })
