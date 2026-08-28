@@ -26,16 +26,15 @@ checkpoint, and reconnect-backfill endpoints.
 
 | Metric | Accepted result |
 | --- | ---: |
-| Requests / observed rate | 20 / 0.999970 s⁻¹ |
-| Latency average / p50 | 23.19 / 20.83 ms |
-| Latency p90 / p95 | 37.53 / 39.59 ms |
-| Latency p99 / maximum | 44.04 / 45.15 ms |
+| Requests / observed rate | 21 / 1.048738 s⁻¹ |
+| Latency average / p50 | 24.55 / 19.11 ms |
+| Latency p90 / p95 | 39.22 / 44.39 ms |
+| Latency p99 / maximum | 71.13 / 77.81 ms |
 | Invalid / row-limit / oversized-body responses | 0 / 0 / 0 |
 | HTTP 429 / 5xx / dropped arrivals | 0 / 0 / 0 |
-| rsctf CPU average over five one-second samples | 1.40% of one core |
-| rsctf RSS | 83,828 KiB |
-| PostgreSQL CPU / RSS contemporaneous sample | 5.35% / 165.6 MiB |
-| Redis CPU / RSS contemporaneous sample | 0.65% / 4.203 MiB |
+| rsctf CPU / peak RSS over six samples | 0.70% of one core / 99,304 KiB |
+| PostgreSQL peak CPU / RSS over six samples | 6.20% / 178.9 MiB |
+| Redis peak CPU / RSS over six samples | 3.45% / 6.352 MiB |
 
 The initial diagnostic deliberately reused one administrator identity at five
 requests per second and was rejected by the monitor query admission policy
