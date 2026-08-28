@@ -268,30 +268,30 @@ function sampleResponse(operation) {
   };
 }
 
-test('catalog has exactly all 83 edit method/path operations', () => {
-  assert.equal(EDIT_OPERATIONS.length, 83);
-  assert.equal(new Set(EDIT_OPERATION_IDS).size, 83);
-  assert.equal(new Set(EDIT_OPERATIONS.map(({ method, path }) => `${method} ${path}`)).size, 83);
+test('catalog has exactly all 84 edit method/path operations', () => {
+  assert.equal(EDIT_OPERATIONS.length, 84);
+  assert.equal(new Set(EDIT_OPERATION_IDS).size, 84);
+  assert.equal(new Set(EDIT_OPERATIONS.map(({ method, path }) => `${method} ${path}`)).size, 84);
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 33, POST: 33, PUT: 6, DELETE: 11 },
+    { GET: 34, POST: 33, PUT: 6, DELETE: 11 },
   );
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.auth] = (counts[operation.auth] || 0) + 1;
       return counts;
     }, {}),
-    { manager: 67, admin: 14, 'managed-list': 1, 'user-submit': 1 },
+    { manager: 68, admin: 14, 'managed-list': 1, 'user-submit': 1 },
   );
 });
 
 test('catalog and every production controller source have exact bidirectional coverage', () => {
   const sources = controllerSources();
-  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 83 });
-  assert.equal(parseEditRouterOperations(sources).length, 83);
+  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 84 });
+  assert.equal(parseEditRouterOperations(sources).length, 84);
 });
 
 test('source drift catches routes added outside controllers/edit and removed catalog routes', () => {
@@ -391,7 +391,7 @@ test('credential and archive recovery reads reject cacheable responses', () => {
 });
 
 test('coverage accounting rejects missing, duplicate, and unknown operation ids', () => {
-  assert.deepEqual(assertCompleteEditCoverage(EDIT_OPERATION_IDS), { covered: 83, required: 83 });
+  assert.deepEqual(assertCompleteEditCoverage(EDIT_OPERATION_IDS), { covered: 84, required: 84 });
   assert.throws(
     () => assertCompleteEditCoverage(EDIT_OPERATION_IDS.slice(1)),
     /missing: edit_control_job_operation_get/,
@@ -403,7 +403,7 @@ test('coverage accounting rejects missing, duplicate, and unknown operation ids'
 test('the disposable orchestrator has one explicit positive call for every catalog id', () => {
   const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
   const invoked = positiveCallExpressions(source).map(({ id }) => id);
-  assert.equal(invoked.length, 83);
+  assert.equal(invoked.length, 84);
   assert.deepEqual(new Set(invoked), new Set(EDIT_OPERATION_IDS));
   assert.equal(new Set(invoked).size, invoked.length, 'positive calls must not hide duplicate coverage');
 });

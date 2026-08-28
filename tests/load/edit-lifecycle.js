@@ -186,6 +186,9 @@ export const EDIT_OPERATIONS = Object.freeze([
     params: { id: 'gameId', cId: 'containerChallengeId' }, mutation: true, runtime: true,
     responseKind: 'message',
   }),
+  operation('edit_flags_get', 'GET', '/api/edit/games/{id}/challenges/{cId}/flags', {
+    params: challenge, responseKind: 'page',
+  }),
   operation('edit_flags_add', 'POST', '/api/edit/games/{id}/challenges/{cId}/flags', {
     params: challenge, mutation: true, responseKind: 'message',
   }),

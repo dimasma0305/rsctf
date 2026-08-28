@@ -650,6 +650,11 @@ async function prepareFutureFixture() {
       { flag: `flag{edit_remove_${runKey}}` },
     ],
   });
+  const flags = await call('edit_flags_get', { jwt: identities.managerJwt });
+  requireCondition(
+    flags.model.total >= 2 && flags.model.data.length >= 2,
+    `flag page omitted newly authored fixtures: ${JSON.stringify(flags.model)}`,
+  );
   context.flagId = Number(sql(
     `SELECT id FROM "FlagContexts" WHERE challenge_id=${context.challengeId} ` +
       `AND flag=${sqlLiteral(`flag{edit_remove_${runKey}}`)} ORDER BY id DESC LIMIT 1`,
