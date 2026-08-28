@@ -11,7 +11,7 @@ test('the bounded suspicious submission page is one-shot and exposes request fai
   assert.match(source, /refreshWhenHidden: false/)
   assert.match(source, /refreshWhenOffline: false/)
   assert.match(source, /keepPreviousData: false/)
-  assert.match(source, /if \(error && !cheatInfo\)/)
+  assert.match(source, /if \(error && !feed\)/)
   assert.match(source, /tryGetErrorMsg\(error, t\)/)
   assert.match(source, /onClick=\{\(\) => void refresh\(\)\}/)
 })

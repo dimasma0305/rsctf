@@ -3,7 +3,9 @@
 // (node:test). Component tests opt into happy-dom explicitly; pure-logic tests do
 // not pay for a shared browser environment. Exits non-zero if any test fails.
 import { build } from 'esbuild'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { once } from 'node:events'
 import { join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -76,10 +78,18 @@ try {
   })
   const outFiles = entries.map((entry) => join(outDir, relative('src', entry).replace(/\.ts$/, '.mjs')))
 
-  // Importing a bundled module registers its node:test cases; the runner executes
-  // them at process exit and sets a non-zero exit code on any failure.
-  for (const outFile of outFiles) {
-    await import(pathToFileURL(outFile).href)
+  // Keep the generated modules alive until node:test has finished every async
+  // test. Importing them in this parent process lets the finally block race the
+  // runner and remove fixtures while tests are still reading them.
+  const runner = join(outDir, 'runner.mjs')
+  writeFileSync(
+    runner,
+    outFiles.map((outFile) => `await import(${JSON.stringify(pathToFileURL(outFile).href)})`).join('\n'),
+  )
+  const child = spawn(process.execPath, [runner], { stdio: 'inherit' })
+  const [code, signal] = await once(child, 'exit')
+  if (code !== 0) {
+    throw new Error(`web test runner exited with ${code ?? `signal ${signal}`}`)
   }
 } finally {
   rmSync(outDir, { recursive: true, force: true })

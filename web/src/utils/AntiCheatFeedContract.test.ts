@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const api = readFileSync(new URL('../Api.ts', import.meta.url), 'utf8')
-const log = readFileSync(new URL('../components/monitor/CheatSubmissionLog.tsx', import.meta.url), 'utf8')
+const api = readFileSync('src/Api.ts', 'utf8')
+const log = readFileSync('src/components/monitor/CheatSubmissionLog.tsx', 'utf8')
 
 test('anti-cheat incident log uses a bounded cursor delta and one-shot reads', () => {
   assert.match(api, /interface CheatIncidentPageModel/)
