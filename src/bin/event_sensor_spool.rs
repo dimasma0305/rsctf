@@ -11,12 +11,6 @@ const MAX_SPOOL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SPOOL_BATCHES: usize = 2_048;
 const MAX_SPOOL_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
-#[derive(Default)]
-pub struct Shed {
-    pub rows: u64,
-    pub bytes: u64,
-}
-
 pub struct DurableSpool {
     directory: PathBuf,
     entries: VecDeque<(PathBuf, u64)>,
@@ -47,51 +41,68 @@ impl DurableSpool {
         })
     }
 
-    pub async fn enqueue(&mut self, batch: &TelemetryBatch) -> anyhow::Result<Shed> {
-        let encoded = serde_json::to_vec(batch)?;
+    pub async fn enqueue(&mut self, batch: &TelemetryBatch) -> anyhow::Result<()> {
+        let mut durable = batch.clone();
+        let mut encoded = serde_json::to_vec(&durable)?;
+        if encoded.len() as u64 > MAX_SPOOL_BYTES {
+            merge_own_payload_shed(&mut durable, encoded.len());
+            encoded = serde_json::to_vec(&durable)?;
+        }
         let final_path = self.directory.join(format!(
             "{:020}-{}.json",
             chrono::Utc::now().timestamp_millis(),
             batch.batch_id
         ));
         let temporary = final_path.with_extension("pending");
-        let mut options = tokio::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temporary).await?;
-        file.write_all(&encoded).await?;
-        file.flush().await?;
-        file.sync_all().await?;
-        drop(file);
+        write_synced_new(&temporary, &encoded).await?;
         tokio::fs::rename(&temporary, &final_path).await?;
         sync_directory(&self.directory).await?;
         let size = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
         self.entries.push_back((final_path, size));
         self.bytes = self.bytes.saturating_add(size);
 
-        let mut shed = Shed::default();
         let mut removed = false;
-        while self.entries.len() > MAX_SPOOL_BATCHES
-            || self.bytes > MAX_SPOOL_BYTES
-            || self.front_expired().await?
-        {
-            let Some((path, size)) = self.entries.pop_front() else {
+        loop {
+            let mut changed = false;
+            while self.entries.len() > MAX_SPOOL_BATCHES
+                || self.bytes > MAX_SPOOL_BYTES
+                || self.front_expired().await?
+            {
+                let Some((path, size)) = self.entries.pop_front() else {
+                    break;
+                };
+                if path == final_path {
+                    anyhow::bail!("bounded telemetry loss report exceeds its spool budget");
+                }
+                let dropped = read_batch(&path).await?;
+                merge_dropped_batch(&mut durable, &dropped, size);
+                tokio::fs::remove_file(path).await?;
+                self.bytes = self.bytes.saturating_sub(size);
+                removed = true;
+                changed = true;
+            }
+            if !changed {
                 break;
+            }
+            let replacement = serde_json::to_vec(&durable)?;
+            let replacement_size =
+                replace_synced(&self.directory, &final_path, &replacement).await?;
+            let Some((path, current_size)) = self.entries.back_mut() else {
+                anyhow::bail!("telemetry loss report lost its spool owner");
             };
-            let dropped = read_batch(&path).await?;
-            shed.rows = shed.rows.saturating_add(row_count(&dropped));
-            shed.bytes = shed.bytes.saturating_add(size);
-            tokio::fs::remove_file(path).await?;
-            self.bytes = self.bytes.saturating_sub(size);
-            removed = true;
+            if *path != final_path {
+                anyhow::bail!("telemetry loss report is not the newest spool entry");
+            }
+            self.bytes = self
+                .bytes
+                .saturating_sub(*current_size)
+                .saturating_add(replacement_size);
+            *current_size = replacement_size;
         }
         if removed {
             sync_directory(&self.directory).await?;
         }
-        Ok(shed)
+        Ok(())
     }
 
     async fn front_expired(&self) -> anyhow::Result<bool> {
@@ -142,6 +153,57 @@ async fn sync_directory(_path: &Path) -> std::io::Result<()> {
 async fn read_batch(path: &Path) -> anyhow::Result<TelemetryBatch> {
     let bytes = tokio::fs::read(path).await?;
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+async fn write_synced_new(path: &Path, encoded: &[u8]) -> anyhow::Result<()> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).await?;
+    file.write_all(encoded).await?;
+    file.flush().await?;
+    file.sync_all().await?;
+    Ok(())
+}
+
+async fn replace_synced(directory: &Path, path: &Path, encoded: &[u8]) -> anyhow::Result<u64> {
+    let temporary = directory.join(format!(".rewrite-{}.pending", uuid::Uuid::new_v4()));
+    write_synced_new(&temporary, encoded).await?;
+    tokio::fs::rename(&temporary, path).await?;
+    sync_directory(directory).await?;
+    Ok(u64::try_from(encoded.len()).unwrap_or(u64::MAX))
+}
+
+fn merge_own_payload_shed(batch: &mut TelemetryBatch, encoded_bytes: usize) {
+    let rows = batch.flows.len()
+        + batch.dns_providers.len()
+        + batch.peer_networks.len()
+        + batch.flag_transports.len();
+    batch.flows.clear();
+    batch.dns_providers.clear();
+    batch.peer_networks.clear();
+    batch.flag_transports.clear();
+    batch.sensor_dropped_rows = batch
+        .sensor_dropped_rows
+        .saturating_add(i64::try_from(rows).unwrap_or(i64::MAX));
+    batch.sensor_dropped_bytes = batch
+        .sensor_dropped_bytes
+        .saturating_add(i64::try_from(encoded_bytes).unwrap_or(i64::MAX));
+}
+
+fn merge_dropped_batch(report: &mut TelemetryBatch, dropped: &TelemetryBatch, encoded_bytes: u64) {
+    let rows = row_count(dropped);
+    let bytes = encoded_bytes
+        .saturating_add(u64::try_from(dropped.sensor_dropped_bytes.max(0)).unwrap_or(u64::MAX));
+    report.sensor_dropped_rows = report
+        .sensor_dropped_rows
+        .saturating_add(i64::try_from(rows).unwrap_or(i64::MAX));
+    report.sensor_dropped_bytes = report
+        .sensor_dropped_bytes
+        .saturating_add(i64::try_from(bytes).unwrap_or(i64::MAX));
 }
 
 fn row_count(batch: &TelemetryBatch) -> u64 {
@@ -236,24 +298,8 @@ async fn upload_with_retry(
     unreachable!("bounded upload attempts return from every terminal branch")
 }
 
-pub async fn enqueue_batch(
-    spool: &mut DurableSpool,
-    pending_dropped_rows: &mut u64,
-    pending_dropped_bytes: &mut u64,
-    mut batch: TelemetryBatch,
-) -> anyhow::Result<()> {
-    batch.sensor_dropped_rows = batch
-        .sensor_dropped_rows
-        .saturating_add(i64::try_from(*pending_dropped_rows).unwrap_or(i64::MAX));
-    batch.sensor_dropped_bytes = batch
-        .sensor_dropped_bytes
-        .saturating_add(i64::try_from(*pending_dropped_bytes).unwrap_or(i64::MAX));
-    *pending_dropped_rows = 0;
-    *pending_dropped_bytes = 0;
-    let shed = spool.enqueue(&batch).await?;
-    *pending_dropped_rows = (*pending_dropped_rows).saturating_add(shed.rows);
-    *pending_dropped_bytes = (*pending_dropped_bytes).saturating_add(shed.bytes);
-    Ok(())
+pub async fn enqueue_batch(spool: &mut DurableSpool, batch: TelemetryBatch) -> anyhow::Result<()> {
+    spool.enqueue(&batch).await
 }
 
 pub async fn drain_spool(
@@ -281,10 +327,34 @@ pub async fn drain_spool(
 mod tests {
     use super::*;
 
+    fn empty_batch() -> TelemetryBatch {
+        TelemetryBatch {
+            batch_id: uuid::Uuid::new_v4(),
+            game_id: 1,
+            flows: Vec::new(),
+            dns_providers: Vec::new(),
+            peer_networks: Vec::new(),
+            flag_transports: Vec::new(),
+            sensor_dropped_rows: 0,
+            sensor_dropped_bytes: 0,
+        }
+    }
+
     #[test]
     fn spool_limits_are_explicit_and_small() {
         assert_eq!(MAX_SPOOL_BYTES, 64 * 1024 * 1024);
         assert_eq!(MAX_SPOOL_BATCHES, 2_048);
         assert_eq!(MAX_SPOOL_AGE, Duration::from_secs(24 * 60 * 60));
+    }
+
+    #[test]
+    fn shed_counters_move_into_the_newest_durable_batch() {
+        let mut report = empty_batch();
+        let mut dropped = empty_batch();
+        dropped.sensor_dropped_rows = 7;
+        dropped.sensor_dropped_bytes = 11;
+        merge_dropped_batch(&mut report, &dropped, 13);
+        assert_eq!(report.sensor_dropped_rows, 7);
+        assert_eq!(report.sensor_dropped_bytes, 24);
     }
 }

@@ -890,8 +890,6 @@ async fn main() -> anyhow::Result<()> {
         .timeout(Duration::from_secs(10))
         .build()?;
     let mut spool = DurableSpool::open(config.spool_dir.clone()).await?;
-    let mut pending_dropped_rows = 0_u64;
-    let mut pending_dropped_bytes = 0_u64;
     let initial = loop {
         match fetch_snapshot(&client, &config)
             .await
@@ -929,7 +927,7 @@ async fn main() -> anyhow::Result<()> {
                     Err(error) => tracing::warn!(%error, "event sensor snapshot refresh failed"),
                 }
                 for batch in network_observations(&config, &snapshot, &prefixes).await {
-                    enqueue_batch(&mut spool, &mut pending_dropped_rows, &mut pending_dropped_bytes, batch).await?;
+                    enqueue_batch(&mut spool, batch).await?;
                 }
                 if let Err(error) = drain_spool(&client, &config.api, &config.token, &mut spool).await {
                     if matches!(&error, DrainError::Permanent(_)) {
@@ -939,7 +937,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Some(batch) = batch_rx.recv() => {
-                enqueue_batch(&mut spool, &mut pending_dropped_rows, &mut pending_dropped_bytes, batch).await?;
+                enqueue_batch(&mut spool, batch).await?;
                 if let Err(error) = drain_spool(&client, &config.api, &config.token, &mut spool).await {
                     if matches!(&error, DrainError::Permanent(_)) {
                         return Err(error.into());
