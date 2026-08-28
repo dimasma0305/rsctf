@@ -183,6 +183,31 @@ async fn complete_desired_state(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?;
+    let stored = sqlx::query_as::<_, (i16, serde_json::Value, Option<i64>)>(
+        r#"SELECT state, result, result_revision
+             FROM "BulkChallengeMutationOperations"
+            WHERE game_id = $1 AND operation_id = $2
+            FOR UPDATE"#,
+    )
+    .bind(game_id)
+    .bind(request.operation_id)
+    .fetch_one(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if stored.0 == 2 {
+        let outcomes = serde_json::from_value(stored.1)
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        control
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(BulkChallengeMutationResult {
+            operation_id: request.operation_id,
+            state: "Complete",
+            configuration_revision: stored.2.unwrap_or(game_state.0),
+            outcomes,
+        });
+    }
     if game_state.0 != request.expected_revision {
         drop(control);
         abandon_operation(st, game_id, request.operation_id).await;
@@ -284,7 +309,7 @@ async fn complete_desired_state(
     .map_err(|error| AppError::internal(error.to_string()))?;
     let result_json =
         serde_json::to_value(&outcomes).map_err(|error| AppError::internal(error.to_string()))?;
-    sqlx::query(
+    let completion = sqlx::query(
         r#"UPDATE "BulkChallengeMutationOperations"
               SET state = 2, result = $3, result_revision = $4,
                   completed_at_utc = clock_timestamp()
@@ -297,6 +322,11 @@ async fn complete_desired_state(
     .execute(&mut **control.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if completion.rows_affected() != 1 {
+        return Err(AppError::conflict(
+            "Bulk challenge operation changed while it was running",
+        ));
+    }
     control
         .release()
         .await
@@ -378,7 +408,7 @@ async fn validate_delete_job(
     st: &SharedState,
     game_id: i32,
     request: &BulkChallengeMutationRequest,
-) -> AppResult<i64> {
+) -> AppResult<(i64, bool)> {
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, game_id).await?;
     let revision = sqlx::query_scalar::<_, i64>(
         r#"SELECT challenge_configuration_revision FROM "Games"
@@ -389,6 +419,22 @@ async fn validate_delete_job(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?;
+    let operation_state = sqlx::query_scalar::<_, i16>(
+        r#"SELECT state FROM "BulkChallengeMutationOperations"
+            WHERE game_id = $1 AND operation_id = $2 FOR UPDATE"#,
+    )
+    .bind(game_id)
+    .bind(request.operation_id)
+    .fetch_one(&mut **control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if operation_state != 0 {
+        control
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok((revision, false));
+    }
     if revision != request.expected_revision {
         drop(control);
         abandon_operation(st, game_id, request.operation_id).await;
@@ -412,7 +458,7 @@ async fn validate_delete_job(
             "Every selected challenge must belong to this event",
         ));
     }
-    sqlx::query(
+    let claimed = sqlx::query(
         r#"UPDATE "BulkChallengeMutationOperations"
               SET state = 1,
                   lease_expires_at_utc = clock_timestamp() + INTERVAL '5 minutes'
@@ -427,7 +473,7 @@ async fn validate_delete_job(
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(revision)
+    Ok((revision, claimed.rows_affected() == 1))
 }
 
 fn spawn_delete_job(st: SharedState, game_id: i32, operation_id: Uuid) {
@@ -560,8 +606,10 @@ pub async fn mutate_challenges_bulk(
     }
 
     let revision = if state == 0 {
-        let revision = validate_delete_job(&st, game_id, &request).await?;
-        spawn_delete_job(st.clone(), game_id, request.operation_id);
+        let (revision, claimed) = validate_delete_job(&st, game_id, &request).await?;
+        if claimed {
+            spawn_delete_job(st.clone(), game_id, request.operation_id);
+        }
         revision
     } else {
         if may_claim {
