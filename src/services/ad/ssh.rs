@@ -40,6 +40,7 @@ use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationSta
 const MAX_CONCURRENT_SHELLS: usize = 5;
 const MAX_SHELLS_PER_MINUTE: usize = 30;
 const MAX_GLOBAL_SHELLS: usize = 256;
+const SSH_SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 static GLOBAL_SHELLS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(MAX_GLOBAL_SHELLS)));
 
@@ -58,6 +59,7 @@ struct ShellSlot {
     pid: i32,
     #[allow(dead_code)]
     global: tokio::sync::OwnedSemaphorePermit,
+    _distributed: Option<crate::services::proxy_admission::ProxyPermit>,
 }
 impl Drop for ShellSlot {
     fn drop(&mut self) {
@@ -86,7 +88,26 @@ fn acquire_shell_slot(pid: i32) -> Result<ShellSlot, &'static str> {
     }
     ts.active += 1;
     ts.recent.push_back(now);
-    Ok(ShellSlot { pid, global })
+    Ok(ShellSlot {
+        pid,
+        global,
+        _distributed: None,
+    })
+}
+
+fn ssh_admission_subject(participation_id: i32) -> uuid::Uuid {
+    let mut bytes = [0_u8; 16];
+    bytes[..12].copy_from_slice(b"rsctf:ssh:v1");
+    bytes[12..].copy_from_slice(&participation_id.to_be_bytes());
+    uuid::Uuid::from_bytes(bytes)
+}
+
+fn ssh_admission_workload(participation_id: i32, challenge_id: i32) -> uuid::Uuid {
+    let mut bytes = [0_u8; 16];
+    bytes[..8].copy_from_slice(b"rsctf:ss");
+    bytes[8..12].copy_from_slice(&participation_id.to_be_bytes());
+    bytes[12..].copy_from_slice(&challenge_id.to_be_bytes());
+    uuid::Uuid::from_bytes(bytes)
 }
 
 const HOST_KEY_CFG: &str = "Ad:Ssh:HostKey";
@@ -285,6 +306,43 @@ async fn validate_ssh_access(
     .ok_or("SSH authorization has been revoked")
 }
 
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+struct SshLeaseKey {
+    key_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+}
+
+static SSH_LEASE_GENERATIONS: std::sync::LazyLock<
+    Arc<crate::services::authorization_lease::LeaseGenerationCache<SshLeaseKey>>,
+> = std::sync::LazyLock::new(crate::services::authorization_lease::LeaseGenerationCache::new);
+
+async fn wait_for_ssh_revocation(
+    st: SharedState,
+    key_id: i32,
+    participation_id: i32,
+    challenge_id: i32,
+) {
+    let key = SshLeaseKey {
+        key_id,
+        participation_id,
+        challenge_id,
+    };
+    let (mut subscription, owner) = SSH_LEASE_GENERATIONS.subscribe(key);
+    if let Some(owner) = owner {
+        let jitter = Duration::from_millis(u64::from(participation_id.unsigned_abs() % 1_000));
+        let _ = tokio::spawn(owner.drive(Duration::from_secs(15) + jitter, move || {
+            let st = st.clone();
+            async move {
+                validate_ssh_access(&st, key_id, participation_id, challenge_id)
+                    .await
+                    .is_ok()
+            }
+        }));
+    }
+    subscription.invalidated().await;
+}
+
 #[derive(Clone)]
 struct Bastion {
     st: SharedState,
@@ -292,7 +350,7 @@ struct Bastion {
 
 impl russh::server::Server for Bastion {
     type Handler = BastionHandler;
-    fn new_client(&mut self, _peer: Option<std::net::SocketAddr>) -> BastionHandler {
+    fn new_client(&mut self, peer: Option<std::net::SocketAddr>) -> BastionHandler {
         BastionHandler {
             st: self.st.clone(),
             ssh_key_id: None,
@@ -304,6 +362,7 @@ impl russh::server::Server for Bastion {
             exec_input: None,
             shell_slot: None,
             byoc_exec: None,
+            source_ip: peer.map_or(std::net::Ipv4Addr::UNSPECIFIED.into(), |peer| peer.ip()),
         }
     }
 }
@@ -327,6 +386,7 @@ struct BastionHandler {
     /// Keeps the BYOC tunnel fast-polling while a shell is open (else keystroke I/O
     /// is 50ms-batched). Dropped with the handler on connection close.
     byoc_exec: Option<crate::services::byoc_tunnel::ExecGuard>,
+    source_ip: std::net::IpAddr,
 }
 
 impl BastionHandler {
@@ -351,7 +411,22 @@ impl BastionHandler {
 
         // Throttle BEFORE opening anything (docker exec or tunnel stream); the slot
         // lives on the handler, so a dropped connection releases it.
-        self.shell_slot = Some(acquire_shell_slot(pid)?);
+        let mut shell_slot = acquire_shell_slot(pid)?;
+        shell_slot._distributed = Some(
+            self.st
+                .proxy_admission
+                .try_acquire_ssh_distributed(
+                    self.st.pg(),
+                    ssh_admission_subject(pid),
+                    pid,
+                    challenge.game_id,
+                    ssh_admission_workload(pid, cid),
+                    self.source_ip,
+                )
+                .await
+                .ok_or("the SSH service is busy — retry shortly")?,
+        );
+        self.shell_slot = Some(shell_slot);
 
         // Self-hosted (BYOC) challenge: the service runs on the team's own machine,
         // reachable only via its agent tunnel — route the shell over an 'E' stream
@@ -435,9 +510,10 @@ impl BastionHandler {
         // Pump container output → SSH channel until the shell exits.
         let st = self.st.clone();
         tokio::spawn(async move {
-            let mut lease = tokio::time::interval(Duration::from_secs(15));
-            lease.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            lease.tick().await;
+            let revoked = wait_for_ssh_revocation(st, key_id, pid, cid);
+            tokio::pin!(revoked);
+            let lifetime = tokio::time::sleep(SSH_SESSION_TIMEOUT);
+            tokio::pin!(lifetime);
             loop {
                 tokio::select! {
                     chunk = output.next() => match chunk {
@@ -448,15 +524,21 @@ impl BastionHandler {
                         }
                         Some(Err(_)) | None => break,
                     },
-                    _ = lease.tick() => {
-                        if validate_ssh_access(&st, key_id, pid, cid).await.is_err() {
-                            let _ = handle.disconnect(
-                                Disconnect::ByApplication,
-                                "SSH authorization revoked".to_string(),
-                                String::new(),
-                            ).await;
-                            break;
-                        }
+                    _ = &mut revoked => {
+                        let _ = handle.disconnect(
+                            Disconnect::ByApplication,
+                            "SSH authorization revoked".to_string(),
+                            String::new(),
+                        ).await;
+                        break;
+                    }
+                    _ = &mut lifetime => {
+                        let _ = handle.disconnect(
+                            Disconnect::ByApplication,
+                            "SSH session lifetime reached".to_string(),
+                            String::new(),
+                        ).await;
+                        break;
                     }
                 }
             }
@@ -499,9 +581,10 @@ impl BastionHandler {
         let st = self.st.clone();
         tokio::spawn(async move {
             let mut buf = [0u8; 8192];
-            let mut lease = tokio::time::interval(Duration::from_secs(15));
-            lease.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            lease.tick().await;
+            let revoked = wait_for_ssh_revocation(st, key_id, pid, cid);
+            tokio::pin!(revoked);
+            let lifetime = tokio::time::sleep(SSH_SESSION_TIMEOUT);
+            tokio::pin!(lifetime);
             loop {
                 tokio::select! {
                     read = tokio::io::AsyncReadExt::read(&mut rd, &mut buf) => match read {
@@ -516,15 +599,21 @@ impl BastionHandler {
                             }
                         }
                     },
-                    _ = lease.tick() => {
-                        if validate_ssh_access(&st, key_id, pid, cid).await.is_err() {
-                            let _ = handle.disconnect(
-                                Disconnect::ByApplication,
-                                "SSH authorization revoked".to_string(),
-                                String::new(),
-                            ).await;
-                            break;
-                        }
+                    _ = &mut revoked => {
+                        let _ = handle.disconnect(
+                            Disconnect::ByApplication,
+                            "SSH authorization revoked".to_string(),
+                            String::new(),
+                        ).await;
+                        break;
+                    }
+                    _ = &mut lifetime => {
+                        let _ = handle.disconnect(
+                            Disconnect::ByApplication,
+                            "SSH session lifetime reached".to_string(),
+                            String::new(),
+                        ).await;
+                        break;
                     }
                 }
             }
@@ -689,5 +778,10 @@ mod tests {
             assert!(SSH_ACCESS_SQL.contains(gate), "SSH lease lost gate: {gate}");
         }
         assert_eq!(MAX_GLOBAL_SHELLS, 256);
+        let source = include_str!("ssh.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        assert_eq!(production.matches("wait_for_ssh_revocation(st").count(), 2);
+        assert!(production.contains("try_acquire_ssh_distributed"));
+        assert!(!production.contains("tokio::time::interval(Duration::from_secs(15))"));
     }
 }

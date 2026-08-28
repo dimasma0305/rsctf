@@ -23,6 +23,7 @@ N=60  npm run byoc          # BYOC scale + request flood
       npm run read-only-websocket-flood # read-only feed inbound-abuse gate
       npm run attack-arena # fixed-rate already-open public arena polling gate
       npm run control-plane-outage # acknowledged worker/missing-image recovery
+      npm run proxy-traffic-admission # acknowledged line-rate proxy byte-work gate
       npm run monitor-history # fixed-rate bounded monitor history + durable backfills
       npm run participation-review # fixed-rate bounded 12k-team organizer review
       npm run details-read  # fixed-rate authenticated challenge-details poll
@@ -92,6 +93,19 @@ dropped iterations, under 0.1% 429, an exact responsive `healthz`, and p95 below
 the checked thresholds. Compare `SUMMARY_JSON` distributions and host/container
 CPU and RAM from the same held rate before making an optimization claim.
 For a remote target, set `ALLOW_REMOTE_ATTACK_ARENA_LOAD` to its exact origin.
+
+The proxy-traffic gate consumes a prepared JSON array of authenticated `url`/`token`
+endpoints, opens streams at a constant rate, writes maximum-size frames on each live
+stream, accepts only the stable policy or normal close, and keeps exact `healthz` on
+an independent lane. Point `TARGET` at the load balancer to exercise shared Redis
+credits and PostgreSQL live-session leases across replicas:
+
+```sh
+PROXY_TRAFFIC_LOAD_ACK=1 \
+PROXY_TRAFFIC_ENDPOINTS_FILE=/tmp/proxy-traffic-endpoints.json \
+RATE=2 FRAME_BYTES=65536 FRAME_INTERVAL_MS=10 STREAM_MS=10000 DURATION=30s \
+SUMMARY_JSON=/tmp/proxy-traffic-admission.json npm run proxy-traffic-admission
+```
 
 The A&D bearer gate requires one current token and one fixed-shape token whose digest
 is absent. It covers current, revoked, rotating-random, one-NAT, many-source, and

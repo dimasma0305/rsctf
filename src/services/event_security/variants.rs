@@ -20,11 +20,111 @@ const GENERATOR_MEMORY_BYTES: i64 = 128 * 1024 * 1024;
 const GENERATOR_NANO_CPUS: i64 = 500_000_000;
 const GENERATOR_PIDS: i64 = 64;
 const GENERATOR_TIMEOUT: Duration = Duration::from_secs(30);
+const GENERATOR_SLOT_LEASE: Duration = Duration::from_secs(180);
+const GENERATOR_SLOT_WAIT: Duration = Duration::from_secs(30);
 const MAX_GENERATOR_OUTPUT: usize = 1024 * 1024;
 const GENERATOR_LOG_MAX_SIZE: &str = "1m";
 const TARGET_PAGE_SIZE: i64 = 128;
 static GENERATOR_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(2));
+
+struct DistributedGeneratorSlot {
+    pool: sqlx::PgPool,
+    slot: i16,
+    owner: Uuid,
+    released: bool,
+}
+
+impl DistributedGeneratorSlot {
+    async fn release(mut self) {
+        self.released = true;
+        let _ = release_generator_slot(&self.pool, self.slot, self.owner).await;
+    }
+}
+
+impl Drop for DistributedGeneratorSlot {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        let pool = self.pool.clone();
+        let slot = self.slot;
+        let owner = self.owner;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = release_generator_slot(&pool, slot, owner).await;
+            });
+        }
+    }
+}
+
+async fn release_generator_slot(pool: &sqlx::PgPool, slot: i16, owner: Uuid) -> bool {
+    sqlx::query(
+        r#"UPDATE "VariantGenerationSlots"
+              SET owner_id = NULL, lease_expires_at_utc = NULL
+            WHERE slot = $1 AND owner_id = $2"#,
+    )
+    .bind(slot)
+    .bind(owner)
+    .execute(pool)
+    .await
+    .is_ok_and(|result| result.rows_affected() == 1)
+}
+
+async fn acquire_generator_slot(
+    pool: &sqlx::PgPool,
+    owner: Uuid,
+    deadline: tokio::time::Instant,
+) -> AppResult<DistributedGeneratorSlot> {
+    let jitter = Duration::from_millis(50 + u64::from(owner.as_bytes()[0]));
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(AppError::unavailable(
+                "Variant generator capacity is busy; retry later",
+            ));
+        }
+        let query = sqlx::query_scalar::<_, i16>(
+            r#"WITH candidate AS (
+                   SELECT slot FROM "VariantGenerationSlots"
+                    WHERE owner_id IS NULL
+                       OR lease_expires_at_utc <= clock_timestamp()
+                 ORDER BY slot
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+               )
+               UPDATE "VariantGenerationSlots" admission
+                  SET owner_id = $1,
+                      lease_expires_at_utc = clock_timestamp()
+                          + ($2 * interval '1 second')
+                 FROM candidate
+                WHERE admission.slot = candidate.slot
+            RETURNING admission.slot"#,
+        )
+        .bind(owner)
+        .bind(GENERATOR_SLOT_LEASE.as_secs() as i64)
+        .fetch_optional(pool);
+        let query_deadline = remaining.min(Duration::from_secs(3));
+        match tokio::time::timeout(query_deadline, query).await {
+            Ok(Ok(Some(slot))) => {
+                return Ok(DistributedGeneratorSlot {
+                    pool: pool.clone(),
+                    slot,
+                    owner,
+                    released: false,
+                });
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => return Err(AppError::internal(error.to_string())),
+            Err(_) => {
+                return Err(AppError::unavailable(
+                    "Variant generator admission database timed out",
+                ));
+            }
+        }
+        tokio::time::sleep(jitter.min(remaining)).await;
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -335,6 +435,12 @@ pub(crate) async fn validate_built_variant_generator(
         .acquire()
         .await
         .map_err(|_| AppError::unavailable("Variant generator is shutting down"))?;
+    let distributed = acquire_generator_slot(
+        st.pg(),
+        Uuid::new_v4(),
+        tokio::time::Instant::now() + GENERATOR_SLOT_WAIT,
+    )
+    .await?;
     let docker = Docker::connect_with_local_defaults()
         .map_err(|error| AppError::unavailable(format!("Docker is unavailable: {error}")))?;
     let target = VariantTarget {
@@ -356,8 +462,11 @@ pub(crate) async fn validate_built_variant_generator(
         revision: 1,
         seed: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0u8; 32]),
     };
-    let (output, _) = run_generator_deterministically(st, &docker, &target, &input).await?;
-    parse_output(&output).map(|_| ())
+    let result = run_generator_deterministically(st, &docker, &target, &input)
+        .await
+        .and_then(|(output, _)| parse_output(&output).map(|_| ()));
+    distributed.release().await;
+    result
 }
 
 async fn load_targets(st: &SharedState, game_id: i32) -> AppResult<Vec<VariantTarget>> {
@@ -522,6 +631,12 @@ pub async fn generate_event_variants_for_job(
                 .acquire()
                 .await
                 .map_err(|_| AppError::unavailable("Variant generator is shutting down"))?;
+            let distributed = acquire_generator_slot(
+                st.pg(),
+                Uuid::new_v4(),
+                deadline.min(tokio::time::Instant::now() + GENERATOR_SLOT_WAIT),
+            )
+            .await?;
             let seed = variant_seed(&st.config.event_vpn_credential_key, &target)?;
             let input = GeneratorInput {
                 game_id: target.game_id,
@@ -562,6 +677,7 @@ pub async fn generate_event_variants_for_job(
             .map_err(|error| AppError::internal(error.to_string()))?;
             generated += usize::try_from(inserted.rows_affected()).unwrap_or(usize::MAX);
             complete_target_claim(st, &target, job_id).await?;
+            distributed.release().await;
             examined = examined.saturating_add(1);
             crate::services::control_jobs::set_progress(
                 st.pg(),

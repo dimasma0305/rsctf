@@ -1,14 +1,6 @@
 //! middlewares/rate_limiter.rs — ported from RSCTF `Middlewares/RateLimiter.cs`.
 //!
-//! A per-policy request throttle. RSCTF registers one **global** sliding-window
-//! limiter (every `/api` request) plus a handful of **named** policies attached
-//! to individual endpoints via the `[EnableRateLimiting(...)]` attribute. We
-//! mirror that decorator model exactly:
-//!
-//! * The Global window is a plain [`global_middleware`] layered once over the
-//!   whole `/api` router in `server.rs`.
-//! * Each named policy is a per-route **decorator** — [`limited`] wraps a single
-//!   handler, the direct analogue of `[EnableRateLimiting(policy)]`:
+//! Global middleware and named route policies share bounded local/Redis state:
 //!   ```ignore
 //!   use crate::middlewares::rate_limiter::{limited, Policy};
 //!   .route("/api/account/login", limited(Policy::Login, post(login)))
@@ -54,6 +46,8 @@ mod proxy_open;
 pub(crate) use proxy_open::{admit_proxy_open, admit_proxy_participation};
 mod public_security;
 pub(crate) use public_security::{admit_public_security, PublicSecurityWork};
+mod proxy_traffic;
+pub(crate) use proxy_traffic::{admit_proxy_traffic_credit, admit_solve_receipt_issuance};
 
 static AUTHENTICATED_IP_BACKSTOP_PER_MINUTE: LazyLock<u32> = LazyLock::new(|| {
     std::env::var("RSCTF_AUTH_IP_BACKSTOP_PER_MINUTE")
@@ -191,6 +185,13 @@ pub enum Policy {
     /// Deployment-wide HashPoW issuance budget layered behind the source-scoped
     /// `PowChallenge` policy. Appended to preserve shipped discriminants.
     PowChallengeAggregate,
+    /// Trusted solve-verifier issuance work. Appended to preserve every
+    /// previously shipped Redis policy discriminant.
+    SolveReceipt,
+    /// Coarse cross-replica proxy byte credits. Per-frame work remains behind
+    /// strict process/session ceilings and never performs a Redis round trip.
+    /// Appended to preserve every previously shipped Redis policy discriminant.
+    ProxyTraffic,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -305,6 +306,16 @@ impl Policy {
             Policy::PowChallengeAggregate => Kind::Bucket {
                 capacity: 64.0,
                 refill_per_sec: 4.0,
+            },
+            Policy::SolveReceipt => Kind::Bucket {
+                capacity: 128.0,
+                refill_per_sec: 16.0,
+            },
+            // Units are 64 KiB. This preserves a 1 GiB interactive/bulk burst
+            // while bounding sustained deployment-wide work at 64 MiB/s.
+            Policy::ProxyTraffic => Kind::Bucket {
+                capacity: 16_384.0,
+                refill_per_sec: 1_024.0,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -846,20 +857,7 @@ fn redis_or_local(
     let ttl_ms = match result {
         Ok(ttl_ms) => ttl_ms,
         Err(error) => {
-            let now_ms = REDIS_FALLBACK_CLOCK
-                .elapsed()
-                .as_millis()
-                .min(u128::from(u64::MAX)) as u64;
-            if claim_redis_fallback_log_slot(
-                &REDIS_FALLBACK_LAST_LOG_MS,
-                now_ms.max(1),
-                REDIS_FALLBACK_LOG_INTERVAL.as_millis() as u64,
-            ) {
-                tracing::warn!(
-                    %error,
-                    "distributed rate limiter unavailable; using per-process fallback"
-                );
-            }
+            log_redis_fallback(&error);
             return local();
         }
     };
@@ -867,6 +865,23 @@ fn redis_or_local(
         Err((ttl_ms as u64).div_ceil(1000).max(1))
     } else {
         Ok(())
+    }
+}
+
+fn log_redis_fallback(error: &redis::RedisError) {
+    let now_ms = REDIS_FALLBACK_CLOCK
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    if claim_redis_fallback_log_slot(
+        &REDIS_FALLBACK_LAST_LOG_MS,
+        now_ms.max(1),
+        REDIS_FALLBACK_LOG_INTERVAL.as_millis() as u64,
+    ) {
+        tracing::warn!(
+            %error,
+            "distributed rate limiter unavailable; using per-process fallback"
+        );
     }
 }
 

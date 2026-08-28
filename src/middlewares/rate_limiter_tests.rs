@@ -621,6 +621,26 @@ fn proxy_open_churn_has_distinct_subject_and_nat_budgets() {
 }
 
 #[test]
+fn receipt_and_proxy_traffic_policies_append_bounded_shared_buckets() {
+    assert!(matches!(
+        Policy::SolveReceipt.kind(),
+        Kind::Bucket {
+            capacity: 128.0,
+            refill_per_sec: 16.0,
+        }
+    ));
+    assert!(matches!(
+        Policy::ProxyTraffic.kind(),
+        Kind::Bucket {
+            capacity: 16_384.0,
+            refill_per_sec: 1_024.0,
+        }
+    ));
+    assert!(redis_key(Policy::SolveReceipt, "issuer").starts_with("rl:tb:23:"));
+    assert!(redis_key(Policy::ProxyTraffic, "subject").starts_with("rl:tb:24:"));
+}
+
+#[test]
 fn event_vpn_mint_has_a_distinct_bounded_identity_budget() {
     assert!(matches!(
         Policy::EventVpnMint.kind(),

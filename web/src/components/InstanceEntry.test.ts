@@ -59,6 +59,8 @@ test('capability renewal aborts stale HTTP work and owns every delayed cleanup',
   assert.doesNotMatch(entry, /new Promise<void>\(\(resolve\) => window\.setTimeout/)
   assert.doesNotMatch(entry, /window\.setTimeout\(\(\) => void wsrx\.delete/)
   assert.match(entry, /for \(const local of drainingLocals\.current\) void wsrx\.delete/)
+  assert.match(entry, /oldValidityRemaining \+ PROXY_SESSION_DRAIN_MS/)
+  assert.doesNotMatch(entry, /void wsrx\.delete\(oldLocal\)[\s\S]{0,160}, 10_000\)/)
 })
 
 test('extension availability follows initial and corrected server clock samples', () => {

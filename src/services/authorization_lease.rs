@@ -15,11 +15,11 @@ struct Generation {
     idle: tokio::sync::Notify,
 }
 
-pub(in crate::controllers::proxy) struct LeaseGenerationCache<K> {
+pub(crate) struct LeaseGenerationCache<K> {
     entries: DashMap<K, Arc<Generation>>,
 }
 
-pub(in crate::controllers::proxy) struct LeaseSubscription<K>
+pub(crate) struct LeaseSubscription<K>
 where
     K: Clone + Eq + Hash,
 {
@@ -29,7 +29,7 @@ where
     receiver: tokio::sync::watch::Receiver<bool>,
 }
 
-pub(in crate::controllers::proxy) struct LeaseGenerationOwner<K>
+pub(crate) struct LeaseGenerationOwner<K>
 where
     K: Clone + Eq + Hash,
 {
@@ -38,11 +38,26 @@ where
     generation: Arc<Generation>,
 }
 
+impl<K> Drop for LeaseGenerationOwner<K>
+where
+    K: Clone + Eq + Hash,
+{
+    fn drop(&mut self) {
+        // An aborted owner must not strand a valid-looking generation with no
+        // reconciliation task. Fail its current subscribers closed and detach
+        // the exact generation so the next subscriber can elect a new owner.
+        self.generation.valid.send_replace(false);
+        let _ = self.cache.entries.remove_if(&self.key, |_, current| {
+            Arc::ptr_eq(current, &self.generation)
+        });
+    }
+}
+
 impl<K> LeaseGenerationCache<K>
 where
     K: Clone + Eq + Hash,
 {
-    pub(in crate::controllers::proxy) fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             entries: DashMap::new(),
         })
@@ -50,7 +65,7 @@ where
 
     /// Subscribe to one exact mutable authorization snapshot. `owner` is true
     /// only for the caller that must start the shared authoritative poll loop.
-    pub(in crate::controllers::proxy) fn subscribe(
+    pub(crate) fn subscribe(
         self: &Arc<Self>,
         key: K,
     ) -> (LeaseSubscription<K>, Option<LeaseGenerationOwner<K>>) {
@@ -93,7 +108,7 @@ impl<K> LeaseGenerationOwner<K>
 where
     K: Clone + Eq + Hash,
 {
-    pub(in crate::controllers::proxy) async fn drive<F, Fut>(self, period: Duration, mut check: F)
+    pub(crate) async fn drive<F, Fut>(self, period: Duration, mut check: F)
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = bool>,
@@ -137,7 +152,7 @@ impl<K> LeaseSubscription<K>
 where
     K: Clone + Eq + Hash,
 {
-    pub(in crate::controllers::proxy) async fn invalidated(&mut self) {
+    pub(crate) async fn invalidated(&mut self) {
         if !*self.receiver.borrow() {
             return;
         }
@@ -199,5 +214,18 @@ mod tests {
         drop(subscriptions);
         owner.await.unwrap();
         assert!(cache.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropped_owner_fails_closed_and_next_generation_elects_an_owner() {
+        let cache = LeaseGenerationCache::new();
+        let (mut subscription, owner) = cache.subscribe(11);
+        drop(owner.expect("first generation owner"));
+        tokio::time::timeout(Duration::from_secs(1), subscription.invalidated())
+            .await
+            .unwrap();
+
+        let (_replacement, replacement_owner) = cache.subscribe(11);
+        assert!(replacement_owner.is_some());
     }
 }

@@ -62,12 +62,18 @@ fn now_millis() -> u64 {
         })
 }
 
-fn reserve(traffic: Option<&ProxyTrafficPermit>, bytes: usize) -> bool {
-    traffic.is_none_or(|traffic| traffic.try_reserve(bytes))
+async fn reserve(traffic: Option<&ProxyTrafficPermit>, bytes: usize) -> bool {
+    match traffic {
+        Some(traffic) => traffic.reserve(bytes).await,
+        None => true,
+    }
 }
 
-fn reserve_control(traffic: Option<&ProxyTrafficPermit>, bytes: usize) -> bool {
-    traffic.is_none_or(|traffic| traffic.try_reserve_control(bytes))
+async fn reserve_control(traffic: Option<&ProxyTrafficPermit>, bytes: usize) -> bool {
+    match traffic {
+        Some(traffic) => traffic.reserve_control(bytes).await,
+        None => true,
+    }
 }
 
 /// Pump one admitted tunnel with bounded per-session and per-process work. The
@@ -94,7 +100,7 @@ pub(super) async fn proxy_pump<S>(
         while let Some(Ok(msg)) = ws_rx.next().await {
             let write = match msg {
                 Message::Binary(data) => {
-                    if !reserve(ingress_traffic.as_ref(), data.len()) {
+                    if !reserve(ingress_traffic.as_ref(), data.len()).await {
                         throttled = true;
                         break;
                     }
@@ -102,7 +108,7 @@ pub(super) async fn proxy_pump<S>(
                     tcp_wr.write_all(&data[..]).await
                 }
                 Message::Text(text) => {
-                    if !reserve(ingress_traffic.as_ref(), text.len()) {
+                    if !reserve(ingress_traffic.as_ref(), text.len()).await {
                         throttled = true;
                         break;
                     }
@@ -111,13 +117,13 @@ pub(super) async fn proxy_pump<S>(
                 }
                 Message::Close(frame) => {
                     let bytes = frame.as_ref().map_or(0, |frame| frame.reason.len() + 2);
-                    if !reserve_control(ingress_traffic.as_ref(), bytes) {
+                    if !reserve_control(ingress_traffic.as_ref(), bytes).await {
                         throttled = true;
                     }
                     break;
                 }
                 Message::Ping(value) | Message::Pong(value) => {
-                    if !reserve_control(ingress_traffic.as_ref(), value.len()) {
+                    if !reserve_control(ingress_traffic.as_ref(), value.len()).await {
                         throttled = true;
                         break;
                     }
@@ -169,7 +175,7 @@ pub(super) async fn proxy_pump<S>(
                     break;
                 }
                 Ok(n) => {
-                    if !reserve(egress_traffic.as_ref(), n) {
+                    if !reserve(egress_traffic.as_ref(), n).await {
                         let _ = ws_tx.send(work_budget_close()).await;
                         break;
                     }

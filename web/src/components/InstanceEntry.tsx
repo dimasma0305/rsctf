@@ -35,6 +35,10 @@ dayjs.extend(duration)
 type ProxyEntryMode = 'wsrx' | 'wss'
 
 const CAPABILITY_REFRESH_SAFETY_MS = 5 * 60 * 1000
+// The server permits an established proxy stream for at most 30 minutes. Keep
+// the preceding local listener through its capability expiry plus that bound so
+// renewal can never tear down a stream which was already using it.
+const PROXY_SESSION_DRAIN_MS = 30 * 60 * 1000
 
 interface InstanceEntryProps {
   test?: boolean
@@ -372,6 +376,7 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     )
       return
     const oldLocal = localTraffic?.local
+    const oldCapabilityExpiresAt = capabilityExpiryRef.current
     setWsrxRemoteEntry(pendingWsrxRemoteEntry)
     setPendingWsrxRemoteEntry('')
     setCapabilityExpiresAt(pendingCapabilityExpiresAt)
@@ -380,10 +385,14 @@ export const InstanceEntry: FC<InstanceEntryProps> = (props) => {
     setTunnelRetrying(false)
     if (oldLocal && !drainingLocals.current.has(oldLocal)) {
       drainingLocals.current.add(oldLocal)
+      const oldValidityRemaining = Math.max(
+        0,
+        (oldCapabilityExpiresAt ?? getServerNowMilliseconds()) - getServerNowMilliseconds()
+      )
       scheduleCapabilityTimer(() => {
         drainingLocals.current.delete(oldLocal)
         void wsrx.delete(oldLocal).catch((err) => HandleWsrxError(err, t))
-      }, 10_000)
+      }, oldValidityRemaining + PROXY_SESSION_DRAIN_MS)
     }
   }, [
     localTraffic?.local,

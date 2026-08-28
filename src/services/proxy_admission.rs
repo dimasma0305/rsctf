@@ -9,6 +9,7 @@ use uuid::Uuid;
 const MAX_PER_USER: usize = 4;
 const MAX_PER_PARTICIPATION: usize = 16;
 const MAX_PER_PREVIEW: usize = 8;
+const MAX_PER_SSH_SCOPE: usize = 5;
 const MAX_PER_WORKLOAD: usize = 64;
 const MAX_PER_SOURCE: usize = 32;
 const MAX_PER_EVENT: usize = 128;
@@ -18,6 +19,8 @@ const PROCESS_FRAMES_PER_SECOND: u64 = 8_192;
 const SESSION_BYTES_PER_SECOND: u64 = 8 * 1024 * 1024;
 const SESSION_FRAMES_PER_SECOND: u64 = 1_024;
 const SESSION_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+const DISTRIBUTED_TRAFFIC_CREDIT_BYTES: u64 = 16 * 1024 * 1024;
+const DISTRIBUTED_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Clone)]
 pub struct ProxyAdmission {
@@ -40,6 +43,7 @@ enum AdmissionScope {
     Participation(i32),
     Exercise(i32),
     Preview(Uuid),
+    Ssh(i32),
 }
 
 pub struct ProxyPermit {
@@ -86,6 +90,16 @@ pub struct ProxyTrafficPermit {
     session: Arc<FixedWindow>,
     total_bytes: Arc<AtomicU64>,
     metrics: Arc<TrafficMetrics>,
+    distributed: Arc<DistributedTrafficCredit>,
+}
+
+struct DistributedTrafficCredit {
+    subject: Uuid,
+    scope: String,
+    source: IpAddr,
+    workload: Uuid,
+    remaining: AtomicU64,
+    refill: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -105,15 +119,56 @@ pub struct ProxyTrafficMetrics {
 }
 
 impl ProxyTrafficPermit {
-    /// Reserve one frame without blocking the WebSocket pump or consulting a
-    /// remote store. The process ceiling is the fail-closed backstop when a
-    /// distributed deployment's coarse open budget is unavailable.
-    pub fn try_reserve(&self, bytes: usize) -> bool {
-        self.try_reserve_frame(bytes, false)
+    pub async fn reserve(&self, bytes: usize) -> bool {
+        self.reserve_frame(bytes, false).await
     }
 
-    pub fn try_reserve_control(&self, bytes: usize) -> bool {
-        self.try_reserve_frame(bytes, true)
+    pub async fn reserve_control(&self, bytes: usize) -> bool {
+        self.reserve_frame(bytes, true).await
+    }
+
+    async fn reserve_frame(&self, bytes: usize, control: bool) -> bool {
+        if !self.reserve_distributed(bytes).await {
+            self.record_rejection();
+            return false;
+        }
+        self.try_reserve_frame(bytes, control)
+    }
+
+    async fn reserve_distributed(&self, bytes: usize) -> bool {
+        let Ok(bytes) = u64::try_from(bytes) else {
+            return false;
+        };
+        if bytes == 0 {
+            return true;
+        }
+        if take_credit(&self.distributed.remaining, bytes) {
+            return true;
+        }
+        let _refill = self.distributed.refill.lock().await;
+        if take_credit(&self.distributed.remaining, bytes) {
+            return true;
+        }
+        let leased = DISTRIBUTED_TRAFFIC_CREDIT_BYTES.max(bytes);
+        let Ok(leased_usize) = usize::try_from(leased) else {
+            return false;
+        };
+        if crate::middlewares::rate_limiter::admit_proxy_traffic_credit(
+            self.distributed.subject,
+            &self.distributed.scope,
+            self.distributed.source,
+            self.distributed.workload,
+            leased_usize,
+        )
+        .await
+        .is_err()
+        {
+            return false;
+        }
+        self.distributed
+            .remaining
+            .fetch_add(leased, Ordering::AcqRel);
+        take_credit(&self.distributed.remaining, bytes)
     }
 
     fn try_reserve_frame(&self, bytes: usize, control: bool) -> bool {
@@ -176,6 +231,14 @@ impl ProxyTrafficPermit {
             tracing::warn!(rejected, "proxy traffic work budget rejected frames");
         }
     }
+}
+
+fn take_credit(credit: &AtomicU64, bytes: u64) -> bool {
+    credit
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            remaining.checked_sub(bytes)
+        })
+        .is_ok()
 }
 
 impl FixedWindow {
@@ -262,6 +325,7 @@ impl ProxyAdmission {
             workload_id,
             source_ip,
             MAX_PER_PARTICIPATION,
+            MAX_PER_USER,
         )
     }
 
@@ -279,6 +343,7 @@ impl ProxyAdmission {
             workload_id,
             source_ip,
             MAX_PER_PARTICIPATION,
+            MAX_PER_USER,
         )
     }
 
@@ -295,7 +360,41 @@ impl ProxyAdmission {
             container_id,
             source_ip,
             MAX_PER_PREVIEW,
+            MAX_PER_USER,
         )
+    }
+
+    pub async fn try_acquire_ssh_distributed(
+        &self,
+        pool: &sqlx::PgPool,
+        subject_id: Uuid,
+        participation_id: i32,
+        game_id: i32,
+        workload_id: Uuid,
+        source_ip: IpAddr,
+    ) -> Option<ProxyPermit> {
+        let permit = self.try_acquire_scope(
+            subject_id,
+            AdmissionScope::Ssh(participation_id),
+            Some(game_id),
+            workload_id,
+            source_ip,
+            MAX_PER_SSH_SCOPE,
+            MAX_PER_SSH_SCOPE,
+        )?;
+        attach_distributed(
+            pool,
+            permit,
+            subject_id,
+            3,
+            participation_id.to_string(),
+            Some(game_id),
+            workload_id,
+            source_ip,
+            MAX_PER_SSH_SCOPE,
+            MAX_PER_SSH_SCOPE,
+        )
+        .await
     }
 
     pub async fn try_acquire_distributed(
@@ -319,6 +418,7 @@ impl ProxyAdmission {
             workload_id,
             source_ip,
             MAX_PER_PARTICIPATION,
+            MAX_PER_USER,
         )
         .await
     }
@@ -343,6 +443,7 @@ impl ProxyAdmission {
             workload_id,
             source_ip,
             MAX_PER_PARTICIPATION,
+            MAX_PER_USER,
         )
         .await
     }
@@ -365,6 +466,7 @@ impl ProxyAdmission {
             container_id,
             source_ip,
             MAX_PER_PREVIEW,
+            MAX_PER_USER,
         )
         .await
     }
@@ -377,9 +479,10 @@ impl ProxyAdmission {
         workload_id: Uuid,
         source_ip: IpAddr,
         scope_limit: usize,
+        user_limit: usize,
     ) -> Option<ProxyPermit> {
         let global = increment_counter(&self.inner.global, MAX_GLOBAL)?;
-        let user = increment(&self.inner.users, user_id, MAX_PER_USER)?;
+        let user = increment(&self.inner.users, user_id, user_limit)?;
         let source = match increment(&self.inner.sources, source_ip, MAX_PER_SOURCE) {
             Some(counter) => counter,
             None => {
@@ -447,104 +550,113 @@ async fn attach_distributed(
     workload_id: Uuid,
     source_ip: IpAddr,
     scope_limit: usize,
+    user_limit: usize,
 ) -> Option<ProxyPermit> {
-    let lease_id = Uuid::new_v4();
-    let source_ip = source_ip.to_string();
-    let mut transaction = pool.begin().await.ok()?;
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(-1_489_361_103_i64)
+    tokio::time::timeout(DISTRIBUTED_ADMISSION_TIMEOUT, async {
+        let lease_id = Uuid::new_v4();
+        let source_ip = source_ip.to_string();
+        let mut transaction = pool.begin().await.ok()?;
+        let locked = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(-1_489_361_103_i64)
+            .fetch_one(&mut *transaction)
+            .await
+            .ok()?;
+        if !locked {
+            return None;
+        }
+        sqlx::query(r#"DELETE FROM "ProxyTunnelLeases" WHERE expires_at_utc <= clock_timestamp()"#)
+            .execute(&mut *transaction)
+            .await
+            .ok()?;
+        sqlx::query(
+            r#"DELETE FROM "ProxyOpenBudgets"
+                WHERE bucket_start_utc < clock_timestamp() - INTERVAL '2 minutes'"#,
+        )
         .execute(&mut *transaction)
         .await
         .ok()?;
-    sqlx::query(r#"DELETE FROM "ProxyTunnelLeases" WHERE expires_at_utc <= clock_timestamp()"#)
-        .execute(&mut *transaction)
+        let global_open = sqlx::query_scalar::<_, i32>(
+            r#"INSERT INTO "ProxyOpenBudgets" (bucket_start_utc, source_key, open_count)
+               VALUES (date_trunc('second', clock_timestamp()), '*', 1)
+               ON CONFLICT (bucket_start_utc, source_key) DO UPDATE
+                 SET open_count = "ProxyOpenBudgets".open_count + 1
+               WHERE "ProxyOpenBudgets".open_count < 128
+            RETURNING open_count"#,
+        )
+        .fetch_optional(&mut *transaction)
         .await
-        .ok()?;
-    sqlx::query(
-        r#"DELETE FROM "ProxyOpenBudgets"
-            WHERE bucket_start_utc < clock_timestamp() - INTERVAL '2 minutes'"#,
-    )
-    .execute(&mut *transaction)
-    .await
-    .ok()?;
-    let global_open = sqlx::query_scalar::<_, i32>(
-        r#"INSERT INTO "ProxyOpenBudgets" (bucket_start_utc, source_key, open_count)
-           VALUES (date_trunc('second', clock_timestamp()), '*', 1)
-           ON CONFLICT (bucket_start_utc, source_key) DO UPDATE
-             SET open_count = "ProxyOpenBudgets".open_count + 1
-           WHERE "ProxyOpenBudgets".open_count < 128
-        RETURNING open_count"#,
-    )
-    .fetch_optional(&mut *transaction)
-    .await
-    .ok()?
-    .is_some();
-    let source_open = sqlx::query_scalar::<_, i32>(
-        r#"INSERT INTO "ProxyOpenBudgets" (bucket_start_utc, source_key, open_count)
-           VALUES (date_trunc('second', clock_timestamp()), $1, 1)
-           ON CONFLICT (bucket_start_utc, source_key) DO UPDATE
-             SET open_count = "ProxyOpenBudgets".open_count + 1
-           WHERE "ProxyOpenBudgets".open_count < 32
-        RETURNING open_count"#,
-    )
-    .bind(&source_ip)
-    .fetch_optional(&mut *transaction)
-    .await
-    .ok()?
-    .is_some();
-    if !(global_open && source_open) {
-        return None;
-    }
-    let counts: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
-        r#"SELECT COUNT(*)::bigint,
+        .ok()?
+        .is_some();
+        let source_open = sqlx::query_scalar::<_, i32>(
+            r#"INSERT INTO "ProxyOpenBudgets" (bucket_start_utc, source_key, open_count)
+               VALUES (date_trunc('second', clock_timestamp()), $1, 1)
+               ON CONFLICT (bucket_start_utc, source_key) DO UPDATE
+                 SET open_count = "ProxyOpenBudgets".open_count + 1
+               WHERE "ProxyOpenBudgets".open_count < 32
+            RETURNING open_count"#,
+        )
+        .bind(&source_ip)
+        .fetch_optional(&mut *transaction)
+        .await
+        .ok()?
+        .is_some();
+        if !(global_open && source_open) {
+            return None;
+        }
+        let counts: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+            r#"SELECT COUNT(*)::bigint,
                   COUNT(*) FILTER (WHERE user_id = $1)::bigint,
                   COUNT(*) FILTER (WHERE scope_kind = $2 AND scope_id = $3)::bigint,
                   COUNT(*) FILTER (WHERE source_ip = $4)::bigint,
                   COUNT(*) FILTER (WHERE event_id = $5)::bigint,
                   COUNT(*) FILTER (WHERE workload_id = $6)::bigint
-             FROM "ProxyTunnelLeases""#,
-    )
-    .bind(user_id)
-    .bind(scope_kind)
-    .bind(&scope_id)
-    .bind(&source_ip)
-    .bind(event_id)
-    .bind(workload_id)
-    .fetch_one(&mut *transaction)
-    .await
-    .ok()?;
-    if counts.0 >= MAX_GLOBAL as i64
-        || counts.1 >= MAX_PER_USER as i64
-        || counts.2 >= scope_limit as i64
-        || counts.3 >= MAX_PER_SOURCE as i64
-        || (event_id.is_some() && counts.4 >= MAX_PER_EVENT as i64)
-        || counts.5 >= MAX_PER_WORKLOAD as i64
-    {
-        return None;
-    }
-    sqlx::query(
-        r#"INSERT INTO "ProxyTunnelLeases"
+                 FROM "ProxyTunnelLeases""#,
+        )
+        .bind(user_id)
+        .bind(scope_kind)
+        .bind(&scope_id)
+        .bind(&source_ip)
+        .bind(event_id)
+        .bind(workload_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .ok()?;
+        if counts.0 >= MAX_GLOBAL as i64
+            || counts.1 >= user_limit as i64
+            || counts.2 >= scope_limit as i64
+            || counts.3 >= MAX_PER_SOURCE as i64
+            || (event_id.is_some() && counts.4 >= MAX_PER_EVENT as i64)
+            || counts.5 >= MAX_PER_WORKLOAD as i64
+        {
+            return None;
+        }
+        sqlx::query(
+            r#"INSERT INTO "ProxyTunnelLeases"
                (lease_id, user_id, scope_kind, scope_id, source_ip,
                 event_id, workload_id, expires_at_utc)
            VALUES ($1, $2, $3, $4, $5, $6, $7,
                    clock_timestamp() + INTERVAL '31 minutes')"#,
-    )
-    .bind(lease_id)
-    .bind(user_id)
-    .bind(scope_kind)
-    .bind(scope_id)
-    .bind(source_ip)
-    .bind(event_id)
-    .bind(workload_id)
-    .execute(&mut *transaction)
+        )
+        .bind(lease_id)
+        .bind(user_id)
+        .bind(scope_kind)
+        .bind(scope_id)
+        .bind(source_ip)
+        .bind(event_id)
+        .bind(workload_id)
+        .execute(&mut *transaction)
+        .await
+        .ok()?;
+        transaction.commit().await.ok()?;
+        permit._distributed = Some(DistributedProxyPermit {
+            pool: pool.clone(),
+            lease_id,
+        });
+        Some(permit)
+    })
     .await
-    .ok()?;
-    transaction.commit().await.ok()?;
-    permit._distributed = Some(DistributedProxyPermit {
-        pool: pool.clone(),
-        lease_id,
-    });
-    Some(permit)
+    .ok()
+    .flatten()
 }
 
 impl Default for ProxyAdmission {
@@ -577,6 +689,19 @@ impl ProxyPermit {
             session: Arc::new(FixedWindow::default()),
             total_bytes: Arc::new(AtomicU64::new(0)),
             metrics: Arc::clone(&self.admission.inner.traffic_metrics),
+            distributed: Arc::new(DistributedTrafficCredit {
+                subject: self.user.0,
+                scope: match self.scope.0 {
+                    AdmissionScope::Participation(id) => format!("participation:{id}"),
+                    AdmissionScope::Exercise(id) => format!("exercise:{id}"),
+                    AdmissionScope::Preview(id) => format!("preview:{id}"),
+                    AdmissionScope::Ssh(id) => format!("ssh:{id}"),
+                },
+                source: self.source.0,
+                workload: self.workload.0,
+                remaining: AtomicU64::new(0),
+                refill: tokio::sync::Mutex::new(()),
+            }),
         }
     }
 }
@@ -771,16 +896,16 @@ mod tests {
             .is_some());
     }
 
-    #[test]
-    fn traffic_budget_rejects_sustained_session_work() {
+    #[tokio::test]
+    async fn traffic_budget_rejects_sustained_session_work() {
         let admission = ProxyAdmission::new();
         let permit = admission
             .try_acquire_preview(Uuid::new_v4(), Uuid::new_v4(), "192.0.2.8".parse().unwrap())
             .unwrap();
         let traffic = permit.traffic();
-        assert!(traffic.try_reserve(1024));
-        assert!(traffic.try_reserve_control(0));
-        assert!(!traffic.try_reserve(SESSION_TOTAL_BYTES as usize));
+        assert!(traffic.reserve(1024).await);
+        assert!(traffic.reserve_control(0).await);
+        assert!(!traffic.reserve(SESSION_TOTAL_BYTES as usize).await);
         assert_eq!(
             admission.traffic_metrics(),
             ProxyTrafficMetrics {

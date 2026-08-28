@@ -161,6 +161,12 @@ pub async fn issue_solve_receipt(
     {
         return Err(AppError::bad_request("Invalid solve receipt request"));
     }
+    crate::middlewares::rate_limiter::admit_solve_receipt_issuance(
+        issuer,
+        request.participation_id,
+    )
+    .await
+    .map_err(AppError::too_many_requests)?;
     let policy: Option<(i16, Option<String>, Option<Uuid>)> = sqlx::query_as(
         r#"SELECT challenge.solve_receipt_mode,
                   challenge.receipt_verifier_identity,
@@ -510,6 +516,19 @@ mod tests {
             verifier_attempt_hash(KEY, "other", attempt).unwrap()
         );
         assert_eq!(issuer_shard("verifier", 7), issuer_shard("verifier", 7));
+
+        let source = include_str!("receipts.rs");
+        let issuance = source
+            .split("pub async fn issue_solve_receipt")
+            .nth(1)
+            .expect("receipt issuance source");
+        assert!(
+            issuance
+                .find("admit_solve_receipt_issuance")
+                .expect("admission")
+                < issuance.find("let policy:").expect("policy query"),
+            "receipt database lookup must remain behind bounded admission"
+        );
     }
 
     #[tokio::test]

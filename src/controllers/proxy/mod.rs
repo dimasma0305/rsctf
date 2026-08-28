@@ -67,8 +67,8 @@ mod target;
 mod tests;
 mod transport;
 
+use crate::services::authorization_lease::LeaseGenerationCache;
 use access_log::log_container_access_on;
-use authorization::lease_generation::LeaseGenerationCache;
 use authorization::{
     exercise_lease_is_valid, game_proxy_scope_is_valid, game_proxy_session_is_valid,
     try_acquire_game_proxy_open_fence, GameProxyOpenFence, GameProxyTargetIdentity,
