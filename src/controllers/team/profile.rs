@@ -284,6 +284,8 @@ pub(super) async fn update_locked(
                      "TeamProfileInvalidations".profile_revision,
                      EXCLUDED.profile_revision),
                  after_game_id = 0,
+                 claim_id = NULL,
+                 claim_expires_at_utc = NULL,
                  updated_at_utc = CURRENT_TIMESTAMP"#,
     )
     .bind(team_id)
@@ -303,15 +305,33 @@ struct PendingInvalidation {
 
 /// Apply a bounded page of durable profile invalidations.
 pub(crate) async fn process_profile_invalidations(state: &SharedState) -> AppResult<u64> {
+    let claim_id = Uuid::new_v4();
+    let mut transaction = crate::utils::database::begin_sqlx_transaction(state.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let effects = sqlx::query_as::<_, PendingInvalidation>(
-        r#"SELECT team_id, profile_revision, after_game_id
-             FROM "TeamProfileInvalidations"
-            ORDER BY updated_at_utc, team_id
-            LIMIT 32"#,
+        r#"WITH candidates AS (
+               SELECT team_id FROM "TeamProfileInvalidations"
+                WHERE claim_expires_at_utc IS NULL
+                   OR claim_expires_at_utc <= CURRENT_TIMESTAMP
+                ORDER BY updated_at_utc, team_id
+                FOR UPDATE SKIP LOCKED LIMIT 32
+           )
+           UPDATE "TeamProfileInvalidations" effect
+              SET claim_id = $1,
+                  claim_expires_at_utc = CURRENT_TIMESTAMP + INTERVAL '2 minutes'
+             FROM candidates
+            WHERE effect.team_id = candidates.team_id
+        RETURNING effect.team_id, effect.profile_revision, effect.after_game_id"#,
     )
-    .fetch_all(state.pg())
+    .bind(claim_id)
+    .fetch_all(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
     let mut processed = 0;
     for effect in effects {
         let game_ids = sqlx::query_scalar::<_, i32>(
@@ -330,22 +350,25 @@ pub(crate) async fn process_profile_invalidations(state: &SharedState) -> AppRes
         if game_ids.len() < INVALIDATION_GAME_PAGE as usize {
             let deleted = sqlx::query(
                 r#"DELETE FROM "TeamProfileInvalidations"
-                    WHERE team_id = $1 AND profile_revision = $2"#,
+                    WHERE team_id = $1 AND profile_revision = $2 AND claim_id = $3"#,
             )
             .bind(effect.team_id)
             .bind(effect.profile_revision)
+            .bind(claim_id)
             .execute(state.pg())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
             processed += deleted.rows_affected();
         } else if let Some(last_game_id) = game_ids.last() {
             sqlx::query(
-                r#"UPDATE "TeamProfileInvalidations" SET after_game_id = $3
-                    WHERE team_id = $1 AND profile_revision = $2"#,
+                r#"UPDATE "TeamProfileInvalidations"
+                      SET after_game_id = $3, claim_id = NULL, claim_expires_at_utc = NULL
+                    WHERE team_id = $1 AND profile_revision = $2 AND claim_id = $4"#,
             )
             .bind(effect.team_id)
             .bind(effect.profile_revision)
             .bind(last_game_id)
+            .bind(claim_id)
             .execute(state.pg())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
