@@ -468,7 +468,7 @@ impl ChallengeEditDetailModel {
 
 /// RSCTF `Models/Request/Edit/FlagCreateModel` — a flag plus optional attachment
 /// metadata (the attachment the flag hands out on solve).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlagCreateModel {
     pub flag: String,
@@ -478,6 +478,13 @@ pub struct FlagCreateModel {
     pub file_hash: Option<String>,
     #[serde(default)]
     pub remote_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlagImportRequest {
+    pub operation_id: Uuid,
+    pub flags: Vec<FlagCreateModel>,
 }
 
 /// RSCTF `Models/Request/Edit/AttachmentCreateModel` — new attachment for a
@@ -765,6 +772,10 @@ pub fn router() -> Router<SharedState> {
             get(get_challenge_build_status),
         )
         .route(
+            "/api/edit/games/{id}/challenges/{cId}/buildstatus",
+            get(get_challenge_build_status),
+        )
+        .route(
             "/api/edit/games/{id}/challenges/{cId}/rebuild",
             limited(Policy::Concurrency, post(rebuild_challenge)),
         )
@@ -778,7 +789,7 @@ pub fn router() -> Router<SharedState> {
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/flags",
-            post(add_flags),
+            post(add_flags).layer(DefaultBodyLimit::max(256 * 1024)),
         )
         .route(
             "/api/edit/games/{id}/challenges/{cId}/flags/{fId}",
