@@ -84,6 +84,20 @@ pub async fn stage_branding(
     }
     let branding_hash = crate::utils::codec::sha256_hex(&bytes);
     let request_digest = Sha256::digest(&bytes).to_vec();
+    let staged = crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        crate::services::blob_refs::scoped_operation_id(
+            operation_id,
+            "platform-settings-branding",
+            0,
+        ),
+        &format!("platform-settings-branding:{operation_id}"),
+        Some(admin.id),
+        &name,
+        &bytes,
+    )
+    .await?;
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(database_error)?;
@@ -141,13 +155,7 @@ pub async fn stage_branding(
             ));
         }
     } else {
-        let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-            st.storage.as_ref(),
-            &mut transaction,
-            &name,
-            &bytes,
-        )
-        .await?;
+        crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
         sqlx::query(
             r#"INSERT INTO "PlatformSettingsBrandingStaging"
                  (operation_id, actor_user_id, request_digest, blob_hash)
@@ -156,7 +164,7 @@ pub async fn stage_branding(
         .bind(operation_id)
         .bind(admin.id)
         .bind(&request_digest)
-        .bind(&blob.hash)
+        .bind(&staged.blob.hash)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;

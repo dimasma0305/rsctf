@@ -8,6 +8,8 @@ pub(crate) async fn get_or_create_shared_container_locked(
     st: &SharedState,
     challenge: &game_challenge::Model,
     vpn_access_required: bool,
+    lifecycle_operation_id: Uuid,
+    publication_id: Uuid,
 ) -> AppResult<container::Model> {
     let container_policy =
         crate::services::container_policy::ContainerPolicy::load(st.pg()).await?;
@@ -66,8 +68,8 @@ pub(crate) async fn get_or_create_shared_container_locked(
         platform_proxy,
         vpn_access_required,
     );
-    let container_uuid = uuid::Uuid::new_v4();
-    let operation_id = Some(format!("container:{container_uuid}"));
+    let container_uuid = publication_id;
+    let operation_id = Some(format!("player-container:{lifecycle_operation_id}"));
     let info = match workload {
         Some(spec) => {
             st.containers

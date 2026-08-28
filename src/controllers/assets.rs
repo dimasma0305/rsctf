@@ -5,12 +5,13 @@
 //! authorized against live game participation before their bytes are loaded.
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use bytes::Bytes;
 use futures::StreamExt;
@@ -34,6 +35,15 @@ pub struct LocalFileResult {
     pub hash: String,
     pub name: String,
     pub size: i64,
+    pub upload_id: Option<Uuid>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetUploadQuery {
+    /// Stable client identity for an atomic upload/consume flow. Omitting it
+    /// preserves the legacy standalone-reference contract.
+    pub operation_id: Option<Uuid>,
 }
 
 pub fn router() -> Router<SharedState> {
@@ -55,7 +65,8 @@ pub fn router() -> Router<SharedState> {
 /// `POST /api/assets` (admin) — multipart upload of one or more files.
 pub async fn upload(
     State(st): State<SharedState>,
-    AdminUser(_user): AdminUser,
+    AdminUser(user): AdminUser,
+    Query(query): Query<AssetUploadQuery>,
     mut multipart: Multipart,
 ) -> AppResult<Json<Vec<LocalFileResult>>> {
     let _upload_reservation =
@@ -89,6 +100,12 @@ pub async fn upload(
             .filter(|total| *total <= crate::utils::upload::ASSET_TOTAL_BYTES)
             .ok_or_else(|| AppError::bad_request("Upload exceeds the total size limit"))?;
         uploads.push((name, bytes));
+        if uploads.len() > crate::utils::upload::ASSET_FILE_COUNT {
+            return Err(AppError::bad_request(format!(
+                "Upload cannot contain more than {} files",
+                crate::utils::upload::ASSET_FILE_COUNT
+            )));
+        }
     }
 
     if uploads.is_empty() {
@@ -98,19 +115,43 @@ pub async fn upload(
     // Validate the complete request before acquiring any blob references. A
     // later oversized part must not leave the earlier parts persisted.
     let mut results = Vec::with_capacity(uploads.len());
-    for (name, bytes) in uploads {
-        let (blob, _) = crate::services::blob_refs::store_and_acquire(
-            st.pg(),
-            st.storage.as_ref(),
-            &name,
-            &bytes,
-        )
-        .await?;
+    for (ordinal, (name, bytes)) in uploads.into_iter().enumerate() {
+        let (blob, upload_id) = match query.operation_id {
+            Some(root) => {
+                let upload_id = crate::services::blob_refs::scoped_operation_id(
+                    root,
+                    "asset-upload",
+                    ordinal as u64,
+                );
+                let staged = crate::services::blob_refs::stage_blob(
+                    st.pg(),
+                    st.storage.as_ref(),
+                    upload_id,
+                    &format!("asset-upload:{root}:{ordinal}"),
+                    Some(user.id),
+                    &name,
+                    &bytes,
+                )
+                .await?;
+                (staged.blob, Some(upload_id))
+            }
+            None => {
+                let (blob, _) = crate::services::blob_refs::store_and_acquire(
+                    st.pg(),
+                    st.storage.as_ref(),
+                    &name,
+                    &bytes,
+                )
+                .await?;
+                (blob, None)
+            }
+        };
 
         results.push(LocalFileResult {
             hash: blob.hash,
             name,
             size: blob.size,
+            upload_id,
         });
     }
 
@@ -289,6 +330,17 @@ fn permitted_stream_body(
     Body::from_stream(held)
 }
 
+fn permitted_request_body(
+    body: Body,
+    permit: crate::services::asset_admission::AssetRequestPermit,
+) -> Body {
+    let stream = body.into_data_stream();
+    let held = futures::stream::unfold((stream, permit), |(mut stream, permit)| async move {
+        stream.next().await.map(|item| (item, (stream, permit)))
+    });
+    Body::from_stream(held)
+}
+
 /// `GET /assets/{hash}/{filename}` — stream a blob back by content hash.
 pub async fn download(
     State(st): State<SharedState>,
@@ -337,10 +389,17 @@ async fn serve_asset(
     filename: &str,
     token: Option<&str>,
 ) -> AppResult<Response> {
+    let source = crate::services::anti_cheat::client_ip(headers, Some(peer.ip()))
+        .unwrap_or_else(|| peer.ip().to_string());
+    let request_permit = st
+        .asset_download_admission
+        .try_acquire_request(&source, hash)
+        .ok_or_else(|| {
+            AppError::overloaded("Attachment request capacity is busy; retry in a moment", 1)
+        })?;
     let authorization = authorize_asset_download(st, hash, user).await?;
     let cache_policy = authorization.cache_policy;
-    let event_vpn_source = crate::services::anti_cheat::client_ip(headers, Some(peer.ip()))
-        .and_then(|value| value.parse::<std::net::Ipv4Addr>().ok());
+    let event_vpn_source = source.parse::<std::net::Ipv4Addr>().ok();
 
     // Conditional caching (RSCTF `AssetsController`): a content-hash blob is
     // immutable, so an `ETag` of hash[8..16] lets the browser skip re-downloading.
@@ -350,7 +409,10 @@ async fn serve_asset(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag))
     {
-        let _ = finalize_asset_download(st, &authorization, event_vpn_source, token, false).await?;
+        if authorization.requires_conditional_revalidation() {
+            let _ =
+                finalize_asset_download(st, &authorization, event_vpn_source, token, false).await?;
+        }
         return Ok((
             StatusCode::NOT_MODIFIED,
             [
@@ -508,6 +570,8 @@ async fn serve_asset(
     // under that fence, then release it before Axum begins streaming the body.
     let _ = finalize_asset_download(st, &authorization, event_vpn_source, token, true).await?;
 
+    let body = permitted_request_body(body, request_permit);
+
     asset_response(
         body,
         status,
@@ -588,6 +652,20 @@ mod tests {
         asset_response, content_type_for, parse_byte_range, signed_download_response,
         AssetCachePolicy,
     };
+    use uuid::Uuid;
+
+    #[test]
+    fn multipart_operation_derivation_is_stable_and_ordered() {
+        let root = Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
+        assert_eq!(
+            crate::services::blob_refs::scoped_operation_id(root, "asset-upload", 0),
+            crate::services::blob_refs::scoped_operation_id(root, "asset-upload", 0)
+        );
+        assert_ne!(
+            crate::services::blob_refs::scoped_operation_id(root, "asset-upload", 0),
+            crate::services::blob_refs::scoped_operation_id(root, "asset-upload", 1)
+        );
+    }
 
     #[test]
     fn caller_chosen_active_extensions_are_always_inert() {

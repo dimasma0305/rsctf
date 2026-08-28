@@ -9,6 +9,7 @@ struct UserTeamRow {
     bio: Option<String>,
     avatar_hash: Option<String>,
     locked: bool,
+    profile_revision: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -23,7 +24,8 @@ struct UserTeamRosterRow {
     student_number: String,
 }
 
-const USER_TEAMS_SQL: &str = r#"SELECT team.id, team.name, team.bio, team.avatar_hash, team.locked
+const USER_TEAMS_SQL: &str = r#"SELECT team.id, team.name, team.bio, team.avatar_hash, team.locked,
+                                      team.profile_revision
        FROM "Teams" team
       WHERE team.deletion_pending = FALSE
         AND (
@@ -110,6 +112,7 @@ pub async fn get_teams_info(
                 .avatar_hash
                 .map(|hash| format!("/assets/{hash}/avatar")),
             locked: team.locked,
+            profile_revision: team.profile_revision,
             members: Some(rosters.remove(&team.id).unwrap_or_default()),
         })
         .collect();

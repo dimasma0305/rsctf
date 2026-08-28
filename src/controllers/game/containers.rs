@@ -1,5 +1,6 @@
 //! Per-team dynamic container lifecycle (create/destroy/extend).
 use super::*;
+use axum::http::HeaderMap;
 
 mod eligibility;
 use crate::services::live_roster::LiveParticipationIdentity;
@@ -20,7 +21,9 @@ use publication::{
     revoke_failed_team_container_publication, revoke_published_shared_container,
     revoke_published_team_container,
 };
+mod operations;
 mod policy;
+pub(crate) use operations::purge_terminal as purge_terminal_operations;
 use policy::{allows_practice_container, container_op_too_frequent};
 mod reaping;
 pub(crate) use reaping::{
@@ -46,6 +49,7 @@ pub struct ExpectedContainerQuery {
 pub async fn create_container(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: HeaderMap,
     Path((id, cid)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<ContainerInfoModel>> {
     let ctx = context_info(&st, &user, id, true).await?;
@@ -79,15 +83,50 @@ pub async fn create_container(
             "Container creation is not allowed for this challenge",
         ));
     }
-    if authorize_on_demand_build(&st, caller, &challenge).await? {
-        image_repair::prepare_queued_image(&st, &challenge).await?;
+    let requested_operation_id = headers
+        .get("x-rsctf-operation-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .unwrap_or_else(Uuid::new_v4);
+    let shared = uses_shared_container(&challenge);
+    let operation_scope = if shared {
+        format!("shared-challenge:{cid}")
+    } else {
+        format!("participation:{}", ctx.participation.id)
+    };
+    let operation = match operations::claim_create(
+        st.pg(),
+        requested_operation_id,
+        &operation_scope,
+        user.id,
+        id,
+        (!shared).then_some(ctx.participation.id),
+        cid,
+    )
+    .await?
+    {
+        operations::ClaimOutcome::Recovered(model) => return Ok(RequestResponse::ok(model)),
+        operations::ClaimOutcome::Owned(operation) => operation,
+    };
+    let on_demand_build = match authorize_on_demand_build(&st, caller, &challenge).await {
+        Ok(value) => value,
+        Err(error) => {
+            operations::fail_create(st.pg(), &operation).await;
+            return Err(error);
+        }
+    };
+    if on_demand_build {
+        if let Err(error) = image_repair::prepare_queued_image(&st, &challenge).await {
+            operations::fail_create(st.pg(), &operation).await;
+            return Err(error);
+        }
     }
 
     // Shared container: one challenge-owned container serves every team. Get-or-create
     // it (idempotent) and hand it back directly — no per-team GameInstance/flag row.
     // Mirrors RSCTF `CreateContainer` (UsesSharedContainer branch, GameController.cs:1953)
     // + `GameInstanceRepository.GetOrCreateSharedContainer`.
-    if uses_shared_container(&challenge) {
+    if shared {
         let flight_key = format!("shared-container:{}", challenge.id);
         let _flight = crate::utils::single_flight::coalesce(&flight_key).await;
         let roster_key = crate::services::live_roster::lock_key(ctx.participation.team_id);
@@ -113,6 +152,8 @@ pub async fn create_container(
                 &st,
                 &challenge,
                 ctx.game.vpn_access_required,
+                operation.operation_id,
+                operation.publication_id,
             )
             .await?;
             // The shared backend remains a valid challenge-level resource when only
@@ -128,10 +169,16 @@ pub async fn create_container(
             {
                 return Err(AppError::Forbidden);
             }
-            Ok(RequestResponse::ok(ContainerInfoModel::from(&c)))
+            let model = ContainerInfoModel::from(&c);
+            operations::complete_create(st.pg(), &operation, &model).await?;
+            Ok(RequestResponse::ok(model))
         }
         .await;
-        distributed.release().await?;
+        let release = distributed.release().await;
+        if result.is_err() {
+            operations::fail_create(st.pg(), &operation).await;
+        }
+        release?;
         return result;
     }
 
@@ -270,8 +317,8 @@ pub async fn create_container(
         platform_proxy,
         game.vpn_access_required,
     );
-    let container_uuid = uuid::Uuid::new_v4();
-    let operation_id = Some(format!("container:{container_uuid}"));
+    let container_uuid = operation.publication_id;
+    let operation_id = Some(format!("player-container:{}", operation.operation_id));
     let info = match workload {
         Some(spec) => {
             let spec = crate::services::challenge_workloads::with_environment(
@@ -536,7 +583,9 @@ pub async fn create_container(
         tracing::warn!(game = id, challenge = cid, error = %err, "container start event persist failed");
     }
 
-    Ok(RequestResponse::ok(ContainerInfoModel::from(&c)))
+    let model = ContainerInfoModel::from(&c);
+    operations::complete_create(st.pg(), &operation, &model).await?;
+    Ok(RequestResponse::ok(model))
 }
 
 /// `DELETE /api/game/{id}/container/{challengeId}` — tear down the team's container.

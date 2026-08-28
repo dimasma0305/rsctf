@@ -229,7 +229,7 @@ impl Write for CaptureZipStreamWriter {
 }
 
 fn scan_capture_archive(dir: &std::path::Path) -> AppResult<Vec<CaptureArchiveSource>> {
-    let files = list_pcaps(dir);
+    let files = list_pcaps(dir)?;
     if files.is_empty() {
         return Err(AppError::not_found("No captures for this participation"));
     }

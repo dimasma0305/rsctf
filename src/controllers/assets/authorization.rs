@@ -16,6 +16,7 @@ use crate::utils::error::{AppError, AppResult};
 /// range-download herds to one SQL query per blob and replica. Every allowed
 /// class is re-proved after storage, so this cache is never the final gate.
 const ASSET_GATE_TTL: Duration = Duration::from_secs(2);
+const MAX_ASSET_GATE_FILL_KEYS: usize = 128;
 
 static ASSET_GATE_SINGLE_FLIGHT: std::sync::LazyLock<
     crate::utils::single_flight::SingleFlight<Option<Bytes>>,
@@ -76,6 +77,15 @@ pub(super) struct AuthorizedAsset {
     /// The handler must revalidate it after any storage delay and immediately
     /// before constructing a response.
     final_grant: AssetFinalGrant,
+}
+
+impl AuthorizedAsset {
+    /// A public grant was established by the bounded, short-lived gate fill.
+    /// An immutable 304 transfers no bytes and may use that cached grant; live
+    /// participant and monitor grants still need their exact final recheck.
+    pub(super) fn requires_conditional_revalidation(&self) -> bool {
+        !matches!(self.final_grant, AssetFinalGrant::Public { .. })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -275,7 +285,11 @@ async fn cached_asset_gate(st: &SharedState, hash: &str) -> AppResult<AssetGate>
     let fill_key = key.clone();
     let fill_hash = hash.to_string();
     let encoded = ASSET_GATE_SINGLE_FLIGHT
-        .run(&key, move || async move {
+        .run_with_limit(
+            &key,
+            Duration::from_secs(15),
+            MAX_ASSET_GATE_FILL_KEYS,
+            move || async move {
             if let Some(bytes) = state.cache.get(&fill_key).await {
                 if decode_asset_gate(&bytes).is_some() {
                     return Some(bytes);
@@ -301,9 +315,15 @@ async fn cached_asset_gate(st: &SharedState, hash: &str) -> AppResult<AssetGate>
                 .set(&fill_key, &bytes, Some(ASSET_GATE_TTL))
                 .await;
             Some(Bytes::from(bytes))
-        })
+            },
+        )
         .await
-        .ok_or_else(|| AppError::internal("asset authorization cache fill failed"))?;
+        .ok_or_else(|| {
+            AppError::overloaded(
+                "Asset authorization capacity is busy; retry in a moment",
+                1,
+            )
+        })?;
 
     decode_asset_gate(&encoded)
         .ok_or_else(|| AppError::internal("invalid cached asset authorization"))
@@ -919,81 +939,4 @@ pub(super) async fn finalize_asset_download(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn static_attachments_are_privately_cacheable_but_team_files_are_not() {
-        let static_gate = AssetGate::Protected {
-            file_size: Some(42),
-            targets: vec![AssetTarget {
-                game_id: 1,
-                source_team: None,
-                challenge_id: Some(2),
-            }],
-        };
-        let sensitive_gate = AssetGate::Protected {
-            file_size: Some(42),
-            targets: vec![AssetTarget {
-                game_id: 1,
-                source_team: Some(3),
-                challenge_id: Some(2),
-            }],
-        };
-
-        let static_delivery = delivery_for_gate(&static_gate);
-        assert_eq!(
-            static_delivery.cache_policy,
-            AssetCachePolicy::PrivateImmutable
-        );
-        assert!(static_delivery.signed_delivery_allowed);
-
-        let sensitive_delivery = delivery_for_gate(&sensitive_gate);
-        assert_eq!(
-            sensitive_delivery.cache_policy,
-            AssetCachePolicy::PrivateNoStore
-        );
-        assert!(!sensitive_delivery.signed_delivery_allowed);
-
-        let private_delivery = delivery_for_gate(&AssetGate::Private {
-            file_size: Some(42),
-        });
-        assert_eq!(
-            private_delivery.cache_policy,
-            AssetCachePolicy::PrivateNoStore
-        );
-        assert!(!private_delivery.signed_delivery_allowed);
-
-        let public_delivery = delivery_for_gate(&AssetGate::Public {
-            file_size: Some(42),
-        });
-        assert!(
-            matches!(public_delivery.final_grant, AssetFinalGrant::None),
-            "public downloads must never become participant anti-cheat evidence"
-        );
-    }
-
-    #[test]
-    fn malformed_hashes_never_enter_the_shared_cache_namespace() {
-        assert!(valid_content_hash(&"a".repeat(64)));
-        assert!(!valid_content_hash("../secrets"));
-        assert!(!valid_content_hash(&"g".repeat(64)));
-    }
-
-    #[test]
-    fn public_finalization_reproves_every_public_hash_relation() {
-        for relation in [
-            r#""AspNetUsers" WHERE avatar_hash = $1"#,
-            r#""Teams" WHERE avatar_hash = $1"#,
-            r#""Games" WHERE poster_hash = $1"#,
-            "GlobalConfig:LogoHash",
-            "GlobalConfig:FaviconHash",
-        ] {
-            assert!(
-                PUBLIC_ASSET_FINAL_SQL.contains(relation),
-                "missing public relation: {relation}"
-            );
-        }
-        assert!(PUBLIC_ASSET_FINAL_SQL.matches("FOR SHARE").count() >= 4);
-    }
-}
+mod tests;

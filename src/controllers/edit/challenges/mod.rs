@@ -17,7 +17,7 @@ mod scoring_lock_tests;
 mod workload;
 
 pub use attachments::update_attachment;
-pub(crate) use attachments::{build_attachment, validate_remote_attachment_url};
+pub(crate) use attachments::validate_remote_attachment_url;
 pub use audit::{
     download_challenge_audit_archive, get_challenge_audit_meta, get_challenge_build_status,
     list_challenge_build_statuses, rebuild_challenge,

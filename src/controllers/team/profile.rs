@@ -181,7 +181,7 @@ async fn enforce_mutation_budget(
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
     if recent >= PROFILE_MUTATIONS_PER_MINUTE {
-        return Err(AppError::TooManyRequests);
+        return Err(AppError::too_many_requests(60));
     }
     Ok(())
 }

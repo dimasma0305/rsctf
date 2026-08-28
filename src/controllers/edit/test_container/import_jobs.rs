@@ -358,6 +358,16 @@ async fn enqueue_zip_owned(
         Some(submitter) => format!("zip:{hash}:pending:{submitter}"),
         None => format!("zip:{hash}:trusted"),
     };
+    let staged = crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        crate::services::blob_refs::scoped_operation_id(operation_id, "challenge-import-zip", 0),
+        &format!("challenge-import-zip:{game_id}:{operation_id}"),
+        Some(actor_user_id),
+        "challenge-import.zip",
+        &bytes,
+    )
+    .await?;
     let admitted = begin_admitted(st, game_id, actor_user_id, operation_id, &source_key).await;
     let mut transaction = match admitted {
         Ok(Ok(transaction)) => transaction,
@@ -366,13 +376,8 @@ async fn enqueue_zip_owned(
         Err(error) => return Err(error),
     };
     let job_id = Uuid::new_v4();
-    let (_, source_file_id) = crate::services::blob_refs::store_and_acquire_in_transaction(
-        st.storage.as_ref(),
-        &mut transaction,
-        "challenge-import.zip",
-        &bytes,
-    )
-    .await?;
+    let source_file_id =
+        crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
     sqlx::query(
         r#"INSERT INTO "ChallengeImportJobs"
               (id, game_id, actor_user_id, operation_id, source_kind, import_policy,

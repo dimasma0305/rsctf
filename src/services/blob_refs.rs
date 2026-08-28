@@ -17,6 +17,7 @@ mod challenges;
 #[cfg(test)]
 mod poster_tests;
 mod seaorm;
+mod staging;
 #[cfg(test)]
 mod test_support;
 mod writeups;
@@ -36,6 +37,10 @@ pub(crate) use challenges::{
     delete_challenge_locked, delete_game_challenges_locked, purge_deleted_challenge_artifacts,
 };
 pub(crate) use seaorm::store_and_acquire_in_seaorm_transaction;
+pub(crate) use staging::{
+    load_ready_upload_stage, publish_staged_blob, purge_expired_stages, scoped_operation_id,
+    stage_blob, StagedBlob,
+};
 pub use writeups::clear_game_writeups;
 #[cfg(test)]
 use writeups::replace_writeup;
@@ -87,46 +92,31 @@ async fn acquire_locked(
         .await
 }
 
-/// Store and acquire within a caller-owned transaction. This is used when the
-/// new blob reference must commit atomically with another domain row (for
-/// example, a challenge attachment link).
-pub(crate) async fn store_and_acquire_in_transaction(
-    storage: &dyn BlobStorage,
-    transaction: &mut Transaction<'_, Postgres>,
-    name: &str,
-    bytes: &[u8],
-) -> AppResult<(StoredBlob, i32)> {
-    let expected_hash = sha256_hex(bytes);
-    lock_hash(transaction, &expected_hash)
-        .await
-        .map_err(database_error)?;
-    let blob = storage.store(name, bytes).await?;
-    if blob.hash != expected_hash {
-        return Err(AppError::internal(
-            "blob storage returned a hash that does not match its content",
-        ));
-    }
-    let id = acquire_locked(transaction, &blob.hash, name, blob.size)
-        .await
-        .map_err(database_error)?;
-    Ok((blob, id))
-}
-
 /// Store bytes and add one logical reference under the same distributed hash
-/// lock used by deletion. The physical write intentionally occurs while the
-/// SQL transaction holds that lock, closing the store-before-metadata window.
+/// identity used by deletion. Storage happens under a durable stage and an
+/// absolute deadline before the short reference transaction.
 pub async fn store_and_acquire(
     pool: &PgPool,
     storage: &dyn BlobStorage,
     name: &str,
     bytes: &[u8],
 ) -> AppResult<(StoredBlob, i32)> {
+    let staged = stage_blob(
+        pool,
+        storage,
+        uuid::Uuid::new_v4(),
+        "standalone-asset",
+        None,
+        name,
+        bytes,
+    )
+    .await?;
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
-    let stored = store_and_acquire_in_transaction(storage, &mut transaction, name, bytes).await?;
+    let file_id = publish_staged_blob(&mut transaction, &staged).await?;
     transaction.commit().await.map_err(database_error)?;
-    Ok(stored)
+    Ok((staged.blob, file_id))
 }
 
 #[cfg(test)]
@@ -337,6 +327,12 @@ pub async fn purge_if_unreferenced(
                OR EXISTS(
                     SELECT 1 FROM "GameChallenges"
                      WHERE original_archive_blob_path = $1
+               )
+               OR EXISTS(
+                    SELECT 1 FROM "BlobStagingOperations" stage
+                     WHERE stage.content_hash = $1
+                       AND stage.state <> 'Published'
+                       AND stage.lease_expires_at_utc > clock_timestamp()
                )"#,
     )
     .bind(hash)
@@ -368,9 +364,15 @@ pub async fn purge_if_unreferenced(
 /// separate work queue or schema migration.
 pub async fn purge_pending(pool: &PgPool, storage: &dyn BlobStorage, limit: i64) -> AppResult<u64> {
     let hashes = sqlx::query_scalar::<_, String>(
-        r#"SELECT hash FROM "Files"
-            WHERE reference_count <= 0
-            ORDER BY id
+        r#"SELECT file.hash FROM "Files" file
+            WHERE file.reference_count <= 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM "BlobStagingOperations" stage
+                   WHERE stage.content_hash = file.hash
+                     AND stage.state <> 'Published'
+                     AND stage.lease_expires_at_utc > clock_timestamp()
+              )
+            ORDER BY file.id
             LIMIT $1"#,
     )
     .bind(limit.clamp(1, 256))

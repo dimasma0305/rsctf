@@ -1214,6 +1214,10 @@ export interface LocalFile {
    * @minLength 1
    */
   name: string;
+  /** Staged upload identity consumed atomically with its attachment owner. */
+  uploadId?: string | null;
+  /** @format int64 */
+  size?: number;
 }
 
 /** This record represents the response for an API token request. */
@@ -2888,6 +2892,8 @@ export interface AttachmentCreateModel {
   attachmentType?: FileType;
   /** File hash (local file) */
   fileHash?: string | null;
+  /** Opaque staged-upload identity returned by the assets API. */
+  uploadId?: string | null;
   /** File URL (remote file) */
   remoteUrl?: string | null;
 }
@@ -2904,6 +2910,8 @@ export interface FlagCreateModel {
   attachmentType?: FileType;
   /** File hash (local file) */
   fileHash?: string | null;
+  /** Opaque staged-upload identity returned by the assets API. */
+  uploadId?: string | null;
   /** File URL (remote file) */
   remoteUrl?: string | null;
 }
@@ -6666,6 +6674,8 @@ export class Api<
       query?: {
         /** Unified filename */
         filename?: string | null;
+        /** Stable identity for a replayable upload/consume flow. */
+        operationId?: string | null;
       },
       params: RequestParams = {},
     ) =>

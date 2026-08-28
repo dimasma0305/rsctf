@@ -182,11 +182,8 @@ async fn replace_writeup_locked(
     transaction: &mut Transaction<'_, Postgres>,
     participation_id: i32,
     old: Option<(i32, String)>,
-    hash: &str,
-    name: &str,
-    size: i64,
+    new_id: i32,
 ) -> Result<Option<String>, sqlx::Error> {
-    let new_id = acquire_locked(transaction, hash, name, size).await?;
     sqlx::query(
         r#"UPDATE "Participations"
               SET writeup_id = $2
@@ -217,10 +214,12 @@ pub(super) async fn replace_writeup(
         .await
         .map_err(database_error)?;
     let old = lock_writeup_hashes(&mut transaction, participation_id, hash).await?;
-    let deleted_hash =
-        replace_writeup_locked(&mut transaction, participation_id, old, hash, name, size)
-            .await
-            .map_err(database_error)?;
+    let new_id = acquire_locked(&mut transaction, hash, name, size)
+        .await
+        .map_err(database_error)?;
+    let deleted_hash = replace_writeup_locked(&mut transaction, participation_id, old, new_id)
+        .await
+        .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
     Ok(deleted_hash)
 }
@@ -235,7 +234,16 @@ pub(crate) async fn store_and_replace_writeup(
     name: &str,
     bytes: &[u8],
 ) -> AppResult<(StoredBlob, Option<String>)> {
-    let expected_hash = sha256_hex(bytes);
+    let staged = stage_blob(
+        pool,
+        storage,
+        uuid::Uuid::new_v4(),
+        &format!("writeup:{}:{}", caller.game_id, caller.participation_id),
+        Some(caller.user_id),
+        name,
+        bytes,
+    )
+    .await?;
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
@@ -265,25 +273,14 @@ pub(crate) async fn store_and_replace_writeup(
         caller.game_id,
         caller.participation_id,
         caller.user_id,
-        &expected_hash,
+        &staged.blob.hash,
     )
     .await?;
-    let blob = storage.store(name, bytes).await?;
-    if blob.hash != expected_hash {
-        return Err(AppError::internal(
-            "blob storage returned a hash that does not match its content",
-        ));
-    }
-    let deleted_hash = replace_writeup_locked(
-        &mut transaction,
-        caller.participation_id,
-        old,
-        &blob.hash,
-        name,
-        blob.size,
-    )
-    .await
-    .map_err(database_error)?;
+    let new_id = publish_staged_blob(&mut transaction, &staged).await?;
+    let deleted_hash =
+        replace_writeup_locked(&mut transaction, caller.participation_id, old, new_id)
+            .await
+            .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
-    Ok((blob, deleted_hash))
+    Ok((staged.blob, deleted_hash))
 }

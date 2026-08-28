@@ -91,8 +91,11 @@ impl AppError {
     pub fn retryable_unavailable(msg: impl Into<String>, retry_after: u64) -> Self {
         AppError::RetryableUnavailable {
             title: msg.into(),
-            retry_after,
+            retry_after: retry_after.max(1),
         }
+    }
+    pub fn overloaded(msg: impl Into<String>, retry_after_seconds: u64) -> Self {
+        AppError::retryable_unavailable(msg, retry_after_seconds)
     }
     pub fn retry_after(seconds: u64) -> Self {
         AppError::too_many_requests(seconds)
@@ -179,8 +182,6 @@ impl IntoResponse for AppError {
     }
 }
 
-pub type AppResult<T> = Result<T, AppError>;
-
 #[cfg(test)]
 mod tests {
     use axum::http::{header, StatusCode};
@@ -203,9 +204,18 @@ mod tests {
     }
 
     #[test]
+    fn overloaded_alias_is_a_retryable_unavailable_response() {
+        let response = AppError::overloaded("busy", 2).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap(), "2");
+    }
+
+    #[test]
     fn bounded_admission_errors_expose_retry_after() {
         let response = AppError::retry_after(300).into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers().get("retry-after").unwrap(), "300");
     }
 }
+
+pub type AppResult<T> = Result<T, AppError>;
