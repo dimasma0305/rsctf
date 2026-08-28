@@ -9,13 +9,9 @@ const MAX_AUDIT_TEXT_BYTES: u64 = 64 * 1024;
 const MAX_AUDIT_PREVIEW_BYTES: usize = 256 * 1024;
 const MAX_AUDIT_FILE_PATH_BYTES: usize = 512 * 1024;
 const MAX_AUDIT_CACHE_ENTRIES: usize = 16;
-const AUDIT_MEMORY_UNIT_BYTES: u64 = 1024 * 1024;
-const AUDIT_MEMORY_UNITS: usize = 144;
 const AUDIT_DOWNLOADS: usize = 4;
 const MAX_BUILD_STATUS_ROWS: i64 = 2_048;
 
-static AUDIT_MEMORY_ADMISSION: LazyLock<Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(AUDIT_MEMORY_UNITS)));
 static AUDIT_DOWNLOAD_ADMISSION: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(AUDIT_DOWNLOADS)));
 static AUDIT_ARCHIVE_FLIGHTS: LazyLock<
@@ -185,12 +181,6 @@ fn cache_projection(hash: String, value: Arc<JsonValue>) {
     }
 }
 
-fn audit_admission_units(size: u64) -> u32 {
-    size.max(1)
-        .div_ceil(AUDIT_MEMORY_UNIT_BYTES)
-        .min(AUDIT_MEMORY_UNITS as u64) as u32
-}
-
 /// Compact mutable state used by challenge-detail and audit-modal polling. This
 /// query deliberately excludes challenge content, flags and archive bytes.
 pub async fn get_challenge_build_status(
@@ -265,7 +255,12 @@ pub async fn download_challenge_audit_archive(
     let permit = AUDIT_DOWNLOAD_ADMISSION
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::unavailable("Archive download capacity is busy; retry shortly"))?;
+        .map_err(|_| {
+            AppError::retryable_unavailable(
+                "Archive download capacity is busy; retry shortly",
+                crate::services::bulk_export::RETRY_AFTER_SECONDS,
+            )
+        })?;
     let stream = st.storage.stream_range(hash, 0..size).await?;
     // The body owns this permit through EOF or disconnect, not merely until
     // the handler returns, so concurrent storage streams stay bounded.
@@ -350,10 +345,14 @@ pub async fn get_challenge_audit_meta(
                     };
                     // Reserve the archive's worst buffered footprint before loading
                     // any bytes. Several tabs can join this same hash's flight, but
-                    // unrelated archives cannot exceed the process memory budget.
-                    let permit = match AUDIT_MEMORY_ADMISSION
-                        .clone()
-                        .try_acquire_many_owned(audit_admission_units(size))
+                    // unrelated archives share the local and deployment-wide budget.
+                    let permit = match st_for_fill
+                        .bulk_export_admission
+                        .try_acquire(
+                            Arc::clone(&st_for_fill.cache),
+                            usize::try_from(size).unwrap_or(usize::MAX),
+                        )
+                        .await
                     {
                         Ok(permit) => permit,
                         Err(_) => return AuditProjectionFill::Busy,
@@ -389,8 +388,9 @@ pub async fn get_challenge_audit_meta(
         AuditProjectionFill::Ready(model) => model,
         AuditProjectionFill::Missing => return Ok(RequestResponse::ok(empty(false))),
         AuditProjectionFill::Busy => {
-            return Err(AppError::unavailable(
+            return Err(AppError::retryable_unavailable(
                 "Archive inspection capacity is busy; retry shortly",
+                crate::services::bulk_export::RETRY_AFTER_SECONDS,
             ))
         }
         AuditProjectionFill::Failed => {
@@ -628,9 +628,6 @@ mod tests {
 
     #[test]
     fn archive_admission_and_download_contract_are_bounded_and_case_exact() {
-        assert_eq!(audit_admission_units(0), 1);
-        assert_eq!(audit_admission_units(72 * 1024 * 1024), 72);
-        assert_eq!(audit_admission_units(u64::MAX), AUDIT_MEMORY_UNITS as u32);
         assert!((1..=8).contains(&AUDIT_DOWNLOADS));
         assert_eq!(
             safe_archive_filename("../My \"Challenge\"\r\n"),
@@ -648,36 +645,16 @@ mod tests {
         assert!(authorization < stream);
         assert!(handler.contains("let _permit = &permit"));
         let size_check = handler.find("storage.size(&fill_hash)").unwrap();
-        let admission = handler.find("try_acquire_many_owned").unwrap();
+        let admission = handler.find("bulk_export_admission").unwrap();
         let load = handler.find("load_bounded(&fill_hash").unwrap();
         assert!(size_check < admission && admission < load);
         assert!(handler.contains("private, no-store"));
     }
 
     #[tokio::test]
-    async fn concurrent_archive_fills_share_one_parse_and_weighted_memory_is_bounded() {
+    async fn concurrent_archive_fills_share_one_parse() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
-
-        let admission = Arc::new(tokio::sync::Semaphore::new(AUDIT_MEMORY_UNITS));
-        let first = admission
-            .clone()
-            .try_acquire_many_owned(audit_admission_units(72 * 1024 * 1024))
-            .unwrap();
-        let second = admission
-            .clone()
-            .try_acquire_many_owned(audit_admission_units(72 * 1024 * 1024))
-            .unwrap();
-        assert!(admission
-            .clone()
-            .try_acquire_many_owned(audit_admission_units(1))
-            .is_err());
-        drop(first);
-        assert!(admission
-            .clone()
-            .try_acquire_many_owned(audit_admission_units(1))
-            .is_ok());
-        drop(second);
 
         let flights: &'static crate::utils::single_flight::SingleFlight<AuditProjectionFill> =
             Box::leak(Box::new(crate::utils::single_flight::SingleFlight::new()));

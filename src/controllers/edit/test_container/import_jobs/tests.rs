@@ -42,6 +42,23 @@ fn admission_and_workspace_limits_are_compile_time_bounded() {
 }
 
 #[test]
+fn zip_admission_is_durable_before_object_storage_and_worker_claim() {
+    let zip_source = include_str!("zip.rs");
+    let handler = zip_source.find("async fn enqueue_zip_owned(").unwrap();
+    let body = &zip_source[handler..];
+    let admission = body.find("begin_admitted(").unwrap();
+    let reservation = body.find("source_staged)").unwrap();
+    let commit = body.find(".commit()").unwrap();
+    let storage = body.find("stage_blob(").unwrap();
+    assert!(admission < reservation && reservation < commit && commit < storage);
+
+    let source = include_str!("../import_jobs.rs");
+    let claim = source.find("async fn claim_job(").unwrap();
+    let claim_body = &source[claim..source.find("fn decrypt_token(").unwrap()];
+    assert!(claim_body.contains("job.source_kind = 1 OR job.source_staged = TRUE"));
+}
+
+#[test]
 fn overload_is_immediate_and_carries_retry_after() {
     let response = busy();
     let expected = ADMISSION_RETRY_SECONDS.to_string();

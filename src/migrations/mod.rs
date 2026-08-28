@@ -187,6 +187,7 @@ mod m0216_solve_receipt_audit_retention;
 mod m0221_team_invite_reconcile_claims;
 mod m0226_ad_challenge_state_effects;
 mod m0227_challenge_update_operations;
+mod m0229_challenge_import_staging_admission;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -392,6 +393,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0221_team_invite_reconcile_claims::Migration),
             Box::new(m0226_ad_challenge_state_effects::Migration),
             Box::new(m0227_challenge_update_operations::Migration),
+            Box::new(m0229_challenge_import_staging_admission::Migration),
         ]
     }
 }
@@ -602,6 +604,7 @@ mod tests {
                 "m0221_team_invite_reconcile_claims",
                 "m0226_ad_challenge_state_effects",
                 "m0227_challenge_update_operations",
+                "m0229_challenge_import_staging_admission",
             ]
         );
     }

@@ -30,6 +30,8 @@ mod retention;
 use retention::release_terminal_sources;
 mod result;
 use result::{bounded_error, bounded_result};
+mod zip;
+pub(super) use zip::enqueue_zip;
 
 const SOURCE_ZIP: i16 = 0;
 const SOURCE_GIT: i16 = 1;
@@ -323,86 +325,6 @@ async fn coalesce_revision(
     Ok(false)
 }
 
-pub(super) async fn enqueue_zip(
-    st: &SharedState,
-    game_id: i32,
-    actor_user_id: Uuid,
-    operation_id: Uuid,
-    bytes: Vec<u8>,
-    policy: ImportPolicy,
-    upload_reservation: tokio::sync::SemaphorePermit<'static>,
-) -> AppResult<axum::response::Response> {
-    let st = st.clone();
-    tokio::spawn(async move {
-        // Once the body is complete, the operation owns both its bytes and the
-        // aggregate memory permit independently of the HTTP future. A client
-        // disconnect can neither orphan the stored blob nor free its budget
-        // while admission is still committing.
-        let _upload_reservation = upload_reservation;
-        enqueue_zip_owned(&st, game_id, actor_user_id, operation_id, bytes, policy).await
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("ZIP admission task failed: {error}")))?
-}
-
-async fn enqueue_zip_owned(
-    st: &SharedState,
-    game_id: i32,
-    actor_user_id: Uuid,
-    operation_id: Uuid,
-    bytes: Vec<u8>,
-    policy: ImportPolicy,
-) -> AppResult<axum::response::Response> {
-    let hash = sha256_hex(&bytes);
-    let source_key = match pending_submitter(policy) {
-        Some(submitter) => format!("zip:{hash}:pending:{submitter}"),
-        None => format!("zip:{hash}:trusted"),
-    };
-    let staged = crate::services::blob_refs::stage_blob(
-        st.pg(),
-        st.storage.as_ref(),
-        crate::services::blob_refs::scoped_operation_id(operation_id, "challenge-import-zip", 0),
-        &format!("challenge-import-zip:{game_id}:{operation_id}"),
-        Some(actor_user_id),
-        "challenge-import.zip",
-        &bytes,
-    )
-    .await?;
-    let admitted = begin_admitted(st, game_id, actor_user_id, operation_id, &source_key).await;
-    let mut transaction = match admitted {
-        Ok(Ok(transaction)) => transaction,
-        Ok(Err(job_id)) => return Ok(accepted(load_job_model(st, job_id).await?)),
-        Err(AppError::ServiceUnavailable(_)) => return Ok(busy()),
-        Err(error) => return Err(error),
-    };
-    let job_id = Uuid::new_v4();
-    let source_file_id =
-        crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
-    sqlx::query(
-        r#"INSERT INTO "ChallengeImportJobs"
-              (id, game_id, actor_user_id, operation_id, source_kind, import_policy,
-               source_key, source_file_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#,
-    )
-    .bind(job_id)
-    .bind(game_id)
-    .bind(actor_user_id)
-    .bind(operation_id)
-    .bind(SOURCE_ZIP)
-    .bind(policy_code(policy))
-    .bind(&source_key)
-    .bind(source_file_id)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    let _ = coalesce_revision(&mut transaction, job_id, game_id, SOURCE_ZIP, &source_key).await?;
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(accepted(load_job_model(st, job_id).await?))
-}
-
 pub(super) async fn enqueue_git(
     st: &SharedState,
     game_id: i32,
@@ -520,6 +442,7 @@ async fn claim_job(st: &SharedState, worker_id: Uuid) -> AppResult<Option<Claime
                   FROM "ChallengeImportJobs" job
                  WHERE job.coalesced_job_id IS NULL
                    AND job.attempts < 8
+                   AND (job.source_kind = 1 OR job.source_staged = TRUE)
                    AND (job.status = 0 OR (job.status = 1 AND job.lease_expires_at <= clock_timestamp()))
                  ORDER BY job.created_at, job.id
                  FOR UPDATE SKIP LOCKED
@@ -831,6 +754,17 @@ async fn worker_lane(st: SharedState, mut shutdown: tokio::sync::watch::Receiver
 }
 
 async fn sweep_expired_jobs(st: &SharedState) -> AppResult<usize> {
+    sqlx::query(
+        r#"UPDATE "ChallengeImportJobs"
+              SET status = 3,
+                  error = 'Challenge import source staging was interrupted.',
+                  updated_at = clock_timestamp()
+            WHERE source_kind = 0 AND source_staged = FALSE AND status = 0
+              AND updated_at <= clock_timestamp() - INTERVAL '16 minutes'"#,
+    )
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     sqlx::query(
         r#"UPDATE "ChallengeImportJobs"
               SET status = 3,

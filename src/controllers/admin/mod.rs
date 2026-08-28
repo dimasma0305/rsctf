@@ -23,6 +23,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use futures::StreamExt;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
     QuerySelect, Set,
@@ -474,6 +475,7 @@ const MAX_WRITEUP_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
 struct WriteupArchiveSource {
     hash: String,
     entry: String,
+    size: usize,
 }
 
 #[derive(sqlx::FromRow)]
@@ -485,9 +487,11 @@ struct WriteupArchiveRow {
     file_size: i64,
 }
 
-struct WriteupArchiveFile {
-    entry: String,
-    bytes: Vec<u8>,
+enum WriteupArchiveInput {
+    Start { entry: String, size: usize },
+    Chunk(bytes::Bytes),
+    End,
+    Failed(String),
 }
 
 type WriteupZipChunk = Result<bytes::Bytes, std::io::Error>;
@@ -541,6 +545,53 @@ impl Write for ZipStreamWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         self.send_buffer()
     }
+}
+
+fn write_streamed_writeup_zip(
+    output: tokio::sync::mpsc::Sender<WriteupZipChunk>,
+    mut input: tokio::sync::mpsc::Receiver<WriteupArchiveInput>,
+) -> Result<(), String> {
+    let writer = ZipStreamWriter::new(output);
+    let mut zip = zip::ZipWriter::new_stream(writer);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut remaining = None::<usize>;
+    while let Some(message) = input.blocking_recv() {
+        match message {
+            WriteupArchiveInput::Start { entry, size } if remaining.is_none() => {
+                zip.start_file(entry, options)
+                    .map_err(|error| format!("zip entry: {error}"))?;
+                remaining = Some(size);
+            }
+            WriteupArchiveInput::Chunk(chunk) => {
+                let Some(left) = remaining.as_mut() else {
+                    return Err("writeup bytes arrived outside a ZIP entry".to_string());
+                };
+                if chunk.len() > *left {
+                    return Err("writeup stream exceeded its declared size".to_string());
+                }
+                zip.write_all(&chunk)
+                    .map_err(|error| format!("zip write: {error}"))?;
+                *left -= chunk.len();
+            }
+            WriteupArchiveInput::End if remaining == Some(0) => remaining = None,
+            WriteupArchiveInput::End => {
+                return Err("writeup stream ended before its declared size".to_string())
+            }
+            WriteupArchiveInput::Failed(error) => return Err(error),
+            WriteupArchiveInput::Start { .. } => {
+                return Err("writeup streams overlapped ZIP entries".to_string())
+            }
+        }
+    }
+    if remaining.is_some() {
+        return Err("writeup stream closed inside a ZIP entry".to_string());
+    }
+    zip.finish()
+        .map_err(|error| format!("zip finish: {error}"))?
+        .into_inner()
+        .finish()
+        .map_err(|error| format!("zip stream: {error}"))
 }
 
 pub async fn download_all_writeups(
@@ -606,35 +657,18 @@ pub async fn download_all_writeups(
                 sanitize_entry(&row.team_name),
                 sanitize_entry(&row.file_name)
             ),
+            size: file_size,
         });
     }
 
-    let (file_sender, mut file_receiver) = tokio::sync::mpsc::channel::<WriteupArchiveFile>(1);
+    let (file_sender, file_receiver) = tokio::sync::mpsc::channel::<WriteupArchiveInput>(8);
     let (output_sender, output_receiver) = tokio::sync::mpsc::channel::<WriteupZipChunk>(8);
 
     let error_sender = output_sender.clone();
     let worker_permit = std::sync::Arc::clone(&permit);
     tokio::task::spawn_blocking(move || {
         let _permit = worker_permit;
-        let outcome = (|| -> Result<(), String> {
-            let writer = ZipStreamWriter::new(output_sender);
-            let mut zip = zip::ZipWriter::new_stream(writer);
-            let options = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated);
-            while let Some(file) = file_receiver.blocking_recv() {
-                zip.start_file(file.entry, options)
-                    .map_err(|error| format!("zip entry: {error}"))?;
-                zip.write_all(&file.bytes)
-                    .map_err(|error| format!("zip write: {error}"))?;
-            }
-            let writer = zip
-                .finish()
-                .map_err(|error| format!("zip finish: {error}"))?;
-            writer
-                .into_inner()
-                .finish()
-                .map_err(|error| format!("zip stream: {error}"))
-        })();
+        let outcome = write_streamed_writeup_zip(output_sender, file_receiver);
         if let Err(error) = outcome {
             let _ = error_sender.blocking_send(Err(std::io::Error::other(error)));
         }
@@ -645,29 +679,54 @@ pub async fn download_all_writeups(
     tokio::spawn(async move {
         let _permit = loader_permit;
         for source in sources {
-            let bytes = match storage
-                .load_bounded(&source.hash, crate::utils::upload::WRITEUP_FILE_BYTES)
+            let mut stream = match storage
+                .stream_range(&source.hash, 0..source.size as u64)
                 .await
             {
-                Ok(bytes) => bytes,
+                Ok(stream) => stream,
                 Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        hash = %source.hash,
-                        "skipping unavailable writeup in archive"
-                    );
-                    continue;
+                    let _ = file_sender
+                        .send(WriteupArchiveInput::Failed(format!(
+                            "writeup {} is unavailable: {error}",
+                            source.hash
+                        )))
+                        .await;
+                    return;
                 }
             };
             if file_sender
-                .send(WriteupArchiveFile {
+                .send(WriteupArchiveInput::Start {
                     entry: source.entry,
-                    bytes,
+                    size: source.size,
                 })
                 .await
                 .is_err()
             {
-                break;
+                return;
+            }
+            while let Some(chunk) = stream.next().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        let _ = file_sender
+                            .send(WriteupArchiveInput::Failed(format!(
+                                "writeup {} stream failed: {error}",
+                                source.hash
+                            )))
+                            .await;
+                        return;
+                    }
+                };
+                if file_sender
+                    .send(WriteupArchiveInput::Chunk(chunk))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            if file_sender.send(WriteupArchiveInput::End).await.is_err() {
+                return;
             }
         }
     });
@@ -715,28 +774,41 @@ mod writeup_archive_tests {
     fn writeup_archive_admits_before_any_projection_or_blob_read() {
         let source = include_str!("mod.rs");
         let handler = source.find("pub async fn download_all_writeups(").unwrap();
-        let body = &source[handler..];
+        let end = source[handler..].find("fn sanitize_entry(").unwrap() + handler;
+        let body = &source[handler..end];
         let admission = body.find("bulk_export_admission").unwrap();
         let projection = body.find("query_as::<_, WriteupArchiveRow>").unwrap();
-        let blob_read = body.find("load_bounded").unwrap();
+        let blob_read = body.find("stream_range").unwrap();
         assert!(admission < projection);
         assert!(admission < blob_read);
+        assert!(!body.contains("load_bounded"));
     }
 
     #[test]
     fn streamed_writeup_zip_is_valid_without_buffering_the_archive() {
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<WriteupZipChunk>(8);
+        let (input_sender, input_receiver) = tokio::sync::mpsc::channel(8);
+        let (output_sender, mut output_receiver) = tokio::sync::mpsc::channel::<WriteupZipChunk>(8);
+        input_sender
+            .blocking_send(WriteupArchiveInput::Start {
+                entry: "team-writeup.pdf".into(),
+                size: 9,
+            })
+            .unwrap();
+        input_sender
+            .blocking_send(WriteupArchiveInput::Chunk(bytes::Bytes::from_static(
+                b"%PDF-test",
+            )))
+            .unwrap();
+        input_sender
+            .blocking_send(WriteupArchiveInput::End)
+            .unwrap();
+        drop(input_sender);
         let worker = std::thread::spawn(move || {
-            let writer = ZipStreamWriter::new(sender);
-            let mut zip = zip::ZipWriter::new_stream(writer);
-            zip.start_file("team-writeup.pdf", zip::write::SimpleFileOptions::default())
-                .unwrap();
-            zip.write_all(b"%PDF-test").unwrap();
-            zip.finish().unwrap().into_inner().finish().unwrap();
+            write_streamed_writeup_zip(output_sender, input_receiver).unwrap();
         });
 
         let mut archive_bytes = Vec::new();
-        while let Some(chunk) = receiver.blocking_recv() {
+        while let Some(chunk) = output_receiver.blocking_recv() {
             archive_bytes.extend_from_slice(&chunk.unwrap());
         }
         worker.join().unwrap();
@@ -749,6 +821,27 @@ mod writeup_archive_tests {
             .read_to_end(&mut contents)
             .unwrap();
         assert_eq!(contents, b"%PDF-test");
+    }
+
+    #[test]
+    fn streamed_writeup_zip_rejects_declared_size_mismatches() {
+        let (input_sender, input_receiver) = tokio::sync::mpsc::channel(8);
+        let (output_sender, _output_receiver) = tokio::sync::mpsc::channel(8);
+        input_sender
+            .blocking_send(WriteupArchiveInput::Start {
+                entry: "writeup.pdf".into(),
+                size: 2,
+            })
+            .unwrap();
+        input_sender
+            .blocking_send(WriteupArchiveInput::Chunk(bytes::Bytes::from_static(
+                b"too long",
+            )))
+            .unwrap();
+        drop(input_sender);
+        assert!(write_streamed_writeup_zip(output_sender, input_receiver)
+            .unwrap_err()
+            .contains("declared size"));
     }
 
     #[test]

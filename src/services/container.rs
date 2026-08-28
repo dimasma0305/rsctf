@@ -53,6 +53,7 @@ use crate::utils::enums::NetworkMode;
 use crate::utils::error::{AppError, AppResult};
 mod backend;
 mod docker;
+mod docker_change_api;
 mod logging;
 mod naming;
 mod policy;
@@ -821,14 +822,12 @@ impl ContainerManager for DockerContainerManager {
             .id
             .as_deref()
             .ok_or_else(|| AppError::internal("inspected container has no backend identity"))?;
-        let changes = docker.container_changes(canonical_id).await.map_err(|e| {
-            if is_not_found(&e) {
-                AppError::not_found(format!("container not found: {id}"))
-            } else {
-                AppError::internal(format!("failed to read container changes: {e}"))
-            }
-        })?;
-        Ok(map_docker_changes_bounded(changes.unwrap_or_default()))
+        // Bollard's convenience API materializes the complete attacker-sized
+        // JSON response. The narrow daemon client cancels at a fixed byte cap
+        // before deserializing, then this mapping applies the entry cap.
+        let changes =
+            docker_change_api::container_changes(self.endpoint.as_deref(), canonical_id).await?;
+        Ok(map_docker_changes_bounded(changes))
     }
 
     async fn read_file(&self, id: &str, path: &str, limit: usize) -> AppResult<ContainerFile> {
