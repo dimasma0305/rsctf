@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import type { LogMessageModel } from '../Api'
 import {
+  ADMIN_LOG_PAGE_SIZE,
   adminLogFilterScope,
   adminLogIdentity,
   adminLogMatchesQuery,
@@ -11,10 +12,11 @@ import {
   boundAdminLogRows,
   compareAdminLogsNewestFirst,
   MAX_BUFFERED_ADMIN_LOGS,
+  MAX_VISIBLE_ADMIN_LOGS,
   normalizeAdminLogSearch,
   receiveAdminLog,
 } from './AdminLogFeed'
-import { prependUniqueBoundedRow } from './FeedReconciliation'
+import { mergeUniqueRows, prependUniqueBoundedRow } from './FeedReconciliation'
 import { currentListSnapshotRows } from './LatestRequest'
 
 const log = (id: number, overrides: Partial<LogMessageModel> = {}): LogMessageModel => ({
@@ -89,6 +91,22 @@ test('five thousand admin pushes retain fifty unique stable ids', () => {
   )
   assert.equal(buffered.filter(({ id }) => id === 5_000).length, 1)
   assert.equal(buffered[0].msg, 'refreshed')
+})
+
+test('admin page one renders one page without shrinking the live recovery buffer', () => {
+  const buffered = Array.from({ length: MAX_BUFFERED_ADMIN_LOGS }, (_, index) => log(ADMIN_LOG_PAGE_SIZE + index + 1))
+  const visible = mergeUniqueRows(
+    buffered,
+    Array.from({ length: ADMIN_LOG_PAGE_SIZE }, (_, index) => log(index + 1)),
+    adminLogIdentity,
+    MAX_VISIBLE_ADMIN_LOGS
+  )
+    .sort(compareAdminLogsNewestFirst)
+    .slice(0, ADMIN_LOG_PAGE_SIZE)
+
+  assert.equal(visible.length, ADMIN_LOG_PAGE_SIZE, 'page one must render one page, not both live and HTTP rows')
+  assert.equal(buffered.length, MAX_BUFFERED_ADMIN_LOGS, 'the render cap must not shrink the live recovery buffer')
+  assert.deepEqual([visible[0].id, visible.at(-1)?.id], [100, 51])
 })
 
 test('more than fifty unrelated pushes cannot evict a matching live row', () => {

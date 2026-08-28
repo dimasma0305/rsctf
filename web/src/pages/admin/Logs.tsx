@@ -166,9 +166,9 @@ const Logs: FC = () => {
   const liveRows = currentListSnapshotRows(liveScope, newLogs.current) ?? []
   const bufferedLogs = queryReady && activePage === 1 ? boundAdminLogRows(liveRows, query) : []
   const snapshotLogs = (logs ?? []).filter((item) => adminLogMatchesQuery(item, query))
-  const visibleLogs = mergeUniqueRows(bufferedLogs, snapshotLogs, adminLogIdentity, MAX_VISIBLE_ADMIN_LOGS).sort(
-    compareAdminLogsNewestFirst
-  )
+  const visibleLogs = mergeUniqueRows(bufferedLogs, snapshotLogs, adminLogIdentity, MAX_VISIBLE_ADMIN_LOGS)
+    .sort(compareAdminLogsNewestFirst)
+    .slice(0, ADMIN_LOG_PAGE_SIZE)
 
   const rows = visibleLogs.map((item, i) => (
     <Table.Tr

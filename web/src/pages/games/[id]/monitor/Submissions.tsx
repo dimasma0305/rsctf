@@ -302,7 +302,7 @@ const Submissions: FC = () => {
     activePage === 1 ? unreconciledMonitorRows(filteredSubs, submissions ?? [], submissionMonitorIdentity) : []
   const visibleSubmissions =
     activePage === 1
-      ? mergeSubmissionBuffer(bufferedSubmissions, submissions ?? [], MAX_BUFFERED_SUBMISSIONS)
+      ? mergeSubmissionBuffer(bufferedSubmissions, submissions ?? [], ITEM_COUNT_PER_PAGE)
       : (submissions ?? [])
 
   const rows = visibleSubmissions.map((item, i) => (

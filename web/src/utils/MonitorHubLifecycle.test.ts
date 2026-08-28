@@ -118,7 +118,7 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
       assert.match(source, /submissionMatchesMonitorFilter\(item, type, debouncedSearch\)/, path)
       assert.match(
         source,
-        /mergeSubmissionBuffer\(bufferedSubmissions, submissions \?\? \[\], MAX_BUFFERED_SUBMISSIONS\)/,
+        /mergeSubmissionBuffer\(bufferedSubmissions, submissions \?\? \[\], ITEM_COUNT_PER_PAGE\)/,
         path
       )
       assert.match(source, /key=\{item\.id\}/, path)
@@ -711,6 +711,16 @@ test('submission realtime rows remain deduplicated and capped through 5k sustain
   )
   assert.equal(buffered.length, 500)
   assert.equal(buffered[0].answer, 'updated duplicate')
+})
+
+test('submission page one renders fifty rows while recovery retains five hundred', () => {
+  const buffered = Array.from({ length: 500 }, (_, index) => monitorSubmission(index + 1))
+  const snapshot = Array.from({ length: 50 }, (_, index) => monitorSubmission(501 + index))
+  const visible = mergeSubmissionBuffer(buffered, snapshot, 50)
+
+  assert.equal(visible.length, 50, 'page one must render one page, not the entire recovery buffer')
+  assert.equal(buffered.length, 500, 'the page cap must not shrink reconnect recovery state')
+  assert.deepEqual([visible[0].cursor, visible.at(-1)?.cursor], [550, 501])
 })
 
 test('submission live rows apply the active result and normalized search filters', () => {

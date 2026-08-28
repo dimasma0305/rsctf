@@ -82,6 +82,10 @@ test('the admin Logs page uses stable-id bounded reconciliation and React keys',
   assert.match(source, /receiveAdminLog\(message, liveRows, query\)/)
   assert.match(feedSource, /prependUniqueBoundedRow\([\s\S]*?MAX_BUFFERED_ADMIN_LOGS/)
   assert.match(source, /mergeUniqueRows\([\s\S]*?MAX_VISIBLE_ADMIN_LOGS/)
+  assert.match(
+    source,
+    /mergeUniqueRows\([\s\S]*?MAX_VISIBLE_ADMIN_LOGS\)[\s\S]*?\.sort\(compareAdminLogsNewestFirst\)[\s\S]*?\.slice\(0, ADMIN_LOG_PAGE_SIZE\)/
+  )
   assert.match(source, /key=\{item\.id\}/)
   assert.doesNotMatch(source, /key=\{`\$\{item\.time\}@\$\{i\}`\}/)
 })
