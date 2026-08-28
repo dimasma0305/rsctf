@@ -56,6 +56,7 @@ struct SelectedChallenge {
     deletion_pending: bool,
     review_status: i16,
     has_flag: bool,
+    ad_self_hosted: bool,
 }
 
 fn validate_request(request: &mut BulkChallengeMutationRequest) -> AppResult<()> {
@@ -222,7 +223,8 @@ async fn complete_desired_state(
                   challenge.is_enabled, challenge.deletion_pending,
                   challenge.review_status,
                   EXISTS (SELECT 1 FROM "FlagContexts" flag
-                           WHERE flag.challenge_id = challenge.id) AS has_flag
+                           WHERE flag.challenge_id = challenge.id) AS has_flag,
+                  challenge.ad_self_hosted
              FROM "GameChallenges" challenge
             WHERE challenge.game_id = $1 AND challenge.id = ANY($2)
             ORDER BY challenge.id
@@ -240,6 +242,7 @@ async fn complete_desired_state(
         .collect::<std::collections::HashMap<_, _>>();
     let mut changed_ids = Vec::new();
     let mut changed_titles = Vec::new();
+    let mut changed_runtimes = Vec::new();
     let mut outcomes = Vec::with_capacity(request.challenge_ids.len());
     for challenge_id in &request.challenge_ids {
         let Some(row) = by_id.get(challenge_id) else {
@@ -280,6 +283,7 @@ async fn complete_desired_state(
         } else {
             changed_ids.push(*challenge_id);
             changed_titles.push(row.title.clone());
+            changed_runtimes.push((row.id, row.challenge_type, row.ad_self_hosted));
             outcomes.push(BulkChallengeOutcome {
                 challenge_id: *challenge_id,
                 status: "Changed".into(),
@@ -338,24 +342,26 @@ async fn complete_desired_state(
     }
     flush_game_scoreboards(st, game_id).await;
     if desired && game_state.2 && !changed_titles.is_empty() {
-        let notice = game_notice::ActiveModel {
-            game_id: Set(game_id),
-            notice_type: Set(NoticeType::NewChallenge),
-            values: Set(serde_json::json!(changed_titles)),
-            publish_time_utc: Set(Utc::now()),
-            ..Default::default()
-        }
-        .insert(&st.db)
+        let values = serde_json::json!(changed_titles);
+        let notice = sqlx::query_as::<_, (i32, DateTime<Utc>)>(
+            r#"INSERT INTO "GameNotices" (game_id, "Type", values, publish_time_utc)
+               VALUES ($1, $2, $3, clock_timestamp())
+               RETURNING id, publish_time_utc"#,
+        )
+        .bind(game_id)
+        .bind(NoticeType::NewChallenge as i16)
+        .bind(&values)
+        .fetch_one(st.pg())
         .await;
         match notice {
-            Ok(notice) => st.publish_event(
+            Ok((notice_id, publish_time_utc)) => st.publish_event(
                 "ReceivedGameNotice",
                 Some(game_id),
                 serde_json::json!({
-                    "type": notice.notice_type,
-                    "values": notice.values,
-                    "id": notice.id,
-                    "time": notice.publish_time_utc,
+                    "type": NoticeType::NewChallenge,
+                    "values": values,
+                    "id": notice_id,
+                    "time": publish_time_utc,
                 })
                 .to_string(),
             ),
@@ -365,32 +371,36 @@ async fn complete_desired_state(
         }
     }
     if !desired && !changed_ids.is_empty() {
-        let challenges = game_challenge::Entity::find()
-            .filter(game_challenge::Column::Id.is_in(changed_ids))
-            .all(&st.db)
-            .await?;
         let background = st.clone();
         tokio::spawn(async move {
-            for challenge in challenges {
-                if challenge.challenge_type.is_container() {
-                    if let Err(error) = super::lifecycle::destroy_challenge_containers(
+            for (challenge_id, challenge_type, ad_self_hosted) in changed_runtimes {
+                let is_container = matches!(
+                    challenge_type,
+                    value if value == ChallengeType::StaticContainer as i16
+                        || value == ChallengeType::DynamicContainer as i16
+                        || value == ChallengeType::AttackDefense as i16
+                        || value == ChallengeType::KingOfTheHill as i16
+                );
+                if is_container {
+                    if let Err(error) = super::lifecycle::destroy_challenge_containers_by_id(
                         &background,
-                        &challenge,
+                        game_id,
+                        challenge_id,
                         true,
                         false,
                     )
                     .await
                     {
-                        tracing::warn!(%error, challenge_id = challenge.id, "bulk disable cleanup deferred");
+                        tracing::warn!(%error, challenge_id, "bulk disable cleanup deferred");
                     }
                 }
-                if challenge.ad_self_hosted {
+                if ad_self_hosted {
                     if let Err(error) = background
                         .byoc
-                        .disconnect_challenge(&background.db, challenge.id)
+                        .disconnect_challenge(&background.db, challenge_id)
                         .await
                     {
-                        tracing::warn!(%error, challenge_id = challenge.id, "bulk BYOC cleanup deferred");
+                        tracing::warn!(%error, challenge_id, "bulk BYOC cleanup deferred");
                     }
                 }
             }

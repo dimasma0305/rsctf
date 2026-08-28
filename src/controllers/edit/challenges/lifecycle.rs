@@ -135,6 +135,32 @@ pub(crate) async fn destroy_challenge_containers(
     require_inactive: bool,
     strict: bool,
 ) -> AppResult<()> {
+    destroy_challenge_containers_by_id(
+        st,
+        challenge.game_id,
+        challenge.id,
+        require_inactive,
+        strict,
+    )
+    .await
+}
+
+struct ChallengeTeardownIdentity {
+    id: i32,
+    game_id: i32,
+}
+
+pub(crate) async fn destroy_challenge_containers_by_id(
+    st: &SharedState,
+    game_id: i32,
+    challenge_id: i32,
+    require_inactive: bool,
+    strict: bool,
+) -> AppResult<()> {
+    let challenge = ChallengeTeardownIdentity {
+        id: challenge_id,
+        game_id,
+    };
     if !teardown_allowed(st.pg(), challenge.id, true).await {
         if strict {
             return Err(AppError::conflict(
