@@ -129,9 +129,10 @@ test('team join retains input on validation and server failures and admits one s
     assert.deepEqual(actions, [])
 
     acceptMode = 'pending'
-    act(() => {
+    await act(async () => {
       form()?.dispatchEvent(new browser.Event('submit', { bubbles: true, cancelable: true }))
       form()?.dispatchEvent(new browser.Event('submit', { bubbles: true, cancelable: true }))
+      await flush()
     })
     assert.equal(acceptAttempts, 2)
     assert.equal(submit()?.disabled, true)
@@ -256,8 +257,9 @@ test('team join clears a failed or pending attempt only when the player intentio
     })
 
     acceptMode = 'pending'
-    act(() => {
+    await act(async () => {
       form()?.dispatchEvent(new browser.Event('submit', { bubbles: true, cancelable: true }))
+      await flush()
     })
     assert.equal(acceptAttempts, 2)
     await close()

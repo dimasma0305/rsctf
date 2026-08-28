@@ -2,9 +2,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const inspector = readFileSync(new URL('../components/traffic/FlowInspector.tsx', import.meta.url), 'utf8')
-const detail = readFileSync(new URL('../components/traffic/FlowDetail.tsx', import.meta.url), 'utf8')
-const api = readFileSync(new URL('../Api.ts', import.meta.url), 'utf8')
+const inspector = readFileSync('src/components/traffic/FlowInspector.tsx', 'utf8')
+const detail = readFileSync('src/components/traffic/FlowDetail.tsx', 'utf8')
+const api = readFileSync('src/Api.ts', 'utf8')
 
 test('traffic inspector aborts superseded work and preserves its last good result', () => {
   assert.match(inspector, /new AbortController\(\)/)

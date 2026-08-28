@@ -113,6 +113,11 @@ export const TeamJoinModal: FC<TeamJoinModalProps> = ({
         },
         onRejected: (error) => {
           if (generation !== attemptGeneration.current) return
+          // Publish the retryable state only after releasing the synchronous
+          // owner, so a player can act on the visible error immediately.
+          attemptAbort.current = null
+          attemptInFlight.current = false
+          setJoining(false)
           setJoinError(tryGetErrorMsg(error, t))
           showErrorMsg(error, t)
         },

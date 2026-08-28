@@ -98,7 +98,7 @@ test('Settings exposes OAuth-only registration with safe provider guidance', () 
 
   assert.match(settings, /allowPasswordRegistration/)
   assert.match(settings, /oauthOnlyRegistrationNeedsAttention/)
-  assert.match(settings, /await mutateConfig\(\)/)
+  assert.match(settings, /Promise\.allSettled\(\[mutate\(\), mutateConfig\(\), mutateCaptchaConfig\(\)\]\)/)
   assert.match(settings, /\/api\/oauth\/google\/callback/)
   assert.match(settings, /\/api\/oauth\/discord\/callback/)
   assert.match(locale.content.settings.account.allow_password_registration.description, /Existing password accounts/i)

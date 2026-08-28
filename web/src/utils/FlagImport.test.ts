@@ -16,6 +16,6 @@ test('flag imports bound rows and UTF-8 field bytes before sending', () => {
 })
 
 test('active builds poll only the compact status owner', () => {
-  assert.match(detail, /editGetChallengeBuildStatus/)
+  assert.match(detail, /useEditGetChallengeBuildStatus/)
   assert.doesNotMatch(detail, /setInterval\(\(\) => \{\s*mutate\(\)/)
 })
