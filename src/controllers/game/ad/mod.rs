@@ -44,7 +44,7 @@ use crate::models::data::{
 };
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType, ParticipationStatus};
 use crate::utils::error::{AppError, AppResult};
-use crate::utils::shared::{MessageResponse, RequestResponse};
+use crate::utils::shared::RequestResponse;
 
 // ---------------------------------------------------------------------------
 // Router — paths match Api.ts verbatim (mixed case, case-sensitive).

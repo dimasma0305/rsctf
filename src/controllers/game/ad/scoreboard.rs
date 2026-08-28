@@ -1,6 +1,6 @@
 //! Player-facing A&D scoreboard + live team state + self-service reset.
 
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 
 use super::*;
 

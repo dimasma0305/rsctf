@@ -528,9 +528,9 @@ pub async fn reset_password(
     .await;
     match reserved {
         Ok(result) if result.rows_affected() == 1 => {}
-        Ok(_) => return Err(AppError::TooManyRequests),
+        Ok(_) => return Err(AppError::too_many_requests(1)),
         Err(error) if crate::utils::error::is_unique_violation(&error) => {
-            return Err(AppError::TooManyRequests);
+            return Err(AppError::too_many_requests(1));
         }
         Err(error) => return Err(AppError::internal(error.to_string())),
     }

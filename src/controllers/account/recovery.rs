@@ -1,7 +1,7 @@
 //! Account recovery / email-verification / password-reset / mail-change confirm
 //! — split from account/mod.rs to stay under the 1000-line rule.
 use super::*;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 const RECOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -462,8 +462,9 @@ pub async fn password_reset(
     }
 
     let token_hash = Sha256::digest(model.r_token.as_bytes()).to_vec();
-    let mut digest_builder = Hmac::<Sha256>::new_from_slice(st.config.jwt_secret.as_bytes())
-        .map_err(|_| AppError::internal("initialize password reset request digest"))?;
+    let mut digest_builder =
+        <Hmac<Sha256> as KeyInit>::new_from_slice(st.config.jwt_secret.as_bytes())
+            .map_err(|_| AppError::internal("initialize password reset request digest"))?;
     Mac::update(&mut digest_builder, b"rsctf:password-reset-attempt:v1\0");
     Mac::update(&mut digest_builder, model.email.as_bytes());
     Mac::update(&mut digest_builder, model.password.as_bytes());
@@ -602,7 +603,7 @@ pub async fn password_reset(
             return Ok(resp);
         }
         if lease_live {
-            return Err(AppError::TooManyRequests);
+            return Err(AppError::too_many_requests(1));
         }
         if !ticket_claimable {
             return Err(AppError::bad_request("Invalid or expired reset token"));

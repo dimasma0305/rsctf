@@ -353,7 +353,7 @@ pub async fn observer_context(
     headers: HeaderMap,
 ) -> AppResult<Response> {
     let Ok(_permit) = OBSERVER_CONTEXT_ADMISSION.try_acquire() else {
-        return Ok(retry_after_response(AppError::TooManyRequests, 1));
+        return Ok(retry_after_response(AppError::too_many_requests(1), 1));
     };
     let body = match tokio::time::timeout(
         OBSERVER_CONTEXT_DEADLINE,

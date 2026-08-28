@@ -211,12 +211,15 @@ async fn run_durable_challenge_build(
     .fetch_optional(st.pg())
     .await;
     let mut outcome = match current {
-        Ok(Some((container_image, original_archive_blob_path, build_context_subdir)))
-            if (BuildFingerprint {
-                container_image,
-                original_archive_blob_path,
-                build_context_subdir,
-            }) == requested =>
+        Ok(Some((
+            ref container_image,
+            ref original_archive_blob_path,
+            ref build_context_subdir,
+        ))) if (BuildFingerprint {
+            container_image: container_image.clone(),
+            original_archive_blob_path: original_archive_blob_path.clone(),
+            build_context_subdir: build_context_subdir.clone(),
+        }) == requested =>
         {
             build_challenge_image(st, challenge).await
         }

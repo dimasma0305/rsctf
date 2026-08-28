@@ -84,7 +84,7 @@ pub async fn try_acquire_scopes(
     };
     let local = semaphore
         .try_acquire_owned()
-        .map_err(|_| AppError::TooManyRequests)?;
+        .map_err(|_| AppError::too_many_requests(1))?;
     let mut scope_hashes = scopes
         .iter()
         .map(|scope| Sha256::digest(scope.as_bytes()).to_vec())
@@ -124,7 +124,7 @@ pub async fn try_acquire_scopes(
                 .rollback()
                 .await
                 .map_err(|error| AppError::internal(error.to_string()))?;
-            return Err(AppError::TooManyRequests);
+            return Err(AppError::too_many_requests(1));
         }
     }
     transaction

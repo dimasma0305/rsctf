@@ -136,6 +136,7 @@ fn replay_clone_operation(
     }
 }
 
+#[cfg(test)]
 pub(super) fn apply_clone_challenge_defaults(clone: &mut game_challenge::ActiveModel) {
     clone.enable_shared_container = Set(false);
     clone.score_curve = Set(ScoreCurve::Standard);

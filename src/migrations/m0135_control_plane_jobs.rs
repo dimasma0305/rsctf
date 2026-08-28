@@ -94,14 +94,11 @@ CREATE INDEX IF NOT EXISTS ix_variant_generation_claim_recovery
     WHERE completed_at_utc IS NULL;
 "#;
 
+#[derive(DeriveMigrationName)]
 pub struct Migration;
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
-    fn name(&self) -> &str {
-        "m0135_control_plane_jobs"
-    }
-
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager.get_connection().execute_unprepared(UP_SQL).await?;
         Ok(())

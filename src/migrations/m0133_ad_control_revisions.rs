@@ -31,14 +31,11 @@ BEGIN
 END $$;
 "#;
 
+#[derive(DeriveMigrationName)]
 pub struct Migration;
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
-    fn name(&self) -> &str {
-        "m0133_ad_control_revisions"
-    }
-
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager.get_connection().execute_unprepared(UP_SQL).await?;
         Ok(())

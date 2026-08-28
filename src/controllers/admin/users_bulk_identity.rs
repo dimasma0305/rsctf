@@ -444,6 +444,7 @@ async fn unique_user_name(
     }
 }
 
+#[cfg(test)]
 pub(super) async fn provision_import_user(
     pool: &sqlx::PgPool,
     write: ImportUserWrite<'_>,

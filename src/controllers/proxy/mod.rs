@@ -37,7 +37,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
@@ -46,8 +46,6 @@ use axum::Router;
 use sea_orm::EntityTrait;
 use tokio::net::TcpStream;
 use uuid::Uuid;
-
-use futures::SinkExt;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};

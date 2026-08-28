@@ -403,7 +403,7 @@ pub async fn submit_observation(
     body: Bytes,
 ) -> AppResult<Response> {
     let Ok(_permit) = OBSERVATION_ADMISSION.try_acquire() else {
-        return Ok(retry_after_response(AppError::TooManyRequests, 1));
+        return Ok(retry_after_response(AppError::too_many_requests(1), 1));
     };
     let accepted = match tokio::time::timeout(
         OBSERVATION_DEADLINE,
