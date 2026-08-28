@@ -1,10 +1,8 @@
 //! Player-facing A&D scoreboard + live team state + self-service reset.
 
-use axum::http::header;
 use axum::response::{IntoResponse, Response};
 
 use super::*;
-use crate::services::container::ContainerResourceLimits;
 
 /// Self-service reset cooldown fallback (seconds), used only when the game row
 /// leaves `ad_reset_cooldown_minutes` null. The live value is
@@ -652,218 +650,79 @@ pub async fn state(
 /// restarts their own service container: destroy it, launch a fresh one with a
 /// newly-planted flag, and stamp the self-reset cooldown. Requires the challenge
 /// to allow self-reset and the cooldown to have elapsed.
+
 pub async fn reset_service(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, ad_team_service_id)): Path<(i32, i32)>,
-) -> AppResult<Response> {
+    headers: HeaderMap,
+) -> AppResult<(
+    StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
     let part = resolve_participation(&st, &user, id).await?;
-    let initial = ad_team_service::Entity::find_by_id(ad_team_service_id)
+    let service = ad_team_service::Entity::find_by_id(ad_team_service_id)
         .one(&st.db)
         .await?
-        .ok_or_else(|| AppError::not_found("Service not found"))?;
-    if initial.participation_id != part.id {
-        return Err(AppError::Forbidden);
-    }
-    let lock_key = format!(
-        "ad-service:{}:{}",
-        initial.participation_id, initial.challenge_id
-    );
-    let _local = crate::utils::single_flight::coalesce(&lock_key).await;
-    let roster_key = crate::services::live_roster::lock_key(part.team_id);
-    let mut distributed =
-        crate::utils::single_flight::PgAdvisoryLock::acquire_provisioning_below_shared(
-            st.pg(),
-            &[roster_key],
-            &lock_key,
-        )
-        .await?;
-    if !crate::services::live_roster::participation_caller_is_live_on(
-        &mut **distributed.transaction_mut(),
-        user.id,
-        &user.security_stamp,
-        id,
-        part.team_id,
-        part.id,
-        true,
-    )
-    .await?
-    {
-        distributed.release().await?;
-        return Err(AppError::Forbidden);
-    }
-    let svc = ad_team_service::Entity::find_by_id(ad_team_service_id)
-        .one(&st.db)
-        .await?
-        .filter(|service| service.participation_id == part.id && service.game_id == id)
-        .ok_or_else(|| AppError::not_found("Service not found"))?;
-    let part = participation::Entity::find()
-        .filter(participation::Column::Id.eq(part.id))
-        .filter(participation::Column::GameId.eq(id))
-        .filter(participation::Column::Status.eq(ParticipationStatus::Accepted))
-        .one(&st.db)
-        .await?
+        .filter(|service| service.game_id == id && service.participation_id == part.id)
         .ok_or(AppError::Forbidden)?;
-    let challenge = game_challenge::Entity::find()
-        .filter(game_challenge::Column::Id.eq(svc.challenge_id))
-        .filter(game_challenge::Column::GameId.eq(id))
-        .filter(game_challenge::Column::IsEnabled.eq(true))
-        .filter(game_challenge::Column::ReviewStatus.eq(ChallengeReviewStatus::Active))
-        .filter(game_challenge::Column::ChallengeType.eq(ChallengeType::AttackDefense))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Active A&D challenge not found"))?;
-    if !challenge.ad_allow_self_reset {
-        return Err(AppError::bad_request(
-            "Self-reset is not allowed for this service",
-        ));
-    }
-    // Self-hosted / BYOC services run in the team's own container, not one the
-    // platform can relaunch — refuse rather than destroy a container we don't own.
-    if challenge.ad_self_hosted {
-        return Err(AppError::bad_request(
-            "Self-hosted services cannot be reset from the platform",
-        ));
-    }
-    let game = game::Entity::find_by_id(id)
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::not_found("Game not found"))?;
-    // Reset only inside the game window. A post-game reset would recreate a
-    // container for a finished game and race the end-of-game teardown; a
-    // pre-start reset has nothing to reset (mirrors RSCTF's ResetService).
-    let now = Utc::now();
-    if now < game.start_time_utc || now >= game.end_time_utc {
-        return Err(AppError::bad_request(
-            "Reset is only available while the game is running",
-        ));
-    }
-    let image = crate::services::challenge_images::runtime_image(&st, &challenge)?;
-    let reset_cooldown_secs = game
-        .ad_reset_cooldown_minutes
-        .map(|m| m as i64 * 60)
-        .unwrap_or(RESET_COOLDOWN_SECS_DEFAULT);
-    if let Some(last) = svc.last_reset_at {
-        let remaining = reset_cooldown_secs - (Utc::now() - last).num_seconds();
-        if remaining > 0 {
-            // RSCTF answers a cooldown rejection with 429 TooManyRequests + a
-            // Retry-After header (whole seconds), not a plain 400 — mirror that so
-            // scripted callers can honor the backoff.
-            let mut resp =
-                MessageResponse::new(format!("Cooldown active; try again in {remaining}s"), 429)
-                    .into_response();
-            if let Ok(val) = axum::http::HeaderValue::from_str(&remaining.to_string()) {
-                resp.headers_mut().insert(header::RETRY_AFTER, val);
-            }
-            return Ok(resp);
-        }
-    }
-
-    // Serialize with checker persistence, settle an unresolved current sample as
-    // explicit reset downtime, and blank the old endpoint before Docker work.
-    // Once rounds exist, the persisted AdFlags row is the only flag source.
-    let replacement = crate::services::ad_engine::prepare_service_reset(
-        &st.db,
+    let operation_id = crate::controllers::edit::control_jobs::operation_id(&headers)?;
+    let input = serde_json::json!({
+        "serviceId": service.id,
+        "participationId": service.participation_id,
+        "expectedBackendId": service.container_id,
+        "playerPolicy": true,
+    });
+    let fingerprint = crate::controllers::edit::control_jobs::fingerprint(&input)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::AdReset,
+        &format!("ad-service:{}", service.id),
         id,
-        svc.id,
-        "service reset before checker completion",
+        Some(service.challenge_id),
+        operation_id,
+        &fingerprint,
+        input,
     )
     .await?;
-    // Revoke the endpoint before teardown so a recycled Docker address cannot
-    // remain reachable through this game's old policy.
-    crate::services::ad_vpn::deactivate_team_service(&st.db, svc.id).await?;
-    // Keep the persisted backend identity retryable until capture is fenced and
-    // the runtime confirms destruction.
-    if let Some(cid) = &replacement.retired_container_id {
-        crate::services::traffic::destroy_container_after_capture_fence(&st, cid).await?;
-    }
-    let prepared_round_id = replacement.prepared_round_id;
-    let flag = replacement.current_flag.unwrap_or_else(|| {
-        let salt = crate::utils::flag_generator::team_hash_salt(&game.private_key);
-        let team_hash =
-            crate::utils::flag_generator::team_challenge_hash(&salt, challenge.id, &part.token);
-        crate::utils::flag_generator::generate_flag(challenge.flag_template.as_deref(), &team_hash)
-    });
-    let info = st
-        .containers
-        .create(crate::services::container::ContainerSpec::ad_service(
-            image,
-            ContainerResourceLimits {
-                memory_limit: challenge.memory_limit.unwrap_or(256),
-                cpu_count: challenge.cpu_count.unwrap_or(1),
-                storage_limit: crate::services::container::storage_limit_or_default(
-                    challenge.storage_limit,
-                ),
-            },
-            challenge.expose_port.unwrap_or(80),
-            part.team_id,
-            challenge.ad_allow_egress,
-            flag,
-        ))
-        .await?;
+    crate::services::control_jobs::kick(st);
+    Ok((StatusCode::ACCEPTED, RequestResponse::ok(job)))
+}
 
-    let backend_id = info.id.clone();
-    let retained = crate::services::ad::service_lifecycle::retain_created_backend_identity(
+pub async fn reset_job_status(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((id, job_id)): Path<(i32, uuid::Uuid)>,
+) -> AppResult<RequestResponse<crate::services::control_jobs::ControlJobModel>> {
+    let part = resolve_participation(&st, &user, id).await?;
+    let job = crate::services::control_jobs::get_ad_reset_for_participation(
         st.pg(),
         id,
-        svc.participation_id,
-        svc.challenge_id,
-        &backend_id,
+        part.id,
+        Some(job_id),
+        None,
     )
-    .await;
-    if let Err(error) = retained {
-        if let Err(destroy_error) = st.containers.destroy(&backend_id).await {
-            tracing::error!(%backend_id, %destroy_error,
-                "failed to destroy replacement whose retry identity could not be retained");
-        }
-        return Err(error);
-    }
-    if !retained.expect("retention error returned above") {
-        st.containers.destroy(&backend_id).await?;
-        distributed.release().await?;
-        return Err(AppError::Forbidden);
-    }
-    let published = match crate::services::ad_engine::publish_service_reset(
-        &st.db,
+    .await?
+    .ok_or_else(|| AppError::not_found("Reset job not found"))?;
+    Ok(RequestResponse::ok(job))
+}
+
+pub async fn reset_job_by_operation(
+    State(st): State<SharedState>,
+    user: CurrentUser,
+    Path((id, operation_id)): Path<(i32, uuid::Uuid)>,
+) -> AppResult<RequestResponse<crate::services::control_jobs::ControlJobModel>> {
+    let part = resolve_participation(&st, &user, id).await?;
+    let job = crate::services::control_jobs::get_ad_reset_for_participation(
+        st.pg(),
         id,
-        svc.id,
-        &info.ip,
-        info.port,
-        &info.id,
-        prepared_round_id,
-        true,
+        part.id,
+        None,
+        Some(operation_id),
     )
-    .await
-    {
-        Ok(published) => published,
-        Err(error) => {
-            crate::services::ad::service_lifecycle::rollback_created_backend(
-                &st,
-                svc.participation_id,
-                svc.challenge_id,
-                &backend_id,
-            )
-            .await?;
-            return Err(error);
-        }
-    };
-    if !published {
-        crate::services::ad::service_lifecycle::rollback_created_backend(
-            &st,
-            svc.participation_id,
-            svc.challenge_id,
-            &backend_id,
-        )
-        .await?;
-        distributed.release().await?;
-        return Err(AppError::Forbidden);
-    }
-    distributed.release().await?;
-    if challenge.enable_traffic_capture {
-        crate::services::traffic::start_container_capture(&st, &backend_id).await?;
-    }
-    crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
-    Ok(MessageResponse::ok("Service reset").into_response())
+    .await?
+    .ok_or_else(|| AppError::not_found("Reset job not found"))?;
+    Ok(RequestResponse::ok(job))
 }
 
 /// `GET /api/Game/{id}/Ad/Services/{adTeamServiceId}/Snapshot` — download the

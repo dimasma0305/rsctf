@@ -892,6 +892,7 @@ export const mergeAdminAdState = (
     roundStartedAt: live.roundStartedAt,
     roundEndsAt: live.roundEndsAt,
     scoringPaused: live.scoringPaused,
+    controlRevision: live.controlRevision,
     scoringPausedAt: live.scoringPausedAt,
     teams: snapshot.teams.map((team) => ({
       ...team,
@@ -941,6 +942,7 @@ export interface AdminKothHill extends KothLifecycleFields {
   challengeId: number
   title: string
   isEnabled: boolean
+  controlRevision: number
   containerGuid: string | null
   containerIp: string | null
   containerPort: number | null
@@ -983,6 +985,7 @@ export interface AdminKothStateModel {
   /** Unix milliseconds. */
   currentRoundEndsAt: number | null
   scoringPaused: boolean
+  controlRevision: number
   /** Unix milliseconds. */
   scoringPausedAt: number | null
   hills: AdminKothHill[]

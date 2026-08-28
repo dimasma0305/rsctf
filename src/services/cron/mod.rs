@@ -209,6 +209,10 @@ async fn run_with_lease(
 /// not abort the others (mirrors RSCTF running each `CronJob` in its own scope
 /// and swallowing per-job exceptions).
 async fn run_jobs(state: &SharedState) {
+    // Slow operator work is durable in PostgreSQL. Wake a bounded lease owner;
+    // this returns immediately and also recovers jobs whose previous owner died.
+    crate::services::control_jobs::kick(state.clone());
+
     match crate::services::traffic::purge_expired_captures(state, 128).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: purged expired traffic capture tree(s)"),
         Ok(_) => {}

@@ -13,6 +13,7 @@ pub mod challenge_images;
 pub mod challenge_workloads;
 pub mod container;
 pub mod container_policy;
+pub mod control_jobs;
 pub mod cron;
 pub mod discord_webhook;
 pub mod donations;

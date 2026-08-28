@@ -412,25 +412,79 @@ impl WorkerStore {
                 "expected workload generation must be positive".to_owned(),
             ));
         }
-        let current = sqlx::query_as::<_, (Uuid, Value)>(
-            r#"SELECT worker_id, required_labels
-                 FROM "WorkerWorkloads"
-                WHERE id = $1 AND assignment_id = $2 AND generation = $3
-                  AND desired_state = 'Present'"#,
-        )
-        .bind(request.id)
-        .bind(request.assignment_id)
-        .bind(request.expected_generation)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(database_error)?;
-        let Some((worker_id, required_labels)) = current else {
-            return Ok(DefinitionUpdateOutcome::Stale);
-        };
-
         let mut transaction = crate::utils::database::begin_sqlx_transaction(&self.pool)
             .await
             .map_err(database_error)?;
+        #[allow(clippy::type_complexity)]
+        let current = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                Value,
+                i64,
+                Vec<u8>,
+                Value,
+                String,
+                String,
+                String,
+                i64,
+                i64,
+                i32,
+                i32,
+            ),
+        >(
+            r#"SELECT worker_id, required_labels, generation,
+                      spec_hash_sha256, spec, required_os,
+                      required_architecture, required_runtime,
+                      reserved_cpu_millis, reserved_memory_bytes,
+                      reserved_slots, required_replicas
+                 FROM "WorkerWorkloads"
+                WHERE id = $1 AND assignment_id = $2
+                  AND desired_state = 'Present'
+                FOR UPDATE"#,
+        )
+        .bind(request.id)
+        .bind(request.assignment_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let Some((
+            worker_id,
+            required_labels,
+            current_generation,
+            current_hash,
+            current_spec,
+            current_os,
+            current_architecture,
+            current_runtime,
+            current_cpu,
+            current_memory,
+            current_slots,
+            current_replicas,
+        )) = current
+        else {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(DefinitionUpdateOutcome::Stale);
+        };
+        let definition_is_current = current_hash == request.definition.spec_hash_sha256
+            && current_spec == request.definition.spec
+            && current_os == request.definition.required_os.as_str()
+            && current_architecture == request.definition.required_architecture.trim()
+            && current_runtime == request.definition.required_runtime.trim()
+            && current_cpu == request.definition.reservation.cpu_millis
+            && current_memory == request.definition.reservation.memory_bytes
+            && current_slots == request.definition.reservation.slots
+            && current_replicas == required_replicas;
+        if definition_is_current {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(DefinitionUpdateOutcome::AlreadyCurrent {
+                generation: current_generation,
+            });
+        }
+        if current_generation != request.expected_generation {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(DefinitionUpdateOutcome::Stale);
+        }
         let capacity = sqlx::query_as::<_, (bool, bool)>(
             r#"SELECT
                    node.platform_os = $3
@@ -494,7 +548,7 @@ impl WorkerStore {
             return Ok(DefinitionUpdateOutcome::InsufficientCapacity);
         }
 
-        let next_generation = request.expected_generation.checked_add(1).ok_or_else(|| {
+        let next_generation = current_generation.checked_add(1).ok_or_else(|| {
             WorkerStoreError::InvalidInput("workload generation is exhausted".to_owned())
         })?;
         let updated = sqlx::query_scalar::<_, i64>(
@@ -521,7 +575,7 @@ impl WorkerStore {
         )
         .bind(request.id)
         .bind(request.assignment_id)
-        .bind(request.expected_generation)
+        .bind(current_generation)
         .bind(next_generation)
         .bind(request.definition.spec_hash_sha256.as_slice())
         .bind(&request.definition.spec)

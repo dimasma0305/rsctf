@@ -2,11 +2,12 @@ import { Alert, Badge, Button, CopyButton, Group, Loader, Stack, Text, Tooltip }
 import { showNotification } from '@mantine/notifications'
 import { mdiAlertCircleOutline, mdiConsole, mdiRefresh, mdiRestart, mdiServerNetwork } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useCallback, useState } from 'react'
+import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { SnapshotDownloadButton } from '@Components/SnapshotDownloadButton'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
 import { showErrorMsg } from '@Utils/Shared'
+import { createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
 import api, { AdSshKeyInfoModel, AdStateModel, AdTeamServiceStateModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
@@ -79,6 +80,9 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
     request: sshRequest,
   })
   const [resetting, setResetting] = useState(false)
+  const resetPromiseRef = useRef<Promise<void> | null>(null)
+  const resetAbortRef = useRef<AbortController | null>(null)
+  useEffect(() => () => resetAbortRef.current?.abort(), [])
 
   const service: AdTeamServiceStateModel | undefined = adState?.services.find((s) => s.challengeId === challengeId)
 
@@ -206,19 +210,49 @@ export const AdChallengePanel: FC<AdChallengePanelProps> = ({ gameId, challengeI
 
   const onReset = async () => {
     if (!service) return
+    if (resetPromiseRef.current) return resetPromiseRef.current
+    const operationId = createOperationId()
+    const controller = new AbortController()
+    resetAbortRef.current?.abort()
+    resetAbortRef.current = controller
     setResetting(true)
+    const request = (async () => {
+      try {
+        let job
+        try {
+          job = (
+            await api.game.gameAdResetService(gameId, service.adTeamServiceId, operationId, {
+              signal: controller.signal,
+            })
+          ).data
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          job = (
+            await api.game.gameAdResetJobByOperation(gameId, operationId, { signal: controller.signal })
+          ).data
+        }
+        await waitForControlJob(
+          job,
+          controller.signal,
+          async (jobId, signal) => (await api.game.gameAdResetJob(gameId, jobId, { signal })).data
+        )
+        showNotification({
+          color: 'teal',
+          icon: <Icon path={mdiRestart} size={1} />,
+          title: t('game.notification.ad.reset_queued.title', 'Reset queued'),
+          message: t('game.notification.ad.reset_queued.message', 'Container will rebuild in seconds.'),
+        })
+        await mutateState()
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      }
+    })()
+    resetPromiseRef.current = request
     try {
-      await api.game.gameAdResetService(gameId, service.adTeamServiceId)
-      showNotification({
-        color: 'teal',
-        icon: <Icon path={mdiRestart} size={1} />,
-        title: t('game.notification.ad.reset_queued.title', 'Reset queued'),
-        message: t('game.notification.ad.reset_queued.message', 'Container will rebuild in seconds.'),
-      })
-      setTimeout(() => mutateState(), 3_000)
-    } catch (e) {
-      showErrorMsg(e, t)
+      await request
     } finally {
+      if (resetPromiseRef.current === request) resetPromiseRef.current = null
+      if (resetAbortRef.current === controller) resetAbortRef.current = null
       setResetting(false)
     }
   }

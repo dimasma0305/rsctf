@@ -183,32 +183,28 @@ pub async fn rebuild_challenge(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, c_id)): Path<(i32, i32)>,
-) -> AppResult<RequestResponse<JsonValue>> {
+    headers: axum::http::HeaderMap,
+) -> AppResult<(
+    axum::http::StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
     manager_or_admin(&st, &user, id).await?;
     super::reject_pending_mutation(st.pg(), id, c_id).await?;
     let challenge = load_challenge(&st, id, c_id).await?;
-
-    // Whether a usable build context is on file (present in blob storage).
-    let archive_available = match challenge.original_archive_blob_path.as_deref() {
-        Some(path) if !path.is_empty() => st.storage.exists(path).await,
-        _ => false,
-    };
-
-    // Run the build/pull seam, then persist the terminal outcome in one write.
-    // The audit metadata response does not poll the DB for an intermediate
-    // `Building` state, so return the synchronous outcome below.
-    let (outcome, _record) = run_challenge_build(&st, &challenge, "Manual", 1).await;
-
-    // The build seam persists status/log before releasing its distributed
-    // per-challenge lock, so a concurrent replica cannot publish stale state.
-
-    Ok(RequestResponse::ok(json!({
-        "files": [],
-        "previews": {},
-        "archiveAvailable": archive_available,
-        "buildStatus": outcome.status,
-        "lastBuildLog": outcome.log,
-    })))
+    let operation = crate::controllers::edit::control_jobs::operation_id(&headers)?;
+    let attempt: i32 = sqlx::query_scalar(
+        r#"SELECT COALESCE(MAX(attempt), 0) + 1
+             FROM "BuildRecords" WHERE challenge_id = $1"#,
+    )
+    .bind(c_id)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let job = crate::controllers::edit::enqueue_challenge_build_job(
+        &st, &challenge, "Manual", attempt, operation,
+    )
+    .await?;
+    Ok((axum::http::StatusCode::ACCEPTED, RequestResponse::ok(job)))
 }
 
 #[cfg(test)]

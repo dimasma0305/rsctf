@@ -121,19 +121,130 @@ async fn deactivate_stale_pair(
 /// (whole game, every accepted team).
 pub async fn ad_ensure_containers(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    user: CurrentUser,
     Path(game_id): Path<i32>,
-) -> AppResult<MessageResponse> {
-    let game = load_game(&st, game_id).await?;
-    let (launched, failures) = ensure_ad_containers(&st, &game, None, true, true).await?;
-    Ok(MessageResponse::ok(format!(
-        "Launched {launched} service container(s){}",
-        if failures > 0 {
-            format!(", {failures} failed (runtime unavailable?)")
-        } else {
-            String::new()
+    headers: axum::http::HeaderMap,
+) -> AppResult<(
+    axum::http::StatusCode,
+    RequestResponse<crate::services::control_jobs::ControlJobModel>,
+)> {
+    manager_or_admin(&st, &user, game_id).await?;
+    let operation = super::super::control_jobs::operation_id(&headers)?;
+    let input = serde_json::json!({ "ensureVpn": true, "ensureKoth": true });
+    let fingerprint = super::super::control_jobs::fingerprint(&input)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::AdReconcile,
+        &format!("game:{game_id}"),
+        game_id,
+        None,
+        operation,
+        &fingerprint,
+        input,
+    )
+    .await?;
+    crate::services::control_jobs::merge_reconcile_input(
+        st.pg(),
+        job.id,
+        serde_json::json!({ "ensureVpn": true, "ensureKoth": true }),
+    )
+    .await?;
+    let job = crate::services::control_jobs::get(st.pg(), job.id)
+        .await?
+        .ok_or_else(|| AppError::internal("queued reconcile job disappeared"))?;
+    crate::services::control_jobs::kick(st);
+    Ok((axum::http::StatusCode::ACCEPTED, RequestResponse::ok(job)))
+}
+
+pub(crate) async fn run_ad_reconcile_job(
+    st: &SharedState,
+    game_id: i32,
+    ensure_vpn: bool,
+    ensure_koth: bool,
+) -> AppResult<(i32, i32)> {
+    let game = load_game(st, game_id).await?;
+    const PARTICIPATION_PAGE_SIZE: i64 = 64;
+    let mut cursor = 0;
+    let mut launched = 0i32;
+    let mut failures = 0i32;
+    loop {
+        let participation_ids = sqlx::query_scalar::<_, i32>(
+            r#"SELECT id FROM "Participations"
+                WHERE game_id = $1 AND status = $2 AND id > $3
+                ORDER BY id LIMIT $4"#,
+        )
+        .bind(game_id)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(cursor)
+        .bind(PARTICIPATION_PAGE_SIZE)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if participation_ids.is_empty() {
+            break;
         }
-    )))
+        for participation_id in participation_ids {
+            cursor = participation_id;
+            let (page_launched, page_failures) =
+                ensure_ad_containers(st, &game, Some(participation_id), ensure_vpn, false, false)
+                    .await?;
+            launched = launched.saturating_add(page_launched);
+            failures = failures.saturating_add(page_failures);
+        }
+    }
+    let has_managed_ad = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM "GameChallenges"
+              WHERE game_id = $1 AND is_enabled = TRUE
+                AND review_status = $2 AND "Type" = $3
+                AND ad_self_hosted = FALSE
+           )"#,
+    )
+    .bind(game_id)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(ChallengeType::AttackDefense as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if ensure_vpn || has_managed_ad {
+        crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
+    }
+    if ensure_koth {
+        crate::controllers::game::koth::ensure_koth_hills(st, game.id).await?;
+    }
+    Ok((launched, failures))
+}
+
+pub(crate) async fn request_ad_reconcile_job(
+    st: &SharedState,
+    game_id: i32,
+    ensure_vpn: bool,
+    ensure_koth: bool,
+) -> AppResult<crate::services::control_jobs::ControlJobModel> {
+    let input = serde_json::json!({ "ensureVpn": ensure_vpn, "ensureKoth": ensure_koth });
+    let fingerprint = super::super::control_jobs::fingerprint(&input)?;
+    let job = crate::services::control_jobs::enqueue(
+        st.pg(),
+        crate::services::control_jobs::ControlJobKind::AdReconcile,
+        &format!("game:{game_id}"),
+        game_id,
+        None,
+        uuid::Uuid::new_v4(),
+        &fingerprint,
+        input,
+    )
+    .await?;
+    crate::services::control_jobs::merge_reconcile_input(
+        st.pg(),
+        job.id,
+        serde_json::json!({ "ensureVpn": ensure_vpn, "ensureKoth": ensure_koth }),
+    )
+    .await?;
+    let job = crate::services::control_jobs::get(st.pg(), job.id)
+        .await?
+        .ok_or_else(|| AppError::internal("queued reconcile job disappeared"))?;
+    crate::services::control_jobs::kick(st.clone());
+    Ok(job)
 }
 
 /// Reusable core of [`ad_ensure_containers`]: launch the platform-hosted A&D
@@ -165,6 +276,10 @@ pub(crate) async fn ensure_ad_containers(
     // The round pipeline repairs A&D before checking, but KotH only after the
     // checker has persisted a dead-backend receipt for the published holder.
     ensure_koth: bool,
+    // Durable event jobs page participants and finalize topology exactly once
+    // after the final page. Direct one-team acceptance keeps the old immediate
+    // finalization behavior.
+    finalize_topology: bool,
 ) -> AppResult<(i32, i32)> {
     let all_ad: Vec<game_challenge::Model> = game_challenge::Entity::find()
         .filter(game_challenge::Column::GameId.eq(game.id))
@@ -369,24 +484,22 @@ pub(crate) async fn ensure_ad_containers(
                     continue;
                 }
             };
-            let info = match st
-                .containers
-                .create(ContainerSpec::ad_service(
-                    image,
-                    ContainerResourceLimits {
-                        memory_limit: c.memory_limit.unwrap_or(256),
-                        cpu_count: c.cpu_count.unwrap_or(1),
-                        storage_limit: crate::services::container::storage_limit_or_default(
-                            c.storage_limit,
-                        ),
-                    },
-                    c.expose_port.unwrap_or(80),
-                    p.team_id,
-                    c.ad_allow_egress,
-                    flag,
-                ))
-                .await
-            {
+            let mut spec = ContainerSpec::ad_service(
+                image,
+                ContainerResourceLimits {
+                    memory_limit: c.memory_limit.unwrap_or(256),
+                    cpu_count: c.cpu_count.unwrap_or(1),
+                    storage_limit: crate::services::container::storage_limit_or_default(
+                        c.storage_limit,
+                    ),
+                },
+                c.expose_port.unwrap_or(80),
+                p.team_id,
+                c.ad_allow_egress,
+                flag,
+            );
+            spec.operation_id = Some(format!("ad-ensure:{}:{}:{}", game.id, p.id, c.id));
+            let info = match st.containers.create(spec).await {
                 Ok(i) => i,
                 Err(_) => {
                     // Best-effort (accept path): register a container-less service
@@ -550,11 +663,11 @@ pub(crate) async fn ensure_ad_containers(
     }
 
     // Reconcile the wg0 hub with the (possibly newly-created) peer set.
-    if reconcile_vpn {
+    if reconcile_vpn && finalize_topology {
         crate::services::ad_vpn::reconcile_for_deployment(&st.db).await?;
     }
 
-    if ensure_koth {
+    if ensure_koth && finalize_topology {
         crate::controllers::game::koth::ensure_koth_hills(st, game.id).await?;
     }
 
@@ -687,7 +800,7 @@ pub(crate) async fn provision_accepted_participation(
 ) -> AppResult<()> {
     ensure_instances(st, participation_id, game_id).await?;
     if let Some(game) = game::Entity::find_by_id(game_id).one(&st.db).await? {
-        ensure_ad_containers(st, &game, Some(participation_id), true, true).await?;
+        ensure_ad_containers(st, &game, Some(participation_id), true, true, true).await?;
     }
     Ok(())
 }

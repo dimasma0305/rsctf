@@ -514,6 +514,10 @@ mod tests {
             DefinitionUpdateOutcome::Updated { generation: 2 }
         );
         assert_eq!(
+            store.update_workload_definition(&scaled).await.unwrap(),
+            DefinitionUpdateOutcome::AlreadyCurrent { generation: 2 }
+        );
+        assert_eq!(
             store
                 .mark_desired_absent(workload_id, assignment_id, 2)
                 .await

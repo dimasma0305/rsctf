@@ -617,6 +617,28 @@ async fn reconcile_one_game(
     seal: bool,
     finalize_grace_seconds: u64,
 ) -> AppResult<bool> {
+    if seal
+        && !close_competitive_evidence_window(state.pg(), game_id, finalize_grace_seconds).await?
+    {
+        return Ok(false);
+    }
+    let context_result = async {
+        let job = crate::services::control_jobs::request_security_derivation(
+            state,
+            game_id,
+            uuid::Uuid::new_v4(),
+        )
+        .await?;
+        let job = crate::services::control_jobs::wait_for_terminal(
+            state.pg(),
+            job.id,
+            std::time::Duration::from_secs(90),
+        )
+        .await?;
+        crate::services::control_jobs::result_count(&job, "inserted")
+    }
+    .await;
+
     let mut fence = state
         .pg()
         .begin()
@@ -631,14 +653,6 @@ async fn reconcile_one_game(
     if !acquired {
         return Ok(false);
     }
-    if seal
-        && !close_competitive_evidence_window(state.pg(), game_id, finalize_grace_seconds).await?
-    {
-        // PostgreSQL's wall clock moved backward after game selection. Do not
-        // scan or seal; a later pass will make a fresh database-time decision.
-        return Ok(false);
-    }
-
     if seal && defer_final_for_incomplete_jobs(state.pg(), &mut fence, game_id).await? {
         fence
             .commit()
@@ -653,6 +667,9 @@ async fn reconcile_one_game(
         super::detectors::ReconciliationSnapshot::Live
     };
     let mut errors = Vec::new();
+    if let Err(error) = context_result {
+        errors.push(format!("event-security context: {error}"));
+    }
     if let Err(error) =
         super::cheat_checks::run_abnormal_solve_checks_for_snapshot(state, game_id, snapshot).await
     {
@@ -677,12 +694,6 @@ async fn reconcile_one_game(
     if let Err(error) = super::run_honeypot_chain_checks(state, game_id).await {
         errors.push(format!("honeypot chain: {error}"));
     }
-    if let Err(error) =
-        crate::services::event_security::derive_context_findings(state, game_id).await
-    {
-        errors.push(format!("event-security context: {error}"));
-    }
-
     for error in &errors {
         tracing::warn!(game = game_id, %error, "suspicion game reconciliation detector failed");
     }

@@ -54,6 +54,7 @@ import {
   ChallengeCategoryList,
 } from '@Utils/Shared'
 import { createDefaultJeopardyWorkloadSpec, formatWorkloadSpec, parseJeopardyWorkloadSpec } from '@Utils/WorkloadSpec'
+import { controlJobResultCount, createOperationId, waitForControlJob } from '@Utils/ControlJobs'
 import { useEditChallenge, useEditChallenges } from '@Hooks/useEdit'
 import { useAdminGame, useGameStatus } from '@Hooks/useGame'
 import api, {
@@ -143,6 +144,8 @@ const GameChallengeEdit: FC = () => {
   )
 
   const [disabled, setDisabled] = useState(false)
+  const rolloutPromiseRef = useRef<Promise<void> | null>(null)
+  const rolloutAbortRef = useRef<AbortController | null>(null)
 
   const [minRate, setMinRate] = useState((challenge?.minScoreRate ?? DEFAULT_JEOPARDY_MIN_SCORE_RATE) * 100)
   const [category, setCategory] = useState<string | null>(challenge?.category ?? ChallengeCategory.Misc)
@@ -452,37 +455,66 @@ const GameChallengeEdit: FC = () => {
     }
   }
 
+  useEffect(() => () => rolloutAbortRef.current?.abort(), [])
+
   const onRolloutWorkloads = async () => {
     if (rolloutBlockedByStatefulService) return
+    if (rolloutPromiseRef.current) return rolloutPromiseRef.current
+    const operationId = createOperationId()
+    const controller = new AbortController()
+    rolloutAbortRef.current?.abort()
+    rolloutAbortRef.current = controller
     setRollingWorkload(true)
-    const saved = await onUpdate(
-      {
-        ...challengeInfo,
-        category: category as ChallengeCategory,
-        minScoreRate: minRate / 100,
-      },
-      true
-    )
-    if (!saved) {
-      setRollingWorkload(false)
-      return
-    }
-
+    const request = (async () => {
+      const saved = await onUpdate(
+        {
+          ...challengeInfo,
+          category: category as ChallengeCategory,
+          minScoreRate: minRate / 100,
+        },
+        true
+      )
+      if (!saved) return
+      try {
+        let job
+        try {
+          job = (
+            await api.edit.editRolloutChallengeWorkloads(numId, numCId, operationId, {
+              headers: { 'X-RSCTF-Expected-Workload': saved.workloadIdentity ?? '' },
+              signal: controller.signal,
+            })
+          ).data
+        } catch (error) {
+          if (controller.signal.aborted) throw error
+          job = (await api.eventSecurity.getControlJobByOperation(operationId, { signal: controller.signal })).data
+        }
+        const completed = await waitForControlJob(job, controller.signal)
+        const result = {
+          matched: controlJobResultCount(completed, 'matched'),
+          updated: controlJobResultCount(completed, 'updated'),
+          alreadyCurrent: controlJobResultCount(completed, 'alreadyCurrent'),
+          stale: controlJobResultCount(completed, 'stale'),
+          incompatible: controlJobResultCount(completed, 'incompatible'),
+          insufficientCapacity: controlJobResultCount(completed, 'insufficientCapacity'),
+          failed: controlJobResultCount(completed, 'failed'),
+        }
+        const incomplete = result.stale + result.incompatible + result.insufficientCapacity + result.failed
+        showNotification({
+          color: incomplete === 0 ? 'teal' : 'orange',
+          message: t('admin.content.games.challenges.workload_spec.rollout_result', { ...result }),
+          icon: <Icon path={mdiCheck} size={1} />,
+        })
+        mutate()
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) showErrorMsg(e, t)
+      }
+    })()
+    rolloutPromiseRef.current = request
     try {
-      const response = await api.edit.editRolloutChallengeWorkloads(numId, numCId, {
-        headers: { 'X-RSCTF-Expected-Workload': saved.workloadIdentity ?? '' },
-      })
-      const result = response.data
-      const incomplete = result.stale + result.incompatible + result.insufficientCapacity + result.failed
-      showNotification({
-        color: incomplete === 0 ? 'teal' : 'orange',
-        message: t('admin.content.games.challenges.workload_spec.rollout_result', { ...result }),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
-      mutate()
-    } catch (e) {
-      showErrorMsg(e, t)
+      await request
     } finally {
+      if (rolloutPromiseRef.current === request) rolloutPromiseRef.current = null
+      if (rolloutAbortRef.current === controller) rolloutAbortRef.current = null
       setRollingWorkload(false)
       setDisabled(false)
     }

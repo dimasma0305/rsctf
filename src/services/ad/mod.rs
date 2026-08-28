@@ -5,6 +5,7 @@ pub mod engine;
 pub(crate) mod forensics;
 pub(crate) mod koth_api_capability;
 pub(crate) mod koth_reporter;
+pub(crate) mod reset;
 pub(crate) mod roster;
 pub mod scoring;
 pub(crate) mod service_lifecycle;
