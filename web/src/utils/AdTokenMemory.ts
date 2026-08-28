@@ -1,5 +1,27 @@
 export const LEGACY_AD_TOKEN_PREFIX = 'ad-api-token-'
 
+export interface EphemeralAdToken {
+  accountId: string
+  token: string
+  viewerScope: string
+}
+
+/**
+ * Bind in-memory plaintext to the exact authenticated account and authorized
+ * participation that received it. Effects run after paint, so clearing state
+ * in an account-change effect alone is not a sufficient render boundary.
+ */
+export const visibleAdToken = (
+  value: EphemeralAdToken | null,
+  accountId: string | undefined,
+  viewerScope: string | null
+) =>
+  value && accountId === value.accountId && viewerScope === value.viewerScope ? value.token : null
+
+/** Share duplicate rotations only inside one exact authenticated viewer. */
+export const adTokenRequestOwnerKey = (gameId: number, accountId: string, viewerScope: string) =>
+  JSON.stringify([gameId, accountId, viewerScope])
+
 /**
  * Remove plaintext bearer tokens written by releases before v0.1.96.
  * This is synchronous and local so logout cleanup cannot depend on the

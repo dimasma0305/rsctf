@@ -49,6 +49,9 @@ if ((captchaModel?.type ?? captchaModel?.data?.type) !== 'HashPow') {
 }
 const probe = await fetch(new URL('/api/captcha/powchallenge', TARGET));
 if (probe.status !== 200) throw new Error(`HashPoW issuance probe returned ${probe.status}`);
+if (!/(?:^|,)\s*no-store(?:\s*(?:,|$))/i.test(probe.headers.get('cache-control') || '')) {
+  throw new Error('HashPoW issuance must be explicitly no-store');
+}
 
 function fingerprint() {
   return sql(

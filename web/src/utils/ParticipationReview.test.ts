@@ -57,6 +57,33 @@ test('participation review keys are fenced by game, query, detail, route, and ac
   )
 })
 
+test('viewer cache scoping is private by default with a narrow public allowlist', () => {
+  for (const key of [
+    '/api/tokens',
+    '/api/proxy/17/capability',
+    '/api/event-security/session',
+    '/api/assets',
+    '/api/a-future-private-controller',
+    ['/api/tokens', { count: 10, skip: 0 }],
+  ]) {
+    assert.equal(isViewerScopedRequest(key), true, JSON.stringify(key))
+  }
+
+  for (const key of [
+    '/api/account/profile',
+    '/api/captcha',
+    '/api/config',
+    '/api/donations',
+    '/api/posts',
+    '/api/posts/latest',
+    '/api/posts/17',
+  ]) {
+    assert.equal(isViewerScopedRequest(key), false, String(key))
+  }
+
+  assert.equal(isViewerScopedRequest('/static/guide/login.webp'), false)
+})
+
 test('roster PII is lazy-loaded only for the opened participation', () => {
   assert.match(page, /useGameParticipationDetail\(gameId, participation\.id, OnceSWRConfig, expanded\)/)
   assert.match(page, /value=\{openedParticipation\}/)

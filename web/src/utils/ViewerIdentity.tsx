@@ -92,23 +92,31 @@ export const swrRequestPath = (key: Key): string | null => {
   return null
 }
 
+/**
+ * The deliberately tiny set of deployment-global reads that are identical for
+ * every viewer. New API surfaces are private by default: adding a controller
+ * must never silently add an account-switch cache leak merely because its
+ * prefix was not known here yet.
+ *
+ * `/api/account/profile` is the bootstrap identity read used to choose the
+ * viewer namespace itself, so it cannot be namespaced by that identity.
+ */
+const isPublicViewerInvariantRequest = (normalizedPath: string) =>
+  normalizedPath === '/api/account/profile' ||
+  normalizedPath === '/api/captcha' ||
+  normalizedPath === '/api/config' ||
+  normalizedPath === '/api/donations' ||
+  normalizedPath === '/api/posts' ||
+  normalizedPath === '/api/posts/latest' ||
+  normalizedPath.startsWith('/api/posts/')
+
 /** Cache entries whose response can differ with identity or authorization. */
 export const isViewerScopedRequest = (key: Key) => {
   const path = swrRequestPath(key)
   if (!path) return false
   const normalized = path.toLowerCase()
-  return (
-    normalized === '/api/game' ||
-    normalized.startsWith('/api/game/') ||
-    normalized === '/api/team' ||
-    normalized.startsWith('/api/team/') ||
-    normalized === '/api/admin' ||
-    normalized.startsWith('/api/admin/') ||
-    normalized === '/api/edit' ||
-    normalized.startsWith('/api/edit/') ||
-    normalized === '/api/account' ||
-    (normalized.startsWith('/api/account/') && normalized !== '/api/account/profile')
-  )
+  const isApiRequest = normalized === '/api' || normalized.startsWith('/api/')
+  return isApiRequest && !isPublicViewerInvariantRequest(normalized)
 }
 
 /**

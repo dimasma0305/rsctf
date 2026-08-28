@@ -27,7 +27,12 @@ import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import { FC, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { clearLegacyAdTokenStorage } from '@Utils/AdTokenMemory'
+import {
+  adTokenRequestOwnerKey,
+  clearLegacyAdTokenStorage,
+  EphemeralAdToken,
+  visibleAdToken,
+} from '@Utils/AdTokenMemory'
 import { adTokenViewerScope, isCurrentAdTokenViewer } from '@Utils/AdTokenScope'
 import {
   claimPlayerCredentialOperation,
@@ -43,7 +48,7 @@ import api, { AdTokenHintModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
 const adTokenRequests = new Map<
-  number,
+  string,
   Promise<{
     token: string
     revision: number
@@ -53,8 +58,10 @@ const adTokenRequests = new Map<
   }>
 >()
 
-const claimAdTokenOperation = async (gameId: number, revision: number) => {
-  const key = playerCredentialOperationStorageKey(gameId, 'ad-token')
+const adTokenOperationStorageKey = (gameId: number, requestOwner: string) =>
+  `${playerCredentialOperationStorageKey(gameId, 'ad-token')}:${requestOwner}`
+
+const claimAdTokenOperation = async (key: string, revision: number) => {
   const claim = () => claimPlayerCredentialOperation(window.localStorage, key, revision)
   if (typeof navigator !== 'undefined' && navigator.locks) {
     return navigator.locks.request(`rsctf:${key}`, claim)
@@ -63,6 +70,7 @@ const claimAdTokenOperation = async (gameId: number, revision: number) => {
 }
 
 const rotateAdTokenOnce = (
+  requestOwner: string,
   gameId: number,
   revision: number
 ): Promise<{
@@ -72,11 +80,11 @@ const rotateAdTokenOnce = (
   teamId: number
   operation: PlayerCredentialOperation
 }> => {
-  const active = adTokenRequests.get(gameId)
+  const active = adTokenRequests.get(requestOwner)
   if (active) return active
   const request = (async () => {
-    const key = playerCredentialOperationStorageKey(gameId, 'ad-token')
-    const operation = await claimAdTokenOperation(gameId, revision)
+    const key = adTokenOperationStorageKey(gameId, requestOwner)
+    const operation = await claimAdTokenOperation(key, revision)
     try {
       const { data } = await api.game.gameAdRotateToken(gameId, {
         operationId: operation.operationId,
@@ -100,9 +108,9 @@ const rotateAdTokenOnce = (
       throw error
     }
   })()
-  adTokenRequests.set(gameId, request)
+  adTokenRequests.set(requestOwner, request)
   const cleanup = () => {
-    if (adTokenRequests.get(gameId) === request) adTokenRequests.delete(gameId)
+    if (adTokenRequests.get(requestOwner) === request) adTokenRequests.delete(requestOwner)
   }
   void request.then(cleanup, cleanup)
   return request
@@ -132,24 +140,34 @@ export const useAdToken = (gameId: number, onRotated?: () => void, enabled: bool
   const currentScope = adTokenViewerScope(adTokenHint)
   const currentScopeRef = useRef(currentScope)
   currentScopeRef.current = currentScope
+  const currentAccountIdRef = useRef(user?.userId)
+  currentAccountIdRef.current = user?.userId
 
   const [rotating, setRotating] = useState(false)
-  const [freshToken, setFreshToken] = useState<string | null>(null)
+  const [freshTokenValue, setFreshTokenValue] = useState<EphemeralAdToken | null>(null)
+  const freshToken = visibleAdToken(freshTokenValue, user?.userId, currentScope)
   const [tokenModalOpen, { open: openTokenModal, close: closeTokenModal }] = useDisclosure(false)
 
   useEffect(() => {
     clearLegacyAdTokenStorage()
-    setFreshToken(null)
+    setFreshTokenValue(null)
     closeTokenModal()
   }, [gameId, user?.userId, adTokenHint?.participationId, adTokenHint?.teamId, closeTokenModal])
 
   const onRotate = async () => {
-    if (!adTokenHint) return
+    const requestedAccountId = user?.userId
+    const requestedScope = adTokenViewerScope(adTokenHint)
+    if (!adTokenHint || !requestedAccountId || !requestedScope) return
     setRotating(true)
     try {
-      const requestedScope = adTokenViewerScope(adTokenHint)
-      const { token, participationId, teamId } = await rotateAdTokenOnce(gameId, adTokenHint?.revision ?? 0)
+      const requestOwner = adTokenRequestOwnerKey(gameId, requestedAccountId, requestedScope)
+      const { token, participationId, teamId } = await rotateAdTokenOnce(
+        requestOwner,
+        gameId,
+        adTokenHint?.revision ?? 0
+      )
       if (
+        requestedAccountId !== currentAccountIdRef.current ||
         !isCurrentAdTokenViewer(
           requestedScope,
           { participationId, teamId },
@@ -158,7 +176,7 @@ export const useAdToken = (gameId: number, onRotated?: () => void, enabled: bool
       ) {
         throw new Error('A credential response for a previous participation was ignored')
       }
-      setFreshToken(token)
+      setFreshTokenValue({ accountId: requestedAccountId, token, viewerScope: requestedScope })
       openTokenModal()
       await mutateHint()
       onRotated?.()
@@ -170,7 +188,7 @@ export const useAdToken = (gameId: number, onRotated?: () => void, enabled: bool
     }
   }
 
-  const forgetToken = () => setFreshToken(null)
+  const forgetToken = () => setFreshTokenValue(null)
 
   return {
     adTokenHint,

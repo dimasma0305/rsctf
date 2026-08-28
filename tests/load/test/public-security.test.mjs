@@ -8,6 +8,7 @@ const runner = readFileSync(new URL('../public-security.mjs', import.meta.url), 
 test('public security load is fixed-rate, multi-source, health isolated, and read-only', () => {
   assert.match(scenario, /executor: 'constant-arrival-rate'/);
   assert.match(scenario, /\/api\/captcha\/powchallenge/);
+  assert.match(scenario, /no-store/);
   assert.match(scenario, /\/api\/team\/verify/);
   assert.match(scenario, /FIXTURE\.trusted/);
   assert.match(scenario, /FIXTURE\.attacker/);
@@ -24,5 +25,6 @@ test('runner requires explicit remote acknowledgement and preserves credentials'
   assert.match(runner, /participation\.status=1/);
   assert.match(runner, /generateKeyPairSync\('ed25519'\)/);
   assert.match(runner, /fingerprint\(\)/);
+  assert.match(runner, /HashPoW issuance must be explicitly no-store/);
   assert.match(runner, /finally \{/);
 });

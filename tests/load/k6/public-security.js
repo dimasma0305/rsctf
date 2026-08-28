@@ -51,7 +51,10 @@ export default function () {
       try {
         const model = response.json();
         validBody = typeof model.id === 'string' && typeof model.challenge === 'string' &&
-          Number.isInteger(model.difficulty) && model.expiresAt > Date.now();
+          Number.isInteger(model.difficulty) && model.expiresAt > Date.now() &&
+          /(?:^|,)\s*no-store(?:\s*(?:,|$))/i.test(
+            response.headers['Cache-Control'] || response.headers['cache-control'] || ''
+          );
       } catch (_) { validBody = false; }
     }
     const limited = response.status === 429 && Boolean(response.headers['Retry-After'] || response.headers['retry-after']);

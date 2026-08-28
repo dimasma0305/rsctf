@@ -278,7 +278,10 @@ test('account replacement fences and deletes retired namespaces from the persist
   let refreshProbe: (() => Promise<unknown>) | undefined
   const profileA = { userId: 'a', userName: 'account A', role: 'User' }
   const profileB = { userId: 'b', userName: 'account B', role: 'User' }
-  const requestKey = '/api/game/17/details'
+  // Personal access tokens live outside the historical account/game/team/admin
+  // prefix list. Private API reads must be scoped by default so a newly added
+  // controller cannot accidentally cross an account boundary.
+  const requestKey = '/api/tokens'
 
   cache.set('/api/account/profile', { data: profileA } as never)
 
