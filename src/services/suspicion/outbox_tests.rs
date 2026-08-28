@@ -52,9 +52,141 @@ fn games_share_the_configured_competitive_end_and_delayed_final_seal() {
 #[test]
 fn live_reconciliation_uses_incremental_submission_jobs() {
     let source = include_str!("outbox.rs");
+    let watermarks = include_str!("outbox/watermarks.rs");
     assert!(source.contains("ReconciliationSnapshot::BarrierBackedFinal"));
     assert!(source.contains("durable per-submission outbox"));
     assert!(source.contains("buffer_unordered(RECONCILE_GAME_CONCURRENCY)"));
+    assert!(watermarks.contains("SuspicionReconciliationWatermarks"));
+    assert!(watermarks.contains("ORDER BY id LIMIT $7"));
+    assert!(watermarks.contains("RECONCILE_SOURCE_BATCH"));
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via RSCTF_TEST_DATABASE_URL"]
+async fn source_watermarks_bound_large_ledgers_and_multi_replica_claims() {
+    let database_url = std::env::var("RSCTF_TEST_DATABASE_URL")
+        .expect("RSCTF_TEST_DATABASE_URL must point to disposable PostgreSQL");
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("rsctf_suspicion_cursor_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!(r#"CREATE SCHEMA "{schema}""#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let options = PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        r#"
+        CREATE TABLE "Games" (id INTEGER PRIMARY KEY);
+        CREATE TABLE "SuspicionReconciliationState" (
+          game_id INTEGER PRIMARY KEY REFERENCES "Games"(id),
+          dirty_generation BIGINT NOT NULL DEFAULT 1,
+          completed_generation BIGINT NOT NULL DEFAULT 0,
+          dirty_mask BIGINT NOT NULL DEFAULT 63,
+          lease_token UUID,
+          lease_expires_at_utc TIMESTAMPTZ
+        );
+        CREATE TABLE "SuspicionReconciliationWatermarks" (
+          game_id INTEGER PRIMARY KEY REFERENCES "Games"(id),
+          identity_observation_id BIGINT NOT NULL DEFAULT 0,
+          dns_revision BIGINT NOT NULL DEFAULT 0,
+          network_revision BIGINT NOT NULL DEFAULT 0,
+          flag_transport_id BIGINT NOT NULL DEFAULT 0,
+          cheat_info_id BIGINT NOT NULL DEFAULT 0,
+          updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE "IdentityObservations" (id BIGINT PRIMARY KEY, game_id INTEGER);
+        CREATE TABLE "VpnDnsProviderBuckets" (
+          id BIGINT PRIMARY KEY, game_id INTEGER, reconcile_revision BIGINT
+        );
+        CREATE TABLE "VpnPeerNetworkObservations" (
+          id BIGINT PRIMARY KEY, game_id INTEGER, reconcile_revision BIGINT
+        );
+        CREATE TABLE "VpnFlagTransportEvents" (id BIGINT PRIMARY KEY, game_id INTEGER);
+        CREATE TABLE "CheatInfo" (id BIGINT PRIMARY KEY, game_id INTEGER);
+        INSERT INTO "Games" VALUES (7);
+        INSERT INTO "SuspicionReconciliationState" (game_id) VALUES (7);
+        INSERT INTO "IdentityObservations" SELECT item, 7 FROM generate_series(1, 600) item;
+        INSERT INTO "VpnDnsProviderBuckets"
+          SELECT item, 7, item FROM generate_series(1, 700) item;
+        INSERT INTO "VpnPeerNetworkObservations"
+          SELECT item, 7, item FROM generate_series(1, 650) item;
+        INSERT INTO "VpnFlagTransportEvents"
+          SELECT item, 7 FROM generate_series(1, 550) item;
+        INSERT INTO "CheatInfo" SELECT item, 7 FROM generate_series(1, 575) item;
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (left, right) = tokio::join!(
+        claim_game_reconciliation(&pool, 7, false),
+        claim_game_reconciliation(&pool, 7, false),
+    );
+    let claims = [left.unwrap(), right.unwrap()];
+    assert_eq!(claims.iter().filter(|claim| claim.is_some()).count(), 1);
+    let first = claims.into_iter().flatten().next().unwrap().sources;
+    assert_eq!(
+        first.through.identity_observation_id,
+        RECONCILE_SOURCE_BATCH
+    );
+    assert_eq!(first.through.dns_revision, RECONCILE_SOURCE_BATCH);
+    assert_eq!(first.backlog_mask, DIRTY_CORRELATION | DIRTY_EVENT_SECURITY);
+
+    sqlx::query(
+        r#"UPDATE "SuspicionReconciliationWatermarks"
+              SET identity_observation_id = $2, dns_revision = $3,
+                  network_revision = $4, flag_transport_id = $5,
+                  cheat_info_id = $6 WHERE game_id = $1"#,
+    )
+    .bind(7_i32)
+    .bind(first.through.identity_observation_id)
+    .bind(first.through.dns_revision)
+    .bind(first.through.network_revision)
+    .bind(first.through.flag_transport_id)
+    .bind(first.through.cheat_info_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let second = capture_source_window(&pool, 7, false).await.unwrap();
+    assert_eq!(second.through.identity_observation_id, 600);
+    assert_eq!(second.through.dns_revision, 700);
+    assert_eq!(second.backlog_mask, 0);
+    sqlx::query(
+        r#"UPDATE "SuspicionReconciliationWatermarks"
+              SET identity_observation_id = $2, dns_revision = $3,
+                  network_revision = $4, flag_transport_id = $5,
+                  cheat_info_id = $6 WHERE game_id = $1"#,
+    )
+    .bind(7_i32)
+    .bind(second.through.identity_observation_id)
+    .bind(second.through.dns_revision)
+    .bind(second.through.network_revision)
+    .bind(second.through.flag_transport_id)
+    .bind(second.through.cheat_info_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let idle = capture_source_window(&pool, 7, false).await.unwrap();
+    assert_eq!(idle.after, idle.through);
+    assert_eq!(idle.backlog_mask, 0);
+
+    pool.close().await;
+    sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
 }
 
 #[test]
@@ -117,6 +249,24 @@ async fn scheduler_closes_intake_after_grace_and_waits_for_every_job() {
           inserted_count INTEGER,
           completed_at_utc TIMESTAMPTZ
         );
+        CREATE TABLE "SuspicionReconciliationWatermarks" (
+          game_id INTEGER PRIMARY KEY REFERENCES "Games"(id),
+          identity_observation_id BIGINT NOT NULL DEFAULT 0,
+          dns_revision BIGINT NOT NULL DEFAULT 0,
+          network_revision BIGINT NOT NULL DEFAULT 0,
+          flag_transport_id BIGINT NOT NULL DEFAULT 0,
+          cheat_info_id BIGINT NOT NULL DEFAULT 0,
+          updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE TABLE "IdentityObservations" (id BIGINT PRIMARY KEY, game_id INTEGER);
+        CREATE TABLE "VpnDnsProviderBuckets" (
+          id BIGINT PRIMARY KEY, game_id INTEGER, reconcile_revision BIGINT
+        );
+        CREATE TABLE "VpnPeerNetworkObservations" (
+          id BIGINT PRIMARY KEY, game_id INTEGER, reconcile_revision BIGINT
+        );
+        CREATE TABLE "VpnFlagTransportEvents" (id BIGINT PRIMARY KEY, game_id INTEGER);
+        CREATE TABLE "CheatInfo" (id BIGINT PRIMARY KEY, game_id INTEGER);
         CREATE TABLE "SuspicionEvaluationOutbox" (
           id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
           game_id INTEGER NOT NULL,
@@ -232,7 +382,10 @@ async fn scheduler_closes_intake_after_grace_and_waits_for_every_job() {
     .await
     .unwrap();
 
-    assert!(defer_final_for_incomplete_jobs(&pool, 5).await.unwrap());
+    assert_eq!(
+        defer_final_for_incomplete_jobs(&pool, 5).await.unwrap(),
+        Some(33)
+    );
     let deferred: (bool, Option<String>) = sqlx::query_as(
         r#"SELECT sealed_at_utc IS NOT NULL, last_error
              FROM "SuspicionReconciliationState" WHERE game_id = 5"#,
@@ -255,13 +408,16 @@ async fn scheduler_closes_intake_after_grace_and_waits_for_every_job() {
     .execute(&pool)
     .await
     .unwrap();
-    assert!(!defer_final_for_incomplete_jobs(&pool, 5).await.unwrap());
+    assert_eq!(
+        defer_final_for_incomplete_jobs(&pool, 5).await.unwrap(),
+        None
+    );
     let claim = claim_game_reconciliation(&pool, 5, true)
         .await
         .unwrap()
         .expect("final reconciliation state is claimable");
     let mut reconciliation = pool.begin().await.unwrap();
-    record_game_reconciliation(&mut reconciliation, 5, &claim, true, 0, &[])
+    record_game_reconciliation(&mut reconciliation, 5, &claim, true, 0, &[], DIRTY_ALL)
         .await
         .unwrap();
     reconciliation.commit().await.unwrap();

@@ -188,6 +188,7 @@ mod m0221_team_invite_reconcile_claims;
 mod m0226_ad_challenge_state_effects;
 mod m0227_challenge_update_operations;
 mod m0229_challenge_import_staging_admission;
+mod m0231_cleanup_and_suspicion_watermarks;
 mod m0232_control_job_cancellation;
 mod m0233_variant_generation_admission;
 mod m0234_event_vpn_override_expiry;
@@ -408,6 +409,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0226_ad_challenge_state_effects::Migration),
             Box::new(m0227_challenge_update_operations::Migration),
             Box::new(m0229_challenge_import_staging_admission::Migration),
+            Box::new(m0231_cleanup_and_suspicion_watermarks::Migration),
             Box::new(m0232_control_job_cancellation::Migration),
             Box::new(m0233_variant_generation_admission::Migration),
             Box::new(m0234_event_vpn_override_expiry::Migration),
@@ -559,7 +561,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 70..],
+            &names[names.len() - 71..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -625,6 +627,7 @@ mod tests {
                 "m0226_ad_challenge_state_effects",
                 "m0227_challenge_update_operations",
                 "m0229_challenge_import_staging_admission",
+                "m0231_cleanup_and_suspicion_watermarks",
                 "m0232_control_job_cancellation",
                 "m0233_variant_generation_admission",
                 "m0234_event_vpn_override_expiry",

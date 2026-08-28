@@ -8,7 +8,10 @@ pub(crate) async fn seal_reconciled_game_for_test(
     if !close_competitive_evidence_window(pool, game_id, finalize_grace_seconds).await? {
         return Ok(false);
     }
-    if defer_final_for_incomplete_jobs(pool, game_id).await? {
+    if defer_final_for_incomplete_jobs(pool, game_id)
+        .await?
+        .is_some()
+    {
         return Ok(false);
     }
     sqlx::query(

@@ -26,7 +26,6 @@ const MAX_RECONCILE_SECONDS: u64 = 3600;
 const GAME_RECONCILE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25);
 const RECONCILE_PASS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 const RECONCILE_GAME_CONCURRENCY: usize = 4;
-const GAME_RECONCILE_LEASE_SECONDS: i64 = 45;
 const DIRTY_ABNORMAL_SOLVE: i64 = 1 << 0;
 const DIRTY_STATISTICAL: i64 = 1 << 1;
 const DIRTY_CORRELATION: i64 = 1 << 2;
@@ -39,6 +38,8 @@ const DIRTY_ALL: i64 = DIRTY_ABNORMAL_SOLVE
     | DIRTY_CONTAINER_ACCESS
     | DIRTY_HONEYPOT
     | DIRTY_EVENT_SECURITY;
+mod watermarks;
+use watermarks::*;
 const RECONCILE_GAMES_SQL: &str = r#"
     WITH observed_clock AS MATERIALIZED (
       SELECT clock_timestamp() AS db_now
@@ -471,111 +472,6 @@ pub async fn reconcile_evaluation_outbox(db: &DatabaseConnection, limit: i64) ->
     Ok(claimed)
 }
 
-#[derive(Debug)]
-struct GameReconciliationClaim {
-    token: Uuid,
-    generation: i64,
-    dirty_mask: i64,
-}
-
-async fn claim_game_reconciliation(
-    pool: &sqlx::PgPool,
-    game_id: i32,
-    force: bool,
-) -> AppResult<Option<GameReconciliationClaim>> {
-    let token = Uuid::new_v4();
-    let claimed = sqlx::query_as::<_, (i64, i64)>(
-        r#"UPDATE "SuspicionReconciliationState"
-              SET lease_token = $2,
-                  lease_expires_at_utc = clock_timestamp()
-                    + ($3::bigint * INTERVAL '1 second')
-            WHERE game_id = $1
-              AND ($4 OR dirty_generation > completed_generation)
-              AND (lease_expires_at_utc IS NULL
-                   OR lease_expires_at_utc <= clock_timestamp())
-        RETURNING dirty_generation, dirty_mask"#,
-    )
-    .bind(game_id)
-    .bind(token)
-    .bind(GAME_RECONCILE_LEASE_SECONDS)
-    .bind(force)
-    .fetch_optional(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(
-        claimed.map(|(generation, dirty_mask)| GameReconciliationClaim {
-            token,
-            generation,
-            dirty_mask: if force { DIRTY_ALL } else { dirty_mask },
-        }),
-    )
-}
-
-async fn record_game_reconciliation(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    game_id: i32,
-    claim: &GameReconciliationClaim,
-    seal: bool,
-    inserted: usize,
-    errors: &[String],
-) -> AppResult<()> {
-    let last_error = (!errors.is_empty()).then(|| errors.join("; "));
-    let updated = sqlx::query(
-        r#"UPDATE "SuspicionReconciliationState"
-              SET evidence_closed_at_utc = CASE
-                    WHEN $5 THEN COALESCE(evidence_closed_at_utc, clock_timestamp())
-                    ELSE evidence_closed_at_utc END,
-                  last_reconciled_at_utc = CASE WHEN $6::text IS NULL
-                    THEN clock_timestamp() ELSE last_reconciled_at_utc END,
-                  sealed_at_utc = CASE WHEN $5 AND $6::text IS NULL
-                    THEN COALESCE(sealed_at_utc, clock_timestamp())
-                    ELSE sealed_at_utc END,
-                  completed_generation = CASE WHEN $6::text IS NULL
-                    THEN GREATEST(completed_generation, $3)
-                    ELSE completed_generation END,
-                  dirty_mask = CASE
-                    WHEN $6::text IS NULL AND dirty_generation <= $3
-                    THEN dirty_mask & ~$4
-                    ELSE dirty_mask END,
-                  attempts = attempts + 1,
-                  last_error = $6,
-                  lease_token = NULL,
-                  lease_expires_at_utc = NULL
-            WHERE game_id = $1 AND lease_token = $2"#,
-    )
-    .bind(game_id)
-    .bind(claim.token)
-    .bind(claim.generation)
-    .bind(claim.dirty_mask)
-    .bind(seal)
-    .bind(last_error.as_deref())
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .rows_affected();
-    if updated != 1 {
-        return Err(AppError::conflict(
-            "Anti-cheat reconciliation lease expired",
-        ));
-    }
-    sqlx::query(
-        r#"UPDATE "SuspicionReconciliationOperations"
-              SET status = 1,
-                  inserted_count = $4,
-                  completed_at_utc = clock_timestamp()
-            WHERE game_id = $1 AND generation <= $2 AND status = 0
-              AND $3::text IS NULL"#,
-    )
-    .bind(game_id)
-    .bind(claim.generation)
-    .bind(last_error.as_deref())
-    .bind(i32::try_from(inserted).unwrap_or(i32::MAX))
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
-}
-
 /// Wait for every evidence producer that already owns this game's shared row
 /// lock, then durably close competitive intake before releasing the barrier.
 /// Every producer rechecks this marker after obtaining Games FOR SHARE, so a
@@ -641,17 +537,31 @@ async fn incomplete_competitive_jobs(pool: &sqlx::PgPool, game_id: i32) -> AppRe
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
-async fn defer_final_for_incomplete_jobs(pool: &sqlx::PgPool, game_id: i32) -> AppResult<bool> {
+async fn defer_final_for_incomplete_jobs(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+) -> AppResult<Option<i64>> {
     let incomplete = incomplete_competitive_jobs(pool, game_id).await?;
     if incomplete == 0 {
-        return Ok(false);
+        return Ok(None);
     }
+    let message = format!("{incomplete} in-window suspicion evaluation jobs remain incomplete");
+    sqlx::query(
+        r#"UPDATE "SuspicionReconciliationState"
+              SET last_error = $2
+            WHERE game_id = $1"#,
+    )
+    .bind(game_id)
+    .bind(&message)
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     tracing::warn!(
         game = game_id,
         incomplete_jobs = incomplete,
         "final suspicion snapshot deferred until durable jobs finish"
     );
-    Ok(true)
+    Ok(Some(incomplete))
 }
 
 async fn reconcile_one_game(
@@ -660,7 +570,7 @@ async fn reconcile_one_game(
     seal: bool,
     finalize_grace_seconds: u64,
 ) -> AppResult<Option<usize>> {
-    let Some(claim) = claim_game_reconciliation(state.pg(), game_id, seal).await? else {
+    let Some(mut claim) = claim_game_reconciliation(state.pg(), game_id, seal).await? else {
         return Ok(None);
     };
     if seal
@@ -680,6 +590,12 @@ async fn reconcile_one_game(
         .map_err(|error| AppError::internal(error.to_string()))?;
         return Ok(None);
     }
+    if seal {
+        // The final target must be captured after the evidence barrier drains
+        // producers that entered before closure. The detector sweep is full,
+        // while these cursors make the durable completion state exact.
+        claim.sources = capture_source_window(state.pg(), game_id, true).await?;
+    }
 
     let snapshot = if seal {
         super::detectors::ReconciliationSnapshot::BarrierBackedFinal
@@ -689,9 +605,14 @@ async fn reconcile_one_game(
     let detector_work = async {
         let mut errors = Vec::new();
         let mut inserted = 0;
-        if seal && defer_final_for_incomplete_jobs(state.pg(), game_id).await? {
-            errors.push("in-window suspicion evaluation jobs remain incomplete".to_string());
-            return Ok::<_, AppError>((errors, inserted));
+        let mut failed_mask = 0_i64;
+        if seal {
+            if let Some(incomplete) = defer_final_for_incomplete_jobs(state.pg(), game_id).await? {
+                errors.push(format!(
+                    "{incomplete} in-window suspicion evaluation jobs remain incomplete"
+                ));
+                return Ok::<_, AppError>((errors, inserted, claim.dirty_mask));
+            }
         }
         // Live submission-derived rules are evaluated incrementally by the
         // durable per-submission outbox. Reloading every accepted and wrong
@@ -707,6 +628,7 @@ async fn reconcile_one_game(
             .await
             {
                 errors.push(format!("abnormal solve: {error}"));
+                failed_mask |= DIRTY_ABNORMAL_SOLVE;
             }
         }
         if claim.dirty_mask & DIRTY_STATISTICAL != 0 {
@@ -715,15 +637,21 @@ async fn reconcile_one_game(
                     .await
             {
                 errors.push(format!("statistical: {error}"));
+                failed_mask |= DIRTY_STATISTICAL;
             }
         }
         if claim.dirty_mask & DIRTY_CORRELATION != 0 {
-            if let Err(error) = super::correlation::run_correlation_checks_for_snapshot(
-                &state.db, game_id, snapshot,
+            if let Err(error) = super::correlation::run_correlation_checks_incremental(
+                &state.db,
+                game_id,
+                snapshot,
+                claim.sources.after.identity_observation_id,
+                claim.sources.through.identity_observation_id,
             )
             .await
             {
                 errors.push(format!("correlation: {error}"));
+                failed_mask |= DIRTY_CORRELATION;
             }
         }
         if claim.dirty_mask & DIRTY_CONTAINER_ACCESS != 0 {
@@ -733,25 +661,50 @@ async fn reconcile_one_game(
             .await
             {
                 errors.push(format!("container access: {error}"));
+                failed_mask |= DIRTY_CONTAINER_ACCESS;
             }
         }
         if claim.dirty_mask & DIRTY_HONEYPOT != 0 {
             if let Err(error) = super::run_honeypot_chain_checks(state, game_id).await {
                 errors.push(format!("honeypot chain: {error}"));
+                failed_mask |= DIRTY_HONEYPOT;
             }
         }
         if claim.dirty_mask & DIRTY_EVENT_SECURITY != 0 {
-            match crate::services::event_security::derive_context_findings(state, game_id).await {
+            match crate::services::event_security::derive_context_findings_incremental(
+                state,
+                game_id,
+                crate::services::event_security::ContextFindingWatermarks {
+                    dns_after: claim.sources.after.dns_revision,
+                    dns_through: claim.sources.through.dns_revision,
+                    network_after: claim.sources.after.network_revision,
+                    network_through: claim.sources.through.network_revision,
+                    flag_after: claim.sources.after.flag_transport_id,
+                    flag_through: claim.sources.through.flag_transport_id,
+                    cheat_after: claim.sources.after.cheat_info_id,
+                    cheat_through: claim.sources.through.cheat_info_id,
+                    final_snapshot: seal,
+                },
+            )
+            .await
+            {
                 Ok(count) => inserted = count,
-                Err(error) => errors.push(format!("event-security context: {error}")),
+                Err(error) => {
+                    errors.push(format!("event-security context: {error}"));
+                    failed_mask |= DIRTY_EVENT_SECURITY;
+                }
             }
         }
-        Ok((errors, inserted))
+        Ok((errors, inserted, failed_mask))
     };
-    let (errors, inserted) =
+    let (errors, inserted, failed_mask) =
         match tokio::time::timeout(GAME_RECONCILE_DEADLINE, detector_work).await {
             Ok(result) => result?,
-            Err(_) => (vec!["detector deadline exceeded".to_string()], 0),
+            Err(_) => (
+                vec!["detector deadline exceeded".to_string()],
+                0,
+                claim.dirty_mask,
+            ),
         };
 
     for error in &errors {
@@ -762,7 +715,16 @@ async fn reconcile_one_game(
         .begin()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    record_game_reconciliation(&mut completion, game_id, &claim, seal, inserted, &errors).await?;
+    record_game_reconciliation(
+        &mut completion,
+        game_id,
+        &claim,
+        seal,
+        inserted,
+        &errors,
+        claim.dirty_mask & !failed_mask,
+    )
+    .await?;
     completion
         .commit()
         .await

@@ -30,6 +30,8 @@ pub(super) const UPSERT_IMAGE_OWNERSHIP_SQL: &str = r#"INSERT INTO "BuildImageOw
  ON CONFLICT (installation_scope, canonical_ref) DO UPDATE
  SET image_id=EXCLUDED.image_id,
      updated_at_utc=clock_timestamp(),
+     cleanup_claim_id=NULL,
+     cleanup_claim_expires_at_utc=NULL,
      last_used_at_utc=CASE
        WHEN "BuildImageOwnerships".image_id=EXCLUDED.image_id
        THEN "BuildImageOwnerships".last_used_at_utc

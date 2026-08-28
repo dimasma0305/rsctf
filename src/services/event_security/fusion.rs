@@ -532,7 +532,48 @@ pub async fn fused_breakdown(
     })
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ContextFindingWatermarks {
+    pub dns_after: i64,
+    pub dns_through: i64,
+    pub network_after: i64,
+    pub network_through: i64,
+    pub flag_after: i64,
+    pub flag_through: i64,
+    pub cheat_after: i64,
+    pub cheat_through: i64,
+    pub final_snapshot: bool,
+}
+
 pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResult<usize> {
+    derive_context_findings_incremental(
+        st,
+        game_id,
+        ContextFindingWatermarks {
+            dns_through: i64::MAX,
+            network_through: i64::MAX,
+            flag_through: i64::MAX,
+            cheat_through: i64::MAX,
+            final_snapshot: true,
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+pub async fn derive_context_findings_incremental(
+    st: &SharedState,
+    game_id: i32,
+    watermarks: ContextFindingWatermarks,
+) -> AppResult<usize> {
+    if !watermarks.final_snapshot
+        && watermarks.dns_after >= watermarks.dns_through
+        && watermarks.network_after >= watermarks.network_through
+        && watermarks.flag_after >= watermarks.flag_through
+        && watermarks.cheat_after >= watermarks.cheat_through
+    {
+        return Ok(0);
+    }
     let mut transaction = st
         .pg()
         .begin()
@@ -553,7 +594,10 @@ pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResul
                           'queryCount', dns.query_count,
                           'meaning', 'network context only; not proof of AI use'
                       ) AS details
-                 FROM "VpnDnsProviderBuckets" dns WHERE dns.game_id = $1
+                 FROM "VpnDnsProviderBuckets" dns
+                WHERE dns.game_id = $1
+                  AND ($2 OR (dns.reconcile_revision > $3
+                              AND dns.reconcile_revision <= $4))
                UNION ALL
                SELECT network.game_id, network.participation_id, network.user_id,
                       'HostingNetworkSource', 1, 1, 0, 0,
@@ -565,6 +609,8 @@ pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResul
                       )
                  FROM "VpnPeerNetworkObservations" network
                 WHERE network.game_id = $1 AND network.network_class <> 0
+                  AND ($2 OR (network.reconcile_revision > $5
+                              AND network.reconcile_revision <= $6))
                UNION ALL
                SELECT flag.game_id, flag.receiving_participation_id,
                       flag.receiving_user_id, 'ForeignFlagTransport', 1, 4, 0, 0,
@@ -576,6 +622,7 @@ pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResul
                           'meaning', 'exact foreign flag bytes crossed the VPN; framing is not proven'
                       )
                  FROM "VpnFlagTransportEvents" flag WHERE flag.game_id = $1
+                  AND ($2 OR (flag.id > $7 AND flag.id <= $8))
            ), inserted AS (
                INSERT INTO "AntiCheatFindings"
                  (game_id, participation_id, user_id, detector_code, detector_version,
@@ -595,6 +642,13 @@ pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResul
            ) SELECT COUNT(*)::bigint FROM inserted"#,
     )
     .bind(game_id)
+    .bind(watermarks.final_snapshot)
+    .bind(watermarks.dns_after)
+    .bind(watermarks.dns_through)
+    .bind(watermarks.network_after)
+    .bind(watermarks.network_through)
+    .bind(watermarks.flag_after)
+    .bind(watermarks.flag_through)
     .fetch_one(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -602,12 +656,19 @@ pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResul
     // One peer observed from several endpoint identities is context only. It is
     // intentionally shadowed and cannot corroborate other evidence.
     let sharing: i64 = sqlx::query_scalar(
-        r#"WITH candidates AS (
+        r#"WITH changed_peers AS MATERIALIZED (
+               SELECT DISTINCT peer_id
+                 FROM "VpnPeerNetworkObservations"
+                WHERE game_id = $1
+                  AND ($2 OR (reconcile_revision > $3
+                              AND reconcile_revision <= $4))
+           ), candidates AS (
                SELECT observation.game_id, observation.participation_id,
                       observation.user_id, observation.peer_id,
                       MIN(observation.first_seen_at_utc) AS occurred_at_utc,
                       COUNT(DISTINCT observation.endpoint_hash)::integer AS endpoints
                  FROM "VpnPeerNetworkObservations" observation
+                 JOIN changed_peers changed ON changed.peer_id = observation.peer_id
                 WHERE observation.game_id = $1
                 GROUP BY observation.game_id, observation.participation_id,
                          observation.user_id, observation.peer_id
@@ -629,6 +690,9 @@ pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResul
            ) SELECT COUNT(*)::bigint FROM inserted"#,
     )
     .bind(game_id)
+    .bind(watermarks.final_snapshot)
+    .bind(watermarks.network_after)
+    .bind(watermarks.network_through)
     .fetch_one(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -637,27 +701,56 @@ pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResul
     // Relationships never add points; they explain which bounded source row a
     // finding came from and whether it corroborates already-canonical proof.
     sqlx::query(
-        r#"INSERT INTO "AntiCheatEvidenceRelationships"
+        r#"WITH changed_sources AS MATERIALIZED (
+               SELECT 'AiProviderDns'::text AS detector_code,
+                      'dns:' || id::text AS evidence_key,
+                      'VpnDnsProviderBucket'::text AS source_type
+                 FROM "VpnDnsProviderBuckets"
+                WHERE game_id = $1
+                  AND ($3 OR (reconcile_revision > $4
+                              AND reconcile_revision <= $5))
+               UNION ALL
+               SELECT 'HostingNetworkSource', 'network:' || id::text,
+                      'VpnPeerNetworkObservation'
+                 FROM "VpnPeerNetworkObservations"
+                WHERE game_id = $1
+                  AND ($3 OR (reconcile_revision > $6
+                              AND reconcile_revision <= $7))
+               UNION ALL
+               SELECT 'ForeignFlagTransport', 'flag-transport:' || id::text,
+                      'VpnFlagTransportEvent'
+                 FROM "VpnFlagTransportEvents"
+                WHERE game_id = $1
+                  AND ($3 OR (id > $8 AND id <= $9))
+               UNION ALL
+               SELECT DISTINCT 'VpnPeerDeviceSharing', 'peer:' || peer_id::text,
+                      'VpnPeerNetworkObservation'
+                 FROM "VpnPeerNetworkObservations"
+                WHERE game_id = $1
+                  AND ($3 OR (reconcile_revision > $6
+                              AND reconcile_revision <= $7))
+           )
+           INSERT INTO "AntiCheatEvidenceRelationships"
              (game_id, finding_id, relation_kind,
               related_source_type, related_source_key)
            SELECT finding.game_id, finding.id, $2,
-                  CASE finding.detector_code
-                    WHEN 'AiProviderDns' THEN 'VpnDnsProviderBucket'
-                    WHEN 'HostingNetworkSource' THEN 'VpnPeerNetworkObservation'
-                    WHEN 'ForeignFlagTransport' THEN 'VpnFlagTransportEvent'
-                    WHEN 'VpnPeerDeviceSharing' THEN 'VpnPeerNetworkObservation'
-                  END,
-                  finding.evidence_key
-             FROM "AntiCheatFindings" finding
-            WHERE finding.game_id = $1
-              AND finding.detector_code IN (
-                    'AiProviderDns', 'HostingNetworkSource',
-                    'ForeignFlagTransport', 'VpnPeerDeviceSharing'
-              )
+                  source.source_type, source.evidence_key
+             FROM changed_sources source
+             JOIN "AntiCheatFindings" finding
+               ON finding.game_id = $1
+              AND finding.detector_code = source.detector_code
+              AND finding.evidence_key = source.evidence_key
            ON CONFLICT DO NOTHING"#,
     )
     .bind(game_id)
     .bind(EvidenceRelationshipKind::DerivedFrom as i16)
+    .bind(watermarks.final_snapshot)
+    .bind(watermarks.dns_after)
+    .bind(watermarks.dns_through)
+    .bind(watermarks.network_after)
+    .bind(watermarks.network_through)
+    .bind(watermarks.flag_after)
+    .bind(watermarks.flag_through)
     .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -667,31 +760,59 @@ pub async fn derive_context_findings(st: &SharedState, game_id: i32) -> AppResul
     // flag, link it to the immutable StolenFlag incident without duplicating
     // or increasing the canonical hard score.
     sqlx::query(
-        r#"INSERT INTO "AntiCheatEvidenceRelationships"
+        r#"WITH changed_transports AS MATERIALIZED (
+               SELECT * FROM "VpnFlagTransportEvents"
+                WHERE game_id = $1
+                  AND ($3 OR (id > $6 AND id <= $7))
+           ), changed_cheats AS MATERIALIZED (
+               SELECT * FROM "CheatInfo"
+                WHERE game_id = $1
+                  AND ($3 OR (id > $4 AND id <= $5))
+           ), matches AS MATERIALIZED (
+               SELECT transport.id AS transport_id, cheat.id AS cheat_id,
+                      cheat.evidence_key, cheat.submit_participation_id
+                 FROM changed_transports transport
+                 JOIN "CheatInfo" cheat
+                   ON cheat.game_id = transport.game_id
+                  AND cheat.challenge_id = transport.challenge_id
+                  AND cheat.submit_participation_id = transport.receiving_participation_id
+                  AND cheat.source_participation_id = transport.owning_participation_id
+                  AND cheat.observed_at_utc >= transport.observed_at_utc
+               UNION
+               SELECT transport.id, cheat.id, cheat.evidence_key,
+                      cheat.submit_participation_id
+                 FROM changed_cheats cheat
+                 JOIN "VpnFlagTransportEvents" transport
+                   ON transport.game_id = cheat.game_id
+                  AND transport.challenge_id = cheat.challenge_id
+                  AND transport.receiving_participation_id = cheat.submit_participation_id
+                  AND transport.owning_participation_id = cheat.source_participation_id
+                  AND cheat.observed_at_utc >= transport.observed_at_utc
+           )
+           INSERT INTO "AntiCheatEvidenceRelationships"
              (game_id, finding_id, relation_kind,
               related_source_type, related_source_key)
            SELECT finding.game_id, finding.id, $2,
                   'SuspicionEvent', 'event:' || event.id::text
-             FROM "AntiCheatFindings" finding
-             JOIN "VpnFlagTransportEvents" transport
-               ON finding.detector_code = 'ForeignFlagTransport'
-              AND finding.evidence_key = 'flag-transport:' || transport.id::text
-             JOIN "CheatInfo" cheat
-               ON cheat.game_id = transport.game_id
-              AND cheat.challenge_id = transport.challenge_id
-              AND cheat.submit_participation_id = transport.receiving_participation_id
-              AND cheat.source_participation_id = transport.owning_participation_id
-              AND cheat.observed_at_utc >= transport.observed_at_utc
+             FROM matches matched
+             JOIN "AntiCheatFindings" finding
+               ON finding.game_id = $1
+              AND finding.detector_code = 'ForeignFlagTransport'
+              AND finding.evidence_key = 'flag-transport:' || matched.transport_id::text
              JOIN "SuspicionEvents" event
-               ON event.game_id = cheat.game_id
-              AND event.participation_id = cheat.submit_participation_id
-              AND event.kind = 0
-              AND event.evidence_key = cheat.evidence_key
-            WHERE finding.game_id = $1
+               ON event.game_id = finding.game_id
+              AND event.participation_id = matched.submit_participation_id
+               AND event.kind = 0
+              AND event.evidence_key = matched.evidence_key
            ON CONFLICT DO NOTHING"#,
     )
     .bind(game_id)
     .bind(EvidenceRelationshipKind::Supports as i16)
+    .bind(watermarks.final_snapshot)
+    .bind(watermarks.cheat_after)
+    .bind(watermarks.cheat_through)
+    .bind(watermarks.flag_after)
+    .bind(watermarks.flag_through)
     .execute(&mut *transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -707,6 +828,19 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    fn live_context_derivation_is_source_windowed_and_idle_short_circuits() {
+        let source = include_str!("fusion.rs");
+        assert!(source.contains("dns.reconcile_revision > $3"));
+        assert!(source.contains("network.reconcile_revision > $5"));
+        assert!(source.contains("flag.id > $7"));
+        assert!(source.contains("WITH changed_peers AS MATERIALIZED"));
+        assert!(source.contains("WITH changed_sources AS MATERIALIZED"));
+        assert!(source.contains("changed_transports AS MATERIALIZED"));
+        assert!(source.contains("changed_cheats AS MATERIALIZED"));
+        assert!(source.contains("watermarks.cheat_after"));
+    }
 
     fn row(family: EvidenceFamily, tier: EvidenceTier, score: i32, shadow: bool) -> FindingRow {
         FindingRow {

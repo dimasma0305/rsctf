@@ -17,6 +17,7 @@ cd tests/load
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
       npm run anti-cheat-read # large-ledger incident/report read gate
+      npm run anti-cheat-reconcile # destructive fixed-rate cursor/coalescing gate
       npm run ad-bearer-admission # A&D bearer admission and optional dependency outages
       npm run public-security # HashPoW issuance + authoritative team-signature admission
       npm run traffic-inventory # bounded capture-inventory pagination
@@ -58,6 +59,17 @@ that the incident/solve/suspicion/identity/outbox fingerprint did not change:
 ```sh
 ANTI_CHEAT_GAME=92001 MIN_INCIDENTS=10000 RATE=2 DURATION=30s \
   SUMMARY_JSON=/tmp/anti-cheat-read.json npm run anti-cheat-read
+```
+
+The reconciliation companion requires a disposable event and explicit
+`ANTI_CHEAT_RECONCILE_STRESS_ACK=1`. It drives rapid manual operations at a fixed
+arrival rate while continuously probing `healthz`, requires at least 10,000 source
+rows by default, then waits for the durable generation and source watermarks to
+become idle without changing the immutable source ledger:
+
+```sh
+ANTI_CHEAT_RECONCILE_STRESS_ACK=1 ANTI_CHEAT_GAME=42 RATE=2 DURATION=30s \
+  SUMMARY_JSON=/tmp/anti-cheat-reconcile.json npm run anti-cheat-reconcile
 ```
 
 The traffic gate discovers one real captured challenge/participation, exercises the

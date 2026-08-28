@@ -43,6 +43,46 @@ const LOAD_OBSERVATIONS_SQL: &str = r#"
      ORDER BY observation.observed_at_utc, observation.id
 "#;
 
+const LOAD_AFFECTED_OBSERVATIONS_SQL: &str = r#"
+    WITH changed AS MATERIALIZED (
+        SELECT observation.user_id, observation.kind, observation.value_hash
+          FROM "IdentityObservations" observation
+         WHERE observation.game_id = $1
+           AND observation.id > $4
+           AND observation.id <= $5
+           AND observation.observed_at_utc >= $2
+           AND observation.observed_at_utc < $3
+    )
+    SELECT observation.id, observation.user_id,
+           roster.team_id, roster.participation_id,
+           observation.kind, observation.value_hash,
+           observation.subnet_group_hash, observation.broad_network_hash,
+           observation.observed_at_utc
+      FROM "IdentityObservations" observation
+      JOIN "UserParticipations" roster
+        ON roster.user_id = observation.user_id
+       AND roster.game_id = $1
+       AND roster.team_id = observation.team_id
+       AND roster.participation_id = observation.participation_id
+      JOIN "Participations" participation
+        ON participation.id = roster.participation_id
+       AND participation.game_id = roster.game_id
+     WHERE observation.game_id = $1
+       AND observation.observed_at_utc >= $2
+       AND observation.observed_at_utc < $3
+       AND participation.competitive_admitted_at_utc IS NOT NULL
+       AND participation.competitive_admitted_at_utc < $3
+       AND (
+         observation.user_id IN (SELECT user_id FROM changed)
+         OR EXISTS (
+           SELECT 1 FROM changed
+            WHERE changed.kind = observation.kind
+              AND changed.value_hash = observation.value_hash
+         )
+       )
+     ORDER BY observation.observed_at_utc, observation.id
+"#;
+
 const LOAD_SUBMISSION_IDENTITIES_SQL: &str = r#"
     SELECT submission.id, submission.participation_id,
            submission.submit_remote_ip_hash, submission.submit_time_utc
@@ -89,6 +129,22 @@ const LOAD_IDENTITY_EXEMPTIONS_SQL: &str = r#"
                AND observation.value_hash = exemption.value_hash
                AND observation.user_id IN (exemption.user_a, exemption.user_b)
        )
+     ORDER BY exemption.user_a, exemption.user_b,
+              exemption.kind, exemption.value_hash,
+              exemption.created_at_utc, exemption.expires_at_utc
+"#;
+
+const LOAD_AFFECTED_IDENTITY_EXEMPTIONS_SQL: &str = r#"
+    SELECT exemption.user_a, exemption.user_b,
+           exemption.kind, exemption.value_hash,
+           exemption.created_at_utc, exemption.expires_at_utc,
+           exemption.revoked_at_utc
+      FROM "AntiCheatExemptions" exemption
+     WHERE exemption.created_at_utc < $2
+       AND exemption.expires_at_utc > $1
+       AND (exemption.revoked_at_utc IS NULL
+            OR exemption.revoked_at_utc > $1)
+       AND (exemption.user_a = ANY($3) OR exemption.user_b = ANY($3))
      ORDER BY exemption.user_a, exemption.user_b,
               exemption.kind, exemption.value_hash,
               exemption.created_at_utc, exemption.expires_at_utc
@@ -456,6 +512,24 @@ pub(super) async fn run_correlation_checks_for_snapshot(
     game_id: i32,
     snapshot: super::detectors::ReconciliationSnapshot,
 ) -> AppResult<()> {
+    let through: i64 = sqlx::query_scalar(
+        r#"SELECT COALESCE(MAX(id), 0)::bigint
+             FROM "IdentityObservations" WHERE game_id = $1"#,
+    )
+    .bind(game_id)
+    .fetch_one(db.get_postgres_connection_pool())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    run_correlation_checks_incremental(db, game_id, snapshot, 0, through).await
+}
+
+pub(super) async fn run_correlation_checks_incremental(
+    db: &DatabaseConnection,
+    game_id: i32,
+    snapshot: super::detectors::ReconciliationSnapshot,
+    after_identity_id: i64,
+    through_identity_id: i64,
+) -> AppResult<()> {
     let pool = db.get_postgres_connection_pool();
     let Some(window) = super::detectors::load_competitive_game_window(pool, game_id).await? else {
         return Ok(());
@@ -465,28 +539,65 @@ pub(super) async fn run_correlation_checks_for_snapshot(
         return Ok(());
     }
     let final_identity_snapshot = super::detectors::final_snapshot_ready(snapshot);
+    if !final_identity_snapshot && through_identity_id <= after_identity_id {
+        return Ok(());
+    }
 
-    let observations = sqlx::query_as::<_, Observation>(LOAD_OBSERVATIONS_SQL)
-        .bind(game_id)
-        .bind(start)
-        .bind(end)
-        .fetch_all(pool)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let submissions = sqlx::query_as::<_, SubmissionIdentity>(LOAD_SUBMISSION_IDENTITIES_SQL)
-        .bind(game_id)
-        .bind(start)
-        .bind(end)
-        .fetch_all(pool)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let exemption_rows = sqlx::query_as::<_, IdentityExemption>(LOAD_IDENTITY_EXEMPTIONS_SQL)
-        .bind(game_id)
-        .bind(start)
-        .bind(end)
-        .fetch_all(pool)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    let observations = if final_identity_snapshot {
+        sqlx::query_as::<_, Observation>(LOAD_OBSERVATIONS_SQL)
+            .bind(game_id)
+            .bind(start)
+            .bind(end)
+            .fetch_all(pool)
+            .await
+    } else {
+        sqlx::query_as::<_, Observation>(LOAD_AFFECTED_OBSERVATIONS_SQL)
+            .bind(game_id)
+            .bind(start)
+            .bind(end)
+            .bind(after_identity_id)
+            .bind(through_identity_id)
+            .fetch_all(pool)
+            .await
+    }
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if observations.is_empty() && !final_identity_snapshot {
+        return Ok(());
+    }
+    let submissions = if final_identity_snapshot {
+        sqlx::query_as::<_, SubmissionIdentity>(LOAD_SUBMISSION_IDENTITIES_SQL)
+            .bind(game_id)
+            .bind(start)
+            .bind(end)
+            .fetch_all(pool)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+    } else {
+        Vec::new()
+    };
+    let exemption_rows = if final_identity_snapshot {
+        sqlx::query_as::<_, IdentityExemption>(LOAD_IDENTITY_EXEMPTIONS_SQL)
+            .bind(game_id)
+            .bind(start)
+            .bind(end)
+            .fetch_all(pool)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+    } else {
+        let affected_users = observations
+            .iter()
+            .map(|observation| observation.user_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        sqlx::query_as::<_, IdentityExemption>(LOAD_AFFECTED_IDENTITY_EXEMPTIONS_SQL)
+            .bind(start)
+            .bind(end)
+            .bind(&affected_users)
+            .fetch_all(pool)
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?
+    };
     let mut exemptions = IdentityExemptions::new();
     for exemption in exemption_rows {
         exemptions
@@ -759,6 +870,10 @@ mod tests {
         assert!(LOAD_SUBMISSION_IDENTITIES_SQL.contains("competitive_admitted_at_utc < $3"));
         assert!(!LOAD_OBSERVATIONS_SQL.contains("TeamMembers"));
         assert!(!LOAD_OBSERVATIONS_SQL.contains("user_name"));
+        assert!(LOAD_AFFECTED_OBSERVATIONS_SQL.contains("observation.id > $4"));
+        assert!(LOAD_AFFECTED_OBSERVATIONS_SQL.contains("observation.id <= $5"));
+        assert!(LOAD_AFFECTED_OBSERVATIONS_SQL.contains("WITH changed AS MATERIALIZED"));
+        assert!(LOAD_AFFECTED_IDENTITY_EXEMPTIONS_SQL.contains("user_a = ANY($3)"));
     }
 
     #[test]
