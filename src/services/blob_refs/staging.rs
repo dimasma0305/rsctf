@@ -42,6 +42,15 @@ pub(crate) struct StagedBlob {
     pub blob: StoredBlob,
 }
 
+impl StagedBlob {
+    pub(crate) async fn consume_with_existing_reference(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+    ) -> AppResult<i32> {
+        consume_staged_blob_with_existing_reference(transaction, self).await
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct StageRow {
     owner_scope: String,
@@ -388,11 +397,11 @@ pub(crate) async fn load_ready_upload_stage(
     if row.owner_user_id != Some(owner_user_id)
         || !row.owner_scope.starts_with("asset-upload:")
         || row.content_hash != expected_hash
-        || row.state != "Ready"
+        || !matches!(row.state.as_str(), "Ready" | "Published")
         || row.lease_expires_at_utc <= Utc::now()
     {
         return Err(AppError::conflict(
-            "Upload operation does not own this ready asset",
+            "Upload operation does not own this staged asset",
         ));
     }
     exact_stage(
@@ -474,6 +483,72 @@ pub(crate) async fn publish_staged_blob(
     .map_err(database_error)?;
     if updated.rows_affected() != 1 {
         return Err(AppError::conflict("Blob staging operation is not ready"));
+    }
+    Ok(file_id)
+}
+
+/// Consume a stage without acquiring another reference when the caller has
+/// already proved that this exact content is its current domain-owned blob.
+/// This closes the commit-acknowledgement gap: an exact retry can publish a
+/// still-ready stage or replay a published receipt without incrementing and
+/// subsequently releasing the owner's only reference.
+pub(crate) async fn consume_staged_blob_with_existing_reference(
+    transaction: &mut Transaction<'_, Postgres>,
+    staged: &StagedBlob,
+) -> AppResult<i32> {
+    lock_hash(transaction, &staged.blob.hash)
+        .await
+        .map_err(database_error)?;
+    let row = sqlx::query_as::<_, StageRow>(
+        r#"SELECT owner_scope, owner_user_id, content_hash, file_name, file_size,
+                  state, lease_expires_at_utc
+             FROM "BlobStagingOperations"
+            WHERE operation_id = $1
+            FOR UPDATE"#,
+    )
+    .bind(staged.operation_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| AppError::conflict("Blob staging operation expired"))?;
+    exact_stage(
+        staged.operation_id,
+        &row,
+        &staged.owner_scope,
+        staged.owner_user_id,
+        &staged.blob.hash,
+        &staged.blob.name,
+        staged.blob.size,
+    )?;
+    if !matches!(row.state.as_str(), "Ready" | "Published")
+        || row.lease_expires_at_utc <= Utc::now()
+    {
+        return Err(AppError::conflict("Blob staging operation is not ready"));
+    }
+
+    let file_id = sqlx::query_scalar::<_, i32>(
+        r#"SELECT id FROM "Files" WHERE hash = $1 AND reference_count > 0"#,
+    )
+    .bind(&staged.blob.hash)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| AppError::conflict("current blob is no longer owned"))?;
+    if row.state == "Ready" {
+        let updated = sqlx::query(
+            r#"UPDATE "BlobStagingOperations"
+                  SET state = 'Published', published_at_utc = clock_timestamp(),
+                      lease_expires_at_utc = clock_timestamp() + interval '24 hours'
+                WHERE operation_id = $1 AND state = 'Ready'
+                  AND lease_expires_at_utc > clock_timestamp()"#,
+        )
+        .bind(staged.operation_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        if updated.rows_affected() != 1 {
+            return Err(AppError::conflict("Blob staging operation is not ready"));
+        }
     }
     Ok(file_id)
 }
@@ -641,6 +716,44 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(references, 1);
+
+        let recovered = load_ready_upload_stage(&pool, operation, owner, &first.blob.hash)
+            .await
+            .unwrap();
+        assert_eq!(recovered.operation_id, operation);
+
+        let same_content = stage_blob(
+            &pool,
+            &storage,
+            Uuid::new_v4(),
+            "account-avatar",
+            Some(owner),
+            "proof.bin",
+            b"immutable",
+        )
+        .await
+        .unwrap();
+        let mut no_op = pool.begin().await.unwrap();
+        let no_op_id = consume_staged_blob_with_existing_reference(&mut no_op, &same_content)
+            .await
+            .unwrap();
+        no_op.commit().await.unwrap();
+        assert_eq!(no_op_id, first_id);
+        let mut no_op_replay = pool.begin().await.unwrap();
+        assert_eq!(
+            consume_staged_blob_with_existing_reference(&mut no_op_replay, &same_content)
+                .await
+                .unwrap(),
+            first_id
+        );
+        no_op_replay.commit().await.unwrap();
+        let references_after_no_op: i64 =
+            sqlx::query_scalar(r#"SELECT reference_count FROM "Files" WHERE id = $1"#)
+                .bind(first_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(references_after_no_op, 1);
 
         sqlx::query(r#"UPDATE "Files" SET reference_count = 0 WHERE id = $1"#)
             .bind(first_id)

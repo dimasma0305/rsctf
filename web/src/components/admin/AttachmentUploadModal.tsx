@@ -23,11 +23,11 @@ import { Icon } from '@mdi/react'
 import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams } from 'react-router'
+import { MAX_FLAG_IMPORT_ROWS } from '@Utils/FlagImport'
 import { showErrorMsg } from '@Utils/Shared'
 import { useEditChallenge } from '@Hooks/useEdit'
 import api, { FileType } from '@Api'
 import uploadClasses from '@Styles/Upload.module.css'
-import { MAX_FLAG_IMPORT_ROWS } from '@Utils/FlagImport'
 
 export const AttachmentUploadModal: FC<ModalProps> = (props) => {
   const { id, chalId } = useParams()
@@ -65,11 +65,12 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
 
     try {
       operationIdRef.current ??= crypto.randomUUID()
+      const operationId = operationIdRef.current
       const data = await api.assets.assetsUpload(
         {
           files,
         },
-        { filename: uploadFileName, operationId: operationIdRef.current },
+        { filename: uploadFileName, operationId },
         {
           onUploadProgress: (e) => {
             setProgress((e.loaded / (e.total ?? 1)) * 90)
@@ -79,19 +80,17 @@ export const AttachmentUploadModal: FC<ModalProps> = (props) => {
 
       setProgress(95)
       if (data.data) {
-        await api.edit.editAddFlags(
-          numId,
-          numCId,
-          {
-            operationId: crypto.randomUUID(),
-            flags: data.data.map((f, idx) => ({
-              flag: files[idx].name,
-              attachmentType: FileType.Local,
-              fileHash: f.hash,
-              uploadId: f.uploadId,
-            })),
-          }
-        )
+        await api.edit.editAddFlags(numId, numCId, {
+          // The import and its staged blobs share one retained request
+          // identity, so a lost response replays both halves together.
+          operationId,
+          flags: data.data.map((f, idx) => ({
+            flag: files[idx].name,
+            attachmentType: FileType.Local,
+            fileHash: f.hash,
+            uploadId: f.uploadId,
+          })),
+        })
 
         setProgress(0)
         showNotification({

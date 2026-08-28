@@ -8,8 +8,26 @@
 //! payload here before polling the multipart stream.
 
 use tokio::sync::{Semaphore, SemaphorePermit};
+use uuid::Uuid;
 
 use crate::utils::error::{AppError, AppResult};
+
+pub const OPERATION_ID_HEADER: &str = "x-rsctf-operation-id";
+
+/// Parse the stable identity required by replayable multipart mutations.
+/// Keeping this in the upload boundary gives every named blob owner the same
+/// strict contract before it buffers a request body or touches storage.
+pub fn required_operation_id(headers: &axum::http::HeaderMap) -> AppResult<Uuid> {
+    let raw = headers
+        .get(OPERATION_ID_HEADER)
+        .ok_or_else(|| AppError::bad_request("X-RSCTF-Operation-Id header is required"))?
+        .to_str()
+        .map_err(|_| AppError::bad_request("X-RSCTF-Operation-Id must be an ASCII UUID"))?;
+    Uuid::parse_str(raw)
+        .ok()
+        .filter(|operation_id| !operation_id.is_nil())
+        .ok_or_else(|| AppError::bad_request("X-RSCTF-Operation-Id must be a non-zero UUID"))
+}
 
 const MIB: usize = 1024 * 1024;
 const MULTIPART_OVERHEAD_BYTES: usize = MIB;
@@ -67,6 +85,7 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
 
     #[test]
     fn every_buffered_route_fits_the_shared_budget() {
@@ -78,5 +97,25 @@ mod tests {
         ] {
             assert!(limit.div_ceil(MIB) <= BUFFERED_UPLOAD_BUDGET_MIB);
         }
+    }
+
+    #[test]
+    fn multipart_operation_identity_is_required_and_strict() {
+        let mut headers = HeaderMap::new();
+        assert!(required_operation_id(&headers).is_err());
+        headers.insert(OPERATION_ID_HEADER, HeaderValue::from_static("not-a-uuid"));
+        assert!(required_operation_id(&headers).is_err());
+        headers.insert(
+            OPERATION_ID_HEADER,
+            HeaderValue::from_static("00000000-0000-0000-0000-000000000000"),
+        );
+        assert!(required_operation_id(&headers).is_err());
+
+        let expected = Uuid::new_v4();
+        headers.insert(
+            OPERATION_ID_HEADER,
+            HeaderValue::from_str(&expected.to_string()).unwrap(),
+        );
+        assert_eq!(required_operation_id(&headers).unwrap(), expected);
     }
 }

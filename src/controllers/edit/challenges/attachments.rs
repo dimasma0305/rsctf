@@ -124,22 +124,44 @@ async fn replace_attachment_locked(
     prepared: Option<&PreparedAttachment>,
 ) -> AppResult<AttachmentSwap> {
     super::deletion::reject_pending_mutation(&mut **transaction, game_id, challenge_id).await?;
-    let (challenge_type, old_attachment_id) = sqlx::query_as::<_, (i16, Option<i32>)>(
-        r#"SELECT "Type", attachment_id
-                 FROM "GameChallenges"
-                WHERE id = $1 AND game_id = $2
-                FOR UPDATE"#,
-    )
-    .bind(challenge_id)
-    .bind(game_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?
-    .ok_or_else(|| AppError::not_found("Challenge not found"))?;
+    let (challenge_type, old_attachment_id, old_file_type, old_hash) =
+        sqlx::query_as::<_, (i16, Option<i32>, Option<i16>, Option<String>)>(
+            r#"SELECT challenge."Type", challenge.attachment_id,
+                      attachment."Type", file.hash
+                 FROM "GameChallenges" challenge
+                 LEFT JOIN "Attachments" attachment
+                   ON attachment.id = challenge.attachment_id
+                 LEFT JOIN "Files" file ON file.id = attachment.local_file_id
+                WHERE challenge.id = $1 AND challenge.game_id = $2
+                FOR UPDATE OF challenge"#,
+        )
+        .bind(challenge_id)
+        .bind(game_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::not_found("Challenge not found"))?;
     if challenge_type == ChallengeType::DynamicAttachment as i16 {
         return Err(AppError::bad_request(
             "Use the assets API for dynamic-attachment challenges",
         ));
+    }
+
+    if let (Some(old_attachment_id), Some(prepared), Some(stage)) = (
+        old_attachment_id,
+        prepared,
+        prepared.and_then(|value| value.upload_stage.as_ref()),
+    ) {
+        let same_local_content = prepared.file_type == FileType::Local
+            && old_file_type == Some(FileType::Local as i16)
+            && old_hash.as_deref() == Some(stage.blob.hash.as_str());
+        if same_local_content {
+            stage.consume_with_existing_reference(transaction).await?;
+            return Ok(AttachmentSwap {
+                attachment_id: Some(old_attachment_id),
+                deleted_hash: None,
+            });
+        }
     }
 
     let new_attachment_id = if let Some(prepared) = prepared {
