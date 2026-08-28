@@ -83,7 +83,12 @@ pub fn router() -> Router<SharedState> {
         // --- Diagnostics ---
         .route("/api/admin/MyIp", get(my_ip))
         // --- Config ---
-        .route("/api/admin/config", get(get_config).put(update_config))
+        .route(
+            "/api/admin/config",
+            get(get_config)
+                .put(update_config)
+                .layer(DefaultBodyLimit::max(96 * 1024)),
+        )
         .route(
             "/api/admin/config/logo",
             post(logo_upload)
@@ -91,6 +96,16 @@ pub fn router() -> Router<SharedState> {
                     crate::utils::upload::IMAGE_BODY_BYTES,
                 ))
                 .merge(delete(logo_delete)),
+        )
+        .route(
+            "/api/admin/config/logo/stage/{operation_id}",
+            post(stage_branding).layer(DefaultBodyLimit::max(
+                crate::utils::upload::IMAGE_BODY_BYTES,
+            )),
+        )
+        .route(
+            "/api/admin/config/operations/{operation_id}",
+            get(get_settings_operation),
         )
         // --- Dashboard / trends / reviews / cheat reports / writeups ---
         .route(

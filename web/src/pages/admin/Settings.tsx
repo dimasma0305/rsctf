@@ -62,6 +62,7 @@ import { IMAGE_MIME_TYPES } from '@Utils/Shared'
 import { OnceSWRConfig, useCaptchaConfig, useConfig } from '@Hooks/useConfig'
 import api, {
   AccountPolicy,
+  BrandingAction,
   BuildRegistryConfig,
   CaptchaConfig,
   CaptchaProvider,
@@ -77,9 +78,17 @@ import api, {
   OAuthConfig,
   ProxyTrustConfig,
   RegistryConfig,
+  SettingsMutationResult,
 } from '@Api'
 import misc from '@Styles/Misc.module.css'
 import classes from '@Styles/Settings.module.css'
+import {
+  dirtySettingsSections,
+  newSettingsOperationId,
+  ownsSettingsResult,
+  settingsRequestSignature,
+  type SettingsOperationOwner,
+} from '@Utils/SettingsOperations'
 import { getAccountUniquenessState, setBrowserFingerprintCollection } from './settingsAccountPolicy'
 
 const Configs: FC = () => {
@@ -122,9 +131,12 @@ const Configs: FC = () => {
     | 'donations'
     | 'diagnostics'
   const [activeSection, setActiveSection] = useState<SectionKey>('platform')
-  const initialSnapshotRef = useRef<string | null>(null)
+  const initialSnapshotRef = useRef<ConfigEditModel | null>(null)
+  const saveOwnerRef = useRef(false)
+  const operationRef = useRef<SettingsOperationOwner | null>(null)
   const [color, setColor] = useState<string | undefined | null>(globalConfig?.customTheme)
   const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [brandingAction, setBrandingAction] = useState<BrandingAction>(BrandingAction.Keep)
 
   const { t } = useTranslation()
 
@@ -150,7 +162,7 @@ const Configs: FC = () => {
       // equality) isn't enough — the SWR cache may return the same
       // object instance after a no-op revalidation, but we want the
       // dirty flag to reset after a save anyway. Stringify wins.
-      initialSnapshotRef.current = JSON.stringify({
+      initialSnapshotRef.current = {
         globalConfig: configs.globalConfig,
         accountPolicy: configs.accountPolicy,
         containerPolicy: configs.containerPolicy,
@@ -158,17 +170,18 @@ const Configs: FC = () => {
         buildRegistry: configs.buildRegistry,
         email: configs.email,
         captcha: configs.captcha,
-        oauth: configs.oAuth,
+        oAuth: configs.oAuth,
         registry: configs.registry,
-        proxyTrust: configs.proxyTrust,
         donations: configs.donations,
-      })
+      }
+      const pending = operationRef.current
+      if (pending && (configs.revision ?? 0) > pending.expectedRevision) operationRef.current = null
     }
   }, [configs])
 
   // Recompute the current snapshot on every render — cheap (<10 small
   // objects) and gets us a fresh dirty flag without per-field plumbing.
-  const currentSnapshot = JSON.stringify({
+  const currentSnapshot: ConfigEditModel = {
     globalConfig: { ...globalConfig, customTheme: color ?? globalConfig?.customTheme },
     accountPolicy,
     containerPolicy,
@@ -176,13 +189,17 @@ const Configs: FC = () => {
     buildRegistry,
     email,
     captcha,
-    oauth,
+    oAuth: oauth,
     registry,
-    proxyTrust,
     donations,
-  })
+  }
+  const dirtySections = initialSnapshotRef.current
+    ? dirtySettingsSections(initialSnapshotRef.current, currentSnapshot)
+    : {}
   const dirty =
-    logoFile !== null || (initialSnapshotRef.current !== null && currentSnapshot !== initialSnapshotRef.current)
+    logoFile !== null ||
+    brandingAction !== BrandingAction.Keep ||
+    Object.keys(dirtySections).length > 0
 
   const logoPreviewUrl = useMemo(() => (logoFile ? URL.createObjectURL(logoFile) : undefined), [logoFile])
 
@@ -282,27 +299,32 @@ const Configs: FC = () => {
     </Tooltip>
   )
 
-  const updateConfig = async (conf: ConfigEditModel) => {
-    setDisabled(true)
-
+  const updateConfig = async (
+    conf: ConfigEditModel,
+    owner: SettingsOperationOwner
+  ): Promise<SettingsMutationResult | null> => {
     try {
-      await api.admin.adminUpdateConfigs(conf)
-
-      if (logoFile) {
-        await api.admin.adminUpdateLogo({ file: logoFile })
+      if (conf.brandingAction === BrandingAction.Set) {
+        if (!logoFile) throw new Error('Select a logo before saving this branding operation')
+        await api.admin.adminStageSettingsBranding(owner.operationId, { file: logoFile })
       }
-
-      await mutate({ ...configs, ...conf, proxyTrust }, { revalidate: false })
-      // Refetch the complete public projection so effective OAuth providers and
-      // environment-backed policy defaults update together after this write.
-      await mutateConfig()
-      await mutateCaptchaConfig()
-      return true
-    } catch (e) {
-      showErrorMsg(e, t)
-      return false
-    } finally {
-      setDisabled(false)
+      const { data } = await api.admin.adminUpdateConfigs(conf)
+      return data
+    } catch (originalError) {
+      // The write may have committed before the response was lost. Reconcile
+      // the durable operation before showing a failure or offering Retry.
+      try {
+        const { data: result } = await api.admin.adminGetSettingsOperation(owner.operationId)
+        if (ownsSettingsResult(owner, result)) return result
+      } catch {
+        // No durable result was available to reconcile this response.
+      }
+      if ((originalError as { response?: { status?: number } }).response?.status === 409) {
+        operationRef.current = null
+        await mutate()
+      }
+      showErrorMsg(originalError, t)
+      return null
     }
   }
 
@@ -354,42 +376,57 @@ const Configs: FC = () => {
     }
   }
 
-  const onResetLogo = async () => {
-    setDisabled(true)
+  const onResetLogo = () => {
     setLogoFile(null)
-
-    try {
-      await api.admin.adminResetLogo()
-      mutate({ ...configs, globalConfig: { ...globalConfig, faviconHash: '' } })
-      mutateConfig({ ...configs, logoUrl: '' })
-    } catch (e) {
-      showErrorMsg(e, t)
-    } finally {
-      setDisabled(false)
-    }
+    setBrandingAction(BrandingAction.Clear)
   }
 
   const colors = color && /^#[0-9A-F]{6}$/i.test(color) ? generateColors(color) : theme.colors.brand
 
   const handleSave = async () => {
+    if (saveOwnerRef.current || !configs || !dirty) return
+    saveOwnerRef.current = true
     setSaved(false)
-    const success = await updateConfig({
-      globalConfig: {
-        ...globalConfig,
-        customTheme: color && /^#[0-9A-F]{6}$/i.test(color) ? color : '',
-      },
-      accountPolicy,
-      containerPolicy,
-      containerProvider,
-      buildRegistry,
-      email,
-      captcha,
-      oAuth: oauth,
-      registry,
-      donations,
-    })
-    if (success) setLogoFile(null)
-    setSaved(true)
+    setDisabled(true)
+    const requestBody = {
+      ...dirtySections,
+      brandingAction,
+    }
+    const signature = settingsRequestSignature(requestBody)
+    const expectedRevision = configs.revision ?? 0
+    const pending = operationRef.current
+    const owner =
+      pending && pending.expectedRevision === expectedRevision && pending.signature === signature
+        ? pending
+        : {
+            operationId: newSettingsOperationId(),
+            expectedRevision,
+            signature,
+          }
+    operationRef.current = owner
+    try {
+      const result = await updateConfig(
+        {
+          ...requestBody,
+          operationId: owner.operationId,
+          expectedRevision: owner.expectedRevision,
+        },
+        owner
+      )
+      if (!result || !ownsSettingsResult(owner, result)) return
+      operationRef.current = null
+      setLogoFile(null)
+      setBrandingAction(BrandingAction.Keep)
+      initialSnapshotRef.current = currentSnapshot
+      // A refresh failure after a confirmed commit is not a Save failure. The
+      // durable revision remains authoritative and the next revalidation will
+      // safely refresh write-only secret placeholders.
+      await Promise.allSettled([mutate(), mutateConfig(), mutateCaptchaConfig()])
+    } finally {
+      saveOwnerRef.current = false
+      setDisabled(false)
+      setSaved(true)
+    }
   }
 
   return (
@@ -465,11 +502,19 @@ const Configs: FC = () => {
                     disabled={disabled}
                     accept={IMAGE_MIME_TYPES.join(',')}
                     value={logoFile}
-                    onChange={setLogoFile}
+                    onChange={(file) => {
+                      setLogoFile(file)
+                      setBrandingAction(file ? BrandingAction.Set : BrandingAction.Keep)
+                    }}
                     rightSectionWidth={48}
                     rightSection={
                       <Tooltip label={t('common.button.reset')}>
-                        <ActionIcon size={44} onClick={onResetLogo} aria-label={t('common.button.reset')}>
+                        <ActionIcon
+                          size={44}
+                          disabled={disabled}
+                          onClick={onResetLogo}
+                          aria-label={t('common.button.reset')}
+                        >
                           <Icon path={mdiRestore} size={0.85} />
                         </ActionIcon>
                       </Tooltip>

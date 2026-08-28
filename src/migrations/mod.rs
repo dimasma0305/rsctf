@@ -150,6 +150,7 @@ mod m0273_receipt_variant_lifecycle;
 mod m0280_traffic_capture_inventory;
 mod m0281_anticheat_read_bounds;
 mod m0303_mail_outbox;
+mod m0304_platform_settings_operations;
 mod m0306_bulk_challenge_mutations;
 mod m0307_division_revision_operations;
 mod m0308_team_invite_rotation;
@@ -322,6 +323,7 @@ impl MigratorTrait for Migrator {
             Box::new(m0280_traffic_capture_inventory::Migration),
             Box::new(m0281_anticheat_read_bounds::Migration),
             Box::new(m0303_mail_outbox::Migration),
+            Box::new(m0304_platform_settings_operations::Migration),
             Box::new(m0306_bulk_challenge_mutations::Migration),
             Box::new(m0307_division_revision_operations::Migration),
             Box::new(m0308_team_invite_rotation::Migration),
@@ -471,7 +473,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 31..],
+            &names[names.len() - 33..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -500,6 +502,8 @@ mod tests {
                 "m0273_receipt_variant_lifecycle",
                 "m0280_traffic_capture_inventory",
                 "m0281_anticheat_read_bounds",
+                "m0303_mail_outbox",
+                "m0304_platform_settings_operations",
                 "m0306_bulk_challenge_mutations",
                 "m0307_division_revision_operations",
                 "m0308_team_invite_rotation",
