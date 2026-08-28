@@ -1,6 +1,6 @@
 //! Atomic persistence and deployment-local sanitization for game archives.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use sea_orm::DatabaseTransaction;
 
@@ -12,30 +12,44 @@ pub(super) async fn persist_game_import(
     export_game: &ExportGameModel,
     export_challenges: &[ExportChallengeModel],
 ) -> AppResult<i32> {
+    // Reject invalid domain data before writing any immutable bytes. The same
+    // checks remain in the transaction as the authoritative publication gate.
+    for challenge in export_challenges {
+        if let Some(storage_limit) = challenge.storage_limit {
+            crate::services::container::validate_storage_limit_value(storage_limit)?;
+        }
+        if let Some(workload_spec) = challenge.workload_spec.clone() {
+            crate::services::challenge_workloads::validate_json_for_challenge(
+                challenge.challenge_type,
+                workload_spec,
+            )?;
+        }
+    }
+    let prepared_attachments = prepare_import_attachments(st, entries, export_challenges).await?;
+    let mut prepared_attachments = prepared_attachments.into_iter();
     let transaction = crate::utils::database::begin_seaorm_transaction(&st.db).await?;
-    let mut stored_hashes = BTreeSet::new();
     let result = persist_game_import_locked(
-        st,
         &transaction,
-        entries,
         export_game,
         export_challenges,
-        &mut stored_hashes,
+        &mut prepared_attachments,
     )
     .await;
 
     match result {
         Ok(game_id) => {
+            if prepared_attachments.next().is_some() {
+                let _ = transaction.rollback().await;
+                return Err(AppError::internal(
+                    "game import attachment manifest was not fully consumed",
+                ));
+            }
             transaction.commit().await?;
             Ok(game_id)
         }
         Err(error) => {
-            match transaction.rollback().await {
-                Ok(()) => purge_rolled_back_blobs(st, stored_hashes).await,
-                Err(rollback_error) => tracing::error!(
-                    %rollback_error,
-                    "game import transaction rollback failed; skipping ambiguous blob cleanup"
-                ),
+            if let Err(rollback_error) = transaction.rollback().await {
+                tracing::error!(%rollback_error, "game import transaction rollback failed");
             }
             Err(error)
         }
@@ -43,12 +57,10 @@ pub(super) async fn persist_game_import(
 }
 
 async fn persist_game_import_locked(
-    st: &SharedState,
     transaction: &DatabaseTransaction,
-    entries: &BTreeMap<String, Vec<u8>>,
     export_game: &ExportGameModel,
     export_challenges: &[ExportChallengeModel],
-    stored_hashes: &mut BTreeSet<String>,
+    prepared_attachments: &mut std::vec::IntoIter<PreparedImportAttachment>,
 ) -> AppResult<i32> {
     let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
     let new_game = imported_game_model(export_game, public_key, private_key)
@@ -71,14 +83,10 @@ async fn persist_game_import_locked(
             crate::services::container::validate_storage_limit_value(storage_limit)?;
         }
         let challenge_attachment_id = import_attachment(
-            st,
             transaction,
-            entries,
-            src.attachment_type,
-            src.attachment_file_hash.as_deref(),
-            src.attachment_remote_url.as_deref(),
-            src.attachment_file_name.as_deref(),
-            stored_hashes,
+            prepared_attachments
+                .next()
+                .ok_or_else(|| AppError::internal("game import attachment manifest ended early"))?,
         )
         .await?;
         let workload_spec = match src.workload_spec.clone() {
@@ -98,14 +106,10 @@ async fn persist_game_import_locked(
 
         for flag in &src.flags {
             let attachment_id = import_attachment(
-                st,
                 transaction,
-                entries,
-                flag.attachment_type,
-                flag.file_hash.as_deref(),
-                flag.remote_url.as_deref(),
-                flag.file_name.as_deref(),
-                stored_hashes,
+                prepared_attachments.next().ok_or_else(|| {
+                    AppError::internal("game import attachment manifest ended early")
+                })?,
             )
             .await?;
             flag_context::ActiveModel {
@@ -277,44 +281,102 @@ fn imported_challenge_model(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn import_attachment(
+enum PreparedImportAttachment {
+    None,
+    Remote(String),
+    Local(crate::services::blob_refs::StagedBlob),
+}
+
+async fn prepare_import_attachments(
     st: &SharedState,
-    transaction: &DatabaseTransaction,
+    entries: &BTreeMap<String, Vec<u8>>,
+    challenges: &[ExportChallengeModel],
+) -> AppResult<Vec<PreparedImportAttachment>> {
+    let mut prepared = Vec::new();
+    for challenge in challenges {
+        let ordinal = prepared.len();
+        prepared.push(
+            prepare_import_attachment(
+                st,
+                entries,
+                challenge.attachment_type,
+                challenge.attachment_file_hash.as_deref(),
+                challenge.attachment_remote_url.as_deref(),
+                challenge.attachment_file_name.as_deref(),
+                ordinal,
+            )
+            .await?,
+        );
+        for flag in &challenge.flags {
+            let ordinal = prepared.len();
+            prepared.push(
+                prepare_import_attachment(
+                    st,
+                    entries,
+                    flag.attachment_type,
+                    flag.file_hash.as_deref(),
+                    flag.remote_url.as_deref(),
+                    flag.file_name.as_deref(),
+                    ordinal,
+                )
+                .await?,
+            );
+        }
+    }
+    Ok(prepared)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_import_attachment(
+    st: &SharedState,
     entries: &BTreeMap<String, Vec<u8>>,
     file_type: Option<FileType>,
     file_hash: Option<&str>,
     remote_url: Option<&str>,
     file_name: Option<&str>,
-    stored_hashes: &mut BTreeSet<String>,
-) -> AppResult<Option<i32>> {
-    let (file_type, remote_url, local_file_id) = match file_type.unwrap_or(FileType::None) {
-        FileType::None => return Ok(None),
-        FileType::Remote => (
-            FileType::Remote,
-            Some(validate_remote_attachment_url(
-                remote_url.unwrap_or_default(),
-            )?),
-            None,
-        ),
+    ordinal: usize,
+) -> AppResult<PreparedImportAttachment> {
+    match file_type.unwrap_or(FileType::None) {
+        FileType::None => Ok(PreparedImportAttachment::None),
+        FileType::Remote => Ok(PreparedImportAttachment::Remote(
+            validate_remote_attachment_url(remote_url.unwrap_or_default())?,
+        )),
         FileType::Local => {
             let Some(hash) = file_hash.filter(|hash| !hash.is_empty()) else {
-                return Ok(None);
+                return Ok(PreparedImportAttachment::None);
             };
             let Some(bytes) = valid_bundled_blob(entries, hash) else {
                 // Never link an attachment to an unavailable deployment-local
                 // blob merely because another database happens to know its hash.
-                return Ok(None);
+                return Ok(PreparedImportAttachment::None);
             };
             let name = file_name.unwrap_or(hash);
-            // Record cleanup intent before storage runs: a metadata-upsert
-            // failure happens after the physical content-addressed write.
-            stored_hashes.insert(hash.to_owned());
-            let (_, file_id) = crate::services::blob_refs::store_and_acquire_in_seaorm_transaction(
+            let stage = crate::services::blob_refs::stage_blob(
+                st.pg(),
                 st.storage.as_ref(),
-                transaction,
+                uuid::Uuid::new_v4(),
+                &format!("game-import:{ordinal}"),
+                None,
                 name,
                 bytes,
+            )
+            .await?;
+            Ok(PreparedImportAttachment::Local(stage))
+        }
+    }
+}
+
+async fn import_attachment(
+    transaction: &DatabaseTransaction,
+    prepared: PreparedImportAttachment,
+) -> AppResult<Option<i32>> {
+    let (file_type, remote_url, local_file_id) = match prepared {
+        PreparedImportAttachment::None => return Ok(None),
+        PreparedImportAttachment::Remote(url) => (FileType::Remote, Some(url), None),
+        PreparedImportAttachment::Local(stage) => {
+            let file_id = crate::services::blob_refs::publish_staged_blob_in_seaorm_transaction(
+                transaction,
+                &stage,
             )
             .await?;
             (FileType::Local, None, Some(file_id))
@@ -337,17 +399,6 @@ fn valid_bundled_blob<'a>(entries: &'a BTreeMap<String, Vec<u8>>, hash: &str) ->
         .get(&format!("files/{hash}"))
         .filter(|bytes| crate::utils::codec::sha256_hex(bytes) == hash)
         .map(Vec::as_slice)
-}
-
-async fn purge_rolled_back_blobs(st: &SharedState, hashes: BTreeSet<String>) {
-    for hash in hashes {
-        if let Err(error) =
-            crate::services::blob_refs::purge_if_unreferenced(st.pg(), st.storage.as_ref(), &hash)
-                .await
-        {
-            tracing::warn!(%error, %hash, "could not clean a rolled-back game-import blob");
-        }
-    }
 }
 
 #[cfg(test)]

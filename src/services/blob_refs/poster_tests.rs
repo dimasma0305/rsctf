@@ -94,6 +94,7 @@ async fn game_delete_releases_and_purges_its_poster_reference_atomically() {
     .execute(&pool)
     .await
     .unwrap();
+    crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
 
     let storage = MemoryStorage::default();
     let poster_bytes = b"game-poster";

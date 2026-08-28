@@ -6,10 +6,9 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::storage::BlobStorage;
-use crate::utils::codec::sha256_hex;
 use crate::utils::error::{AppError, AppResult};
 
-use super::{acquire_locked, database_error, lock_hash, purge_if_unreferenced};
+use super::{database_error, purge_if_unreferenced};
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct ServiceSnapshotBlob {
@@ -82,7 +81,39 @@ pub async fn store_service_snapshot(
     name: &str,
     bytes: &[u8],
 ) -> AppResult<Option<ServiceSnapshotBlob>> {
-    let expected_hash = sha256_hex(bytes);
+    if expires_at_utc.is_some_and(|expires| expires <= Utc::now()) {
+        return Ok(None);
+    }
+    let source_exists: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM "AdTeamServices"
+                WHERE id = $1 AND container_id = $2
+           )"#,
+    )
+    .bind(team_service_id)
+    .bind(source_container_id)
+    .fetch_one(pool)
+    .await
+    .map_err(database_error)?;
+    if !source_exists {
+        return Err(AppError::conflict(
+            "A&D service backend changed before snapshot publication",
+        ));
+    }
+    if let Some(existing) = load_service_snapshot(pool, team_service_id).await? {
+        return Ok(Some(existing));
+    }
+    let staged = super::stage_blob(
+        pool,
+        storage,
+        uuid::Uuid::new_v4(),
+        &format!("ad-service-snapshot:{team_service_id}"),
+        None,
+        name,
+        bytes,
+    )
+    .await?;
+    let expected_hash = staged.blob.hash.clone();
     let mut transaction = crate::utils::database::begin_sqlx_transaction(pool)
         .await
         .map_err(database_error)?;
@@ -125,18 +156,7 @@ pub async fn store_service_snapshot(
             return Ok(None);
         }
 
-        lock_hash(&mut transaction, &expected_hash)
-            .await
-            .map_err(database_error)?;
-        let stored = storage.store(name, bytes).await?;
-        if stored.hash != expected_hash {
-            return Err(AppError::internal(
-                "blob storage returned a hash that does not match its content",
-            ));
-        }
-        let file_id = acquire_locked(&mut transaction, &stored.hash, &stored.name, stored.size)
-            .await
-            .map_err(database_error)?;
+        let file_id = super::publish_staged_blob(&mut transaction, &staged).await?;
         let id = sqlx::query_scalar::<_, i64>(
             r#"INSERT INTO "AdServiceSnapshots"
                     (team_service_id, local_file_id, source_container_id,
@@ -357,6 +377,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        crate::services::blob_refs::test_support::install_operation_tables(&pool).await;
 
         let root =
             std::env::temp_dir().join(format!("rsctf-ad-snapshot-{}", Uuid::new_v4().simple()));
