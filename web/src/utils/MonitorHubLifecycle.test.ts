@@ -17,9 +17,11 @@ import {
   monitorEventPushIsCurrent,
   monitorPushIsCurrent,
   monitorSnapshotIsCurrent,
+  receiveMonitorSubmissions,
   rebaseGameEventBuffer,
   rebaseSubmissionBuffer,
   submissionMatchesMonitorFilter,
+  submissionMonitorFilterScope,
   submissionMonitorIdentity,
   unreconciledMonitorRows,
 } from './MonitorFeed'
@@ -87,7 +89,7 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
     } else {
       assert.match(source, /api\.game\.gameSubmissionBackfill\(numId/, path)
       assert.match(source, /page < MAX_BACKFILL_PAGES/, path)
-      assert.match(source, /mergeSubmissionBuffer\(incoming, newSubmissions\.current, MAX_BUFFERED_SUBMISSIONS\)/, path)
+      assert.match(source, /receiveMonitorSubmissions\([\s\S]*?MAX_BUFFERED_SUBMISSIONS/, path)
       assert.match(source, /ownerKey: gameStatus/, path)
       assert.match(
         source,
@@ -102,12 +104,17 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
         /const snapshotScope = JSON\.stringify\(\[feedScope, activePage, type, debouncedSearch\]\)/,
         path
       )
+      assert.match(
+        source,
+        /const submissionFilterScope = submissionMonitorFilterScope\(feedScope, type, debouncedSearch\)/,
+        path
+      )
       assert.match(source, /const submissionRequest = useRef\(new LatestRequest\(\)\)/, path)
       assert.match(source, /const recoveryRequest = useRef\(new LatestRequest\(\)\)/, path)
       assert.match(source, /currentMonitorSnapshotRows\(snapshotScope, submissionSnapshot\)/, path)
       assert.match(
         source,
-        /currentMonitorBufferRows\([\s\S]*?feedScope,[\s\S]*?bufferedFeedScope\.current,[\s\S]*?newSubmissions\.current[\s\S]*?\)/,
+        /currentMonitorBufferRows\([\s\S]*?submissionFilterScope,[\s\S]*?bufferedSubmissionScope\.current,[\s\S]*?newSubmissions\.current[\s\S]*?\)/,
         path
       )
       assert.match(
@@ -115,7 +122,11 @@ test('monitor hubs survive timing revalidation, stop at the boundary, and reconc
         /const loadSnapshot = useCallback[\s\S]*?\[activePage, type, debouncedSearch, numId, snapshotScope\]/,
         path
       )
-      assert.match(source, /submissionMatchesMonitorFilter\(item, type, debouncedSearch\)/, path)
+      assert.match(
+        source,
+        /activeSubmissionFilterScope\.current === requestedSubmissionFilterScope/,
+        `${path} must fence a stale reconnect batch when the active filter changes`
+      )
       assert.match(
         source,
         /mergeSubmissionBuffer\(bufferedSubmissions, submissions \?\? \[\], ITEM_COUNT_PER_PAGE\)/,
@@ -711,6 +722,66 @@ test('submission realtime rows remain deduplicated and capped through 5k sustain
   )
   assert.equal(buffered.length, 500)
   assert.equal(buffered[0].answer, 'updated duplicate')
+})
+
+test('more than five hundred nonmatching pushes cannot evict a matching submission', () => {
+  const type = AnswerResult.Accepted
+  const search = 'needle'
+  let buffered = receiveMonitorSubmissions(
+    [monitorSubmission(1, type, { answer: 'needle' })],
+    [],
+    500,
+    type,
+    search
+  ).rows
+
+  for (let cursor = 2; cursor <= 602; cursor += 1) {
+    const submission =
+      cursor % 2 === 0
+        ? monitorSubmission(cursor, AnswerResult.WrongAnswer, { answer: 'needle' })
+        : monitorSubmission(cursor, type, { answer: 'unrelated' })
+    const received = receiveMonitorSubmissions([submission], buffered, 500, type, search)
+    assert.equal(received.accepted, false)
+    assert.equal(received.rows, buffered, 'irrelevant traffic must not churn the scoped recovery buffer')
+    buffered = received.rows
+  }
+
+  assert.deepEqual(
+    buffered.map(({ id }) => id),
+    [1]
+  )
+
+  const reconnect = receiveMonitorSubmissions(
+    [
+      monitorSubmission(2_000, type, { answer: 'needle' }),
+      ...Array.from({ length: 501 }, (_, index) =>
+        monitorSubmission(2_001 + index, AnswerResult.WrongAnswer, { answer: 'needle' })
+      ),
+    ],
+    buffered,
+    500,
+    type,
+    search
+  )
+  assert.equal(reconnect.accepted, true)
+  assert.deepEqual(
+    reconnect.rows.map(({ id }) => id),
+    [2_000, 1],
+    'reconnect pages must also filter before applying the recovery cap'
+  )
+})
+
+test('submission recovery scopes follow filters but remain stable across pages', () => {
+  const feedScope = JSON.stringify(['viewer:admin', 7])
+  const acceptedScope = submissionMonitorFilterScope(feedScope, AnswerResult.Accepted, '  NEEDLE  ')
+  const sameQueryOnAnotherPage = submissionMonitorFilterScope(feedScope, AnswerResult.Accepted, 'needle')
+  const wrongAnswerScope = submissionMonitorFilterScope(feedScope, AnswerResult.WrongAnswer, 'needle')
+  const buffered = [monitorSubmission(1, AnswerResult.Accepted, { answer: 'needle' })]
+
+  assert.equal(acceptedScope, sameQueryOnAnotherPage)
+  assert.notEqual(acceptedScope, wrongAnswerScope)
+  assert.equal(currentMonitorBufferRows(acceptedScope, acceptedScope, buffered), buffered)
+  assert.deepEqual(currentMonitorBufferRows(wrongAnswerScope, acceptedScope, buffered), [])
 })
 
 test('submission page one renders fifty rows while recovery retains five hundred', () => {

@@ -147,6 +147,11 @@ const normalizedMonitorSearch = (search: string) => {
   return normalized
 }
 
+/** Live recovery follows result/search filters but remains stable while the
+ * operator pages through the same query. */
+export const submissionMonitorFilterScope = (feedScope: string, type: AnswerResult | 'All', search: string) =>
+  JSON.stringify([feedScope, type, normalizedMonitorSearch(search)])
+
 /** Match a pushed submission with the same result/search dimensions as HTTP. */
 export const submissionMatchesMonitorFilter = (
   submission: MonitorSubmission,
@@ -159,4 +164,28 @@ export const submissionMatchesMonitorFilter = (
   return [submission.answer, submission.user, submission.team, submission.challenge]
     .filter((value): value is string => typeof value === 'string')
     .some((value) => value.toLowerCase().includes(normalizedSearch))
+}
+
+export interface MonitorSubmissionBufferUpdate {
+  accepted: boolean
+  rows: readonly MonitorSubmission[]
+}
+
+/** Filter SignalR and reconnect batches before applying the recovery cap so
+ * unrelated traffic cannot evict rows from the active query. */
+export const receiveMonitorSubmissions = (
+  incoming: readonly MonitorSubmission[],
+  current: readonly MonitorSubmission[],
+  limit: number,
+  type: AnswerResult | 'All',
+  search: string
+): MonitorSubmissionBufferUpdate => {
+  const matchingIncoming = incoming.filter((submission) => submissionMatchesMonitorFilter(submission, type, search))
+  if (matchingIncoming.length === 0) return { accepted: false, rows: current }
+
+  const matchingCurrent = current.filter((submission) => submissionMatchesMonitorFilter(submission, type, search))
+  return {
+    accepted: true,
+    rows: mergeSubmissionBuffer(matchingIncoming, matchingCurrent, limit),
+  }
 }

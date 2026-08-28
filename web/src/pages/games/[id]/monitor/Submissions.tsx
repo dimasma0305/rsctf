@@ -45,9 +45,10 @@ import {
   mergeSubmissionBuffer,
   monitorCursorPushIsCurrent,
   monitorSnapshotIsCurrent,
+  receiveMonitorSubmissions,
   rebaseSubmissionBuffer,
   type ScopedMonitorSnapshot,
-  submissionMatchesMonitorFilter,
+  submissionMonitorFilterScope,
   submissionMonitorIdentity,
   unreconciledMonitorRows,
 } from '@Utils/MonitorFeed'
@@ -97,14 +98,16 @@ const Submissions: FC = () => {
   const { scope: viewerScope } = useViewerIdentity()
   const feedScope = JSON.stringify([viewerScope, numId])
   const snapshotScope = JSON.stringify([feedScope, activePage, type, debouncedSearch])
+  const submissionFilterScope = submissionMonitorFilterScope(feedScope, type, debouncedSearch)
 
   const [, update] = useState(0)
-  const newSubmissions = useRef<MonitorSubmission[]>([])
-  const bufferedFeedScope = useRef(feedScope)
+  const newSubmissions = useRef<readonly MonitorSubmission[]>([])
+  const bufferedSubmissionScope = useRef(submissionFilterScope)
   const submissionCursor = useRef(0)
   const cursorInitialized = useRef(false)
   const activeFeedScope = useRef(feedScope)
   const activeSnapshotScope = useRef(snapshotScope)
+  const activeSubmissionFilterScope = useRef(submissionFilterScope)
   const latestSnapshotRequest = useRef(0)
   const [submissionSnapshot, setSubmissionSnapshot] = useState<ScopedMonitorSnapshot<MonitorSubmission>>()
   const submissions = currentMonitorSnapshotRows(snapshotScope, submissionSnapshot)
@@ -127,7 +130,8 @@ const Submissions: FC = () => {
   useEffect(() => {
     activeFeedScope.current = feedScope
     activeSnapshotScope.current = snapshotScope
-  }, [feedScope, snapshotScope])
+    activeSubmissionFilterScope.current = submissionFilterScope
+  }, [feedScope, snapshotScope, submissionFilterScope])
 
   useEffect(() => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
@@ -170,11 +174,22 @@ const Submissions: FC = () => {
     }
   }, [loadSnapshot, t])
 
-  const mergeIncomingSubmissions = useCallback((incoming: readonly MonitorSubmission[]) => {
-    if (incoming.length === 0) return
-    newSubmissions.current = mergeSubmissionBuffer(incoming, newSubmissions.current, MAX_BUFFERED_SUBMISSIONS)
-    update((version) => version + 1)
-  }, [])
+  const mergeIncomingSubmissions = useCallback(
+    (incoming: readonly MonitorSubmission[]) => {
+      if (incoming.length === 0 || activeSubmissionFilterScope.current !== submissionFilterScope) return
+      const buffered = currentMonitorBufferRows(
+        submissionFilterScope,
+        bufferedSubmissionScope.current,
+        newSubmissions.current
+      )
+      const received = receiveMonitorSubmissions(incoming, buffered, MAX_BUFFERED_SUBMISSIONS, type, debouncedSearch)
+      if (!received.accepted) return
+      bufferedSubmissionScope.current = submissionFilterScope
+      newSubmissions.current = received.rows
+      update((version) => version + 1)
+    },
+    [debouncedSearch, submissionFilterScope, type]
+  )
 
   const rebaseAtCheckpoint = useCallback((checkpoint: number) => {
     newSubmissions.current = rebaseSubmissionBuffer(newSubmissions.current, checkpoint)
@@ -185,7 +200,6 @@ const Submissions: FC = () => {
     submissionCursor.current = 0
     cursorInitialized.current = false
     newSubmissions.current = []
-    bufferedFeedScope.current = feedScope
     setSubmissionSnapshot(undefined)
     update((version) => version + 1)
     return () => {
@@ -208,7 +222,11 @@ const Submissions: FC = () => {
     () =>
       recoveryRequest.current.run(async (signal) => {
         const requestedFeedScope = feedScope
-        const isCurrent = () => activeFeedScope.current === requestedFeedScope && !signal.aborted
+        const requestedSubmissionFilterScope = submissionFilterScope
+        const isCurrent = () =>
+          activeFeedScope.current === requestedFeedScope &&
+          activeSubmissionFilterScope.current === requestedSubmissionFilterScope &&
+          !signal.aborted
 
         if (!cursorInitialized.current) {
           const checkpoint = await api.game.gameSubmissionBackfill(numId, {}, { signal })
@@ -251,7 +269,7 @@ const Submissions: FC = () => {
         rebaseAtCheckpoint(checkpoint.data.nextCursor)
         submissionCursor.current = Math.max(submissionCursor.current, checkpoint.data.nextCursor)
       }),
-    [feedScope, loadSnapshot, mergeIncomingSubmissions, numId, rebaseAtCheckpoint]
+    [feedScope, loadSnapshot, mergeIncomingSubmissions, numId, rebaseAtCheckpoint, submissionFilterScope]
   )
 
   const { waitForStop: waitForMonitorHubStop } = useRecoveringHub({
@@ -291,15 +309,14 @@ const Submissions: FC = () => {
   useRevalidateWhenPollingStops(monitorConnectionActive, reconcileSubmissions, waitForMonitorHubStop)
 
   const currentBufferedSubmissions = currentMonitorBufferRows(
-    feedScope,
-    bufferedFeedScope.current,
+    submissionFilterScope,
+    bufferedSubmissionScope.current,
     newSubmissions.current
   )
-  const filteredSubs = currentBufferedSubmissions.filter((item) =>
-    submissionMatchesMonitorFilter(item, type, debouncedSearch)
-  )
   const bufferedSubmissions =
-    activePage === 1 ? unreconciledMonitorRows(filteredSubs, submissions ?? [], submissionMonitorIdentity) : []
+    activePage === 1
+      ? unreconciledMonitorRows(currentBufferedSubmissions, submissions ?? [], submissionMonitorIdentity)
+      : []
   const visibleSubmissions =
     activePage === 1
       ? mergeSubmissionBuffer(bufferedSubmissions, submissions ?? [], ITEM_COUNT_PER_PAGE)
