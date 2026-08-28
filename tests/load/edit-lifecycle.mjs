@@ -20,6 +20,7 @@ import {
   expectStatus,
   inspectUnchangedServerRuntimeIdentity,
   inspectUniformServerRuntimeIdentity,
+  multipartRequest,
   originalServerRuntimeLogTargets,
   persistRecovery,
   rawRequest,
@@ -48,7 +49,7 @@ import {
 import {
   assertSafeAdminTarget,
 } from './admin-lifecycle.js';
-import { docker, mintJwt, PG, RSCTF, runK6, sql, TARGET } from './lib.mjs';
+import { docker, mintJwt, PG, retryTransientUntil, RSCTF, runK6, sql, TARGET } from './lib.mjs';
 import { countContainerFatalLogs } from './log-audit.mjs';
 import {
   acquireExclusiveProcessLock,
@@ -58,6 +59,7 @@ import {
 const runKey = `${Date.now().toString(36)}${process.pid.toString(36)}`;
 const tags = Object.freeze({
   future: `adm${runKey}f`,
+  auth: `adm${runKey}u`,
   ad: `adm${runKey}a`,
   koth: `adm${runKey}k`,
 });
@@ -86,7 +88,8 @@ const k6SummaryPath = process.env.EDIT_SUMMARY_JSON || `/tmp/rsctf-edit-lifecycl
 const githubRepository = process.env.EDIT_GITHUB_REPOSITORY ||
   'https://github.com/dimasma0305/rsctf-challenges.git';
 const githubRef = String(process.env.EDIT_GITHUB_REF || 'main').trim();
-const githubSubpath = process.env.EDIT_GITHUB_SUBPATH || 'Jeopardy/Misc/static-handout';
+const githubSubpath = process.env.EDIT_GITHUB_SUBPATH ||
+  'challenges/Jeopardy/Misc/static-handout';
 const githubExpectedCommit = String(process.env.EDIT_GITHUB_EXPECTED_COMMIT || '').trim().toLowerCase();
 if (!/^[a-f0-9]{40}$/.test(githubExpectedCommit)) {
   throw new Error('EDIT_GITHUB_EXPECTED_COMMIT must be a full 40-character Git commit');
@@ -216,6 +219,7 @@ async function call(id, {
   headers = {},
   baseUrl = TARGET,
   label = id,
+  retryConflict,
 } = {}) {
   const operation = operationById.get(id);
   if (!operation) throw new Error(`unknown edit operation ${id}`);
@@ -235,14 +239,17 @@ async function call(id, {
     requestBody = JSON.stringify(body);
   }
   const started = performance.now();
-  const response = await rawRequest(operation.method, path, {
-    baseUrl,
-    jwt,
-    ip: `10.254.${Math.floor(requestIndex / 240) % 240}.${(requestIndex++ % 240) + 1}`,
-    headers: requestHeaders,
-    body: requestBody,
-    timeoutMs: 180_000,
-  });
+  const request = ({ timeoutMs = 180_000 } = {}) => rawRequest(operation.method, path, {
+      baseUrl,
+      jwt,
+      ip: `10.254.${Math.floor(requestIndex / 240) % 240}.${(requestIndex++ % 240) + 1}`,
+      headers: requestHeaders,
+      body: requestBody,
+      timeoutMs,
+    });
+  const response = retryConflict
+    ? await retryTransientUntil(request, retryConflict)
+    : await request();
   expectStatus(response, operation.expectedStatuses, label);
   const model = responseBody(response, operation);
   validateEditResponse(operation, {
@@ -255,6 +262,19 @@ async function call(id, {
   timings.push({ id, ms: elapsed });
   console.log(`  ✓ ${id} (${response.status}, ${elapsed} ms)`);
   return { model, response, path };
+}
+
+function isTransientKothRecoveryConflict(response) {
+  if (response.status !== 409) return false;
+  let title;
+  try {
+    title = JSON.parse(response.text).title;
+  } catch {
+    return false;
+  }
+  return title === 'replacement container is still transitioning' ||
+    title === 'checker exit 2' ||
+    title === 'checker timed out';
 }
 
 async function uncatalogued(method, path, { body, jwt = A.adminJwt(), expected = 200 } = {}) {
@@ -303,7 +323,7 @@ function authorizationProbeRequest(operation) {
     edit_challenge_update: { content: 'authorization probe' },
     edit_challenge_import_github: {
       repoUrl: 'https://github.com/dimasma0305/rsctf-challenges.git',
-      subpath: 'Jeopardy/Misc/static-handout',
+      subpath: 'challenges/Jeopardy/Misc/static-handout',
     },
     edit_challenge_reject: { note: 'authorization probe' },
     edit_challenge_attachment: {
@@ -430,7 +450,20 @@ async function prepareFutureFixture() {
   state.futureGameIds.push(context.gameId);
   saveRecovery();
 
-  const cohort = A.seedCohort(context.gameId, 3);
+  authorizationGameId = await A.createGame({
+    ...futureGameBody(),
+    title: titleFor(tags.auth),
+    allowUserSubmissions: false,
+  });
+  state.gameIds.push(authorizationGameId);
+  state.futureGameIds.push(authorizationGameId);
+  saveRecovery();
+
+  // Cohort seeding records durable competitive admission. Keep those identity
+  // rows on their own exact disposable event so the primary future event still
+  // truthfully exercises the public hard-delete success path. Cleanup routes
+  // this protected auxiliary identity through the title-guarded fixture helper.
+  const cohort = A.seedCohort(authorizationGameId, 3);
   const [managerUserId, ordinaryUserId, crossManagerUserId] = cohort.userIds;
   const stamp = (id) => sql(`SELECT security_stamp FROM "AspNetUsers" WHERE id=${sqlLiteral(id)}::uuid`);
   context.managerUserId = managerUserId;
@@ -443,15 +476,6 @@ async function prepareFutureFixture() {
     crossGameManagerJwt: mintJwt(crossManagerUserId, stamp(crossManagerUserId), 1),
     managerGameIds: new Set(),
   };
-
-  authorizationGameId = await A.createGame({
-    ...futureGameBody(),
-    title: `EDIT-AUTH-${runKey}`,
-    allowUserSubmissions: false,
-  });
-  state.gameIds.push(authorizationGameId);
-  state.futureGameIds.push(authorizationGameId);
-  saveRecovery();
   await uncatalogued('POST', `/api/edit/games/${authorizationGameId}/admins/${crossManagerUserId}`);
 
   await call('edit_game_admin_add');
@@ -583,15 +607,47 @@ async function prepareFutureFixture() {
   });
   context.divisionId = division.model.id;
 
-  const pendingArchive = challengeArchive([
+  const pendingApproveArchive = challengeArchive([
     { name: `Pending Approve ${runKey}`, flag: `flag{pending_approve_${runKey}}` },
+  ]);
+  const submittedApprove = await call('edit_challenge_submit', {
+    jwt: identities.ordinaryJwt,
+    form: {
+      filename: `${runKey}-pending-approve.zip`,
+      content: pendingApproveArchive,
+      contentType: 'application/zip',
+    },
+  });
+  requireCondition(
+    submittedApprove.model.imported === 1 && submittedApprove.model.failed === 0,
+    'first user submission did not create its pending challenge',
+  );
+  const pendingRejectArchive = challengeArchive([
     { name: `Pending Reject ${runKey}`, flag: `flag{pending_reject_${runKey}}` },
   ]);
-  const submitted = await call('edit_challenge_submit', {
-    jwt: identities.ordinaryJwt,
-    form: { filename: `${runKey}-pending.zip`, content: pendingArchive, contentType: 'application/zip' },
+  const submitOperation = operationById.get('edit_challenge_submit');
+  const submittedRejectResponse = await multipartRequest(
+    resolveEditOperationPath(submitOperation, context),
+    {
+      filename: `${runKey}-pending-reject.zip`,
+      content: pendingRejectArchive,
+      contentType: 'application/zip',
+      jwt: identities.ordinaryJwt,
+      ip: `10.254.${Math.floor(requestIndex / 240) % 240}.${(requestIndex++ % 240) + 1}`,
+      label: 'second single-manifest user challenge submission',
+      timeoutMs: 180_000,
+    },
+  );
+  const submittedReject = responseBody(submittedRejectResponse, submitOperation);
+  validateEditResponse(submitOperation, {
+    status: submittedRejectResponse.status,
+    body: submittedReject,
+    headers: submittedRejectResponse.headers,
   });
-  requireCondition(submitted.model.imported === 2 && submitted.model.failed === 0, 'user submission did not create two pending challenges');
+  requireCondition(
+    submittedReject.imported === 1 && submittedReject.failed === 0,
+    'second user submission did not create its pending challenge',
+  );
   context.pendingApproveId = Number(sql(
     `SELECT id FROM "GameChallenges" WHERE game_id=${context.gameId} ` +
       `AND title=${sqlLiteral(`Pending Approve ${runKey}`)} ORDER BY id DESC LIMIT 1`,
@@ -706,13 +762,15 @@ async function prepareFutureFixture() {
 async function prepareAdFixture() {
   console.log('\nactive A&D organizer fixture…');
   const now = A.nowMs();
+  const liveStart = now - 60_000;
+  const liveEnd = now + 3_600_000;
   context.adGameId = await A.createGame({
     title: titleFor(tags.ad),
     hidden: true,
     practiceMode: false,
     acceptWithoutReview: true,
-    start: now - 60_000,
-    end: now + 3_600_000,
+    start: now + 86_400_000,
+    end: now + 90_000_000,
     teamMemberCountLimit: 1,
     containerCountLimit: 1,
     allowUserSubmissions: false,
@@ -734,13 +792,15 @@ async function prepareAdFixture() {
     title: `edit-ad-${runKey}`, category: 'Pwn', type: 'AttackDefense',
   });
   const checker = A.prepareExactChecker(context.adGameId, context.adChallengeId);
-  const image = ensureLocalImage(process.env.EDIT_AD_IMAGE || 'nginx:alpine');
+  const suppliedImage = String(process.env.EDIT_AD_IMAGE || '').trim();
+  const image = suppliedImage ? ensureLocalImage(suppliedImage) : A.buildManagedAdImage();
+  const exposePort = suppliedImage ? 80 : 8080;
   await A.setChallenge(context.adGameId, context.adChallengeId, {
     content: 'Disposable managed A&D service',
     containerImage: image,
     memoryLimit: 64,
     cpuCount: 1,
-    exposePort: 80,
+    exposePort,
     adCheckerImage: checker,
     adAllowEgress: false,
     adAllowSelfReset: true,
@@ -798,18 +858,25 @@ async function prepareAdFixture() {
   const started = docker(['start', adRuntimeBeforeRestart]);
   requireCondition(started.status === 0, `could not restore A&D service after inspector: ${started.stderr.trim()}`);
   mutateContainerFilesystem(adRuntimeBeforeRestart, runKey);
+
+  // Scoring-affecting definitions are immutable once play starts. Arm the
+  // completed fixture only after its challenge, roster, checker, and managed
+  // service have all been proven.
+  await A.setGameSchedule(context.adGameId, liveStart, liveEnd);
 }
 
 async function prepareKothFixture() {
   console.log('\nactive KotH organizer fixture…');
   const now = A.nowMs();
+  const liveStart = now - 60_000;
+  const liveEnd = now + 3_600_000;
   context.kothGameId = await A.createGame({
     title: titleFor(tags.koth),
     hidden: true,
     practiceMode: false,
     acceptWithoutReview: true,
-    start: now - 60_000,
-    end: now + 3_600_000,
+    start: now + 86_400_000,
+    end: now + 90_000_000,
     teamMemberCountLimit: 1,
     containerCountLimit: 1,
     allowUserSubmissions: false,
@@ -871,6 +938,7 @@ async function prepareKothFixture() {
   state.containerIds.push(hill.containerId);
   state.runtimeIds.push(hill.backendId);
   saveRecovery();
+  await A.setGameSchedule(context.kothGameId, liveStart, liveEnd);
   await A.setAdScoringPaused(context.kothGameId, false);
   await A.waitForCrownReady(context.kothGameId, context.kothChallengeId, 2, 180);
 }
@@ -1399,7 +1467,10 @@ async function positiveReadAndMutationSurface() {
   state.kothRecovery.runtimeStopped = true;
   saveRecovery();
 
-  const recovered = await call('edit_koth_recover', { jwt: identities.managerJwt });
+  const recovered = await call('edit_koth_recover', {
+    jwt: identities.managerJwt,
+    retryConflict: isTransientKothRecoveryConflict,
+  });
   requireCondition(
     recovered.model.challengeId === context.kothChallengeId &&
       recovered.model.cycleNumber === cycleBefore.cycleNumber &&
@@ -1688,6 +1759,15 @@ async function destructivePositiveSurface() {
 
 async function deleteFutureGame(gameId) {
   if (!gameId || Number(sql(`SELECT count(*) FROM "Games" WHERE id=${Number(gameId)}`)) === 0) return;
+  const title = sql(`SELECT title FROM "Games" WHERE id=${Number(gameId)}`);
+  if (title === titleFor(tags.auth)) {
+    deleteDisposableAdminGame(gameId, tags.auth, { runtimeIds: state.runtimeIds });
+    requireCondition(
+      Number(sql(`SELECT count(*) FROM "Games" WHERE id=${Number(gameId)}`)) === 0,
+      `protected authorization game ${gameId} survived exact cleanup`,
+    );
+    return;
+  }
   const response = await A.deleteGame(gameId);
   expectStatus(response, 200, `cleanup future game ${gameId}`);
   requireCondition(Number(sql(`SELECT count(*) FROM "Games" WHERE id=${Number(gameId)}`)) === 0, `future game ${gameId} survived cleanup`);
@@ -1728,8 +1808,8 @@ function checkerDirectoryPresent(container, gameId) {
   throw new Error(`could not audit checker directory ${path} in ${container}`);
 }
 
-function editResidualSnapshot() {
-  const gameIds = [...new Set([
+function trackedGameIds() {
+  return [...new Set([
     ...state.gameIds,
     context.gameId,
     authorizationGameId,
@@ -1738,6 +1818,10 @@ function editResidualSnapshot() {
     cloneGameId,
     importedGameId,
   ].map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))];
+}
+
+function editResidualSnapshot() {
+  const gameIds = trackedGameIds();
   const containerIds = [...new Set(state.containerIds
     .map((id) => String(id || '').trim())
     .filter((id) => /^[a-f0-9-]{36}$/i.test(id)))];
@@ -1748,6 +1832,9 @@ function editResidualSnapshot() {
   return Object.freeze({
     games: gameIds.length
       ? Number(sql(`SELECT count(*) FROM "Games" WHERE id IN (${gameIds.join(',')})`))
+      : 0,
+    buildRecords: gameIds.length
+      ? Number(sql(`SELECT count(*) FROM "BuildRecords" WHERE game_id IN (${gameIds.join(',')})`))
       : 0,
     gameNamespace: Number(sql(`SELECT count(*) FROM "Games" WHERE strpos(title, ${sqlLiteral(runKey)}) > 0`)),
     containers: containerIds.length
@@ -1797,6 +1884,20 @@ async function assertStableExactEditCleanup() {
   );
   state.cleanupAudit = { delayMs, passes };
   saveRecovery();
+}
+
+function removeOwnedBuildHistory() {
+  const gameIds = trackedGameIds();
+  if (gameIds.length === 0) return;
+  requireCondition(
+    Number(sql(`SELECT count(*) FROM "Games" WHERE id IN (${gameIds.join(',')})`)) === 0,
+    'refusing to remove build history while a tracked fixture game still exists',
+  );
+  sql(`DELETE FROM "BuildRecords" WHERE game_id IN (${gameIds.join(',')})`);
+  requireCondition(
+    Number(sql(`SELECT count(*) FROM "BuildRecords" WHERE game_id IN (${gameIds.join(',')})`)) === 0,
+    'tracked fixture build history survived cleanup',
+  );
 }
 
 async function cleanup() {
@@ -1886,6 +1987,7 @@ async function cleanup() {
     });
   }
   await capture('owned build images', removeOwnedImages);
+  await capture('owned build history', removeOwnedBuildHistory);
   await capture('stable exact residual audit', assertStableExactEditCleanup);
 
   if (errors.length) {

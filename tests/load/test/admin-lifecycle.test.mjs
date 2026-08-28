@@ -1089,7 +1089,10 @@ test('repository HTTP scan retries preserve the solved challenge identity and ev
   assert.match(source, /dimasma0305\/rsctf-challenges\.git/);
   assert.match(source, /ADMIN_REPOSITORY_EXPECTED_COMMIT/);
   assert.match(source, /observedCommit\.toLowerCase\(\) === repositoryExpectedCommit\.toLowerCase\(\)/);
-  assert.match(source, /sourceIdentity = `binding\/\$\{repoBindingId\}\/Jeopardy\/Misc\/static-handout\/challenge\.yaml`/);
+  assert.match(
+    source,
+    /`binding\/\$\{repoBindingId\}\/challenges\/Jeopardy\/Misc\/static-handout\/challenge\.yaml`/,
+  );
   assert.match(source, /'firstSolveSubmissionId'/);
   assert.match(source, /'acceptedCount'/);
   assert.match(source, /solvedChallenges\?\.find/);

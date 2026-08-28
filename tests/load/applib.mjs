@@ -17,6 +17,7 @@ import {
   byocAgentImage,
   NET,
   RSCTF,
+  retryTransientUntil,
 } from './lib.mjs';
 import { cohortSeedQuery, parseCohortSeedResult } from './cohort-seed.js';
 import { materializeFixtures } from './fixtures.mjs';
@@ -923,12 +924,21 @@ export function prepareKothChecker(gid, cid) {
   return prepareChecker(gid, cid, materializeFixtures().kothChecker, 'KotH');
 }
 
-export function buildCompetitiveKothImage() {
-  const tag = 'rsctf-load-koth:competitive-v1';
-  const baseImage = mustDocker(
-    docker(['inspect', RSCTF, '--format', '{{.Config.Image}}']),
-    'discover base image for competitive KotH fixture'
-  ).stdout.trim();
+function buildManagedFixtureImage(tag, dockerfile, label) {
+  const baseReference = process.env.LOAD_FIXTURE_PYTHON_IMAGE ||
+    'python:3.12-alpine@sha256:d09d15e60962ca365d1cd544a48773bac9d33f2fb1b00f2aa0deec78ade7dc31';
+  if (!isImmutableImageReference(baseReference)) {
+    throw new Error('LOAD_FIXTURE_PYTHON_IMAGE must be an immutable repository digest or image ID');
+  }
+  let inspected = docker(['image', 'inspect', baseReference, '--format', '{{.Id}}']);
+  if (inspected.status !== 0) {
+    mustDocker(docker(['pull', baseReference]), `pull ${label} base image`);
+    inspected = docker(['image', 'inspect', baseReference, '--format', '{{.Id}}']);
+  }
+  const baseImageId = mustDocker(inspected, `inspect ${label} base image`).stdout.trim();
+  if (!/^sha256:[a-f0-9]{64}$/.test(baseImageId)) {
+    throw new Error(`${label} base did not resolve to an immutable Docker image ID`);
+  }
   const fixtures = materializeFixtures();
   mustDocker(
     docker([
@@ -937,21 +947,37 @@ export function buildCompetitiveKothImage() {
       '--tag',
       tag,
       '--file',
-      fixtures.kothDockerfile,
+      dockerfile(fixtures),
       '--build-arg',
-      `BASE_IMAGE=${baseImage}`,
+      `BASE_IMAGE=${baseReference}`,
       fixtures.root,
     ]),
-    'build competitive KotH fixture image'
+    `build ${label} image`
   );
   const identity = mustDocker(
     docker(['image', 'inspect', tag, '--format', '{{.Id}}']),
-    'inspect competitive KotH fixture image'
+    `inspect ${label} image`
   ).stdout.trim();
   if (!isImmutableImageReference(identity) || !identity.startsWith('sha256:')) {
-    throw new Error('competitive KotH fixture did not produce an immutable Docker image ID');
+    throw new Error(`${label} did not produce an immutable Docker image ID`);
   }
   return identity;
+}
+
+export function buildManagedAdImage() {
+  return buildManagedFixtureImage(
+    'rsctf-load-ad:functional-v1',
+    (fixtures) => fixtures.adDockerfile,
+    'functional A&D fixture',
+  );
+}
+
+export function buildCompetitiveKothImage() {
+  return buildManagedFixtureImage(
+    'rsctf-load-koth:competitive-v1',
+    (fixtures) => fixtures.kothDockerfile,
+    'competitive KotH fixture',
+  );
 }
 
 export function startFleetService(gameId, cid) {
@@ -1601,14 +1627,20 @@ export async function kothApiObservation(
   cid,
   secret,
   tokenOrTokens,
-  { omitLast = false } = {},
+  { omitLast = false, deadlineMs } = {},
 ) {
   const gameId = Number(gid);
   const challengeId = Number(cid);
+  const requestTimeout = () => {
+    if (deadlineMs === undefined) return 30_000;
+    const remainingMs = Math.floor(deadlineMs - performance.now());
+    if (remainingMs <= 0) throw new Error('KotH API context retry deadline exhausted');
+    return remainingMs;
+  };
   const contextResponse = await api(
     'GET',
     `/api/v1/koth/games/${gameId}/challenges/${challengeId}/context`,
-    { ip: '10.9.9.10' },
+    { ip: '10.9.9.10', timeoutMs: requestTimeout() },
   );
   if (contextResponse.status !== 200) {
     throw new Error(
@@ -1666,6 +1698,7 @@ export async function kothApiObservation(
       rawBody,
       headers: kothObservationHeaders(secret, timestamp, gameId, challengeId, rawBody),
       ip: '10.9.9.10',
+      timeoutMs: requestTimeout(),
     },
   );
   if (response.status === 200) {
@@ -1676,6 +1709,14 @@ export async function kothApiObservation(
   return response;
 }
 
+export function isRetriableKothApiContextFailure(value) {
+  const status = value instanceof Error ? null : Number(value?.status);
+  const detail = value instanceof Error ? value.message : String(value?.text || '');
+  return (status === 409 || /fetch KotH API context → 409\b/.test(detail)) &&
+    (detail.includes('Leaderboard KotH context is not active') ||
+      detail.includes('Leaderboard KotH context changed; fetch context and retry'));
+}
+
 export async function kothApiCaptureWrite(
   gid,
   cid,
@@ -1683,12 +1724,15 @@ export async function kothApiCaptureWrite(
   tokenOrTokens,
   options,
 ) {
-  const response = await kothApiObservation(
-    gid,
-    cid,
-    secret,
-    tokenOrTokens,
-    options,
+  const response = await retryTransientUntil(
+    ({ deadlineMs }) => kothApiObservation(
+        gid,
+        cid,
+        secret,
+        tokenOrTokens,
+        { ...options, deadlineMs },
+      ),
+    isRetriableKothApiContextFailure,
   );
   if (response.status !== 200) {
     throw new Error(

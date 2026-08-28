@@ -348,6 +348,18 @@ test('the disposable orchestrator has one explicit positive call for every catal
   assert.equal(new Set(invoked).size, invoked.length, 'positive calls must not hide duplicate coverage');
 });
 
+test('pending challenge fixtures obey the one-manifest public submission boundary', () => {
+  const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
+  assert.match(source, /const pendingApproveArchive = challengeArchive\(\[\s*\{ name: `Pending Approve/);
+  assert.match(source, /const pendingRejectArchive = challengeArchive\(\[\s*\{ name: `Pending Reject/);
+  assert.match(source, /await call\('edit_challenge_submit'/);
+  assert.match(source, /await multipartRequest\([\s\S]*second single-manifest user challenge submission/);
+  assert.doesNotMatch(
+    source,
+    /challengeArchive\(\[[\s\S]{0,300}Pending Approve[\s\S]{0,300}Pending Reject/,
+  );
+});
+
 test('every manager-class positive uses the delegated manager token', () => {
   const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
   const calls = new Map(positiveCallExpressions(source).map((call) => [call.id, call.source]));
@@ -431,6 +443,10 @@ test('edit cleanup is stable and GitHub import is fenced before and after', () =
     'each edit cleanup sample must wait before reading residue',
   );
   assert.match(cleanup, /JSON\.stringify\(passes\[0\]\) === JSON\.stringify\(passes\[1\]\)/);
+  assert.match(cleanup, /buildRecords:/);
+  assert.match(cleanup, /owned build history/);
+  assert.match(cleanup, /refusing to remove build history while a tracked fixture game still exists/);
+  assert.match(cleanup, /DELETE FROM "BuildRecords" WHERE game_id IN/);
   assert.match(cleanup, /stable exact residual audit/);
   assert.match(source, /EDIT_GITHUB_EXPECTED_COMMIT must be a full 40-character Git commit/);
   const before = source.indexOf('const githubCommitBefore = resolveRemoteGitRefCommit');
@@ -452,6 +468,23 @@ test('cleanup reconciles run-tagged games whose failing create never returned an
   assert.match(cleanup, /run-tagged game survived cleanup/);
 });
 
+test('identity admission is isolated from the public game-delete success fixture', () => {
+  const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
+  const prepare = source.slice(
+    source.indexOf('async function prepareFutureFixture()'),
+    source.indexOf('async function prepareAdFixture()'),
+  );
+  const cleanup = source.slice(
+    source.indexOf('async function deleteFutureGame('),
+    source.indexOf('async function removeOwnedImages()'),
+  );
+  assert.match(prepare, /title: titleFor\(tags\.auth\)/);
+  assert.match(prepare, /A\.seedCohort\(authorizationGameId, 3\)/);
+  assert.doesNotMatch(prepare, /A\.seedCohort\(context\.gameId, 3\)/);
+  assert.match(cleanup, /title === titleFor\(tags\.auth\)/);
+  assert.match(cleanup, /deleteDisposableAdminGame\(gameId, tags\.auth, \{ runtimeIds: state\.runtimeIds \}\)/);
+});
+
 test('edit acceptance awaits the shared orchestration lease with the canonical path', () => {
   const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
   assert.match(
@@ -465,7 +498,7 @@ test('edit acceptance awaits the shared orchestration lease with the canonical p
 test('GitHub import defaults to the challenge repository rather than its parent gitlink', () => {
   const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
   assert.match(source, /https:\/\/github\.com\/dimasma0305\/rsctf-challenges\.git/);
-  assert.match(source, /'Jeopardy\/Misc\/static-handout'/);
+  assert.match(source, /'challenges\/Jeopardy\/Misc\/static-handout'/);
   assert.doesNotMatch(source, /examples\/challenge-repository\/Jeopardy/);
 });
 
@@ -511,8 +544,26 @@ test('A&D and KotH create fixtures immediately prove every supplied engine setti
   );
   assert.match(adPrepare, /assertPersistedGameSettings\(context\.adGameId, AD_CREATION_SETTINGS/);
   assert.match(kothPrepare, /assertPersistedGameSettings\(context\.kothGameId, KOTH_CREATION_SETTINGS/);
+  assert.match(adPrepare, /A\.buildManagedAdImage\(\)/);
+  assert.match(adPrepare, /const exposePort = suppliedImage \? 80 : 8080/);
+  assert.match(adPrepare, /exposePort,/);
   assert.ok(adPrepare.indexOf('saveRecovery()') < adPrepare.indexOf('assertPersistedGameSettings('));
   assert.ok(kothPrepare.indexOf('saveRecovery()') < kothPrepare.indexOf('assertPersistedGameSettings('));
+  assert.ok(
+    adPrepare.indexOf('mutateContainerFilesystem(') <
+      adPrepare.indexOf('A.setGameSchedule(context.adGameId, liveStart, liveEnd)'),
+    'A&D fixture must finish definition and runtime setup before its live schedule is armed',
+  );
+  assert.ok(
+    kothPrepare.indexOf('discoverManagedKothHill(') <
+      kothPrepare.indexOf('A.setGameSchedule(context.kothGameId, liveStart, liveEnd)'),
+    'KotH fixture must prove its managed hill before its live schedule is armed',
+  );
+  assert.ok(
+    kothPrepare.indexOf('A.setGameSchedule(context.kothGameId, liveStart, liveEnd)') <
+      kothPrepare.indexOf('A.setAdScoringPaused(context.kothGameId, false)'),
+    'KotH scoring must resume only after the completed fixture is armed',
+  );
 });
 
 test('game import acceptance reads back portable semantics and proves late-failure rollback', () => {
@@ -661,6 +712,11 @@ test('KotH recovery acceptance faults a scoped durable phase and proves receipt/
       positives.indexOf("call('edit_koth_recover'"),
     'the durable fault and stopped runtime must precede public recovery',
   );
+  assert.match(positives, /retryConflict: isTransientKothRecoveryConflict/);
+  assert.match(source, /title === 'replacement container is still transitioning'/);
+  assert.match(source, /title === 'checker exit 2'/);
+  assert.match(source, /title === 'checker timed out'/);
+  assert.match(source, /retryTransientUntil\(request, retryConflict\)/);
   assert.match(positives, /recovered\.model\.resetPhase === 'Active'/);
   assert.match(positives, /replacementHill\.backendId !== oldHill\.backendId/);
   assert.match(positives, /docker\(\['container', 'inspect', oldHill\.backendId\]\)\.status !== 0/);

@@ -1361,7 +1361,7 @@ const AdOps: FC = () => {
                   ]}
                 />
               )}
-              <Title order={4}>
+              <Title order={2} size="h4">
                 {showKoth
                   ? t('admin.content.ad_ops.koth.grid_title', 'Hills')
                   : t('admin.content.ad_ops.grid_title', 'Team status')}
