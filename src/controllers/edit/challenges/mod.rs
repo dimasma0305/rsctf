@@ -3,6 +3,7 @@ use super::*;
 
 mod attachments;
 mod audit;
+mod bulk;
 mod deletion;
 #[cfg(test)]
 mod deletion_tests;
@@ -21,6 +22,7 @@ pub use audit::{
     download_challenge_audit_archive, get_challenge_audit_meta, get_challenge_build_status,
     list_challenge_build_statuses, rebuild_challenge,
 };
+pub use bulk::mutate_challenges_bulk;
 pub(crate) use deletion::reject_pending_mutation;
 pub(crate) use lifecycle::destroy_challenge_containers;
 use lifecycle::destroy_test_container_locked;
@@ -45,6 +47,14 @@ pub async fn get_challenges(
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<Vec<ChallengeSummaryModel>>> {
     manager_or_admin(&st, &user, id).await?;
+    let configuration_revision = sqlx::query_scalar::<_, i64>(
+        r#"SELECT challenge_configuration_revision FROM "Games" WHERE id = $1"#,
+    )
+    .bind(id)
+    .fetch_optional(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))?;
     let challenges = game_challenge::Entity::find()
         .filter(game_challenge::Column::GameId.eq(id))
         .filter(game_challenge::Column::ReviewStatus.eq(ChallengeReviewStatus::Active))
@@ -58,7 +68,7 @@ pub async fn get_challenges(
     let data = challenges
         .iter()
         .map(|c| {
-            let mut m = ChallengeSummaryModel::from_challenge(c);
+            let mut m = ChallengeSummaryModel::from_challenge(c, configuration_revision);
             // Mirror the scoreboard cell exactly (RSCTF `GenScoreboard`): A&D /
             // KotH are live-scored (0), every other challenge shows the current
             // dynamic-decayed score at its distinct-solve count.
@@ -865,6 +875,15 @@ pub async fn delete_challenge(
     Path((id, c_id)): Path<(i32, i32)>,
 ) -> AppResult<MessageResponse> {
     manager_or_admin(&st, &user, id).await?;
+    delete_challenge_core(st, id, c_id, true).await
+}
+
+pub(crate) async fn delete_challenge_core(
+    st: SharedState,
+    id: i32,
+    c_id: i32,
+    reconcile_scoreboards: bool,
+) -> AppResult<MessageResponse> {
     // Share the hard-deletion admission domain with whole-game deletion before
     // retaining the outer runtime-transition transaction.
     let deletion_admission = super::deletion_locks::acquire_hard_deletion_admission().await?;
@@ -955,7 +974,9 @@ pub async fn delete_challenge(
             tracing::warn!(%error, attachment_id = aid, "deleted challenge attachment cleanup deferred");
         }
     }
-    flush_game_scoreboards(&st, id).await;
+    if reconcile_scoreboards {
+        flush_game_scoreboards(&st, id).await;
+    }
     Ok(MessageResponse::ok(""))
 }
 

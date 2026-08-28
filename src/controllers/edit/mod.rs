@@ -269,10 +269,11 @@ pub struct ChallengeSummaryModel {
     pub review_status: ChallengeReviewStatus,
     pub build_status: ChallengeBuildStatus,
     pub has_original_archive: bool,
+    pub configuration_revision: i64,
 }
 
 impl ChallengeSummaryModel {
-    fn from_challenge(c: &game_challenge::Model) -> Self {
+    fn from_challenge(c: &game_challenge::Model, configuration_revision: i64) -> Self {
         Self {
             id: c.id,
             title: c.title.clone(),
@@ -286,6 +287,7 @@ impl ChallengeSummaryModel {
             review_status: c.review_status,
             build_status: c.build_status,
             has_original_archive: c.original_archive_blob_path.is_some(),
+            configuration_revision,
         }
     }
 }
@@ -716,6 +718,10 @@ pub fn router() -> Router<SharedState> {
         .route(
             "/api/edit/games/{id}/challenges",
             get(get_challenges).post(add_challenge),
+        )
+        .route(
+            "/api/edit/games/{id}/challenges/bulk",
+            post(mutate_challenges_bulk).layer(DefaultBodyLimit::max(16 * 1024)),
         )
         .route(
             "/api/edit/games/{id}/challenges/submit",
