@@ -60,7 +60,7 @@ assertAdminOriginAcknowledgements(__ENV, {
 if (MAX_VUS < VUS) throw new Error('MAX_VUS must be greater than or equal to VUS');
 if (RATE > 2) {
   throw new Error(
-    'RATE must stay at or below 2 req/s: the 74-request setup matrix shares the 150/min admin quota',
+    'RATE must stay at or below 2 req/s: the 79-request setup matrix shares the 150/min admin quota',
   );
 }
 

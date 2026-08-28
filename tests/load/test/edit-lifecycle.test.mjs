@@ -37,7 +37,6 @@ test('GitHub import ref fencing resolves one stable branch/tag commit', () => {
     ),
     commit,
   );
-  assert.match(positives, /clone source omitted its configuration revisions/);
   assert.throws(
     () => resolveRemoteGitRefCommit('https://github.com/example/repo.git', 'main', () =>
       `${'c'.repeat(40)}\trefs/heads/main\n${'d'.repeat(40)}\trefs/tags/main\n`),
@@ -123,8 +122,12 @@ function positiveCallExpressions(source) {
 }
 
 const context = Object.freeze({
+  controlJobOperationId: '00000000-0000-4000-8000-000000000010',
+  controlJobId: '00000000-0000-4000-8000-000000000011',
   gameId: 10,
+  gameOperationId: '00000000-0000-4000-8000-000000000012',
   challengeId: 20,
+  challengeOperationId: '00000000-0000-4000-8000-000000000013',
   deletableChallengeId: 21,
   pendingApproveId: 22,
   pendingRejectId: 23,
@@ -132,6 +135,7 @@ const context = Object.freeze({
   containerChallengeId: 25,
   workerGameId: 11,
   workerChallengeId: 26,
+  importJobId: '00000000-0000-4000-8000-000000000014',
   postId: 'post-id',
   managerUserId: '018f3c6a-d79b-7cc0-8f68-8fdbad0f57bb',
   flagId: 30,
@@ -156,13 +160,32 @@ function objectBody(kind) {
     case 'array': return [];
     case 'page': return { data: [], total: 0, length: 0 };
     case 'zip': return new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+    case 'private-zip': return new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
     case 'tar': return new Uint8Array([0x1f, 0x8b]);
-    case 'import': return { imported: 1, updated: 0, failed: 0, messages: [] };
+    case 'import-job':
+      return {
+        jobId: '00000000-0000-4000-8000-000000000014', status: 'Succeeded',
+        result: { imported: 1, updated: 0, skipped: 0, failed: 0, messages: [] }, error: null,
+        createdAt: Date.now(), updatedAt: Date.now(),
+      };
     case 'flag-status': return 'Success';
     case 'inspector': return { containerGuid: '0123456789abcdef' };
     case 'container': return { id: '018f3c6a-d79b-7cc0-8f68-8fdbad0f57bb' };
     case 'rollout':
       return { matched: 1, updated: 1, stale: 0, incompatible: 0, insufficientCapacity: 0, failed: 0 };
+    case 'control-job':
+      return {
+        id: '00000000-0000-4000-8000-000000000011', kind: 'VariantGeneration', scopeKey: 'game:10',
+        gameId: 10, challengeId: null, operationId: '00000000-0000-4000-8000-000000000010',
+        fingerprint: 'fixture', status: 'Queued', progressCurrent: 0, progressTotal: 0,
+        requestedGeneration: 0, result: null, error: null, cancellationRequested: false,
+        createdAtUtc: Date.now(), updatedAtUtc: Date.now(), finishedAtUtc: null,
+      };
+    case 'bulk-mutation':
+      return {
+        operationId: '00000000-0000-4000-8000-000000000015', state: 'Complete',
+        configurationRevision: 2, outcomes: [{ challengeId: 20, status: 'Enabled' }],
+      };
     case 'scoring-pause': return { scoringPaused: true };
     case 'toggle': return { isEnabled: false };
     case 'snapshot-changes': return { snapshotAvailable: true, changes: [] };
@@ -173,6 +196,16 @@ function objectBody(kind) {
     case 'notice': return { id: 1, values: ['notice'], time: Date.now() };
     case 'division': return { id: 1, name: 'Open' };
     case 'audit': return { archiveAvailable: true, files: [], previews: {} };
+    case 'build-status-list': return [{ challengeId: 20, buildStatus: 'Success' }];
+    case 'build-status':
+      return {
+        challengeId: 20, buildStatus: 'Success', lastBuildLog: null,
+        archiveAvailable: true, archiveVersion: 'fixture',
+      };
+    case 'challenge-operation':
+      return {
+        operationId: '00000000-0000-4000-8000-000000000013', challengeId: 20, revision: 2,
+      };
     case 'build': return { buildStatus: 'Success', archiveAvailable: false, files: [], previews: {} };
     case 'ad-state': return { challenges: [], teams: [], scoringPaused: false };
     case 'ad-engines':
@@ -225,36 +258,40 @@ function sampleResponse(operation) {
     headers:
       operation.responseKind === 'tar'
         ? { 'content-type': 'application/gzip' }
+        : operation.responseKind === 'private-zip'
+          ? { 'content-type': 'application/zip', 'cache-control': 'private, no-store' }
+          : operation.responseKind === 'import-job' && operation.method === 'GET'
+            ? { 'cache-control': 'no-store' }
         : ['koth-observer-secret', 'koth-observer-mutation'].includes(operation.responseKind)
           ? { 'cache-control': 'no-store' }
           : {},
   };
 }
 
-test('catalog has exactly all 72 edit method/path operations', () => {
-  assert.equal(EDIT_OPERATIONS.length, 72);
-  assert.equal(new Set(EDIT_OPERATION_IDS).size, 72);
-  assert.equal(new Set(EDIT_OPERATIONS.map(({ method, path }) => `${method} ${path}`)).size, 72);
+test('catalog has exactly all 83 edit method/path operations', () => {
+  assert.equal(EDIT_OPERATIONS.length, 83);
+  assert.equal(new Set(EDIT_OPERATION_IDS).size, 83);
+  assert.equal(new Set(EDIT_OPERATIONS.map(({ method, path }) => `${method} ${path}`)).size, 83);
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { POST: 30, PUT: 6, DELETE: 11, GET: 25 },
+    { GET: 33, POST: 33, PUT: 6, DELETE: 11 },
   );
   assert.deepEqual(
     EDIT_OPERATIONS.reduce((counts, operation) => {
       counts[operation.auth] = (counts[operation.auth] || 0) + 1;
       return counts;
     }, {}),
-    { admin: 13, 'managed-list': 1, manager: 57, 'user-submit': 1 },
+    { manager: 67, admin: 14, 'managed-list': 1, 'user-submit': 1 },
   );
 });
 
 test('catalog and every production controller source have exact bidirectional coverage', () => {
   const sources = controllerSources();
-  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 72 });
-  assert.equal(parseEditRouterOperations(sources).length, 72);
+  assert.deepEqual(assertEditRouterCoverage(sources), { operations: 83 });
+  assert.equal(parseEditRouterOperations(sources).length, 83);
 });
 
 test('source drift catches routes added outside controllers/edit and removed catalog routes', () => {
@@ -334,9 +371,31 @@ test('every declared response contract has an accepting and rejecting unit sampl
   }
 });
 
+test('credential and archive recovery reads reject cacheable responses', () => {
+  const importOperation = EDIT_OPERATIONS.find(({ id }) => id === 'edit_challenge_import_job_get');
+  assert.throws(
+    () => validateEditResponse(importOperation, {
+      ...sampleResponse(importOperation),
+      headers: {},
+    }),
+    /invalid import job/,
+  );
+  const archiveOperation = EDIT_OPERATIONS.find(({ id }) => id === 'edit_challenge_audit_archive');
+  assert.throws(
+    () => validateEditResponse(archiveOperation, {
+      ...sampleResponse(archiveOperation),
+      headers: { 'content-type': 'application/zip' },
+    }),
+    /invalid private ZIP/,
+  );
+});
+
 test('coverage accounting rejects missing, duplicate, and unknown operation ids', () => {
-  assert.deepEqual(assertCompleteEditCoverage(EDIT_OPERATION_IDS), { covered: 72, required: 72 });
-  assert.throws(() => assertCompleteEditCoverage(EDIT_OPERATION_IDS.slice(1)), /missing: edit_post_add/);
+  assert.deepEqual(assertCompleteEditCoverage(EDIT_OPERATION_IDS), { covered: 83, required: 83 });
+  assert.throws(
+    () => assertCompleteEditCoverage(EDIT_OPERATION_IDS.slice(1)),
+    /missing: edit_control_job_operation_get/,
+  );
   assert.throws(() => assertCompleteEditCoverage([...EDIT_OPERATION_IDS, EDIT_OPERATION_IDS[0]]), /duplicate/);
   assert.throws(() => assertCompleteEditCoverage([...EDIT_OPERATION_IDS, 'future']), /unknown: future/);
 });
@@ -344,7 +403,7 @@ test('coverage accounting rejects missing, duplicate, and unknown operation ids'
 test('the disposable orchestrator has one explicit positive call for every catalog id', () => {
   const source = readFileSync(join(REPOSITORY, 'tests/load/edit-lifecycle.mjs'), 'utf8');
   const invoked = positiveCallExpressions(source).map(({ id }) => id);
-  assert.equal(invoked.length, 72);
+  assert.equal(invoked.length, 83);
   assert.deepEqual(new Set(invoked), new Set(EDIT_OPERATION_IDS));
   assert.equal(new Set(invoked).size, invoked.length, 'positive calls must not hide duplicate coverage');
 });
@@ -354,7 +413,8 @@ test('pending challenge fixtures obey the one-manifest public submission boundar
   assert.match(source, /const pendingApproveArchive = challengeArchive\(\[\s*\{ name: `Pending Approve/);
   assert.match(source, /const pendingRejectArchive = challengeArchive\(\[\s*\{ name: `Pending Reject/);
   assert.match(source, /await call\('edit_challenge_submit'/);
-  assert.match(source, /await multipartRequest\([\s\S]*second single-manifest user challenge submission/);
+  assert.match(source, /await rawRequest\([\s\S]*second single-manifest user challenge submission/);
+  assert.match(source, /fields: \{ operationId: randomUUID\(\) \}/);
   assert.doesNotMatch(
     source,
     /challengeArchive\(\[[\s\S]{0,300}Pending Approve[\s\S]{0,300}Pending Reject/,

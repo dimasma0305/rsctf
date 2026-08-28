@@ -23,6 +23,15 @@ const challenge = { id: 'gameId', cId: 'challengeId' };
 const service = { id: 'adGameId', adTeamServiceId: 'serviceId' };
 
 export const EDIT_OPERATIONS = Object.freeze([
+  operation('edit_control_job_operation_get', 'GET', '/api/edit/jobs/operations/{operationId}', {
+    params: { operationId: 'controlJobOperationId' }, responseKind: 'control-job',
+  }),
+  operation('edit_control_job_get', 'GET', '/api/edit/jobs/{jobId}', {
+    params: { jobId: 'controlJobId' }, responseKind: 'control-job',
+  }),
+  operation('edit_control_job_cancel', 'POST', '/api/edit/jobs/{jobId}', {
+    params: { jobId: 'controlJobId' }, mutation: true, responseKind: 'control-job',
+  }),
   operation('edit_post_add', 'POST', '/api/edit/posts', {
     auth: 'admin', mutation: true, responseKind: 'string',
   }),
@@ -48,6 +57,9 @@ export const EDIT_OPERATIONS = Object.freeze([
   operation('edit_game_update', 'PUT', '/api/edit/games/{id}', {
     params: game, mutation: true, responseKind: 'game',
   }),
+  operation('edit_game_operation_get', 'GET', '/api/edit/games/{id}/operations/{operationId}', {
+    params: { id: 'gameId', operationId: 'gameOperationId' }, responseKind: 'game',
+  }),
   operation('edit_game_delete', 'DELETE', '/api/edit/games/{id}', {
     auth: 'admin', params: game, mutation: true, responseKind: 'game',
   }),
@@ -55,6 +67,9 @@ export const EDIT_OPERATIONS = Object.freeze([
     params: game, responseKind: 'private-string',
   }),
   operation('edit_game_clone', 'POST', '/api/edit/games/{id}/Clone', {
+    auth: 'admin', params: game, mutation: true, responseKind: 'number',
+  }),
+  operation('edit_game_clone_lowercase', 'POST', '/api/edit/games/{id}/clone', {
     auth: 'admin', params: game, mutation: true, responseKind: 'number',
   }),
   operation('edit_game_writeups_delete', 'DELETE', '/api/edit/games/{id}/writeups', {
@@ -73,7 +88,7 @@ export const EDIT_OPERATIONS = Object.freeze([
     params: game, responseKind: 'array',
   }),
   operation('edit_variants_generate', 'POST', '/api/edit/games/{id}/variants/generate', {
-    params: game, mutation: true, responseKind: 'variant-generation',
+    params: game, mutation: true, responseKind: 'control-job', expectedStatuses: [202],
   }),
 
   operation('edit_game_admins_get', 'GET', '/api/edit/games/{id}/admins', {
@@ -104,20 +119,34 @@ export const EDIT_OPERATIONS = Object.freeze([
   operation('edit_challenge_add', 'POST', '/api/edit/games/{id}/challenges', {
     params: game, mutation: true, responseKind: 'challenge',
   }),
+  operation('edit_challenges_bulk', 'POST', '/api/edit/games/{id}/challenges/bulk', {
+    params: game, mutation: true, responseKind: 'bulk-mutation',
+  }),
   operation('edit_challenge_submit', 'POST', '/api/edit/games/{id}/challenges/submit', {
-    auth: 'user-submit', params: game, multipart: true, mutation: true, responseKind: 'import',
+    auth: 'user-submit', params: game, multipart: true, mutation: true,
+    responseKind: 'import-job', expectedStatuses: [202],
   }),
   operation('edit_challenge_import', 'POST', '/api/edit/games/{id}/challenges/import', {
-    params: game, multipart: true, mutation: true, responseKind: 'import',
+    params: game, multipart: true, mutation: true, responseKind: 'import-job', expectedStatuses: [202],
   }),
   operation('edit_challenge_import_github', 'POST', '/api/edit/games/{id}/challenges/importfromgithub', {
-    params: game, mutation: true, responseKind: 'import',
+    params: game, mutation: true, responseKind: 'import-job', expectedStatuses: [202],
+  }),
+  operation('edit_challenge_import_job_get', 'GET', '/api/edit/games/{id}/challenges/importjobs/{jobId}', {
+    params: { id: 'gameId', jobId: 'importJobId' }, responseKind: 'import-job',
+  }),
+  operation('edit_challenge_build_statuses_get', 'GET', '/api/edit/games/{id}/challenges/buildstatuses', {
+    params: game, responseKind: 'build-status-list',
   }),
   operation('edit_challenge_get', 'GET', '/api/edit/games/{id}/challenges/{cId}', {
     params: challenge, responseKind: 'challenge',
   }),
   operation('edit_challenge_update', 'PUT', '/api/edit/games/{id}/challenges/{cId}', {
     params: challenge, mutation: true, responseKind: 'challenge',
+  }),
+  operation('edit_challenge_operation_get', 'GET', '/api/edit/games/{id}/challenges/{cId}/operations/{operationId}', {
+    params: { ...challenge, operationId: 'challengeOperationId' },
+    responseKind: 'challenge-operation',
   }),
   operation('edit_challenge_delete', 'DELETE', '/api/edit/games/{id}/challenges/{cId}', {
     params: { id: 'gameId', cId: 'deletableChallengeId' }, mutation: true,
@@ -135,13 +164,19 @@ export const EDIT_OPERATIONS = Object.freeze([
   operation('edit_challenge_audit_meta', 'GET', '/api/edit/games/{id}/challenges/{cId}/auditmeta', {
     params: { id: 'gameId', cId: 'archiveChallengeId' }, responseKind: 'audit',
   }),
+  operation('edit_challenge_audit_archive', 'GET', '/api/edit/games/{id}/challenges/{cId}/auditarchive', {
+    params: { id: 'gameId', cId: 'archiveChallengeId' }, responseKind: 'private-zip',
+  }),
+  operation('edit_challenge_build_status_get', 'GET', '/api/edit/games/{id}/challenges/{cId}/buildstatus', {
+    params: { id: 'gameId', cId: 'containerChallengeId' }, responseKind: 'build-status',
+  }),
   operation('edit_challenge_rebuild', 'POST', '/api/edit/games/{id}/challenges/{cId}/rebuild', {
     params: { id: 'gameId', cId: 'containerChallengeId' }, mutation: true, runtime: true,
-    responseKind: 'build',
+    responseKind: 'control-job', expectedStatuses: [202],
   }),
   operation('edit_workload_rollout', 'POST', '/api/edit/games/{id}/challenges/{cId}/workload/rollout', {
     params: { id: 'workerGameId', cId: 'workerChallengeId' }, mutation: true, runtime: true,
-    responseKind: 'rollout',
+    responseKind: 'control-job', expectedStatuses: [202],
   }),
   operation('edit_test_container_create', 'POST', '/api/edit/games/{id}/challenges/{cId}/container', {
     params: { id: 'gameId', cId: 'containerChallengeId' }, mutation: true, runtime: true,
@@ -199,7 +234,7 @@ export const EDIT_OPERATIONS = Object.freeze([
   }),
   operation('edit_ad_ensure_containers', 'POST', '/api/edit/games/{id}/ad/EnsureContainers', {
     auth: 'admin', params: { id: 'adGameId' }, mutation: true, runtime: true,
-    responseKind: 'message',
+    responseKind: 'control-job', expectedStatuses: [202],
   }),
   operation('edit_ad_scoring_pause', 'POST', '/api/edit/games/{id}/ad/ScoringPause', {
     params: { id: 'adGameId' }, mutation: true, responseKind: 'scoring-pause',
@@ -223,7 +258,8 @@ export const EDIT_OPERATIONS = Object.freeze([
     mutation: true, runtime: true, responseKind: 'message',
   }),
   operation('edit_ad_service_restart', 'POST', '/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Restart', {
-    params: service, mutation: true, runtime: true, responseKind: 'message',
+    params: service, mutation: true, runtime: true,
+    responseKind: 'control-job', expectedStatuses: [202],
   }),
   operation('edit_ad_snapshot_download', 'GET', '/api/edit/games/{id}/ad/Services/{adTeamServiceId}/Snapshot', {
     params: service, runtime: true, responseKind: 'tar',
@@ -387,6 +423,34 @@ function headerValue(headers, name) {
   return entry ? String(entry[1]) : '';
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const BUILD_STATUSES = new Set([
+  'None', 'Success', 'Failed', 'Building', 'NotApplicable', 'Queued', 'MissingDockerfile',
+]);
+
+function validControlJob(body) {
+  return isObject(body) && UUID.test(body.id) && UUID.test(body.operationId) &&
+    typeof body.kind === 'string' && body.kind.length > 0 &&
+    typeof body.scopeKey === 'string' && body.scopeKey.length > 0 &&
+    Number.isSafeInteger(body.gameId) && body.gameId > 0 &&
+    (body.challengeId == null || (Number.isSafeInteger(body.challengeId) && body.challengeId > 0)) &&
+    typeof body.fingerprint === 'string' && body.fingerprint.length > 0 &&
+    ['Queued', 'Running', 'Succeeded', 'Failed', 'Cancelled'].includes(body.status) &&
+    Number.isSafeInteger(body.progressCurrent) && body.progressCurrent >= 0 &&
+    Number.isSafeInteger(body.progressTotal) && body.progressTotal >= body.progressCurrent &&
+    Number.isSafeInteger(body.requestedGeneration) && body.requestedGeneration >= 0 &&
+    (body.result == null || isObject(body.result) || Array.isArray(body.result)) &&
+    (body.error == null || typeof body.error === 'string') &&
+    typeof body.cancellationRequested === 'boolean' &&
+    Number.isSafeInteger(body.createdAtUtc) && Number.isSafeInteger(body.updatedAtUtc) &&
+    (body.finishedAtUtc == null || Number.isSafeInteger(body.finishedAtUtc));
+}
+
+function validImportResult(body) {
+  return isObject(body) && ['imported', 'updated', 'skipped', 'failed'].every((key) =>
+    Number.isSafeInteger(body[key]) && body[key] >= 0) && Array.isArray(body.messages);
+}
+
 export function validateEditResponse(operationOrId, response) {
   const item = typeof operationOrId === 'string' ? operationById.get(operationOrId) : operationOrId;
   if (!item) throw new Error(`unknown edit operation ${operationOrId}`);
@@ -427,6 +491,14 @@ export function validateEditResponse(operationOrId, response) {
     case 'zip':
       if (!(body instanceof Uint8Array) || body[0] !== 0x50 || body[1] !== 0x4b) throw new Error(`${item.id} invalid ZIP`);
       break;
+    case 'private-zip':
+      if (!(body instanceof Uint8Array) || body[0] !== 0x50 || body[1] !== 0x4b ||
+          !/application\/zip/i.test(headerValue(response.headers, 'content-type')) ||
+          !/\bprivate\b/i.test(headerValue(response.headers, 'cache-control')) ||
+          !/\bno-store\b/i.test(headerValue(response.headers, 'cache-control'))) {
+        throw new Error(`${item.id} invalid private ZIP`);
+      }
+      break;
     case 'tar':
       if (!(body instanceof Uint8Array) || body.length < 2 ||
           body[0] !== 0x1f || body[1] !== 0x8b ||
@@ -434,12 +506,16 @@ export function validateEditResponse(operationOrId, response) {
         throw new Error(`${item.id} invalid gzip-compressed TAR`);
       }
       break;
-    case 'import':
+    case 'import-job':
       object();
-      for (const key of ['imported', 'updated', 'failed']) {
-        if (!Number.isSafeInteger(body[key]) || body[key] < 0) throw new Error(`${item.id} invalid import result`);
+      if (!UUID.test(body.jobId) || !['Queued', 'Running', 'Succeeded', 'Failed'].includes(body.status) ||
+          !Number.isSafeInteger(body.createdAt) || !Number.isSafeInteger(body.updatedAt) ||
+          (body.error != null && typeof body.error !== 'string') ||
+          (body.result != null && !validImportResult(body.result)) ||
+          (body.status === 'Succeeded' && !validImportResult(body.result)) ||
+          (item.method === 'GET' && !/\bno-store\b/i.test(headerValue(response.headers, 'cache-control')))) {
+        throw new Error(`${item.id} invalid import job`);
       }
-      if (!Array.isArray(body.messages)) throw new Error(`${item.id} invalid import messages`);
       break;
     case 'flag-status':
       if (!['Success', 'NotFound'].includes(body)) throw new Error(`${item.id} invalid flag deletion status`);
@@ -458,6 +534,20 @@ export function validateEditResponse(operationOrId, response) {
       object();
       for (const key of ['matched', 'updated', 'stale', 'incompatible', 'insufficientCapacity', 'failed']) {
         if (!Number.isSafeInteger(body[key]) || body[key] < 0) throw new Error(`${item.id} invalid rollout`);
+      }
+      break;
+    case 'control-job':
+      if (!validControlJob(body)) throw new Error(`${item.id} invalid control job`);
+      break;
+    case 'bulk-mutation':
+      object();
+      if (!UUID.test(body.operationId) || !['Pending', 'Complete'].includes(body.state) ||
+          !Number.isSafeInteger(body.configurationRevision) || body.configurationRevision < 1 ||
+          !Array.isArray(body.outcomes) || body.outcomes.some((outcome) =>
+            !isObject(outcome) || !Number.isSafeInteger(outcome.challengeId) ||
+            typeof outcome.status !== 'string' ||
+            (outcome.message != null && typeof outcome.message !== 'string'))) {
+        throw new Error(`${item.id} invalid bulk challenge mutation`);
       }
       break;
     case 'scoring-pause':
@@ -510,6 +600,28 @@ export function validateEditResponse(operationOrId, response) {
       object();
       if (typeof body.archiveAvailable !== 'boolean' || !Array.isArray(body.files) || !isObject(body.previews)) {
         throw new Error(`${item.id} invalid audit metadata`);
+      }
+      break;
+    case 'build-status-list':
+      if (!Array.isArray(body) || body.some((entry) => !isObject(entry) ||
+          !Number.isSafeInteger(entry.challengeId) || !BUILD_STATUSES.has(entry.buildStatus))) {
+        throw new Error(`${item.id} invalid build status list`);
+      }
+      break;
+    case 'build-status':
+      object();
+      if (!Number.isSafeInteger(body.challengeId) || !BUILD_STATUSES.has(body.buildStatus) ||
+          (body.lastBuildLog != null && typeof body.lastBuildLog !== 'string') ||
+          typeof body.archiveAvailable !== 'boolean' ||
+          (body.archiveVersion != null && typeof body.archiveVersion !== 'string')) {
+        throw new Error(`${item.id} invalid challenge build status`);
+      }
+      break;
+    case 'challenge-operation':
+      object();
+      if (!UUID.test(body.operationId) || !Number.isSafeInteger(body.challengeId) ||
+          !Number.isSafeInteger(body.revision) || body.revision < 1) {
+        throw new Error(`${item.id} invalid challenge operation result`);
       }
       break;
     case 'build':

@@ -124,6 +124,10 @@ let fixturePlayerJwt = null;
 let runtimeRepairContainerGuid = null;
 let runtimeRepairContainerId = null;
 let runtimeRepairFixture = null;
+let settingsOperationId = null;
+let importOperationId = null;
+let vpnOverrideOperationId = null;
+let vpnOverrideId = null;
 
 function saveRecovery() {
   persistRecovery(recoveryPath, state);
@@ -180,6 +184,18 @@ async function callRaw(method, template, path, options = {}, expected = 200) {
 
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function waitForControlJob(jobId, label, timeoutMs = 180_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    const response = await adminApi('GET', `/api/edit/jobs/${jobId}`);
+    last = response.json;
+    if (['Succeeded', 'Failed', 'Cancelled'].includes(last?.status)) return last;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`${label} did not become terminal: ${JSON.stringify(last)}`);
 }
 
 function inspectComposeContainer(container, label) {
@@ -573,6 +589,12 @@ function materializeCatalogPath(template, fixture) {
   };
   let path = template.replace(/\{([^}]+)\}/g, (_, key) => {
     const normalized = key.toLowerCase();
+    if (normalized === 'operation_id') return fixture.settingsOperationId;
+    if (normalized === 'operationid' && template.includes('/users/import/')) return fixture.importOperationId;
+    if (normalized === 'operationid' && template.includes('/vpn-override/operations/')) {
+      return fixture.vpnOverrideOperationId;
+    }
+    if (normalized === 'overrideid') return fixture.overrideId;
     if (normalized === 'id' && template.includes('/instances/')) return fixture.containerId;
     if (normalized === 'id' && template.includes('/anticheatblocks/')) return fixture.antiCheatId;
     if (normalized === 'id' && template.includes('/repobindings/')) return fixture.bindingId;
@@ -740,6 +762,7 @@ async function identityLifecycle() {
 
   const importedResponse = await call('POST', '/api/admin/users/import', '/api/admin/users/import', {
     body: {
+      operationId: (importOperationId = randomUUID()),
       rows: [
         {
           email: names.importEmail,
@@ -763,6 +786,17 @@ async function identityLifecycle() {
       (user) => typeof user.password === 'string' && user.password.length >= 8,
     ),
     'user import did not return both one-time passwords',
+  );
+  const recoveredImport = await call(
+    'GET',
+    '/api/admin/users/import/{operationId}',
+    `/api/admin/users/import/${importOperationId}`,
+  );
+  requireCondition(
+    recoveredImport.json?.status === 'Completed' &&
+      recoveredImport.json?.completed === importedModel.total &&
+      JSON.stringify(recoveredImport.json?.result) === JSON.stringify(importedModel),
+    'user import recovery did not return the exact completed credential result',
   );
   const imported = userByEmail(names.importEmail);
   const cacheDelete = userByEmail(names.cacheDeleteEmail);
@@ -919,26 +953,17 @@ async function configurationLifecycle() {
     title: `RSCTF admin lifecycle ${tag}`,
     slogan: `replica convergence ${tag}`,
   };
-  await call('PUT', '/api/admin/config', '/api/admin/config', { body: { globalConfig: changed } });
-  for (const [index, baseUrl] of webTargets.entries()) {
-    const replica = await adminApi('GET', '/api/admin/config', {
-      baseUrl,
-      ip: `10.252.10.${index + 1}`,
-    });
-    requireCondition(
-      replica.json?.globalConfig?.title === changed.title,
-      `web replica ${index + 1} did not converge on the config mutation`,
-    );
-  }
-
   const onePixelPng = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     'base64',
   );
+  // Keep the legacy direct-upload compatibility route covered with its stable
+  // upload identity, then clear it before exercising the revision-fenced path.
   const uploaded = await multipartRequest('/api/admin/config/logo', {
     filename: `${tag}.png`,
     content: onePixelPng,
     contentType: 'image/png',
+    headers: { 'Idempotency-Key': randomUUID() },
   });
   recordCoverage('POST', '/api/admin/config/logo', uploaded);
   console.log('  ✓ admin.config.logo.upload');
@@ -958,6 +983,63 @@ async function configurationLifecycle() {
       afterDelete.json?.globalConfig?.faviconHash === null,
     'logo delete did not clear both branding hashes',
   );
+
+  settingsOperationId = randomUUID();
+  const staged = await multipartRequest(`/api/admin/config/logo/stage/${settingsOperationId}`, {
+    filename: `${tag}.png`,
+    content: onePixelPng,
+    contentType: 'image/png',
+  });
+  recordCoverage('POST', '/api/admin/config/logo/stage/{operation_id}', staged);
+  requireCondition(
+    staged.json?.operationId === settingsOperationId && /^[a-f0-9]{64}$/.test(staged.json?.brandingHash),
+    'revision-fenced branding stage did not return its exact operation and content hash',
+  );
+  const updated = await call('PUT', '/api/admin/config', '/api/admin/config', {
+    body: {
+      operationId: settingsOperationId,
+      expectedRevision: afterDelete.json?.revision,
+      brandingAction: 'Set',
+      globalConfig: changed,
+    },
+  });
+  requireCondition(
+    updated.json?.operationId === settingsOperationId &&
+      updated.json?.brandingHash === staged.json?.brandingHash,
+    'settings mutation did not consume the exact staged branding reference',
+  );
+  const recoveredSettings = await call(
+    'GET',
+    '/api/admin/config/operations/{operation_id}',
+    `/api/admin/config/operations/${settingsOperationId}`,
+  );
+  requireCondition(
+    JSON.stringify(recoveredSettings.json) === JSON.stringify(updated.json),
+    'settings recovery did not return the exact committed result',
+  );
+  for (const [index, baseUrl] of webTargets.entries()) {
+    const replica = await adminApi('GET', '/api/admin/config', {
+      baseUrl,
+      ip: `10.252.10.${index + 1}`,
+    });
+    requireCondition(
+      replica.json?.globalConfig?.title === changed.title &&
+        replica.json?.globalConfig?.logoHash === staged.json?.brandingHash,
+      `web replica ${index + 1} did not converge on the settings mutation`,
+    );
+  }
+  const stagedAsset = await rawRequest(
+    'GET',
+    `/assets/${staged.json.brandingHash}/${tag}.png`,
+    { jwt: null, ip: null },
+  );
+  requireCondition(
+    stagedAsset.status === 200 && stagedAsset.bytes.length === onePixelPng.length,
+    'staged branding was not published as a servable asset',
+  );
+  // Restore the fixture's initial empty branding while retaining the changed
+  // title for cross-replica checks; final cleanup restores every global field.
+  await adminApi('DELETE', '/api/admin/config/logo');
 
   const myIp = await call('GET', '/api/admin/MyIp', '/api/admin/MyIp');
   requireCondition(typeof myIp.json?.detectedIp === 'string', 'MyIp did not resolve an address');
@@ -1425,6 +1507,16 @@ async function runtimeImageRepairLifecycle() {
 
 async function observabilityAndRuntime() {
   console.log('\nadmin observability and runtime endpoints…');
+  const websocketMetrics = await call(
+    'GET',
+    '/api/admin/realtime/websocket-metrics',
+    '/api/admin/realtime/websocket-metrics',
+  );
+  requireCondition(
+    Number.isSafeInteger(websocketMetrics.json?.startedAtUnixMs) &&
+      websocketMetrics.json.startedAtUnixMs <= Date.now(),
+    'WebSocket operational metrics omitted the bounded process-lifetime sample',
+  );
   const dashboard = await call('GET', '/api/admin/dashboard', '/api/admin/dashboard');
   requireCondition(dashboard.json?.systemStats?.userCount > 0, 'dashboard user count is not populated');
 
@@ -1507,23 +1599,59 @@ async function observabilityAndRuntime() {
     `/api/admin/games/${fixtureGame}/anti-cheat/telemetry/purge`,
     { body: { reason: 'short' }, expected: 400 },
   );
-  await call(
-    'POST',
-    '/api/admin/games/{gameId}/vpn-override',
-    `/api/admin/games/${fixtureGame}/vpn-override`,
-    { body: { reason: `invalid zero-duration override ${tag}`, durationMinutes: 0 }, expected: 400 },
-  );
   const overrides = await call(
     'GET',
     '/api/admin/games/{gameId}/vpn-overrides',
     `/api/admin/games/${fixtureGame}/vpn-overrides`,
   );
-  requireCondition(Array.isArray(overrides.json), 'VPN override history is not an array');
-  await call(
+  requireCondition(
+    Number.isSafeInteger(overrides.json?.policyRevision) && Array.isArray(overrides.json?.overrides),
+    'VPN override history omitted its bounded revisioned projection',
+  );
+  vpnOverrideOperationId = randomUUID();
+  const createdOverride = await call(
+    'POST',
+    '/api/admin/games/{gameId}/vpn-override',
+    `/api/admin/games/${fixtureGame}/vpn-override`,
+    {
+      body: {
+        operationId: vpnOverrideOperationId,
+        expectedPolicyRevision: overrides.json.policyRevision,
+        reason: `admin lifecycle recovery ${tag}`,
+        durationMinutes: 5,
+      },
+    },
+  );
+  vpnOverrideId = createdOverride.json?.id;
+  requireCondition(
+    typeof vpnOverrideId === 'string' &&
+      createdOverride.json.policyRevision === overrides.json.policyRevision + 1,
+    'VPN override creation did not return its durable identity and next policy revision',
+  );
+  const recoveredOverride = await call(
+    'GET',
+    '/api/admin/games/{gameId}/vpn-override/operations/{operationId}',
+    `/api/admin/games/${fixtureGame}/vpn-override/operations/${vpnOverrideOperationId}`,
+  );
+  requireCondition(
+    JSON.stringify(recoveredOverride.json) === JSON.stringify(createdOverride.json),
+    'VPN override recovery did not return the exact committed result',
+  );
+  const revokedOverride = await call(
     'POST',
     '/api/admin/games/{gameId}/vpn-override/{overrideId}/revoke',
-    `/api/admin/games/${fixtureGame}/vpn-override/${randomUUID()}/revoke`,
-    { expected: 404 },
+    `/api/admin/games/${fixtureGame}/vpn-override/${vpnOverrideId}/revoke`,
+    {
+      body: {
+        operationId: randomUUID(),
+        expectedPolicyRevision: createdOverride.json.policyRevision,
+      },
+    },
+  );
+  requireCondition(
+    revokedOverride.json?.id === vpnOverrideId &&
+      revokedOverride.json?.policyRevision === createdOverride.json.policyRevision + 1,
+    'VPN override revocation did not advance the exact policy revision',
   );
   const writeups = await call('GET', '/api/admin/writeups', '/api/admin/writeups?count=100&skip=0');
   requireCondition(
@@ -1746,9 +1874,14 @@ async function buildLifecycle() {
     'POST',
     '/api/admin/games/{gameId}/bulkrebuild',
     `/api/admin/games/${fixtureGame}/bulkrebuild`,
-    { timeoutMs: 180_000 },
+    { headers: { 'Idempotency-Key': randomUUID() }, expected: 202, timeoutMs: 180_000 },
   );
-  requireCondition(bulk.json?.enqueued >= 1, `bulk rebuild remained a no-op: ${bulk.text}`);
+  requireCondition(bulk.json?.kind === 'BuildBatch', `bulk rebuild did not enqueue its durable job: ${bulk.text}`);
+  const bulkResult = await waitForControlJob(bulk.json.id, 'bulk rebuild');
+  requireCondition(
+    bulkResult.status === 'Succeeded' && Number(bulkResult.result?.enqueued) >= 1,
+    `bulk rebuild remained a no-op: ${JSON.stringify(bulkResult)}`,
+  );
   requireCondition(
     Number(sql(`SELECT count(*) FROM "BuildRecords" WHERE challenge_id=${fixtureContainerChallenge}`)) > beforeBulk,
     'bulk rebuild did not create a durable audit row',
@@ -3076,12 +3209,19 @@ async function cleanup() {
   await attempt('global configuration restore', async () => {
     const restoreConfig = originalGlobalConfig || state.originalGlobalConfig;
     if (restoreConfig) {
-      // update_config deliberately ignores branding hashes. The logo endpoint
-      // is the only operation that clears the references and purges the blob,
-      // so run its idempotent delete even if the main scenario failed between
-      // upload and its ordinary delete step.
+      // Clear any published branding and its blob even if the main scenario
+      // failed between upload and its ordinary delete step, then restore the
+      // original global fields through the revision-fenced settings operation.
       await adminApi('DELETE', '/api/admin/config/logo');
-      await adminApi('PUT', '/api/admin/config', { body: { globalConfig: restoreConfig } });
+      const current = await adminApi('GET', '/api/admin/config');
+      await adminApi('PUT', '/api/admin/config', {
+        body: {
+          operationId: randomUUID(),
+          expectedRevision: current.json?.revision,
+          brandingAction: 'Keep',
+          globalConfig: restoreConfig,
+        },
+      });
     }
   });
   await attempt('remaining namespaced evidence', async () => {
@@ -3148,6 +3288,10 @@ async function main() {
       auditId: state.buildRecordIds.find(Boolean) || 1,
       bindingId: state.repoBindingIds.find(Boolean) || 1,
       workerId,
+      settingsOperationId: settingsOperationId || randomUUID(),
+      importOperationId: importOperationId || randomUUID(),
+      vpnOverrideOperationId: vpnOverrideOperationId || randomUUID(),
+      overrideId: vpnOverrideId || randomUUID(),
     });
   } catch (error) {
     primaryError = error;

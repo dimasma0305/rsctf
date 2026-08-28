@@ -306,6 +306,7 @@ export function expectStatus(response, expected, label) {
 
 export async function adminApi(method, path, {
   body,
+  headers,
   baseUrl = TARGET,
   jwt = adminJwt(),
   ip = '10.252.0.10',
@@ -313,7 +314,7 @@ export async function adminApi(method, path, {
   expected = 200,
   label = `${method} ${path}`,
 } = {}) {
-  const response = await api(method, path, { body, baseUrl, jwt, ip, timeoutMs });
+  const response = await api(method, path, { body, headers, baseUrl, jwt, ip, timeoutMs });
   return expectStatus(response, expected, label);
 }
 
@@ -389,6 +390,7 @@ export async function multipartRequest(path, {
   filename,
   content,
   contentType = 'application/octet-stream',
+  headers = {},
   baseUrl = TARGET,
   jwt = adminJwt(),
   ip = '10.252.0.12',
@@ -398,7 +400,7 @@ export async function multipartRequest(path, {
 } = {}) {
   const form = new FormData();
   form.append('file', new Blob([content], { type: contentType }), filename);
-  const response = await rawRequest('POST', path, { baseUrl, jwt, ip, body: form, timeoutMs });
+  const response = await rawRequest('POST', path, { baseUrl, jwt, ip, body: form, headers, timeoutMs });
   return expectStatus(response, expected, label);
 }
 

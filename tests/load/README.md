@@ -703,7 +703,7 @@ PostgreSQL and Redis services. A PostgreSQL session advisory lock excludes lifec
 runs started from other hosts in addition to the host-local process lock. `RATE=2` is the
 enforced comparison ceiling for the fresh polling administrator; the runner rejects any
 higher rate and fails on the first 429 or dropped iteration. Keep the `RATE=1` example for
-lighter diagnostics. The 74-request setup matrix consumes the same 150-request/minute
+lighter diagnostics. The 79-request setup matrix consumes the same 150-request/minute
 account quota, so a quota-policy change is intentionally fail-closed. Optional
 fixed-rate gates are `HEALTH_RATE`, `MAX_VUS`, `MAX_ADMIN_P95_MS`, and
 `MAX_HEALTH_P95_MS`. `ADMIN_CONTAINER_IMAGE` selects the local/pullable source image

@@ -331,12 +331,29 @@ function sampleBody(kind, status) {
         proxyTrusted: true,
         trustedNetworks: ['127.0.0.0/8'],
       };
-    case 'config': return { accountPolicy: {}, globalConfig: {}, containerPolicy: {}, proxyTrust: {} };
+    case 'config': return { revision: 1, accountPolicy: {}, globalConfig: {}, containerPolicy: {}, proxyTrust: {} };
+    case 'websocket-metrics':
+      return {
+        startedAtUnixMs: Date.now(), connectionsRejected: 0, inboundFrames: 0, inboundBytes: 0,
+        inboundQuotaRejections: 0, protocolRejections: 0, quotaCloses: 0, protocolCloses: 0,
+        invalidHandshakeCloses: 0, idleTimeoutCloses: 0, authorizationCloses: 0, feedResyncCloses: 0,
+      };
+    case 'settings-branding-stage':
+      return { operationId: '018f3c6a-d79b-7cc0-8f68-8fdbad0f57bb', brandingHash: 'a'.repeat(64) };
+    case 'settings-operation':
+      return {
+        operationId: '018f3c6a-d79b-7cc0-8f68-8fdbad0f57bb', revision: 2, brandingHash: 'a'.repeat(64),
+      };
     case 'dashboard':
       return { systemStats: { userCount: 0, teamCount: 0, activeContainerCount: 0 }, topGames: [] };
     case 'game-writeups': return { divisions: {}, writeups: [] };
     case 'zip': return new Uint8Array([0x50, 0x4b]);
     case 'import': return { total: 0, created: 0, updated: 0, skipped: 0, users: [] };
+    case 'import-job':
+      return {
+        operationId: '018f3c6a-d79b-7cc0-8f68-8fdbad0f57bb', status: 'Completed', total: 0,
+        completed: 0, result: { total: 0, created: 0, updated: 0, skipped: 0, users: [] },
+      };
     case 'credential-send': return { sent: 0, failed: 0, results: [] };
     case 'user': return { userId: worker.id, role: 'User' };
     case 'instance-stats':
@@ -348,7 +365,21 @@ function sampleBody(kind, status) {
         netTxBytes: 20,
         sampledAt: Date.now(),
       };
-    case 'bulk-rebuild': return { enqueued: 0, skipped: 0, messages: [] };
+    case 'control-job':
+      return {
+        id: '018f3c6a-d79b-7cc0-8f68-8fdbad0f57bb', kind: 'BuildBatch', scopeKey: 'game:1',
+        gameId: 1, challengeId: null, operationId: '018f3c6a-d79b-7cc0-8f68-8fdbad0f57bc',
+        fingerprint: 'fixture', status: 'Queued', progressCurrent: 0, progressTotal: 0,
+        requestedGeneration: 0, result: null, error: null, cancellationRequested: false,
+        createdAtUtc: Date.now(), updatedAtUtc: Date.now(), finishedAtUtc: null,
+      };
+    case 'vpn-override-result':
+      return {
+        id: '018f3c6a-d79b-7cc0-8f68-8fdbad0f57bb', expiresAtUtc: Date.now() + 60_000,
+        policyRevision: 2,
+      };
+    case 'vpn-override-list':
+      return { policyRevision: 2, activeLimit: 16, overrides: [] };
     case 'prune': return { removed: 0, messages: [] };
     case 'build': return { id: 1, challengeId: 2, status: 'Queued' };
     case 'build-images':
@@ -425,6 +456,7 @@ function sampleResponse(operation) {
     : [
         'private-string',
         'import',
+        'import-job',
         'credential-send',
         'worker-created',
         'enrollment-token',
@@ -435,15 +467,15 @@ function sampleResponse(operation) {
   return { status, body: sampleBody(operation.responseKind, status), headers };
 }
 
-test('catalog covers all 74 HTTP operations and keeps SignalR as separate surfaces', () => {
-  assert.equal(ADMIN_OPERATIONS.length, 74);
-  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 74);
+test('catalog covers all 79 HTTP operations and keeps SignalR as separate surfaces', () => {
+  assert.equal(ADMIN_OPERATIONS.length, 79);
+  assert.equal(new Set(ADMIN_OPERATION_IDS).size, 79);
   assert.deepEqual(
     ADMIN_OPERATIONS.reduce((counts, operation) => {
       counts[operation.method] = (counts[operation.method] || 0) + 1;
       return counts;
     }, {}),
-    { GET: 32, PUT: 6, POST: 26, DELETE: 10 },
+    { GET: 36, PUT: 6, POST: 27, DELETE: 10 },
   );
   const enroll = ADMIN_OPERATIONS.find(({ id }) => id === 'worker_enroll');
   assert.deepEqual(
@@ -458,7 +490,7 @@ test('catalog covers all 74 HTTP operations and keeps SignalR as separate surfac
 });
 
 test('read-load subset is GET-only, non-destructive, and includes web and control surfaces', () => {
-  assert.equal(ADMIN_READ_OPERATIONS.length, 26);
+  assert.equal(ADMIN_READ_OPERATIONS.length, 27);
   assert.ok(ADMIN_READ_OPERATIONS.every(({ method, poll, mutation }) => method === 'GET' && poll && !mutation));
   assert.deepEqual(new Set(ADMIN_READ_OPERATIONS.map(({ surface }) => surface)), new Set(['web', 'control']));
   assert.ok(!ADMIN_READ_OPERATIONS.some(({ id }) => id === 'admin_writeups_download'));
@@ -473,7 +505,7 @@ test('fixed-rate admin load uses one bounded instance batch and never a per-row 
 });
 
 test('authorization classes keep Admin, manager, and enrollment-token surfaces explicit', () => {
-  assert.equal(ADMIN_OPERATIONS.filter(({ auth }) => auth === 'admin').length, 72);
+  assert.equal(ADMIN_OPERATIONS.filter(({ auth }) => auth === 'admin').length, 77);
   assert.deepEqual(
     ADMIN_OPERATIONS.filter(({ auth }) => auth !== 'admin').map(({ id, auth }) => [id, auth]),
     [
@@ -599,7 +631,7 @@ test('read-origin matrix covers every live read on every eligible replica exactl
   const controlOrigins = ['http://public.test', 'http://control.test'];
   const matrix = buildAdminReadOriginMatrix(context, webOrigins, controlOrigins);
 
-  assert.equal(matrix.length, 77);
+  assert.equal(matrix.length, 80);
   assert.equal(new Set(matrix.map(({ operation, selectedOrigin }) =>
     `${operation.id}|${selectedOrigin}`)).size, matrix.length);
   for (const operation of ADMIN_READ_OPERATIONS) {
@@ -617,9 +649,9 @@ test('read-origin matrix covers every live read on every eligible replica exactl
 
 test('repository router source and lifecycle catalog have exact bidirectional coverage', () => {
   const sources = repositoryRouterSources();
-  assert.deepEqual(assertRouterCoverage(sources), { operations: 74, signalR: 2 });
+  assert.deepEqual(assertRouterCoverage(sources), { operations: 79, signalR: 2 });
   const parsed = parseAdminRouterOperations(sources);
-  assert.equal(parsed.operations.length, 74);
+  assert.equal(parsed.operations.length, 79);
   assert.equal(parsed.signalR.length, 2);
 });
 
@@ -660,8 +692,8 @@ test('router parser ignores route-like text in Rust comments and strings', () =>
 
 test('coverage accounting rejects omissions, duplicates, and unknown operations', () => {
   assert.deepEqual(assertCompleteCoverage(ADMIN_OPERATION_IDS), {
-    covered: 74,
-    required: 74,
+    covered: 79,
+    required: 79,
     missing: [],
     extra: [],
   });
@@ -671,8 +703,8 @@ test('coverage accounting rejects omissions, duplicates, and unknown operations'
 
   const allSurfaces = [...ADMIN_OPERATION_IDS, ...ADMIN_SIGNALR_SURFACES.map(({ id }) => id)];
   assert.deepEqual(assertCompleteCoverage(allSurfaces, { includeSignalR: true }), {
-    covered: 76,
-    required: 76,
+    covered: 81,
+    required: 81,
     missing: [],
     extra: [],
   });
@@ -936,6 +968,14 @@ test('response validation rejects malformed pages, leaked credential caching, an
     false,
   );
   assert.equal(
+    validateAdminResponse('admin_users_import_recover', {
+      status: 200,
+      body: sampleBody('import-job', 200),
+      headers: { 'Cache-Control': 'public, max-age=3600' },
+    }),
+    false,
+  );
+  assert.equal(
     validateAdminResponse('admin_credentials_send', {
       status: 200,
       body: sampleBody('credential-send', 200),
@@ -1040,7 +1080,7 @@ test('k6 admin scenario holds a fixed rate, polls shared contracts only, and fai
   assert.match(source, /const CONTROL_TARGET/);
   assert.match(source, /assertAdminOriginAcknowledgements\(__ENV/);
   assert.match(source, /RATE > 2/);
-  assert.match(source, /74-request setup matrix shares the 150\/min admin quota/);
+  assert.match(source, /79-request setup matrix shares the 150\/min admin quota/);
   assert.match(source, /new Trend\(`\$\{operation\.id\}_ms`/);
   assert.match(source, /server_5xx: \['rate==0'\]/);
   assert.match(source, /invalid_admin_response: \['rate==0'\]/);

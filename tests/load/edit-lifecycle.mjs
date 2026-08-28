@@ -139,8 +139,13 @@ const state = {
 };
 
 const context = {
+  controlJobOperationId: null,
+  controlJobId: null,
   gameId: null,
+  gameOperationId: null,
   challengeId: null,
+  challengeOperationId: null,
+  challengeOperationRevision: null,
   deletableChallengeId: null,
   pendingApproveId: null,
   pendingRejectId: null,
@@ -148,6 +153,7 @@ const context = {
   containerChallengeId: null,
   workerGameId: null,
   workerChallengeId: null,
+  importJobId: null,
   transferChallengeId: null,
   postId: null,
   managerUserId: null,
@@ -191,7 +197,7 @@ function redisRaw(args, label) {
 }
 
 function responseBody(response, operation) {
-  if (operation.responseKind === 'zip' || operation.responseKind === 'tar') return response.bytes;
+  if (['zip', 'private-zip', 'tar'].includes(operation.responseKind)) return response.bytes;
   const json = response.json;
   if (
     json &&
@@ -205,8 +211,15 @@ function responseBody(response, operation) {
   return json;
 }
 
-function multipartBody({ filename, content, contentType = 'application/octet-stream', field = 'file' }) {
+function multipartBody({
+  filename,
+  content,
+  contentType = 'application/octet-stream',
+  field = 'file',
+  fields = {},
+}) {
   const form = new FormData();
+  for (const [name, value] of Object.entries(fields)) form.append(name, String(value));
   form.append(field, new Blob([content], { type: contentType }), filename);
   return form;
 }
@@ -277,14 +290,58 @@ function isTransientKothRecoveryConflict(response) {
     title === 'checker timed out';
 }
 
-async function uncatalogued(method, path, { body, jwt = A.adminJwt(), expected = 200 } = {}) {
+async function uncatalogued(method, path, {
+  body,
+  headers,
+  jwt = A.adminJwt(),
+  expected = 200,
+} = {}) {
   const response = await A.api(method, path, {
     body,
+    headers,
     jwt,
     ip: `10.255.1.${(requestIndex++ % 240) + 1}`,
     timeoutMs: 180_000,
   });
   return expectStatus(response, expected, `${method} ${path}`);
+}
+
+async function waitForControlJob(jobId, jwt, label, timeoutMs = 180_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    const response = await uncatalogued('GET', `/api/edit/jobs/${jobId}`, { jwt });
+    last = response.json?.data ?? response.json;
+    validateEditResponse('edit_control_job_get', {
+      status: response.status,
+      body: last,
+      headers: response.headers,
+    });
+    if (['Succeeded', 'Failed', 'Cancelled'].includes(last?.status)) return last;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`${label} did not become terminal: ${JSON.stringify(last)}`);
+}
+
+async function waitForImportJob(gameId, jobId, jwt, label, timeoutMs = 180_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    const response = await uncatalogued(
+      'GET',
+      `/api/edit/games/${gameId}/challenges/importjobs/${jobId}`,
+      { jwt },
+    );
+    last = response.json?.data ?? response.json;
+    validateEditResponse('edit_challenge_import_job_get', {
+      status: response.status,
+      body: last,
+      headers: response.headers,
+    });
+    if (['Succeeded', 'Failed'].includes(last?.status)) return last;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`${label} did not become terminal: ${JSON.stringify(last)}`);
 }
 
 function fixtureFingerprint() {
@@ -445,6 +502,10 @@ async function prepareFutureFixture() {
   const created = await call('edit_game_add', { body: futureGameBody() });
   context.gameId = created.model.id;
   context.workerGameId = context.gameId;
+  context.gameOperationId = randomUUID();
+  context.controlJobOperationId = randomUUID();
+  context.controlJobId = randomUUID();
+  context.importJobId = randomUUID();
   primaryGameModel = created.model;
   state.gameIds.push(context.gameId);
   state.futureGameIds.push(context.gameId);
@@ -503,9 +564,12 @@ async function prepareFutureFixture() {
     body: { title: `edit-static-${runKey}`, category: 'Misc', type: 'StaticAttachment' },
   });
   context.challengeId = challenge.model.id;
-  await call('edit_challenge_update', {
+  context.challengeOperationId = randomUUID();
+  const updatedChallenge = await call('edit_challenge_update', {
     jwt: identities.managerJwt,
     body: {
+      operationId: context.challengeOperationId,
+      expectedRevision: challenge.model.revision,
       content: 'Updated by exhaustive edit acceptance',
       originalScore: 1000,
       minScoreRate: 0.25,
@@ -513,6 +577,7 @@ async function prepareFutureFixture() {
       submissionLimit: 10,
     },
   });
+  context.challengeOperationRevision = updatedChallenge.model.revision;
 
   context.deletableChallengeId = await A.createChallenge(context.gameId, {
     title: `edit-delete-${runKey}`, category: 'Misc', type: 'StaticAttachment',
@@ -616,36 +681,55 @@ async function prepareFutureFixture() {
       filename: `${runKey}-pending-approve.zip`,
       content: pendingApproveArchive,
       contentType: 'application/zip',
+      fields: { operationId: randomUUID() },
     },
   });
+  const approvedImportJob = await waitForImportJob(
+    context.gameId,
+    submittedApprove.model.jobId,
+    identities.ordinaryJwt,
+    'first user challenge submission',
+  );
   requireCondition(
-    submittedApprove.model.imported === 1 && submittedApprove.model.failed === 0,
+    approvedImportJob.status === 'Succeeded' &&
+      approvedImportJob.result?.imported === 1 && approvedImportJob.result?.failed === 0,
     'first user submission did not create its pending challenge',
   );
   const pendingRejectArchive = challengeArchive([
     { name: `Pending Reject ${runKey}`, flag: `flag{pending_reject_${runKey}}` },
   ]);
   const submitOperation = operationById.get('edit_challenge_submit');
-  const submittedRejectResponse = await multipartRequest(
+  const submittedRejectResponse = await rawRequest(
+    'POST',
     resolveEditOperationPath(submitOperation, context),
     {
-      filename: `${runKey}-pending-reject.zip`,
-      content: pendingRejectArchive,
-      contentType: 'application/zip',
+      body: multipartBody({
+        filename: `${runKey}-pending-reject.zip`,
+        content: pendingRejectArchive,
+        contentType: 'application/zip',
+        fields: { operationId: randomUUID() },
+      }),
       jwt: identities.ordinaryJwt,
       ip: `10.254.${Math.floor(requestIndex / 240) % 240}.${(requestIndex++ % 240) + 1}`,
-      label: 'second single-manifest user challenge submission',
       timeoutMs: 180_000,
     },
   );
+  expectStatus(submittedRejectResponse, 202, 'second single-manifest user challenge submission');
   const submittedReject = responseBody(submittedRejectResponse, submitOperation);
   validateEditResponse(submitOperation, {
     status: submittedRejectResponse.status,
     body: submittedReject,
     headers: submittedRejectResponse.headers,
   });
+  const rejectedImportJob = await waitForImportJob(
+    context.gameId,
+    submittedReject.jobId,
+    identities.ordinaryJwt,
+    'second user challenge submission',
+  );
   requireCondition(
-    submittedReject.imported === 1 && submittedReject.failed === 0,
+    rejectedImportJob.status === 'Succeeded' &&
+      rejectedImportJob.result?.imported === 1 && rejectedImportJob.result?.failed === 0,
     'second user submission did not create its pending challenge',
   );
   context.pendingApproveId = Number(sql(
@@ -662,9 +746,27 @@ async function prepareFutureFixture() {
   ]);
   const imported = await call('edit_challenge_import', {
     jwt: identities.managerJwt,
-    form: { filename: `${runKey}-trusted.zip`, content: trustedArchive, contentType: 'application/zip' },
+    form: {
+      filename: `${runKey}-trusted.zip`,
+      content: trustedArchive,
+      contentType: 'application/zip',
+      fields: { operationId: randomUUID() },
+    },
   });
-  requireCondition(imported.model.imported === 1 && imported.model.failed === 0, 'trusted challenge import failed');
+  context.importJobId = imported.model.jobId;
+  const observedImport = await call('edit_challenge_import_job_get', { jwt: identities.managerJwt });
+  requireCondition(observedImport.model.jobId === context.importJobId, 'import-job read returned the wrong job');
+  const trustedImportJob = await waitForImportJob(
+    context.gameId,
+    context.importJobId,
+    identities.managerJwt,
+    'trusted challenge import',
+  );
+  requireCondition(
+    trustedImportJob.status === 'Succeeded' &&
+      trustedImportJob.result?.imported === 1 && trustedImportJob.result?.failed === 0,
+    'trusted challenge import failed',
+  );
   context.archiveChallengeId = Number(sql(
     `SELECT id FROM "GameChallenges" WHERE game_id=${context.gameId} ` +
       `AND title=${sqlLiteral(`Archive Audit ${runKey}`)} ORDER BY id DESC LIMIT 1`,
@@ -691,6 +793,7 @@ async function prepareFutureFixture() {
     github = await call('edit_challenge_import_github', {
       jwt: identities.managerJwt,
       body: {
+        operationId: randomUUID(),
         repoUrl: githubRepository,
         ref: githubRef,
         subpath: githubSubpath,
@@ -720,7 +823,17 @@ async function prepareFutureFixture() {
   }
   if (githubImportFailure) throw githubImportFailure;
   if (githubFenceFailure) throw githubFenceFailure;
-  requireCondition(github.model.imported >= 1 && github.model.failed === 0, `GitHub import was not successful: ${JSON.stringify(github.model)}`);
+  const githubImportJob = await waitForImportJob(
+    context.gameId,
+    github.model.jobId,
+    identities.managerJwt,
+    'GitHub challenge import',
+  );
+  requireCondition(
+    githubImportJob.status === 'Succeeded' &&
+      githubImportJob.result?.imported >= 1 && githubImportJob.result?.failed === 0,
+    `GitHub import was not successful: ${JSON.stringify(githubImportJob)}`,
+  );
 
   const onePixelPng = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
@@ -738,12 +851,30 @@ async function prepareFutureFixture() {
   const rebuild = await call('edit_challenge_rebuild', {
     ctx: { ...context, gameId: context.gameId },
     jwt: identities.managerJwt,
+    headers: { 'Idempotency-Key': randomUUID() },
   });
-  requireCondition(/success/i.test(rebuild.model.buildStatus), `container rebuild did not succeed: ${JSON.stringify(rebuild.model)}`);
-  const rollout = await call('edit_workload_rollout', { jwt: identities.managerJwt });
+  const rebuildJob = await waitForControlJob(
+    rebuild.model.id,
+    identities.managerJwt,
+    'container challenge rebuild',
+  );
   requireCondition(
-    rollout.model.matched === 0 && Object.entries(rollout.model).every(([key, value]) => key === 'matched' || value === 0),
-    `zero-instance stateless rollout was not a no-op: ${JSON.stringify(rollout.model)}`,
+    rebuildJob.status === 'Succeeded',
+    `container rebuild did not succeed: ${JSON.stringify(rebuildJob)}`,
+  );
+  const rollout = await call('edit_workload_rollout', {
+    jwt: identities.managerJwt,
+    headers: { 'Idempotency-Key': randomUUID() },
+  });
+  const rolloutJob = await waitForControlJob(
+    rollout.model.id,
+    identities.managerJwt,
+    'zero-instance workload rollout',
+  );
+  requireCondition(
+    rolloutJob.status === 'Succeeded' && rolloutJob.result?.matched === 0 &&
+      Object.values(rolloutJob.result).every((value) => value === 0),
+    `zero-instance stateless rollout was not a no-op: ${JSON.stringify(rolloutJob)}`,
   );
 
   const testContainer = await call('edit_test_container_create', { jwt: identities.managerJwt });
@@ -811,7 +942,18 @@ async function prepareAdFixture() {
   await A.addFlags(context.adGameId, context.adChallengeId, [`flag{edit_ad_placeholder_${runKey}}`]);
   await A.setChallenge(context.adGameId, context.adChallengeId, { isEnabled: true });
 
-  await call('edit_ad_ensure_containers');
+  const provision = await call('edit_ad_ensure_containers', {
+    headers: { 'Idempotency-Key': randomUUID() },
+  });
+  const provisionJob = await waitForControlJob(
+    provision.model.id,
+    A.adminJwt(),
+    'platform A&D service provisioning',
+  );
+  requireCondition(
+    provisionJob.status === 'Succeeded',
+    `platform A&D service provisioning failed: ${JSON.stringify(provisionJob)}`,
+  );
   context.serviceId = Number(await waitForSql(
     `SELECT id FROM "AdTeamServices" WHERE game_id=${context.adGameId} ` +
       `AND challenge_id=${context.adChallengeId} AND container_id IS NOT NULL ORDER BY id LIMIT 1`,
@@ -840,7 +982,23 @@ async function prepareAdFixture() {
     { jwt: identities.managerJwt },
   );
   requireCondition(reenabled.json?.isEnabled === true, 'A&D fixture did not re-enable');
-  await uncatalogued('POST', `/api/edit/games/${context.adGameId}/ad/EnsureContainers`);
+  const reprovision = await uncatalogued(
+    'POST',
+    `/api/edit/games/${context.adGameId}/ad/EnsureContainers`,
+    {
+      headers: { 'Idempotency-Key': randomUUID() },
+      expected: 202,
+    },
+  );
+  const reprovisionJob = await waitForControlJob(
+    reprovision.json?.data?.id ?? reprovision.json?.id,
+    A.adminJwt(),
+    'A&D service reprovisioning after toggle',
+  );
+  requireCondition(
+    reprovisionJob.status === 'Succeeded',
+    `A&D service reprovisioning failed: ${JSON.stringify(reprovisionJob)}`,
+  );
   context.serviceId = Number(await waitForSql(
     `SELECT id FROM "AdTeamServices" WHERE game_id=${context.adGameId} ` +
       `AND challenge_id=${context.adChallengeId} AND container_id IS NOT NULL ORDER BY id LIMIT 1`,
@@ -933,7 +1091,23 @@ async function prepareKothFixture() {
   };
   saveRecovery();
   await A.setChallenge(context.kothGameId, context.kothChallengeId, { isEnabled: true });
-  await uncatalogued('POST', `/api/edit/games/${context.kothGameId}/ad/EnsureContainers`);
+  const provision = await uncatalogued(
+    'POST',
+    `/api/edit/games/${context.kothGameId}/ad/EnsureContainers`,
+    {
+      headers: { 'Idempotency-Key': randomUUID() },
+      expected: 202,
+    },
+  );
+  const provisionJob = await waitForControlJob(
+    provision.json?.data?.id ?? provision.json?.id,
+    A.adminJwt(),
+    'KotH hill provisioning',
+  );
+  requireCondition(
+    provisionJob.status === 'Succeeded',
+    `KotH hill provisioning failed: ${JSON.stringify(provisionJob)}`,
+  );
   const hill = discoverManagedKothHill(context.kothGameId, context.kothChallengeId);
   state.containerIds.push(hill.containerId);
   state.runtimeIds.push(hill.backendId);
@@ -1008,16 +1182,48 @@ async function positiveReadAndMutationSurface() {
   const updatedGameBody = {
     ...primaryGameModel,
     summary: `updated edit acceptance ${runKey}`,
+    operationId: (context.gameOperationId = randomUUID()),
   };
-  await call('edit_game_update', { jwt: identities.managerJwt, body: updatedGameBody });
+  const updatedGame = await call('edit_game_update', {
+    jwt: identities.managerJwt,
+    body: updatedGameBody,
+  });
+  primaryGameModel = updatedGame.model;
+  const recoveredGame = await call('edit_game_operation_get', { jwt: identities.managerJwt });
+  requireCondition(
+    recoveredGame.model.id === context.gameId &&
+      recoveredGame.model.configurationRevision === primaryGameModel.configurationRevision,
+    'game operation recovery did not return the exact committed revision',
+  );
   const salt = await call('edit_game_hash_salt', { jwt: identities.managerJwt });
   requireCondition(/^[a-f0-9]{64}$/.test(salt.model), 'game hash salt is not a SHA-256 value');
   const variants = await call('edit_variants_get', { jwt: identities.managerJwt });
   requireCondition(Array.isArray(variants.model), 'variant ledger response is not an array');
-  const generatedVariants = await call('edit_variants_generate', { jwt: identities.managerJwt });
+  context.controlJobOperationId = randomUUID();
+  const generatedVariants = await call('edit_variants_generate', {
+    jwt: identities.managerJwt,
+    headers: { 'Idempotency-Key': context.controlJobOperationId },
+  });
+  context.controlJobId = generatedVariants.model.id;
+  const terminalVariantJob = await waitForControlJob(
+    context.controlJobId,
+    identities.managerJwt,
+    'variant generation',
+  );
   requireCondition(
-    generatedVariants.model.generated === 0,
+    terminalVariantJob.status === 'Succeeded' && terminalVariantJob.result?.generated === 0,
     'fixture with no configured generators unexpectedly created variants',
+  );
+  const recoveredControlJob = await call('edit_control_job_operation_get', {
+    jwt: identities.managerJwt,
+  });
+  const readControlJob = await call('edit_control_job_get', { jwt: identities.managerJwt });
+  const cancelledControlJob = await call('edit_control_job_cancel', { jwt: identities.managerJwt });
+  requireCondition(
+    [recoveredControlJob, readControlJob, cancelledControlJob].every(
+      ({ model }) => model.id === context.controlJobId && model.operationId === context.controlJobOperationId,
+    ),
+    'control-job read, operation recovery, or cancellation returned a different job identity',
   );
   requireCondition(
     Number.isSafeInteger(primaryGameModel.configurationRevision) &&
@@ -1046,6 +1252,20 @@ async function positiveReadAndMutationSurface() {
     `EDIT-CLONE-${runKey}`,
   );
   console.log(`  ✓ clone preserved ${cloneShape.cloneChallenges} challenge template(s) without live ownership`);
+  const lowercaseClone = await call('edit_game_clone_lowercase', {
+    body: {
+      operationId: randomUUID(),
+      expectedSourceRevision: primaryGameModel.configurationRevision,
+      expectedChallengeRevision: primaryGameModel.challengeConfigurationRevision,
+      title: `EDIT-CLONE-LOWER-${runKey}`,
+      startTimeUtc: primaryGameModel.start,
+      endTimeUtc: primaryGameModel.end,
+      includeChallenges: false,
+    },
+  });
+  state.gameIds.push(lowercaseClone.model);
+  state.futureGameIds.push(lowercaseClone.model);
+  saveRecovery();
   await call('edit_game_writeups_delete');
   await call('edit_scoreboard_flush', { jwt: identities.managerJwt });
   const admins = await call('edit_game_admins_get');
@@ -1066,10 +1286,45 @@ async function positiveReadAndMutationSurface() {
   );
   const challenges = await call('edit_challenges_get', { jwt: identities.managerJwt });
   requireCondition(challenges.model.some((challenge) => challenge.id === context.challengeId), 'challenge list omitted primary fixture');
+  const bulk = await call('edit_challenges_bulk', {
+    jwt: identities.managerJwt,
+    body: {
+      operationId: randomUUID(),
+      expectedRevision: primaryGameModel.challengeConfigurationRevision,
+      action: 'Enable',
+      challengeIds: [context.challengeId],
+    },
+  });
+  requireCondition(
+    bulk.model.state === 'Complete' && bulk.model.outcomes.some(
+      (outcome) => outcome.challengeId === context.challengeId,
+    ),
+    'bulk challenge mutation omitted its exact challenge outcome',
+  );
   const challenge = await call('edit_challenge_get', { jwt: identities.managerJwt });
   requireCondition(challenge.model.id === context.challengeId, 'challenge detail returned the wrong fixture');
+  const recoveredChallenge = await call('edit_challenge_operation_get', { jwt: identities.managerJwt });
+  requireCondition(
+    recoveredChallenge.model.challengeId === context.challengeId &&
+      recoveredChallenge.model.operationId === context.challengeOperationId &&
+      recoveredChallenge.model.revision === context.challengeOperationRevision,
+    'challenge operation recovery did not return the exact committed revision',
+  );
   const audit = await call('edit_challenge_audit_meta', { jwt: identities.managerJwt });
   requireCondition(audit.model.archiveAvailable === true && audit.model.files.length > 0, 'archive audit metadata is not materialized');
+  const auditArchive = await call('edit_challenge_audit_archive', { jwt: identities.managerJwt });
+  requireCondition(auditArchive.model.length > 3, 'retained challenge audit archive is empty');
+  const buildStatuses = await call('edit_challenge_build_statuses_get', { jwt: identities.managerJwt });
+  requireCondition(
+    buildStatuses.model.some(({ challengeId }) => challengeId === context.containerChallengeId),
+    'bounded challenge build-status projection omitted the container fixture',
+  );
+  const buildStatus = await call('edit_challenge_build_status_get', { jwt: identities.managerJwt });
+  requireCondition(
+    buildStatus.model.challengeId === context.containerChallengeId &&
+      buildStatus.model.buildStatus === 'Success',
+    `container fixture build status was not successful: ${JSON.stringify(buildStatus.model)}`,
+  );
 
   await call('edit_notices_get', { jwt: identities.managerJwt });
   const notice = await call('edit_notice_update', {
@@ -1106,7 +1361,19 @@ async function positiveReadAndMutationSurface() {
   requireCondition(points.model.length > 0, 'snapshot history did not expose live drift point');
   const snapshot = await call('edit_ad_snapshot_download', { jwt: identities.managerJwt });
   requireCondition(snapshot.model.length >= 2, 'compressed snapshot archive is empty');
-  await call('edit_ad_service_restart', { jwt: identities.managerJwt });
+  const restart = await call('edit_ad_service_restart', {
+    jwt: identities.managerJwt,
+    headers: { 'Idempotency-Key': randomUUID() },
+  });
+  const restartJob = await waitForControlJob(
+    restart.model.id,
+    identities.managerJwt,
+    'A&D service replacement',
+  );
+  requireCondition(
+    restartJob.status === 'Succeeded',
+    `A&D service replacement failed: ${JSON.stringify(restartJob)}`,
+  );
   const restartedRuntime = await waitForSql(
     `SELECT container_id FROM "AdTeamServices" WHERE id=${context.serviceId} AND game_id=${context.adGameId}`,
     (value) => value && value !== adRuntimeBeforeRestart,
@@ -2025,8 +2292,8 @@ async function main() {
     await prepareFutureFixture();
     await prepareAdFixture();
     await prepareKothFixture();
-    await authorizationMatrix();
     await positiveReadAndMutationSurface();
+    await authorizationMatrix();
     await runReadSimulation();
     await destructivePositiveSurface();
 

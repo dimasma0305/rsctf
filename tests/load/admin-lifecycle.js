@@ -35,10 +35,26 @@ export const PARTICIPATION_STATUS = Object.freeze({
 // authenticated by that token rather than an administrator session.
 export const ADMIN_OPERATIONS = Object.freeze([
   operation("admin_my_ip_get", "GET", "/api/admin/MyIp", { poll: true, responseKind: "my-ip" }),
+  operation("admin_websocket_metrics_get", "GET", "/api/admin/realtime/websocket-metrics", {
+    poll: true,
+    responseKind: "websocket-metrics",
+  }),
   operation("admin_config_get", "GET", "/api/admin/config", { poll: true, responseKind: "config" }),
-  operation("admin_config_update", "PUT", "/api/admin/config", { mutation: true, responseKind: "message" }),
+  operation("admin_config_update", "PUT", "/api/admin/config", {
+    mutation: true,
+    responseKind: "settings-operation",
+  }),
   operation("admin_logo_upload", "POST", "/api/admin/config/logo", { mutation: true, responseKind: "message" }),
   operation("admin_logo_delete", "DELETE", "/api/admin/config/logo", { mutation: true, responseKind: "message" }),
+  operation("admin_logo_stage", "POST", "/api/admin/config/logo/stage/{operation_id}", {
+    mutation: true,
+    responseKind: "settings-branding-stage",
+    params: { operation_id: "settingsOperationId" },
+  }),
+  operation("admin_config_operation_get", "GET", "/api/admin/config/operations/{operation_id}", {
+    responseKind: "settings-operation",
+    params: { operation_id: "settingsOperationId" },
+  }),
   operation("admin_dashboard_get", "GET", "/api/admin/dashboard", { poll: true, responseKind: "dashboard" }),
   operation("admin_flag_egress_get", "GET", "/api/admin/Games/{id}/FlagEgress", {
     poll: true,
@@ -88,6 +104,10 @@ export const ADMIN_OPERATIONS = Object.freeze([
   }),
   operation("admin_users_add", "POST", "/api/admin/users", { mutation: true, responseKind: "message" }),
   operation("admin_users_import", "POST", "/api/admin/users/import", { mutation: true, responseKind: "import" }),
+  operation("admin_users_import_recover", "GET", "/api/admin/users/import/{operationId}", {
+    responseKind: "import-job",
+    params: { operationId: "importOperationId" },
+  }),
   operation("admin_credentials_send", "POST", "/api/admin/users/credentials/send", {
     mutation: true,
     responseKind: "credential-send",
@@ -186,7 +206,8 @@ export const ADMIN_OPERATIONS = Object.freeze([
   }),
   operation("admin_game_bulk_rebuild", "POST", "/api/admin/games/{gameId}/bulkrebuild", {
     mutation: true,
-    responseKind: "bulk-rebuild",
+    responseKind: "control-job",
+    expectedStatuses: [202],
     params: { gameId: "gameId" },
   }),
   operation("admin_anticheat_blocks_get", "GET", "/api/admin/anticheatblocks", {
@@ -222,18 +243,20 @@ export const ADMIN_OPERATIONS = Object.freeze([
   }),
   operation("admin_event_vpn_override_create", "POST", "/api/admin/games/{gameId}/vpn-override", {
     mutation: true,
-    responseKind: "error",
-    expectedStatuses: [400],
+    responseKind: "vpn-override-result",
     params: { gameId: "gameId" },
   }),
   operation("admin_event_vpn_overrides_get", "GET", "/api/admin/games/{gameId}/vpn-overrides", {
-    responseKind: "array",
+    responseKind: "vpn-override-list",
     params: { gameId: "gameId" },
+  }),
+  operation("admin_event_vpn_override_recover", "GET", "/api/admin/games/{gameId}/vpn-override/operations/{operationId}", {
+    responseKind: "vpn-override-result",
+    params: { gameId: "gameId", operationId: "vpnOverrideOperationId" },
   }),
   operation("admin_event_vpn_override_revoke", "POST", "/api/admin/games/{gameId}/vpn-override/{overrideId}/revoke", {
     mutation: true,
-    responseKind: "error",
-    expectedStatuses: [404],
+    responseKind: "vpn-override-result",
     params: { gameId: "gameId", overrideId: "overrideId" },
   }),
   operation("admin_builds_get", "GET", "/api/admin/builds", {
@@ -884,6 +907,39 @@ function validWorker(worker) {
     typeof worker.online === "boolean" && object(worker.capacity);
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256 = /^[0-9a-f]{64}$/i;
+
+function validImportResult(body) {
+  return object(body) && ["total", "created", "updated", "skipped"].every((key) =>
+    Number.isSafeInteger(body[key]) && body[key] >= 0) && Array.isArray(body.users) &&
+    body.total === body.created + body.updated + body.skipped;
+}
+
+function validControlJob(body) {
+  return object(body) && UUID.test(body.id) && UUID.test(body.operationId) &&
+    typeof body.kind === "string" && body.kind.length > 0 &&
+    typeof body.scopeKey === "string" && body.scopeKey.length > 0 &&
+    Number.isSafeInteger(body.gameId) && body.gameId > 0 &&
+    (body.challengeId === null || body.challengeId === undefined ||
+      (Number.isSafeInteger(body.challengeId) && body.challengeId > 0)) &&
+    typeof body.fingerprint === "string" && body.fingerprint.length > 0 &&
+    ["Queued", "Running", "Succeeded", "Failed", "Cancelled"].includes(body.status) &&
+    Number.isSafeInteger(body.progressCurrent) && body.progressCurrent >= 0 &&
+    Number.isSafeInteger(body.progressTotal) && body.progressTotal >= body.progressCurrent &&
+    Number.isSafeInteger(body.requestedGeneration) && body.requestedGeneration >= 0 &&
+    (body.result === null || body.result === undefined || object(body.result) || Array.isArray(body.result)) &&
+    (body.error === null || body.error === undefined || typeof body.error === "string") &&
+    typeof body.cancellationRequested === "boolean" &&
+    Number.isSafeInteger(body.createdAtUtc) && Number.isSafeInteger(body.updatedAtUtc) &&
+    (body.finishedAtUtc === null || body.finishedAtUtc === undefined || Number.isSafeInteger(body.finishedAtUtc));
+}
+
+function validVpnOverrideResult(body) {
+  return object(body) && UUID.test(body.id) && Number.isSafeInteger(body.expiresAtUtc) &&
+    Number.isSafeInteger(body.policyRevision) && body.policyRevision >= 1;
+}
+
 export function validateAdminResponse(operationId, response) {
   const item = operationById.get(operationId);
   if (!item) throw new Error(`unknown admin operation ${operationId}`);
@@ -909,8 +965,21 @@ export function validateAdminResponse(operationId, response) {
         typeof body.forwardedFor === "string" && typeof body.proxyTrusted === "boolean" &&
         Array.isArray(body.trustedNetworks);
     case "config":
-      return object(body) && object(body.accountPolicy) && object(body.globalConfig) &&
+      return object(body) && Number.isSafeInteger(body.revision) && body.revision >= 0 &&
+        object(body.accountPolicy) && object(body.globalConfig) &&
         object(body.containerPolicy) && object(body.proxyTrust);
+    case "websocket-metrics":
+      return object(body) && [
+        "startedAtUnixMs", "connectionsRejected", "inboundFrames", "inboundBytes",
+        "inboundQuotaRejections", "protocolRejections", "quotaCloses", "protocolCloses",
+        "invalidHandshakeCloses", "idleTimeoutCloses", "authorizationCloses", "feedResyncCloses",
+      ].every((key) => Number.isSafeInteger(body[key]) && body[key] >= 0);
+    case "settings-branding-stage":
+      return object(body) && UUID.test(body.operationId) && SHA256.test(body.brandingHash);
+    case "settings-operation":
+      return object(body) && UUID.test(body.operationId) && Number.isSafeInteger(body.revision) &&
+        body.revision >= 1 &&
+        (body.brandingHash === null || body.brandingHash === undefined || SHA256.test(body.brandingHash));
     case "dashboard":
       return object(body) && object(body.systemStats) && Array.isArray(body.topGames) &&
         ["userCount", "teamCount", "activeContainerCount"].every((key) =>
@@ -921,10 +990,14 @@ export function validateAdminResponse(operationId, response) {
       return /application\/zip/i.test(headerValue(headers, "content-type")) &&
         (typeof archive === "string" || archive instanceof ArrayBuffer || ArrayBuffer.isView(archive));
     }
-    case "import":
-      return object(body) && ["total", "created", "updated", "skipped"].every((key) =>
-        Number.isSafeInteger(body[key]) && body[key] >= 0) && Array.isArray(body.users) &&
-        body.total === body.created + body.updated + body.skipped && privateNoStore(headers);
+    case "import": return validImportResult(body) && privateNoStore(headers);
+    case "import-job":
+      return object(body) && UUID.test(body.operationId) && ["Running", "Completed"].includes(body.status) &&
+        Number.isSafeInteger(body.total) && body.total >= 0 &&
+        Number.isSafeInteger(body.completed) && body.completed >= 0 && body.completed <= body.total &&
+        (body.status === "Completed"
+          ? body.completed === body.total && validImportResult(body.result)
+          : body.result === undefined || body.result === null) && privateNoStore(headers);
     case "credential-send":
       return object(body) && Number.isSafeInteger(body.sent) && Number.isSafeInteger(body.failed) &&
         Array.isArray(body.results) && body.sent + body.failed === body.results.length && privateNoStore(headers);
@@ -932,9 +1005,16 @@ export function validateAdminResponse(operationId, response) {
     case "instance-stats":
       return object(body) && ["cpuPercent", "memoryUsedBytes", "memoryLimitBytes", "netRxBytes", "netTxBytes", "sampledAt"]
         .every((key) => number(body[key])) && body.cpuPercent >= 0 && body.memoryUsedBytes >= 0;
-    case "bulk-rebuild":
-      return object(body) && Number.isSafeInteger(body.enqueued) && body.enqueued >= 0 &&
-        Number.isSafeInteger(body.skipped) && body.skipped >= 0 && Array.isArray(body.messages);
+    case "control-job": return validControlJob(body);
+    case "vpn-override-result": return validVpnOverrideResult(body);
+    case "vpn-override-list":
+      return object(body) && Number.isSafeInteger(body.policyRevision) && body.policyRevision >= 1 &&
+        Number.isSafeInteger(body.activeLimit) && body.activeLimit > 0 && Array.isArray(body.overrides) &&
+        body.overrides.every((override) => object(override) && UUID.test(override.id) &&
+          typeof override.reason === "string" && Number.isSafeInteger(override.createdAtUtc) &&
+          Number.isSafeInteger(override.expiresAtUtc) &&
+          (override.revokedAtUtc === null || override.revokedAtUtc === undefined ||
+            Number.isSafeInteger(override.revokedAtUtc)) && typeof override.active === "boolean");
     case "prune":
       return object(body) && Number.isSafeInteger(body.removed) && body.removed >= 0 && Array.isArray(body.messages);
     case "build":
