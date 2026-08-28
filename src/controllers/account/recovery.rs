@@ -2,6 +2,7 @@
 //! — split from account/mod.rs to stay under the 1000-line rule.
 use super::*;
 use hmac::{Hmac, KeyInit, Mac};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const RECOVERY_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -479,6 +480,11 @@ pub async fn password_reset(
     headers: HeaderMap,
     Json(model): Json<PasswordResetModel>,
 ) -> AppResult<Response> {
+    if model.operation_id.is_nil() {
+        return Err(AppError::bad_request(
+            "A valid password reset operation ID is required",
+        ));
+    }
     if model.password.len() < 6 {
         return Err(AppError::bad_request(
             "Password must be at least 6 characters",
@@ -766,8 +772,6 @@ pub async fn change_email(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     user: CurrentUser,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(model): Json<MailChangeModel>,
 ) -> AppResult<Response> {
     let operation_id = model.operation_id.unwrap_or_else(Uuid::now_v7);

@@ -122,7 +122,7 @@ pub(super) async fn proxy_pump<S>(
         let mut egress_recorded = false;
         let mut egress_matcher = scan
             .as_ref()
-            .map(|scan| RollingFlagMatcher::new(&scan.flag));
+            .and_then(|scan| RollingFlagMatcher::new(&scan.flag));
         loop {
             let read = tokio::select! {
                 result = &mut budget_exceeded => {

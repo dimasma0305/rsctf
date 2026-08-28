@@ -360,7 +360,7 @@ impl Registry {
                 .filter_map(|key| registry.remove(&key))
                 .collect::<Vec<_>>()
         };
-        let handles = futures::stream::iter(endpoints.iter())
+        let handles = futures::stream::iter(endpoints.iter().cloned())
             .map(|endpoint| async move { endpoint.revoke().await })
             .buffer_unordered(16)
             .filter_map(future::ready)

@@ -2212,11 +2212,6 @@ export interface ChallengeBuildAuditModel {
   durationMs: number
 }
 
-export interface ChallengeBuildStatusModel {
-  buildStatus: ChallengeBuildStatus
-  lastBuildLog?: string | null
-}
-
 /** One row of the live in-progress strip */
 export interface ChallengeBuildInProgressModel {
   auditId: number
