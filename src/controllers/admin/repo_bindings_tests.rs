@@ -194,17 +194,30 @@ async fn scan_and_push_leases_are_single_owner_across_claimers() {
         .options([("search_path", schema.as_str())]);
     let pool = PgPoolOptions::new()
         .max_connections(4)
+        .connect_with(options.clone())
+        .await
+        .unwrap();
+    let second_pool = PgPoolOptions::new()
+        .max_connections(4)
         .connect_with(options)
         .await
         .unwrap();
     sqlx::raw_sql(
         r#"CREATE TABLE "RepoBindings" (
              id INTEGER PRIMARY KEY, status SMALLINT NOT NULL,
+             repo_url TEXT NOT NULL,
              next_scan_utc TIMESTAMPTZ,
              scan_lease_token UUID, scan_lease_until TIMESTAMPTZ,
              scan_started_at_utc TIMESTAMPTZ,
+             scan_host_key TEXT, scan_slot SMALLINT,
+             consecutive_scan_failures INTEGER NOT NULL DEFAULT 0,
+             last_scan_message TEXT,
              push_lease_token UUID, push_lease_until TIMESTAMPTZ
            );
+           CREATE UNIQUE INDEX scan_slot_unique
+             ON "RepoBindings" (scan_slot) WHERE scan_slot IS NOT NULL;
+           CREATE UNIQUE INDEX scan_host_unique
+             ON "RepoBindings" (scan_host_key) WHERE scan_host_key IS NOT NULL;
            CREATE TABLE "RepoBindingPushJobs" (
              binding_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
              game_id INTEGER NOT NULL, requested_revision BIGINT NOT NULL,
@@ -212,8 +225,12 @@ async fn scan_and_push_leases_are_single_owner_across_claimers() {
              updated_at_utc TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
              PRIMARY KEY (binding_id, challenge_id)
            );
-           INSERT INTO "RepoBindings" (id, status, next_scan_utc)
-             VALUES (1, 0, clock_timestamp() - INTERVAL '1 second');
+           INSERT INTO "RepoBindings" (id, status, repo_url, next_scan_utc)
+             VALUES
+               (1, 0, 'https://github.com/one/repo', clock_timestamp() - INTERVAL '4 seconds'),
+               (2, 0, 'https://GITHUB.com/two/repo', clock_timestamp() - INTERVAL '3 seconds'),
+               (3, 0, 'https://gitlab.com/three/repo', clock_timestamp() - INTERVAL '2 seconds'),
+               (4, 1, 'https://codeberg.org/four/repo', clock_timestamp() - INTERVAL '1 second');
            INSERT INTO "RepoBindingPushJobs"
              (binding_id, challenge_id, game_id, requested_revision)
              VALUES (1, 10, 20, 3), (1, 11, 20, 7);"#,
@@ -222,9 +239,102 @@ async fn scan_and_push_leases_are_single_owner_across_claimers() {
     .await
     .unwrap();
 
-    let scan = claim_repo_scan(&pool, None, 1).await.unwrap();
-    assert_eq!(scan.len(), 1);
-    assert!(claim_repo_scan(&pool, None, 1).await.unwrap().is_empty());
+    let (first_replica, second_replica) = tokio::join!(
+        claim_repo_scan(&pool, None, 4),
+        claim_repo_scan(&second_pool, None, 4)
+    );
+    let mut scan = first_replica.unwrap();
+    scan.extend(second_replica.unwrap());
+    scan.sort_unstable_by_key(|claim| claim.0);
+    assert_eq!(
+        scan.iter().map(|claim| claim.0).collect::<Vec<_>>(),
+        vec![1, 3],
+        "same-host binding #2 must not consume a second deployment slot"
+    );
+    assert!(claim_repo_scan(&second_pool, None, 4)
+        .await
+        .unwrap()
+        .is_empty());
+    let (active, slots, hosts): (i64, i64, i64) = sqlx::query_as(
+        r#"SELECT COUNT(*)::BIGINT,
+                  COUNT(DISTINCT scan_slot)::BIGINT,
+                  COUNT(DISTINCT scan_host_key)::BIGINT
+             FROM "RepoBindings" WHERE scan_lease_token IS NOT NULL"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((active, slots, hosts), (2, 2, 2));
+
+    let first_token = scan[0].1;
+    assert!(
+        super::scheduler::renew_repo_scan_lease(&second_pool, 1, first_token)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !super::scheduler::renew_repo_scan_lease(&second_pool, 1, Uuid::new_v4())
+            .await
+            .unwrap()
+    );
+    sqlx::query(
+        r#"UPDATE "RepoBindings"
+              SET next_scan_utc = clock_timestamp() + INTERVAL '1 hour'
+            WHERE id = 1"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    super::scheduler::finish_repo_scan_lease(&pool, 1, first_token, true, None)
+        .await
+        .unwrap();
+    let same_host = claim_repo_scan(&second_pool, None, 1).await.unwrap();
+    assert_eq!(same_host.len(), 1);
+    assert_eq!(same_host[0].0, 2);
+
+    // A crashed owner stops renewing. Database-time expiry releases both its
+    // global and host slots, and a different replica can reclaim exact work.
+    sqlx::query(
+        r#"UPDATE "RepoBindings"
+              SET scan_lease_until = clock_timestamp() - INTERVAL '1 second'
+            WHERE id = 3"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let recovered = claim_repo_scan(&second_pool, None, 2).await.unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].0, 3);
+    super::scheduler::finish_repo_scan_lease(
+        &second_pool,
+        3,
+        recovered[0].1,
+        false,
+        Some("upstream unavailable"),
+    )
+    .await
+    .unwrap();
+    let (failures, backed_off, message): (i32, bool, Option<String>) = sqlx::query_as(
+        r#"SELECT consecutive_scan_failures,
+                  next_scan_utc > clock_timestamp(), last_scan_message
+             FROM "RepoBindings" WHERE id = 3"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(failures, 1);
+    assert!(backed_off);
+    assert_eq!(message.as_deref(), Some("upstream unavailable"));
+
+    // Manual scans may claim a paused binding, but they still obey the same
+    // deployment-wide slot and per-host ownership contract.
+    super::scheduler::finish_repo_scan_lease(&pool, 2, same_host[0].1, true, None)
+        .await
+        .unwrap();
+    let paused = claim_repo_scan(&second_pool, Some(4), 1).await.unwrap();
+    assert_eq!(paused.len(), 1);
+    assert_eq!(paused[0].0, 4);
+
     let push = crate::controllers::edit::claim_repo_push_jobs(&pool, 1)
         .await
         .unwrap();
@@ -235,6 +345,7 @@ async fn scan_and_push_leases_are_single_owner_across_claimers() {
         .unwrap()
         .is_empty());
 
+    second_pool.close().await;
     pool.close().await;
     sqlx::query(&format!(r#"DROP SCHEMA "{schema}" CASCADE"#))
         .execute(&admin)

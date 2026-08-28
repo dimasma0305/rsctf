@@ -2147,6 +2147,23 @@ async function repositoryLifecycle() {
     JSON.stringify(afterRetry) === JSON.stringify(beforeScan),
     `same-commit repository retry changed solve evidence: ${JSON.stringify({ beforeScan, afterRetry })}`,
   );
+  const scanAdmission = JSON.parse(
+    sql(
+      `SELECT json_build_object(` +
+        `'active',count(*) FILTER (WHERE scan_lease_token IS NOT NULL),` +
+        `'slots',count(DISTINCT scan_slot) FILTER (WHERE scan_lease_token IS NOT NULL),` +
+        `'hosts',count(DISTINCT scan_host_key) FILTER (WHERE scan_lease_token IS NOT NULL),` +
+        `'ownedActive',count(*) FILTER (WHERE id=${repoBindingId} AND scan_lease_token IS NOT NULL)` +
+      `)::text FROM "RepoBindings"`,
+    ),
+  );
+  requireCondition(
+    scanAdmission.active <= 2 &&
+      scanAdmission.active === scanAdmission.slots &&
+      scanAdmission.active === scanAdmission.hosts &&
+      scanAdmission.ownedActive === 0,
+    `repository scan admission leaked or exceeded its deployment bounds: ${JSON.stringify(scanAdmission)}`,
+  );
   state.evidence.repositorySolve = {
     ...state.evidence.repositorySolve,
     beforeScan,
@@ -2155,6 +2172,7 @@ async function repositoryLifecycle() {
     firstScan: scan.json,
     retriedScan: retriedScan.json,
     commit: observedCommit,
+    scanAdmission,
   };
   const history = await call(
     'GET',

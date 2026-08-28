@@ -621,7 +621,10 @@ mutates global branding and configuration before restoring them. Build retry/del
 and repository scan paths really run. The repository fixture links a solved challenge to
 its stable manifest identity, performs two real HTTP scans of the same retryable commit,
 and requires its challenge ID, submission, first-solve row, counters, flag, and scoreboard
-cell to remain equivalent. The worker enrollment token is really consumed and replay-rejected.
+cell to remain equivalent. It also requires the split-replica scan scheduler to leave no
+owned lease behind and proves every live lease has one of at most two deployment-wide
+slots plus a distinct repository-host admission. The worker enrollment token is really
+consumed and replay-rejected.
 Cleanup is attempted after success or failure. Two delayed, exact zero-resource snapshots
 must agree across fixture UUID/ID ledgers, Redis credential keys, blob metadata and local
 bytes, repository checkouts, build/evidence rows, worker state, and container identities.
