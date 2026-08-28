@@ -9,22 +9,26 @@ if (!Number.isSafeInteger(game) || game <= 0) {
   throw new Error('MONITOR_HISTORY_GAME (or GAME) must be a positive integer');
 }
 
-const [eventCount, durableEventCount, submissionCount] = sql(
+const [eventCount, durableEventCount, submissionCount, durableSubmissionCount] = sql(
   `SELECT (SELECT COUNT(*) FROM "GameEvents" WHERE game_id=${game})::text || '|' || ` +
     `(SELECT COUNT(*) FROM "GameEvents" WHERE game_id=${game} AND feed_cursor IS NOT NULL)::text || '|' || ` +
-    `(SELECT COUNT(*) FROM "Submissions" WHERE game_id=${game})::text`,
+    `(SELECT COUNT(*) FROM "Submissions" WHERE game_id=${game})::text || '|' || ` +
+    `(SELECT COUNT(*) FROM "Submissions" WHERE game_id=${game} AND feed_cursor IS NOT NULL)::text`,
 ).split('|').map(Number);
 if (
   !Number.isSafeInteger(eventCount) ||
   !Number.isSafeInteger(durableEventCount) ||
   !Number.isSafeInteger(submissionCount) ||
+  !Number.isSafeInteger(durableSubmissionCount) ||
   eventCount < 10000 ||
   durableEventCount !== eventCount ||
-  submissionCount < 10000
+  submissionCount < 10000 ||
+  durableSubmissionCount !== submissionCount
 ) {
   throw new Error(
-    `monitor-history requires at least 10,000 cursor-backed events and submissions in game ${game}; ` +
-      `found events=${eventCount} durableEvents=${durableEventCount} submissions=${submissionCount}`,
+    `monitor-history requires at least 10,000 cursor-backed events and cursor-backed submissions in game ${game}; ` +
+      `found events=${eventCount} durableEvents=${durableEventCount} submissions=${submissionCount} ` +
+      `durableSubmissions=${durableSubmissionCount}`,
   );
 }
 
@@ -43,7 +47,8 @@ const tokenFile = join(tokenDirectory, 'tokens.json');
 writeFileSync(tokenFile, JSON.stringify(tokens), { mode: 0o600 });
 console.log(
   `monitor history/read-backfill load → ${TARGET} game=${game} events=${eventCount} ` +
-    `submissions=${submissionCount} rate=${process.env.RATE || 1}/s`,
+    `submissions=${submissionCount} durableSubmissions=${durableSubmissionCount} ` +
+    `rate=${process.env.RATE || 1}/s`,
 );
 
 let status = 1;

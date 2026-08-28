@@ -6,7 +6,7 @@ const scenario = readFileSync(new URL('../k6/monitor-history.js', import.meta.ur
 const runner = readFileSync(new URL('../monitor-history.mjs', import.meta.url), 'utf8');
 const routes = readFileSync(new URL('../../../src/controllers/game/routes.rs', import.meta.url), 'utf8');
 
-test('monitor history and durable backfill use one fixed-rate bounded read per iteration', () => {
+test('monitor history and both durable backfills use one fixed-rate bounded read per iteration', () => {
   assert.match(scenario, /executor:\s*'constant-arrival-rate'/);
   assert.match(scenario, /exec\.scenario\.iterationInTest/);
   assert.equal((scenario.match(/http\.get\(/g) || []).length, 1);
@@ -24,13 +24,19 @@ test('monitor history and durable backfill use one fixed-rate bounded read per i
     'events/backfill?after=0&limit=1',
     'events/backfill?after=0&limit=100',
     'events/backfill?after=0&limit=10000',
+    'submissions/backfill`',
+    'submissions/backfill?after=0&limit=1',
+    'submissions/backfill?after=0&limit=100',
+    'submissions/backfill?after=0&limit=10000',
   ]) {
     assert.ok(scenario.includes(range), `missing monitor-history range ${range}`);
   }
   assert.match(scenario, /rows\.length > endpoint\.maxRows/);
-  assert.match(scenario, /event\.cursor > previousCursor/);
-  assert.match(scenario, /!ids\.has\(event\.id\)/);
-  assert.match(scenario, /body\.nextCursor === rows\[rows\.length - 1\]\.cursor/);
+  assert.match(scenario, /body\[endpoint\.feed\]/);
+  assert.match(scenario, /row\.cursor <= previousCursor/);
+  assert.match(scenario, /!ids\.has\(row\.id\)/);
+  assert.match(scenario, /!cursors\.has\(row\.cursor\)/);
+  assert.match(scenario, /rows\[rows\.length - 1\]\.cursor/);
   assert.doesNotMatch(scenario, /body\.data/);
   assert.match(scenario, /String\(response\.body \|\| ''\)\.length > 262144/);
   assert.match(scenario, /dropped_iterations:\s*\['count==0'\]/);
@@ -41,10 +47,12 @@ test('monitor history and durable backfill use one fixed-rate bounded read per i
 test('runner requires a large history and protects minted credentials', () => {
   assert.match(runner, /Number\.isSafeInteger\(eventCount\)/);
   assert.match(runner, /Number\.isSafeInteger\(durableEventCount\)/);
+  assert.match(runner, /Number\.isSafeInteger\(durableSubmissionCount\)/);
   assert.match(runner, /eventCount < 10000/);
   assert.match(runner, /durableEventCount !== eventCount/);
-  assert.match(runner, /feed_cursor IS NOT NULL/);
+  assert.equal((runner.match(/feed_cursor IS NOT NULL/g) || []).length, 2);
   assert.match(runner, /submissionCount < 10000/);
+  assert.match(runner, /durableSubmissionCount !== submissionCount/);
   assert.match(runner, /WHERE role IN \(2,3\)/);
   assert.match(runner, /writeFileSync\(tokenFile, JSON\.stringify\(tokens\), \{ mode: 0o600 \}\)/);
   assert.match(runner, /rmSync\(tokenDirectory, \{ recursive: true, force: true \}\)/);

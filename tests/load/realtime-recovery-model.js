@@ -33,11 +33,11 @@ export function steadyFallbackRequestsPerSecond(clients, pollingIntervalMs) {
   return clients / ((pollingIntervalMs * 0.9) / 1_000);
 }
 
-/** Worst-case HTTP request ceiling for the durable monitor event feed. The
+/** Worst-case HTTP request ceiling for one durable cursor-backed monitor feed. The
  * initial visible snapshot costs one read. Each handshake/poll reconciliation
  * reads at most `maxBackfillPages`, then one checkpoint and one replacement
  * snapshot when the gap is larger than that fixed page budget. */
-export function durableEventFeedRequestUpperBound({
+export function durableFeedRequestUpperBound({
   clients,
   durationMs,
   pollingIntervalMs,
@@ -64,4 +64,12 @@ export function durableEventFeedRequestUpperBound({
     clients *
     (1 + (1 + scheduledPolls) * maximumRequestsPerReconciliation)
   );
+}
+
+export function durableEventFeedRequestUpperBound(options) {
+  return durableFeedRequestUpperBound(options);
+}
+
+export function durableSubmissionFeedRequestUpperBound(options) {
+  return durableFeedRequestUpperBound(options);
 }

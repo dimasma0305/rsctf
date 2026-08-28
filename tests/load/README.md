@@ -16,7 +16,7 @@ cd tests/load
       npm run organizer-hubs  # destructive AdminHub + containerExec acceptance
 N=60  npm run byoc          # BYOC scale + request flood
       npm run polled-read   # fixed-rate, read-only dominant-endpoint production smoke
-      npm run monitor-history # fixed-rate bounded monitor history + event backfill
+      npm run monitor-history # fixed-rate bounded monitor history + durable backfills
       npm run participation-review # fixed-rate bounded 12k-team organizer review
       npm run details-read  # fixed-rate authenticated challenge-details poll
       npm run challenge-modal-read # bounded detail + solver modal reads
@@ -68,16 +68,17 @@ application/PostgreSQL resource samples in `REPORT.md`; do not compare peak rps.
 ### Bounded monitor history
 
 `monitor-history` is read-only and requires a selected game with at least 10,000
-cursor-backed events and 10,000 submissions. It holds a fixed arrival rate across
+cursor-backed events and 10,000 cursor-backed submissions. It holds a fixed arrival rate across
 zero, minimum, maximum, oversized, literal-wildcard, and long-search history pages,
-plus cursor-only checkpoints and one/max/oversized reconnect backfill pages:
+plus event and submission cursor-only checkpoints and one/max/oversized reconnect
+backfill pages:
 
 ```sh
 MONITOR_HISTORY_GAME=17 RATE=1 DURATION=20s npm run monitor-history
 ```
 
-Its baseline gate is zero 5xx, 429, invalid responses, duplicate event IDs,
-non-ascending cursors, oversized bodies, row-limit violations, or dropped
+Its baseline gate is zero 5xx, 429, invalid responses, duplicate event/submission
+IDs or cursors, non-ascending backfill cursors, oversized bodies, row-limit violations, or dropped
 iterations, with p95 below 800 ms. Use a
 disposable/local stack when raising `RATE`; the Query policy deliberately limits
 sustained work per monitor identity.
@@ -232,7 +233,7 @@ tests/load/
   cheat-acceptance.mjs isolated small anti-cheat acceptance for a fresh CI database
   cheat-event.mjs   retained anti-cheat drill: deterministic offenders + clean controls
   polled-read.mjs   read-only broad-token fixed-rate polling smoke
-  monitor-history.mjs read-only bounded history/checkpoint/backfill acceptance
+  monitor-history.mjs read-only bounded history/event+submission backfill acceptance
   realtime-recovery-model.js deterministic browser backfill request ceiling
   asset-download.mjs fixed-rate range/resume delivery benchmark
   monitor-exports.mjs bounded XLSX row-integrity/resource acceptance
@@ -258,7 +259,7 @@ tests/load/
     edit-lifecycle.js  fixed-rate organizer reads across future/A&D/KotH fixtures
     organizer-hubs.js  fixed-rate privileged negotiate, WebSocket, and exec traffic
     polled-read.js     one read per iteration across the dominant polled endpoints
-    monitor-history.js one bounded history, checkpoint, or backfill read per iteration
+    monitor-history.js one bounded history, event checkpoint/backfill, or submission checkpoint/backfill read per iteration
     scoreboard-conditional.js conditional standard/KotH spectators at a fixed arrival rate
     asset-download.js  one authenticated deterministic attachment range per iteration
     monitor-exports.js fixed-rate monitor exports plus independent health arrivals
