@@ -189,6 +189,15 @@ fn is_unique_violation(error: &sqlx::Error) -> bool {
         .is_some_and(|code| code == "23505")
 }
 
+fn can_coalesce_active(
+    kind: ControlJobKind,
+    active_fingerprint: &str,
+    requested_fingerprint: &str,
+) -> bool {
+    active_fingerprint == requested_fingerprint
+        || matches!(kind, ControlJobKind::AdReconcile | ControlJobKind::AdReset)
+}
+
 /// Atomically return an exact retry, coalesce with the active scope, or admit a
 /// new job. The short transaction-wide admission lock makes the deployment-wide
 /// active bound exact without retaining a connection during external work.
@@ -221,7 +230,8 @@ pub async fn enqueue(
         .await
         .map_err(database_error)?
     {
-        if row.kind != kind.as_str() || row.scope_key != scope_key {
+        if row.kind != kind.as_str() || row.scope_key != scope_key || row.fingerprint != fingerprint
+        {
             transaction.rollback().await.map_err(database_error)?;
             return Err(AppError::conflict(
                 "Idempotency-Key was already used for a different operation",
@@ -243,6 +253,12 @@ pub async fn enqueue(
         .await
         .map_err(database_error)?
     {
+        if !can_coalesce_active(kind, &row.fingerprint, fingerprint) {
+            transaction.rollback().await.map_err(database_error)?;
+            return Err(AppError::conflict(
+                "A different revision is already active for this control-plane resource",
+            ));
+        }
         sqlx::query(
             r#"INSERT INTO "ControlPlaneJobOperations" (operation_id, job_id)
                 VALUES ($1, $2)"#,
