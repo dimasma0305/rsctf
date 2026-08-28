@@ -17,6 +17,7 @@
 import { FC, useEffect, useRef } from 'react'
 import { useParams, useSearchParams } from 'react-router'
 import { apiJsonFetch as fetch } from '@Utils/ApiJsonFetch'
+import { createDeferredTimerOwner } from '@Utils/DeferredTimer'
 import { epochProgress } from '@Utils/epochProgress'
 import type { AdScoreboardModel } from '@Api'
 import { createJeopardy, type JeopCategory } from './arenaJeopardy'
@@ -29,6 +30,7 @@ import {
   previewArenaMatchTiming,
   resolveArenaFinalState,
 } from './arenaLifecycle'
+import { arenaTopologySignature, buildArenaRosterRows } from './arenaTopology'
 import {
   arenaRetryDelay,
   CompletionScheduledArenaCycle,
@@ -635,6 +637,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
   const routes = arenaRoutes(gameId)
   let killed = false
   const timers: number[] = []
+  const deferredTimers = createDeferredTimerOwner()
+  const defer = (action: () => void, delay: number) => deferredTimers.schedule(action, delay)
   let raf = 0
   let liveClockStarted = false
   let arenaInitialized = false
@@ -1290,7 +1294,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     g.classList.remove(cls)
     void g.offsetWidth
     g.classList.add(cls)
-    setTimeout(() => g.classList.remove(cls), ms)
+    defer(() => g.classList.remove(cls), ms)
   }
 
   function drawFX(dt: number) {
@@ -1474,7 +1478,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     d.style.transform = 'translate(-50%,-50%)'
     d.textContent = txt
     arena.appendChild(d)
-    setTimeout(() => d.remove(), 1100)
+    defer(() => d.remove(), 1100)
   }
 
   /* -------- log -------- */
@@ -1511,7 +1515,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     if (!quiet) {
       if (vic && svc) {
         svc.pwnUntil = Date.now() + 5000
-        setTimeout(() => {
+        defer(() => {
           if (!killed) renderSvc(vic)
         }, 5200)
       }
@@ -1680,7 +1684,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     stopFirstBloodSound = null
     stopIncomingSound = snd.sfxIncoming(FB.preroll / 1000)
     // ---- PHASE 2: the slam cinematic, after the build-up ----
-    setTimeout(() => {
+    defer(() => {
       if (killed) return
       stopIncomingSound?.()
       stopIncomingSound = null
@@ -1697,26 +1701,28 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       slamCovering = true // the dark slam overlay covers the board — pause the arena draw underneath
       // The procedural first-blood stinger fires with the reveal so it
       // punctuates the slam rather than the build-up.
-      setTimeout(() => {
+      defer(() => {
         if (killed || !snd.isEnabled()) return
         stopFirstBloodSound = snd.sfxFirstBlood()
       }, FB.soundDelay)
-      setTimeout(() => {
+      defer(() => {
         if (killed) return
         const sh: any = root.querySelector('.shell')
         if (sh) {
           sh.classList.add('shake')
-          setTimeout(() => sh.classList.remove('shake'), 520)
+          defer(() => sh.classList.remove('shake'), 520)
         }
         if (opt.onImpact) opt.onImpact()
       }, FB.slam)
-      setTimeout(() => {
+      defer(() => {
+        if (killed) return
         if (opt.beamTo) {
           spawnBeam(atkr, opt.beamTo, th.accent, true)
           if (opt.beamTo.id && opt.beamTo.color) pulseBase(opt.beamTo, opt.beamTo.color)
         }
       }, FB.total - 680)
-      setTimeout(() => {
+      defer(() => {
+        if (killed) return
         ov.classList.remove('play')
         cinema = false
         slamCovering = false
@@ -2253,6 +2259,10 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     generatedAt: 0,
   })
   let latestAdBoard = emptyAdScoreboard()
+  let latestKothBoard: any = null
+  let latestJeopardyBoard: any = null
+  let latestGameTitle: string | null = null
+  let liveTopologySignature = ''
 
   // Jeopardy categories for the constellation overlay: every challenge on the standard
   // scoreboard that is NOT an A&D service or KotH hill, grouped by category, with the
@@ -2338,32 +2348,16 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     SERVICES = svcDefs.map((c: any) => c.title)
     const svcIds = svcDefs.map((c: any) => c.challengeId)
 
-    const adRows = ad.teams || []
     // Build one stable union. The former A&D/KotH-only fallback left a pure
     // Jeopardy arena with no teams even though the standard board was healthy.
-    const rosterRows: any[] = []
-    const seenTeamIds = new Set<number>()
-    const seenNames = new Set<string>()
-    const addRosterRow = (row: any) => {
-      const teamId = Number.isInteger(row.teamId) ? row.teamId : Number.isInteger(row.id) ? row.id : null
-      const teamName = String(row.teamName ?? row.name ?? '')
-      if (!teamName || (teamId != null ? seenTeamIds.has(teamId) : seenNames.has(teamName))) return
-      if (teamId != null) seenTeamIds.add(teamId)
-      seenNames.add(teamName)
-      rosterRows.push({
-        ...row,
-        teamId,
-        teamName,
-        settledTotal: Number(row.settledTotal) || 0,
-        projectedTotal: Number(row.projectedTotal) || 0,
-        offenseRate: Number(row.offenseRate) || 0,
-        defenseRate: Number(row.defenseRate) || 0,
-        slaRate: Number(row.slaRate) || 0,
-      })
-    }
-    adRows.forEach(addRosterRow)
-    ;((koth && koth.teams) || []).forEach(addRosterRow)
-    ;((jp && jp.items) || []).forEach(addRosterRow)
+    const rosterRows = buildArenaRosterRows(ad, koth, jp).map((row) => ({
+      ...row,
+      settledTotal: Number(row.settledTotal) || 0,
+      projectedTotal: Number(row.projectedTotal) || 0,
+      offenseRate: Number(row.offenseRate) || 0,
+      defenseRate: Number(row.defenseRate) || 0,
+      slaRate: Number(row.slaRate) || 0,
+    }))
 
     TEAMS = rosterRows.map((row, i: number) => {
       const color = PALETTE[i % PALETTE.length]
@@ -2563,7 +2557,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       if (!frozen) snd.sfxSolve()
     }
     pendingResolves++
-    setTimeout(
+    defer(
       () => {
         pendingResolves--
         if (!killed) resolveFlag(atkr, vic, svc, pts, false)
@@ -2719,14 +2713,44 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     const jp = jpResult.status === 'fulfilled' ? jpResult.value : null
     const game: any = gameResult.status === 'fulfilled' ? gameResult.value : null
     if (game) {
+      latestGameTitle = game.title ?? latestGameTitle
       matchTiming = observeArenaGameTiming(matchTiming, game)
       if (matchOver && !arenaHasEnded(matchTiming)) reopenMatch()
     }
 
     const scoreboardAvailable = adResult.status === 'fulfilled' || koth !== null || jp !== null
     const retryAfterMs = snapshotRetryAfter(results)
+    if (adResult.status === 'fulfilled') latestAdBoard = ad
+    if (kothResult.status === 'fulfilled') latestKothBoard = koth
+    if (jpResult.status === 'fulfilled') latestJeopardyBoard = jp
     if (arenaInitialized) {
-      if (scoreboardAvailable) applyLivePoll(adResult.status === 'fulfilled' ? ad : null, koth, jp)
+      if (scoreboardAvailable) {
+        const nextTopology = arenaTopologySignature(latestAdBoard, latestKothBoard, latestJeopardyBoard)
+        if (nextTopology !== liveTopologySignature) {
+          buildLiveModel(latestAdBoard, latestKothBoard, latestJeopardyBoard, latestGameTitle)
+          liveTopologySignature = nextTopology
+          shots.length = 0
+          sparks.length = 0
+          fxq.length = 0
+          buildArena()
+          rankInit = false
+          refreshRank()
+          sizeCanvas()
+          if (TEAMS.length) {
+            clearNote()
+            addLog(
+              'SYS',
+              'sys',
+              `<span class="em">ARENA TOPOLOGY UPDATED</span> :: ${TEAMS.length} teams, ${SERVICES.length} services, ${HILLS.length} hills`
+            )
+          } else {
+            showNote('WAITING FOR THE OFFICIAL EVENT ROSTER')
+          }
+          applyLivePoll(latestAdBoard, latestKothBoard, latestJeopardyBoard)
+        } else {
+          applyLivePoll(adResult.status === 'fulfilled' ? ad : null, koth, jp)
+        }
+      }
       return { success: scoreboardAvailable, retryAfterMs }
     }
 
@@ -2739,8 +2763,8 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       return { success: false, retryAfterMs }
     }
 
-    latestAdBoard = ad
-    buildLiveModel(ad, koth, jp, game?.title ?? null)
+    buildLiveModel(latestAdBoard, latestKothBoard, latestJeopardyBoard, latestGameTitle)
+    liveTopologySignature = arenaTopologySignature(latestAdBoard, latestKothBoard, latestJeopardyBoard)
     if (!TEAMS.length) {
       showNote('WAITING FOR THE OFFICIAL EVENT ROSTER')
       tNow = Date.now()
@@ -2914,7 +2938,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     if (vic === atkr) return
     const svc = pick(vic.svc.filter((s: any) => s.status !== 'down')) || pick(vic.svc)
     fireShot(atkr, vic, atkr.color)
-    setTimeout(
+    defer(
       () => {
         if (!killed) resolveFlag(atkr, vic, svc, 0, false)
       },
@@ -2954,7 +2978,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
       'sla',
       `<span class="who">${esc(t.name)}</span> :: <span class="svc">${esc(s.name)}</span> went <span class="em">DOWN</span>`
     )
-    setTimeout(
+    defer(
       () => {
         if (s.status === 'down') {
           s.status = 'def'
@@ -3012,7 +3036,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     const pts = hit ? hit.base : Math.floor(rng(50, 150))
     if (!hit) fireShot(atkr, { x: CX, y: CY }, atkr.color)
     snd.sfxSolve()
-    setTimeout(
+    defer(
       () => {
         if (killed) return
         atkr.jpScore = (atkr.jpScore || 0) + pts
@@ -3071,12 +3095,12 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     addLog('SYS', 'sys', `<span class="em">PREVIEW MODE</span> :: simulated battle — ${TEAMS.length} teams`)
     timers.push(window.setInterval(tickClock, 1000))
     raf = requestAnimationFrame(loop)
-    timers.push(window.setTimeout(() => evFlag(), 1200))
-    timers.push(window.setTimeout(() => evJeopardy(), 2600))
-    timers.push(window.setTimeout(() => evHill(), 4200))
-    timers.push(window.setTimeout(() => evDef(), 4800))
-    timers.push(window.setTimeout(() => evHill(), 5400))
-    timers.push(window.setTimeout(() => evFlag(), 6000))
+    defer(() => evFlag(), 1200)
+    defer(() => evJeopardy(), 2600)
+    defer(() => evHill(), 4200)
+    defer(() => evDef(), 4800)
+    defer(() => evHill(), 5400)
+    defer(() => evFlag(), 6000)
     evTimer = window.setTimeout(scheduleEvent, 1800) // recurring generator (survives background tabs)
   }
 
@@ -3261,6 +3285,7 @@ function runArena(root: ShadowRoot, gameId: string, preview: boolean): () => voi
     killed = true
     timers.forEach((id) => clearInterval(id))
     timers.forEach((id) => clearTimeout(id))
+    deferredTimers.cancelAll()
     clearTimeout(evTimer)
     clearTimeout(reconnectTimer) // cancel any pending WS reconnect so connectWS can't fire after killed
     liveCycleOwner?.stop()

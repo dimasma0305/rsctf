@@ -27,6 +27,9 @@ test('live arena URLs match the registered case-sensitive route contract', () =>
   assert.match(arena, /arenaRetryDelay\(Math\.max\(1, wsRetry\)/)
   assert.doesNotMatch(arena, /setTimeout\(connectWS/)
   assert.match(arena, /window\.addEventListener\('offline', syncLiveTransport\)/)
+  assert.match(arena, /nextTopology !== liveTopologySignature/)
+  assert.match(arena, /deferredTimers\.cancelAll\(\)/)
+  assert.doesNotMatch(arena, /^\s*setTimeout\(/m)
 })
 
 const eventFormats = [
