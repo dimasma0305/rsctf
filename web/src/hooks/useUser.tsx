@@ -8,6 +8,7 @@ import { useSWRConfig } from 'swr'
 import { clearLegacyAdTokenStorage } from '@Utils/AdTokenMemory'
 import { setAuthSession } from '@Utils/AuthState'
 import { createProfileRetryTimers, profileErrorDisposition, profileRetryScheduleDelay } from '@Utils/ProfileRetry'
+import { swrRequestPath } from '@Utils/ViewerIdentity'
 import { OnceSWRConfig } from '@Hooks/useConfig'
 import api from '@Api'
 
@@ -99,15 +100,13 @@ export const useUserRole = () => {
 
 export const useTeams = () => {
   const { mutate: mutateCache } = useSWRConfig()
-  const {
-    data: teams,
-    error,
-    mutate: mutateTeamList,
-  } = api.team.useTeamGetTeamsInfo(OnceSWRConfig)
+  const { data: teams, error, mutate: mutateTeamList } = api.team.useTeamGetTeamsInfo(OnceSWRConfig)
 
   const mutate: typeof mutateTeamList = async (data, options) => {
     const result = await mutateTeamList(data, options)
-    await mutateCache('/api/team/selector')
+    await mutateCache((key) => swrRequestPath(key) === '/api/team/selector', undefined, {
+      revalidate: true,
+    })
     return result
   }
 
@@ -115,11 +114,7 @@ export const useTeams = () => {
 }
 
 export const useTeamSelector = (enabled: boolean = true) => {
-  const {
-    data: teams,
-    error,
-    mutate,
-  } = api.team.useTeamGetTeamSelector(OnceSWRConfig, enabled)
+  const { data: teams, error, mutate } = api.team.useTeamGetTeamSelector(OnceSWRConfig, enabled)
   return { teams, error, mutate }
 }
 

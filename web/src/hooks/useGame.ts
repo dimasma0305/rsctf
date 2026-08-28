@@ -518,43 +518,9 @@ export const useGameScoreboard = (numId: number, isTabActive: boolean = true) =>
   return query
 }
 
-const participantDeltaSubscribers = new Map<string, Map<symbol, (leader: boolean) => void>>()
-
-const participantDeltaPollMiddleware: Middleware = (useSWRNext) =>
-  function useParticipantDeltaPollOwner(key, fetcher, config) {
-    const serializedKey = unstable_serialize(key)
-    const [leaderKey, setLeaderKey] = useState<string | null>(null)
-    useLayoutEffect(() => {
-      if (!serializedKey) {
-        setLeaderKey(null)
-        return
-      }
-      const token = Symbol(serializedKey)
-      const subscribers = participantDeltaSubscribers.get(serializedKey) ?? new Map()
-      const first = subscribers.size === 0
-      subscribers.set(token, (leader: boolean) => setLeaderKey(leader ? serializedKey : null))
-      participantDeltaSubscribers.set(serializedKey, subscribers)
-      if (first) subscribers.get(token)?.(true)
-      return () => {
-        const active = participantDeltaSubscribers.get(serializedKey)
-        if (!active) return
-        const wasLeader = active.keys().next().value === token
-        active.delete(token)
-        if (active.size === 0) participantDeltaSubscribers.delete(serializedKey)
-        else if (wasLeader) active.values().next().value?.(true)
-      }
-    }, [serializedKey])
-    return useSWRNext(key, fetcher, {
-      ...config,
-      refreshInterval: leaderKey === serializedKey ? config.refreshInterval : 0,
-    })
-  }
-
 export const participantDeltaSWRConfig: SWRConfiguration = {
-  ...OnceSWRConfig,
-  use: [...(OnceSWRConfig.use ?? []), participantDeltaPollMiddleware],
-  refreshWhenHidden: false,
-  refreshWhenOffline: false,
+  ...CompletionPollSWRConfig,
+  compare: Object.is,
   shouldRetryOnError: false,
 }
 
@@ -565,19 +531,33 @@ export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
   const catalog = api.game.useGamePlayCatalog(
     numId,
     {
-      ...participantDeltaSWRConfig,
-      refreshInterval: polling ? 60_000 : 0,
+      ...CompletionPollSWRConfig,
+      compare: Object.is,
     },
     numId > 0
   )
-  const delta = api.game.useGameParticipantDelta(
-    numId,
-    {
-      ...participantDeltaSWRConfig,
-      refreshInterval: polling ? 10_000 : 0,
-    },
-    numId > 0
-  )
+  const delta = api.game.useGameParticipantDelta(numId, participantDeltaSWRConfig, numId > 0)
+  useCompletionPolling({
+    key: polling ? `/api/game/${numId}/details/catalog` : '',
+    phase: status,
+    enabled: polling,
+    data: catalog.data,
+    error: catalog.error,
+    isValidating: catalog.isValidating,
+    mutate: catalog.mutate,
+    successDelay: () => jitterPollingDelay(60_000),
+  })
+  useCompletionPolling({
+    key: polling ? `/api/game/${numId}/details/live` : '',
+    phase: status,
+    enabled: polling,
+    data: delta.data,
+    error: delta.error,
+    isValidating: delta.isValidating,
+    mutate: delta.mutate,
+    successDelay: () => jitterPollingDelay(10_000),
+  })
+  useRevalidateWhenPollingStops(polling, catalog.mutate)
   useRevalidateWhenPollingStops(polling, delta.mutate)
   const teamInfo = useMemo(
     () => (catalog.data && delta.data ? { ...catalog.data, rank: delta.data.rank } : undefined),
@@ -599,16 +579,26 @@ export const useAdState = (numId: number, doFetch: boolean = true) => {
   const {
     data: adState,
     error,
+    isValidating,
     mutate,
   } = api.game.useGameAdState(
     numId,
     {
-      ...OnceSWRConfig,
-      shouldRetryOnError: false,
-      refreshInterval: polling ? 10 * 1000 : 0,
+      ...CompletionPollSWRConfig,
+      compare: Object.is,
     },
     doFetch
   )
+  useCompletionPolling({
+    key: polling ? `/api/Game/${numId}/Ad/State` : '',
+    phase: status,
+    enabled: polling,
+    data: adState,
+    error,
+    isValidating,
+    mutate,
+    successDelay: () => jitterPollingDelay(10_000),
+  })
   useRevalidateWhenPollingStops(polling, mutate)
   return { adState, error, mutate }
 }

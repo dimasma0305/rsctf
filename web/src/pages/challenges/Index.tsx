@@ -27,8 +27,8 @@ import { PageHeader } from '@Components/PageHeader'
 import { WithNavBar } from '@Components/WithNavbar'
 import { ChallengeCategoryList, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
-import { useGame, useGameStatus } from '@Hooks/useGame'
 import { OnceSWRConfig } from '@Hooks/useConfig'
+import { useGame, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUser } from '@Hooks/useUser'
 import api, { ChallengeCatalogItem, ChallengeCatalogMode, ChallengeCategory, ChallengeInfo, SubmissionType } from '@Api'
@@ -59,9 +59,10 @@ const catalogChallengeInfo = (challenge: ChallengeCatalogItem): ChallengeInfo =>
 interface CatalogChallengeModalProps {
   challenge: ChallengeCatalogItem
   onClose: () => void
+  onAccepted: () => Promise<unknown>
 }
 
-const CatalogChallengeModal: FC<CatalogChallengeModalProps> = ({ challenge, onClose }) => {
+const CatalogChallengeModal: FC<CatalogChallengeModalProps> = ({ challenge, onClose, onAccepted }) => {
   const { game } = useGame(challenge.gameId)
   const { finished } = useGameStatus({
     start: game?.start ?? challenge.gameStart,
@@ -85,6 +86,7 @@ const CatalogChallengeModal: FC<CatalogChallengeModalProps> = ({ challenge, onCl
       title={challenge.title}
       score={challenge.score}
       challengeId={challenge.id}
+      onAccepted={onAccepted}
     />
   )
 }
@@ -104,7 +106,13 @@ const ChallengeCatalog: FC = () => {
   const [selectedChallenge, setSelectedChallenge] = useState<ChallengeCatalogItem | null>(null)
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
 
-  const { data: catalog, error: catalogError, isLoading, isValidating, mutate } = api.game.useGameChallengeCatalog(
+  const {
+    data: catalog,
+    error: catalogError,
+    isLoading,
+    isValidating,
+    mutate,
+  } = api.game.useGameChallengeCatalog(
     {
       count: ITEMS_PER_PAGE,
       skip: (page - 1) * ITEMS_PER_PAGE,
@@ -147,9 +155,9 @@ const ChallengeCatalog: FC = () => {
         actions={
           <Group gap="xs">
             {catalog && (
-            <Badge size="lg" variant="light">
-              {t('challenge.catalog.total', '{{count}} challenges', { count: catalog.total })}
-            </Badge>
+              <Badge size="lg" variant="light">
+                {t('challenge.catalog.total', '{{count}} challenges', { count: catalog.total })}
+              </Badge>
             )}
             <Button
               size="compact-sm"
@@ -335,7 +343,11 @@ const ChallengeCatalog: FC = () => {
         )}
       </Stack>
       {selectedChallenge && (
-        <CatalogChallengeModal challenge={selectedChallenge} onClose={() => setSelectedChallenge(null)} />
+        <CatalogChallengeModal
+          challenge={selectedChallenge}
+          onClose={() => setSelectedChallenge(null)}
+          onAccepted={() => mutate()}
+        />
       )}
     </WithNavBar>
   )

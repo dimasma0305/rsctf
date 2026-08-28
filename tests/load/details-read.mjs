@@ -19,7 +19,7 @@ async function assertHealth(stage) {
 }
 
 await assertHealth("pre-load");
-const tokens = discover().tokens;
+const tokens = discover().tokens.slice(0, 4000);
 if (tokens.length === 0) {
   throw new Error(`game ${game} has no accepted-participation users`);
 }

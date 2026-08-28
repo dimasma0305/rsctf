@@ -25,6 +25,7 @@ import {
 import { httpErrorStatus } from '@Utils/ProfileRetry'
 import { showErrorMsg } from '@Utils/Shared'
 import { ChallengeCategoryItemProps } from '@Utils/Shared'
+import { swrRequestPath } from '@Utils/ViewerIdentity'
 import { useChallengePolling } from '@Hooks/useChallengePolling'
 import { useConfig } from '@Hooks/useConfig'
 import api, {
@@ -52,6 +53,7 @@ interface GameChallengeModalProps extends ModalProps {
   /** Proven by the current catalog/team response, not by a retained selection. */
   challengeOwned?: boolean
   adStateOwner?: AdStateOwner
+  onAccepted?: () => void | Promise<unknown>
 }
 
 interface PendingFlagVerdict extends FlagVerdictIdentity {
@@ -117,6 +119,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     score,
     challengeOwned = true,
     adStateOwner,
+    onAccepted,
     ...modalProps
   } = props
 
@@ -576,12 +579,17 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
 
     if (data === AnswerResult.Accepted) {
       void mutateCachedRead(
-        (key) =>
-          key === '/api/account/stats' ||
-          (Array.isArray(key) && typeof key[0] === 'string' && key[0] === '/api/game/challenges'),
+        (key) => {
+          const path = swrRequestPath(key)
+          return path === '/api/account/stats' || path === '/api/game/challenges'
+        },
         undefined,
-        { revalidate: true }
+        { revalidate: false }
       )
+      void mutateCachedRead((key) => swrRequestPath(key) === `/api/game/${gameId}/details/live`, undefined, {
+        revalidate: true,
+      })
+      void onAccepted?.()
       setSolvedChallengeId(identity.challengeId)
       updateNotification({
         id: 'flag-submitted',

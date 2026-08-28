@@ -28,6 +28,7 @@ import { Icon } from '@mdi/react'
 import { CSSProperties, FC, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate, useParams } from 'react-router'
+import { useSWRConfig } from 'swr'
 import { GameColorMap, getGameStatusLabel } from '@Components/GameCard'
 import { GameJoinModal } from '@Components/GameJoinModal'
 import { GameProgress } from '@Components/GameProgress'
@@ -38,6 +39,7 @@ import { submitGameEnrollment } from '@Utils/EnrollmentFlow'
 import { useLanguage } from '@Utils/I18n'
 import { showErrorMsg } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
+import { swrRequestPath } from '@Utils/ViewerIdentity'
 import { useConfig } from '@Hooks/useConfig'
 import { shouldRedirectGameLandingError, useGame, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
@@ -95,6 +97,7 @@ const GameDetail: FC = () => {
   const { id } = useParams()
   const numId = parseInt(id ?? '-1')
   const navigate = useNavigate()
+  const { mutate: mutateCachedRead } = useSWRConfig()
 
   const { game, error, mutate, status } = useGame(numId)
 
@@ -115,6 +118,21 @@ const GameDetail: FC = () => {
 
   usePageTitle(game?.title)
   const hasLoadedGame = game !== undefined
+
+  const invalidateParticipationReads = () =>
+    mutateCachedRead(
+      (key) => {
+        const path = swrRequestPath(key)
+        return (
+          path === '/api/game/challenges' ||
+          path === `/api/game/${numId}/details` ||
+          path === `/api/game/${numId}/details/catalog` ||
+          path === `/api/game/${numId}/details/live`
+        )
+      },
+      undefined,
+      { revalidate: false }
+    )
 
   useEffect(() => {
     if (shouldRedirectGameLandingError(error, hasLoadedGame)) {
@@ -168,7 +186,8 @@ const GameDetail: FC = () => {
       message: t('game.notification.joined'),
       icon: <Icon path={mdiCheck} size={1} />,
     })
-    mutate()
+    await invalidateParticipationReads()
+    void mutate()
   }
 
   const onSubmitLeave = async () => {
@@ -181,7 +200,8 @@ const GameDetail: FC = () => {
         message: t('game.notification.left'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
-      mutate()
+      await invalidateParticipationReads()
+      void mutate()
     } catch (err) {
       return showErrorMsg(err, t)
     }

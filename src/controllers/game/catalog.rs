@@ -7,6 +7,86 @@
 use super::*;
 
 const MAX_CATALOG_SEARCH_CHARS: usize = 100;
+const MAX_JOINED_CATALOG_GAMES: i64 = 128;
+const MAX_JOINED_CATALOG_CHALLENGES_PER_GAME: i64 = 256;
+
+const CHALLENGE_CATALOG_SQL: &str = r#"WITH eligible AS MATERIALIZED (
+            SELECT participation.id AS participation_id,
+                   participation.game_id, participation.division_id,
+                   game.title AS game_title,
+                   game.start_time_utc AS game_start,
+                   game.end_time_utc AS game_end,
+                   division.id IS NOT NULL AS division_exists,
+                   division.default_permissions
+              FROM "UserParticipations" membership
+              JOIN "Participations" participation
+                ON participation.id = membership.participation_id
+               AND participation.game_id = membership.game_id
+               AND participation.team_id = membership.team_id
+              JOIN "Games" game ON game.id = participation.game_id
+              LEFT JOIN "Divisions" division
+                ON division.id = participation.division_id
+               AND division.game_id = participation.game_id
+             WHERE membership.user_id = $1
+               AND participation.status = $2
+               AND game.hidden = FALSE
+               AND game.start_time_utc <= clock_timestamp()
+               AND ($6::int IS NULL OR game.id = $6)
+             ORDER BY game.start_time_utc DESC, game.id DESC
+             LIMIT $13
+        ), catalog AS (
+            SELECT candidate.*, eligible.game_id, eligible.game_title,
+                   eligible.game_start, eligible.game_end
+              FROM eligible
+              JOIN LATERAL (
+                  SELECT challenge.id, challenge.title, challenge.category,
+                         challenge."Type" AS challenge_type,
+                         challenge.original_score, challenge.min_score_rate,
+                         challenge.difficulty, challenge.accepted_count,
+                         challenge.score_curve,
+                         (first_solve.challenge_id IS NOT NULL) AS solved
+                    FROM "GameChallenges" challenge
+                    LEFT JOIN "FirstSolves" first_solve
+                      ON first_solve.participation_id = eligible.participation_id
+                     AND first_solve.challenge_id = challenge.id
+                    LEFT JOIN "DivisionChallengeConfigs" permission
+                      ON permission.division_id = eligible.division_id
+                     AND permission.challenge_id = challenge.id
+                   WHERE challenge.game_id = eligible.game_id
+                     AND challenge.is_enabled = TRUE
+                     AND challenge.review_status = $3
+                     AND (
+                         eligible.division_id IS NULL
+                         OR (
+                             eligible.division_exists
+                             AND (COALESCE(permission.permissions,
+                                           eligible.default_permissions, 0) & $4) = $4
+                         )
+                     )
+                     AND ($5::text IS NULL
+                          OR STRPOS(LOWER(CONCAT_WS(' ', challenge.title,
+                                                   eligible.game_title)), LOWER($5)) > 0
+                          OR challenge.id::text = $5
+                          OR eligible.game_id::text = $5)
+                     AND ($7::smallint IS NULL OR challenge.category = $7)
+                     AND (
+                          $8::text IS NULL
+                          OR ($8 = 'jeopardy' AND challenge."Type" NOT IN ($9, $10))
+                          OR ($8 = 'attackDefense' AND challenge."Type" = $9)
+                          OR ($8 = 'koth' AND challenge."Type" = $10)
+                     )
+                     AND ($11::smallint IS NULL OR challenge."Type" = $11)
+                     AND ($12::boolean IS NULL
+                          OR (first_solve.challenge_id IS NOT NULL) = $12)
+                   ORDER BY challenge.category, challenge.id
+                   LIMIT $14
+              ) candidate ON TRUE
+        )
+        SELECT catalog.*, COUNT(*) OVER () AS total_count
+          FROM catalog
+         ORDER BY catalog.solved, catalog.game_start DESC,
+                  catalog.game_id DESC, catalog.category, catalog.id
+         OFFSET $15 LIMIT $16"#;
 
 fn normalized_catalog_search(search: Option<&str>) -> AppResult<Option<String>> {
     let Some(search) = search.map(str::trim).filter(|search| !search.is_empty()) else {
@@ -270,87 +350,26 @@ async fn load_challenge_catalog(
     query: &ChallengeCatalogQuery,
 ) -> AppResult<(Vec<ChallengeCatalogItem>, i64)> {
     let search = normalized_catalog_search(query.search.as_deref())?;
-    let rows = sqlx::query_as::<_, ChallengeCatalogRow>(
-        r#"WITH eligible AS MATERIALIZED (
-                SELECT participation.id, participation.game_id, participation.division_id
-                  FROM "UserParticipations" membership
-                  JOIN "Participations" participation
-                    ON participation.id = membership.participation_id
-                   AND participation.game_id = membership.game_id
-                   AND participation.team_id = membership.team_id
-                 WHERE membership.user_id = $1
-                   AND participation.status = $2
-            ), catalog AS (
-                SELECT challenge.id, challenge.title, challenge.category,
-                       challenge."Type" AS challenge_type,
-                       challenge.original_score, challenge.min_score_rate,
-                       challenge.difficulty, challenge.accepted_count,
-                       challenge.score_curve,
-                       (first_solve.challenge_id IS NOT NULL) AS solved,
-                       game.id AS game_id, game.title AS game_title,
-                       game.start_time_utc AS game_start,
-                       game.end_time_utc AS game_end
-                  FROM eligible
-                  JOIN "Games" game ON game.id = eligible.game_id
-                  JOIN "GameChallenges" challenge ON challenge.game_id = game.id
-                  LEFT JOIN "FirstSolves" first_solve
-                    ON first_solve.participation_id = eligible.id
-                   AND first_solve.challenge_id = challenge.id
-                  LEFT JOIN "Divisions" division
-                    ON division.id = eligible.division_id
-                   AND division.game_id = eligible.game_id
-                  LEFT JOIN "DivisionChallengeConfigs" permission
-                    ON permission.division_id = eligible.division_id
-                   AND permission.challenge_id = challenge.id
-                 WHERE game.hidden = FALSE
-                   AND game.start_time_utc <= clock_timestamp()
-                   AND challenge.is_enabled = TRUE
-                   AND challenge.review_status = $3
-                   AND (
-                       eligible.division_id IS NULL
-                       OR (
-                           division.id IS NOT NULL
-                           AND (COALESCE(permission.permissions, division.default_permissions, 0) & $4) = $4
-                       )
-                   )
-                   AND ($5::text IS NULL
-                        OR STRPOS(LOWER(CONCAT_WS(' ', challenge.title, game.title)), LOWER($5)) > 0
-                        OR challenge.id::text = $5
-                        OR game.id::text = $5)
-                   AND ($6::int IS NULL OR game.id = $6)
-                   AND ($7::smallint IS NULL OR challenge.category = $7)
-                   AND (
-                        $8::text IS NULL
-                        OR ($8 = 'jeopardy' AND challenge."Type" NOT IN ($9, $10))
-                        OR ($8 = 'attackDefense' AND challenge."Type" = $9)
-                        OR ($8 = 'koth' AND challenge."Type" = $10)
-                   )
-                   AND ($11::smallint IS NULL OR challenge."Type" = $11)
-                   AND ($12::boolean IS NULL OR (first_solve.challenge_id IS NOT NULL) = $12)
-            )
-            SELECT catalog.*, COUNT(*) OVER () AS total_count
-              FROM catalog
-             ORDER BY catalog.solved, catalog.game_start DESC,
-                      catalog.game_id DESC, catalog.category, catalog.id
-             OFFSET $13 LIMIT $14"#,
-    )
-    .bind(user_id)
-    .bind(ParticipationStatus::Accepted as i16)
-    .bind(ChallengeReviewStatus::Active as i16)
-    .bind(GamePermission::VIEW_CHALLENGE)
-    .bind(search.as_deref())
-    .bind(query.game_id)
-    .bind(query.category.map(|category| category as i16))
-    .bind(query.mode.map(ChallengeCatalogMode::as_query_value))
-    .bind(ChallengeType::AttackDefense as i16)
-    .bind(ChallengeType::KingOfTheHill as i16)
-    .bind(query.challenge_type.map(|kind| kind as i16))
-    .bind(query.solved)
-    .bind(query.skip.min(i64::MAX as u64) as i64)
-    .bind(query.count.clamp(1, 100) as i64)
-    .fetch_all(pool)
-    .await
-    .map_err(|error| AppError::internal(error.to_string()))?;
+    let rows = sqlx::query_as::<_, ChallengeCatalogRow>(CHALLENGE_CATALOG_SQL)
+        .bind(user_id)
+        .bind(ParticipationStatus::Accepted as i16)
+        .bind(ChallengeReviewStatus::Active as i16)
+        .bind(GamePermission::VIEW_CHALLENGE)
+        .bind(search.as_deref())
+        .bind(query.game_id)
+        .bind(query.category.map(|category| category as i16))
+        .bind(query.mode.map(ChallengeCatalogMode::as_query_value))
+        .bind(ChallengeType::AttackDefense as i16)
+        .bind(ChallengeType::KingOfTheHill as i16)
+        .bind(query.challenge_type.map(|kind| kind as i16))
+        .bind(query.solved)
+        .bind(MAX_JOINED_CATALOG_GAMES)
+        .bind(MAX_JOINED_CATALOG_CHALLENGES_PER_GAME)
+        .bind(query.skip.min(i64::MAX as u64) as i64)
+        .bind(query.count.clamp(1, 100) as i64)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
 
     let total = rows.first().map_or(0, |row| row.total_count);
     let items = rows

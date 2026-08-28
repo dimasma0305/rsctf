@@ -8,20 +8,26 @@ const GAME = __ENV.GAME || "";
 const TOKENS = JSON.parse(open(__ENV.TOKENS_FILE || ""));
 const RATE = Number(__ENV.RATE || 10);
 const VUS = Number(__ENV.VUS || Math.max(10, RATE));
+const DURATION = __ENV.DURATION || "30s";
 const REQUIRE_FIXED_PROJECTION = __ENV.REQUIRE_FIXED_PROJECTION !== "0";
+const durationMatch = /^(\d+)(s|m)$/.exec(DURATION);
+const durationSeconds = durationMatch
+  ? Number(durationMatch[1]) * (durationMatch[2] === "m" ? 60 : 1)
+  : Number.NaN;
 
-if (!/^\d+$/.test(GAME) || TOKENS.length === 0) {
+if (!/^\d+$/.test(GAME) || TOKENS.length === 0 || TOKENS.length > 4000) {
   throw new Error(
-    "GAME and at least one accepted-participant token are required",
+    "GAME and between 1 and 4000 accepted-participant tokens are required",
   );
 }
-if (
-  !Number.isSafeInteger(RATE) ||
-  RATE <= 0 ||
-  !Number.isSafeInteger(VUS) ||
-  VUS <= 0
-) {
-  throw new Error("RATE and VUS must be positive integers");
+if (!Number.isSafeInteger(RATE) || RATE <= 0 || RATE > 2000) {
+  throw new Error("RATE must be an integer between 1 and 2000");
+}
+if (!Number.isSafeInteger(VUS) || VUS <= 0 || VUS > 500) {
+  throw new Error("VUS must be an integer between 1 and 500");
+}
+if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 600) {
+  throw new Error("DURATION must be between 1s and 10m");
 }
 
 const non200 = new Rate("details_non_200");
@@ -46,9 +52,9 @@ export const options = {
       executor: "constant-arrival-rate",
       rate: RATE,
       timeUnit: "1s",
-      duration: __ENV.DURATION || "30s",
+      duration: DURATION,
       preAllocatedVUs: VUS,
-      maxVUs: VUS * 2,
+      maxVUs: Math.min(500, VUS * 2),
     },
   },
   summaryTrendStats: ["avg", "med", "p(90)", "p(95)", "p(99)", "max"],

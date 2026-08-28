@@ -3,6 +3,7 @@ use axum::http::{Request, StatusCode};
 use axum::routing::get;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
+use std::time::Duration;
 use tower::ServiceExt;
 
 use super::*;
@@ -87,6 +88,17 @@ fn catalog_search_is_trimmed_bounded_and_optional() {
         normalized_catalog_search(Some(&"x".repeat(101))),
         Err(AppError::BadRequest(message)) if message.contains("100 characters")
     ));
+}
+
+#[test]
+fn joined_catalog_caps_history_before_count_and_pagination() {
+    assert_eq!(MAX_JOINED_CATALOG_GAMES, 128);
+    assert_eq!(MAX_JOINED_CATALOG_CHALLENGES_PER_GAME, 256);
+    assert!(CHALLENGE_CATALOG_SQL
+        .contains("ORDER BY game.start_time_utc DESC, game.id DESC\n             LIMIT $13"));
+    assert!(CHALLENGE_CATALOG_SQL.contains("JOIN LATERAL"));
+    assert!(CHALLENGE_CATALOG_SQL.contains("LIMIT $14"));
+    assert!(CHALLENGE_CATALOG_SQL.contains("OFFSET $15 LIMIT $16"));
 }
 
 #[tokio::test]
@@ -293,6 +305,87 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         .unwrap();
     assert_eq!(total, 1);
     assert_eq!(unsolved_items[0].id, 701);
+
+    // Retained history is intentionally bounded before the window count and
+    // final page. An explicit event filter still makes an old joined event
+    // eligible, so the bound does not break direct event navigation.
+    sqlx::query(
+        r#"INSERT INTO "Games"
+           SELECT series, 'Historical ' || series, FALSE,
+                  clock_timestamp() - interval '1 day' * series,
+                  clock_timestamp() - interval '1 day' * series + interval '6 hours'
+             FROM generate_series(1000, 1139) series"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "GameChallenges"
+           SELECT 10000 + series, series, 'Historical challenge ' || series,
+                  3, 0, 1000, 0.01, 5, 0, 0, TRUE, 0
+             FROM generate_series(1000, 1139) series"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "Participations"
+           SELECT 20000 + series, series, 30000 + series, 1, NULL
+             FROM generate_series(1000, 1139) series"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO "UserParticipations"
+           SELECT $1, series, 30000 + series, 20000 + series
+             FROM generate_series(1000, 1139) series"#,
+    )
+    .bind(player)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let first_page = ChallengeCatalogQuery {
+        count: 100,
+        ..Default::default()
+    };
+    let second_page = ChallengeCatalogQuery {
+        count: 100,
+        skip: 100,
+        ..Default::default()
+    };
+    let (first_items, retained_total) = tokio::time::timeout(
+        Duration::from_secs(5),
+        load_challenge_catalog(&pool, player, &first_page),
+    )
+    .await
+    .expect("bounded catalog query timed out")
+    .unwrap();
+    let (second_items, second_total) = load_challenge_catalog(&pool, player, &second_page)
+        .await
+        .unwrap();
+    assert_eq!(retained_total, 131);
+    assert_eq!(second_total, retained_total);
+    assert_eq!(
+        first_items.len() + second_items.len(),
+        retained_total as usize
+    );
+    assert!(!first_items
+        .iter()
+        .chain(&second_items)
+        .any(|item| item.id == 11139));
+
+    let oldest_event = ChallengeCatalogQuery {
+        count: 10,
+        game_id: Some(1139),
+        ..Default::default()
+    };
+    let (oldest_items, oldest_total) = load_challenge_catalog(&pool, player, &oldest_event)
+        .await
+        .unwrap();
+    assert_eq!(oldest_total, 1);
+    assert_eq!(oldest_items[0].id, 11139);
 
     pool.close().await;
     assert!(schema.starts_with("challenge_catalog_"));
