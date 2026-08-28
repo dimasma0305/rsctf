@@ -745,13 +745,15 @@ async function prepareFutureFixture() {
 async function prepareAdFixture() {
   console.log('\nactive A&D organizer fixture…');
   const now = A.nowMs();
+  const liveStart = now - 60_000;
+  const liveEnd = now + 3_600_000;
   context.adGameId = await A.createGame({
     title: titleFor(tags.ad),
     hidden: true,
     practiceMode: false,
     acceptWithoutReview: true,
-    start: now - 60_000,
-    end: now + 3_600_000,
+    start: now + 86_400_000,
+    end: now + 90_000_000,
     teamMemberCountLimit: 1,
     containerCountLimit: 1,
     allowUserSubmissions: false,
@@ -837,18 +839,25 @@ async function prepareAdFixture() {
   const started = docker(['start', adRuntimeBeforeRestart]);
   requireCondition(started.status === 0, `could not restore A&D service after inspector: ${started.stderr.trim()}`);
   mutateContainerFilesystem(adRuntimeBeforeRestart, runKey);
+
+  // Scoring-affecting definitions are immutable once play starts. Arm the
+  // completed fixture only after its challenge, roster, checker, and managed
+  // service have all been proven.
+  await A.setGameSchedule(context.adGameId, liveStart, liveEnd);
 }
 
 async function prepareKothFixture() {
   console.log('\nactive KotH organizer fixture…');
   const now = A.nowMs();
+  const liveStart = now - 60_000;
+  const liveEnd = now + 3_600_000;
   context.kothGameId = await A.createGame({
     title: titleFor(tags.koth),
     hidden: true,
     practiceMode: false,
     acceptWithoutReview: true,
-    start: now - 60_000,
-    end: now + 3_600_000,
+    start: now + 86_400_000,
+    end: now + 90_000_000,
     teamMemberCountLimit: 1,
     containerCountLimit: 1,
     allowUserSubmissions: false,
@@ -910,6 +919,7 @@ async function prepareKothFixture() {
   state.containerIds.push(hill.containerId);
   state.runtimeIds.push(hill.backendId);
   saveRecovery();
+  await A.setGameSchedule(context.kothGameId, liveStart, liveEnd);
   await A.setAdScoringPaused(context.kothGameId, false);
   await A.waitForCrownReady(context.kothGameId, context.kothChallengeId, 2, 180);
 }

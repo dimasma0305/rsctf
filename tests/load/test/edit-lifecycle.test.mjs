@@ -542,6 +542,21 @@ test('A&D and KotH create fixtures immediately prove every supplied engine setti
   assert.match(kothPrepare, /assertPersistedGameSettings\(context\.kothGameId, KOTH_CREATION_SETTINGS/);
   assert.ok(adPrepare.indexOf('saveRecovery()') < adPrepare.indexOf('assertPersistedGameSettings('));
   assert.ok(kothPrepare.indexOf('saveRecovery()') < kothPrepare.indexOf('assertPersistedGameSettings('));
+  assert.ok(
+    adPrepare.indexOf('mutateContainerFilesystem(') <
+      adPrepare.indexOf('A.setGameSchedule(context.adGameId, liveStart, liveEnd)'),
+    'A&D fixture must finish definition and runtime setup before its live schedule is armed',
+  );
+  assert.ok(
+    kothPrepare.indexOf('discoverManagedKothHill(') <
+      kothPrepare.indexOf('A.setGameSchedule(context.kothGameId, liveStart, liveEnd)'),
+    'KotH fixture must prove its managed hill before its live schedule is armed',
+  );
+  assert.ok(
+    kothPrepare.indexOf('A.setGameSchedule(context.kothGameId, liveStart, liveEnd)') <
+      kothPrepare.indexOf('A.setAdScoringPaused(context.kothGameId, false)'),
+    'KotH scoring must resume only after the completed fixture is armed',
+  );
 });
 
 test('game import acceptance reads back portable semantics and proves late-failure rollback', () => {
