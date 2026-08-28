@@ -393,15 +393,37 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   }
 
   const onReviewSubmit = async (rating: ReviewRating, comment: string) => {
+    const reviewScope = {
+      gameId,
+      challengeId,
+    }
     try {
       await api.game.gameReviewChallenge(gameId, challengeId, { rating, comment })
+      const latestScope = currentScope.current
+      if (
+        !latestScope.mounted ||
+        !latestScope.opened ||
+        latestScope.gameId !== reviewScope.gameId ||
+        latestScope.challengeId !== reviewScope.challengeId
+      ) {
+        return
+      }
       showNotification({
         color: 'teal',
         message: t('challenge.review.submitted', 'Review submitted'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (e) {
-      showErrorMsg(e, t)
+      const latestScope = currentScope.current
+      if (
+        latestScope.mounted &&
+        latestScope.opened &&
+        latestScope.gameId === reviewScope.gameId &&
+        latestScope.challengeId === reviewScope.challengeId
+      ) {
+        showErrorMsg(e, t)
+      }
+      throw e
     }
   }
 

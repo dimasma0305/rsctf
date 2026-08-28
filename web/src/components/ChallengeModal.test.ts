@@ -12,6 +12,12 @@ import { LanguageProvider } from '../utils/I18n'
 import type { ChallengeCategoryItemProps } from '../utils/Shared'
 import { ChallengeModal } from './ChallengeModal'
 
+const flush = async () => {
+  await Promise.resolve()
+  await Promise.resolve()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 test('challenge modal ticks only while an open deadline needs updates', async (context) => {
   const browser = new Window({ url: 'https://rsctf.test/' })
   const restoreDom = installTestDom(browser)
@@ -121,6 +127,157 @@ test('challenge modal ticks only while an open deadline needs updates', async (c
   } finally {
     await act(async () => root.unmount())
     context.mock.timers.reset()
+    delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
+    await browser.happyDOM.close()
+    restoreDom()
+  }
+})
+
+test('challenge review keeps its draft on failure and closes only after one committed retry', async () => {
+  const browser = new Window({ url: 'https://rsctf.test/games/4/challenges#7' })
+  const restoreDom = installTestDom(browser)
+  const i18n = i18next.createInstance()
+  await i18n.init({
+    lng: 'en-US',
+    fallbackLng: 'en-US',
+    resources: {
+      'en-US': {
+        translation: {
+          challenge: {
+            button: { submit_flag: 'Submit flag' },
+            content: { already_solved: 'Already solved', flag_placeholders: ['flag{answer}'] },
+            label: { flag: 'Flag' },
+            review: {
+              label: 'Rate this challenge',
+              comment: 'Comment',
+              placeholder: 'Leave a comment...',
+              required_notice: 'Please rate this challenge',
+              submit_and_close: 'Submit & Close',
+            },
+          },
+          common: {
+            button: { close: 'Close' },
+            label: { like: 'Recommended', dislike: 'Not Recommended' },
+          },
+        },
+      },
+    },
+  })
+  const category: ChallengeCategoryItemProps = {
+    name: ChallengeCategory.Misc,
+    desrc: 'Miscellaneous',
+    icon: mdiHelpCircleOutline,
+    color: 'gray',
+    colors: Array(10).fill('#868e96') as ChallengeCategoryItemProps['colors'],
+  }
+  const challenge: ChallengeDetailModel = {
+    id: 7,
+    title: 'Review boundary',
+    content: 'Keep the draft.',
+    category: ChallengeCategory.Misc,
+    type: ChallengeType.StaticAttachment,
+    score: 100,
+    attempts: 1,
+  }
+  const container = browser.document.createElement('div')
+  browser.document.body.append(container)
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(container)
+  ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+  let requests = 0
+  let closeCount = 0
+  let flag = 'flag{answer}'
+  let resolveRetry: (() => void) | undefined
+  const submitReview = async () => {
+    requests += 1
+    if (requests === 1) throw new Error('temporary review failure')
+    await new Promise<void>((resolve) => {
+      resolveRetry = resolve
+    })
+  }
+  const render = () =>
+    createElement(
+      HeadlessMantineProvider,
+      null,
+      createElement(
+        I18nextProvider,
+        { i18n },
+        createElement(
+          LanguageProvider,
+          null,
+          createElement(ChallengeModal, {
+            opened: true,
+            onClose: () => {
+              closeCount += 1
+            },
+            transitionProps: { duration: 0 },
+            challenge,
+            cateData: category,
+            solved: true,
+            justSolved: true,
+            flag,
+            setFlag: (value) => {
+              if (typeof value === 'string') flag = value
+            },
+            receiptProof: '',
+            setReceiptProof: () => undefined,
+            onCreate: () => undefined,
+            onDestroy: () => undefined,
+            onSubmitFlag: () => undefined,
+            onReviewSubmit: submitReview,
+          })
+        )
+      )
+    )
+
+  try {
+    await act(async () => {
+      root.render(render())
+      await flush()
+    })
+    const buttons = () => Array.from(browser.document.querySelectorAll<HTMLButtonElement>('button'))
+    const recommended = buttons().find((button) => button.textContent?.trim() === 'Recommended')
+    assert.ok(recommended)
+    await act(async () => recommended.click())
+
+    const textarea = browser.document.querySelector<HTMLTextAreaElement>('textarea')
+    assert.ok(textarea)
+    await act(async () => {
+      const setTextareaValue = Object.getOwnPropertyDescriptor(browser.HTMLTextAreaElement.prototype, 'value')?.set
+      assert.ok(setTextareaValue)
+      setTextareaValue.call(textarea, 'Please keep this exact draft')
+      textarea.dispatchEvent(new browser.Event('input', { bubbles: true }))
+      await flush()
+    })
+    const submit = () => buttons().find((button) => button.textContent?.includes('Submit & Close'))
+    assert.ok(submit())
+
+    await act(async () => {
+      submit()?.click()
+      await flush()
+    })
+    assert.equal(requests, 1)
+    assert.equal(closeCount, 0)
+    assert.equal(textarea.value, 'Please keep this exact draft')
+    assert.equal(browser.document.activeElement, textarea)
+
+    await act(async () => {
+      submit()?.click()
+      submit()?.click()
+      await Promise.resolve()
+    })
+    assert.equal(requests, 2, 'the synchronous request owner must collapse the duplicate click')
+    assert.equal(closeCount, 0)
+
+    await act(async () => {
+      resolveRetry?.()
+      await flush()
+    })
+    assert.equal(closeCount, 1)
+    assert.equal(flag, '')
+  } finally {
+    await act(async () => root.unmount())
     delete (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT
     await browser.happyDOM.close()
     restoreDom()

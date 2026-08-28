@@ -180,6 +180,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   const [reviewSubmitted, setReviewSubmitted] = useState(false)
   const flagInputRef = useRef<HTMLInputElement>(null)
   const reviewStartRef = useRef<HTMLButtonElement>(null)
+  const reviewCommentRef = useRef<HTMLTextAreaElement>(null)
+  const reviewOperationRef = useRef<symbol | undefined>(undefined)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const focusAfterVerdictRef = useRef<FlagVerdictKind | null>(null)
 
@@ -213,6 +215,8 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
   // Keyed on the challenge id — otherwise submitting one review leaves
   // reviewSubmitted=true and blocks the review UI on every OTHER challenge.
   useEffect(() => {
+    reviewOperationRef.current = undefined
+    setIsSubmittingReview(false)
     setRating((challenge as any)?.userRating ?? ReviewRating.None)
     setComment((challenge as any)?.userComment ?? '')
     setReviewSubmitted(false)
@@ -593,6 +597,7 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
 
       <Stack gap={4}>
         <Textarea
+          ref={reviewCommentRef}
           label={t('challenge.review.comment', 'Comment')}
           placeholder={t('challenge.review.placeholder', 'Leave a comment...')}
           value={comment}
@@ -615,19 +620,31 @@ export const ChallengeModal: FC<ChallengeModalProps> = (props) => {
       <Group justify="flex-end">
         <Button
           loading={isSubmittingReview}
-          disabled={rating === ReviewRating.None}
+          disabled={rating === ReviewRating.None || isSubmittingReview}
           onClick={async () => {
-            if (onReviewSubmit) {
-              setIsSubmittingReview(true)
+            if (!onReviewSubmit || reviewOperationRef.current) return
+            const operation = Symbol('challenge-review')
+            const challengeId = challenge?.id
+            reviewOperationRef.current = operation
+            setIsSubmittingReview(true)
+            try {
               await onReviewSubmit(rating, comment)
-              setIsSubmittingReview(false)
+              if (reviewOperationRef.current !== operation || challenge?.id !== challengeId) return
               setReviewSubmitted(true)
               // Fresh-solve nudge: submit then close. When editing an existing
-              // review, keep the modal open so it stays editable (onReviewSubmit
-              // already shows a "saved" toast).
+              // review, keep the modal open so it stays editable.
               if (justSolved) {
                 setFlag('')
                 modalProps.onClose()
+              }
+            } catch {
+              if (reviewOperationRef.current === operation && challenge?.id === challengeId) {
+                window.requestAnimationFrame(() => reviewCommentRef.current?.focus({ preventScroll: true }))
+              }
+            } finally {
+              if (reviewOperationRef.current === operation) {
+                reviewOperationRef.current = undefined
+                setIsSubmittingReview(false)
               }
             }
           }}
