@@ -93,7 +93,7 @@ pub(crate) async fn get_or_create_shared_container_locked(
                     flag: Some(flag),
                     ad_network,
                     allow_egress: challenge.ad_allow_egress,
-                    control_plane_callback_port: None,
+                    control_plane_callback_ports: Vec::new(),
                     network_mode: challenge.network_mode.unwrap_or(NetworkMode::Open),
                     operation_id,
                 })

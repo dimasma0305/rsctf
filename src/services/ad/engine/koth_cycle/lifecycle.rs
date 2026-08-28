@@ -379,6 +379,7 @@ async fn create_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()>
     let reporter = crate::services::ad::koth_reporter::ensure_for_cycle(
         st.pg(),
         st.config.koth_reporter_base_url.as_deref(),
+        &st.config.bind_addr,
         cycle.id,
         cycle.game_id,
         cycle.challenge_id,
@@ -478,7 +479,9 @@ fn replacement_container_spec(
         flag: Some(spec.runtime_flag.clone().unwrap_or_default()),
         ad_network: Some(crate::services::ad_vpn::services_network()),
         allow_egress: spec.allow_egress,
-        control_plane_callback_port: reporter.map(|runtime| runtime.callback_port),
+        control_plane_callback_ports: reporter
+            .map(|runtime| runtime.callback_ports.clone())
+            .unwrap_or_default(),
         network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some(operation_id),
     }

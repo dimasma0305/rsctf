@@ -163,7 +163,7 @@ fn fingerprint_spec() -> ContainerSpec {
         flag: Some("flag-secret".to_string()),
         ad_network: Some("rsctf-ad".to_string()),
         allow_egress: false,
-        control_plane_callback_port: None,
+        control_plane_callback_ports: Vec::new(),
         network_mode: crate::utils::enums::NetworkMode::Open,
         operation_id: Some("cycle:9".to_string()),
     }
@@ -535,6 +535,25 @@ fn proxy_only_spec_is_restricted_to_published_jeopardy() {
     spec.ad_network = None;
     assert!(validate_container_spec(&spec).is_ok());
     spec.publish_port = false;
+    assert!(validate_container_spec(&spec).is_err());
+}
+
+#[test]
+fn callback_ports_are_bounded_and_require_an_ad_network() {
+    let mut spec = fingerprint_spec();
+    spec.control_plane_callback_ports = vec![80, 8080];
+    assert!(validate_container_spec(&spec).is_ok());
+
+    spec.ad_network = None;
+    assert!(validate_container_spec(&spec).is_err());
+
+    spec.ad_network = Some("rsctf-ad".to_string());
+    spec.control_plane_callback_ports.push(8443);
+    assert!(validate_container_spec(&spec).is_err());
+
+    spec.control_plane_callback_ports = vec![0];
+    assert!(validate_container_spec(&spec).is_err());
+    spec.control_plane_callback_ports = vec![65_536];
     assert!(validate_container_spec(&spec).is_err());
 }
 

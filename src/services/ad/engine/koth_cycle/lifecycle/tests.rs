@@ -118,7 +118,7 @@ fn persistent_replacement_preserves_the_static_runtime_flag() {
     assert_eq!(spec.storage_limit, 1_024);
     assert_eq!(spec.network_mode, crate::utils::enums::NetworkMode::Open);
     assert!(spec.env.is_empty());
-    assert_eq!(spec.control_plane_callback_port, None);
+    assert!(spec.control_plane_callback_ports.is_empty());
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn managed_reporter_replaces_a_pre_upgrade_create_orphan() {
             crate::services::ad::koth_reporter::REPORTER_SECRET_ENV.to_string(),
             "koth_target_test".to_string(),
         )],
-        callback_port: 8080,
+        callback_ports: vec![80, 8080],
     };
 
     let legacy = replacement_container_spec(cycle.expected_image.clone(), &cycle, &hill, None);
@@ -171,7 +171,7 @@ fn managed_reporter_replaces_a_pre_upgrade_create_orphan() {
         Some("koth-cycle:41:attempt:3:managed-reporter-v1")
     );
     assert_ne!(managed.operation_id, legacy.operation_id);
-    assert_eq!(managed.control_plane_callback_port, Some(8080));
+    assert_eq!(managed.control_plane_callback_ports, vec![80, 8080]);
 }
 
 #[test]

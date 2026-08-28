@@ -251,8 +251,8 @@ pub struct ContainerSpec {
     /// rejects it because a shared external bridge cannot prevent east-west,
     /// private-network, or metadata access.
     pub allow_egress: bool,
-    /// Trusted platform callback port used by the narrow Kubernetes egress rule.
-    pub control_plane_callback_port: Option<i32>,
+    /// Service and target-pod ports for narrow Kubernetes callback egress.
+    pub control_plane_callback_ports: Vec<i32>,
     /// Author-selected network isolation for legacy container definitions.
     pub network_mode: NetworkMode,
     /// Stable lifecycle identity for crash-recoverable create operations. When
@@ -304,7 +304,7 @@ impl ContainerSpec {
             flag: Some(flag),
             ad_network: Some(crate::services::ad_vpn::services_network()),
             allow_egress,
-            control_plane_callback_port: None,
+            control_plane_callback_ports: Vec::new(),
             network_mode: NetworkMode::Open,
             operation_id: None,
         }

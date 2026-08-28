@@ -20,10 +20,10 @@ pub(crate) const REPORTER_SECRET_ENV: &str = "RSCTF_KOTH_REPORTER_SECRET";
 
 pub(crate) struct TargetReporterRuntime {
     pub(crate) env: Vec<(String, String)>,
-    pub(crate) callback_port: i32,
+    pub(crate) callback_ports: Vec<i32>,
 }
 
-fn callback_port(base_url: &str) -> AppResult<i32> {
+fn callback_origin_port(base_url: &str) -> AppResult<i32> {
     let uri = base_url
         .parse::<Uri>()
         .map_err(|_| AppError::internal("invalid managed KotH reporter base URL"))?;
@@ -40,8 +40,22 @@ fn callback_port(base_url: &str) -> AppResult<i32> {
     Ok(i32::from(port))
 }
 
+fn callback_ports(base_url: &str, bind_addr: &str) -> AppResult<Vec<i32>> {
+    let origin_port = callback_origin_port(base_url)?;
+    let target_port = bind_addr
+        .parse::<std::net::SocketAddr>()
+        .map(|address| i32::from(address.port()))
+        .map_err(|_| AppError::internal("invalid rsctf bind address for managed KotH reporting"))?;
+    let mut ports = vec![origin_port];
+    if target_port != origin_port {
+        ports.push(target_port);
+    }
+    Ok(ports)
+}
+
 fn runtime(
     base_url: &str,
+    bind_addr: &str,
     game_id: i32,
     challenge_id: i32,
     secret: String,
@@ -63,7 +77,7 @@ fn runtime(
             ),
             (REPORTER_SECRET_ENV.to_string(), secret),
         ],
-        callback_port: callback_port(base_url)?,
+        callback_ports: callback_ports(base_url, bind_addr)?,
     })
 }
 
@@ -73,6 +87,7 @@ fn runtime(
 pub(crate) async fn ensure_for_cycle(
     pool: &sqlx::PgPool,
     base_url: Option<&str>,
+    bind_addr: &str,
     cycle_id: i64,
     game_id: i32,
     challenge_id: i32,
@@ -150,7 +165,7 @@ pub(crate) async fn ensure_for_cycle(
     let secret = secret.ok_or_else(|| {
         AppError::conflict("KotH reporter lifecycle changed during target creation")
     })?;
-    runtime(base_url, game_id, challenge_id, secret).map(Some)
+    runtime(base_url, bind_addr, game_id, challenge_id, secret).map(Some)
 }
 
 #[cfg(test)]
@@ -168,8 +183,15 @@ mod tests {
 
     #[test]
     fn reporter_runtime_contains_exact_scoped_endpoints_and_default_ports() {
-        let http = runtime("http://rsctf-control", 7, 9, "secret".to_string()).unwrap();
-        assert_eq!(http.callback_port, 80);
+        let http = runtime(
+            "http://rsctf-control",
+            "0.0.0.0:8080",
+            7,
+            9,
+            "secret".to_string(),
+        )
+        .unwrap();
+        assert_eq!(http.callback_ports, vec![80, 8080]);
         assert!(http.env.contains(&(
             CONTEXT_URL_ENV.to_string(),
             "http://rsctf-control/api/v1/koth/games/7/challenges/9/context".to_string()
@@ -179,16 +201,24 @@ mod tests {
             "http://rsctf-control/api/v1/koth/games/7/challenges/9/observations".to_string()
         )));
 
-        let https = runtime("https://rsctf-control/", 7, 9, "secret".to_string()).unwrap();
-        assert_eq!(https.callback_port, 443);
-        let custom = runtime(
-            "http://rsctf-koth-reporter:8080",
+        let https = runtime(
+            "https://rsctf-control/",
+            "0.0.0.0:8080",
             7,
             9,
             "secret".to_string(),
         )
         .unwrap();
-        assert_eq!(custom.callback_port, 8080);
+        assert_eq!(https.callback_ports, vec![443, 8080]);
+        let custom = runtime(
+            "http://rsctf-koth-reporter:8080",
+            "0.0.0.0:8080",
+            7,
+            9,
+            "secret".to_string(),
+        )
+        .unwrap();
+        assert_eq!(custom.callback_ports, vec![8080]);
     }
 
     #[tokio::test]
@@ -234,25 +264,48 @@ mod tests {
         .await
         .unwrap();
 
-        let first = ensure_for_cycle(&pool, Some("http://rsctf-koth-reporter:8080"), 41, 7, 9, 1)
-            .await
-            .unwrap()
-            .unwrap();
-        let retry = ensure_for_cycle(&pool, Some("http://rsctf-koth-reporter:8080"), 41, 7, 9, 1)
-            .await
-            .unwrap()
-            .unwrap();
+        let first = ensure_for_cycle(
+            &pool,
+            Some("http://rsctf-koth-reporter:8080"),
+            "0.0.0.0:8080",
+            41,
+            7,
+            9,
+            1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let retry = ensure_for_cycle(
+            &pool,
+            Some("http://rsctf-koth-reporter:8080"),
+            "0.0.0.0:8080",
+            41,
+            7,
+            9,
+            1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(reporter_secret(&first), reporter_secret(&retry));
 
         sqlx::query(r#"UPDATE "KothCrownCycles" SET reset_attempt = 2 WHERE id = 41"#)
             .execute(&pool)
             .await
             .unwrap();
-        let replacement =
-            ensure_for_cycle(&pool, Some("http://rsctf-koth-reporter:8080"), 41, 7, 9, 2)
-                .await
-                .unwrap()
-                .unwrap();
+        let replacement = ensure_for_cycle(
+            &pool,
+            Some("http://rsctf-koth-reporter:8080"),
+            "0.0.0.0:8080",
+            41,
+            7,
+            9,
+            2,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_ne!(reporter_secret(&first), reporter_secret(&replacement));
         let stored_attempt: i32 = sqlx::query_scalar(
             r#"SELECT reset_attempt FROM "KothTargetReporters" WHERE cycle_id = 41"#,

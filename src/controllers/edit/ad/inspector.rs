@@ -256,7 +256,7 @@ pub async fn ad_spawn_inspector(
                 flag: None,
                 ad_network: None,
                 allow_egress: false,
-                control_plane_callback_port: None,
+                control_plane_callback_ports: Vec::new(),
                 network_mode: crate::utils::enums::NetworkMode::Isolated,
                 operation_id,
             })

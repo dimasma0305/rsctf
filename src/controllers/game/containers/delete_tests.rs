@@ -506,7 +506,7 @@ async fn stale_conditional_delete_cannot_destroy_a_real_replacement_runtime() {
         flag: None,
         ad_network: None,
         allow_egress: false,
-        control_plane_callback_port: None,
+        control_plane_callback_ports: Vec::new(),
         network_mode: NetworkMode::Isolated,
         operation_id: Some(format!("conditional-delete-{operation}-{suffix}")),
     };

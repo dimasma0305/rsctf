@@ -19,7 +19,7 @@ fn ad_policy_is_default_deny_with_allowlisted_ingress() {
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
     };
-    let policy = network::ad_network_policy("test", &labels, None, 8080, false, None, &config);
+    let policy = network::ad_network_policy("test", &labels, None, 8080, false, &[], &config);
     let spec = policy.spec.unwrap();
     assert_eq!(spec.egress, Some(Vec::new()));
     assert_eq!(spec.ingress.as_ref().map(Vec::len), Some(1));
@@ -46,7 +46,7 @@ fn ad_internet_egress_still_excludes_private_networks() {
         control_namespace: Some("rsctf-system".to_string()),
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
     };
-    let policy = network::ad_network_policy("test", &labels, None, 8080, true, None, &config);
+    let policy = network::ad_network_policy("test", &labels, None, 8080, true, &[], &config);
     let egress = policy.spec.unwrap().egress.unwrap();
     assert_eq!(egress.len(), 2);
     let internet_peers = egress[0].to.as_ref().unwrap();
@@ -70,11 +70,16 @@ fn managed_koth_callback_allows_only_control_http_and_dns() {
         control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
     };
     let policy =
-        network::ad_network_policy("test", &labels, None, 8080, false, Some(8080), &config);
+        network::ad_network_policy("test", &labels, None, 8080, false, &[80, 8080], &config);
     let egress = policy.spec.unwrap().egress.unwrap();
     assert_eq!(egress.len(), 2);
+    assert_eq!(egress[0].ports.as_ref().unwrap().len(), 2);
     assert_eq!(
         egress[0].ports.as_ref().unwrap()[0].port,
+        Some(IntOrString::Int(80))
+    );
+    assert_eq!(
+        egress[0].ports.as_ref().unwrap()[1].port,
         Some(IntOrString::Int(8080))
     );
     let peer = &egress[0].to.as_ref().unwrap()[0];
@@ -87,6 +92,65 @@ fn managed_koth_callback_allows_only_control_http_and_dns() {
         Some("rsctf-system")
     );
     assert_eq!(egress[1].ports.as_ref().map(Vec::len), Some(2));
+}
+
+#[tokio::test]
+async fn managed_callback_policy_round_trips_through_kubernetes_api() {
+    use std::convert::Infallible;
+    use std::sync::{Arc, Mutex};
+
+    use axum::http::{header::CONTENT_TYPE, Method, Request, Response, StatusCode};
+    use kube::api::PostParams;
+    use kube::client::Body;
+    use tower::service_fn;
+
+    let labels = BTreeMap::from([(APP_LABEL.to_string(), "rsctf-test".to_string())]);
+    let config = network::AdNetworkConfig {
+        service_cidr: "10.96.0.0/12".parse().unwrap(),
+        ingress_cidrs: vec!["10.244.1.0/24".parse().unwrap()],
+        control_namespace: Some("rsctf-system".to_string()),
+        control_pod_label: ("app.kubernetes.io/name".to_string(), "rsctf".to_string()),
+    };
+    let policy =
+        network::ad_network_policy("test", &labels, None, 8080, false, &[80, 8080], &config);
+    let captured = Arc::new(Mutex::new(None));
+    let captured_request = Arc::clone(&captured);
+    let service = service_fn(move |request: Request<Body>| {
+        let captured_request = Arc::clone(&captured_request);
+        async move {
+            assert_eq!(request.method(), Method::POST);
+            assert_eq!(
+                request.uri().path(),
+                "/apis/networking.k8s.io/v1/namespaces/rsctf-challenges/networkpolicies"
+            );
+            let body = request.into_body().collect_bytes().await.unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            *captured_request.lock().unwrap() = Some(value.clone());
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(StatusCode::CREATED)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&value).unwrap()))
+                    .unwrap(),
+            )
+        }
+    });
+    let client = Client::new(service, "rsctf-challenges");
+    let policies: Api<NetworkPolicy> = Api::namespaced(client, "rsctf-challenges");
+
+    policies
+        .create(&PostParams::default(), &policy)
+        .await
+        .unwrap();
+
+    let value = captured.lock().unwrap().take().unwrap();
+    let ports = value["spec"]["egress"][0]["ports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|port| port["port"].as_i64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(ports, vec![80, 8080]);
 }
 
 #[test]

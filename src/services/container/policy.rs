@@ -84,13 +84,15 @@ pub(crate) fn validate_container_spec(spec: &ContainerSpec) -> AppResult<()> {
             "container expose port must be between 1 and 65535",
         ));
     }
-    if spec
-        .control_plane_callback_port
-        .is_some_and(|port| !(1..=65_535).contains(&port))
-        || (spec.control_plane_callback_port.is_some() && spec.ad_network.is_none())
+    if spec.control_plane_callback_ports.len() > 2
+        || spec
+            .control_plane_callback_ports
+            .iter()
+            .any(|port| !(1..=65_535).contains(port))
+        || (!spec.control_plane_callback_ports.is_empty() && spec.ad_network.is_none())
     {
         return Err(AppError::bad_request(
-            "a control-plane callback requires an A&D network and a port between 1 and 65535",
+            "a control-plane callback requires an A&D network and at most two ports between 1 and 65535",
         ));
     }
     if spec.proxy_only

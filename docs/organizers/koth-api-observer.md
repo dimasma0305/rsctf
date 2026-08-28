@@ -86,7 +86,8 @@ The recommended deployment has these properties:
    owns gameplay truth; there is no second private scoring feed.
 2. A child gameplay process receives a domain-separated loopback credential,
    not any `RSCTF_KOTH_*` value, when a narrower supervisor can own reporting.
-3. The managed callback network allows only the target-to-rsctf port plus DNS.
+3. The managed callback network allows only the target-to-rsctf Service and
+   target-pod ports plus DNS.
 4. A team controls only work keyed by its KotH capability hash; it cannot spend
    another team's quota or an unbounded shared admission budget.
 5. The independent RSCTF functional checker is read-only and does not accept
@@ -207,8 +208,9 @@ credential; every new reset rotates it.
 Set `RSCTF_KOTH_REPORTER_BASE_URL` to an absolute HTTP(S) origin with no path,
 credentials, query, or fragment. Docker examples expose the control process on
 the private `rsctf-koth-reporter` alias. Kubernetes deployments should point it
-at the singleton control Service; the generated NetworkPolicy grants only that
-Service's backing pods and port.
+at the singleton control Service. The generated NetworkPolicy grants only that
+Service's backing pods and both its public port and rsctf's configured bind
+port, covering CNI enforcement before or after Service port translation.
 
 ## Wire contract
 

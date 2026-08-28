@@ -246,7 +246,7 @@ pub(super) fn ad_network_policy(
     owner_references: Option<Vec<OwnerReference>>,
     expose_port: i32,
     allow_egress: bool,
-    control_plane_callback_port: Option<i32>,
+    control_plane_callback_ports: &[i32],
     config: &AdNetworkConfig,
 ) -> NetworkPolicy {
     let mut ingress_peers: Vec<NetworkPolicyPeer> = config
@@ -267,22 +267,26 @@ pub(super) fn ad_network_policy(
     } else {
         Vec::new()
     };
-    if let (Some(port), Some(namespace)) = (
-        control_plane_callback_port,
-        config.control_namespace.as_ref(),
-    ) {
-        egress.insert(
-            0,
-            NetworkPolicyEgressRule {
-                ports: Some(vec![network_port(port, "TCP")]),
-                to: Some(vec![control_pod_peer(
-                    namespace.clone(),
-                    config.control_pod_label.clone(),
-                )]),
-            },
-        );
-        if !allow_egress {
-            egress.push(dns_egress_rule());
+    if !control_plane_callback_ports.is_empty() {
+        if let Some(namespace) = config.control_namespace.as_ref() {
+            egress.insert(
+                0,
+                NetworkPolicyEgressRule {
+                    ports: Some(
+                        control_plane_callback_ports
+                            .iter()
+                            .map(|port| network_port(*port, "TCP"))
+                            .collect(),
+                    ),
+                    to: Some(vec![control_pod_peer(
+                        namespace.clone(),
+                        config.control_pod_label.clone(),
+                    )]),
+                },
+            );
+            if !allow_egress {
+                egress.push(dns_egress_rule());
+            }
         }
     }
     NetworkPolicy {

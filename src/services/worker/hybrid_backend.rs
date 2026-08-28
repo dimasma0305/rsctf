@@ -198,7 +198,7 @@ mod tests {
             flag: None,
             ad_network: None,
             allow_egress: false,
-            control_plane_callback_port: None,
+            control_plane_callback_ports: Vec::new(),
             network_mode: crate::utils::enums::NetworkMode::Open,
             operation_id: None,
         }

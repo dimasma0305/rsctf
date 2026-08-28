@@ -359,7 +359,7 @@ impl ContainerManager for KubernetesContainerManager {
         } else {
             None
         };
-        if spec.control_plane_callback_port.is_some()
+        if !spec.control_plane_callback_ports.is_empty()
             && ad_config
                 .as_ref()
                 .and_then(|config| config.control_namespace.as_ref())
@@ -469,7 +469,7 @@ impl ContainerManager for KubernetesContainerManager {
                 None,
                 spec.expose_port,
                 spec.allow_egress,
-                spec.control_plane_callback_port,
+                &spec.control_plane_callback_ports,
                 config,
             ))
         } else if spec.proxy_only && isolated {
