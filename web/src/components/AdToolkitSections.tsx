@@ -106,10 +106,10 @@ const rotateAdTokenOnce = (
  * @param onRotated optional callback fired after a successful rotation — KotH
  *   uses it to show a success notification; A&D leaves it off.
  */
-export const useAdToken = (gameId: number, onRotated?: () => void) => {
+export const useAdToken = (gameId: number, onRotated?: () => void, enabled: boolean = true) => {
   const { t } = useTranslation()
   const { user } = useUser()
-  const { adTokenHint, mutate: mutateHint } = useAdTokenHint(gameId)
+  const { adTokenHint, mutate: mutateHint } = useAdTokenHint(gameId, enabled)
 
   const [rotating, setRotating] = useState(false)
   const [freshToken, setFreshToken] = useState<string | null>(null)

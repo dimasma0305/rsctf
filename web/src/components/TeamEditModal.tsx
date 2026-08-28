@@ -27,6 +27,7 @@ import { mdiCheck, mdiClose, mdiContentCopy, mdiLinkVariant, mdiLockOutline, mdi
 import { Icon } from '@mdi/react'
 import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { KeyedMutator } from 'swr'
 import { ScrollingText } from '@Components/ScrollingText'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { IMAGE_MIME_TYPES } from '@Utils/Shared'
@@ -37,6 +38,8 @@ import styles from '@Styles/TeamEditModal.module.css'
 interface TeamEditModalProps extends ModalProps {
   team: TeamInfoModel | null
   isCaptain: boolean
+  teams?: TeamInfoModel[]
+  mutateTeams: KeyedMutator<TeamInfoModel[]>
 }
 
 interface TeamMemberInfoProps {
@@ -103,7 +106,7 @@ const TeamMemberInfo: FC<TeamMemberInfoProps> = (props) => {
 }
 
 export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
-  const { team, isCaptain, ...modalProps } = props
+  const { team, isCaptain, teams, mutateTeams, ...modalProps } = props
 
   const teamId = team?.id
 
@@ -118,8 +121,6 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   const inviteMutationOwner = useRef(false)
   const inviteOperationId = useRef<string | null>(null)
   const [disabled, setDisabled] = useState(false)
-  const { data: teams, mutate: mutateTeams } = api.team.useTeamGetTeamsInfo()
-
   const clipboard = useClipboard()
   const locked = teamInfo?.locked ?? false
   const captain = teamInfo?.members?.filter((x) => x.captain)[0]

@@ -6,23 +6,23 @@ import { FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AccessibleModal, AccessibleModalProps } from '@Components/AccessibleModal'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
-import api, { DetailedGameInfoModel, GameJoinCheckInfoModel, GameJoinModel, TeamInfoModel } from '@Api'
+import api, { DetailedGameInfoModel, GameJoinCheckInfoModel, GameJoinModel, TeamSelectorModel } from '@Api'
 
 interface GameJoinModalProps extends AccessibleModalProps {
   accountId?: string
   game?: DetailedGameInfoModel
   gameId: number
-  teams?: TeamInfoModel[]
-  refreshTeams: () => Promise<TeamInfoModel[] | undefined>
+  teams?: TeamSelectorModel[]
+  refreshTeams: () => Promise<TeamSelectorModel[] | undefined>
   onSubmitJoin: (info: GameJoinModel, signal: AbortSignal) => Promise<void>
 }
 
 interface JoinContext {
   checkInfo: GameJoinCheckInfoModel
-  teams: TeamInfoModel[]
+  teams: TeamSelectorModel[]
 }
 
-const teamSignature = (teams: TeamInfoModel[] | undefined) =>
+const teamSignature = (teams: TeamSelectorModel[] | undefined) =>
   (teams ?? [])
     .flatMap((team) => (typeof team.id === 'number' ? [`${team.id}:${team.name ?? ''}`] : []))
     .sort()

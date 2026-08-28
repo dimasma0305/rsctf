@@ -41,7 +41,7 @@ import { useIsMobile } from '@Utils/ThemeOverride'
 import { useConfig } from '@Hooks/useConfig'
 import { shouldRedirectGameLandingError, useGame, useGameStatus } from '@Hooks/useGame'
 import { usePageTitle } from '@Hooks/usePageTitle'
-import { useTeams, useUser } from '@Hooks/useUser'
+import { useTeamSelector, useUser } from '@Hooks/useUser'
 import api, { GameJoinModel, ParticipationStatus } from '@Api'
 import classes from '@Styles/GameDetail.module.css'
 
@@ -106,7 +106,7 @@ const GameDetail: FC = () => {
   const { config } = useConfig()
 
   const { user } = useUser()
-  const { teams, mutate: mutateTeams } = useTeams()
+  const { teams, mutate: mutateTeams } = useTeamSelector(Boolean(user))
 
   const modals = useModals()
   const isMobile = useIsMobile()

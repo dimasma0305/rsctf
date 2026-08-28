@@ -143,8 +143,14 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
           permissions INTEGER NOT NULL, PRIMARY KEY (division_id, challenge_id)
         );
         CREATE TABLE "Submissions" (
+          id INTEGER PRIMARY KEY,
           participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
           status SMALLINT NOT NULL
+        );
+        CREATE TABLE "FirstSolves" (
+          participation_id INTEGER NOT NULL, challenge_id INTEGER NOT NULL,
+          submission_id INTEGER NOT NULL,
+          PRIMARY KEY (participation_id, challenge_id)
         );
         "#,
     )
@@ -207,7 +213,11 @@ async fn challenge_catalog_cannot_escape_join_start_visibility_or_division_bound
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query(r#"INSERT INTO "Submissions" VALUES (11, 101, 1)"#)
+    sqlx::query(r#"INSERT INTO "Submissions" VALUES (1, 11, 101, 1)"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"INSERT INTO "FirstSolves" VALUES (11, 101, 1)"#)
         .execute(&pool)
         .await
         .unwrap();

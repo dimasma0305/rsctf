@@ -2,6 +2,7 @@ import dayjs from 'dayjs'
 import { useEffect, useRef } from 'react'
 import { SWRConfiguration } from 'swr'
 import api, { ClientConfig, ContainerPortMappingType } from '@Api'
+import { boundedRetryDelay, isRetryableHttpError } from '@Utils/HttpError'
 
 export const RSCTF_REPOSITORY = 'https://github.com/dimasma0305/rsctf'
 export const RSCTF_DOCUMENTATION = `${RSCTF_REPOSITORY}/tree/main/docs`
@@ -9,6 +10,16 @@ export const RSCTF_DOCUMENTATION = `${RSCTF_REPOSITORY}/tree/main/docs`
 export const OnceSWRConfig: SWRConfiguration = {
   refreshInterval: 0,
   revalidateOnFocus: false,
+  revalidateOnReconnect: false,
+  refreshWhenHidden: false,
+  refreshWhenOffline: false,
+  shouldRetryOnError: isRetryableHttpError,
+  errorRetryCount: 3,
+  onErrorRetry: (error, _key, _config, revalidate, options) => {
+    const delay = boundedRetryDelay(error, options.retryCount)
+    if (delay === null) return
+    window.setTimeout(() => revalidate({ retryCount: options.retryCount }), delay)
+  },
 }
 
 const fallbackConfig: ClientConfig = {

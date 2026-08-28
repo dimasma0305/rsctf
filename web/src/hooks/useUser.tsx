@@ -8,6 +8,7 @@ import { useSWRConfig } from 'swr'
 import { clearLegacyAdTokenStorage } from '@Utils/AdTokenMemory'
 import { setAuthSession } from '@Utils/AuthState'
 import { createProfileRetryTimers, profileErrorDisposition, profileRetryScheduleDelay } from '@Utils/ProfileRetry'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import api from '@Api'
 
 const handledBannedProfileErrors = new WeakSet<object>()
@@ -97,16 +98,28 @@ export const useUserRole = () => {
 }
 
 export const useTeams = () => {
+  const { mutate: mutateCache } = useSWRConfig()
+  const {
+    data: teams,
+    error,
+    mutate: mutateTeamList,
+  } = api.team.useTeamGetTeamsInfo(OnceSWRConfig)
+
+  const mutate: typeof mutateTeamList = async (data, options) => {
+    const result = await mutateTeamList(data, options)
+    await mutateCache('/api/team/selector')
+    return result
+  }
+
+  return { teams, error, mutate }
+}
+
+export const useTeamSelector = (enabled: boolean = true) => {
   const {
     data: teams,
     error,
     mutate,
-  } = api.team.useTeamGetTeamsInfo({
-    refreshInterval: 120000,
-    shouldRetryOnError: false,
-    revalidateOnFocus: false,
-  })
-
+  } = api.team.useTeamGetTeamSelector(OnceSWRConfig, enabled)
   return { teams, error, mutate }
 }
 

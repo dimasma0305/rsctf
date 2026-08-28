@@ -1,37 +1,80 @@
 use super::*;
 
+#[derive(sqlx::FromRow)]
+struct PendingChallengeRow {
+    id: i32,
+    title: String,
+    category: i16,
+    challenge_type: i16,
+    review_status: i16,
+    review_note: Option<String>,
+    submitted_at_utc: Option<DateTime<Utc>>,
+    reviewed_at_utc: Option<DateTime<Utc>>,
+    submitted_by_user_id: Option<Uuid>,
+    submitted_by_user_name: Option<String>,
+    total_count: i64,
+}
+
 /// `GET /api/edit/games/{id}/pendingchallenges` — Pending + Rejected rows.
 pub async fn list_pending_challenges(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path(id): Path<i32>,
-) -> AppResult<RequestResponse<Vec<PendingChallengeModel>>> {
+    axum::extract::Query(page): axum::extract::Query<PageParams>,
+) -> AppResult<ArrayResponse<PendingChallengeModel>> {
     manager_or_admin(&st, &user, id).await?;
     load_game(&st, id).await?;
-    let rows = game_challenge::Entity::find()
-        .filter(game_challenge::Column::GameId.eq(id))
-        .filter(game_challenge::Column::ReviewStatus.ne(ChallengeReviewStatus::Active))
-        // RSCTF orders by ReviewStatus ASC first, then SubmittedAtUtc DESC.
-        .order_by_asc(game_challenge::Column::ReviewStatus)
-        .order_by_desc(game_challenge::Column::SubmittedAtUtc)
-        .all(&st.db)
-        .await?;
-
-    // Resolve submittedByUserName via a single batched join on `user`.
-    let user_ids: Vec<Uuid> = rows.iter().filter_map(|c| c.submitted_by_user_id).collect();
-    let user_names = load_user_names(&st, user_ids).await?;
-
+    let rows = sqlx::query_as::<_, PendingChallengeRow>(
+        r#"SELECT challenge.id, challenge.title, challenge.category,
+                  challenge."Type" AS challenge_type,
+                  challenge.review_status, challenge.review_note,
+                  challenge.submitted_at_utc, challenge.reviewed_at_utc,
+                  challenge.submitted_by_user_id,
+                  account.user_name AS submitted_by_user_name,
+                  COUNT(*) OVER () AS total_count
+             FROM "GameChallenges" challenge
+             LEFT JOIN "AspNetUsers" account
+               ON account.id = challenge.submitted_by_user_id
+            WHERE challenge.game_id = $1
+              AND challenge.review_status <> $2
+              AND challenge.deletion_pending = FALSE
+            ORDER BY challenge.review_status, challenge.submitted_at_utc DESC NULLS LAST,
+                     challenge.id DESC
+            OFFSET $3 LIMIT $4"#,
+    )
+    .bind(id)
+    .bind(ChallengeReviewStatus::Active as i16)
+    .bind(page.skip.min(i64::MAX as u64) as i64)
+    .bind(page.limit().min(100) as i64)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let total = rows.first().map_or(0, |row| row.total_count);
     let data = rows
-        .iter()
-        .map(|c| {
-            let mut m = PendingChallengeModel::from_challenge(c);
-            m.submitted_by_user_name = c
-                .submitted_by_user_id
-                .and_then(|uid| user_names.get(&uid).cloned());
-            m
+        .into_iter()
+        .map(|row| {
+            Ok(PendingChallengeModel {
+                id: row.id,
+                title: row.title,
+                category: <ChallengeCategory as sea_orm::ActiveEnum>::try_from_value(&row.category)
+                    .map_err(|error| AppError::internal(error.to_string()))?,
+                challenge_type: <ChallengeType as sea_orm::ActiveEnum>::try_from_value(
+                    &row.challenge_type,
+                )
+                .map_err(|error| AppError::internal(error.to_string()))?,
+                review_status: <ChallengeReviewStatus as sea_orm::ActiveEnum>::try_from_value(
+                    &row.review_status,
+                )
+                .map_err(|error| AppError::internal(error.to_string()))?,
+                review_note: row.review_note,
+                submitted_at_utc: row.submitted_at_utc,
+                reviewed_at_utc: row.reviewed_at_utc,
+                submitted_by_user_id: row.submitted_by_user_id,
+                submitted_by_user_name: row.submitted_by_user_name,
+            })
         })
-        .collect();
-    Ok(RequestResponse::ok(data))
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(ArrayResponse::new(data, total))
 }
 
 /// `POST /api/edit/games/{id}/challenges/{cId}/approve` — void.

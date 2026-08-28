@@ -31,12 +31,14 @@ mod account_lifecycle;
 mod avatar;
 mod invite;
 mod lifecycle;
+mod membership_reads;
 mod models;
 mod revocation;
 mod roster_policy;
 pub(crate) use account_lifecycle::{create_team_rows, transfer_captain_locked};
 pub use avatar::avatar;
 pub use invite::{invite_code, update_invite_token};
+pub use membership_reads::{get_team_selector, get_teams_info};
 pub use models::*;
 pub(crate) use revocation::{
     acquire_roster_mutation, invalidate_removed_membership_cache, mark_team_participations_revoked,
@@ -137,6 +139,7 @@ mod profile_tests {
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route("/api/team", get(get_teams_info).post(create_team))
+        .route("/api/team/selector", get(get_team_selector))
         .route(
             "/api/team/{id}",
             get(get_basic_info).put(update_team).delete(delete_team),
@@ -172,19 +175,6 @@ pub async fn get_basic_info(
     let team = load_team(&st, id).await?;
     let info = to_info(&st, &team, true).await?;
     Ok(RequestResponse::ok(info))
-}
-
-/// `GET /api/team` — every team the current user captains or participates in.
-pub async fn get_teams_info(
-    State(st): State<SharedState>,
-    user: CurrentUser,
-) -> AppResult<RequestResponse<Vec<TeamInfoModel>>> {
-    let teams = user_teams(&st, user.id).await?;
-    let mut out = Vec::with_capacity(teams.len());
-    for team in &teams {
-        out.push(to_info(&st, team, true).await?);
-    }
-    Ok(RequestResponse::ok(out))
 }
 
 /// `POST /api/team` — create a team; creator becomes captain.

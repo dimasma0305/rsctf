@@ -33,6 +33,7 @@ import { FC, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
 import { useAdToken, AdTokenSection, AdVpnSection, AdTokenRevealModal } from '@Components/AdToolkitSections'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import type { KothScoreboardModel } from '@Hooks/useGame'
 import misc from '@Styles/Misc.module.css'
 
@@ -104,17 +105,21 @@ const CopyCurlButton: FC<{ value: string }> = ({ value }) => {
 export const KothGuideModal: FC<KothToolkitModalProps> = ({ gameId, ...modalProps }) => {
   const { t } = useTranslation()
   const { data: scoreboard } = useSWR<KothScoreboardModel>(
-    modalProps.opened ? `/api/game/${gameId}/ad/koth/scoreboard` : null
+    modalProps.opened ? `/api/game/${gameId}/ad/koth/scoreboard` : null,
+    OnceSWRConfig
   )
   const hasApiArena = scoreboard?.hills.some((hill) => hill.claimSource === 'Api') ?? false
   const hasMarkerHill = !scoreboard || scoreboard.hills.some((hill) => hill.claimSource !== 'Api')
   const { adTokenHint, rotating, freshToken, storedToken, forgetToken, tokenModalOpen, closeTokenModal, onRotate } =
-    useAdToken(gameId, () =>
-      showNotification({
-        color: 'teal',
-        message: t('game.notification.koth.token.rotated', 'KotH token rotated'),
-        icon: <Icon path={mdiCheck} size={1} />,
-      })
+    useAdToken(
+      gameId,
+      () =>
+        showNotification({
+          color: 'teal',
+          message: t('game.notification.koth.token.rotated', 'KotH token rotated'),
+          icon: <Icon path={mdiCheck} size={1} />,
+        }),
+      modalProps.opened
     )
 
   const apiUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/api/Game/${gameId}/Ad`

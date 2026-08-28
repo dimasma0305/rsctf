@@ -1,7 +1,7 @@
-import { Badge, Button, Center, Group, Stack, Table, Text, Textarea, Title } from '@mantine/core'
+import { Alert, Badge, Button, Center, Group, Pagination, Stack, Table, Text, Textarea, Title } from '@mantine/core'
 import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
-import { mdiCheck, mdiClose, mdiDeleteOutline, mdiMagnify } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiCheck, mdiClose, mdiDeleteOutline, mdiMagnify, mdiRefresh } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
@@ -11,9 +11,11 @@ import { useParams } from 'react-router'
 import { ChallengeAuditModal } from '@Components/admin/ChallengeAuditModal'
 import { WithGameEditTab } from '@Components/admin/WithGameEditTab'
 import { showErrorMsg } from '@Utils/Shared'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { PendingChallengeModel } from '@Api'
 
 dayjs.extend(relativeTime)
+const PAGE_SIZE = 50
 
 const PendingChallenges: FC = () => {
   const { id } = useParams()
@@ -21,8 +23,16 @@ const PendingChallenges: FC = () => {
   const { t } = useTranslation()
   const modals = useModals()
   const [busy, setBusy] = useState(false)
+  const [page, setPage] = useState(1)
 
-  const { data: pending, mutate } = api.edit.useEditListPendingChallenges(gameId, undefined, gameId > 0)
+  const { data: pendingPage, error, mutate } = api.edit.useEditListPendingChallenges(
+    gameId,
+    { count: PAGE_SIZE, skip: (page - 1) * PAGE_SIZE },
+    OnceSWRConfig,
+    gameId > 0
+  )
+  const pending = pendingPage?.data
+  const pageCount = Math.ceil((pendingPage?.total ?? 0) / PAGE_SIZE)
 
   const [auditTarget, setAuditTarget] = useState<{ id: number; title: string; submitter?: string | null } | null>(null)
 
@@ -103,10 +113,27 @@ const PendingChallenges: FC = () => {
   }
 
   return (
-    <WithGameEditTab isLoading={!pending}>
+    <WithGameEditTab isLoading={!pending && !error}>
       <Stack gap="md" w="100%">
         <Title order={2}>{t('admin.content.review.title')}</Title>
-        {!pending || pending.length === 0 ? (
+        {error ? (
+          <Alert
+            color="red"
+            role="alert"
+            icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+            title={t('admin.content.review.load_failed', 'Could not load challenge reviews')}
+          >
+            <Button
+              mt="sm"
+              size="compact-sm"
+              variant="light"
+              leftSection={<Icon path={mdiRefresh} size={0.7} aria-hidden="true" />}
+              onClick={() => void mutate()}
+            >
+              {t('common.button.retry', 'Retry')}
+            </Button>
+          </Alert>
+        ) : !pending || pending.length === 0 ? (
           <Center h="40vh">
             <Stack gap={0} align="center">
               <Title order={3}>{t('admin.content.review.empty.title')}</Title>
@@ -200,6 +227,14 @@ const PendingChallenges: FC = () => {
               })}
             </Table.Tbody>
           </Table>
+        )}
+        {pageCount > 1 && (
+          <Pagination
+            total={pageCount}
+            value={page}
+            onChange={setPage}
+            aria-label={t('admin.content.review.pagination', 'Challenge review pages')}
+          />
         )}
       </Stack>
       <ChallengeAuditModal

@@ -904,6 +904,13 @@ export interface TeamInviteModel {
   revision: number;
 }
 
+/** Compact team identity for join selectors. */
+export interface TeamSelectorModel {
+  /** @format int32 */
+  id: number;
+  name: string;
+}
+
 /** Team member information */
 export interface TeamUserInfoModel {
   /**
@@ -3826,6 +3833,12 @@ export interface PendingChallengeModel {
   reviewedAtUtc?: string | null
   submittedByUserId?: string | null
   submittedByUserName?: string | null
+}
+
+export interface ArrayResponseOfPendingChallengeModel {
+  data: PendingChallengeModel[]
+  total: number
+  length: number
 }
 
 /** Lifecycle state of a repo binding (Active / Paused). */
@@ -8215,32 +8228,36 @@ export class Api<
      */
     editListPendingChallenges: (
       id: number,
+      query: { count?: number; skip?: number } = {},
       params: RequestParams = {},
     ) =>
-      this.request<PendingChallengeModel[], RequestResponse>({
+      this.request<ArrayResponseOfPendingChallengeModel, RequestResponse>({
         path: `/api/edit/games/${id}/pendingchallenges`,
         method: "GET",
+        query,
         format: "json",
         ...params,
       }),
 
     useEditListPendingChallenges: (
       id: number,
+      query: { count?: number; skip?: number } = {},
       options?: SWRConfiguration,
       doFetch: boolean = true,
     ) =>
-      useSWR<PendingChallengeModel[], RequestResponse>(
-        doFetch ? `/api/edit/games/${id}/pendingchallenges` : null,
+      useSWR<ArrayResponseOfPendingChallengeModel, RequestResponse>(
+        doFetch ? [`/api/edit/games/${id}/pendingchallenges`, query] : null,
         options,
       ),
 
     mutateEditListPendingChallenges: (
       id: number,
-      data?: PendingChallengeModel[] | Promise<PendingChallengeModel[]>,
+      query: { count?: number; skip?: number } = {},
+      data?: ArrayResponseOfPendingChallengeModel | Promise<ArrayResponseOfPendingChallengeModel>,
       options?: MutatorOptions,
     ) =>
-      mutate<PendingChallengeModel[]>(
-        `/api/edit/games/${id}/pendingchallenges`,
+      mutate<ArrayResponseOfPendingChallengeModel>(
+        [`/api/edit/games/${id}/pendingchallenges`, query],
         data,
         options,
       ),
@@ -11156,6 +11173,30 @@ export class Api<
       data?: TeamInfoModel[] | Promise<TeamInfoModel[]>,
       options?: MutatorOptions,
     ) => mutate<TeamInfoModel[]>(`/api/team`, data, options),
+
+    /** Bounded team identities without roster profiles. */
+    teamGetTeamSelector: (params: RequestParams = {}) =>
+      this.request<TeamSelectorModel[], RequestResponse>({
+        path: `/api/team/selector`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+
+    /** Bounded team identities without roster profiles. */
+    useTeamGetTeamSelector: (
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<TeamSelectorModel[], RequestResponse>(
+        doFetch ? `/api/team/selector` : null,
+        options,
+      ),
+
+    mutateTeamGetTeamSelector: (
+      data?: TeamSelectorModel[] | Promise<TeamSelectorModel[]>,
+      options?: MutatorOptions,
+    ) => mutate<TeamSelectorModel[]>(`/api/team/selector`, data, options),
 
     /**
      * @description Get team invitation information, must be team creator

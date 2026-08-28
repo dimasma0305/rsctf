@@ -51,6 +51,7 @@ import {
   PlayerCredentialOperation,
 } from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import api, { AdSshKeyGeneratedModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
@@ -111,8 +112,12 @@ interface AdToolkitModalProps extends ModalProps {
 export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, ...modalProps }) => {
   const { t } = useTranslation()
   const { adTokenHint, rotating, freshToken, storedToken, forgetToken, tokenModalOpen, closeTokenModal, onRotate } =
-    useAdToken(gameId)
-  const { data: sshKey, mutate: mutateSshKey } = api.game.useAdGameGetSshKey(gameId)
+    useAdToken(gameId, undefined, modalProps.opened)
+  const { data: sshKey, mutate: mutateSshKey } = api.game.useAdGameGetSshKey(
+    gameId,
+    OnceSWRConfig,
+    modalProps.opened
+  )
 
   const [sshTab, setSshTab] = useState<string>('paste')
   const [pastedPubkey, setPastedPubkey] = useState('')

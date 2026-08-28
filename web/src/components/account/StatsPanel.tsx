@@ -38,6 +38,7 @@ import { Link, useNavigate } from 'react-router'
 import useSWR from 'swr'
 import { EchartsContainer } from '@Components/charts/EchartsContainer'
 import { useLanguage } from '@Utils/I18n'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import classes from '@Pages/account/Stats.module.css'
 
 dayjs.extend(relativeTime)
@@ -68,12 +69,6 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 const catColor = (cat: string) => CATEGORY_COLORS[cat] ?? 'blue'
 
-const fetcher = (url: string) =>
-  fetch(url, { credentials: 'include' }).then((r) => {
-    if (!r.ok) throw new Error(`Request failed with status ${r.status}`)
-    return r.json()
-  })
-
 /** The user's CTF statistics, rendered as a self-contained panel (no page chrome). */
 export const StatsPanel: FC = () => {
   const { t } = useTranslation()
@@ -82,7 +77,7 @@ export const StatsPanel: FC = () => {
   const { colorScheme } = useMantineColorScheme()
   const navigate = useNavigate()
 
-  const { data: stats, error, isLoading, mutate } = useSWR<UserStatsModel>('/api/account/stats', fetcher)
+  const { data: stats, error, isLoading, mutate } = useSWR<UserStatsModel>('/api/account/stats', OnceSWRConfig)
 
   const sortedCategories = useMemo(
     () => Object.entries(stats?.solvesByCategory ?? {}).sort((a, b) => b[1] - a[1]),

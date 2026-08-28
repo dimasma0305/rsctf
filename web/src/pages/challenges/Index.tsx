@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Alert,
   Badge,
   Button,
   Group,
@@ -14,7 +15,7 @@ import {
   VisuallyHidden,
 } from '@mantine/core'
 import { useDebouncedValue } from '@mantine/hooks'
-import { mdiClose, mdiMagnify } from '@mdi/js'
+import { mdiAlertCircleOutline, mdiClose, mdiMagnify, mdiRefresh } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -27,6 +28,7 @@ import { WithNavBar } from '@Components/WithNavbar'
 import { ChallengeCategoryList, SubmissionTypeIconMap, useChallengeCategoryLabelMap } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import { useGame, useGameStatus } from '@Hooks/useGame'
+import { OnceSWRConfig } from '@Hooks/useConfig'
 import { usePageTitle } from '@Hooks/usePageTitle'
 import { useUser } from '@Hooks/useUser'
 import api, { ChallengeCatalogItem, ChallengeCatalogMode, ChallengeCategory, ChallengeInfo, SubmissionType } from '@Api'
@@ -102,7 +104,7 @@ const ChallengeCatalog: FC = () => {
   const [selectedChallenge, setSelectedChallenge] = useState<ChallengeCatalogItem | null>(null)
   const { iconMap, colorMap } = SubmissionTypeIconMap(0.8)
 
-  const { data: catalog, isLoading } = api.game.useGameChallengeCatalog(
+  const { data: catalog, error: catalogError, isLoading, isValidating, mutate } = api.game.useGameChallengeCatalog(
     {
       count: ITEMS_PER_PAGE,
       skip: (page - 1) * ITEMS_PER_PAGE,
@@ -111,7 +113,7 @@ const ChallengeCatalog: FC = () => {
       mode: challengeMode ?? undefined,
       solved: solveFilter === 'all' ? undefined : solveFilter === 'solved',
     },
-    { refreshInterval: 60_000 },
+    OnceSWRConfig,
     Boolean(user)
   )
 
@@ -143,15 +145,43 @@ const ChallengeCatalog: FC = () => {
           'Search challenges across events you have joined. Upcoming, hidden, and unauthorized event content stays private.'
         )}
         actions={
-          catalog && (
+          <Group gap="xs">
+            {catalog && (
             <Badge size="lg" variant="light">
               {t('challenge.catalog.total', '{{count}} challenges', { count: catalog.total })}
             </Badge>
-          )
+            )}
+            <Button
+              size="compact-sm"
+              variant="default"
+              loading={isValidating}
+              leftSection={<Icon path={mdiRefresh} size={0.7} aria-hidden="true" />}
+              onClick={() => void mutate()}
+            >
+              {t('common.button.refresh', 'Refresh')}
+            </Button>
+          </Group>
         }
       />
 
       <Stack gap="xl" className={classes.catalog}>
+        {catalogError && (
+          <Alert
+            color="red"
+            role="alert"
+            icon={<Icon path={mdiAlertCircleOutline} size={0.9} aria-hidden="true" />}
+            title={t('challenge.catalog.load_failed', 'Could not load your challenges')}
+          >
+            <Group justify="space-between" align="center" wrap="wrap">
+              <Text size="sm">
+                {t('challenge.catalog.load_failed_hint', 'Check your connection, then retry this request.')}
+              </Text>
+              <Button size="compact-sm" variant="light" onClick={() => void mutate()}>
+                {t('common.button.retry', 'Retry')}
+              </Button>
+            </Group>
+          </Alert>
+        )}
         <form
           role="search"
           className={classes.filters}
@@ -258,7 +288,7 @@ const ChallengeCatalog: FC = () => {
           </VisuallyHidden>
         </form>
 
-        <div id="challenge-catalog-results" aria-busy={!catalog || isLoading ? true : undefined}>
+        <div id="challenge-catalog-results" aria-busy={!catalog || isLoading || isValidating ? true : undefined}>
           {!catalog ? (
             <SimpleGrid cols={{ base: 1, sm: 2, lg: 3, xl: 4 }} spacing="lg">
               {Array.from({ length: 8 }).map((_, index) => (

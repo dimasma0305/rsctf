@@ -56,3 +56,11 @@ pub struct TeamInfoModel {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<TeamUserInfoModel>>,
 }
+
+/// Compact team identity used by selectors that never need roster profiles.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamSelectorModel {
+    pub id: i32,
+    pub name: String,
+}

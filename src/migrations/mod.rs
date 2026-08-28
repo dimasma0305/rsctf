@@ -165,6 +165,8 @@ mod m0180_team_invite_rotation;
 mod m0181_flag_import_operations;
 mod m0183_exercise_api_bounds;
 mod m0184_canonical_flag_policy;
+mod m0205_account_activity_indexes;
+mod m0206_joined_challenge_catalog_indexes;
 
 #[cfg(test)]
 pub(crate) use m0103_recent_games_candidates::UP_SQL as RECENT_GAMES_INDEX_SQL;
@@ -344,6 +346,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0181_flag_import_operations::Migration),
             Box::new(m0183_exercise_api_bounds::Migration),
             Box::new(m0184_canonical_flag_policy::Migration),
+            Box::new(m0205_account_activity_indexes::Migration),
+            Box::new(m0206_joined_challenge_catalog_indexes::Migration),
         ]
     }
 }
@@ -489,7 +493,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 43..],
+            &names[names.len() - 45..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -534,6 +538,8 @@ mod tests {
                 "m0181_flag_import_operations",
                 "m0183_exercise_api_bounds",
                 "m0184_canonical_flag_policy",
+                "m0205_account_activity_indexes",
+                "m0206_joined_challenge_catalog_indexes",
             ]
         );
     }

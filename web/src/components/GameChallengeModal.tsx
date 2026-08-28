@@ -5,6 +5,7 @@ import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { FC, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useSWRConfig } from 'swr'
 import { ChallengeModal, SolverInfo } from '@Components/ChallengeModal'
 import { useFeatureGuide } from '@Components/guide/PlayerGuide'
 import { assertJsonResponse, NonJsonResponseError } from '@Utils/ChallengePolling'
@@ -56,6 +57,7 @@ interface PendingFlagVerdict extends FlagVerdictIdentity {
 }
 
 export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
+  const { mutate: mutateCachedRead } = useSWRConfig()
   const {
     gameId,
     gameTitle,
@@ -501,6 +503,13 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     dispatchFlagVerdict({ type: 'show', result: data, sequence: identity.submissionId })
 
     if (data === AnswerResult.Accepted) {
+      void mutateCachedRead(
+        (key) =>
+          key === '/api/account/stats' ||
+          (Array.isArray(key) && typeof key[0] === 'string' && key[0] === '/api/game/challenges'),
+        undefined,
+        { revalidate: true }
+      )
       setSolvedChallengeId(identity.challengeId)
       updateNotification({
         id: 'flag-submitted',
