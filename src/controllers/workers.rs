@@ -411,7 +411,7 @@ pub async fn enroll_worker(
                 .fail_enrollment(request.operation_id)
                 .await
                 .map_err(store_error)?;
-            return Ok(retry_response(AppError::TooManyRequests, 2));
+            return Ok(retry_response(AppError::too_many_requests(2), 2));
         }
     };
 

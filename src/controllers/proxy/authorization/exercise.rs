@@ -30,7 +30,7 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
        )
 )"#;
 
-pub(super) async fn exercise_lease_is_valid(
+pub(in crate::controllers::proxy) async fn exercise_lease_is_valid(
     pool: &sqlx::PgPool,
     user_id: Uuid,
     expected_security_stamp: &str,

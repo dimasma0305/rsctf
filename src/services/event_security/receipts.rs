@@ -153,7 +153,7 @@ pub async fn issue_solve_receipt(
     }
     let _permit = RECEIPT_ISSUANCE
         .try_acquire()
-        .map_err(|_| AppError::TooManyRequests)?;
+        .map_err(|_| AppError::too_many_requests(1))?;
     let issuer = request.issuer_identity.trim();
     if !(1..=128).contains(&issuer.len()) || request.answer.is_empty() || request.answer.len() > 127
     {
@@ -192,7 +192,7 @@ pub async fn issue_solve_receipt(
     }
     let _issuer_permit = RECEIPT_ISSUER_SHARDS[issuer_shard(issuer, request.participation_id)]
         .try_acquire()
-        .map_err(|_| AppError::TooManyRequests)?;
+        .map_err(|_| AppError::too_many_requests(1))?;
     let attempt_hash = verifier_attempt_hash(
         &st.config.event_vpn_credential_key,
         issuer,

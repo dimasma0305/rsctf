@@ -156,8 +156,7 @@ pub(super) async fn proxy_pump<S>(
                                 .is_some_and(|matcher| matcher.contains(&scan.flag, &buf[..n]));
                             if matched {
                                 egress_recorded = true;
-                                let scan = scan.clone();
-                                tokio::spawn(async move { record_flag_egress(&scan).await });
+                                record_flag_egress(scan);
                             }
                         }
                     }

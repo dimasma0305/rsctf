@@ -52,7 +52,7 @@ use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};
 use crate::models::data::{container, game_instance, participation, user_participation};
 use crate::services::live_roster::LiveParticipationIdentity;
 use crate::services::worker::WorkerHandle;
-use crate::utils::enums::ParticipationStatus;
+use crate::utils::enums::{ParticipationStatus, Role};
 use rsctf_worker_protocol::{
     DataStreamRequest, TcpProxyRequest, ValidatedWorkloadSpec, WorkloadFence,
 };
@@ -945,6 +945,7 @@ async fn preview_lease_is_valid(
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
     SELECT 1
       FROM "ExerciseInstances" instance
@@ -968,23 +969,3 @@ const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
            OR container.exercise_instance_id = instance.id
        )
 )"#;
-
-async fn exercise_lease_is_valid(
-    pool: &sqlx::PgPool,
-    user_id: Uuid,
-    expected_security_stamp: &str,
-    exercise_instance_id: i32,
-    exercise_id: i32,
-    container_id: Uuid,
-) -> bool {
-    sqlx::query_scalar::<_, bool>(EXERCISE_LEASE_SQL)
-        .bind(exercise_instance_id)
-        .bind(exercise_id)
-        .bind(user_id)
-        .bind(container_id)
-        .bind(expected_security_stamp)
-        .bind(Role::Banned as i16)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(false)
-}

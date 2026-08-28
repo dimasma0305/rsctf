@@ -14,7 +14,7 @@ use futures::{SinkExt, StreamExt};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{interval, Duration, Instant};
 
-use crate::app_state::{HubEvent, SharedState};
+use crate::app_state::SharedState;
 use crate::hubs::{admission, signalr};
 use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::services::event_bus::EventReceiver;
