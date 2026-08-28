@@ -2,7 +2,7 @@
 //!
 //! PostgreSQL is authoritative. A submission commits before publication, and
 //! reconnecting clients recover missed pushes through the commit-ordered cursor
-//! installed by `m0112_submission_feed_cursor`.
+//! installed by `m0114_submission_feed_cursor`.
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveEnum;

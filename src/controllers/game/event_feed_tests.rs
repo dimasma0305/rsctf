@@ -169,7 +169,7 @@ async fn monitor_backfills_enforce_role_game_start_scope_and_hard_page_bound() {
         .route("/api/game/{id}/events/backfill", get(event_backfill))
         .route(
             "/api/game/{id}/submissions/backfill",
-            get(submission_backfill),
+            get(super::super::submission_backfill),
         )
         .with_state(state);
 
