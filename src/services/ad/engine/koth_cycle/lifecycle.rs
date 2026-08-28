@@ -14,6 +14,7 @@ mod data;
 mod deadline;
 mod persistent;
 mod readiness;
+mod reporter;
 
 use super::state::CrownCyclePosition;
 use capability::mint_capabilities;
@@ -376,26 +377,7 @@ async fn create_replacement(st: &SharedState, cycle: &CycleRow) -> AppResult<()>
         st.config.runtime_role,
         crate::services::challenge_images::shared_docker_daemon_acknowledged(),
     )?;
-    let reporter_base_url = st.config.koth_reporter_base_url.as_deref();
-    let backend_route_identity = if reporter_base_url.is_some() {
-        st.containers.managed_callback_routing_identity()?
-    } else {
-        None
-    };
-    let reporter = crate::services::ad::koth_reporter::ensure_for_cycle(
-        st.pg(),
-        crate::services::ad::koth_reporter::TargetReporterRoute {
-            base_url: reporter_base_url,
-            bind_addr: &st.config.bind_addr,
-            backend_kind: st.containers.backend_kind(),
-            backend_identity: backend_route_identity.as_deref(),
-        },
-        cycle.id,
-        cycle.game_id,
-        cycle.challenge_id,
-        cycle.reset_attempt,
-    )
-    .await?;
+    let reporter = reporter::ensure(st, cycle).await?;
     let info = st
         .containers
         .create(replacement_container_spec(
