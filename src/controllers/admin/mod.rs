@@ -211,12 +211,16 @@ pub fn router() -> Router<SharedState> {
         .route("/api/admin/builds/inprogress", get(builds_in_progress))
         .route(
             "/api/admin/builds/images",
-            get(build_images).delete(delete_build_image),
+            limited(Policy::Query, get(build_images)),
         )
+        .route("/api/admin/builds/images", delete(delete_build_image))
         .route("/api/admin/builds/bulkdelete", post(bulk_delete_builds))
         .route("/api/admin/builds/prunefailed", post(prune_failed_builds))
         .route("/api/admin/builds/pruneimages", post(prune_images))
-        .route("/api/admin/builds/storage", get(build_storage_status))
+        .route(
+            "/api/admin/builds/storage",
+            limited(Policy::Query, get(build_storage_status)),
+        )
         .route(
             "/api/admin/builds/prunestorage",
             post(cleanup_build_storage),

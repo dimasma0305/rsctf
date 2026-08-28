@@ -22,7 +22,9 @@ SELECT id AS audit_id,
  WHERE status IN (3, 5)
    AND finished_at_utc IS NULL
  ORDER BY enqueued_at_utc DESC, id DESC
+ LIMIT $1
 "#;
+const MAX_IN_PROGRESS_BUILDS: i64 = 200;
 
 /// RSCTF `PruneResultModel`.
 #[derive(Debug, Serialize)]
@@ -125,7 +127,7 @@ pub struct ChallengeBuildInProgressModel {
 }
 
 /// RSCTF `BuildImageModel` — one `rsctf/*` image on the local docker daemon.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildImageModel {
     pub id: String,
@@ -395,6 +397,7 @@ async fn load_builds_in_progress(
     pool: &sqlx::PgPool,
 ) -> AppResult<Vec<ChallengeBuildInProgressModel>> {
     sqlx::query_as::<_, ChallengeBuildInProgressModel>(BUILDS_IN_PROGRESS_SQL)
+        .bind(MAX_IN_PROGRESS_BUILDS)
         .fetch_all(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))
