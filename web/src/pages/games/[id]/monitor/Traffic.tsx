@@ -18,7 +18,7 @@ import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose, mdiDeleteForeverOutline, mdiDownloadMultiple } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { CSSProperties, FC, useEffect, useRef, useState } from 'react'
+import { CSSProperties, FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useParams, useSearchParams } from 'react-router'
 import { ScrollSelect } from '@Components/ScrollSelect'
@@ -26,15 +26,54 @@ import { ChallengeItem, FileItem, TeamItem } from '@Components/TrafficItems'
 import { WithGameMonitor } from '@Components/WithGameMonitor'
 import { FlowInspector } from '@Components/traffic/FlowInspector'
 import { useLanguage } from '@Utils/I18n'
+import { currentListSnapshotRows, LatestListRequest, type ListSnapshot } from '@Utils/LatestRequest'
 import { showErrorMsg } from '@Utils/Shared'
 import { HunamizeSize } from '@Utils/Shared'
 import { useIsMobile } from '@Utils/ThemeOverride'
 import api, { FileRecord } from '@Api'
+import type { ChallengeTrafficModel, TeamTrafficModel } from '@Api'
 
-const SWROptions = {
-  refreshInterval: 0,
-  shouldRetryOnError: false,
-  revalidateOnFocus: false,
+const useLatestTrafficList = <T,>(
+  scope: string,
+  enabled: boolean,
+  request: (signal: AbortSignal) => Promise<readonly T[]>
+) => {
+  const owner = useRef(new LatestListRequest<T>())
+  const generation = useRef(0)
+  const [snapshot, setSnapshot] = useState<ListSnapshot<T>>()
+  const [loading, setLoading] = useState(enabled)
+
+  const refresh = useCallback(async () => {
+    const current = ++generation.current
+    if (!enabled) {
+      owner.current.cancel()
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    try {
+      const result = await owner.current.run(scope, request)
+      if (result) setSnapshot(result)
+    } catch {
+      // The page retains the last good snapshot; a manual refresh retries.
+    } finally {
+      if (generation.current === current) setLoading(false)
+    }
+  }, [enabled, request, scope])
+
+  useEffect(() => {
+    void refresh()
+    return () => {
+      generation.current += 1
+      owner.current.cancel()
+    }
+  }, [refresh])
+
+  return {
+    data: currentListSnapshotRows(scope, snapshot),
+    loading,
+    mutate: refresh,
+  }
 }
 
 const Traffic: FC = () => {
@@ -101,21 +140,47 @@ const Traffic: FC = () => {
   const modals = useModals()
   const isCompact = useIsMobile(1200)
 
-  const { data: challengeTraffic, mutate: mutateChallenges } = api.game.useGameGetChallengesWithTrafficCapturing(
-    gameId,
-    SWROptions
+  const loadChallenges = useCallback(
+    (signal: AbortSignal) =>
+      api.game.gameGetChallengesWithTrafficCapturing(gameId, { signal }).then((response) => response.data),
+    [gameId]
   )
-  const { data: teamTraffic, mutate: mutateTeams } = api.game.useGameGetChallengeTraffic(
-    challengeId ?? 0,
-    SWROptions,
-    !!challengeId
+  const loadTeams = useCallback(
+    (signal: AbortSignal) =>
+      api.game.gameGetChallengeTraffic(challengeId ?? 0, { signal }).then((response) => response.data),
+    [challengeId]
   )
-  const { data: fileRecords, mutate: mutateTraffic } = api.game.useGameGetTeamTrafficAll(
-    challengeId ?? 0,
-    participationId ?? 0,
-    SWROptions,
-    !!challengeId && !!participationId
+  const loadFiles = useCallback(
+    (signal: AbortSignal) =>
+      api.game
+        .gameGetTeamTrafficAll(challengeId ?? 0, participationId ?? 0, { signal })
+        .then((response) => response.data),
+    [challengeId, participationId]
   )
+  const challengeQuery = useLatestTrafficList<ChallengeTrafficModel>(`game:${gameId}`, gameId > 0, loadChallenges)
+  const teamQuery = useLatestTrafficList<TeamTrafficModel>(
+    `challenge:${challengeId ?? 0}`,
+    challengeId != null,
+    loadTeams
+  )
+  const fileQuery = useLatestTrafficList<FileRecord>(
+    `files:${challengeId ?? 0}:${participationId ?? 0}`,
+    challengeId != null && participationId != null,
+    loadFiles
+  )
+  const challengeTraffic = useMemo(
+    () =>
+      challengeQuery.data && [...challengeQuery.data].sort((a, b) => a.category?.localeCompare(b.category ?? '') ?? 0),
+    [challengeQuery.data]
+  )
+  const teamTraffic = useMemo(
+    () => teamQuery.data && [...teamQuery.data].sort((a, b) => (a.teamId ?? 0) - (b.teamId ?? 0)),
+    [teamQuery.data]
+  )
+  const fileRecords = fileQuery.data
+  const mutateChallenges = challengeQuery.mutate
+  const mutateTeams = teamQuery.mutate
+  const mutateTraffic = fileQuery.mutate
 
   const onDownload = (item: FileRecord) => {
     if (!challengeId || !participationId || !item.fileName) return
@@ -211,7 +276,10 @@ const Traffic: FC = () => {
 
   const totalFileSize = fileRecords?.reduce((acc, cur) => acc + (cur?.size ?? 0), 0) ?? 0
 
-  const orderedFileRecords = fileRecords?.sort((a, b) => dayjs(b.updateTime).diff(dayjs(a.updateTime))) ?? []
+  const orderedFileRecords = useMemo(
+    () => [...(fileRecords ?? [])].sort((a, b) => dayjs(b.updateTime).diff(dayjs(a.updateTime))),
+    [fileRecords]
+  )
 
   const dividerColor = colorScheme === 'dark' ? theme.colors.dark[4] : theme.colors.gray[4]
   const innerStyle: CSSProperties = isCompact
@@ -222,11 +290,8 @@ const Traffic: FC = () => {
   const fileScrollHeight = isCompact ? 'clamp(14rem, 36vh, 21rem)' : scrollHeight
   const headerHeight = rem(32)
 
-  challengeTraffic?.sort((a, b) => a.category?.localeCompare(b.category ?? '') ?? 0)
-  teamTraffic?.sort((a, b) => (a.teamId ?? 0) - (b.teamId ?? 0))
-
   return (
-    <WithGameMonitor isLoading={!challengeTraffic}>
+    <WithGameMonitor isLoading={challengeQuery.loading && !challengeTraffic}>
       {!challengeTraffic || challengeTraffic?.length === 0 ? (
         <Center mih={isCompact ? rem(240) : 'calc(100vh - 140px)'}>
           <Stack gap={0}>

@@ -2,7 +2,7 @@ use bollard::container::{
     DownloadFromContainerOptions, RemoveContainerOptions, StartContainerOptions, StatsOptions,
 };
 use bollard::models::{
-    ContainerInspectResponse, ContainerStateStatusEnum, ImageInspect, SystemInfo,
+    ContainerInspectResponse, ContainerStateStatusEnum, FilesystemChange, ImageInspect, SystemInfo,
 };
 use bollard::Docker;
 use futures::StreamExt;
@@ -39,6 +39,33 @@ pub(super) const SNAPSHOT_EXPORT_ADMISSION_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(5);
 pub(super) const MAX_FILE_ARCHIVE_METADATA_BYTES: usize = 512 * 1024;
 const ABSOLUTE_MAX_FILE_PREVIEW_BYTES: usize = 256 * 1024;
+// Bollard currently materializes the daemon's JSON changes response before it
+// returns. Keep the second, rsctf-owned representation bounded so a hostile
+// writable layer cannot cause another unbounded allocation while the response
+// is validated by the forensics layer.
+pub(super) const MAX_SNAPSHOT_CHANGE_ENTRIES: usize = 4_096;
+
+pub(super) fn map_docker_changes_bounded(
+    changes: impl IntoIterator<Item = FilesystemChange>,
+) -> Vec<super::FileChange> {
+    changes
+        .into_iter()
+        // Retain one sentinel entry so `forensics::bound_changes` reports
+        // truncation instead of presenting the bounded prefix as complete.
+        .take(MAX_SNAPSHOT_CHANGE_ENTRIES.saturating_add(1))
+        .map(|change| super::FileChange {
+            path: change.path,
+            // Docker Kind: 0 = Modified, 1 = Added, 2 = Deleted.
+            kind: match change.kind as i64 {
+                0 => "Modified",
+                1 => "Added",
+                2 => "Deleted",
+                _ => "Unknown",
+            }
+            .to_string(),
+        })
+        .collect()
+}
 
 /// Retain a deterministic prefix of Docker's TAR stream. Returning true asks
 /// the caller to drop the stream immediately, which cancels the daemon body

@@ -64,13 +64,13 @@ const MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS: i64 = 2;
 const CAPTURE_ARCHIVE_CHUNK_BYTES: usize = 64 * 1024;
 const CAPTURE_ARCHIVE_LEASE_SECONDS: i64 = 30;
 const CAPTURE_ARCHIVE_STREAM_SECONDS: u64 = 300;
+const CAPTURE_ARCHIVE_RETRY_SECONDS: u64 = 2;
 const CAPTURE_ARCHIVE_ADVISORY_KEY: i64 = 1_195_722_091;
 const MAX_INSPECT_CAPTURE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CAPTURE_FLOWS: usize = 20_000;
 const MAX_CAPTURE_CHALLENGES: u64 = 500;
 const MAX_CAPTURE_PAGE: usize = 100;
 const MAX_CAPTURE_SCAN_ENTRIES: usize = 4_096;
-static CAPTURE_LISTING_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -272,8 +272,9 @@ async fn acquire_archive_lease(
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     if !locked {
-        return Err(AppError::unavailable(
+        return Err(AppError::retryable_unavailable(
             "Capture archive admission is busy; retry shortly",
+            CAPTURE_ARCHIVE_RETRY_SECONDS,
         ));
     }
     sqlx::query(r#"DELETE FROM "TrafficArchiveLeases" WHERE expires_at_utc <= CURRENT_TIMESTAMP"#)
@@ -305,8 +306,9 @@ async fn acquire_archive_lease(
         || reserved.saturating_add(MAX_CAPTURE_ARCHIVE_BYTES as i64)
             > MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES
     {
-        return Err(AppError::unavailable(
+        return Err(AppError::retryable_unavailable(
             "Capture archive capacity is busy; retry shortly",
+            CAPTURE_ARCHIVE_RETRY_SECONDS,
         ));
     }
 
@@ -438,62 +440,35 @@ fn list_pcaps(dir: &std::path::Path) -> AppResult<Vec<std::fs::DirEntry>> {
     Ok(v)
 }
 
-/// Count without materializing metadata or sorting the directory. The shared
-/// budget fences nested challenge/participation scans to a fixed amount of I/O.
-fn count_pcaps(dir: &std::path::Path, budget: &mut usize) -> AppResult<usize> {
-    let mut count = 0usize;
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        *budget = budget.checked_sub(1).ok_or_else(|| {
-            AppError::unavailable("Capture inventory is too large; retry after retention cleanup")
-        })?;
-        if is_regular_pcap(&entry) {
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
 /// `GET /api/game/games/{id}/captures` — each challenge + its total pcap count.
 pub async fn game_captures(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<Vec<Json>>> {
-    let _permit = CAPTURE_LISTING_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Capture listing capacity is busy; retry shortly"))?;
+    let inventory = crate::services::traffic::inventory::load(capture_root(&st)).await?;
     let challenges = game_challenge::Entity::find()
         .filter(game_challenge::Column::GameId.eq(id))
         .limit(MAX_CAPTURE_CHALLENGES)
         .all(&st.db)
         .await?;
-    let root = capture_root(&st);
-    let out = tokio::task::spawn_blocking(move || -> AppResult<Vec<Json>> {
-        let mut budget = MAX_CAPTURE_SCAN_ENTRIES;
-        challenges
-            .into_iter()
-            .map(|c| {
-                let cdir = root.join(c.id.to_string());
-                let mut count = 0usize;
-                for entry in std::fs::read_dir(&cdir).into_iter().flatten().flatten() {
-                    budget = budget.checked_sub(1).ok_or_else(|| {
-                        AppError::unavailable(
-                            "Capture inventory is too large; retry after retention cleanup",
-                        )
-                    })?;
-                    if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                        count = count.saturating_add(count_pcaps(&entry.path(), &mut budget)?);
-                    }
-                }
-                Ok(serde_json::json!({
-                    "id": c.id, "title": c.title, "category": c.category,
-                    "type": c.challenge_type, "isEnabled": c.is_enabled, "count": count,
-                }))
+    let counts = inventory.directories.iter().fold(
+        std::collections::HashMap::<i32, usize>::new(),
+        |mut counts, directory| {
+            *counts.entry(directory.challenge_id).or_default() += directory.files.len();
+            counts
+        },
+    );
+    let out = challenges
+        .into_iter()
+        .map(|challenge| {
+            serde_json::json!({
+                "id": challenge.id, "title": challenge.title, "category": challenge.category,
+                "type": challenge.challenge_type, "isEnabled": challenge.is_enabled,
+                "count": counts.get(&challenge.id).copied().unwrap_or(0),
             })
-            .collect()
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))??;
+        })
+        .collect();
     Ok(RequestResponse::ok(out))
 }
 
@@ -505,39 +480,18 @@ pub async fn team_traffic(
     Query(page): Query<CapturePageQuery>,
 ) -> AppResult<RequestResponse<Vec<Json>>> {
     let (skip, count) = page.normalized()?;
-    let _permit = CAPTURE_LISTING_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Capture listing capacity is busy; retry shortly"))?;
-    let cdir = capture_root(&st).join(cid.to_string());
-    let captures = tokio::task::spawn_blocking(move || -> AppResult<Vec<(i32, usize)>> {
-        let mut budget = MAX_CAPTURE_SCAN_ENTRIES;
-        let mut captures = Vec::new();
-        for entry in std::fs::read_dir(&cdir).into_iter().flatten().flatten() {
-            budget = budget.checked_sub(1).ok_or_else(|| {
-                AppError::unavailable(
-                    "Capture inventory is too large; retry after retention cleanup",
-                )
-            })?;
-            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                continue;
-            }
-            let Some(pid) = entry
-                .file_name()
-                .to_str()
-                .and_then(|value| value.parse::<i32>().ok())
-            else {
-                continue;
-            };
-            let file_count = count_pcaps(&entry.path(), &mut budget)?;
-            if file_count > 0 {
-                captures.push((pid, file_count));
-            }
-        }
-        captures.sort_unstable_by_key(|(pid, _)| *pid);
-        Ok(captures.into_iter().skip(skip).take(count).collect())
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))??;
+    let inventory = crate::services::traffic::inventory::load(capture_root(&st)).await?;
+    let captures = inventory
+        .directories
+        .iter()
+        .filter(|directory| directory.challenge_id == cid && !directory.files.is_empty())
+        .skip(skip)
+        .take(count)
+        .map(|directory| (directory.participation_id, directory.files.len()))
+        .collect::<Vec<_>>();
+    if captures.is_empty() {
+        return Ok(RequestResponse::ok(Vec::new()));
+    }
     let participation_ids: Vec<i32> = captures.iter().map(|(pid, _)| *pid).collect();
     let teams = sqlx::query_as::<_, CaptureTeamRow>(
         r#"SELECT p.id AS participation_id,
@@ -546,9 +500,12 @@ pub async fn team_traffic(
                   t.avatar_hash
              FROM "Participations" p
              JOIN "Teams" t ON t.id = p.team_id
+             JOIN "GameChallenges" challenge
+               ON challenge.id = $2 AND challenge.game_id = p.game_id
             WHERE p.id = ANY($1)"#,
     )
     .bind(&participation_ids)
+    .bind(cid)
     .fetch_all(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -581,30 +538,41 @@ pub async fn traffic_files(
     Query(page): Query<CapturePageQuery>,
 ) -> AppResult<RequestResponse<Vec<Json>>> {
     let (skip, count) = page.normalized()?;
-    let _permit = CAPTURE_LISTING_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Capture listing capacity is busy; retry shortly"))?;
-    let dir = capture_root(&st)
-        .join(cid.to_string())
-        .join(pid.to_string());
+    let root = capture_root(&st);
+    let inventory =
+        crate::services::traffic::inventory::load_directory(root.clone(), cid, pid).await?;
+    let names = inventory
+        .map(|inventory| {
+            inventory
+                .files
+                .into_iter()
+                .skip(skip)
+                .take(count)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let dir = root.join(cid.to_string()).join(pid.to_string());
     let out = tokio::task::spawn_blocking(move || -> AppResult<Vec<Json>> {
-        let rows = list_pcaps(&dir)?
+        let rows = names
             .into_iter()
-            .skip(skip)
-            .take(count)
-            .map(|e| {
-                let meta = e.metadata().ok();
-                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            .filter_map(|name| {
+                let path = dir.join(&name);
+                let meta = std::fs::symlink_metadata(path).ok()?;
+                if meta.file_type().is_symlink() || !meta.is_file() {
+                    return None;
+                }
+                let size = meta.len();
                 let update = meta
-                    .and_then(|m| m.modified().ok())
+                    .modified()
+                    .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
-                serde_json::json!({
-                    "fileName": e.file_name().to_string_lossy(),
+                Some(serde_json::json!({
+                    "fileName": name,
                     "size": size,
                     "updateTime": update,
-                })
+                }))
             })
             .collect::<Vec<_>>();
         Ok(rows)
@@ -626,7 +594,12 @@ pub async fn get_all_traffic(
     let permit = CAPTURE_ARCHIVE_SLOTS
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AppError::unavailable("Capture archive capacity is busy; retry shortly"))?;
+        .map_err(|_| {
+            AppError::retryable_unavailable(
+                "Capture archive capacity is busy; retry shortly",
+                CAPTURE_ARCHIVE_RETRY_SECONDS,
+            )
+        })?;
     let operation_id = acquire_archive_lease(st.pg(), cid, pid).await?;
     let sources = match tokio::task::spawn_blocking(move || scan_capture_archive(&dir)).await {
         Ok(Ok(sources)) => sources,
@@ -732,6 +705,12 @@ pub async fn delete_all_traffic(
             )));
         }
     }
+    let refresh_dir = dir.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::services::traffic::inventory::refresh_directory_sync(&refresh_dir)
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("capture inventory task failed: {error}")))??;
     Ok(StatusCode::OK)
 }
 
@@ -796,6 +775,15 @@ pub async fn delete_traffic_file(
             )));
         }
     }
+    let refresh_dir = path
+        .parent()
+        .expect("capture file path has a parent")
+        .to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::services::traffic::inventory::refresh_directory_sync(&refresh_dir)
+    })
+    .await
+    .map_err(|error| AppError::internal(format!("capture inventory task failed: {error}")))??;
     Ok(StatusCode::OK)
 }
 
@@ -953,110 +941,5 @@ pub async fn traffic_flow_detail(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Cursor;
-
-    #[test]
-    fn capture_pages_reject_unbounded_windows() {
-        assert_eq!(
-            CapturePageQuery {
-                skip: 4_096,
-                count: 100,
-            }
-            .normalized()
-            .unwrap(),
-            (4_096, 100)
-        );
-        assert!(CapturePageQuery { skip: 0, count: 0 }.normalized().is_err());
-        assert!(CapturePageQuery {
-            skip: 0,
-            count: 101
-        }
-        .normalized()
-        .is_err());
-        assert!(CapturePageQuery {
-            skip: 4_097,
-            count: 1
-        }
-        .normalized()
-        .is_err());
-    }
-
-    #[test]
-    fn filesystem_inventory_uses_one_shared_strict_scan_budget() {
-        let dir = std::env::temp_dir().join(format!("rsctf-capture-list-{}", Uuid::new_v4()));
-        std::fs::create_dir(&dir).unwrap();
-        for name in ["one.pcap", "two.PCAP", "three.pcap"] {
-            std::fs::File::create(dir.join(name)).unwrap();
-        }
-        std::fs::File::create(dir.join("ignore.txt")).unwrap();
-
-        let mut enough = 4;
-        assert_eq!(count_pcaps(&dir, &mut enough).unwrap(), 3);
-        assert_eq!(list_pcaps(&dir).unwrap().len(), 3);
-        let mut exhausted = 2;
-        assert!(count_pcaps(&dir, &mut exhausted).is_err());
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn traffic_zip_writer_streams_a_valid_archive() {
-        let (sender, mut receiver) = tokio::sync::mpsc::channel::<CaptureZipChunk>(1);
-        let worker = std::thread::spawn(move || {
-            let writer = CaptureZipStreamWriter::new(sender);
-            let mut zip = zip::ZipWriter::new_stream(writer);
-            zip.start_file("capture.pcap", zip::write::SimpleFileOptions::default())
-                .unwrap();
-            zip.write_all(b"pcap-data").unwrap();
-            zip.finish().unwrap().into_inner().finish().unwrap();
-        });
-
-        let mut bytes = Vec::new();
-        while let Some(chunk) = receiver.blocking_recv() {
-            bytes.extend_from_slice(&chunk.unwrap());
-        }
-        worker.join().unwrap();
-
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-        let mut contents = Vec::new();
-        archive
-            .by_name("capture.pcap")
-            .unwrap()
-            .read_to_end(&mut contents)
-            .unwrap();
-        assert_eq!(contents, b"pcap-data");
-    }
-
-    #[test]
-    fn deployment_budget_reserves_the_full_per_export_ceiling() {
-        assert_eq!(
-            MAX_CAPTURE_ARCHIVE_DEPLOYMENT_BYTES,
-            MAX_CAPTURE_ARCHIVE_DEPLOYMENT_JOBS * MAX_CAPTURE_ARCHIVE_BYTES as i64
-        );
-        assert!(CAPTURE_ARCHIVE_LEASE_SECONDS > 2 * 10);
-    }
-
-    #[tokio::test]
-    async fn response_stream_retains_admission_until_disconnect() {
-        let admission = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
-        let permit = admission.clone().try_acquire_owned().unwrap();
-        let (_sender, receiver) = tokio::sync::mpsc::channel(1);
-        let (completed, released) = tokio::sync::oneshot::channel();
-        let (_lease_failed, lease_failure) = tokio::sync::oneshot::channel();
-        let stream = CaptureArchiveStream {
-            inner: tokio_stream::wrappers::ReceiverStream::new(receiver),
-            _permit: permit,
-            completed: Some(completed),
-            lease_failed: Box::pin(lease_failure),
-            deadline: Box::pin(tokio::time::sleep(std::time::Duration::from_secs(30))),
-            terminal: false,
-        };
-
-        assert!(admission.clone().try_acquire_owned().is_err());
-        drop(stream);
-        released.await.unwrap();
-        assert!(admission.try_acquire_owned().is_ok());
-    }
-}
+#[path = "traffic_tests.rs"]
+mod tests;

@@ -61,11 +61,12 @@ mod spec;
 mod tests;
 use self::docker::{
     append_snapshot_chunk, docker_network_mode, image_requests_restricted_profile, is_conflict,
-    is_not_found, launch_spec_fingerprint, launch_spec_matches, restricted_profile_matches,
-    restricted_tmpfs_mounts, snapshot_export_slots, stamp_restricted_profile,
-    stamp_storage_quota_policy, storage_quota_policy_matches, validate_docker_container_spec,
-    writable_layer_quota_supported, writable_layer_storage_option, LAUNCH_SPEC_LABEL,
-    MAX_SNAPSHOT_EXPORT_BYTES, SNAPSHOT_EXPORT_ADMISSION_TIMEOUT, SNAPSHOT_EXPORT_MAX_DURATION,
+    is_not_found, launch_spec_fingerprint, launch_spec_matches, map_docker_changes_bounded,
+    restricted_profile_matches, restricted_tmpfs_mounts, snapshot_export_slots,
+    stamp_restricted_profile, stamp_storage_quota_policy, storage_quota_policy_matches,
+    validate_docker_container_spec, writable_layer_quota_supported, writable_layer_storage_option,
+    LAUNCH_SPEC_LABEL, MAX_SNAPSHOT_EXPORT_BYTES, SNAPSHOT_EXPORT_ADMISSION_TIMEOUT,
+    SNAPSHOT_EXPORT_MAX_DURATION,
 };
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
@@ -827,21 +828,7 @@ impl ContainerManager for DockerContainerManager {
                 AppError::internal(format!("failed to read container changes: {e}"))
             }
         })?;
-        Ok(changes
-            .unwrap_or_default()
-            .into_iter()
-            .map(|c| FileChange {
-                path: c.path,
-                // Docker Kind: 0 = Modified, 1 = Added, 2 = Deleted.
-                kind: match c.kind as i64 {
-                    0 => "Modified",
-                    1 => "Added",
-                    2 => "Deleted",
-                    _ => "Unknown",
-                }
-                .to_string(),
-            })
-            .collect())
+        Ok(map_docker_changes_bounded(changes.unwrap_or_default()))
     }
 
     async fn read_file(&self, id: &str, path: &str, limit: usize) -> AppResult<ContainerFile> {

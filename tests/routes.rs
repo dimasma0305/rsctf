@@ -36,6 +36,24 @@ fn each_controller_router_builds() {
     let _ = rsctf::hubs::admin::router();
 }
 
+#[test]
+fn challenge_build_status_route_has_one_owner() {
+    let source = include_str!("../src/controllers/edit/mod.rs");
+    assert_eq!(
+        source
+            .matches("/api/edit/games/{id}/challenges/{cId}/buildstatus")
+            .count(),
+        1,
+        "duplicate registrations hide route ownership and may panic after middleware changes"
+    );
+    let client = include_str!("../web/src/Api.ts");
+    assert_eq!(
+        client.matches("editGetChallengeBuildStatus: (").count(),
+        1,
+        "the generated client must expose one canonical method per route"
+    );
+}
+
 #[cfg(test)]
 mod challenge_audit_archive_route {
     use std::sync::Arc;

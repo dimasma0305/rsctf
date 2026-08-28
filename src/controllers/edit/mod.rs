@@ -799,10 +799,6 @@ pub fn router() -> Router<SharedState> {
             get(get_challenge_build_status),
         )
         .route(
-            "/api/edit/games/{id}/challenges/{cId}/buildstatus",
-            get(get_challenge_build_status),
-        )
-        .route(
             "/api/edit/games/{id}/challenges/{cId}/rebuild",
             post(rebuild_challenge),
         )

@@ -3596,6 +3596,17 @@ export interface CheatInfoModel {
   submission: Submission & { answer: string; status: AnswerResult; time: number };
 }
 
+export type CheatIncidentFeedItem = CheatInfoModel & {
+  /** Stable immutable incident identity used as the reconnect cursor. */
+  cursor: number;
+};
+
+export interface CheatIncidentPageModel {
+  incidents: CheatIncidentFeedItem[];
+  nextCursor: number;
+  hasMore: boolean;
+}
+
 /** Team participation information */
 export interface ParticipationModel {
   /**
@@ -8392,18 +8403,6 @@ export class Api<
         ...params,
       }),
 
-    editGetChallengeBuildStatus: (
-      id: number,
-      cId: number,
-      params: RequestParams = {},
-    ) =>
-      this.request<ChallengeBuildStatusModel, RequestResponse>({
-        path: `/api/edit/games/${id}/challenges/${cId}/buildstatus`,
-        method: "GET",
-        format: "json",
-        ...params,
-      }),
-
     /**
      * @description Compact build status for one challenge. Does not load or parse the retained source archive.
      * @tags Edit
@@ -8618,6 +8617,31 @@ export class Api<
     ) =>
       useSWR<CheatInfoModel[], RequestResponse>(
         doFetch ? `/api/game/${id}/cheatinfo` : null,
+        options,
+      ),
+
+    /** Bounded latest incident page or ascending delta after a stable cursor. */
+    gameCheatInfoPage: (
+      id: number,
+      query?: { after?: number; count?: number },
+      params: RequestParams = {},
+    ) =>
+      this.request<CheatIncidentPageModel, RequestResponse>({
+        path: `/api/game/${id}/cheatinfo/page`,
+        method: "GET",
+        query,
+        format: "json",
+        ...params,
+      }),
+
+    useGameCheatInfoPage: (
+      id: number,
+      query?: { after?: number; count?: number },
+      options?: SWRConfiguration,
+      doFetch: boolean = true,
+    ) =>
+      useSWR<CheatIncidentPageModel, RequestResponse>(
+        doFetch ? [`/api/game/${id}/cheatinfo/page`, query ?? {}] : null,
         options,
       ),
 

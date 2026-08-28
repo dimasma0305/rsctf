@@ -102,12 +102,17 @@ pub async fn cheat_reports(
     Query(q): Query<ListQuery>,
 ) -> AppResult<RequestResponse<Vec<CheatInfoModel>>> {
     let (count, skip) = bounded_page(q.count, q.skip);
-    let data =
-        crate::controllers::game::cheat::load_cheat_incident_rows(st.pg(), None, Some(count), skip)
-            .await?
-            .into_iter()
-            .map(cheat_info_model)
-            .collect::<AppResult<Vec<_>>>()?;
+    let data = crate::controllers::game::cheat::load_cheat_incident_rows(
+        st.pg(),
+        None,
+        Some(count),
+        skip,
+        None,
+    )
+    .await?
+    .into_iter()
+    .map(cheat_info_model)
+    .collect::<AppResult<Vec<_>>>()?;
     Ok(RequestResponse::ok(data))
 }
 

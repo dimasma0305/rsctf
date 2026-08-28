@@ -10,6 +10,7 @@ pub mod ad;
 mod cheat_capabilities;
 mod cheat_identity;
 mod cheat_report_cache;
+mod cheat_report_http;
 mod credential_operations;
 pub mod koth;
 mod monitor_history;
@@ -500,6 +501,24 @@ pub struct CheatInfoModel {
     pub submission: SubmissionModel,
 }
 
+/// One stable incident row in the bounded monitor feed.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheatIncidentFeedItem {
+    pub cursor: i32,
+    #[serde(flatten)]
+    pub incident: CheatInfoModel,
+}
+
+/// Latest-page or reconnect delta for immutable flag-sharing incidents.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheatIncidentPageModel {
+    pub incidents: Vec<CheatIncidentFeedItem>,
+    pub next_cursor: i32,
+    pub has_more: bool,
+}
+
 /// RSCTF `GameJoinModel`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -944,6 +963,7 @@ pub(crate) use access_policy::{can_view_engine_standings, require_live_event_win
 pub use catalog::*;
 pub use cheat::*;
 pub use cheat_evidence::*;
+pub use cheat_report_http::cheat_report;
 pub use combined_scoreboard::*;
 pub use containers::*;
 pub(crate) use containers::{

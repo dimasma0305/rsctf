@@ -24,18 +24,25 @@ import { showNotification } from '@mantine/notifications'
 import { mdiAlertCircle, mdiCheck, mdiKeyAlert, mdiRefresh, mdiTarget } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useMemo, useState } from 'react'
+import { FC, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ScrollingText } from '@Components/ScrollingText'
 import { RequireRole } from '@Components/WithRole'
 import { ParticipationStatusControl } from '@Components/admin/ParticipationStatusControl'
 import { SwitchLabel } from '@Components/admin/SwitchLabel'
 import { useLanguage } from '@Utils/I18n'
+import { LatestRequest } from '@Utils/LatestRequest'
 import { showErrorMsg, tryGetErrorMsg } from '@Utils/Shared'
 import { useParticipationStatusMap } from '@Utils/Shared'
 import { useDisplayInputStyles } from '@Utils/ThemeOverride'
 import { useUserRole } from '@Hooks/useUser'
-import api, { CheatInfoModel, ParticipationEditModel, ParticipationStatus, Role } from '@Api'
+import api, {
+  type CheatIncidentFeedItem,
+  CheatInfoModel,
+  ParticipationEditModel,
+  ParticipationStatus,
+  Role,
+} from '@Api'
 import classes from '@Styles/Accordion.module.css'
 import misc from '@Styles/Misc.module.css'
 
@@ -495,20 +502,30 @@ interface CheatSubmissionLogProps {
 
 export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
   const {
-    data: cheatInfo,
+    data: feed,
     error,
     isLoading,
     isValidating,
     mutate,
-  } = api.game.useGameCheatInfo(gameId, {
-    refreshInterval: 0,
-    revalidateOnFocus: false,
-    revalidateOnReconnect: false,
-    refreshWhenHidden: false,
-    refreshWhenOffline: false,
-    shouldRetryOnError: false,
-    keepPreviousData: false,
-  })
+  } = api.game.useGameCheatInfoPage(
+    gameId,
+    { count: 100 },
+    {
+      refreshInterval: 0,
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false,
+      refreshWhenHidden: false,
+      refreshWhenOffline: false,
+      shouldRetryOnError: false,
+      keepPreviousData: false,
+    }
+  )
+  const refreshOwner = useRef(new LatestRequest())
+  useEffect(() => () => refreshOwner.current.cancel(), [gameId])
+  const cheatInfo = useMemo(
+    () => feed?.incidents.map(({ cursor: _cursor, ...incident }) => incident),
+    [feed?.incidents]
+  )
 
   const [disabled, setDisabled] = useState(false)
   const [teamView, setTeamView] = useLocalStorage({
@@ -522,9 +539,29 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
 
   const refresh = async () => {
     try {
-      await mutate()
-    } catch {
-      // SWR exposes the request error on the next render.
+      if (!feed) {
+        await mutate()
+        return
+      }
+      let after = feed.nextCursor
+      let hasMore = true
+      const incidents = new Map(feed.incidents.map((incident) => [incident.cursor, incident]))
+      // A bounded reconnect loop absorbs ordinary gaps without letting one
+      // monitor action rebuild an unbounded event history.
+      for (let pageIndex = 0; pageIndex < 10 && hasMore; pageIndex += 1) {
+        const page = await refreshOwner.current.run((signal) =>
+          api.game.gameCheatInfoPage(gameId, { after, count: 100 }, { signal }).then((response) => response.data)
+        )
+        if (!page) return
+        for (const incident of page.incidents) incidents.set(incident.cursor, incident)
+        if (page.nextCursor < after || (page.nextCursor === after && page.hasMore)) return
+        after = page.nextCursor
+        hasMore = page.hasMore
+      }
+      const latest = [...incidents.values()].sort((left, right) => right.cursor - left.cursor).slice(0, 100)
+      await mutate({ incidents: latest, nextCursor: after, hasMore }, { revalidate: false })
+    } catch (err) {
+      showErrorMsg(err, t)
     }
   }
 
@@ -534,17 +571,20 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
       await api.admin.adminParticipation(id, model)
       await mutate(
         (current) =>
-          (current ?? []).map((info) => ({
-            ...info,
-            ownedTeam:
-              info.ownedTeam?.id === id
-                ? { ...info.ownedTeam, status: model.status ?? info.ownedTeam.status }
-                : info.ownedTeam,
-            submitTeam:
-              info.submitTeam?.id === id
-                ? { ...info.submitTeam, status: model.status ?? info.submitTeam.status }
-                : info.submitTeam,
-          })),
+          current && {
+            ...current,
+            incidents: current.incidents.map((info): CheatIncidentFeedItem => ({
+              ...info,
+              ownedTeam:
+                info.ownedTeam?.id === id
+                  ? { ...info.ownedTeam, status: model.status ?? info.ownedTeam.status }
+                  : info.ownedTeam,
+              submitTeam:
+                info.submitTeam?.id === id
+                  ? { ...info.submitTeam, status: model.status ?? info.submitTeam.status }
+                  : info.submitTeam,
+            })),
+          },
         { revalidate: false }
       )
       showNotification({
@@ -559,7 +599,7 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
     }
   }
 
-  if (error && !cheatInfo) {
+  if (error && !feed) {
     return (
       <Alert
         color="red"
@@ -578,7 +618,7 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
     )
   }
 
-  if (isLoading || !cheatInfo) {
+  if (isLoading || !feed || !cheatInfo) {
     return (
       <Center h="30vh">
         <Stack align="center" gap="sm" role="status" aria-live="polite">

@@ -1,21 +1,5 @@
 //! Cheat detection: immutable flag-sharing evidence + collusion (RSI) reporting.
-use super::cheat_report_cache::{
-    cache_cheat_report, cached_cheat_report, CheatReportFill, CHEAT_REPORT_BUILD_SLOTS,
-    CHEAT_REPORT_FLIGHTS, MAX_CHEAT_REPORT_BYTES,
-};
 use super::*;
-use bytes::Bytes;
-
-fn cheat_report_response(body: Bytes) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
-            (header::CACHE_CONTROL, "private, no-store"),
-        ],
-        body,
-    )
-        .into_response()
-}
 
 #[derive(Debug, Default, sqlx::FromRow)]
 struct ReconciliationReportState {
@@ -74,6 +58,7 @@ async fn load_reconciliation_report_state(
 /// participation status remain presentation-only.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct CheatIncidentRow {
+    pub(crate) incident_id: i32,
     pub(crate) source_participation_id: i32,
     pub(crate) source_team_id: i32,
     pub(crate) source_team_name: String,
@@ -174,9 +159,11 @@ pub(crate) async fn load_cheat_incident_rows(
     game_id: Option<i32>,
     limit: Option<i64>,
     offset: i64,
+    after: Option<i32>,
 ) -> AppResult<Vec<CheatIncidentRow>> {
     sqlx::query_as::<_, CheatIncidentRow>(
-        r#"SELECT cheat.source_participation_id,
+        r#"SELECT cheat.id AS incident_id,
+                  cheat.source_participation_id,
                   source_part.team_id AS source_team_id,
                   COALESCE(
                       NULLIF(cheat.evidence_payload->>'sourceTeamName', ''),
@@ -236,12 +223,16 @@ pub(crate) async fn load_cheat_incident_rows(
               AND cheat.observed_at_utc = submission.submit_time_utc
               AND cheat.observed_at_utc >= game.start_time_utc
               AND cheat.observed_at_utc < game.end_time_utc
-            ORDER BY cheat.observed_at_utc DESC, cheat.id DESC
+              AND ($4::INTEGER IS NULL OR cheat.id > $4)
+            ORDER BY
+              CASE WHEN $4::INTEGER IS NULL THEN cheat.id END DESC,
+              CASE WHEN $4::INTEGER IS NOT NULL THEN cheat.id END ASC
             LIMIT $2 OFFSET $3"#,
     )
     .bind(game_id)
     .bind(limit)
     .bind(offset.max(0))
+    .bind(after)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))
@@ -258,6 +249,15 @@ const MAX_REPORT_SUSPICION_EVENTS: usize = 50_000;
 pub struct CheatIncidentPage {
     #[serde(default)]
     skip: i64,
+    #[serde(default = "default_cheat_incident_count")]
+    count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheatIncidentFeedQuery {
+    #[serde(default)]
+    after: Option<i32>,
     #[serde(default = "default_cheat_incident_count")]
     count: i64,
 }
@@ -291,7 +291,7 @@ pub async fn cheat_info(
 ) -> AppResult<RequestResponse<Vec<CheatInfoModel>>> {
     let _ = load_game(&st, id).await?;
     let (count, skip) = page.normalized()?;
-    let results = load_cheat_incident_rows(st.pg(), Some(id), Some(count), skip)
+    let results = load_cheat_incident_rows(st.pg(), Some(id), Some(count), skip, None)
         .await?
         .into_iter()
         .map(CheatIncidentRow::into_model)
@@ -299,13 +299,67 @@ pub async fn cheat_info(
     Ok(RequestResponse::ok(results))
 }
 
+/// `GET /api/game/{id}/cheatinfo/page` — latest bounded snapshot or an
+/// ascending immutable delta after a stable incident id.
+pub async fn cheat_info_page(
+    State(st): State<SharedState>,
+    _user: MonitorUser,
+    Path(id): Path<i32>,
+    Query(query): Query<CheatIncidentFeedQuery>,
+) -> AppResult<RequestResponse<CheatIncidentPageModel>> {
+    let _ = load_game(&st, id).await?;
+    if query.after.is_some_and(|after| after < 0)
+        || !(1..=MAX_CHEAT_INCIDENT_PAGE).contains(&query.count)
+    {
+        return Err(AppError::bad_request(
+            "Cheat incident pages require a non-negative cursor and count 1-100",
+        ));
+    }
+    let mut rows = load_cheat_incident_rows(
+        st.pg(),
+        Some(id),
+        Some(query.count.saturating_add(1)),
+        0,
+        query.after,
+    )
+    .await?;
+    let has_more = rows.len() > query.count as usize;
+    rows.truncate(query.count as usize);
+    let next_cursor = rows
+        .iter()
+        .map(|row| row.incident_id)
+        .max()
+        .or(query.after)
+        .unwrap_or(0);
+    let incidents = rows
+        .into_iter()
+        .map(|row| {
+            let cursor = row.incident_id;
+            Ok(CheatIncidentFeedItem {
+                cursor,
+                incident: row.into_model()?,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(RequestResponse::ok(CheatIncidentPageModel {
+        incidents,
+        next_cursor,
+        has_more,
+    }))
+}
+
 /// Reconstruct flag-sharing incidents for a game — shared by `cheatinfo` (raw
 /// list) and `cheatreport` (grouped into collusion groups). Detection strategy is
 /// documented on [`cheat_info`].
 async fn collect_cheat_incidents(st: &SharedState, id: i32) -> AppResult<Vec<CheatInfoModel>> {
-    let rows =
-        load_cheat_incident_rows(st.pg(), Some(id), Some(MAX_REPORT_INCIDENTS as i64 + 1), 0)
-            .await?;
+    let rows = load_cheat_incident_rows(
+        st.pg(),
+        Some(id),
+        Some(MAX_REPORT_INCIDENTS as i64 + 1),
+        0,
+        None,
+    )
+    .await?;
     if rows.len() > MAX_REPORT_INCIDENTS {
         return Err(AppError::payload_too_large(
             "Cheat report has too many flag-sharing incidents; use the paginated incident log",
@@ -339,51 +393,7 @@ pub struct CompareQuery {
 ///
 /// This GET is deliberately read-only. Detector sweeps run in the background
 /// reconciler; refreshing the report cannot create evidence or change scores.
-pub async fn cheat_report(
-    State(st): State<SharedState>,
-    _user: MonitorUser,
-    Path(id): Path<i32>,
-) -> AppResult<Response> {
-    let _ = load_game(&st, id).await?;
-    if let Some(body) = cached_cheat_report(id) {
-        return Ok(cheat_report_response(body));
-    }
-    let key = id.to_string();
-    let fill = CHEAT_REPORT_FLIGHTS
-        .run(&key, move || async move {
-            let Ok(_permit) = CHEAT_REPORT_BUILD_SLOTS.try_acquire() else {
-                return CheatReportFill::Busy;
-            };
-            match build_cheat_report(&st, id).await {
-                Ok(report) => match serde_json::to_vec(&report) {
-                    Ok(body) => {
-                        if body.len() > MAX_CHEAT_REPORT_BYTES {
-                            return CheatReportFill::Oversized;
-                        }
-                        let body = Bytes::from(body);
-                        cache_cheat_report(id, &body);
-                        CheatReportFill::Ready(body)
-                    }
-                    Err(error) => CheatReportFill::Failed(error.to_string()),
-                },
-                Err(AppError::PayloadTooLarge(_)) => CheatReportFill::Oversized,
-                Err(error) => CheatReportFill::Failed(error.to_string()),
-            }
-        })
-        .await;
-    match fill {
-        CheatReportFill::Ready(body) => Ok(cheat_report_response(body)),
-        CheatReportFill::Busy | CheatReportFill::TimedOut => Err(AppError::unavailable(
-            "Cheat report generation is busy; retry shortly",
-        )),
-        CheatReportFill::Oversized => Err(AppError::payload_too_large(
-            "Cheat report exceeds the safe response limit; use the paginated evidence views",
-        )),
-        CheatReportFill::Failed(error) => Err(AppError::internal(error)),
-    }
-}
-
-async fn build_cheat_report(st: &SharedState, id: i32) -> AppResult<CheatReport> {
+pub(super) async fn build_cheat_report(st: &SharedState, id: i32) -> AppResult<CheatReport> {
     let incidents = collect_cheat_incidents(&st, id).await?;
 
     // Canonical one-row-per-participation/challenge solves for RSI. Replayed

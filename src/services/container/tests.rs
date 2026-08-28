@@ -8,12 +8,12 @@ use bollard::models::{
 use super::docker::{
     advertised_endpoint_ip, docker_liveness, docker_network_mode, failed_start_action,
     image_requests_restricted_profile, launch_spec_fingerprint, launch_spec_matches,
-    parse_proxy_bind, published_bind_ip, restricted_profile_matches, restricted_tmpfs_mounts,
-    stamp_restricted_profile, stamp_storage_quota_policy, storage_quota_policy_matches,
-    validate_docker_container_spec, verify_container_scope, writable_layer_quota_supported,
-    writable_layer_storage_opt, writable_layer_storage_option, FailedStartAction,
-    LAUNCH_SPEC_LABEL, RESTRICTED_IMAGE_PROFILE, RESTRICTED_IMAGE_PROFILE_LABEL,
-    RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
+    map_docker_changes_bounded, parse_proxy_bind, published_bind_ip, restricted_profile_matches,
+    restricted_tmpfs_mounts, stamp_restricted_profile, stamp_storage_quota_policy,
+    storage_quota_policy_matches, validate_docker_container_spec, verify_container_scope,
+    writable_layer_quota_supported, writable_layer_storage_opt, writable_layer_storage_option,
+    FailedStartAction, LAUNCH_SPEC_LABEL, MAX_SNAPSHOT_CHANGE_ENTRIES, RESTRICTED_IMAGE_PROFILE,
+    RESTRICTED_IMAGE_PROFILE_LABEL, RESTRICTED_TMPFS_OPTIONS, RESTRICTED_TMPFS_PATH,
 };
 use super::{
     append_snapshot_chunk, bounded_log_config, bridge_network_matches, container_name,
@@ -896,4 +896,19 @@ fn only_terminal_docker_states_authorize_repair() {
         assert_eq!(docker_liveness(Some(state)), ContainerLiveness::Unknown);
     }
     assert_eq!(docker_liveness(None), ContainerLiveness::Unknown);
+}
+
+#[test]
+fn docker_change_mapping_never_duplicates_an_unbounded_daemon_response() {
+    let changes =
+        (0..MAX_SNAPSHOT_CHANGE_ENTRIES + 200).map(|index| bollard::models::FilesystemChange {
+            path: format!("/tmp/{index}"),
+            ..Default::default()
+        });
+    let bounded = map_docker_changes_bounded(changes);
+
+    assert_eq!(bounded.len(), MAX_SNAPSHOT_CHANGE_ENTRIES + 1);
+    let response = crate::services::ad::forensics::bound_changes(bounded);
+    assert!(response.truncated);
+    assert_eq!(response.changes.len(), MAX_SNAPSHOT_CHANGE_ENTRIES);
 }

@@ -361,6 +361,7 @@ const LIVE_READ_TIMEOUT_MS: i32 = 200;
 const PCAP_GLOBAL_HEADER_BYTES: u64 = 24;
 const PCAP_PACKET_HEADER_BYTES: u64 = 16;
 const FREE_SPACE_CHECK_INTERVAL_BYTES: u64 = 1024 * 1024;
+pub(crate) mod inventory;
 mod live_limits;
 use live_limits::{
     enforce_capture_directory_budget, refresh_capture_space_if_needed, rotated_capture_path,
@@ -464,6 +465,7 @@ fn capture_live_inner(
         let savefile = capture
             .savefile(out_path)
             .map_err(|e| pcap_err("create capture savefile", e))?;
+        inventory::refresh_for_capture_file(out_path);
         Ok((capture, savefile, disk_reservation))
     })();
     let (mut capture, mut savefile, _disk_reservation) = match initialized {
@@ -518,6 +520,7 @@ fn capture_live_inner(
                     savefile = capture
                         .savefile(&current_path)
                         .map_err(|e| pcap_err("create rotated capture savefile", e))?;
+                    inventory::refresh_for_capture_file(&current_path);
                     current_bytes = PCAP_GLOBAL_HEADER_BYTES;
                     next_space_check = FREE_SPACE_CHECK_INTERVAL_BYTES;
                     file_started = std::time::Instant::now();
@@ -799,7 +802,6 @@ fn ones_complement_checksum(bytes: &[u8]) -> u16 {
 }
 
 // Per-container live-capture ownership and desired-state reconciliation.
-
 mod capture;
 
 pub(crate) use capture::{destroy_container_after_capture_fence, purge_expired_captures};

@@ -92,6 +92,10 @@ fn router_with_domains(
             limited(Policy::Query, get(cheat_info)),
         )
         .route(
+            "/api/game/{id}/cheatinfo/page",
+            limited(Policy::Query, get(cheat_info_page)),
+        )
+        .route(
             "/api/game/{id}/cheatreport",
             limited(Policy::Query, get(cheat_report)),
         )

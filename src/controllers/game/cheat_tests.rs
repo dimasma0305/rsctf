@@ -84,6 +84,9 @@ impl CheatReportFixture {
               kind SMALLINT NOT NULL, evidence_key TEXT NOT NULL,
               score_delta INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL
             );
+            CREATE TABLE "SuspicionRules" (
+              rule_code TEXT PRIMARY KEY, weight INTEGER NOT NULL
+            );
             CREATE TABLE "UserParticipations" (
               user_id UUID NOT NULL, game_id INTEGER NOT NULL, team_id INTEGER NOT NULL,
               participation_id INTEGER NOT NULL,
@@ -106,7 +109,12 @@ impl CheatReportFixture {
               last_reconciled_at_utc TIMESTAMPTZ NULL,
               sealed_at_utc TIMESTAMPTZ NULL,
               attempts INTEGER NOT NULL DEFAULT 0,
-              last_error TEXT NULL
+              last_error TEXT NULL,
+              dirty_generation BIGINT NOT NULL DEFAULT 1,
+              completed_generation BIGINT NOT NULL DEFAULT 0,
+              dirty_mask BIGINT NOT NULL DEFAULT 63,
+              lease_token UUID NULL,
+              lease_expires_at_utc TIMESTAMPTZ NULL
             );
             CREATE TABLE "SuspicionEvaluationOutbox" (
               id BIGINT PRIMARY KEY, game_id INTEGER NOT NULL,
@@ -215,22 +223,29 @@ async fn report_survives_rotation_and_paginates_by_stable_incident_id() {
     let fixture = CheatReportFixture::create().await;
     fixture.seed_cheat_rows().await;
 
-    let rows = load_cheat_incident_rows(&fixture.pool, Some(1), None, 0)
+    let rows = load_cheat_incident_rows(&fixture.pool, Some(1), None, 0, None)
         .await
         .unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].answer, "flag-two");
+    assert_eq!(rows[0].incident_id, 402);
     assert_eq!(rows[0].source_team_name, "Owner second");
     assert_eq!(rows[1].source_team_name, "Owner at detection");
     assert_eq!(rows[1].submit_team_name, "Submitter at detection");
     assert_eq!(rows[1].user_name.as_deref(), Some("user-at-detection"));
     assert_eq!(rows[1].challenge_title, "Challenge at detection");
 
-    let page_two = load_cheat_incident_rows(&fixture.pool, Some(1), Some(1), 1)
+    let page_two = load_cheat_incident_rows(&fixture.pool, Some(1), Some(1), 1, None)
         .await
         .unwrap();
     assert_eq!(page_two.len(), 1);
     assert_eq!(page_two[0].answer, "flag-one");
+
+    let delta = load_cheat_incident_rows(&fixture.pool, Some(1), Some(100), 0, Some(401))
+        .await
+        .unwrap();
+    assert_eq!(delta.len(), 1);
+    assert_eq!(delta[0].incident_id, 402);
 
     let canonical = canonical_solves(&fixture.pool, 1, &[], None).await.unwrap();
     assert_eq!(canonical.len(), 1, "accepted replay must not inflate RSI");
@@ -301,12 +316,12 @@ async fn report_survives_rotation_and_paginates_by_stable_incident_id() {
     .execute(&fixture.pool)
     .await
     .unwrap();
-    let practice_cheats = load_cheat_incident_rows(&fixture.pool, Some(2), None, 0)
+    let practice_cheats = load_cheat_incident_rows(&fixture.pool, Some(2), None, 0, None)
         .await
         .unwrap();
     assert_eq!(practice_cheats.len(), 1);
     assert_eq!(practice_cheats[0].answer, "stolen-at-start");
-    let global_cheats = load_cheat_incident_rows(&fixture.pool, None, Some(100), 0)
+    let global_cheats = load_cheat_incident_rows(&fixture.pool, None, Some(100), 0, None)
         .await
         .unwrap();
     assert_eq!(
@@ -344,10 +359,12 @@ async fn ordinary_suspicion_events_are_not_stolen_flag_reports() {
     .await
     .unwrap();
 
-    assert!(load_cheat_incident_rows(&fixture.pool, None, Some(100), 0)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        load_cheat_incident_rows(&fixture.pool, None, Some(100), 0, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     fixture.cleanup().await;
 }
 
@@ -685,6 +702,9 @@ async fn identity_report_applies_exemptions_to_temporal_pairs_not_whole_hashes()
 async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
     let fixture = CheatReportFixture::create().await;
     fixture.seed_cheat_rows().await;
+    let version_before = super::super::cheat_report_http::report_version(&fixture.pool, 1)
+        .await
+        .unwrap();
     sqlx::query(
         r#"INSERT INTO "SuspicionEvents"
              VALUES (1, 1, 202, 11, 9, 'burst:202', 30, '2026-06-01T13:00:00Z')"#,
@@ -709,9 +729,32 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
     .execute(&fixture.pool)
     .await
     .unwrap();
+    let version_after = super::super::cheat_report_http::report_version(&fixture.pool, 1)
+        .await
+        .unwrap();
+    assert_ne!(version_before, version_after);
+    sqlx::query(
+        r#"UPDATE "SuspicionReconciliationState"
+              SET dirty_generation = dirty_generation + 1,
+                  dirty_mask = dirty_mask | 16
+            WHERE game_id = 1"#,
+    )
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    let dirty_version = super::super::cheat_report_http::report_version(&fixture.pool, 1)
+        .await
+        .unwrap();
+    assert_ne!(version_after, dirty_version);
     let pool = fixture.read_only_pool().await;
     assert_eq!(
-        load_cheat_incident_rows(&pool, Some(1), None, 0)
+        super::super::cheat_report_http::report_version(&pool, 1)
+            .await
+            .unwrap(),
+        dirty_version
+    );
+    assert_eq!(
+        load_cheat_incident_rows(&pool, Some(1), None, 0, None)
             .await
             .unwrap()
             .len(),
@@ -749,13 +792,7 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
 
 #[test]
 fn report_routes_keep_monitor_and_admin_role_extractors_and_no_sweeps() {
-    let game_source = include_str!("cheat.rs");
-    let report_start = game_source.find("pub async fn cheat_report(").unwrap();
-    let report_end = game_source[report_start..]
-        .find("pub async fn cheat_report_compare(")
-        .map(|offset| report_start + offset)
-        .unwrap();
-    let report_handler = &game_source[report_start..report_end];
+    let report_handler = include_str!("cheat_report_http.rs");
     assert!(report_handler.contains("_user: MonitorUser"));
     assert!(!report_handler.contains("run_abnormal_solve_checks"));
     assert!(!report_handler.contains("run_statistical_checks"));
