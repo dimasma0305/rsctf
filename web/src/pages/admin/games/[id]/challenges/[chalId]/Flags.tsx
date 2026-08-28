@@ -23,7 +23,7 @@ import { useModals } from '@mantine/modals'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiPuzzleEditOutline } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, PropsWithChildren, useEffect, useState } from 'react'
+import { FC, PropsWithChildren, useEffect, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useParams } from 'react-router'
 import { AttachmentRemoteEditModal } from '@Components/admin/AttachmentRemoteEditModal'
@@ -59,6 +59,7 @@ const AttachmentEditor: FC = () => {
   const [type, setType] = useState<FileType>(challenge?.attachment?.type ?? FileType.None)
   const [remoteUrl, setRemoteUrl] = useState(challenge?.attachment?.url ?? '')
   const [progress, setProgress] = useState(0)
+  const uploadOperationRef = useRef<{ fileKey: string; id: string } | null>(null)
 
   const modals = useModals()
   const theme = useMantineTheme()
@@ -100,16 +101,26 @@ const AttachmentEditor: FC = () => {
     setProgress(0)
     setDisabled(true)
     try {
-      const res = await api.assets.assetsUpload({ files: [file] }, undefined, {
-        onUploadProgress: (e) => setProgress((e.loaded / (e.total ?? 1)) * 90),
-      })
+      const fileKey = `${file.name}:${file.size}:${file.lastModified}`
+      if (uploadOperationRef.current?.fileKey !== fileKey) {
+        uploadOperationRef.current = { fileKey, id: crypto.randomUUID() }
+      }
+      const res = await api.assets.assetsUpload(
+        { files: [file] },
+        { operationId: uploadOperationRef.current.id },
+        {
+          onUploadProgress: (e) => setProgress((e.loaded / (e.total ?? 1)) * 90),
+        }
+      )
       const remoteFile = res.data[0]
       setProgress(95)
       if (remoteFile) {
         await api.edit.editUpdateAttachment(numId, numCId, {
           attachmentType: FileType.Local,
           fileHash: remoteFile.hash,
+          uploadId: remoteFile.uploadId,
         })
+        uploadOperationRef.current = null
         setProgress(0)
         setDisabled(false)
         mutate()
@@ -329,6 +340,7 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
   const theme = useMantineTheme()
   const [progress, setProgress] = useState(0)
   const [flagCreateModalOpen, setFlagCreateModalOpen] = useState(false)
+  const uploadOperationRef = useRef<{ fileKey: string; id: string } | null>(null)
   const FileTypeDesrcMap = new Map<FileType, string>([
     [FileType.None, t('challenge.file_type.none')],
     [FileType.Remote, t('challenge.file_type.remote')],
@@ -342,11 +354,15 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
     setDisabled(true)
 
     try {
+      const fileKey = `${file.name}:${file.size}:${file.lastModified}`
+      if (uploadOperationRef.current?.fileKey !== fileKey) {
+        uploadOperationRef.current = { fileKey, id: crypto.randomUUID() }
+      }
       const res = await api.assets.assetsUpload(
         {
           files: [file],
         },
-        undefined,
+        { operationId: uploadOperationRef.current.id },
         {
           onUploadProgress: (e) => {
             setProgress((e.loaded / (e.total ?? 1)) * 90)
@@ -359,7 +375,9 @@ const OneAttachmentWithFlags: FC<FlagEditProps> = ({ onDelete }) => {
         await api.edit.editUpdateAttachment(numId, numCId, {
           attachmentType: FileType.Local,
           fileHash: remoteFile.hash,
+          uploadId: remoteFile.uploadId,
         })
+        uploadOperationRef.current = null
         setProgress(0)
         setDisabled(false)
         mutate()

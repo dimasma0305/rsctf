@@ -11,6 +11,10 @@ use uuid::Uuid;
 const MAX_GLOBAL_STREAMS: usize = 2_048;
 const MAX_PER_USER_STREAMS: usize = 16;
 const MAX_PER_HASH_STREAMS: usize = 1_536;
+const MAX_ACTIVE_REQUESTS: usize = 512;
+const MAX_PER_SOURCE_REQUESTS: usize = 32;
+const MAX_PER_HASH_REQUESTS: usize = 64;
+const MAX_DISTINCT_REQUEST_HASHES: usize = 256;
 
 #[derive(Clone)]
 pub struct AssetDownloadAdmission {
@@ -21,11 +25,24 @@ struct Inner {
     global: AtomicUsize,
     users: DashMap<Uuid, Arc<AtomicUsize>>,
     hashes: DashMap<String, Arc<AtomicUsize>>,
+    requests: AtomicUsize,
+    sources: DashMap<String, Arc<AtomicUsize>>,
+    request_hashes: DashMap<String, Arc<AtomicUsize>>,
 }
 
 pub struct AssetDownloadPermit {
     admission: AssetDownloadAdmission,
     user: Option<(Uuid, Arc<AtomicUsize>)>,
+    hash: (String, Arc<AtomicUsize>),
+}
+
+/// Cheap request-work admission acquired before authorization, cache, SQL, or
+/// storage. It intentionally has a lower ceiling than byte streaming: a
+/// rotating unknown-hash flood should fail before it can allocate a cache-fill
+/// key or check out a PostgreSQL connection.
+pub struct AssetRequestPermit {
+    admission: AssetDownloadAdmission,
+    source: (String, Arc<AtomicUsize>),
     hash: (String, Arc<AtomicUsize>),
 }
 
@@ -36,8 +53,50 @@ impl AssetDownloadAdmission {
                 global: AtomicUsize::new(0),
                 users: DashMap::new(),
                 hashes: DashMap::new(),
+                requests: AtomicUsize::new(0),
+                sources: DashMap::new(),
+                request_hashes: DashMap::new(),
             }),
         }
+    }
+
+    pub fn try_acquire_request(&self, source: &str, hash: &str) -> Option<AssetRequestPermit> {
+        let source_key = source.to_string();
+        let source_counter = increment(
+            &self.inner.sources,
+            source_key.clone(),
+            MAX_PER_SOURCE_REQUESTS,
+        )?;
+        let hash_key = hash.to_string();
+        let hash_counter = match increment_distinct_bounded(
+            &self.inner.request_hashes,
+            hash_key.clone(),
+            MAX_PER_HASH_REQUESTS,
+            MAX_DISTINCT_REQUEST_HASHES,
+        ) {
+            Some(counter) => counter,
+            None => {
+                release(&self.inner.sources, source_key, &source_counter);
+                return None;
+            }
+        };
+        if self
+            .inner
+            .requests
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < MAX_ACTIVE_REQUESTS).then_some(active + 1)
+            })
+            .is_err()
+        {
+            release(&self.inner.request_hashes, hash_key, &hash_counter);
+            release(&self.inner.sources, source_key, &source_counter);
+            return None;
+        }
+        Some(AssetRequestPermit {
+            admission: self.clone(),
+            source: (source_key, source_counter),
+            hash: (hash_key, hash_counter),
+        })
     }
 
     pub fn try_acquire(&self, user_id: Option<Uuid>, hash: &str) -> Option<AssetDownloadPermit> {
@@ -102,6 +161,22 @@ impl Drop for AssetDownloadPermit {
     }
 }
 
+impl Drop for AssetRequestPermit {
+    fn drop(&mut self) {
+        self.admission.inner.requests.fetch_sub(1, Ordering::AcqRel);
+        release(
+            &self.admission.inner.request_hashes,
+            self.hash.0.clone(),
+            &self.hash.1,
+        );
+        release(
+            &self.admission.inner.sources,
+            self.source.0.clone(),
+            &self.source.1,
+        );
+    }
+}
+
 fn increment<K>(
     map: &DashMap<K, Arc<AtomicUsize>>,
     key: K,
@@ -120,6 +195,39 @@ where
         })
         .ok()
         .map(|_| counter)
+}
+
+fn increment_distinct_bounded<K>(
+    map: &DashMap<K, Arc<AtomicUsize>>,
+    key: K,
+    per_key_limit: usize,
+    distinct_limit: usize,
+) -> Option<Arc<AtomicUsize>>
+where
+    K: Eq + std::hash::Hash + Clone,
+{
+    // This is a soft cardinality ceiling backed by the race-safe global
+    // active-request ceiling. Check before taking an entry shard lock: calling
+    // `DashMap::len` while an entry guard is held can deadlock on that shard.
+    if !map.contains_key(&key) && map.len() >= distinct_limit {
+        return None;
+    }
+    match map.entry(key) {
+        Entry::Occupied(entry) => {
+            let counter = entry.get().clone();
+            counter
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                    (value < per_key_limit).then_some(value + 1)
+                })
+                .ok()
+                .map(|_| counter)
+        }
+        Entry::Vacant(entry) => {
+            let counter = Arc::new(AtomicUsize::new(1));
+            entry.insert(counter.clone());
+            Some(counter)
+        }
+    }
 }
 
 fn release<K>(map: &DashMap<K, Arc<AtomicUsize>>, key: K, counter: &Arc<AtomicUsize>)
@@ -167,6 +275,45 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(admission.try_acquire(None, &hash).is_none());
+        drop(permits);
+    }
+
+    #[test]
+    fn rotating_hashes_and_one_source_are_bounded_and_release() {
+        let admission = AssetDownloadAdmission::new();
+        let source = "203.0.113.9";
+        let permits = (0..MAX_PER_SOURCE_REQUESTS)
+            .map(|index| {
+                admission
+                    .try_acquire_request(source, &format!("{index:064x}"))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert!(admission
+            .try_acquire_request(source, &"f".repeat(64))
+            .is_none());
+        drop(permits);
+        assert!(admission
+            .try_acquire_request(source, &"f".repeat(64))
+            .is_some());
+    }
+
+    #[test]
+    fn distinct_hash_ceiling_does_not_reject_an_existing_key() {
+        let admission = AssetDownloadAdmission::new();
+        let permits = (0..MAX_DISTINCT_REQUEST_HASHES)
+            .map(|index| {
+                admission
+                    .try_acquire_request(&format!("source-{index}"), &format!("{index:064x}"))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert!(admission
+            .try_acquire_request("new-source", &"f".repeat(64))
+            .is_none());
+        assert!(admission
+            .try_acquire_request("another-source", &format!("{:064x}", 0))
+            .is_some());
         drop(permits);
     }
 }

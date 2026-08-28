@@ -136,6 +136,8 @@ mod m0113_koth_reporter_routing_revision;
 mod m0114_submission_feed_cursor;
 mod m0115_flag_egress_feed_cursor;
 mod m0116_game_event_feed_pending;
+mod m0185_blob_staging_operations;
+mod m0186_player_container_operations;
 mod m0190_traffic_archive_admission;
 mod m0191_game_configuration_operations;
 mod m0192_team_profile_operations;
@@ -287,6 +289,8 @@ impl MigratorTrait for Migrator {
             Box::new(m0114_submission_feed_cursor::Migration),
             Box::new(m0115_flag_egress_feed_cursor::Migration),
             Box::new(m0116_game_event_feed_pending::Migration),
+            Box::new(m0185_blob_staging_operations::Migration),
+            Box::new(m0186_player_container_operations::Migration),
             Box::new(m0190_traffic_archive_admission::Migration),
             Box::new(m0191_game_configuration_operations::Migration),
             Box::new(m0192_team_profile_operations::Migration),
@@ -435,7 +439,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 14..],
+            &names[names.len() - 16..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -451,6 +455,8 @@ mod tests {
                 "m0114_submission_feed_cursor",
                 "m0115_flag_egress_feed_cursor",
                 "m0116_game_event_feed_pending",
+                "m0185_blob_staging_operations",
+                "m0186_player_container_operations",
             ]
         );
     }

@@ -854,9 +854,11 @@ async fn check_authenticated_async(identity: String, ip: String) -> Result<(), u
 // Middleware / decorator API
 // ---------------------------------------------------------------------------
 
-/// The always-on Global sliding window, layered once over the whole `/api`
-/// router in `server.rs`. Non-`/api` traffic (health checks, static SPA assets)
-/// is never limited, matching RSCTF scoping the global limiter to `/api`.
+/// The always-on Global sliding window, layered once over the whole router in
+/// `server.rs`. API calls and content-addressed blob downloads are admitted;
+/// health checks and static SPA assets are not. Asset hashes are caller chosen,
+/// so leaving `/assets` outside this cheap source budget would let anonymous
+/// rotating misses reach authorization SQL without consuming rate quota.
 ///
 /// Layer it **after** CORS so `OPTIONS` preflights don't consume quota:
 /// ```ignore
@@ -867,7 +869,8 @@ pub async fn global_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
-    if !req.uri().path().starts_with("/api") {
+    let path = req.uri().path();
+    if !globally_limited_path(path) {
         return next.run(req).await;
     }
     let ip = client_ip(&req);
@@ -934,6 +937,10 @@ pub async fn global_middleware(
         }
     }
     next.run(req).await
+}
+
+fn globally_limited_path(path: &str) -> bool {
+    path.starts_with("/api") || path.starts_with("/assets/")
 }
 
 /// Decorate a single route handler with a named policy — the axum analogue of

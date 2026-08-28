@@ -37,6 +37,17 @@ pub async fn update_poster(
         return Err(AppError::bad_request("File is too large"));
     }
 
+    let staged = crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        uuid::Uuid::new_v4(),
+        &format!("game-poster:{id}"),
+        Some(user.id),
+        "poster",
+        &bytes,
+    )
+    .await?;
+
     let mut control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
     require_game_mutable(control.transaction_mut(), id).await?;
     let old_hash = sqlx::query_as::<_, (Option<String>,)>(
@@ -48,13 +59,8 @@ pub async fn update_poster(
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("Game not found"))?
     .0;
-    let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-        st.storage.as_ref(),
-        control.transaction_mut(),
-        "poster",
-        &bytes,
-    )
-    .await?;
+    crate::services::blob_refs::publish_staged_blob(control.transaction_mut(), &staged).await?;
+    let blob = staged.blob;
     sqlx::query(r#"UPDATE "Games" SET poster_hash = $2 WHERE id = $1"#)
         .bind(game.id)
         .bind(&blob.hash)

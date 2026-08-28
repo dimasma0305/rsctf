@@ -186,6 +186,7 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
   const [solvedChallengeId, setSolvedChallengeId] = useState<number | null>(null)
   const [flagVerdict, dispatchFlagVerdict] = useReducer(flagVerdictReducer, null)
   const submitAttemptOwnerRef = useRef<FlagSubmitAttemptOwner | null>(null)
+  const containerCreateOperationRef = useRef<{ scope: string; id: string } | null>(null)
   if (submitAttemptOwnerRef.current === null) {
     submitAttemptOwnerRef.current = new FlagSubmitAttemptOwner()
   }
@@ -236,8 +237,15 @@ export const GameChallengeModal: FC<GameChallengeModalProps> = (props) => {
     setDisabled(true)
 
     try {
-      const res = await api.game.gameCreateContainer(gameId, challengeId)
+      const scope = `${gameId}:${challengeId}`
+      if (containerCreateOperationRef.current?.scope !== scope) {
+        containerCreateOperationRef.current = { scope, id: crypto.randomUUID() }
+      }
+      const res = await api.game.gameCreateContainer(gameId, challengeId, {
+        headers: { 'X-RSCTF-Operation-Id': containerCreateOperationRef.current.id },
+      })
       if (!(await confirmCreatedInstance(res.data, mutate))) return
+      containerCreateOperationRef.current = null
       showNotification({
         color: 'teal',
         title: t('challenge.notification.instance.created.title'),

@@ -31,6 +31,17 @@ pub async fn avatar(
         return Err(AppError::bad_request("Invalid avatar file size"));
     }
 
+    let staged = crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        uuid::Uuid::new_v4(),
+        "account-avatar",
+        Some(user.id),
+        "avatar",
+        &bytes,
+    )
+    .await?;
+
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -43,13 +54,8 @@ pub async fn avatar(
     .map_err(|error| AppError::internal(error.to_string()))?
     .ok_or_else(|| AppError::not_found("User not found"))?
     .0;
-    let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-        st.storage.as_ref(),
-        &mut transaction,
-        "avatar",
-        &bytes,
-    )
-    .await?;
+    crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
+    let blob = staged.blob;
     sqlx::query(r#"UPDATE "AspNetUsers" SET avatar_hash = $2 WHERE id = $1"#)
         .bind(user.id)
         .bind(&blob.hash)

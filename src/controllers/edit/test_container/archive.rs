@@ -215,6 +215,23 @@ pub(super) async fn persist_challenge_archive(
             return;
         }
     };
+    let staged = match crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        uuid::Uuid::new_v4(),
+        &format!("challenge-source-archive:{challenge_id}"),
+        None,
+        &format!("{dir_name}.zip"),
+        &bytes,
+    )
+    .await
+    {
+        Ok(staged) => staged,
+        Err(error) => {
+            tracing::warn!(%error, "audit archive: stage {dir_name} failed");
+            return;
+        }
+    };
     let persisted: AppResult<Option<String>> = async {
         let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
             .await
@@ -238,13 +255,8 @@ pub(super) async fn persist_challenge_archive(
                 .map_err(|error| AppError::internal(error.to_string()))?;
             return Ok(None);
         }
-        let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-            st.storage.as_ref(),
-            &mut transaction,
-            &format!("{dir_name}.zip"),
-            &bytes,
-        )
-        .await?;
+        crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
+        let blob = staged.blob.clone();
         sqlx::query(
             r#"UPDATE "GameChallenges"
                   SET original_archive_blob_path = $2

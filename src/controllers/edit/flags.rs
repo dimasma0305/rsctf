@@ -1,16 +1,98 @@
 //! edit: flag CRUD (see edit/mod.rs for the router + shared DTOs/helpers).
 use super::*;
 
-async fn cleanup_staged_flag_attachments(st: &SharedState, flags: &[(String, Option<i32>)]) {
-    for attachment_id in flags.iter().filter_map(|(_, attachment_id)| *attachment_id) {
-        if let Err(error) = delete_attachment(st, attachment_id).await {
-            tracing::warn!(
-                %error,
-                attachment_id,
-                "failed to clean an unpublished flag attachment"
-            );
+struct PreparedFlag {
+    flag: String,
+    file_type: FileType,
+    file_hash: Option<String>,
+    remote_url: Option<String>,
+    upload_stage: Option<crate::services::blob_refs::StagedBlob>,
+}
+
+async fn prepare_flag(
+    st: &SharedState,
+    user_id: Uuid,
+    model: FlagCreateModel,
+) -> AppResult<PreparedFlag> {
+    let file_type = model.attachment_type.unwrap_or(FileType::None);
+    let remote_url = match file_type {
+        FileType::Remote => Some(challenges::validate_remote_attachment_url(
+            model.remote_url.as_deref().unwrap_or_default(),
+        )?),
+        _ => None,
+    };
+    let upload_stage = match model.upload_id {
+        Some(upload_id) if file_type == FileType::Local => {
+            let hash = model
+                .file_hash
+                .as_deref()
+                .ok_or_else(|| AppError::bad_request("A local attachment requires fileHash"))?;
+            Some(
+                crate::services::blob_refs::load_ready_upload_stage(
+                    st.pg(),
+                    upload_id,
+                    user_id,
+                    hash,
+                )
+                .await?,
+            )
         }
+        Some(_) => {
+            return Err(AppError::bad_request(
+                "An uploadId requires a local attachment",
+            ));
+        }
+        None => None,
+    };
+    Ok(PreparedFlag {
+        flag: model.flag,
+        file_type,
+        file_hash: model.file_hash,
+        remote_url,
+        upload_stage,
+    })
+}
+
+async fn insert_flag_attachment_locked(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    prepared: &PreparedFlag,
+) -> AppResult<Option<i32>> {
+    if prepared.file_type == FileType::None {
+        return Ok(None);
     }
+    let local_file_id = match prepared.file_type {
+        FileType::Local => match prepared.upload_stage.as_ref() {
+            Some(stage) => {
+                Some(crate::services::blob_refs::publish_staged_blob(transaction, stage).await?)
+            }
+            None => match prepared
+                .file_hash
+                .as_deref()
+                .filter(|hash| !hash.is_empty())
+            {
+                Some(hash) => {
+                    sqlx::query_scalar::<_, i32>(r#"SELECT id FROM "Files" WHERE hash = $1"#)
+                        .bind(hash)
+                        .fetch_optional(&mut **transaction)
+                        .await
+                        .map_err(|error| AppError::internal(error.to_string()))?
+                }
+                None => None,
+            },
+        },
+        _ => None,
+    };
+    let id = sqlx::query_scalar::<_, i32>(
+        r#"INSERT INTO "Attachments" ("Type", remote_url, local_file_id)
+           VALUES ($1, $2, $3) RETURNING id"#,
+    )
+    .bind(prepared.file_type as i16)
+    .bind(prepared.remote_url.as_deref())
+    .bind(local_file_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(Some(id))
 }
 
 /// The accepted static flags and a dynamic flag template are scoring policy,
@@ -53,20 +135,12 @@ pub async fn add_flags(
     challenges::reject_pending_mutation(st.pg(), id, c_id).await?;
     load_challenge(&st, id, c_id).await?;
 
-    // Attachment creation does not alter grading policy. Materialize it before
-    // taking the flag-policy lock so submissions are not held up by blob lookup.
+    // Storage already completed under durable upload stages. Resolve their
+    // immutable metadata before taking policy locks; the logical references,
+    // attachment rows, and flags publish together below.
     let mut flags = Vec::with_capacity(models.len());
     for m in models {
-        // Each flag can carry its own hand-out attachment (RSCTF AddFlags).
-        let attachment_id =
-            match build_attachment(&st, m.attachment_type, m.file_hash, m.remote_url).await {
-                Ok(attachment_id) => attachment_id,
-                Err(error) => {
-                    cleanup_staged_flag_attachments(&st, &flags).await;
-                    return Err(error);
-                }
-            };
-        flags.push((m.flag, attachment_id));
+        flags.push(prepare_flag(&st, user.id, m).await?);
     }
 
     // Global order is game-control -> challenge definition -> JFLG. The game
@@ -74,10 +148,7 @@ pub async fn add_flags(
     // JFLG provides the corresponding first-Jeopardy-solve fence.
     let game_control = match crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await {
         Ok(lock) => lock,
-        Err(error) => {
-            cleanup_staged_flag_attachments(&st, &flags).await;
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
     let mut definition_lock = match crate::services::challenge_workloads::acquire_definition_lock(
         st.pg(),
@@ -89,7 +160,6 @@ pub async fn add_flags(
         Ok(lock) => lock,
         Err(error) => {
             drop(game_control);
-            cleanup_staged_flag_attachments(&st, &flags).await;
             return Err(AppError::internal(error.to_string()));
         }
     };
@@ -106,15 +176,17 @@ pub async fn add_flags(
         )
         .await?;
 
-        for (flag, attachment_id) in &flags {
+        for prepared in &flags {
+            let attachment_id =
+                insert_flag_attachment_locked(definition_lock.transaction_mut(), prepared).await?;
             sqlx::query(
                 r#"INSERT INTO "FlagContexts"
                      (flag, is_occupied, challenge_id, attachment_id)
                    VALUES ($1, FALSE, $2, $3)"#,
             )
-            .bind(flag)
+            .bind(&prepared.flag)
             .bind(c_id)
-            .bind(*attachment_id)
+            .bind(attachment_id)
             .execute(&mut **definition_lock.transaction_mut())
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;
@@ -126,12 +198,10 @@ pub async fn add_flags(
     if let Err(error) = mutation {
         drop(definition_lock);
         drop(game_control);
-        cleanup_staged_flag_attachments(&st, &flags).await;
         return Err(error);
     }
     if let Err(error) = definition_lock.release().await {
         drop(game_control);
-        cleanup_staged_flag_attachments(&st, &flags).await;
         return Err(AppError::internal(error.to_string()));
     }
     if let Err(error) = game_control.release().await {

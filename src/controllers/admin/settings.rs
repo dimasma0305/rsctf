@@ -775,6 +775,17 @@ pub async fn logo_upload(
         return Err(AppError::bad_request("File is too large"));
     }
 
+    let staged = crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        uuid::Uuid::new_v4(),
+        "platform-branding",
+        None,
+        &name,
+        &bytes,
+    )
+    .await?;
+
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
@@ -796,13 +807,8 @@ pub async fn logo_upload(
     .map_err(|error| AppError::internal(error.to_string()))?
     .into_iter()
     .collect();
-    let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-        st.storage.as_ref(),
-        &mut transaction,
-        &name,
-        &bytes,
-    )
-    .await?;
+    crate::services::blob_refs::publish_staged_blob(&mut transaction, &staged).await?;
+    let blob = staged.blob;
     for key in ["GlobalConfig:LogoHash", "GlobalConfig:FaviconHash"] {
         sqlx::query(
             r#"INSERT INTO "Configs" (config_key, value, cache_keys)

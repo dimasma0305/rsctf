@@ -2,7 +2,7 @@
 
 use axum::extract::{Multipart, Path, State};
 
-use super::{acquire_roster_mutation, load_team, require_captain};
+use super::{acquire_roster_mutation, ensure_roster_change_allowed, load_team, require_captain};
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::CurrentUser;
 use crate::utils::error::{AppError, AppResult};
@@ -56,6 +56,29 @@ pub async fn avatar(
         return Err(AppError::bad_request("Avatar must be an image"));
     }
 
+    // Avoid staging bytes when every accepted participation already freezes
+    // roster/profile mutations. This is only a cheap preflight; the retained
+    // roster transaction below is authoritative against a concurrent start.
+    let mut preflight = crate::utils::database::begin_sqlx_transaction(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    ensure_roster_change_allowed(&mut preflight, id).await?;
+    preflight
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    let staged = crate::services::blob_refs::stage_blob(
+        st.pg(),
+        st.storage.as_ref(),
+        uuid::Uuid::new_v4(),
+        &format!("team-avatar:{id}"),
+        Some(user.id),
+        "avatar",
+        &bytes,
+    )
+    .await?;
+
     // Multipart ingestion happens before retaining a pooled connection. Recheck
     // captaincy and the deletion fence under the same roster lock used by the
     // final team cascade, then commit the blob reference and avatar hash in that
@@ -77,13 +100,9 @@ pub async fn avatar(
     if deletion_pending {
         return Err(AppError::conflict("Team is being deleted"));
     }
-    let (blob, _) = crate::services::blob_refs::store_and_acquire_in_transaction(
-        st.storage.as_ref(),
-        roster.transaction_mut(),
-        "avatar",
-        &bytes,
-    )
-    .await?;
+    ensure_roster_change_allowed(roster.transaction_mut(), id).await?;
+    crate::services::blob_refs::publish_staged_blob(roster.transaction_mut(), &staged).await?;
+    let blob = staged.blob;
     sqlx::query(r#"UPDATE "Teams" SET avatar_hash = $2 WHERE id = $1"#)
         .bind(id)
         .bind(&blob.hash)

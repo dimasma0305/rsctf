@@ -358,7 +358,7 @@ pub struct ClientChallengeVariant {
 }
 
 /// RSCTF `ContainerInfoModel`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerInfoModel {
     pub id: String,
@@ -961,7 +961,9 @@ pub use cheat::*;
 pub use cheat_evidence::*;
 pub use combined_scoreboard::*;
 pub use containers::*;
-pub(crate) use containers::{prepare_queued_image, repair_missing_legacy_image};
+pub(crate) use containers::{
+    prepare_queued_image, purge_terminal_operations, repair_missing_legacy_image,
+};
 use lookups::*;
 pub use participation_review::*;
 pub use play::*;

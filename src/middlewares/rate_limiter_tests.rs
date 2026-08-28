@@ -1,5 +1,15 @@
 use super::*;
 
+#[test]
+fn anonymous_content_addressed_assets_are_globally_admitted() {
+    assert!(globally_limited_path("/api/game/1"));
+    assert!(globally_limited_path(
+        "/assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/file"
+    ));
+    assert!(!globally_limited_path("/healthz"));
+    assert!(!globally_limited_path("/assets-app.js"));
+}
+
 fn ad_submit_capacity() -> u32 {
     match Policy::AdSubmit.kind() {
         Kind::Bucket { capacity, .. } => capacity as u32,
