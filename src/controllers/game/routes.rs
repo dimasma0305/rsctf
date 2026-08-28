@@ -27,6 +27,11 @@ fn router_with_domains(
             get(game_details).post(join_game).delete(leave_game),
         )
         .route("/api/game/{id}/details", get(game_details_with_challenges))
+        .route(
+            "/api/game/{id}/details/catalog",
+            get(game_challenge_catalog),
+        )
+        .route("/api/game/{id}/details/live", get(game_participant_delta))
         .route("/api/game/{id}/notices", get(notices))
         .route("/api/game/{id}/events", limited(Policy::Query, get(events)))
         .route(

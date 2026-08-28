@@ -22,6 +22,9 @@ pub struct KothTokenModel {
     pub token: Option<String>,
     /// `"warmup"` (no round yet) | `"no-cycle-token"` | `"ready"`.
     pub status: String,
+    pub revision: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<uuid::Uuid>,
 }
 
 enum KothTokenCaller {
@@ -179,7 +182,18 @@ pub async fn koth_hill_token(
         roster.release().await?;
         return Err(AppError::Forbidden);
     }
-    if let Some(model) = cached_model {
+    let revision = crate::controllers::game::credential_operations::current_revision(
+        &mut **roster.transaction_mut(),
+        part.id,
+        crate::controllers::game::credential_operations::CredentialKind::KothApi,
+        challenge_id,
+    )
+    .await?;
+    // A rotator commits the durable revision under this same roster fence.
+    // Comparing it here closes the small interval between that commit and the
+    // best-effort Redis eviction, so an older plaintext cache entry can never
+    // be returned as the newly active credential.
+    if let Some(model) = cached_model.filter(|model| model.revision == revision) {
         roster.release().await?;
         return Ok(no_store_token_response(model));
     }
@@ -241,6 +255,8 @@ pub async fn koth_hill_token(
         round: latest_round,
         token,
         status,
+        revision,
+        operation_id: None,
     };
     if let Ok(json) = serde_json::to_vec(&model) {
         // Set while the read fence is retained. A waiting revoker therefore
@@ -382,6 +398,7 @@ pub async fn rotate_koth_api_token(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path((id, challenge_id)): Path<(i32, i32)>,
+    crate::controllers::game::credential_operations::CredentialMutationInput(request): crate::controllers::game::credential_operations::CredentialMutationInput,
 ) -> AppResult<Response> {
     let part = resolve_participation(&st, &user, id).await?;
     require_live_hill(&st, id, challenge_id).await?;
@@ -406,6 +423,35 @@ pub async fn rotate_koth_api_token(
     )
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let scope = crate::controllers::game::credential_operations::CredentialScope {
+        participation_id: part.id,
+        game_id: id,
+        challenge_id,
+        actor_user_id: user.id,
+        kind: crate::controllers::game::credential_operations::CredentialKind::KothApi,
+    };
+    let reservation: crate::controllers::game::credential_operations::CredentialReservation<
+        KothTokenModel,
+    > = crate::controllers::game::credential_operations::reserve(
+        &st,
+        roster.transaction_mut(),
+        scope,
+        request,
+    )
+    .await?;
+    let (operation_id, expected_revision, result_revision) = match reservation {
+        crate::controllers::game::credential_operations::CredentialReservation::Recovered(
+            result,
+        ) => {
+            roster.release().await?;
+            return Ok(no_store_token_response(result));
+        }
+        crate::controllers::game::credential_operations::CredentialReservation::Fresh {
+            operation_id,
+            expected_revision,
+            result_revision,
+        } => (operation_id, expected_revision, result_revision),
+    };
     let token = format!("koth_{}", crate::utils::codec::random_token(18));
     let token: String = sqlx::query_scalar(
         r#"INSERT INTO "KothApiTeamTokens"
@@ -432,7 +478,26 @@ pub async fn rotate_koth_api_token(
         part.id,
     )
     .await?;
+    let result = KothTokenModel {
+        round: latest_round,
+        token: Some(token),
+        status: "ready".to_string(),
+        revision: result_revision,
+        operation_id: Some(operation_id),
+    };
+    crate::controllers::game::credential_operations::complete(
+        &st,
+        roster.transaction_mut(),
+        scope,
+        operation_id,
+        expected_revision,
+        result_revision,
+        &result,
+    )
+    .await?;
     roster.release().await?;
+
+    super::api::invalidate_observer_context(&st, id, challenge_id).await;
 
     st.cache
         .remove(&koth_token_cache_key(
@@ -445,11 +510,7 @@ pub async fn rotate_koth_api_token(
     st.cache
         .remove(&format!("kothtokensall:{id}:{}:{latest_round}", part.id))
         .await;
-    Ok(no_store_token_response(KothTokenModel {
-        round: latest_round,
-        token: Some(token),
-        status: "ready".to_string(),
-    }))
+    Ok(no_store_token_response(result))
 }
 
 #[cfg(test)]
@@ -464,6 +525,8 @@ mod tests {
             round: 7,
             token: Some("koth_example_token".to_string()),
             status: "ready".to_string(),
+            revision: 3,
+            operation_id: None,
         });
         assert_eq!(
             response

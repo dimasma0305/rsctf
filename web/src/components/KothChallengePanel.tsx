@@ -7,11 +7,18 @@ import { FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import useSWR from 'swr'
 import { assertJsonResponse } from '@Utils/ChallengePolling'
+import {
+  claimPlayerCredentialOperation,
+  clearPlayerCredentialOperation,
+  ownsPlayerCredentialResult,
+  playerCredentialOperationStorageKey,
+  readPlayerCredentialOperation,
+} from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
 import { isKothResetTransition, kothConfirmationProgress, maxKothCooldownTicks } from '@Utils/kothLifecycle'
 import { CompletionPollSWRConfig, jitterPollingDelay, useCompletionPolling } from '@Hooks/useCompletionPolling'
 import type { KothLifecycleFields } from '@Hooks/useGame'
-import api from '@Api'
+import api, { ContentType } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
 const KOTH_POLL_INTERVAL_MS = 5_000
@@ -37,6 +44,8 @@ interface KothTokenModel {
   round: number
   token: string | null
   status: 'warmup' | 'no-cycle-token' | 'ready'
+  revision: number
+  operationId?: string | null
 }
 
 interface KothHillStateModel extends KothLifecycleFields {
@@ -176,11 +185,27 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
       onConfirm: async () => {
         setRotating(true)
         try {
+          const operationKey = playerCredentialOperationStorageKey(gameId, 'koth-api', challengeId)
+          const claim = () =>
+            claimPlayerCredentialOperation(window.localStorage, operationKey, tokenData?.revision ?? 0)
+          const operation =
+            typeof navigator !== 'undefined' && navigator.locks
+              ? await navigator.locks.request(`rsctf:${operationKey}`, claim)
+              : claim()
           const response = await api.request<KothTokenModel>({
             path: `/api/game/${gameId}/ad/koth/${challengeId}/token`,
             method: 'POST',
+            body: {
+              operationId: operation.operationId,
+              expectedRevision: operation.expectedRevision,
+            },
+            type: ContentType.Json,
             format: 'json',
           })
+          if (!ownsPlayerCredentialResult(window.localStorage, operationKey, operation, response.data)) {
+            throw new Error('A stale KotH credential response was ignored')
+          }
+          clearPlayerCredentialOperation(window.localStorage, operationKey, operation.operationId)
           await mutateToken(response.data, { revalidate: false })
           showNotification({
             color: 'teal',
@@ -191,6 +216,14 @@ export const KothChallengePanel: FC<KothChallengePanelProps> = ({ gameId, challe
             ),
           })
         } catch (error) {
+          if ((error as { response?: { status?: number } })?.response?.status === 409) {
+            const operationKey = playerCredentialOperationStorageKey(gameId, 'koth-api', challengeId)
+            const operationId = readPlayerCredentialOperation(window.localStorage, operationKey)?.operationId
+            if (operationId) {
+              clearPlayerCredentialOperation(window.localStorage, operationKey, operationId)
+            }
+          }
+          await mutateToken().catch(() => undefined)
           showErrorMsg(error, t)
         } finally {
           setRotating(false)

@@ -5,7 +5,8 @@
 //! the only component that can turn a stable, healthy snapshot into score.
 
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::Serialize;
@@ -14,7 +15,6 @@ use sha2::{Digest, Sha256};
 use crate::app_state::SharedState;
 use crate::utils::enums::{ParticipationStatus, Role};
 use crate::utils::error::{AppError, AppResult};
-use crate::utils::shared::RequestResponse;
 
 mod admin;
 mod authentication;
@@ -111,7 +111,7 @@ pub struct KothObserverContextModel {
     generated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KothObservationAcceptedModel {
     pub(super) accepted: bool,
@@ -124,6 +124,36 @@ pub struct KothObservationAcceptedModel {
     #[serde(with = "crate::utils::datetime::millis")]
     pub(super) accepted_at: DateTime<Utc>,
 }
+
+const OBSERVER_CONTEXT_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+const OBSERVER_CONTEXT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+const OBSERVER_CONTEXT_MAX_BYTES: usize = 512 * 1024;
+const OBSERVER_CONTEXT_CONCURRENCY: usize = 16;
+static OBSERVER_CONTEXT_ADMISSION: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(OBSERVER_CONTEXT_CONCURRENCY));
+
+fn observer_context_cache_key(game_id: i32, challenge_id: i32) -> String {
+    format!("_KothObserverContextV2_{game_id}_{challenge_id}")
+}
+
+pub(crate) async fn invalidate_observer_context(st: &SharedState, game_id: i32, challenge_id: i32) {
+    st.cache
+        .remove(&observer_context_cache_key(game_id, challenge_id))
+        .await;
+}
+
+pub(super) fn retry_after_response(error: AppError, seconds: u64) -> Response {
+    let mut response = error.into_response();
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from_str(&seconds.max(1).to_string())
+            .expect("positive integer Retry-After is a valid header"),
+    );
+    response
+}
+static OBSERVER_CONTEXT_SF: std::sync::LazyLock<
+    crate::utils::single_flight::SingleFlight<Option<bytes::Bytes>>,
+> = std::sync::LazyLock::new(crate::utils::single_flight::SingleFlight::new);
 
 pub(super) async fn load_active_context<'e, E>(
     executor: E,
@@ -254,37 +284,127 @@ where
 }
 
 /// Public, non-secret fence bound to the exact container, cycle, and scoring tick.
+async fn observer_context_body(
+    st: &SharedState,
+    game_id: i32,
+    challenge_id: i32,
+) -> AppResult<bytes::Bytes> {
+    let key = observer_context_cache_key(game_id, challenge_id);
+    if let Some(body) = st.cache.get(&key).await {
+        return Ok(body);
+    }
+    let st = st.clone();
+    let cache_key = key.clone();
+    OBSERVER_CONTEXT_SF
+        .run(&key, move || async move {
+            if let Some(body) = st.cache.get(&cache_key).await {
+                return Some(body);
+            }
+            let context = load_active_context(st.pg(), game_id, challenge_id)
+                .await
+                .ok()??;
+            let eligible_tokens = load_eligible_tokens(st.pg(), game_id, challenge_id)
+                .await
+                .ok()?;
+            if eligible_tokens.len() > super::api_contract::MAX_TEAM_ENTRIES {
+                return None;
+            }
+            let (wave_window_starts_at, wave_window_ends_at) = context.wave_window();
+            let body = bytes::Bytes::from(
+                serde_json::to_vec(&KothObserverContextModel {
+                    api_version: "v1",
+                    context: context.opaque_context(game_id, challenge_id, &eligible_tokens),
+                    cycle_number: context.cycle_number,
+                    reset_attempt: context.reset_attempt,
+                    round_number: context.round_number,
+                    cycle_ends_at: context.cycle_ends_at,
+                    wave_window_starts_at,
+                    wave_window_ends_at,
+                    eligible_token_hashes: eligible_tokens
+                        .iter()
+                        .map(|token| {
+                            crate::services::ad::koth_api_capability::token_hash_hex(token)
+                        })
+                        .collect(),
+                    objective_ids: context.objective_ids.clone().unwrap_or_default(),
+                    objective_schema_hash: context.objective_schema_hash.as_ref().map(hex::encode),
+                    // Stable for the full context generation so cache expiry
+                    // alone never changes the ETag.
+                    generated_at: context.round_starts_at,
+                })
+                .ok()?,
+            );
+            if body.len() > OBSERVER_CONTEXT_MAX_BYTES {
+                return None;
+            }
+            st.cache
+                .set(&cache_key, &body, Some(OBSERVER_CONTEXT_TTL))
+                .await;
+            Some(body)
+        })
+        .await
+        .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))
+}
+
+/// Public, non-secret fence bound to the exact container, cycle, and scoring tick.
 pub async fn observer_context(
     State(st): State<SharedState>,
     Path((game_id, challenge_id)): Path<(i32, i32)>,
-) -> AppResult<RequestResponse<KothObserverContextModel>> {
-    let context = load_active_context(st.pg(), game_id, challenge_id)
-        .await?
-        .ok_or_else(|| AppError::conflict("Leaderboard KotH context is not active"))?;
-    let (wave_window_starts_at, wave_window_ends_at) = context.wave_window();
-    let eligible_tokens = load_eligible_tokens(st.pg(), game_id, challenge_id).await?;
-    if eligible_tokens.len() > super::api_contract::MAX_TEAM_ENTRIES {
-        return Err(AppError::conflict(
-            "Leaderboard KotH roster exceeds the supported 2,000 teams",
-        ));
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let Ok(_permit) = OBSERVER_CONTEXT_ADMISSION.try_acquire() else {
+        return Ok(retry_after_response(AppError::TooManyRequests, 1));
+    };
+    let body = match tokio::time::timeout(
+        OBSERVER_CONTEXT_DEADLINE,
+        observer_context_body(&st, game_id, challenge_id),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Ok(retry_after_response(
+                AppError::unavailable("Leaderboard context timed out; retry later"),
+                1,
+            ));
+        }
+    };
+    let validator = format!("\"{}\"", hex::encode(Sha256::digest(&body)));
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|candidates| {
+            candidates.split(',').map(str::trim).any(|candidate| {
+                candidate == validator || candidate.strip_prefix("W/") == Some(validator.as_str())
+            })
+        })
+    {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        response.headers_mut().insert(
+            header::ETAG,
+            HeaderValue::from_str(&validator)
+                .map_err(|error| AppError::internal(error.to_string()))?,
+        );
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-cache"),
+        );
+        return Ok(response);
     }
-    Ok(RequestResponse::ok(KothObserverContextModel {
-        api_version: "v1",
-        context: context.opaque_context(game_id, challenge_id, &eligible_tokens),
-        cycle_number: context.cycle_number,
-        reset_attempt: context.reset_attempt,
-        round_number: context.round_number,
-        cycle_ends_at: context.cycle_ends_at,
-        wave_window_starts_at,
-        wave_window_ends_at,
-        eligible_token_hashes: eligible_tokens
-            .iter()
-            .map(|token| crate::services::ad::koth_api_capability::token_hash_hex(token))
-            .collect(),
-        objective_ids: context.objective_ids.clone().unwrap_or_default(),
-        objective_schema_hash: context.objective_schema_hash.as_ref().map(hex::encode),
-        generated_at: Utc::now(),
-    }))
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(&validator).map_err(|error| AppError::internal(error.to_string()))?,
+    );
+    Ok(response)
 }
 
 pub(super) fn parse_timestamp(headers: &HeaderMap, now_ms: i64) -> AppResult<(i64, &str)> {
@@ -545,6 +665,14 @@ mod tests {
         assert_eq!(value["waveWindowEndsAt"], 230_123_i64);
         assert!(value.get("cycle_ends_at").is_none());
         assert_eq!(value.as_object().unwrap().len(), 12);
+    }
+
+    #[test]
+    fn observer_context_work_is_explicitly_bounded() {
+        assert!(OBSERVER_CONTEXT_CONCURRENCY <= 16);
+        assert!(OBSERVER_CONTEXT_DEADLINE <= std::time::Duration::from_secs(2));
+        assert!(OBSERVER_CONTEXT_TTL <= std::time::Duration::from_secs(5));
+        assert!(OBSERVER_CONTEXT_MAX_BYTES <= 512 * 1024);
     }
 
     #[test]

@@ -278,6 +278,12 @@ Example response after the objective schema is frozen:
 }
 ```
 
+`generatedAt` is the start of the scoring-round context generation, not the
+HTTP response time. It and the response ETag therefore remain stable across
+cache expiry until a real round, roster, capability, runtime, or schema change.
+Persist that ETag and send it as `If-None-Match`; a `304` keeps the already
+validated context without downloading the 2,000-team capability roster again.
+
 Before the first accepted snapshot, `objectiveIds` is empty and
 `objectiveSchemaHash` is `null`. The reporter supplies the final schema in that
 first submission. Thereafter the context is bound to its hash. `context`
@@ -319,6 +325,14 @@ X-RSCTF-Signature: sha256=<lowercase-hex-HMAC-SHA256>
   ]
 }
 ```
+
+Keep one observation request in flight per hill. If a response is lost, sign
+the same canonical body with a fresh timestamp and retry it: rsctf recovers the
+one durable result instead of replacing the snapshot twice. Refresh context on
+a stale-context `409`; stop on permanent `401`/`403` or schema errors. Honor
+`Retry-After` when present and use capped exponential backoff with full jitter
+for `429`, `502`, `503`, timeouts, and connection failures. Reset that backoff
+only after a complete context/read/submit cycle succeeds.
 
 The objective array positions must match `objectiveIds` exactly. `waveId` is a
 stable 1–128 byte identifier using ASCII letters, digits, `.`, `_`, `:`, or

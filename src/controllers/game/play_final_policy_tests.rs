@@ -635,3 +635,27 @@ async fn committed_policy_end_and_kick_win_the_final_response_boundary() {
         .unwrap();
     admin.close().await;
 }
+#[test]
+fn private_play_projections_support_stable_weak_conditional_reads() {
+    let response = private_conditional_response(GameParticipantDeltaModel { rank: None }, None)
+        .expect("serialize participant delta");
+    let validator = response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .expect("ETag")
+        .to_string();
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("private, no-cache")
+    );
+    let conditional = private_conditional_response(
+        GameParticipantDeltaModel { rank: None },
+        Some(&format!("W/{validator}")),
+    )
+    .expect("conditional participant delta");
+    assert_eq!(conditional.status(), axum::http::StatusCode::NOT_MODIFIED);
+}

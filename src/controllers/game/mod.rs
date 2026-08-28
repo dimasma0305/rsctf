@@ -9,6 +9,7 @@
 pub mod ad;
 mod cheat_capabilities;
 mod cheat_identity;
+mod credential_operations;
 pub mod koth;
 mod monitor_history;
 #[cfg(test)]
@@ -280,6 +281,27 @@ pub struct GameDetailModel {
     pub writeup_required: bool,
     #[serde(with = "crate::utils::datetime::millis")]
     pub writeup_deadline: DateTime<Utc>,
+}
+
+/// Rarely-changing division-scoped challenge catalog. Player clients fetch this
+/// once and refresh it on explicit configuration/lifecycle transitions rather
+/// than carrying it in the ten-second participant poll.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameChallengeCatalogModel {
+    pub challenges: BTreeMap<String, Vec<ChallengeInfo>>,
+    pub challenge_count: i32,
+    pub team_token: String,
+    pub writeup_required: bool,
+    #[serde(with = "crate::utils::datetime::millis")]
+    pub writeup_deadline: DateTime<Utc>,
+}
+
+/// Compact live fields for one accepted participation.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameParticipantDeltaModel {
+    pub rank: Option<ScoreboardItem>,
 }
 
 /// RSCTF `JoinedTeam`.

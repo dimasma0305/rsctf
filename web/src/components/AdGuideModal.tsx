@@ -43,9 +43,59 @@ import dayjs from 'dayjs'
 import { FC, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAdToken, AdTokenSection, AdVpnSection, AdTokenRevealModal } from '@Components/AdToolkitSections'
+import {
+  claimPlayerCredentialOperation,
+  clearPlayerCredentialOperation,
+  ownsPlayerCredentialResult,
+  playerCredentialOperationStorageKey,
+  PlayerCredentialOperation,
+} from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
-import api from '@Api'
+import api, { AdSshKeyGeneratedModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
+
+const sshGenerationRequests = new Map<
+  number,
+  Promise<{ data: AdSshKeyGeneratedModel; operation: PlayerCredentialOperation }>
+>()
+
+const generateSshKeyOnce = (
+  gameId: number,
+  revision: number
+): Promise<{ data: AdSshKeyGeneratedModel; operation: PlayerCredentialOperation }> => {
+  const active = sshGenerationRequests.get(gameId)
+  if (active) return active
+  const request = (async () => {
+    const key = playerCredentialOperationStorageKey(gameId, 'ad-ssh')
+    const claim = () => claimPlayerCredentialOperation(window.localStorage, key, revision)
+    const operation =
+      typeof navigator !== 'undefined' && navigator.locks
+        ? await navigator.locks.request(`rsctf:${key}`, claim)
+        : claim()
+    try {
+      const { data } = await api.game.adGameGenerateSshKey(gameId, {
+        operationId: operation.operationId,
+        expectedRevision: operation.expectedRevision,
+      })
+      if (!ownsPlayerCredentialResult(window.localStorage, key, operation, data)) {
+        throw new Error('A stale SSH credential response was ignored')
+      }
+      clearPlayerCredentialOperation(window.localStorage, key, operation.operationId)
+      return { data, operation }
+    } catch (error) {
+      if ((error as { response?: { status?: number } })?.response?.status === 409) {
+        clearPlayerCredentialOperation(window.localStorage, key, operation.operationId)
+      }
+      throw error
+    }
+  })()
+  sshGenerationRequests.set(gameId, request)
+  const cleanup = () => {
+    if (sshGenerationRequests.get(gameId) === request) sshGenerationRequests.delete(gameId)
+  }
+  void request.then(cleanup, cleanup)
+  return request
+}
 
 interface AdToolkitModalProps extends ModalProps {
   gameId: number
@@ -80,13 +130,14 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, ...modalProps })
     try {
       await api.game.adGameUploadSshKey(gameId, { publicKey: pastedPubkey.trim() })
       setPastedPubkey('')
-      mutateSshKey()
+      await mutateSshKey()
       showNotification({
         color: 'teal',
         message: t('game.notification.ad.ssh.uploaded', 'SSH public key registered'),
         icon: <Icon path={mdiCheck} size={1} />,
       })
     } catch (e) {
+      await mutateSshKey().catch(() => undefined)
       showErrorMsg(e, t)
     } finally {
       setSshBusy(false)
@@ -96,11 +147,12 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, ...modalProps })
   const onGenerateSshKey = async () => {
     setSshBusy(true)
     try {
-      const { data } = await api.game.adGameGenerateSshKey(gameId)
+      const { data } = await generateSshKeyOnce(gameId, sshKey?.revision ?? 0)
       setFreshPrivKey({ privateKey: data.privateKey, publicKey: data.publicKey, fingerprint: data.fingerprint })
       openPrivKeyModal()
-      mutateSshKey()
+      await mutateSshKey()
     } catch (e) {
+      await mutateSshKey().catch(() => undefined)
       showErrorMsg(e, t)
     } finally {
       setSshBusy(false)
@@ -111,12 +163,13 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, ...modalProps })
     setSshBusy(true)
     try {
       await api.game.adGameRevokeSshKey(gameId)
-      mutateSshKey()
+      await mutateSshKey()
       showNotification({
         color: 'orange',
         message: t('game.notification.ad.ssh.revoked', 'SSH key revoked'),
       })
     } catch (e) {
+      await mutateSshKey().catch(() => undefined)
       showErrorMsg(e, t)
     } finally {
       setSshBusy(false)

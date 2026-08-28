@@ -552,9 +552,11 @@ const AD_SOLVER = `# Example A&D exploit.
 # teams' instances of this service each tick, then submit the captured
 # flags via the API (see the in-game Toolkit -> "How to submit").
 #
-#   import requests
-#   flag = requests.get(f"http://{target_ip}/flag", timeout=5).text
-#   # POST flag to /api/Game/{id}/Ad/Submit with your Bearer token
+# Feed parsed flags into one bounded, deduplicating submission queue. Exactly
+# one worker should own POST /api/Game/{id}/Ad/Submit, keep one request in
+# flight, batch at most 100 flags, honor Retry-After on 429, and stop on
+# 401/403, event end, or token replacement. Do not start a retry loop per
+# target/exploit task.
 `
 
 // ---------------------------------------------------------------------------

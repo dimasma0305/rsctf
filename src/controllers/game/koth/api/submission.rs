@@ -1,26 +1,32 @@
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, QueryBuilder};
 
 use crate::app_state::SharedState;
 use crate::controllers::game::koth::api_contract::{
-    flatten_waves, parse_and_normalize, MAX_BODY_BYTES,
+    flatten_waves, parse_and_normalize, KothArenaSnapshotInput, MAX_BODY_BYTES,
 };
 use crate::utils::enums::ChallengeType;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::shared::RequestResponse;
 
 use super::{
-    load_active_context, parse_signature, parse_timestamp, verify_signature,
+    load_active_context, parse_signature, parse_timestamp, retry_after_response, verify_signature,
     KothObservationAcceptedModel, INSERT_REPLAY_SQL,
 };
 
 mod evidence;
 #[cfg(test)]
 mod tests;
+
+const OBSERVATION_CONCURRENCY: usize = 8;
+const OBSERVATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+static OBSERVATION_ADMISSION: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(OBSERVATION_CONCURRENCY));
 
 use evidence::{
     ensure_finalized_waves_are_append_only, load_stored_waves, resolve_current_capabilities,
@@ -36,6 +42,140 @@ enum SigningCredentialKind {
 struct SigningCredential {
     kind: SigningCredentialKind,
     secret: String,
+}
+
+struct ObservationReservation {
+    request_digest: [u8; 32],
+    lease_token: uuid::Uuid,
+}
+
+enum ObservationAdmission {
+    Owner(ObservationReservation),
+    Completed(KothObservationAcceptedModel),
+}
+
+fn canonical_input_digest(input: &KothArenaSnapshotInput) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update((input.context.len() as u64).to_be_bytes());
+    digest.update(input.context.as_bytes());
+    digest.update((input.objective_ids.len() as u64).to_be_bytes());
+    for objective in &input.objective_ids {
+        digest.update((objective.len() as u64).to_be_bytes());
+        digest.update(objective.as_bytes());
+    }
+    digest.update((input.waves.len() as u64).to_be_bytes());
+    for wave in &input.waves {
+        digest.update((wave.wave_id.len() as u64).to_be_bytes());
+        digest.update(wave.wave_id.as_bytes());
+        digest.update(wave.ended_at_unix_ms.to_be_bytes());
+        let mut teams: Vec<_> = wave.teams.iter().collect();
+        teams.sort_by(|left, right| left.token_hash.cmp(&right.token_hash));
+        digest.update((teams.len() as u64).to_be_bytes());
+        for team in teams {
+            digest.update(team.token_hash.as_bytes());
+            digest.update(team.activity.earned.to_be_bytes());
+            digest.update(team.activity.possible.to_be_bytes());
+            for objective in &team.objectives {
+                digest.update(objective.earned.to_be_bytes());
+                digest.update(objective.possible.to_be_bytes());
+            }
+            digest.update([u8::from(team.is_crown)]);
+        }
+    }
+    digest.finalize().into()
+}
+
+fn observation_request_digest(
+    credential: &SigningCredential,
+    game_id: i32,
+    challenge_id: i32,
+    input: &KothArenaSnapshotInput,
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"rsctf:koth-observation:v1");
+    digest.update(game_id.to_be_bytes());
+    digest.update(challenge_id.to_be_bytes());
+    match credential.kind {
+        SigningCredentialKind::Observer => digest.update(b"observer"),
+        SigningCredentialKind::TargetReporter {
+            cycle_id,
+            reset_attempt,
+        } => {
+            digest.update(b"target-reporter");
+            digest.update(cycle_id.to_be_bytes());
+            digest.update(reset_attempt.to_be_bytes());
+        }
+    }
+    digest.update(Sha256::digest(credential.secret.as_bytes()));
+    digest.update(canonical_input_digest(input));
+    digest.finalize().into()
+}
+
+async fn completed_observation(
+    pool: &sqlx::PgPool,
+    challenge_id: i32,
+    request_digest: &[u8; 32],
+) -> AppResult<Option<KothObservationAcceptedModel>> {
+    let value: Option<serde_json::Value> = sqlx::query_scalar(
+        r#"SELECT response FROM "KothApiObservationOperations"
+            WHERE challenge_id = $1 AND request_digest = $2"#,
+    )
+    .bind(challenge_id)
+    .bind(request_digest.as_slice())
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .flatten();
+    value
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| AppError::internal(error.to_string()))
+}
+
+async fn reserve_observation(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    challenge_id: i32,
+    context: &str,
+    request_digest: [u8; 32],
+) -> AppResult<ObservationAdmission> {
+    let lease_token = uuid::Uuid::new_v4();
+    let owned: Option<uuid::Uuid> = sqlx::query_scalar(
+        r#"INSERT INTO "KothApiObservationOperations"
+              (challenge_id, game_id, request_digest, context_hash,
+               lease_token, lease_expires_at)
+            VALUES ($1, $2, $3, $4, $5,
+                    clock_timestamp() + interval '30 seconds')
+            ON CONFLICT (challenge_id, request_digest) DO UPDATE SET
+              lease_token = EXCLUDED.lease_token,
+              lease_expires_at = EXCLUDED.lease_expires_at
+            WHERE "KothApiObservationOperations".response IS NULL
+              AND "KothApiObservationOperations".lease_expires_at <= clock_timestamp()
+            RETURNING lease_token"#,
+    )
+    .bind(challenge_id)
+    .bind(game_id)
+    .bind(request_digest.as_slice())
+    .bind(context)
+    .bind(lease_token)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    if owned == Some(lease_token) {
+        return Ok(ObservationAdmission::Owner(ObservationReservation {
+            request_digest,
+            lease_token,
+        }));
+    }
+    for _ in 0..20 {
+        if let Some(response) = completed_observation(pool, challenge_id, &request_digest).await? {
+            return Ok(ObservationAdmission::Completed(response));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Err(AppError::unavailable(
+        "An identical Leaderboard observation is still being committed; retry later",
+    ))
 }
 
 async fn load_signing_credentials(
@@ -261,10 +401,25 @@ pub async fn submit_observation(
     Path((game_id, challenge_id)): Path<(i32, i32)>,
     headers: HeaderMap,
     body: Bytes,
-) -> AppResult<RequestResponse<KothObservationAcceptedModel>> {
-    Ok(RequestResponse::ok(
-        accept_observation(st.pg(), game_id, challenge_id, &headers, &body).await?,
-    ))
+) -> AppResult<Response> {
+    let Ok(_permit) = OBSERVATION_ADMISSION.try_acquire() else {
+        return Ok(retry_after_response(AppError::TooManyRequests, 1));
+    };
+    let accepted = match tokio::time::timeout(
+        OBSERVATION_DEADLINE,
+        accept_observation(st.pg(), game_id, challenge_id, &headers, &body),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Ok(retry_after_response(
+                AppError::unavailable("Leaderboard observation timed out; retry later"),
+                1,
+            ));
+        }
+    };
+    Ok(RequestResponse::ok(accepted).into_response())
 }
 
 async fn accept_observation(
@@ -291,6 +446,14 @@ async fn accept_observation(
         &signature,
     )?;
     let input = parse_and_normalize(body)?;
+    let request_digest = observation_request_digest(&credential, game_id, challenge_id, &input);
+    let reservation =
+        match reserve_observation(pool, game_id, challenge_id, &input.context, request_digest)
+            .await?
+        {
+            ObservationAdmission::Completed(response) => return Ok(response),
+            ObservationAdmission::Owner(reservation) => reservation,
+        };
     let submitted_waves = input.waves.len();
     let submitted_team_hashes: std::collections::HashSet<_> = input
         .waves
@@ -552,11 +715,7 @@ async fn accept_observation(
             .map_err(|error| AppError::internal(error.to_string()))?;
         }
     }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(KothObservationAcceptedModel {
+    let response = KothObservationAcceptedModel {
         accepted: true,
         cycle_number: context.cycle_number,
         reset_attempt: context.reset_attempt,
@@ -565,5 +724,31 @@ async fn accept_observation(
         submitted_teams,
         recognized_teams: recognized_team_ids.len(),
         accepted_at,
-    })
+    };
+    let stored = sqlx::query(
+        r#"UPDATE "KothApiObservationOperations"
+              SET response = $4,
+                  completed_at = clock_timestamp(),
+                  expires_at = clock_timestamp() + interval '10 minutes'
+            WHERE challenge_id = $1 AND request_digest = $2
+              AND lease_token = $3 AND response IS NULL"#,
+    )
+    .bind(challenge_id)
+    .bind(reservation.request_digest.as_slice())
+    .bind(reservation.lease_token)
+    .bind(serde_json::to_value(&response).map_err(|error| AppError::internal(error.to_string()))?)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if stored != 1 {
+        return Err(AppError::conflict(
+            "Leaderboard observation ownership changed before commit",
+        ));
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(response)
 }

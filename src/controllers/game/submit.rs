@@ -955,6 +955,9 @@ pub async fn submit(
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    if claimed_first_solve {
+        super::play::invalidate_participant_rows(id);
+    }
     crate::services::feed_publication::enqueue_submission(&st, id, sub_id, committed_event_ids);
 
     if let Some((notice_type, notice_id, values, publish_time)) = notice_to_broadcast {

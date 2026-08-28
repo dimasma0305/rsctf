@@ -3,11 +3,13 @@
 use super::*;
 
 /// `AdTokenGenerateResultModel` — `POST Ad/Token` response (plaintext once).
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdTokenGenerateResultModel {
     pub token: String,
     pub hint: String,
+    pub operation_id: uuid::Uuid,
+    pub revision: i64,
     #[serde(with = "crate::utils::datetime::millis")]
     pub rotated_at: DateTime<Utc>,
 }
@@ -25,6 +27,7 @@ pub struct AdTokenHintModel {
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub last_used_at: Option<DateTime<Utc>>,
     pub can_manage: bool,
+    pub revision: i64,
 }
 
 /// `GET /api/Game/{id}/Ad/Token` — the caller team's API-token hint (never the
@@ -39,6 +42,13 @@ pub async fn get_token(
         .filter(ad_team_api_token::Column::ParticipationId.eq(part.id))
         .one(&st.db)
         .await?;
+    let revision = crate::controllers::game::credential_operations::current_revision(
+        st.pg(),
+        part.id,
+        crate::controllers::game::credential_operations::CredentialKind::AdToken,
+        0,
+    )
+    .await?;
     let model = match existing {
         None => AdTokenHintModel {
             exists: false,
@@ -47,6 +57,7 @@ pub async fn get_token(
             last_rotated_at: None,
             last_used_at: None,
             can_manage: true,
+            revision,
         },
         Some(t) => AdTokenHintModel {
             exists: true,
@@ -55,6 +66,7 @@ pub async fn get_token(
             last_rotated_at: t.last_rotated_at_utc,
             last_used_at: t.last_used_at_utc,
             can_manage: true,
+            revision,
         },
     };
     Ok(RequestResponse::ok(model))
@@ -67,13 +79,42 @@ pub async fn rotate_token(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path(id): Path<i32>,
+    crate::controllers::game::credential_operations::CredentialMutationInput(request): crate::controllers::game::credential_operations::CredentialMutationInput,
 ) -> AppResult<RequestResponse<AdTokenGenerateResultModel>> {
     let part = resolve_participation(&st, &user, id).await?;
+    let mut roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
+    let scope = crate::controllers::game::credential_operations::CredentialScope {
+        participation_id: part.id,
+        game_id: id,
+        challenge_id: 0,
+        actor_user_id: user.id,
+        kind: crate::controllers::game::credential_operations::CredentialKind::AdToken,
+    };
+    let reservation = crate::controllers::game::credential_operations::reserve(
+        &st,
+        roster.transaction_mut(),
+        scope,
+        request,
+    )
+    .await?;
+    let (operation_id, expected_revision, result_revision) = match reservation {
+        crate::controllers::game::credential_operations::CredentialReservation::Recovered(
+            result,
+        ) => {
+            roster.release().await?;
+            return Ok(RequestResponse::ok(result));
+        }
+        crate::controllers::game::credential_operations::CredentialReservation::Fresh {
+            operation_id,
+            expected_revision,
+            result_revision,
+        } => (operation_id, expected_revision, result_revision),
+    };
+
     let plaintext = generate_ad_token();
     let hint = build_hint(&plaintext);
     let hash = crate::services::ad::api_token::hash(&plaintext);
     let now = Utc::now();
-    let roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
 
     sqlx::query(
         r#"INSERT INTO "AdTeamApiTokens"
@@ -90,16 +131,29 @@ pub async fn rotate_token(
     .bind(hash)
     .bind(&hint)
     .bind(now)
-    .execute(st.pg())
+    .execute(&mut **roster.transaction_mut())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    roster.release().await?;
-
-    Ok(RequestResponse::ok(AdTokenGenerateResultModel {
+    let result = AdTokenGenerateResultModel {
         token: plaintext,
         hint,
+        operation_id,
+        revision: result_revision,
         rotated_at: now,
-    }))
+    };
+    crate::controllers::game::credential_operations::complete(
+        &st,
+        roster.transaction_mut(),
+        scope,
+        operation_id,
+        expected_revision,
+        result_revision,
+        &result,
+    )
+    .await?;
+    roster.release().await?;
+
+    Ok(RequestResponse::ok(result))
 }
 
 /// `DELETE /api/Game/{id}/Ad/Token` — revoke the caller team's token. Subsequent
@@ -110,11 +164,19 @@ pub async fn revoke_token(
     Path(id): Path<i32>,
 ) -> AppResult<StatusCode> {
     let part = resolve_participation(&st, &user, id).await?;
-    let roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
-    ad_team_api_token::Entity::delete_many()
-        .filter(ad_team_api_token::Column::ParticipationId.eq(part.id))
-        .exec(&st.db)
-        .await?;
+    let mut roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
+    sqlx::query(r#"DELETE FROM "AdTeamApiTokens" WHERE participation_id = $1"#)
+        .bind(part.id)
+        .execute(&mut **roster.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    crate::controllers::game::credential_operations::advance_revision(
+        roster.transaction_mut(),
+        part.id,
+        crate::controllers::game::credential_operations::CredentialKind::AdToken,
+        0,
+    )
+    .await?;
     roster.release().await?;
     // RSCTF `AdGameController.RevokeToken` returns 204 NoContent.
     Ok(StatusCode::NO_CONTENT)

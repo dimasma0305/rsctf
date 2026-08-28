@@ -2338,7 +2338,15 @@ export interface AdBatchSubmitResultModel {
 export interface AdTokenGenerateResultModel {
   token: string;
   hint: string;
+  operationId: string;
+  revision: number;
   rotatedAt: string;
+}
+
+/** Revision-fenced identity for a recoverable one-time credential mutation. */
+export interface CredentialMutationRequest {
+  operationId: string;
+  expectedRevision: number;
 }
 
 /** A&D SSH key — body for POST /api/Game/{id}/Ad/Ssh/Key. */
@@ -2356,6 +2364,7 @@ export interface AdSshKeyInfoModel {
   lastUsedAt?: string | null;
   /** Hostname:port the player ssh's to (Ad:Ssh:PublicHost/Port). */
   jumpHost?: string | null;
+  revision: number;
 }
 
 /** A&D SSH key — server-generated keypair (private key shown once). */
@@ -2364,6 +2373,8 @@ export interface AdSshKeyGeneratedModel {
   publicKey: string;
   privateKey: string;
   fingerprint: string;
+  operationId: string;
+  revision: number;
   createdAt: string;
 }
 
@@ -2453,6 +2464,7 @@ export interface AdTokenHintModel {
   lastUsedAt?: string | null;
   /** True iff caller is captain of the participating team. */
   canManage: boolean;
+  revision: number;
 }
 
 /** A&D — per-service row in the player's state view. */
@@ -3781,6 +3793,21 @@ export interface GameDetailModel {
    * @format uint64
    */
   writeupDeadline: number;
+}
+
+export interface GameChallengeCatalogModel {
+  challenges?: Record<string, ChallengeInfo[]>;
+  /** @format int32 */
+  challengeCount?: number;
+  /** @minLength 1 */
+  teamToken: string;
+  writeupRequired: boolean;
+  /** @format uint64 */
+  writeupDeadline: number;
+}
+
+export interface GameParticipantDeltaModel {
+  rank?: ScoreboardItem | null;
 }
 
 /** Participation for review (Admin). Kept for the legacy raw-array endpoint. */
@@ -8181,6 +8208,30 @@ export class Api<
       }),
   };
   game = {
+    gamePlayCatalog: (id: number, params: RequestParams = {}) =>
+      this.request<GameChallengeCatalogModel, RequestResponse>({
+        path: `/api/game/${id}/details/catalog`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    useGamePlayCatalog: (id: number, options?: SWRConfiguration, doFetch: boolean = true) =>
+      useSWR<GameChallengeCatalogModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/details/catalog` : null,
+        options,
+      ),
+    gameParticipantDelta: (id: number, params: RequestParams = {}) =>
+      this.request<GameParticipantDeltaModel, RequestResponse>({
+        path: `/api/game/${id}/details/live`,
+        method: "GET",
+        format: "json",
+        ...params,
+      }),
+    useGameParticipantDelta: (id: number, options?: SWRConfiguration, doFetch: boolean = true) =>
+      useSWR<GameParticipantDeltaModel, RequestResponse>(
+        doFetch ? `/api/game/${id}/details/live` : null,
+        options,
+      ),
     /**
      * @description Retrieves all challenges of the game; requires User permission and active team participation
      *
@@ -9761,10 +9812,12 @@ export class Api<
      * @name GameAdRotateToken
      * @request POST:/api/Game/{id}/Ad/Token
      */
-    gameAdRotateToken: (id: number, params: RequestParams = {}) =>
+    gameAdRotateToken: (id: number, data?: CredentialMutationRequest, params: RequestParams = {}) =>
       this.request<AdTokenGenerateResultModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Token`,
         method: "POST",
+        body: data,
+        type: data ? ContentType.Json : undefined,
         format: "json",
         ...params,
       }),
@@ -9845,10 +9898,12 @@ export class Api<
      * @name AdGameGenerateSshKey
      * @request POST:/api/Game/{id}/Ad/Ssh/Key/Generate
      */
-    adGameGenerateSshKey: (id: number, params: RequestParams = {}) =>
+    adGameGenerateSshKey: (id: number, data?: CredentialMutationRequest, params: RequestParams = {}) =>
       this.request<AdSshKeyGeneratedModel, RequestResponse>({
         path: `/api/Game/${id}/Ad/Ssh/Key/Generate`,
         method: "POST",
+        body: data,
+        type: data ? ContentType.Json : undefined,
         format: "json",
         ...params,
       }),

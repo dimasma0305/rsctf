@@ -23,16 +23,19 @@ pub struct AdSshKeyInfoModel {
     #[serde(with = "crate::utils::datetime::millis_opt")]
     pub last_used_at: Option<DateTime<Utc>>,
     pub jump_host: Option<String>,
+    pub revision: i64,
 }
 
 /// `AdSshKeyGeneratedModel` — server-generated keypair (private key once).
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdSshKeyGeneratedModel {
     pub algorithm: String,
     pub public_key: String,
     pub private_key: String,
     pub fingerprint: String,
+    pub operation_id: uuid::Uuid,
+    pub revision: i64,
     #[serde(with = "crate::utils::datetime::millis")]
     pub created_at: DateTime<Utc>,
 }
@@ -49,10 +52,17 @@ pub async fn get_ssh_key(
         .filter(ad_ssh_key::Column::ParticipationId.eq(part.id))
         .one(&st.db)
         .await?;
+    let revision = crate::controllers::game::credential_operations::current_revision(
+        st.pg(),
+        part.id,
+        crate::controllers::game::credential_operations::CredentialKind::AdSsh,
+        0,
+    )
+    .await?;
     let model = existing
         .as_ref()
-        .map(ssh_key_info)
-        .unwrap_or_else(empty_ssh_key_info);
+        .map(|key| ssh_key_info(key, revision))
+        .unwrap_or_else(|| empty_ssh_key_info(revision));
     Ok(RequestResponse::ok(model))
 }
 
@@ -69,7 +79,7 @@ pub async fn upload_ssh_key(
     let (algorithm, fingerprint) = parse_ssh_public_key(&model.public_key)?;
     let public_key = model.public_key.trim().to_string();
     let now = Utc::now();
-    let roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
+    let mut roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
 
     sqlx::query(
         r#"INSERT INTO "AdSshKeys"
@@ -89,16 +99,37 @@ pub async fn upload_ssh_key(
     .bind(public_key)
     .bind(fingerprint)
     .bind(now)
-    .execute(st.pg())
+    .execute(&mut **roster.transaction_mut())
     .await
     .map_err(map_ssh_key_write_error)?;
-    let stored = ad_ssh_key::Entity::find()
-        .filter(ad_ssh_key::Column::ParticipationId.eq(part.id))
-        .one(&st.db)
-        .await?
-        .ok_or_else(|| AppError::internal("SSH key upsert did not persist"))?;
+    let revision = crate::controllers::game::credential_operations::advance_revision(
+        roster.transaction_mut(),
+        part.id,
+        crate::controllers::game::credential_operations::CredentialKind::AdSsh,
+        0,
+    )
+    .await?;
+    let stored = sqlx::query_as::<_, (String, String, bool, DateTime<Utc>, Option<DateTime<Utc>>)>(
+        r#"SELECT algorithm, fingerprint, platform_generated,
+                  created_at_utc, last_used_at_utc
+             FROM "AdSshKeys" WHERE participation_id = $1"#,
+    )
+    .bind(part.id)
+    .fetch_optional(&mut **roster.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::internal("SSH key upsert did not persist"))?;
     roster.release().await?;
-    Ok(RequestResponse::ok(ssh_key_info(&stored)))
+    Ok(RequestResponse::ok(AdSshKeyInfoModel {
+        exists: true,
+        algorithm: stored.0,
+        fingerprint: stored.1,
+        platform_generated: stored.2,
+        created_at: Some(stored.3),
+        last_used_at: stored.4,
+        jump_host: crate::services::ad_ssh::jump_host(),
+        revision,
+    }))
 }
 
 /// `DELETE /api/Game/{id}/Ad/Ssh/Key` — remove the caller team's registered key.
@@ -108,11 +139,19 @@ pub async fn delete_ssh_key(
     Path(id): Path<i32>,
 ) -> AppResult<StatusCode> {
     let part = resolve_participation(&st, &user, id).await?;
-    let roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
-    ad_ssh_key::Entity::delete_many()
-        .filter(ad_ssh_key::Column::ParticipationId.eq(part.id))
-        .exec(&st.db)
-        .await?;
+    let mut roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
+    sqlx::query(r#"DELETE FROM "AdSshKeys" WHERE participation_id = $1"#)
+        .bind(part.id)
+        .execute(&mut **roster.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    crate::controllers::game::credential_operations::advance_revision(
+        roster.transaction_mut(),
+        part.id,
+        crate::controllers::game::credential_operations::CredentialKind::AdSsh,
+        0,
+    )
+    .await?;
     roster.release().await?;
     Ok(StatusCode::OK)
 }
@@ -125,11 +164,39 @@ pub async fn generate_ssh_key(
     State(st): State<SharedState>,
     user: CurrentUser,
     Path(id): Path<i32>,
+    crate::controllers::game::credential_operations::CredentialMutationInput(request): crate::controllers::game::credential_operations::CredentialMutationInput,
 ) -> AppResult<RequestResponse<AdSshKeyGeneratedModel>> {
     let part = resolve_participation(&st, &user, id).await?;
+    let mut roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
+    let scope = crate::controllers::game::credential_operations::CredentialScope {
+        participation_id: part.id,
+        game_id: id,
+        challenge_id: 0,
+        actor_user_id: user.id,
+        kind: crate::controllers::game::credential_operations::CredentialKind::AdSsh,
+    };
+    let reservation = crate::controllers::game::credential_operations::reserve(
+        &st,
+        roster.transaction_mut(),
+        scope,
+        request,
+    )
+    .await?;
+    let (operation_id, expected_revision, result_revision) = match reservation {
+        crate::controllers::game::credential_operations::CredentialReservation::Recovered(
+            result,
+        ) => {
+            roster.release().await?;
+            return Ok(RequestResponse::ok(result));
+        }
+        crate::controllers::game::credential_operations::CredentialReservation::Fresh {
+            operation_id,
+            expected_revision,
+            result_revision,
+        } => (operation_id, expected_revision, result_revision),
+    };
     let kp = generate_ed25519_keypair();
     let now = Utc::now();
-    let roster = super::vpn::acquire_roster_access(&st, &user, &part).await?;
 
     sqlx::query(
         r#"INSERT INTO "AdSshKeys"
@@ -148,18 +215,31 @@ pub async fn generate_ssh_key(
     .bind(&kp.public_key)
     .bind(&kp.fingerprint)
     .bind(now)
-    .execute(st.pg())
+    .execute(&mut **roster.transaction_mut())
     .await
     .map_err(map_ssh_key_write_error)?;
-    roster.release().await?;
-
-    Ok(RequestResponse::ok(AdSshKeyGeneratedModel {
+    let result = AdSshKeyGeneratedModel {
         algorithm: "ssh-ed25519".to_string(),
         public_key: kp.public_key,
         private_key: kp.private_key,
         fingerprint: kp.fingerprint,
+        operation_id,
+        revision: result_revision,
         created_at: now,
-    }))
+    };
+    crate::controllers::game::credential_operations::complete(
+        &st,
+        roster.transaction_mut(),
+        scope,
+        operation_id,
+        expected_revision,
+        result_revision,
+        &result,
+    )
+    .await?;
+    roster.release().await?;
+
+    Ok(RequestResponse::ok(result))
 }
 
 const SSH_FINGERPRINT_INDEX: &str = "ux_adsshkeys_fingerprint";
@@ -184,7 +264,7 @@ fn is_ssh_fingerprint_conflict(error: &sqlx::Error) -> bool {
             == Some(SSH_FINGERPRINT_INDEX)
 }
 
-fn empty_ssh_key_info() -> AdSshKeyInfoModel {
+fn empty_ssh_key_info(revision: i64) -> AdSshKeyInfoModel {
     AdSshKeyInfoModel {
         exists: false,
         algorithm: String::new(),
@@ -193,11 +273,12 @@ fn empty_ssh_key_info() -> AdSshKeyInfoModel {
         created_at: None,
         last_used_at: None,
         jump_host: crate::services::ad_ssh::jump_host(),
+        revision,
     }
 }
 
 /// Project a stored `ad_ssh_key` row to its player-facing metadata (no plaintext).
-fn ssh_key_info(k: &ad_ssh_key::Model) -> AdSshKeyInfoModel {
+fn ssh_key_info(k: &ad_ssh_key::Model, revision: i64) -> AdSshKeyInfoModel {
     AdSshKeyInfoModel {
         exists: true,
         algorithm: k.algorithm.clone(),
@@ -206,6 +287,7 @@ fn ssh_key_info(k: &ad_ssh_key::Model) -> AdSshKeyInfoModel {
         created_at: Some(k.created_at_utc),
         last_used_at: k.last_used_at_utc,
         jump_host: crate::services::ad_ssh::jump_host(),
+        revision,
     }
 }
 

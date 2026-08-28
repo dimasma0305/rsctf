@@ -29,9 +29,6 @@
 
 use std::time::Duration as StdDuration;
 
-use chrono::Utc;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-
 use crate::app_state::SharedState;
 use crate::utils::enums::{ChallengeReviewStatus, ChallengeType};
 use crate::utils::error::AppResult;

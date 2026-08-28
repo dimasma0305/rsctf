@@ -518,23 +518,74 @@ export const useGameScoreboard = (numId: number, isTabActive: boolean = true) =>
   return query
 }
 
+const participantDeltaSubscribers = new Map<string, Map<symbol, (leader: boolean) => void>>()
+
+const participantDeltaPollMiddleware: Middleware = (useSWRNext) =>
+  function useParticipantDeltaPollOwner(key, fetcher, config) {
+    const serializedKey = unstable_serialize(key)
+    const [leaderKey, setLeaderKey] = useState<string | null>(null)
+    useLayoutEffect(() => {
+      if (!serializedKey) {
+        setLeaderKey(null)
+        return
+      }
+      const token = Symbol(serializedKey)
+      const subscribers = participantDeltaSubscribers.get(serializedKey) ?? new Map()
+      const first = subscribers.size === 0
+      subscribers.set(token, (leader: boolean) => setLeaderKey(leader ? serializedKey : null))
+      participantDeltaSubscribers.set(serializedKey, subscribers)
+      if (first) subscribers.get(token)?.(true)
+      return () => {
+        const active = participantDeltaSubscribers.get(serializedKey)
+        if (!active) return
+        const wasLeader = active.keys().next().value === token
+        active.delete(token)
+        if (active.size === 0) participantDeltaSubscribers.delete(serializedKey)
+        else if (wasLeader) active.values().next().value?.(true)
+      }
+    }, [serializedKey])
+    return useSWRNext(key, fetcher, {
+      ...config,
+      refreshInterval: leaderKey === serializedKey ? config.refreshInterval : 0,
+    })
+  }
+
+export const participantDeltaSWRConfig: SWRConfiguration = {
+  ...OnceSWRConfig,
+  use: [...(OnceSWRConfig.use ?? []), participantDeltaPollMiddleware],
+  refreshWhenHidden: false,
+  refreshWhenOffline: false,
+  shouldRetryOnError: false,
+}
+
 export const useGameTeamInfo = (numId: number, shouldPoll: boolean = true) => {
   const { game } = useGame(numId)
   const { status } = useGameStatus(game)
   const polling = status === GameStatus.OnGoing && shouldPoll
+  const catalog = api.game.useGamePlayCatalog(
+    numId,
+    {
+      ...participantDeltaSWRConfig,
+      refreshInterval: polling ? 60_000 : 0,
+    },
+    numId > 0
+  )
+  const delta = api.game.useGameParticipantDelta(
+    numId,
+    {
+      ...participantDeltaSWRConfig,
+      refreshInterval: polling ? 10_000 : 0,
+    },
+    numId > 0
+  )
+  useRevalidateWhenPollingStops(polling, delta.mutate)
+  const teamInfo = useMemo(
+    () => (catalog.data && delta.data ? { ...catalog.data, rank: delta.data.rank } : undefined),
+    [catalog.data, delta.data]
+  )
+  const mutate = () => Promise.all([catalog.mutate(), delta.mutate()])
 
-  const {
-    data: teamInfo,
-    error,
-    mutate,
-  } = api.game.useGameChallengesWithTeamInfo(numId, {
-    ...OnceSWRConfig,
-    shouldRetryOnError: false,
-    refreshInterval: polling ? 10 * 1000 : 0,
-  })
-  useRevalidateWhenPollingStops(polling, mutate)
-
-  return { teamInfo, game, error, mutate }
+  return { teamInfo, game, error: catalog.error ?? delta.error, mutate }
 }
 
 /** A&D — player state poll (own team's containers + flags). Pass doFetch=false

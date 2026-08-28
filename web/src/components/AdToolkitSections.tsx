@@ -1,14 +1,91 @@
-import { Accordion, ActionIcon, Alert, Box, Button, Code, CopyButton, Group, Modal, Stack, Text, Tooltip } from '@mantine/core'
+import {
+  Accordion,
+  ActionIcon,
+  Alert,
+  Box,
+  Button,
+  Code,
+  CopyButton,
+  Group,
+  Modal,
+  Stack,
+  Text,
+  Tooltip,
+} from '@mantine/core'
 import { useDisclosure, useLocalStorage } from '@mantine/hooks'
-import { mdiAlertCircleOutline, mdiCheck, mdiContentCopy, mdiDownload, mdiEye, mdiEyeOff, mdiKeyChain, mdiVpn } from '@mdi/js'
+import {
+  mdiAlertCircleOutline,
+  mdiCheck,
+  mdiContentCopy,
+  mdiDownload,
+  mdiEye,
+  mdiEyeOff,
+  mdiKeyChain,
+  mdiVpn,
+} from '@mdi/js'
 import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
-import { FC, useState } from 'react'
+import { FC, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import {
+  claimPlayerCredentialOperation,
+  clearPlayerCredentialOperation,
+  ownsPlayerCredentialResult,
+  playerCredentialOperationStorageKey,
+  PlayerCredentialOperation,
+} from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
 import { useAdTokenHint } from '@Hooks/useGame'
 import api, { AdTokenHintModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
+
+const adTokenRequests = new Map<
+  number,
+  Promise<{ token: string; revision: number; operation: PlayerCredentialOperation }>
+>()
+
+const claimAdTokenOperation = async (gameId: number, revision: number) => {
+  const key = playerCredentialOperationStorageKey(gameId, 'ad-token')
+  const claim = () => claimPlayerCredentialOperation(window.localStorage, key, revision)
+  if (typeof navigator !== 'undefined' && navigator.locks) {
+    return navigator.locks.request(`rsctf:${key}`, claim)
+  }
+  return claim()
+}
+
+const rotateAdTokenOnce = (
+  gameId: number,
+  revision: number
+): Promise<{ token: string; revision: number; operation: PlayerCredentialOperation }> => {
+  const active = adTokenRequests.get(gameId)
+  if (active) return active
+  const request = (async () => {
+    const key = playerCredentialOperationStorageKey(gameId, 'ad-token')
+    const operation = await claimAdTokenOperation(gameId, revision)
+    try {
+      const { data } = await api.game.gameAdRotateToken(gameId, {
+        operationId: operation.operationId,
+        expectedRevision: operation.expectedRevision,
+      })
+      if (!ownsPlayerCredentialResult(window.localStorage, key, operation, data)) {
+        throw new Error('A stale credential response was ignored')
+      }
+      clearPlayerCredentialOperation(window.localStorage, key, operation.operationId)
+      return { token: data.token, revision: data.revision, operation }
+    } catch (error) {
+      if ((error as { response?: { status?: number } })?.response?.status === 409) {
+        clearPlayerCredentialOperation(window.localStorage, key, operation.operationId)
+      }
+      throw error
+    }
+  })()
+  adTokenRequests.set(gameId, request)
+  const cleanup = () => {
+    if (adTokenRequests.get(gameId) === request) adTokenRequests.delete(gameId)
+  }
+  void request.then(cleanup, cleanup)
+  return request
+}
 
 /**
  * Shared token state + rotation flow for the A&D and KotH toolkits. The two
@@ -45,25 +122,42 @@ export const useAdToken = (gameId: number, onRotated?: () => void) => {
     defaultValue: null,
     getInitialValueInEffect: false,
   })
+  const [storedRevision, setStoredRevision] = useLocalStorage<number | null>({
+    key: `ad-api-token-revision-${gameId}`,
+    defaultValue: null,
+    getInitialValueInEffect: false,
+  })
   const [tokenModalOpen, { open: openTokenModal, close: closeTokenModal }] = useDisclosure(false)
+
+  useEffect(() => {
+    if (!adTokenHint || !storedToken || storedRevision === adTokenHint.revision) return
+    setStoredToken(null)
+    setStoredRevision(null)
+    setFreshToken(null)
+  }, [adTokenHint, setStoredRevision, setStoredToken, storedRevision, storedToken])
 
   const onRotate = async () => {
     setRotating(true)
     try {
-      const { data } = await api.game.gameAdRotateToken(gameId)
-      setFreshToken(data.token)
-      setStoredToken(data.token) // persist for bot/script reuse across reloads
+      const { token, revision } = await rotateAdTokenOnce(gameId, adTokenHint?.revision ?? 0)
+      setFreshToken(token)
+      setStoredToken(token) // persist for bot/script reuse across reloads
+      setStoredRevision(revision)
       openTokenModal()
-      mutateHint()
+      await mutateHint()
       onRotated?.()
     } catch (e) {
+      await mutateHint().catch(() => undefined)
       showErrorMsg(e, t)
     } finally {
       setRotating(false)
     }
   }
 
-  const forgetToken = () => setStoredToken(null)
+  const forgetToken = () => {
+    setStoredToken(null)
+    setStoredRevision(null)
+  }
 
   return { adTokenHint, rotating, freshToken, storedToken, forgetToken, tokenModalOpen, closeTokenModal, onRotate }
 }
@@ -85,8 +179,7 @@ interface AdTokenSectionProps {
 }
 
 /** Mask a token to prefix + last 4 so it can be shown without fully revealing. */
-const maskToken = (tok: string) =>
-  tok.length <= 12 ? tok : `${tok.slice(0, 7)}${'•'.repeat(6)}${tok.slice(-4)}`
+const maskToken = (tok: string) => (tok.length <= 12 ? tok : `${tok.slice(0, 7)}${'•'.repeat(6)}${tok.slice(-4)}`)
 
 /**
  * The "Your API token" accordion item, shared by the A&D and KotH toolkits.
@@ -146,9 +239,7 @@ export const AdTokenSection: FC<AdTokenSectionProps> = ({
           {hint?.exists && (
             <Text size="xs" c="dimmed">
               {t('game.content.ad.last_used', 'Last used')}:{' '}
-              {hint.lastUsedAt
-                ? dayjs(hint.lastUsedAt).fromNow()
-                : t('game.content.ad.never_used', 'never')}
+              {hint.lastUsedAt ? dayjs(hint.lastUsedAt).fromNow() : t('game.content.ad.never_used', 'never')}
             </Text>
           )}
 
@@ -161,15 +252,27 @@ export const AdTokenSection: FC<AdTokenSectionProps> = ({
                   <Text size="sm" fw={600} style={{ whiteSpace: 'nowrap' }}>
                     {t('game.content.ad.saved_token', 'Saved token')}:
                   </Text>
-                  <Code className={misc.ffmono} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <Code
+                    className={misc.ffmono}
+                    style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  >
                     {revealed ? storedToken : maskToken(storedToken)}
                   </Code>
-                  <Tooltip label={revealed ? t('game.button.ad.hide_token', 'Hide') : t('game.button.ad.reveal_token', 'Reveal')} withArrow>
+                  <Tooltip
+                    label={
+                      revealed ? t('game.button.ad.hide_token', 'Hide') : t('game.button.ad.reveal_token', 'Reveal')
+                    }
+                    withArrow
+                  >
                     <ActionIcon
                       variant="subtle"
                       size="sm"
                       onClick={() => setRevealed((v) => !v)}
-                      aria-label={revealed ? t('game.button.ad.hide_token', 'Hide token') : t('game.button.ad.reveal_token', 'Reveal token')}
+                      aria-label={
+                        revealed
+                          ? t('game.button.ad.hide_token', 'Hide token')
+                          : t('game.button.ad.reveal_token', 'Reveal token')
+                      }
                     >
                       <Icon path={revealed ? mdiEyeOff : mdiEye} size={0.7} />
                     </ActionIcon>
@@ -184,7 +287,9 @@ export const AdTokenSection: FC<AdTokenSectionProps> = ({
                         leftSection={<Icon path={copied ? mdiCheck : mdiContentCopy} size={0.7} />}
                         onClick={copy}
                       >
-                        {copied ? t('game.tooltip.copy.copied', 'Copied') : t('game.button.ad.copy_token', 'Copy token')}
+                        {copied
+                          ? t('game.tooltip.copy.copied', 'Copied')
+                          : t('game.button.ad.copy_token', 'Copy token')}
                       </Button>
                     )}
                   </CopyButton>
@@ -204,7 +309,10 @@ export const AdTokenSection: FC<AdTokenSectionProps> = ({
             </Stack>
           ) : (
             <Text size="xs" c="dimmed">
-              {t('game.content.ad.saved_token_hint', 'Generate or rotate a token and it’s saved in this browser so your bot/scripts can reuse it later.')}
+              {t(
+                'game.content.ad.saved_token_hint',
+                'Generate or rotate a token and it’s saved in this browser so your bot/scripts can reuse it later.'
+              )}
             </Text>
           )}
         </Stack>
@@ -272,13 +380,7 @@ interface AdTokenRevealModalProps {
  * Fresh-token reveal modal shared by the A&D and KotH toolkits — shows the
  * plaintext token exactly once after a rotation.
  */
-export const AdTokenRevealModal: FC<AdTokenRevealModalProps> = ({
-  opened,
-  onClose,
-  freshToken,
-  title,
-  warning,
-}) => {
+export const AdTokenRevealModal: FC<AdTokenRevealModalProps> = ({ opened, onClose, freshToken, title, warning }) => {
   const { t } = useTranslation()
 
   return (

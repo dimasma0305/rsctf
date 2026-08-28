@@ -397,6 +397,15 @@ Batching reduces overhead, but do not wait so long that short-lived flags expire
 Use the current target endpoint as the source of truth and respect its challenge,
 IP, port, and health fields.
 
+Give one worker ownership of the submit endpoint and merge captured flags into
+that worker's deduplicated queue. Keep at most one HTTP request in flight, send
+no more than 100 flags at once, and remove terminal per-flag results before the
+next batch. On `429`, honor `Retry-After`; on `502`, `503`, or a timeout, use a
+capped exponential delay with full jitter. Stop the worker on `401`, `403`, an
+ended/paused response, or token replacement. In particular, do not let every
+exploit task start its own retry loop: that multiplies authentication queries
+without increasing accepted-flag throughput.
+
 ## 4. Evidence and scoring method {#official-epoch-scoring}
 
 The scorer reads three kinds of database evidence:

@@ -4,6 +4,10 @@ use super::*;
 
 #[path = "play_final_policy.rs"]
 mod final_policy;
+#[path = "play_details.rs"]
+mod split_details;
+pub(crate) use split_details::invalidate_participant_rows;
+pub use split_details::{game_challenge_catalog, game_participant_delta};
 
 const MAX_RECENT_GAMES: usize = 50;
 

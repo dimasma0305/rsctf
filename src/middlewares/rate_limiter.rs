@@ -39,6 +39,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::MethodRouter;
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 
 use crate::app_state::SharedState;
 
@@ -145,6 +146,13 @@ pub enum Policy {
     /// Per-identity ceiling for player submission-verdict recovery. Appended to
     /// preserve every shipped Redis policy discriminant.
     Verdict,
+    /// Pre-PostgreSQL budget for one presented A&D bearer digest.
+    AdBearerAdmission,
+    /// Source backstop for A&D bearer authentication on supported routes.
+    AdBearerSourceAdmission,
+    /// Tight player credential mutation budget. Correctness comes from the
+    /// durable operation/revision fence; this only limits abusive new intents.
+    CredentialMutation,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -208,6 +216,18 @@ impl Policy {
             Policy::Verdict => Kind::Bucket {
                 capacity: 30.0,
                 refill_per_sec: 0.5,
+            },
+            Policy::AdBearerAdmission => Kind::Bucket {
+                capacity: 60.0,
+                refill_per_sec: 2.0,
+            },
+            Policy::AdBearerSourceAdmission => Kind::Bucket {
+                capacity: 300.0,
+                refill_per_sec: 20.0,
+            },
+            Policy::CredentialMutation => Kind::Bucket {
+                capacity: 4.0,
+                refill_per_sec: 0.1,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -463,6 +483,8 @@ fn partition_key(policy: Policy, req: &Request) -> String {
             | Policy::Register
             | Policy::GlobalIpBackstop
             | Policy::CredentialIpAdmission
+            | Policy::AdBearerAdmission
+            | Policy::AdBearerSourceAdmission
             | Policy::PrivilegedHubAdmission
             | Policy::PublicHubAdmission
     ) {
@@ -850,6 +872,56 @@ async fn check_authenticated_async(identity: String, ip: String) -> Result<(), u
     }
 }
 
+const AD_AUTH_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
+const AD_AUTH_CONCURRENCY: usize = 32;
+static AD_AUTH_ADMISSION: LazyLock<std::sync::Arc<Semaphore>> =
+    LazyLock::new(|| std::sync::Arc::new(Semaphore::new(AD_AUTH_CONCURRENCY)));
+
+fn route_supports_ad_bearer(path: &str) -> bool {
+    let segments: Vec<_> = path.trim_matches('/').split('/').collect();
+    matches!(
+        segments.as_slice(),
+        ["api", "Game", game_id, "Ad", "Submit" | "Targets"]
+            | ["api", "Game", game_id, "Ad", "Koth", "Token" | "Hills"]
+            | ["api", "game", game_id, "ad", "targets"]
+            if game_id.parse::<i32>().is_ok_and(|id| id > 0)
+    )
+}
+
+async fn authenticate_ad_bearer(
+    st: &SharedState,
+    token: &str,
+    ip: &str,
+) -> Result<Option<crate::services::ad::api_token::VerifiedTeamToken>, Response> {
+    if let Err(retry_after) = check_async(Policy::AdBearerSourceAdmission, ip.to_owned()).await {
+        return Err(too_many_requests(retry_after));
+    }
+    let digest = crate::services::ad::api_token::hash(token);
+    if let Err(retry_after) =
+        check_async(Policy::AdBearerAdmission, format!("presented:{digest}")).await
+    {
+        return Err(too_many_requests(retry_after));
+    }
+    let permit = AD_AUTH_ADMISSION
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| too_many_requests(1))?;
+    let result = tokio::time::timeout(
+        AD_AUTH_QUERY_TIMEOUT,
+        crate::services::ad::api_token::authenticate(st.pg(), token),
+    )
+    .await;
+    drop(permit);
+    match result {
+        Ok(Ok(credential)) => Ok(credential),
+        Ok(Err(error)) => Err(error.into_response()),
+        Err(_) => Err(crate::utils::error::AppError::unavailable(
+            "A&D credential verification timed out; retry later",
+        )
+        .into_response()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Middleware / decorator API
 // ---------------------------------------------------------------------------
@@ -883,18 +955,20 @@ pub async fn global_middleware(
 
     let attempted_ad = credential
         .as_deref()
-        .is_some_and(crate::services::ad::api_token::is_well_formed);
+        .is_some_and(crate::services::ad::api_token::is_well_formed)
+        && route_supports_ad_bearer(req.uri().path());
     let verified_ad = if attempted_ad {
-        match crate::services::ad::api_token::authenticate(
-            st.pg(),
+        match authenticate_ad_bearer(
+            &st,
             credential
                 .as_deref()
                 .expect("attempted A&D token is present"),
+            &ip,
         )
         .await
         {
             Ok(credential) => credential,
-            Err(error) => return error.into_response(),
+            Err(response) => return response,
         }
     } else {
         None

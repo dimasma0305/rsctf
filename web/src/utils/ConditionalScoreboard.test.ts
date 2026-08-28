@@ -5,10 +5,12 @@ import { act, createElement, type FC } from 'react'
 import { installTestDom } from '../test/installDom'
 import { createConditionalScoreboardReader, isConditionalScoreboardPath } from './ConditionalScoreboard'
 
-test('scoreboard paths are narrowly scoped to public standard and KotH boards', () => {
+test('conditional paths are narrowly scoped to boards and split private play projections', () => {
   assert.equal(isConditionalScoreboardPath('/api/game/7/scoreboard'), true)
   assert.equal(isConditionalScoreboardPath('/api/game/7/ad/koth/scoreboard'), true)
   assert.equal(isConditionalScoreboardPath('/api/Game/7/Ad/Scoreboard'), false)
+  assert.equal(isConditionalScoreboardPath('/api/game/7/details/catalog'), true)
+  assert.equal(isConditionalScoreboardPath('/api/game/7/details/live'), true)
   assert.equal(isConditionalScoreboardPath('/api/game/7/details'), false)
   assert.equal(isConditionalScoreboardPath('/api/game/7/scoreboard?monitor=true'), false)
 })

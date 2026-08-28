@@ -85,6 +85,7 @@ pub(crate) use scoring::{
     invalidate_rollups_for_end_change, lock_epoch_rollups, refresh_epoch_rollups,
 };
 use scoring::{load_koth_scoring, KothScoringSnapshot};
+pub(crate) use timeline::materialize_final_timelines;
 pub use timeline::{timeline, KothScoreTimelineModel, KothTeamTimeline, KothTimelinePoint};
 #[cfg(test)]
 use tokens::koth_token_cache_key;
@@ -590,7 +591,10 @@ fn common_router() -> Router<SharedState> {
         // Per-hill player token + state (KothChallengePanel polls these).
         .route(
             "/api/game/{id}/ad/koth/{challengeId}/token",
-            get(koth_hill_token).merge(limited(Policy::Container, post(rotate_koth_api_token))),
+            get(koth_hill_token).merge(limited(
+                Policy::CredentialMutation,
+                post(rotate_koth_api_token),
+            )),
         )
         .route(
             "/api/game/{id}/ad/koth/{challengeId}/state",

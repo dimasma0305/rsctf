@@ -7,6 +7,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::*;
+use sha2::{Digest as _, Sha256};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PlayAccessPhase {
@@ -693,6 +694,113 @@ pub(super) async fn finish_details_response(
         .await?;
         scope.phase_at_db_clock(roster.transaction_mut()).await?;
         Ok(RequestResponse::ok(model).into_response())
+    }
+    .await;
+    release_with_result(roster, result).await
+}
+
+fn private_conditional_response<T: Serialize>(
+    model: T,
+    if_none_match: Option<&str>,
+) -> AppResult<Response> {
+    let encoded =
+        serde_json::to_vec(&model).map_err(|error| AppError::internal(error.to_string()))?;
+    let validator = format!("\"{}\"", hex::encode(Sha256::digest(encoded)));
+    let mut response = if if_none_match.is_some_and(|candidate| {
+        candidate.split(',').map(str::trim).any(|candidate| {
+            candidate == validator
+                || candidate == "*"
+                || candidate.strip_prefix("W/") == Some(validator.as_str())
+        })
+    }) {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        RequestResponse::ok(model).into_response()
+    };
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, no-cache"),
+    );
+    response.headers_mut().insert(
+        header::ETAG,
+        axum::http::HeaderValue::from_str(&validator)
+            .map_err(|error| AppError::internal(error.to_string()))?,
+    );
+    Ok(response)
+}
+
+pub(super) async fn finish_catalog_response(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    challenge_ids: Vec<i32>,
+    if_none_match: Option<&str>,
+    model: GameChallengeCatalogModel,
+) -> AppResult<Response> {
+    let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
+        pool,
+        user.id,
+        &user.security_stamp,
+        game_id,
+        team_id,
+        participation_id,
+        true,
+    )
+    .await?
+    else {
+        return Err(AppError::Forbidden);
+    };
+    let result = async {
+        let scope = lock_play_scope_on(
+            roster.transaction_mut(),
+            game_id,
+            team_id,
+            participation_id,
+            &challenge_ids,
+        )
+        .await?;
+        scope.phase_at_db_clock(roster.transaction_mut()).await?;
+        private_conditional_response(model, if_none_match)
+    }
+    .await;
+    release_with_result(roster, result).await
+}
+
+pub(super) async fn finish_participant_delta_response(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    game_id: i32,
+    team_id: i32,
+    participation_id: i32,
+    if_none_match: Option<&str>,
+    model: GameParticipantDeltaModel,
+) -> AppResult<Response> {
+    let Some(mut roster) = crate::services::live_roster::try_acquire_participation_fence(
+        pool,
+        user.id,
+        &user.security_stamp,
+        game_id,
+        team_id,
+        participation_id,
+        true,
+    )
+    .await?
+    else {
+        return Err(AppError::Forbidden);
+    };
+    let result = async {
+        let scope = lock_play_scope_on(
+            roster.transaction_mut(),
+            game_id,
+            team_id,
+            participation_id,
+            &[],
+        )
+        .await?;
+        scope.phase_at_db_clock(roster.transaction_mut()).await?;
+        private_conditional_response(model, if_none_match)
     }
     .await;
     release_with_result(roster, result).await

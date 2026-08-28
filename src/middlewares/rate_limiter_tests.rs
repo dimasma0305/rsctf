@@ -8,6 +8,69 @@ fn ad_submit_capacity() -> u32 {
 }
 
 #[test]
+fn ad_bearer_authentication_is_limited_to_dual_auth_routes() {
+    for path in [
+        "/api/Game/7/Ad/Submit",
+        "/api/Game/7/Ad/Targets",
+        "/api/Game/7/Ad/Koth/Token",
+        "/api/Game/7/Ad/Koth/Hills",
+        "/api/game/7/ad/targets",
+    ] {
+        assert!(
+            route_supports_ad_bearer(path),
+            "missing supported route {path}"
+        );
+    }
+    for path in [
+        "/api/Game/7/Ad/State",
+        "/api/game/7/details",
+        "/api/admin/logs",
+        "/api/Game/not-a-number/Ad/Submit",
+        "/api/Game/-1/Ad/Submit",
+    ] {
+        assert!(
+            !route_supports_ad_bearer(path),
+            "unexpected A&D lookup on {path}"
+        );
+    }
+}
+
+#[test]
+fn pre_database_admission_has_tight_bounded_buckets() {
+    let Kind::Bucket {
+        capacity: token_capacity,
+        refill_per_sec: token_refill,
+    } = Policy::AdBearerAdmission.kind()
+    else {
+        panic!("token admission must use a bucket");
+    };
+    let Kind::Bucket {
+        capacity: source_capacity,
+        refill_per_sec: source_refill,
+    } = Policy::AdBearerSourceAdmission.kind()
+    else {
+        panic!("source admission must use a bucket");
+    };
+    assert!(token_capacity <= 100.0 && token_refill <= 2.0);
+    assert!(source_capacity <= 300.0 && source_refill <= 20.0);
+    assert!(AD_AUTH_CONCURRENCY <= 32);
+    assert!(AD_AUTH_QUERY_TIMEOUT <= Duration::from_secs(2));
+}
+
+#[test]
+fn credential_mutations_have_a_named_tight_budget() {
+    let Kind::Bucket {
+        capacity,
+        refill_per_sec,
+    } = Policy::CredentialMutation.kind()
+    else {
+        panic!("credential mutation admission must use a bucket");
+    };
+    assert_eq!(capacity, 4.0);
+    assert_eq!(refill_per_sec, 0.1);
+}
+
+#[test]
 fn ad_submit_burst_configuration_requires_a_bounded_integer() {
     assert_eq!(parse_ad_submit_burst_flags(None), Ok(400));
     assert_eq!(parse_ad_submit_burst_flags(Some("100")), Ok(100));

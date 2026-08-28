@@ -1,4 +1,4 @@
-// Fixed-rate, authenticated smoke for the ten-second player challenge-details poll.
+// Fixed-rate authenticated smoke for the split player catalog/live projection.
 import http from "k6/http";
 import { Rate, Trend } from "k6/metrics";
 import { validVisibleChallengeProjection } from "../details-read-model.js";
@@ -59,28 +59,61 @@ function sourceIp(index) {
   return `31.${1 + (index % 240)}.${1 + (Math.floor(index / 240) % 250)}.${1 + (index % 250)}`;
 }
 
+let catalogModel = null;
+let participantModel = null;
+let participantEtag = "";
+
 export default function () {
   const tokenIndex = ((__VU - 1) * 997 + __ITER) % TOKENS.length;
-  const response = http.get(`${TARGET}/api/game/${GAME}/details`, {
+  const headers = {
+    Authorization: `Bearer ${TOKENS[tokenIndex]}`,
+    "X-Real-IP": sourceIp(tokenIndex),
+  };
+  if (catalogModel === null) {
+    const catalog = http.get(`${TARGET}/api/game/${GAME}/details/catalog`, {
+      headers,
+      tags: { endpoint: "challenge_catalog" },
+    });
+    if (catalog.status === 200) {
+      try {
+        catalogModel = catalog.json();
+      } catch (_) {
+        catalogModel = null;
+      }
+    }
+    non200.add(catalog.status !== 200);
+    server5xx.add(catalog.status >= 500);
+  }
+
+  const response = http.get(`${TARGET}/api/game/${GAME}/details/live`, {
     headers: {
-      Authorization: `Bearer ${TOKENS[tokenIndex]}`,
-      "X-Real-IP": sourceIp(tokenIndex),
+      ...headers,
+      ...(participantEtag ? { "If-None-Match": participantEtag } : {}),
     },
-    tags: { endpoint: "challenge_details" },
+    tags: { endpoint: "participant_delta" },
   });
 
   duration.add(response.timings.duration);
-  non200.add(response.status !== 200);
+  non200.add(response.status !== 200 && response.status !== 304);
   server5xx.add(response.status >= 500);
 
-  let model = null;
-  try {
-    model = response.json();
-  } catch (_) {
-    // The explicit metrics below retain both transport and projection failures.
+  if (response.status === 200) {
+    try {
+      participantModel = response.json();
+      participantEtag = response.headers.ETag || response.headers.Etag || "";
+    } catch (_) {
+      participantModel = null;
+    }
   }
-  invalidJson.add(response.status === 200 && model === null);
+  const model =
+    catalogModel && participantModel
+      ? { ...catalogModel, rank: participantModel.rank }
+      : null;
+  invalidJson.add(
+    (response.status === 200 || response.status === 304) && model === null,
+  );
   invalidProjection.add(
-    response.status !== 200 || !validVisibleChallengeProjection(model),
+    (response.status !== 200 && response.status !== 304) ||
+      !validVisibleChallengeProjection(model),
   );
 }

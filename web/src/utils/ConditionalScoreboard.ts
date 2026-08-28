@@ -15,10 +15,10 @@ type ValidatorEntry = {
 }
 
 export const isConditionalScoreboardPath = (path: string) =>
-  /^\/api\/game\/\d+\/(?:scoreboard|ad\/koth\/scoreboard)$/.test(path)
+  /^\/api\/game\/\d+\/(?:scoreboard|ad\/koth\/scoreboard|details\/(?:catalog|live))$/.test(path)
 
 /**
- * Keep only weak references to parsed boards. SWR owns the live value; this
+ * Keep only weak references to parsed boards and private play projections. SWR owns the live value; this
  * reader retains a bounded validator index and can return SWR's exact object on
  * a 304 without parsing JSON or publishing an equivalent React state tree.
  */

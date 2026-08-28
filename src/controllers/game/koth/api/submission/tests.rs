@@ -73,6 +73,12 @@ fn snapshot_digest_binds_resolved_identity_and_every_budget() {
 }
 
 #[test]
+fn observation_work_has_a_process_ceiling_and_absolute_deadline() {
+    assert!(OBSERVATION_CONCURRENCY <= 8);
+    assert!(OBSERVATION_DEADLINE <= std::time::Duration::from_secs(15));
+}
+
+#[test]
 fn resolved_crown_requires_one_unique_completed_leader() {
     let valid = wave("wave-1", vec![row(1, 8), row(2, 7)]);
     assert!(validate_resolved_crowns(&[valid]).is_ok());
@@ -241,6 +247,15 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
             CREATE TEMP TABLE "KothApiRequestReplays" (
               request_hash BYTEA PRIMARY KEY, challenge_id INTEGER,
               expires_at TIMESTAMPTZ
+            );
+            CREATE TEMP TABLE "KothApiObservationOperations" (
+              challenge_id INTEGER, game_id INTEGER,
+              request_digest BYTEA, context_hash CHAR(64),
+              lease_token UUID, lease_expires_at TIMESTAMPTZ,
+              response JSONB, created_at TIMESTAMPTZ DEFAULT clock_timestamp(),
+              completed_at TIMESTAMPTZ, expires_at TIMESTAMPTZ
+                DEFAULT (clock_timestamp() + interval '10 minutes'),
+              PRIMARY KEY (challenge_id, request_digest)
             );
             "#,
     )
@@ -433,8 +448,20 @@ async fn signed_snapshot_is_tick_bound_normalized_replay_safe_and_hash_only() {
 
     let replay = accept_observation(&pool, 7, 9, &headers, &body)
         .await
-        .unwrap_err();
-    assert_eq!(replay.status(), axum::http::StatusCode::CONFLICT);
+        .unwrap();
+    assert_eq!(replay.accepted_at, accepted.accepted_at);
+    assert_eq!(replay.submitted_waves, accepted.submitted_waves);
+    let retry_timestamp = (timestamp.parse::<i64>().unwrap() + 3).to_string();
+    let retry_headers = signed_headers("observer-secret", &retry_timestamp, 7, 9, &body);
+    let retried = accept_observation(&pool, 7, 9, &retry_headers, &body)
+        .await
+        .unwrap();
+    assert_eq!(retried.accepted_at, accepted.accepted_at);
+    let durable_snapshots: i64 = sqlx::query_scalar(r#"SELECT COUNT(*) FROM "KothApiSnapshots""#)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(durable_snapshots, 1);
 
     let rewritten_body = serde_json::to_vec(&serde_json::json!({
         "context": context,

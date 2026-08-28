@@ -70,7 +70,10 @@ fn common_router() -> Router<SharedState> {
             "/api/Game/{id}/Ad/Ssh/Key",
             get(get_ssh_key).post(upload_ssh_key).delete(delete_ssh_key),
         )
-        .route("/api/Game/{id}/Ad/Ssh/Key/Generate", post(generate_ssh_key))
+        .route(
+            "/api/Game/{id}/Ad/Ssh/Key/Generate",
+            limited(Policy::CredentialMutation, post(generate_ssh_key)),
+        )
         .route("/api/Game/{id}/Ad/State", get(state))
         .route("/api/Game/{id}/Ad/Submit", post(submit))
         .route("/api/Game/{id}/Ad/Targets", get(targets))
@@ -107,7 +110,9 @@ fn common_router() -> Router<SharedState> {
         )
         .route(
             "/api/Game/{id}/Ad/Token",
-            get(get_token).post(rotate_token).delete(revoke_token),
+            get(get_token)
+                .merge(limited(Policy::CredentialMutation, post(rotate_token)))
+                .delete(revoke_token),
         )
         .route("/api/Game/{id}/Ad/Vpn/Config", get(download_vpn_config))
         .route(
