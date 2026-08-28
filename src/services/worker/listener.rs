@@ -8,7 +8,7 @@ use rsctf_worker_protocol::{
 };
 use tokio::io::AsyncWrite;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{watch, OwnedSemaphorePermit};
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig};
@@ -20,9 +20,8 @@ use super::control_admission::ControlAdmission;
 use super::data::{drive_data_lane, DataConfig};
 use super::registry::{RegistryConfig, SessionRegistration, WorkerRegistry};
 use super::{SessionContext, WorkerError, WorkerResult};
-
 mod admission;
-use admission::{HandshakeAdmission, PeerHandshakePermit};
+use admission::{HandshakeAdmission, HandshakeSlots, PeerHandshakePermit};
 
 #[derive(Clone, Debug)]
 pub struct WorkerServerConfig {
@@ -138,7 +137,7 @@ impl WorkerService {
         mut shutdown: watch::Receiver<bool>,
     ) -> std::io::Result<()> {
         let acceptor = TlsAcceptor::from(tls_config);
-        let handshakes = Arc::new(Semaphore::new(self.config.max_concurrent_handshakes));
+        let handshakes = HandshakeSlots::new(self.config.max_concurrent_handshakes);
         let peer_handshakes = HandshakeAdmission::new(self.config.max_concurrent_handshakes_per_ip);
         let mut connections = tokio::task::JoinSet::new();
         loop {
@@ -156,7 +155,7 @@ impl WorkerService {
                         }
                         continue;
                     };
-                    let Ok(permit) = handshakes.clone().try_acquire_owned() else {
+                    let Some(permit) = handshakes.try_acquire(peer_handshakes.is_known_source(peer.ip())) else {
                         if let Some(rejections) = admission::sample_global_rejection() {
                             tracing::warn!(%peer, rejections, "worker: handshake capacity exhausted");
                         }
@@ -235,6 +234,7 @@ impl WorkerService {
         if !handshake_admission.admit_worker(authenticated_peer.worker_id) {
             return Err(WorkerError::Busy);
         }
+        peer_permit.mark_authenticated();
         // Keep both admission permits through the application hello and
         // durable session setup. A valid but compromised certificate must not
         // be able to pipeline slow hellos from one address and occupy every

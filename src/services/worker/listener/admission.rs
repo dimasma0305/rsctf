@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 const GLOBAL_RATE: f64 = 512.0;
@@ -14,6 +15,7 @@ const WORKER_RATE: f64 = 16.0;
 const WORKER_BURST: f64 = 32.0;
 const BUCKET_TTL: Duration = Duration::from_secs(10 * 60);
 const MAX_TRACKED_KEYS: usize = 4_096;
+const MAX_RESERVED_HANDSHAKES: usize = 8;
 static PEER_REJECTIONS: AtomicU64 = AtomicU64::new(0);
 static GLOBAL_REJECTIONS: AtomicU64 = AtomicU64::new(0);
 static CONNECTION_REJECTIONS: AtomicU64 = AtomicU64::new(0);
@@ -35,6 +37,43 @@ pub(super) fn sample_connection_rejection() -> Option<u64> {
     sample(&CONNECTION_REJECTIONS)
 }
 
+/// Keeps a small part of aggregate TLS capacity available to source addresses
+/// which completed a valid worker authentication recently. Unknown/stale
+/// agents can consume only the regular pool.
+pub(super) struct HandshakeSlots {
+    regular: Arc<Semaphore>,
+    known_worker_reserve: Arc<Semaphore>,
+}
+
+impl HandshakeSlots {
+    pub(super) fn new(maximum: usize) -> Self {
+        let reserved = if maximum >= 4 {
+            (maximum / 4).min(MAX_RESERVED_HANDSHAKES)
+        } else {
+            0
+        };
+        Self {
+            regular: Arc::new(Semaphore::new(maximum.saturating_sub(reserved))),
+            known_worker_reserve: Arc::new(Semaphore::new(reserved)),
+        }
+    }
+
+    pub(super) fn try_acquire(&self, known_source: bool) -> Option<OwnedSemaphorePermit> {
+        Arc::clone(&self.regular)
+            .try_acquire_owned()
+            .ok()
+            .or_else(|| {
+                known_source
+                    .then(|| {
+                        Arc::clone(&self.known_worker_reserve)
+                            .try_acquire_owned()
+                            .ok()
+                    })
+                    .flatten()
+            })
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct HandshakeAdmission {
     maximum: usize,
@@ -45,6 +84,7 @@ struct AdmissionState {
     active: HashMap<IpAddr, usize>,
     peers: HashMap<IpAddr, TokenBucket>,
     workers: HashMap<Uuid, TokenBucket>,
+    known_peers: HashMap<IpAddr, Instant>,
     global: TokenBucket,
 }
 
@@ -83,6 +123,7 @@ impl HandshakeAdmission {
                 active: HashMap::new(),
                 peers: HashMap::new(),
                 workers: HashMap::new(),
+                known_peers: HashMap::new(),
                 global: TokenBucket::full(GLOBAL_BURST, now),
             })),
         }
@@ -139,6 +180,21 @@ impl HandshakeAdmission {
             .or_insert_with(|| TokenBucket::full(WORKER_BURST, now))
             .take(WORKER_RATE, WORKER_BURST, now)
     }
+
+    pub(super) fn is_known_source(&self, peer: IpAddr) -> bool {
+        let now = Instant::now();
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let known = state
+            .known_peers
+            .get(&peer)
+            .is_some_and(|seen| now.saturating_duration_since(*seen) < BUCKET_TTL);
+        if !known {
+            state.known_peers.remove(&peer);
+        }
+        known
+    }
 }
 
 impl AdmissionState {
@@ -150,12 +206,31 @@ impl AdmissionState {
             .retain(|_, bucket| now.saturating_duration_since(bucket.updated_at) < BUCKET_TTL);
         self.workers
             .retain(|_, bucket| now.saturating_duration_since(bucket.updated_at) < BUCKET_TTL);
+        self.known_peers
+            .retain(|_, seen| now.saturating_duration_since(*seen) < BUCKET_TTL);
     }
 }
 
 pub(super) struct PeerHandshakePermit {
     peer: IpAddr,
     state: Arc<Mutex<AdmissionState>>,
+}
+
+impl PeerHandshakePermit {
+    pub(super) fn mark_authenticated(&self) {
+        let now = Instant::now();
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.known_peers.len() >= MAX_TRACKED_KEYS {
+            state
+                .known_peers
+                .retain(|_, seen| now.saturating_duration_since(*seen) < BUCKET_TTL);
+        }
+        if state.known_peers.len() < MAX_TRACKED_KEYS {
+            state.known_peers.insert(self.peer, now);
+        }
+    }
 }
 
 impl Drop for PeerHandshakePermit {
@@ -215,5 +290,23 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(permits.len(), PEER_BURST as usize);
         assert!(admission.try_admit(legitimate).is_some());
+    }
+
+    #[test]
+    fn recently_authenticated_workers_retain_reserved_tls_progress() {
+        let slots = HandshakeSlots::new(4);
+        let regular = (0..3)
+            .map(|_| slots.try_acquire(false).expect("regular slot"))
+            .collect::<Vec<_>>();
+        assert!(slots.try_acquire(false).is_none());
+        let _reserved = slots.try_acquire(true).expect("known-worker reserve");
+        assert!(slots.try_acquire(true).is_none());
+        drop(regular);
+
+        let admission = HandshakeAdmission::new(1);
+        let peer: IpAddr = "192.0.2.12".parse().unwrap();
+        let permit = admission.try_admit(peer).unwrap();
+        permit.mark_authenticated();
+        assert!(admission.is_known_source(peer));
     }
 }
