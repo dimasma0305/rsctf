@@ -173,32 +173,6 @@ pub(super) async fn revoke_published_team_container(
         Some(instance_id),
         created_instance_id,
         created_flag_id,
-        false,
-    )
-    .await
-}
-
-/// Roll back a publication that may have failed between its non-transactional
-/// writes. Backend failure returns before any owner row is removed; successful
-/// destroy also permits removing a request-created instance that never linked.
-pub(super) async fn revoke_failed_team_container_publication(
-    st: &SharedState,
-    backend_id: &str,
-    container_id: uuid::Uuid,
-    instance_id: Option<i32>,
-    created_instance_id: Option<i32>,
-    created_flag_id: Option<i32>,
-) -> AppResult<()> {
-    crate::services::traffic::destroy_container_after_capture_fence(st, backend_id).await?;
-
-    clear_destroyed_team_container(
-        st,
-        backend_id,
-        container_id,
-        instance_id,
-        created_instance_id,
-        created_flag_id,
-        true,
     )
     .await
 }
@@ -210,7 +184,6 @@ async fn clear_destroyed_team_container(
     instance_id: Option<i32>,
     created_instance_id: Option<i32>,
     created_flag_id: Option<i32>,
-    allow_unlinked_created_instance: bool,
 ) -> AppResult<()> {
     let mut transaction = crate::utils::database::begin_sqlx_transaction(st.pg())
         .await
@@ -219,15 +192,10 @@ async fn clear_destroyed_team_container(
         Some(instance_id) if created_instance_id == Some(instance_id) => {
             sqlx::query(
                 r#"DELETE FROM "GameInstances"
-                    WHERE id = $1
-                      AND (
-                          container_id = $2
-                          OR ($3 AND container_id IS NULL)
-                      )"#,
+                    WHERE id = $1 AND container_id = $2"#,
             )
             .bind(instance_id)
             .bind(container_id)
-            .bind(allow_unlinked_created_instance)
             .execute(&mut *transaction)
             .await
             .map_err(|error| AppError::internal(error.to_string()))?;

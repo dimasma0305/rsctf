@@ -496,7 +496,7 @@ async fn perform_create_container(
             }
             return Err(AppError::internal(commit_error.to_string()));
         };
-        return Ok(recovered.into());
+        return Ok(ContainerInfoModel::from(&recovered));
     }
 
     // Surface container activity on the monitor `/events` feed. RSCTF emits a
