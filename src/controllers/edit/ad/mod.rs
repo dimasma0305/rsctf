@@ -592,6 +592,7 @@ pub async fn ad_restart_service(
 pub async fn ad_download_snapshot(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: axum::http::HeaderMap,
     Path((game_id, ats_id)): Path<(i32, i32)>,
 ) -> AppResult<Response> {
     manager_or_admin(&st, &user, game_id).await?;
@@ -611,35 +612,92 @@ pub async fn ad_download_snapshot(
         ));
     }
 
-    let persisted = crate::services::blob_refs::load_service_snapshot(st.pg(), svc.id).await?;
-    let (archive, filename) = if let Some(snapshot) = persisted {
-        let archive = st
-            .storage
-            .load_bounded(
-                &snapshot.hash,
-                crate::services::ad::snapshots::MAX_STORED_SNAPSHOT_BYTES,
-            )
-            .await?;
-        (archive, snapshot.name)
-    } else {
-        let Some(cid) = svc.container_id.as_deref().filter(|c| !c.is_empty()) else {
-            return Err(AppError::not_found(
-                "Snapshot not available for this service",
-            ));
+    if let Some(snapshot) =
+        crate::services::blob_refs::load_service_snapshot(st.pg(), svc.id).await?
+    {
+        let grant = crate::controllers::game::ad::snapshot_download::SnapshotResponseGrant {
+            team_service_id: svc.id,
+            snapshot_id: snapshot.id,
+            hash: snapshot.hash,
+            filename: snapshot.name,
+            file_size: snapshot.file_size,
         };
-        let archive =
-            crate::services::ad::snapshots::export_archive(st.containers.as_ref(), cid).await?;
-        let filename =
-            crate::services::ad::snapshots::archive_name(svc.participation_id, svc.challenge_id);
-        (archive, filename)
+        let prepared =
+            match crate::controllers::game::ad::snapshot_download::prepare_snapshot_stream(
+                &st, &headers, &grant,
+            )
+            .await?
+            {
+                crate::controllers::game::ad::snapshot_download::SnapshotPreparation::Ready(
+                    prepared,
+                ) => prepared,
+                crate::controllers::game::ad::snapshot_download::SnapshotPreparation::Response(
+                    response,
+                ) => return Ok(response),
+            };
+        // Storage may be slow. Revalidate both operator authority and the exact
+        // retained relation after opening the immutable stream.
+        manager_or_admin(&st, &user, game_id).await?;
+        let current = crate::services::blob_refs::load_service_snapshot(st.pg(), svc.id).await?;
+        let service_available: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                     FROM "AdTeamServices" service
+                     JOIN "GameChallenges" challenge
+                       ON challenge.id = service.challenge_id
+                      AND challenge.game_id = service.game_id
+                    WHERE service.id = $1
+                      AND service.game_id = $2
+                      AND challenge.ad_self_hosted = FALSE
+                      AND challenge.deletion_pending = FALSE
+               )"#,
+        )
+        .bind(svc.id)
+        .bind(game_id)
+        .fetch_one(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if !service_available
+            || current.as_ref().is_none_or(|current| {
+                current.id != grant.snapshot_id
+                    || current.hash != grant.hash
+                    || current.name != grant.filename
+                    || current.file_size != grant.file_size
+            })
+        {
+            return Err(AppError::not_found("Snapshot is no longer available"));
+        }
+        return prepared.into_response(&grant.filename);
+    }
+
+    let Some(cid) = svc.container_id.as_deref().filter(|c| !c.is_empty()) else {
+        return Err(AppError::not_found(
+            "Snapshot not available for this service",
+        ));
     };
+    let permit = match st
+        .bulk_export_admission
+        .try_acquire(
+            std::sync::Arc::clone(&st.cache),
+            crate::services::ad::snapshots::MAX_STORED_SNAPSHOT_BYTES,
+        )
+        .await
+    {
+        Ok(permit) => std::sync::Arc::new(permit),
+        Err(_) => return Ok(crate::services::bulk_export::overload_response()),
+    };
+    let archive =
+        crate::services::ad::snapshots::export_archive(st.containers.as_ref(), cid).await?;
+    let filename =
+        crate::services::ad::snapshots::archive_name(svc.participation_id, svc.challenge_id);
+    let archive_len = archive.len();
     Ok((
         [
             (
                 header::CONTENT_TYPE,
                 crate::services::ad::snapshots::SNAPSHOT_CONTENT_TYPE.to_string(),
             ),
-            (header::CONTENT_LENGTH, archive.len().to_string()),
+            (header::CONTENT_LENGTH, archive_len.to_string()),
             (header::CACHE_CONTROL, "private, no-store".to_string()),
             (header::PRAGMA, "no-cache".to_string()),
             (
@@ -647,7 +705,7 @@ pub async fn ad_download_snapshot(
                 format!("attachment; filename=\"{filename}\""),
             ),
         ],
-        archive,
+        crate::services::bulk_export::permitted_bytes_body(archive, permit),
     )
         .into_response())
 }

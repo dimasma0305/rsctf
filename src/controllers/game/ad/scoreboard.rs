@@ -877,6 +877,7 @@ pub async fn reset_service(
 pub async fn download_snapshot(
     State(st): State<SharedState>,
     user: CurrentUser,
+    headers: axum::http::HeaderMap,
     Path((id, ad_team_service_id)): Path<(i32, i32)>,
 ) -> AppResult<Response> {
     let part = resolve_participation(&st, &user, id).await?;
@@ -925,13 +926,19 @@ pub async fn download_snapshot(
             "Snapshot not available for this service",
         ));
     };
-    let archive = st
-        .storage
-        .load_bounded(
-            &snapshot.hash,
-            crate::services::ad::snapshots::MAX_STORED_SNAPSHOT_BYTES,
-        )
-        .await?;
+    let grant = super::snapshot_download::SnapshotResponseGrant {
+        team_service_id: svc.id,
+        snapshot_id: snapshot.id,
+        hash: snapshot.hash,
+        filename: snapshot.name,
+        file_size: snapshot.file_size,
+    };
+    let prepared = match super::snapshot_download::prepare_snapshot_stream(&st, &headers, &grant)
+        .await?
+    {
+        super::snapshot_download::SnapshotPreparation::Ready(prepared) => prepared,
+        super::snapshot_download::SnapshotPreparation::Response(response) => return Ok(response),
+    };
     super::snapshot_download::finish_snapshot_response(
         st.pg(),
         crate::services::live_roster::LiveParticipationIdentity {
@@ -941,13 +948,8 @@ pub async fn download_snapshot(
             team_id: part.team_id,
             participation_id: part.id,
         },
-        super::snapshot_download::SnapshotResponseGrant {
-            team_service_id: svc.id,
-            snapshot_id: snapshot.id,
-            hash: snapshot.hash,
-            filename: snapshot.name,
-        },
-        archive,
+        grant,
+        prepared,
     )
     .await
 }

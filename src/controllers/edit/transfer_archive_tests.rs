@@ -1,5 +1,17 @@
 use super::*;
 
+#[test]
+fn game_export_admits_before_projection_or_blob_loading() {
+    let source = include_str!("transfer.rs");
+    let handler = source.find("pub async fn export_game(").unwrap();
+    let body = &source[handler..];
+    let admission = body.find("bulk_export_admission").unwrap();
+    let first_query = body.find("let game = load_game").unwrap();
+    let first_blob = body.find("resolve_export_attachment").unwrap();
+    assert!(admission < first_query);
+    assert!(admission < first_blob);
+}
+
 fn archive_with(name: &str, data: &[u8]) -> Vec<u8> {
     archive_with_entries(&[(name, data)], zip::CompressionMethod::Deflated)
 }

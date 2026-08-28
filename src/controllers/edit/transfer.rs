@@ -10,7 +10,12 @@ const MAX_GAME_IMPORT_PATH_COMPONENTS: usize = 32;
 static GAME_IMPORT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 const MAX_GAME_EXPORT_FILES: usize = 2_048;
 const MAX_GAME_EXPORT_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
-static GAME_EXPORT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+const MAX_GAME_EXPORT_CHALLENGES: usize = 2_048;
+const MAX_GAME_EXPORT_FLAGS: usize = 2_048;
+const MAX_GAME_EXPORT_DIVISIONS: usize = 512;
+const MAX_GAME_EXPORT_DIVISION_CONFIGS: usize = 2_048;
+// Attachment bytes and the completed ZIP may coexist while compression runs.
+const MAX_GAME_EXPORT_RETAINED_BYTES: usize = MAX_GAME_EXPORT_ATTACHMENT_BYTES * 2;
 
 #[derive(Clone, Copy)]
 struct GameImportLimits {
@@ -792,12 +797,30 @@ pub async fn export_game(
     Path(id): Path<i32>,
 ) -> AppResult<Response> {
     manager_or_admin(&st, &user, id).await?;
+    let export_permit = match st
+        .bulk_export_admission
+        .try_acquire(
+            std::sync::Arc::clone(&st.cache),
+            MAX_GAME_EXPORT_RETAINED_BYTES,
+        )
+        .await
+    {
+        Ok(permit) => permit,
+        Err(_) => return Ok(crate::services::bulk_export::overload_response()),
+    };
     let game = load_game(&st, id).await?;
 
     let challenges = game_challenge::Entity::find()
         .filter(game_challenge::Column::GameId.eq(id))
+        .order_by_asc(game_challenge::Column::Id)
+        .limit((MAX_GAME_EXPORT_CHALLENGES + 1) as u64)
         .all(&st.db)
         .await?;
+    if challenges.len() > MAX_GAME_EXPORT_CHALLENGES {
+        return Err(AppError::payload_too_large(format!(
+            "Game export is limited to {MAX_GAME_EXPORT_CHALLENGES} challenges"
+        )));
+    }
 
     // Build the transfer models. `embed` accumulates the `Local` attachment blob
     // bytes (deduped by content hash) to bundle under `files/` — mirroring
@@ -809,15 +832,32 @@ pub async fn export_game(
     let divisions = division::Entity::find()
         .filter(division::Column::GameId.eq(id))
         .order_by_asc(division::Column::Id)
+        .limit((MAX_GAME_EXPORT_DIVISIONS + 1) as u64)
         .all(&st.db)
         .await?;
+    if divisions.len() > MAX_GAME_EXPORT_DIVISIONS {
+        return Err(AppError::payload_too_large(format!(
+            "Game export is limited to {MAX_GAME_EXPORT_DIVISIONS} divisions"
+        )));
+    }
     let mut export_divisions = Vec::with_capacity(divisions.len());
+    let mut division_config_count = 0usize;
     for d in divisions {
-        let challenge_configs = division_challenge_config::Entity::find()
+        let configs = division_challenge_config::Entity::find()
             .filter(division_challenge_config::Column::DivisionId.eq(d.id))
             .order_by_asc(division_challenge_config::Column::ChallengeId)
+            .limit((MAX_GAME_EXPORT_DIVISION_CONFIGS + 1) as u64)
             .all(&st.db)
-            .await?
+            .await?;
+        division_config_count = division_config_count
+            .checked_add(configs.len())
+            .filter(|count| *count <= MAX_GAME_EXPORT_DIVISION_CONFIGS)
+            .ok_or_else(|| {
+                AppError::payload_too_large(format!(
+                    "Game export is limited to {MAX_GAME_EXPORT_DIVISION_CONFIGS} division challenge settings"
+                ))
+            })?;
+        let challenge_configs = configs
             .into_iter()
             .map(|c| ExportDivisionConfigModel {
                 challenge_id: c.challenge_id,
@@ -836,6 +876,7 @@ pub async fn export_game(
     let mut export_challenges = Vec::with_capacity(challenges.len());
     let mut embed: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut embed_bytes = 0usize;
+    let mut flag_count = 0usize;
     for c in &challenges {
         // Challenge-level attachment: RSCTF loads `challenge.Attachment` for ALL
         // types (only Flags are gated to static challenges), so resolve it
@@ -850,8 +891,17 @@ pub async fn export_game(
         } else {
             let rows = flag_context::Entity::find()
                 .filter(flag_context::Column::ChallengeId.eq(c.id))
+                .limit((MAX_GAME_EXPORT_FLAGS - flag_count + 1) as u64)
                 .all(&st.db)
                 .await?;
+            flag_count = flag_count
+                .checked_add(rows.len())
+                .filter(|count| *count <= MAX_GAME_EXPORT_FLAGS)
+                .ok_or_else(|| {
+                    AppError::payload_too_large(format!(
+                        "Game export is limited to {MAX_GAME_EXPORT_FLAGS} flags"
+                    ))
+                })?;
             let mut out = Vec::with_capacity(rows.len());
             for f in rows {
                 let (attachment_type, file_hash, remote_url, file_name) =
@@ -872,15 +922,13 @@ pub async fn export_game(
         ));
     }
 
-    let _permit = GAME_EXPORT_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Game export capacity is busy; retry shortly"))?;
     let buf = tokio::task::spawn_blocking(move || {
         build_game_export_zip(export_game, export_challenges, embed)
     })
     .await
     .map_err(|error| AppError::internal(format!("game export task failed: {error}")))?
     .map_err(AppError::internal)?;
+    manager_or_admin(&st, &user, id).await?;
 
     let filename = format!("game-{id}-export.zip");
     Response::builder()
@@ -889,7 +937,10 @@ pub async fn export_game(
             header::CONTENT_DISPOSITION,
             format!("attachment; filename=\"{filename}\""),
         )
-        .body(Body::from(buf))
+        .body(crate::services::bulk_export::permitted_bytes_body(
+            buf,
+            std::sync::Arc::new(export_permit),
+        ))
         .map_err(|e| AppError::internal(format!("build response: {e}")))
 }
 
