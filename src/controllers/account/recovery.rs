@@ -326,7 +326,11 @@ pub async fn recovery(
         crate::services::captcha::CaptchaSettings::load(st.pg(), st.config.account.use_captcha)
             .await?;
     let captcha_admission = captcha
-        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .verify_local(
+            model.challenge.as_deref().unwrap_or(""),
+            st.cache.as_ref(),
+            &st.config.jwt_secret,
+        )
         .await?;
     crate::services::anti_cheat::authorize_captcha_admission(
         st.pg(),

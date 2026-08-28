@@ -12,7 +12,7 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core'
-import { useDisclosure, useLocalStorage } from '@mantine/hooks'
+import { useDisclosure } from '@mantine/hooks'
 import {
   mdiAlertCircleOutline,
   mdiCheck,
@@ -27,6 +27,7 @@ import { Icon } from '@mdi/react'
 import dayjs from 'dayjs'
 import { FC, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { clearLegacyAdTokenStorage } from '@Utils/AdTokenMemory'
 import {
   claimPlayerCredentialOperation,
   clearPlayerCredentialOperation,
@@ -36,6 +37,7 @@ import {
 } from '@Utils/PlayerCredentialOperations'
 import { showErrorMsg } from '@Utils/Shared'
 import { useAdTokenHint } from '@Hooks/useGame'
+import { useUser } from '@Hooks/useUser'
 import api, { AdTokenHintModel } from '@Api'
 import misc from '@Styles/Misc.module.css'
 
@@ -96,53 +98,34 @@ const rotateAdTokenOnce = (
  * caller's curl examples can render with the real Bearer token for the rest
  * of the session; the DB only stores an HMAC hash, so it's gone on reload.
  *
- * `storedToken` persists the plaintext to this browser's localStorage (keyed
- * per game) so a player's bot/scripts can grab it later without re-rotating
- * (which would invalidate the token their bot is already using). It's the same
- * one string for both engines. This is a deliberate convenience/exposure
- * tradeoff — surfaced in the UI with a security note + a "Forget" control, and
- * a rotation overwrites it (the old value is invalid anyway).
+ * The plaintext exists only in this mounted browser session. The database
+ * stores an HMAC and browser storage is deliberately never used, so a reload,
+ * logout, account replacement or participation change cannot reveal a previous
+ * player's bearer on a shared device.
  *
  * @param onRotated optional callback fired after a successful rotation — KotH
  *   uses it to show a success notification; A&D leaves it off.
  */
 export const useAdToken = (gameId: number, onRotated?: () => void) => {
   const { t } = useTranslation()
+  const { user } = useUser()
   const { adTokenHint, mutate: mutateHint } = useAdTokenHint(gameId)
 
   const [rotating, setRotating] = useState(false)
   const [freshToken, setFreshToken] = useState<string | null>(null)
-  // Per-game so switching games never surfaces the wrong token. JSON-serialized
-  // by Mantine; null when nothing has been saved (or after Forget).
-  // getInitialValueInEffect:false → read synchronously on first render (SPA, no
-  // SSR) so the curl examples render with the saved token immediately instead of
-  // flashing the <your-token> placeholder for a frame.
-  const [storedToken, setStoredToken] = useLocalStorage<string | null>({
-    key: `ad-api-token-${gameId}`,
-    defaultValue: null,
-    getInitialValueInEffect: false,
-  })
-  const [storedRevision, setStoredRevision] = useLocalStorage<number | null>({
-    key: `ad-api-token-revision-${gameId}`,
-    defaultValue: null,
-    getInitialValueInEffect: false,
-  })
   const [tokenModalOpen, { open: openTokenModal, close: closeTokenModal }] = useDisclosure(false)
 
   useEffect(() => {
-    if (!adTokenHint || !storedToken || storedRevision === adTokenHint.revision) return
-    setStoredToken(null)
-    setStoredRevision(null)
+    clearLegacyAdTokenStorage()
     setFreshToken(null)
-  }, [adTokenHint, setStoredRevision, setStoredToken, storedRevision, storedToken])
+    closeTokenModal()
+  }, [gameId, user?.userId, closeTokenModal])
 
   const onRotate = async () => {
     setRotating(true)
     try {
-      const { token, revision } = await rotateAdTokenOnce(gameId, adTokenHint?.revision ?? 0)
+      const { token } = await rotateAdTokenOnce(gameId, adTokenHint?.revision ?? 0)
       setFreshToken(token)
-      setStoredToken(token) // persist for bot/script reuse across reloads
-      setStoredRevision(revision)
       openTokenModal()
       await mutateHint()
       onRotated?.()
@@ -154,12 +137,18 @@ export const useAdToken = (gameId: number, onRotated?: () => void) => {
     }
   }
 
-  const forgetToken = () => {
-    setStoredToken(null)
-    setStoredRevision(null)
-  }
+  const forgetToken = () => setFreshToken(null)
 
-  return { adTokenHint, rotating, freshToken, storedToken, forgetToken, tokenModalOpen, closeTokenModal, onRotate }
+  return {
+    adTokenHint,
+    rotating,
+    freshToken,
+    storedToken: freshToken,
+    forgetToken,
+    tokenModalOpen,
+    closeTokenModal,
+    onRotate,
+  }
 }
 
 interface AdTokenSectionProps {
@@ -172,9 +161,9 @@ interface AdTokenSectionProps {
   intro: string
   /** "Your current token" label — engine-specific copy. */
   currentLabel: string
-  /** Plaintext token persisted in this browser (from useAdToken.storedToken). */
+  /** Plaintext token held only by the mounted toolkit session. */
   storedToken?: string | null
-  /** Clear the persisted token (from useAdToken.forgetToken). */
+  /** Clear the in-memory token (from useAdToken.forgetToken). */
   onForget?: () => void
 }
 
@@ -184,8 +173,8 @@ const maskToken = (tok: string) => (tok.length <= 12 ? tok : `${tok.slice(0, 7)}
 /**
  * The "Your API token" accordion item, shared by the A&D and KotH toolkits.
  * Renders the current-token hint + rotate/generate button + last-used line, and
- * — when a token has been saved to this browser — a reveal/copy/forget block so
- * a player's bot can reuse the same string across reloads.
+ * — while the freshly rotated token remains in this mounted session — a
+ * reveal/copy/forget block. Plaintext never persists across a reload.
  * Must be rendered inside a Mantine <Accordion> (it returns an Accordion.Item).
  */
 export const AdTokenSection: FC<AdTokenSectionProps> = ({
@@ -243,14 +232,13 @@ export const AdTokenSection: FC<AdTokenSectionProps> = ({
             </Text>
           )}
 
-          {/* Saved-token block — present only after a rotation has persisted the
-              plaintext to this browser, so a bot/script can grab it later. */}
+          {/* Session-token block — the plaintext is never put in browser storage. */}
           {storedToken ? (
             <Stack gap={4}>
               <Group justify="space-between" wrap="nowrap" gap="xs" align="center">
                 <Group gap="xs" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
                   <Text size="sm" fw={600} style={{ whiteSpace: 'nowrap' }}>
-                    {t('game.content.ad.saved_token', 'Saved token')}:
+                    {t('game.content.ad.saved_token', 'Current session token')}:
                   </Text>
                   <Code
                     className={misc.ffmono}
@@ -303,16 +291,16 @@ export const AdTokenSection: FC<AdTokenSectionProps> = ({
               <Text size="xs" c="dimmed">
                 {t(
                   'game.content.ad.saved_token_note',
-                  'Saved in THIS browser so your bot/scripts can reuse it — it survives reloads. Anyone with access to this browser can read it. “Rotate” issues a new token (invalidating this one); “Forget” removes it from this browser.'
+                  'Available only in this tab until you reload, log out, change account, or choose Forget. Copy or download it for your bot now. Rotate invalidates the previous token.'
                 )}
               </Text>
             </Stack>
           ) : (
             <Text size="xs" c="dimmed">
-              {t(
-                'game.content.ad.saved_token_hint',
-                'Generate or rotate a token and it’s saved in this browser so your bot/scripts can reuse it later.'
-              )}
+                {t(
+                  'game.content.ad.saved_token_hint',
+                  'Generate or rotate a token, then copy it for your bot. The platform will not store the plaintext in this browser.'
+                )}
             </Text>
           )}
         </Stack>

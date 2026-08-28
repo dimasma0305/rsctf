@@ -381,6 +381,13 @@ pub async fn scoreboard(
     headers: HeaderMap,
 ) -> AppResult<Response> {
     let is_monitor = maybe.as_ref().is_some_and(|user| user.is_monitor());
+    let game = crate::controllers::game::load_game_cached(&st, id).await?;
+    if !crate::controllers::game::can_view_engine_standings(&game, is_monitor, Utc::now()) {
+        if game.hidden {
+            return Err(AppError::not_found("Game not found"));
+        }
+        return Err(AppError::game_not_started());
+    }
     let cache_key = scoreboard_cache_key(id, is_monitor);
     if let Some(bytes) = cached_scoreboard_bundle(st.cache.as_ref(), &cache_key).await {
         return super::scoreboard_encoding::response(bytes, &headers);
@@ -537,6 +544,7 @@ pub async fn state(
     user: CurrentUser,
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<AdStateModel>> {
+    crate::controllers::game::require_live_event_window(&st, id).await?;
     let part = resolve_participation(&st, &user, id).await?;
 
     // Config + the challenge title/policy map are game-global and near-static → cached.

@@ -1381,8 +1381,13 @@ export const CheatInfo: FC<CheatInfoProps> = ({ report, mutate, canManagePartici
     isValidating: isDrillRefreshing,
     mutate: retryDrill,
   } = api.cheatReport.useCheatReportCompare(gameId, teamAId, teamBId, {
+    refreshInterval: 0,
     keepPreviousData: false,
     shouldRetryOnError: false,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    refreshWhenHidden: false,
+    refreshWhenOffline: false,
   })
 
   const defaultTeamAId = selectedGroup?.teams?.[0]?.participationId

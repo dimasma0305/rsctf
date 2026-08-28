@@ -145,6 +145,27 @@ struct SolveSourceRow {
     submitted_at: DateTime<Utc>,
     game_start: DateTime<Utc>,
     wrong_before: i64,
+    solver_count: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct BurstSourceRow {
+    first_title: String,
+    first_at: DateTime<Utc>,
+    second_title: String,
+    second_at: DateTime<Utc>,
+    third_title: String,
+    third_at: DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct PairSourceRow {
+    left_team_name: String,
+    right_team_name: String,
+    challenge_title: String,
+    left_at: DateTime<Utc>,
+    right_at: DateTime<Utc>,
+    shared_count: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]

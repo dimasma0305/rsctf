@@ -17,9 +17,11 @@
 //! share, so provider/difficulty/site-key can never drift between them.
 
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
-use std::time::Duration;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -34,6 +36,9 @@ const TURNSTILE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const TURNSTILE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TURNSTILE_RESPONSE_MAX_BYTES: usize = 16 * 1024;
 const MAX_CAPTCHA_TOKEN_BYTES: usize = 4 * 1024;
+const HASHPOW_LIFETIME: Duration = Duration::from_secs(5 * 60);
+const HASHPOW_CLOCK_SKEW: u64 = 15;
+const CAPTCHA_SETTINGS_SNAPSHOT_TTL: Duration = Duration::from_secs(2);
 
 static TURNSTILE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     turnstile_client_builder(TURNSTILE_CONNECT_TIMEOUT, TURNSTILE_REQUEST_TIMEOUT)
@@ -109,6 +114,26 @@ pub enum CaptchaService {
     HashPow { difficulty: u32 },
 }
 
+#[derive(Clone, Debug)]
+pub struct IssuedHashPowChallenge {
+    pub id: String,
+    pub challenge: String,
+    pub difficulty: i32,
+    pub expires_at_millis: i64,
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedHashPowPayload {
+    version: u8,
+    challenge_id: String,
+    challenge: String,
+    issued_at: u64,
+    expires_at: u64,
+    difficulty: u32,
+    policy_revision: String,
+}
+
 /// Shape of the Turnstile siteverify response we care about.
 #[derive(Debug, Deserialize)]
 struct TurnstileResponse {
@@ -156,7 +181,7 @@ impl CaptchaService {
     /// * `HashPow`   -> the token is `"<challenge>:<nonce>"`; returns whether
     ///   `sha256(challenge || nonce)` has at least `difficulty` leading zero
     ///   bits.
-    pub async fn verify(&self, token: &str, cache: &dyn Cache) -> AppResult<bool> {
+    pub async fn verify(&self, token: &str, _cache: &dyn Cache) -> AppResult<bool> {
         match self {
             CaptchaService::None => Ok(true),
 
@@ -182,45 +207,119 @@ impl CaptchaService {
                 Ok(body.success)
             }
 
-            CaptchaService::HashPow { difficulty } => Ok(token.len() <= MAX_CAPTCHA_TOKEN_BYTES
-                && verify_hashpow(token, *difficulty, cache).await),
+            // HashPoW verification needs the policy revision and deployment
+            // signing secret held by `CaptchaSettings::verify_local`.
+            CaptchaService::HashPow { .. } => Ok(false),
         }
     }
 }
 
-/// Verify a proof-of-work token of the form `"<id>:<answer>"` against the
-/// challenge value the server minted in [`get_pow_challenge`] and cached under
-/// `_HP_{id}` (single-use).
+/// Verify a proof-of-work token of the form `"<signed-id>:<answer>"` against
+/// the self-contained challenge value authenticated by the signed envelope.
 ///
 /// This matches the client worker (`web/src/utils/PowWorker.ts`) exactly:
 /// the browser hashes `SHA-256(hex_decode(challenge_value) ‖ salt ‖ nonce)` and
-/// returns `answer = hex(salt) ‖ hex(nonce)` (16 hex chars). So server-side the
+/// returns `answer = hex(salt) ‖ hex(nonce)` (16 hex chars). Server-side the
 /// pre-image is `hex_decode(challenge_value) ‖ hex_decode(answer)`, and the token
-/// passes iff its SHA-256 has ≥ `difficulty` leading zero bits. The `_HP_{id}`
-/// key is consumed on every attempt so a solved nonce can't be replayed.
-async fn verify_hashpow(token: &str, difficulty: u32, cache: &dyn Cache) -> bool {
+/// passes iff its SHA-256 has ≥ `difficulty` leading zero bits. Only a valid
+/// proof creates a short `_HPC_*` consumed marker, atomically, so issuance is
+/// stateless and a solved nonce cannot be replayed.
+async fn verify_hashpow(
+    token: &str,
+    expected_difficulty: u32,
+    expected_revision: CaptchaRevision,
+    signing_secret: &str,
+    cache: &dyn Cache,
+) -> bool {
     let mut parts = token.splitn(2, ':');
     let (id, answer) = match (parts.next(), parts.next()) {
         (Some(i), Some(a)) if !i.is_empty() && !a.is_empty() => (i, a),
         _ => return false,
     };
-
-    let key = format!("_HP_{id}");
-    let Some(value) = cache.get_and_remove(&key).await else {
-        return false; // expired, unknown, or already consumed
+    if id.len() > 512 || answer.len() != 16 {
+        return false;
+    }
+    let Some(payload) = verify_hashpow_envelope(id, signing_secret) else {
+        return false;
     };
+    let now = unix_seconds();
+    if payload.version != 1
+        || payload.difficulty != expected_difficulty
+        || payload.policy_revision != hex::encode(expected_revision.0)
+        || payload.challenge_id.len() != 24
+        || payload.challenge.len() != 16
+        || payload.issued_at > now.saturating_add(HASHPOW_CLOCK_SKEW)
+        || payload.expires_at <= now
+        || payload.expires_at.saturating_sub(payload.issued_at) != HASHPOW_LIFETIME.as_secs()
+    {
+        return false;
+    }
 
-    let (Some(value_bytes), Some(answer_bytes)) = (
-        hex_bytes(std::str::from_utf8(&value).unwrap_or_default()),
-        hex_bytes(answer),
-    ) else {
+    let (Some(value_bytes), Some(answer_bytes)) =
+        (hex_bytes(&payload.challenge), hex_bytes(answer))
+    else {
         return false;
     };
 
     let mut hasher = Sha256::new();
     hasher.update(&value_bytes);
     hasher.update(&answer_bytes);
-    leading_zero_bits(&hasher.finalize()) >= difficulty
+    if leading_zero_bits(&hasher.finalize()) < payload.difficulty {
+        return false;
+    }
+
+    // Only paid, valid work creates cache pressure. SET NX is the distributed
+    // one-use decision; its short marker naturally expires with the challenge.
+    let consumed_key = format!("_HPC_{}", crate::utils::codec::sha256_hex(id.as_bytes()));
+    cache
+        .set_if_absent(
+            &consumed_key,
+            b"1",
+            Some(Duration::from_secs(
+                payload.expires_at.saturating_sub(now).max(1),
+            )),
+        )
+        .await
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn hashpow_mac(payload: &[u8], signing_secret: &str) -> Option<Vec<u8>> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(signing_secret.as_bytes()).ok()?;
+    mac.update(b"rsctf-hashpow-v1\0");
+    mac.update(payload);
+    Some(mac.finalize().into_bytes().to_vec())
+}
+
+fn sign_hashpow_payload(payload: &SignedHashPowPayload, signing_secret: &str) -> Option<String> {
+    let encoded_payload = serde_json::to_vec(payload).ok()?;
+    let signature = hashpow_mac(&encoded_payload, signing_secret)?;
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    Some(format!(
+        "{}.{}",
+        engine.encode(encoded_payload),
+        engine.encode(signature)
+    ))
+}
+
+fn verify_hashpow_envelope(id: &str, signing_secret: &str) -> Option<SignedHashPowPayload> {
+    let (payload, signature) = id.split_once('.')?;
+    if payload.is_empty() || signature.is_empty() || signature.contains('.') {
+        return None;
+    }
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let payload = engine.decode(payload).ok()?;
+    let signature = engine.decode(signature).ok()?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(signing_secret.as_bytes()).ok()?;
+    mac.update(b"rsctf-hashpow-v1\0");
+    mac.update(&payload);
+    mac.verify_slice(&signature).ok()?;
+    serde_json::from_slice(&payload).ok()
 }
 
 /// Decode an even-length lowercase/uppercase hex string to bytes; `None` on any
@@ -263,6 +362,18 @@ pub struct CaptchaSettings {
     secret_key: Option<String>,
 }
 
+struct CachedCaptchaSettings {
+    fallback_use_captcha: bool,
+    expires_at: Instant,
+    settings: CaptchaSettings,
+}
+
+static CAPTCHA_SETTINGS_SNAPSHOT: LazyLock<Mutex<Option<CachedCaptchaSettings>>> =
+    LazyLock::new(|| Mutex::new(None));
+static CAPTCHA_SETTINGS_FLIGHT: LazyLock<
+    crate::utils::single_flight::SingleFlight<Option<CaptchaSettings>>,
+> = LazyLock::new(crate::utils::single_flight::SingleFlight::new);
+
 /// Opaque digest of every setting that determines whether a locally supplied
 /// captcha token is valid. It is request-local and never crosses the wire.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -296,6 +407,72 @@ impl CaptchaSettings {
         .await
         .map_err(database_error)?;
         Self::from_values(&rows.into_iter().collect(), fallback_use_captcha)
+    }
+
+    /// Small process-local snapshot for anonymous captcha discovery/issuance.
+    /// Admin writes explicitly invalidate it; the TTL is only a missed-writer
+    /// backstop, and single-flight prevents a database dogpile at expiry.
+    pub async fn load_cached(pool: &PgPool, fallback_use_captcha: bool) -> AppResult<Self> {
+        if let Some(settings) = CAPTCHA_SETTINGS_SNAPSHOT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|cached| {
+                cached.fallback_use_captcha == fallback_use_captcha
+                    && cached.expires_at > Instant::now()
+            })
+            .map(|cached| cached.settings.clone())
+        {
+            return Ok(settings);
+        }
+
+        let pool = pool.clone();
+        let key = if fallback_use_captcha {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let settings = CAPTCHA_SETTINGS_FLIGHT
+            .run(key, move || async move {
+                Self::load(&pool, fallback_use_captcha).await.ok()
+            })
+            .await
+            .ok_or_else(|| AppError::internal("captcha policy snapshot refresh failed"))?;
+        *CAPTCHA_SETTINGS_SNAPSHOT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(CachedCaptchaSettings {
+            fallback_use_captcha,
+            expires_at: Instant::now() + CAPTCHA_SETTINGS_SNAPSHOT_TTL,
+            settings: settings.clone(),
+        });
+        Ok(settings)
+    }
+
+    pub fn issue_hashpow(&self, signing_secret: &str) -> AppResult<IssuedHashPowChallenge> {
+        if !self.use_captcha || self.provider != "HashPow" {
+            return Err(AppError::not_found("PoW challenge is not available"));
+        }
+        let issued_at = unix_seconds();
+        let expires_at = issued_at.saturating_add(HASHPOW_LIFETIME.as_secs());
+        let payload = SignedHashPowPayload {
+            version: 1,
+            challenge_id: crate::utils::codec::random_hex(12),
+            challenge: crate::utils::codec::random_hex(8),
+            issued_at,
+            expires_at,
+            difficulty: self.difficulty,
+            policy_revision: hex::encode(self.revision().0),
+        };
+        let id = sign_hashpow_payload(&payload, signing_secret)
+            .ok_or_else(|| AppError::internal("could not sign PoW challenge"))?;
+        Ok(IssuedHashPowChallenge {
+            id,
+            challenge: payload.challenge,
+            difficulty: payload.difficulty as i32,
+            expires_at_millis: i64::try_from(expires_at)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(1000),
+        })
     }
 
     pub(crate) async fn load_in_transaction(
@@ -369,11 +546,25 @@ impl CaptchaSettings {
         &self,
         token: &str,
         cache: &dyn Cache,
+        signing_secret: &str,
     ) -> AppResult<CaptchaAdmission> {
         if !self.use_captcha {
             return Ok(CaptchaAdmission::Local(None));
         }
-        if !self.service().verify(token, cache).await? {
+        let verified = if self.provider == "HashPow" {
+            token.len() <= MAX_CAPTCHA_TOKEN_BYTES
+                && verify_hashpow(
+                    token,
+                    self.difficulty,
+                    self.revision(),
+                    signing_secret,
+                    cache,
+                )
+                .await
+        } else {
+            self.service().verify(token, cache).await?
+        };
+        if !verified {
             return Err(AppError::bad_request("Captcha failed"));
         }
         Ok(CaptchaAdmission::Local(Some(self.revision())))
@@ -462,6 +653,12 @@ impl CaptchaSettings {
     }
 }
 
+pub fn invalidate_settings_snapshot() {
+    *CAPTCHA_SETTINGS_SNAPSHOT
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+}
+
 fn captcha_config_keys() -> &'static [&'static str] {
     &[
         "AccountPolicy:UseCaptcha",
@@ -491,7 +688,7 @@ fn database_error(error: sqlx::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::cache::{Cache, InMemoryCache};
+    use crate::services::cache::InMemoryCache;
 
     #[test]
     fn leading_zeros_counts_bits() {
@@ -576,23 +773,41 @@ mod tests {
     #[tokio::test]
     async fn hashpow_rejects_bad_shape_or_unknown_challenge() {
         let cache = InMemoryCache::default();
-        assert!(!verify_hashpow("no-colon", 0, &cache).await); // no ':'
-        assert!(!verify_hashpow(":answer", 0, &cache).await); // empty id
-        assert!(!verify_hashpow("id:", 0, &cache).await); // empty answer
-                                                          // A well-formed token whose id was never minted (no cached challenge) fails.
-        assert!(!verify_hashpow("unknownid:00000000", 0, &cache).await);
+        let revision = CaptchaRevision([0; 32]);
+        assert!(!verify_hashpow("no-colon", 8, revision, "secret", &cache).await);
+        assert!(!verify_hashpow(":answer", 8, revision, "secret", &cache).await);
+        assert!(!verify_hashpow("id:", 8, revision, "secret", &cache).await);
+        assert!(!verify_hashpow("unknownid:0000000000000000", 8, revision, "secret", &cache).await);
     }
 
     #[tokio::test]
-    async fn hashpow_service_rejects_oversized_tokens_before_cache_access() {
+    async fn hashpow_rejects_oversized_tokens_without_creating_state() {
         let cache = InMemoryCache::default();
-        let key = "_HP_kept";
-        cache.set(key, b"0011223344556677", None).await;
-        let token = format!("kept:{}", "0".repeat(MAX_CAPTCHA_TOKEN_BYTES));
+        let token = format!("{}:{}", "x".repeat(513), "0".repeat(16));
+        assert!(!verify_hashpow(&token, 8, CaptchaRevision([0; 32]), "secret", &cache).await);
+    }
 
-        let service = CaptchaService::HashPow { difficulty: 0 };
-        assert!(!service.verify(&token, &cache).await.unwrap());
-        assert!(cache.get(key).await.is_some());
+    fn signed_test_id(
+        challenge: &str,
+        difficulty: u32,
+        revision: CaptchaRevision,
+        secret: &str,
+        issued_at: u64,
+        expires_at: u64,
+    ) -> String {
+        sign_hashpow_payload(
+            &SignedHashPowPayload {
+                version: 1,
+                challenge_id: "00112233445566778899aabb".to_string(),
+                challenge: challenge.to_string(),
+                issued_at,
+                expires_at,
+                difficulty,
+                policy_revision: hex::encode(revision.0),
+            },
+            secret,
+        )
+        .unwrap()
     }
 
     #[tokio::test]
@@ -600,43 +815,72 @@ mod tests {
         // Mirror the server↔client contract: the id keys a cached hex challenge
         // value, and the answer is hex(bytes) whose sha256(value ‖ answer) has the
         // required leading zero bits.
-        let id = "deadbeef";
         let value = "0011223344556677"; // 8-byte hex, like get_pow_challenge mints
         let value_bytes = hex_bytes(value).unwrap();
+        let revision = CaptchaRevision([3; 32]);
+        let now = unix_seconds();
+        let id = signed_test_id(
+            value,
+            8,
+            revision,
+            "signing-secret",
+            now,
+            now + HASHPOW_LIFETIME.as_secs(),
+        );
 
         // Brute-force an answer with >= 8 leading zero bits.
         let mut answer = None;
         for n in 0..5_000_000u32 {
+            let candidate = [
+                0,
+                0,
+                0,
+                0,
+                n.to_be_bytes()[0],
+                n.to_be_bytes()[1],
+                n.to_be_bytes()[2],
+                n.to_be_bytes()[3],
+            ];
             let mut h = Sha256::new();
             h.update(&value_bytes);
-            h.update(n.to_be_bytes());
+            h.update(candidate);
             if leading_zero_bits(&h.finalize()) >= 8 {
-                answer = Some(format!("{n:08x}"));
+                answer = Some(format!("00000000{n:08x}"));
                 break;
             }
         }
         let answer = answer.expect("a <=8-bit nonce exists well within range");
         let token = format!("{id}:{answer}");
-        let key = format!("_HP_{id}");
-
         let cache = InMemoryCache::default();
-        cache.set(&key, value.as_bytes(), None).await;
-        assert!(verify_hashpow(&token, 8, &cache).await);
-        // Single-use: the key was consumed, so a replay fails.
-        assert!(!verify_hashpow(&token, 8, &cache).await);
-
-        // A difficulty higher than the solved nonce provides is rejected.
-        cache.set(&key, value.as_bytes(), None).await;
-        assert!(!verify_hashpow(&token, 64, &cache).await);
+        assert!(verify_hashpow(&token, 8, revision, "signing-secret", &cache).await);
+        assert!(!verify_hashpow(&token, 8, revision, "signing-secret", &cache).await);
+        assert!(!verify_hashpow(&token, 8, revision, "different-secret", &cache).await);
+        assert!(
+            !verify_hashpow(
+                &token,
+                8,
+                CaptchaRevision([4; 32]),
+                "signing-secret",
+                &cache
+            )
+            .await
+        );
     }
 
     #[tokio::test]
     async fn concurrent_hashpow_replays_have_one_winner() {
-        let id = "concurrent";
-        let key = format!("_HP_{id}");
-        let token = format!("{id}:00000000");
+        let revision = CaptchaRevision([5; 32]);
+        let now = unix_seconds();
+        let id = signed_test_id(
+            "0011223344556677",
+            0,
+            revision,
+            "secret",
+            now,
+            now + HASHPOW_LIFETIME.as_secs(),
+        );
+        let token = format!("{id}:0000000000000000");
         let cache = std::sync::Arc::new(InMemoryCache::default());
-        cache.set(&key, b"0011223344556677", None).await;
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(17));
         let mut tasks = Vec::new();
         for _ in 0..16 {
@@ -645,7 +889,7 @@ mod tests {
             let token = token.clone();
             tasks.push(tokio::spawn(async move {
                 barrier.wait().await;
-                verify_hashpow(&token, 0, cache.as_ref()).await
+                verify_hashpow(&token, 0, revision, "secret", cache.as_ref()).await
             }));
         }
         barrier.wait().await;
@@ -655,5 +899,35 @@ mod tests {
             accepted += usize::from(task.await.unwrap());
         }
         assert_eq!(accepted, 1);
+    }
+
+    #[test]
+    fn issuance_is_disabled_and_signed_payload_expiry_is_enforced() {
+        let disabled = CaptchaSettings {
+            use_captcha: false,
+            provider: "HashPow".to_string(),
+            site_key: None,
+            difficulty: 8,
+            secret_key: None,
+        };
+        assert!(disabled.issue_hashpow("secret").is_err());
+
+        let revision = CaptchaRevision([1; 32]);
+        let now = unix_seconds();
+        let expired = signed_test_id(
+            "0011223344556677",
+            8,
+            revision,
+            "secret",
+            now.saturating_sub(HASHPOW_LIFETIME.as_secs()),
+            now,
+        );
+        assert_eq!(
+            verify_hashpow_envelope(&expired, "secret")
+                .unwrap()
+                .expires_at,
+            now
+        );
+        assert!(verify_hashpow_envelope(&expired, "wrong-secret").is_none());
     }
 }

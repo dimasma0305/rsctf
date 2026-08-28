@@ -1,8 +1,10 @@
 //! Source projections for the lazy suspicion-evidence review endpoint.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use super::*;
+
+const MAX_EVIDENCE_SOURCE_ROWS: usize = 2_048;
 
 pub(super) fn add_synthetic_preview(
     event: &EventEvidenceRow,
@@ -341,6 +343,7 @@ pub(super) async fn add_challenge_source(
                   challenge.title AS challenge_title,
                   submission.submit_time_utc AS submitted_at,
                   game.start_time_utc AS game_start,
+                  COUNT(*) OVER ()::bigint AS solver_count,
                   (SELECT COUNT(*)::bigint
                      FROM "Submissions" wrong
                     WHERE wrong.game_id = submission.game_id
@@ -366,15 +369,29 @@ pub(super) async fn add_challenge_source(
               AND submission.status = $4
               AND submission.submit_time_utc >= game.start_time_utc
               AND submission.submit_time_utc < game.end_time_utc
-            ORDER BY submission.submit_time_utc, submission.id"#,
+            ORDER BY submission.submit_time_utc, submission.id
+            LIMIT $5"#,
     )
     .bind(event.game_id)
     .bind(challenge_id)
     .bind(AnswerResult::WrongAnswer as i16)
     .bind(AnswerResult::Accepted as i16)
+    .bind(MAX_EVIDENCE_SOURCE_ROWS as i64 + 1)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    let mut solves = solves;
+    let solver_count = solves
+        .first()
+        .map(|solve| solve.solver_count.max(0) as usize)
+        .unwrap_or(0);
+    let solver_history_truncated = solves.len() > MAX_EVIDENCE_SOURCE_ROWS;
+    solves.truncate(MAX_EVIDENCE_SOURCE_ROWS);
+    if solver_history_truncated {
+        review.limitations.push(format!(
+            "Canonical solver history is capped at the first {MAX_EVIDENCE_SOURCE_ROWS} rows; population counts remain exact, but later team detail is omitted."
+        ));
+    }
     let wrong_pattern = matches!(
         ty,
         SuspicionType::HighWrongRate | SuspicionType::AutomatedPattern
@@ -399,9 +416,9 @@ pub(super) async fn add_challenge_source(
                 .or_else(|| solves.first().map(|solve| solve.challenge_title.clone()))
                 .unwrap_or_else(|| format!("#{challenge_id}")),
         ),
-        fact("Canonical solver count", solves.len().to_string()),
+        fact("Canonical solver count", solver_count.to_string()),
     ];
-    if !offsets.is_empty() {
+    if !offsets.is_empty() && !solver_history_truncated {
         offsets.sort_by(|a, b| a.total_cmp(b));
         let median_ms = if offsets.len().is_multiple_of(2) {
             (offsets[offsets.len() / 2 - 1] + offsets[offsets.len() / 2]) / 2.0
@@ -441,28 +458,55 @@ pub(super) async fn add_challenge_source(
     }
 
     if wrong_pattern {
-        let wrong_times: Vec<DateTime<Utc>> = sqlx::query_scalar(
-            r#"SELECT submit_time_utc
+        let (wrong_count, rolling): (i64, i64) = sqlx::query_as(
+            r#"SELECT COUNT(*)::bigint,
+                      COUNT(*) FILTER (
+                          WHERE submit_time_utc >= $5 - INTERVAL '60 seconds'
+                      )::bigint
                  FROM "Submissions"
                 WHERE game_id = $1
                   AND participation_id = $2
                   AND challenge_id = $3
                   AND status = $4
-                  AND submit_time_utc <= $5
-                ORDER BY submit_time_utc, id"#,
+                  AND submit_time_utc <= $5"#,
         )
         .bind(event.game_id)
         .bind(event.participation_id)
         .bind(challenge_id)
         .bind(AnswerResult::WrongAnswer as i16)
         .bind(event.created_at)
+        .fetch_one(pool)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        let wrong_times: Vec<DateTime<Utc>> = sqlx::query_scalar(
+            r#"SELECT sampled.submit_time_utc
+                 FROM (
+                       SELECT submit_time_utc, id
+                         FROM "Submissions"
+                        WHERE game_id = $1
+                          AND participation_id = $2
+                          AND challenge_id = $3
+                          AND status = $4
+                          AND submit_time_utc <= $5
+                        ORDER BY submit_time_utc DESC, id DESC
+                        LIMIT $6
+                 ) sampled
+                ORDER BY sampled.submit_time_utc, sampled.id"#,
+        )
+        .bind(event.game_id)
+        .bind(event.participation_id)
+        .bind(challenge_id)
+        .bind(AnswerResult::WrongAnswer as i16)
+        .bind(event.created_at)
+        .bind(MAX_EVIDENCE_SOURCE_ROWS as i64)
         .fetch_all(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-        let rolling = wrong_times
-            .iter()
-            .filter(|time| event.created_at - **time <= chrono::Duration::seconds(60))
-            .count();
+        if wrong_count > MAX_EVIDENCE_SOURCE_ROWS as i64 {
+            review.limitations.push(format!(
+                "Wrong-attempt timing detail is capped at the most recent {MAX_EVIDENCE_SOURCE_ROWS} rows; exact total and prior-60-second counts come from bounded aggregate output."
+            ));
+        }
         let mut fastest_run = 0usize;
         let mut run = 0usize;
         for pair in wrong_times.windows(2) {
@@ -476,7 +520,7 @@ pub(super) async fn add_challenge_source(
         }
         facts.push(fact(
             "Wrong attempts through event",
-            wrong_times.len().to_string(),
+            wrong_count.to_string(),
         ));
         facts.push(fact(
             "Wrong attempts in prior 60 seconds",
@@ -507,41 +551,53 @@ pub(super) async fn add_burst_source(
     event: &EventEvidenceRow,
     review: &mut SuspicionEvidenceReview,
 ) -> AppResult<()> {
-    let rows: Vec<(String, DateTime<Utc>)> = sqlx::query_as(
-        r#"SELECT challenge.title, submission.submit_time_utc
-             FROM "FirstSolves" first_solve
-             JOIN "Submissions" submission
-               ON submission.id = first_solve.submission_id
-              AND submission.participation_id = first_solve.participation_id
-              AND submission.challenge_id = first_solve.challenge_id
-             JOIN "GameChallenges" challenge
-               ON challenge.id = submission.challenge_id
-              AND challenge.game_id = submission.game_id
-             JOIN "Games" game ON game.id = submission.game_id
-            WHERE submission.game_id = $1
-              AND submission.participation_id = $2
-              AND submission.status = $3
-              AND submission.submit_time_utc >= game.start_time_utc
-              AND submission.submit_time_utc < game.end_time_utc
-            ORDER BY submission.submit_time_utc, submission.id"#,
+    let row = sqlx::query_as::<_, BurstSourceRow>(
+        r#"WITH solves AS (
+               SELECT challenge.title AS first_title,
+                      submission.submit_time_utc AS first_at,
+                      submission.id,
+                      LEAD(challenge.title, 1) OVER solve_order AS second_title,
+                      LEAD(submission.submit_time_utc, 1) OVER solve_order AS second_at,
+                      LEAD(challenge.title, 2) OVER solve_order AS third_title,
+                      LEAD(submission.submit_time_utc, 2) OVER solve_order AS third_at
+                 FROM "FirstSolves" first_solve
+                 JOIN "Submissions" submission
+                   ON submission.id = first_solve.submission_id
+                  AND submission.participation_id = first_solve.participation_id
+                  AND submission.challenge_id = first_solve.challenge_id
+                 JOIN "GameChallenges" challenge
+                   ON challenge.id = submission.challenge_id
+                  AND challenge.game_id = submission.game_id
+                 JOIN "Games" game ON game.id = submission.game_id
+                WHERE submission.game_id = $1
+                  AND submission.participation_id = $2
+                  AND submission.status = $3
+                  AND submission.submit_time_utc >= game.start_time_utc
+                  AND submission.submit_time_utc < game.end_time_utc
+               WINDOW solve_order AS (
+                   ORDER BY submission.submit_time_utc, submission.id
+               )
+         )
+         SELECT first_title, first_at, second_title, second_at, third_title, third_at
+           FROM solves
+          WHERE third_at IS NOT NULL
+          ORDER BY third_at - first_at, first_at
+          LIMIT 1"#,
     )
     .bind(event.game_id)
     .bind(event.participation_id)
     .bind(AnswerResult::Accepted as i16)
-    .fetch_all(pool)
+    .fetch_optional(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let best = rows
-        .windows(3)
-        .min_by_key(|window| window[2].1 - window[0].1);
-    let Some(best) = best else {
+    let Some(row) = row else {
         return Ok(());
     };
     review.sources.push(EvidenceSourceReview {
         source_type: "solveBurst".to_string(),
         title: "Fastest three-solve window".to_string(),
         source_id: Some("canonical-first-solves".to_string()),
-        recorded_at: Some(best[2].1),
+        recorded_at: Some(row.third_at),
         immutable: true,
         summary:
             "The detector requires at least three distinct canonical solves inside 60 seconds."
@@ -549,14 +605,19 @@ pub(super) async fn add_burst_source(
         facts: vec![
             fact(
                 "Window",
-                duration_text((best[2].1 - best[0].1).num_milliseconds()),
+                duration_text((row.third_at - row.first_at).num_milliseconds()),
             ),
             fact(
                 "Solves",
-                best.iter()
-                    .map(|(title, time)| format!("{title} @ {}", format_time(*time)))
-                    .collect::<Vec<_>>()
-                    .join("; "),
+                [
+                    (row.first_title, row.first_at),
+                    (row.second_title, row.second_at),
+                    (row.third_title, row.third_at),
+                ]
+                .into_iter()
+                .map(|(title, time)| format!("{title} @ {}", format_time(time)))
+                .collect::<Vec<_>>()
+                .join("; "),
             ),
         ],
     });
@@ -737,66 +798,74 @@ pub(super) async fn add_pair_source(
         };
         [source, event.participation_id]
     };
-    let rows: Vec<(i32, String, i32, String, DateTime<Utc>)> = sqlx::query_as(
-        r#"SELECT submission.participation_id,
-                  team.name,
-                  submission.challenge_id,
-                  challenge.title,
-                  submission.submit_time_utc
-             FROM "FirstSolves" first_solve
-             JOIN "Submissions" submission
-               ON submission.id = first_solve.submission_id
-              AND submission.participation_id = first_solve.participation_id
-              AND submission.challenge_id = first_solve.challenge_id
-             JOIN "Participations" participation
-               ON participation.id = submission.participation_id
-              AND participation.game_id = submission.game_id
-             JOIN "Teams" team ON team.id = participation.team_id
+    let rows = sqlx::query_as::<_, PairSourceRow>(
+        r#"SELECT left_team.name AS left_team_name,
+                  right_team.name AS right_team_name,
+                  challenge.title AS challenge_title,
+                  left_submission.submit_time_utc AS left_at,
+                  right_submission.submit_time_utc AS right_at,
+                  COUNT(*) OVER ()::bigint AS shared_count
+             FROM "FirstSolves" left_solve
+             JOIN "Submissions" left_submission
+               ON left_submission.id = left_solve.submission_id
+              AND left_submission.participation_id = left_solve.participation_id
+              AND left_submission.challenge_id = left_solve.challenge_id
+             JOIN "FirstSolves" right_solve
+               ON right_solve.challenge_id = left_solve.challenge_id
+              AND right_solve.participation_id = $3
+             JOIN "Submissions" right_submission
+               ON right_submission.id = right_solve.submission_id
+              AND right_submission.participation_id = right_solve.participation_id
+              AND right_submission.challenge_id = right_solve.challenge_id
+              AND right_submission.game_id = left_submission.game_id
+             JOIN "Participations" left_participation
+               ON left_participation.id = left_submission.participation_id
+              AND left_participation.game_id = left_submission.game_id
+             JOIN "Teams" left_team ON left_team.id = left_participation.team_id
+             JOIN "Participations" right_participation
+               ON right_participation.id = right_submission.participation_id
+              AND right_participation.game_id = right_submission.game_id
+             JOIN "Teams" right_team ON right_team.id = right_participation.team_id
              JOIN "GameChallenges" challenge
-               ON challenge.id = submission.challenge_id
-              AND challenge.game_id = submission.game_id
-             JOIN "Games" game ON game.id = submission.game_id
-            WHERE submission.game_id = $1
-              AND submission.participation_id = ANY($2::INTEGER[])
-              AND submission.status = $3
-              AND submission.submit_time_utc >= game.start_time_utc
-              AND submission.submit_time_utc < game.end_time_utc
-            ORDER BY submission.submit_time_utc, submission.id"#,
+               ON challenge.id = left_submission.challenge_id
+              AND challenge.game_id = left_submission.game_id
+             JOIN "Games" game ON game.id = left_submission.game_id
+            WHERE left_submission.game_id = $1
+              AND left_submission.participation_id = $2
+              AND left_submission.status = $4
+              AND right_submission.status = $4
+              AND left_submission.submit_time_utc >= game.start_time_utc
+              AND left_submission.submit_time_utc < game.end_time_utc
+              AND right_submission.submit_time_utc >= game.start_time_utc
+              AND right_submission.submit_time_utc < game.end_time_utc
+            ORDER BY GREATEST(
+                         left_submission.submit_time_utc,
+                         right_submission.submit_time_utc
+                     ),
+                     left_submission.id,
+                     right_submission.id
+            LIMIT 12"#,
     )
     .bind(event.game_id)
-    .bind(&participants[..])
+    .bind(participants[0])
+    .bind(participants[1])
     .bind(AnswerResult::Accepted as i16)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    let mut by_part: BTreeMap<i32, BTreeMap<i32, (String, DateTime<Utc>)>> = BTreeMap::new();
-    let mut team_names = BTreeMap::new();
-    for (participation_id, team_name, challenge_id, title, time) in rows {
-        team_names.insert(participation_id, team_name);
-        by_part
-            .entry(participation_id)
-            .or_default()
-            .insert(challenge_id, (title, time));
-    }
-    let (Some(left), Some(right)) = (by_part.get(&participants[0]), by_part.get(&participants[1]))
-    else {
+    let Some(first) = rows.first() else {
         return Ok(());
     };
-    let mut shared = left
+    let shared_count = first.shared_count;
+    let left_team_name = first.left_team_name.clone();
+    let right_team_name = first.right_team_name.clone();
+    let sample = rows
         .iter()
-        .filter_map(|(challenge_id, (title, left_time))| {
-            let (_, right_time) = right.get(challenge_id)?;
-            Some((title.clone(), *left_time, *right_time))
-        })
-        .collect::<Vec<_>>();
-    shared.sort_by_key(|row| row.1.max(row.2));
-    let sample = shared
-        .iter()
-        .take(12)
-        .map(|(title, left_time, right_time)| {
+        .map(|row| {
             format!(
                 "{title}: {}",
-                duration_text((*right_time - *left_time).num_milliseconds())
+                duration_text((row.right_at - row.left_at).num_milliseconds()),
+                title = row.challenge_title,
             )
         })
         .collect::<Vec<_>>()
@@ -814,11 +883,11 @@ pub(super) async fn add_pair_source(
                 "Teams",
                 format!(
                     "{} ↔ {}",
-                    team_names.get(&participants[0]).cloned().unwrap_or_else(|| participants[0].to_string()),
-                    team_names.get(&participants[1]).cloned().unwrap_or_else(|| participants[1].to_string())
+                    left_team_name,
+                    right_team_name,
                 ),
             ),
-            fact("Shared canonical solves", shared.len().to_string()),
+            fact("Shared canonical solves", shared_count.to_string()),
             fact("Solve-gap sample", if sample.is_empty() { "none".to_string() } else { sample }),
         ],
     });

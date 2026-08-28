@@ -816,7 +816,7 @@ export const AdGuideModal: FC<AdToolkitModalProps> = ({ gameId, ...modalProps })
         title={t('game.content.ad.token_modal.title', 'Your new A&D API token')}
         warning={t(
           'game.content.ad.token_modal.warning',
-          'This token is now saved in this browser (see “Saved token” in the API-token section) so your scripts can reuse it. Copy it here too if you want it elsewhere — the platform keeps only a hash and can’t show it again. The previous token (if any) has been invalidated.'
+          'This plaintext is available only in this tab. Copy it for your script now — the platform keeps only a hash and cannot show it after reload, logout, or account change. The previous token (if any) has been invalidated.'
         )}
       />
 

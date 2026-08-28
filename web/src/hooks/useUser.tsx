@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
 import { useSWRConfig } from 'swr'
+import { clearLegacyAdTokenStorage } from '@Utils/AdTokenMemory'
 import { setAuthSession } from '@Utils/AuthState'
 import { createProfileRetryTimers, profileErrorDisposition, profileRetryScheduleDelay } from '@Utils/ProfileRetry'
 import api from '@Api'
@@ -131,6 +132,8 @@ export const useLogOut = () => {
     } catch {
       navigate('/')
       mutateProfile(undefined, { revalidate: false })
+    } finally {
+      clearLegacyAdTokenStorage()
     }
   }
 }

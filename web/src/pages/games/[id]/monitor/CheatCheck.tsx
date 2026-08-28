@@ -70,13 +70,18 @@ const CheatCheck: FC = () => {
     isValidating,
     error,
     mutate,
-  } = api.cheatReport.useCheatReportGet(numId, {
-    refreshInterval: CHEAT_REPORT_REFRESH_INTERVAL_MS,
-    refreshWhenHidden: false,
-    revalidateOnFocus: true,
-    revalidateOnReconnect: true,
-    keepPreviousData: false,
-  })
+  } = api.cheatReport.useCheatReportGet(
+    numId,
+    {
+      refreshInterval: (latest) => (latest?.sealedAt == null ? CHEAT_REPORT_REFRESH_INTERVAL_MS : 0),
+      refreshWhenHidden: false,
+      refreshWhenOffline: false,
+      revalidateOnFocus: true,
+      revalidateOnReconnect: true,
+      keepPreviousData: false,
+    },
+    activeTab === 'analysis'
+  )
   const refresh = () => void mutate()
   const lastReconciledAt = report?.lastReconciledAt
   const reportIsStale = isCheatReportStale(lastReconciledAt)
@@ -87,8 +92,7 @@ const CheatCheck: FC = () => {
           timeStyle: 'medium',
         }).format(new Date(value))
       : null
-  const lastEvaluated =
-    formatReportTime(lastReconciledAt) ?? t('game.content.cheat.not_evaluated', 'Not evaluated yet')
+  const lastEvaluated = formatReportTime(lastReconciledAt) ?? t('game.content.cheat.not_evaluated', 'Not evaluated yet')
   const oldestPending = formatReportTime(report?.oldestPendingAt)
   const pendingJobs = report?.pendingJobs ?? 0
   const finalizing = report?.evidenceClosedAt != null && report?.sealedAt == null
@@ -100,7 +104,7 @@ const CheatCheck: FC = () => {
     { active: 0, background: 0, telemetryOnly: 0, unimplemented: 0 }
   )
 
-  if (isLoading && !report)
+  if (activeTab === 'analysis' && isLoading && !report)
     return (
       <WithGameMonitor>
         <Stack align="center" justify="center" h="60vh" gap="md">
@@ -112,7 +116,7 @@ const CheatCheck: FC = () => {
       </WithGameMonitor>
     )
 
-  if (error && !report)
+  if (activeTab === 'analysis' && error && !report)
     return (
       <WithGameMonitor>
         <Alert
@@ -370,13 +374,17 @@ const CheatCheck: FC = () => {
             </Tabs.Tab>
           </Tabs.List>
 
-          <Tabs.Panel value="analysis" pt="xs">
-            <CheatInfo report={report || null} mutate={mutate} canManageParticipations={user?.role === Role.Admin} />
-          </Tabs.Panel>
+          {activeTab === 'analysis' && (
+            <Tabs.Panel value="analysis" pt="xs">
+              <CheatInfo report={report || null} mutate={mutate} canManageParticipations={user?.role === Role.Admin} />
+            </Tabs.Panel>
+          )}
 
-          <Tabs.Panel value="submissions" pt="xs">
-            <CheatSubmissionLog gameId={numId} />
-          </Tabs.Panel>
+          {activeTab === 'submissions' && (
+            <Tabs.Panel value="submissions" pt="xs">
+              <CheatSubmissionLog gameId={numId} />
+            </Tabs.Panel>
+          )}
         </Tabs>
       </Stack>
     </WithGameMonitor>

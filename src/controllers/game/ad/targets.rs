@@ -75,6 +75,7 @@ pub async fn targets(
     verified: Option<axum::Extension<crate::services::ad::api_token::VerifiedTeamToken>>,
     rejected: Option<axum::Extension<crate::services::ad::api_token::RejectedTeamToken>>,
 ) -> AppResult<Response> {
+    crate::controllers::game::require_live_event_window(&st, id).await?;
     // Initial auth identifies the team whose final fence must be taken. Only the
     // game-global challenge/roster skeleton is cached; mutable service endpoints
     // and verdicts are loaded from PostgreSQL on every request so a BYOC reconnect

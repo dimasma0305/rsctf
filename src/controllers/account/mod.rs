@@ -281,13 +281,15 @@ pub async fn register(
     // account authenticate a resend even if public registration was disabled
     // after its original request.
 
-    // Captcha gate (RSCTF `AccountController.Register`: `if (UseCaptcha &&
-    // !VerifyAsync) return BadRequest`), placed right after the AllowRegister gate
-    // and BEFORE creating the account. Only enforced when the live
-    // `AccountPolicy:UseCaptcha` is on, so captcha-off registration is unaffected.
+    // Apply the live captcha policy before creating the account; captcha-off
+    // registration remains unaffected.
     let captcha = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
     let captcha_admission = captcha
-        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .verify_local(
+            model.challenge.as_deref().unwrap_or(""),
+            st.cache.as_ref(),
+            &st.config.jwt_secret,
+        )
         .await?;
 
     let user_name = model.user_name.trim().to_string();
@@ -604,13 +606,15 @@ pub async fn login(
     headers: HeaderMap,
     Json(model): Json<LoginModel>,
 ) -> AppResult<Response> {
-    // Captcha gate (RSCTF `AccountController.LogIn`: `if (UseCaptcha &&
-    // !VerifyAsync) return BadRequest`), verified FIRST — before the user lookup,
-    // so response ordering/timing can't leak account existence. Only enforced when
-    // the live `AccountPolicy:UseCaptcha` is on, so captcha-off login is unaffected.
+    // Verify the live captcha policy before lookup so response ordering cannot
+    // reveal whether an account exists; captcha-off login remains unaffected.
     let captcha = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
     let captcha_admission = captcha
-        .verify_local(model.challenge.as_deref().unwrap_or(""), st.cache.as_ref())
+        .verify_local(
+            model.challenge.as_deref().unwrap_or(""),
+            st.cache.as_ref(),
+            &st.config.jwt_secret,
+        )
         .await?;
 
     let credentials_within_bounds =

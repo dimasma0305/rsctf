@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::app_state::SharedState;
+use crate::middlewares::rate_limiter::{limited, Policy};
 use crate::models::data::{config, post, user};
 use crate::services::captcha::CaptchaSettings;
 use crate::utils::codec;
@@ -159,7 +160,10 @@ pub struct HashPowChallenge {
     pub id: String,
     pub challenge: String,
     pub difficulty: i32,
+    pub expires_at: i64,
 }
+
+static HASHPOW_ISSUANCE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(32);
 
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -169,7 +173,10 @@ pub fn router() -> Router<SharedState> {
         .route("/api/posts/page", get(get_posts_page))
         .route("/api/posts/{id}", get(get_post))
         .route("/api/captcha", get(get_captcha))
-        .route("/api/captcha/powchallenge", get(get_pow_challenge))
+        .route(
+            "/api/captcha/powchallenge",
+            limited(Policy::PowChallenge, get(get_pow_challenge)),
+        )
 }
 
 /// `GET /api/Config` — client-facing site configuration.
@@ -358,7 +365,7 @@ pub async fn get_post(
 pub async fn get_captcha(
     State(st): State<SharedState>,
 ) -> AppResult<RequestResponse<ClientCaptchaInfoModel>> {
-    let settings = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
+    let settings = CaptchaSettings::load_cached(st.pg(), st.config.account.use_captcha).await?;
     // RSCTF `InfoController` (line 148): advertise the captcha provider to the
     // client ONLY when AccountPolicy.UseCaptcha is enabled. Otherwise the
     // login/register captcha widget still renders — and for HashPow it grinds a
@@ -377,10 +384,9 @@ pub async fn get_captcha(
 /// `GET /api/captcha/powchallenge` — proof-of-work challenge.
 ///
 /// Ports RSCTF `InfoController.PowChallenge`. When the configured captcha
-/// provider is `HashPow`, mint a fresh random challenge plus a short-lived
-/// cache entry (5-minute sliding window, matching RSCTF) so the paired
-/// verification step can later confirm the client's nonce, and return the
-/// `HashPowChallenge` shape the client expects. For any other provider
+/// provider is enabled `HashPow`, mint a signed self-contained five-minute
+/// challenge without writing issuance state. Verification creates only a
+/// short consumed-ID marker after the caller has paid the work. For any other provider
 /// (notably `None`) RSCTF has no PoW to issue and returns `404 NotFound`,
 /// so we do the same.
 ///
@@ -390,33 +396,17 @@ pub async fn get_pow_challenge(
     // The provider + difficulty come from the LIVE captcha config (the same
     // source the verify step reads), so the client solves the PoW at exactly the
     // difficulty the server later checks against.
-    let settings = CaptchaSettings::load(st.pg(), st.config.account.use_captcha).await?;
-    let difficulty = if settings.provider == "HashPow" {
-        settings.difficulty
-    } else {
-        // "None"/Turnstile: no PoW challenge to issue — RSCTF returns 404.
-        return Err(AppError::not_found("PoW challenge is not available"));
-    };
-
-    // RSCTF: 8 random challenge bytes (returned as lowercase hex) keyed by a
-    // 12-char random hex id. We store the hex challenge string itself so the
-    // verifier hashes exactly what the client was handed.
-    let id = codec::random_hex(6); // 6 bytes -> 12 hex chars
-    let challenge = codec::random_hex(8); // 8 bytes -> 16 hex chars
-
-    // CacheKey.HashPow(id) => "_HP_{id}"; 5-minute expiry.
-    st.cache
-        .set(
-            &format!("_HP_{id}"),
-            challenge.as_bytes(),
-            Some(std::time::Duration::from_secs(5 * 60)),
-        )
-        .await;
+    let _permit = HASHPOW_ISSUANCE_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("PoW issuance capacity is busy; retry shortly"))?;
+    let settings = CaptchaSettings::load_cached(st.pg(), st.config.account.use_captcha).await?;
+    let issued = settings.issue_hashpow(&st.config.jwt_secret)?;
 
     Ok(RequestResponse::ok(HashPowChallenge {
-        id,
-        challenge,
-        difficulty: difficulty as i32,
+        id: issued.id,
+        challenge: issued.challenge,
+        difficulty: issued.difficulty,
+        expires_at: issued.expires_at_millis,
     }))
 }
 

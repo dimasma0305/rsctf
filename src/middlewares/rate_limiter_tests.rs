@@ -246,6 +246,8 @@ fn named_policy_reuses_verified_session_partition_key() {
         partition_key(Policy::PublicHubAdmission, &request),
         "192.0.2.10"
     );
+    assert_eq!(partition_key(Policy::TeamSignature, &request), "192.0.2.10");
+    assert_eq!(partition_key(Policy::PowChallenge, &request), "192.0.2.10");
 }
 
 #[test]
@@ -535,6 +537,8 @@ fn verdict_recovery_has_a_distinct_bounded_identity_budget() {
     ));
     assert_eq!(Policy::Verdict.fixed_window(), (30, 60_000));
     assert!(redis_key(Policy::Verdict, "partition").starts_with("rl:tb:12:"));
+    assert!(redis_key(Policy::TeamSignature, "partition").starts_with("rl:tb:13:"));
+    assert!(redis_key(Policy::PowChallenge, "partition").starts_with("rl:tb:14:"));
 
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

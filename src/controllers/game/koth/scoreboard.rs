@@ -37,10 +37,11 @@ fn koth_cache_key(
 /// authenticated monitor retains the same operational view exposed by the
 /// combined scoreboard and other game read endpoints.
 pub(in crate::controllers::game) fn can_view_koth_standings(
-    game_hidden: bool,
+    game: &game::Model,
     is_monitor: bool,
+    now: DateTime<Utc>,
 ) -> bool {
-    !game_hidden || is_monitor
+    crate::controllers::game::can_view_engine_standings(game, is_monitor, now)
 }
 
 /// Compute the rendered KotH board for `(game, is_monitor)`: derive the ICPC
@@ -224,8 +225,11 @@ pub async fn scoreboard(
     // authenticated monitor to operate the private event. 1s-cached game row.
     let game = load_game_cached(&st, game_id).await?;
     let is_monitor = maybe.as_ref().is_some_and(|u| u.is_monitor());
-    if !can_view_koth_standings(game.hidden, is_monitor) {
-        return Err(AppError::not_found("Game not found"));
+    if !can_view_koth_standings(&game, is_monitor, Utc::now()) {
+        if game.hidden {
+            return Err(AppError::not_found("Game not found"));
+        }
+        return Err(AppError::game_not_started());
     }
     let bundle = koth_scoreboard_bundle(&st, &game, is_monitor).await?;
     let validator_scope = if is_monitor {
@@ -238,20 +242,12 @@ pub async fn scoreboard(
 
 #[cfg(test)]
 mod tests {
-    use super::{cached_koth_bundle, can_view_koth_standings, koth_cache_key};
+    use super::{cached_koth_bundle, koth_cache_key};
     use chrono::{TimeZone, Utc};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-
-    #[test]
-    fn hidden_standings_are_monitor_only() {
-        assert!(can_view_koth_standings(false, false));
-        assert!(can_view_koth_standings(false, true));
-        assert!(can_view_koth_standings(true, true));
-        assert!(!can_view_koth_standings(true, false));
-    }
 
     #[test]
     fn live_player_and_operator_views_share_one_scoring_version() {

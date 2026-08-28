@@ -39,8 +39,6 @@ import api, { CheatInfoModel, ParticipationEditModel, ParticipationStatus, Role 
 import classes from '@Styles/Accordion.module.css'
 import misc from '@Styles/Misc.module.css'
 
-const CHEAT_INFO_REFRESH_INTERVAL_MS = 10_000
-
 enum CheatType {
   Submit = 'Submit',
   Owned = 'Owned',
@@ -503,9 +501,9 @@ export const CheatSubmissionLog: FC<CheatSubmissionLogProps> = ({ gameId }) => {
     isValidating,
     mutate,
   } = api.game.useGameCheatInfo(gameId, {
-    refreshInterval: CHEAT_INFO_REFRESH_INTERVAL_MS,
-    revalidateOnFocus: true,
-    revalidateOnReconnect: true,
+    refreshInterval: 0,
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
     refreshWhenHidden: false,
     refreshWhenOffline: false,
     shouldRetryOnError: false,

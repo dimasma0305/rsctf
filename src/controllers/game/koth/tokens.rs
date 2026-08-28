@@ -162,6 +162,7 @@ pub async fn koth_hill_token(
     user: CurrentUser,
     Path((id, challenge_id)): Path<(i32, i32)>,
 ) -> AppResult<Response> {
+    crate::controllers::game::require_live_event_window(&st, id).await?;
     let part = resolve_participation(&st, &user, id).await?;
     require_live_hill(&st, id, challenge_id).await?;
 
@@ -286,6 +287,7 @@ pub async fn koth_token_all(
     verified: Option<axum::Extension<crate::services::ad::api_token::VerifiedTeamToken>>,
     rejected: Option<axum::Extension<crate::services::ad::api_token::RejectedTeamToken>>,
 ) -> AppResult<Response> {
+    crate::controllers::game::require_live_event_window(&st, id).await?;
     let session_user_id = maybe_user.0.as_ref().map(|user| user.id);
     let session_security_stamp = maybe_user
         .0
@@ -400,6 +402,7 @@ pub async fn rotate_koth_api_token(
     Path((id, challenge_id)): Path<(i32, i32)>,
     crate::controllers::game::credential_operations::CredentialMutationInput(request): crate::controllers::game::credential_operations::CredentialMutationInput,
 ) -> AppResult<Response> {
+    crate::controllers::game::require_live_event_window(&st, id).await?;
     let part = resolve_participation(&st, &user, id).await?;
     require_live_hill(&st, id, challenge_id).await?;
     let latest_round = load_latest_round_cached(&st, id).await?;

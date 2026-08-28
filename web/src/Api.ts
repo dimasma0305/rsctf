@@ -4262,6 +4262,8 @@ export interface HashPowChallenge {
    * @format int32
    */
   difficulty?: number;
+  /** Challenge expiry as Unix milliseconds. */
+  expiresAt?: number;
 }
 
 /** Team information update */
@@ -11115,11 +11117,11 @@ export class Api<
       }),
 
     /**
-     * @description Perform signature verification
+     * @description Statelessly verify a caller-supplied Ed25519 key and signature. A 200 is not platform team or participation authorization.
      *
      * @tags Team
      * @name TeamVerifySignature
-     * @summary Verify signature
+     * @summary Verify an untrusted-key signature envelope
      * @request POST:/api/team/verify
      */
     teamVerifySignature: (

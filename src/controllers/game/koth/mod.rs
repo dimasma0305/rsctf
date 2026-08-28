@@ -520,6 +520,7 @@ pub async fn koth_hill_state(
     user: CurrentUser,
     Path((id, challenge_id)): Path<(i32, i32)>,
 ) -> AppResult<RequestResponse<KothHillStateModel>> {
+    crate::controllers::game::require_live_event_window(&st, id).await?;
     let part = resolve_participation(&st, &user, id).await?;
     require_live_hill(&st, id, challenge_id).await?;
     let (base, round) = tokio::try_join!(

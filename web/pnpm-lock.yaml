@@ -129,15 +129,9 @@ importers:
       katex:
         specifier: ^0.18.3
         version: 0.18.3
-      lz-string:
-        specifier: ^1.5.0
-        version: 1.5.0
       marked:
         specifier: ^18.0.9
         version: 18.0.9
-      pako:
-        specifier: ^3.0.1
-        version: 3.0.1
       pdfjs-dist:
         specifier: 5.4.296
         version: 5.4.296
@@ -1791,10 +1785,6 @@ packages:
     resolution: {integrity: sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q==}
     hasBin: true
 
-  lz-string@1.5.0:
-    resolution: {integrity: sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==}
-    hasBin: true
-
   make-cancellable-promise@2.0.0:
     resolution: {integrity: sha512-3SEQqTpV9oqVsIWqAcmDuaNeo7yBO3tqPtqGRcKkEo0lrzD3wqbKG9mkxO65KoOgXqj+zH2phJ2LiAsdzlogSw==}
 
@@ -1931,9 +1921,6 @@ packages:
 
   pako@1.0.11:
     resolution: {integrity: sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==}
-
-  pako@3.0.1:
-    resolution: {integrity: sha512-GupotUUI0mlhugKjUs4bjOwLt3nrehy9Ys2dxC0GtgVef5cnKggkDMmf2bq2poCCuVXopWPmqsc9VDT2iJUy+w==}
 
   parent-module@1.0.1:
     resolution: {integrity: sha512-GQ2EWRpQV8/o+Aw8YqtfZZPfNRWZYkbidE9k5rpl/hC3vtHHBfGm2Ifi6qWV+coDGkrUKZAxE3Lot5kcsRlh+g==}
@@ -3905,8 +3892,6 @@ snapshots:
     dependencies:
       js-tokens: 4.0.0
 
-  lz-string@1.5.0: {}
-
   make-cancellable-promise@2.0.0: {}
 
   make-event-props@2.0.0: {}
@@ -4056,8 +4041,6 @@ snapshots:
       '@oxlint/binding-win32-x64-msvc': 1.77.0
 
   pako@1.0.11: {}
-
-  pako@3.0.1: {}
 
   parent-module@1.0.1:
     dependencies:

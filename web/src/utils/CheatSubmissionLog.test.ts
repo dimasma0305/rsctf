@@ -4,10 +4,12 @@ import { test } from 'node:test'
 
 const source = readFileSync('src/components/monitor/CheatSubmissionLog.tsx', 'utf8')
 
-test('the suspicious submission feed refreshes and exposes request failures', () => {
-  assert.match(source, /const CHEAT_INFO_REFRESH_INTERVAL_MS = 10_000/)
-  assert.match(source, /refreshInterval: CHEAT_INFO_REFRESH_INTERVAL_MS/)
-  assert.match(source, /revalidateOnReconnect: true/)
+test('the bounded suspicious submission page is one-shot and exposes request failures', () => {
+  assert.match(source, /refreshInterval: 0/)
+  assert.match(source, /revalidateOnFocus: false/)
+  assert.match(source, /revalidateOnReconnect: false/)
+  assert.match(source, /refreshWhenHidden: false/)
+  assert.match(source, /refreshWhenOffline: false/)
   assert.match(source, /keepPreviousData: false/)
   assert.match(source, /if \(error && !cheatInfo\)/)
   assert.match(source, /tryGetErrorMsg\(error, t\)/)

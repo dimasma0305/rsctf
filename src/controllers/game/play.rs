@@ -4,8 +4,10 @@ use super::*;
 
 #[path = "play_final_policy.rs"]
 mod final_policy;
+mod metadata_policy;
 #[path = "play_details.rs"]
 mod split_details;
+use metadata_policy::can_view_game_metadata;
 pub(crate) use split_details::invalidate_participant_rows;
 pub use split_details::{game_challenge_catalog, game_participant_delta};
 
@@ -201,10 +203,15 @@ pub async fn game_details(
         return Err(AppError::not_found("Game not found"));
     }
 
-    let team_count = participation::Entity::find()
-        .filter(participation::Column::GameId.eq(id))
-        .count(&st.db)
-        .await? as i64;
+    let team_count = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*)::bigint FROM "Participations"
+            WHERE game_id = $1 AND status = $2"#,
+    )
+    .bind(id)
+    .bind(ParticipationStatus::Accepted as i16)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
 
     let divisions = division::Entity::find()
         .filter(division::Column::GameId.eq(id))
@@ -234,9 +241,14 @@ pub async fn game_details(
         None => (ParticipationStatus::Unsubmitted, None, None),
     };
 
-    // Challenge panel — visible to accepted participants (and in practice mode).
-    let can_view = matches!(&part, Some(p) if p.status == ParticipationStatus::Accepted)
-        || (g.practice_mode && part.is_some());
+    // Challenge metadata follows the same accepted + started boundary as the
+    // playable challenge surface. Practice mode relaxes the end boundary only;
+    // it never upgrades pending/rejected/suspended participation.
+    let can_view = can_view_game_metadata(
+        part.as_ref().map(|participation| participation.status),
+        g.start_time_utc,
+        Utc::now(),
+    );
     let challenges = if can_view {
         let list = game_challenge::Entity::find()
             .filter(game_challenge::Column::GameId.eq(id))
@@ -245,6 +257,12 @@ pub async fn game_details(
             .all(&st.db)
             .await?;
         // Challenges this participation has solved.
+        let challenge_ids = list
+            .iter()
+            .map(|challenge| challenge.id)
+            .collect::<Vec<_>>();
+        let permissions =
+            effective_permissions_batch(&st, part.as_ref().unwrap(), &challenge_ids).await?;
         let solved: HashSet<i32> = match &part {
             Some(p) => submission::Entity::find()
                 .filter(submission::Column::ParticipationId.eq(p.id))
@@ -261,6 +279,12 @@ pub async fn game_details(
         // each challenge's `.category` field, so the enum fields must be strings.
         let mut map: BTreeMap<String, Vec<ChallengeBrief>> = Default::default();
         for c in list {
+            if !permissions
+                .get(&c.id)
+                .is_some_and(|permission| permission.contains(GamePermission::VIEW_CHALLENGE))
+            {
+                continue;
+            }
             let cat = c.category;
             let key = serde_json::to_value(cat)
                 .ok()

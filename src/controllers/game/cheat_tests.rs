@@ -232,7 +232,7 @@ async fn report_survives_rotation_and_paginates_by_stable_incident_id() {
     assert_eq!(page_two.len(), 1);
     assert_eq!(page_two[0].answer, "flag-one");
 
-    let canonical = canonical_solves(&fixture.pool, 1, &[]).await.unwrap();
+    let canonical = canonical_solves(&fixture.pool, 1, &[], None).await.unwrap();
     assert_eq!(canonical.len(), 1, "accepted replay must not inflate RSI");
     assert_eq!(
         canonical[0].submit_time_utc.to_rfc3339(),
@@ -262,14 +262,14 @@ async fn report_survives_rotation_and_paginates_by_stable_incident_id() {
     .execute(&fixture.pool)
     .await
     .unwrap();
-    let practice = canonical_solves(&fixture.pool, 2, &[]).await.unwrap();
+    let practice = canonical_solves(&fixture.pool, 2, &[], None).await.unwrap();
     assert_eq!(
         practice.len(),
         1,
         "practice solves at/after end stay out of reports"
     );
     assert_eq!(practice[0].challenge_id, 13);
-    let compared = canonical_solves(&fixture.pool, 2, &[203, 204])
+    let compared = canonical_solves(&fixture.pool, 2, &[203, 204], None)
         .await
         .unwrap();
     assert_eq!(
@@ -717,7 +717,10 @@ async fn report_queries_succeed_on_a_database_enforced_read_only_connection() {
             .len(),
         2
     );
-    assert_eq!(canonical_solves(&pool, 1, &[]).await.unwrap().len(), 1);
+    assert_eq!(
+        canonical_solves(&pool, 1, &[], None).await.unwrap().len(),
+        1
+    );
     let _ = super::super::cheat_identity::build_identity_analysis(&pool, 1)
         .await
         .unwrap();

@@ -30,8 +30,13 @@ function displayTime(value?: number | null) {
 export const SuspicionEvidenceReviewPanel: FC<SuspicionEvidenceReviewProps> = ({ gameId, eventId }) => {
   const { t } = useTranslation()
   const { data, error, isLoading, mutate } = api.cheatReport.useCheatReportEventEvidence(gameId, eventId, {
+    refreshInterval: 0,
     shouldRetryOnError: false,
     revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+    refreshWhenHidden: false,
+    refreshWhenOffline: false,
+    keepPreviousData: false,
   })
 
   if (isLoading && !data) {

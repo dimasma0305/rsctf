@@ -153,6 +153,11 @@ pub enum Policy {
     /// Tight player credential mutation budget. Correctness comes from the
     /// durable operation/revision fence; this only limits abusive new intents.
     CredentialMutation,
+    /// Cheap source admission for the public, stateless Ed25519 utility.
+    /// Appended so every previously shipped Redis policy discriminant remains stable.
+    TeamSignature,
+    /// Tight per-source admission for anonymous stateless HashPoW issuance.
+    PowChallenge,
 }
 
 /// The shape of a policy: either a sliding window (log of hit instants) or a
@@ -228,6 +233,14 @@ impl Policy {
             Policy::CredentialMutation => Kind::Bucket {
                 capacity: 4.0,
                 refill_per_sec: 0.1,
+            },
+            Policy::TeamSignature => Kind::Bucket {
+                capacity: 20.0,
+                refill_per_sec: 0.5,
+            },
+            Policy::PowChallenge => Kind::Bucket {
+                capacity: 8.0,
+                refill_per_sec: 0.2,
             },
             // LoginPermitLimit = 50, LoginWindow = 1 min.
             Policy::Login => Kind::Sliding {
@@ -487,6 +500,8 @@ fn partition_key(policy: Policy, req: &Request) -> String {
             | Policy::AdBearerSourceAdmission
             | Policy::PrivilegedHubAdmission
             | Policy::PublicHubAdmission
+            | Policy::TeamSignature
+            | Policy::PowChallenge
     ) {
         return client_ip(req);
     }

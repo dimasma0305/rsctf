@@ -56,6 +56,7 @@ pub(super) async fn save_security_policy(
             .any_configured();
     anti_cheat::validate_oauth_only_registration(&account, config, oauth_configured)?;
     transaction.commit().await.map_err(database_error)?;
+    crate::services::captcha::invalidate_settings_snapshot();
     Ok(())
 }
 

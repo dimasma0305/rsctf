@@ -81,15 +81,21 @@ fn router_with_domains(
         .route("/api/game/{id}/vpn/challenge", post(vpn_challenge))
         .route("/api/game/{id}/vpn/proof", post(vpn_proof))
         .route("/api/game/{id}/vpn/config", get(vpn_config))
-        .route("/api/game/{id}/cheatinfo", get(cheat_info))
-        .route("/api/game/{id}/cheatreport", get(cheat_report))
+        .route(
+            "/api/game/{id}/cheatinfo",
+            limited(Policy::Query, get(cheat_info)),
+        )
+        .route(
+            "/api/game/{id}/cheatreport",
+            limited(Policy::Query, get(cheat_report)),
+        )
         .route(
             "/api/game/{id}/cheatreport/events/{eventId}",
             limited(Policy::Query, get(suspicion_event_evidence)),
         )
         .route(
             "/api/game/{id}/cheatreport/compare",
-            get(cheat_report_compare),
+            limited(Policy::Query, get(cheat_report_compare)),
         )
         .route(
             "/api/game/{id}/writeup",
@@ -135,15 +141,21 @@ fn router_with_domains(
             limited(Policy::Container, post(extend_container)),
         )
         // Traffic capture subsystem — registered, well-typed empty payloads.
-        .route("/api/game/games/{id}/captures", get(game_captures))
-        .route("/api/game/captures/{challengeId}", get(team_traffic))
+        .route(
+            "/api/game/games/{id}/captures",
+            limited(Policy::Query, get(game_captures)),
+        )
+        .route(
+            "/api/game/captures/{challengeId}",
+            limited(Policy::Query, get(team_traffic)),
+        )
         .route(
             "/api/game/captures/{challengeId}/{partId}",
-            get(traffic_files),
+            limited(Policy::Query, get(traffic_files)),
         )
         .route(
             "/api/game/captures/{challengeId}/{partId}/all",
-            get(get_all_traffic).delete(delete_all_traffic),
+            limited(Policy::Query, get(get_all_traffic)).delete(delete_all_traffic),
         )
         .route(
             "/api/game/captures/{challengeId}/{partId}/{filename}",
@@ -151,11 +163,11 @@ fn router_with_domains(
         )
         .route(
             "/api/game/captures/{challengeId}/{partId}/{filename}/flows",
-            get(traffic_flows),
+            limited(Policy::Query, get(traffic_flows)),
         )
         .route(
             "/api/game/captures/{challengeId}/{partId}/{filename}/flow/{connectionPort}",
-            get(traffic_flow_detail),
+            limited(Policy::Query, get(traffic_flow_detail)),
         )
         // Player-facing A&D + KotH controllers live under this game area.
         .merge(ad_router)

@@ -9,6 +9,7 @@
 pub mod ad;
 mod cheat_capabilities;
 mod cheat_identity;
+mod cheat_report_cache;
 mod credential_operations;
 pub mod koth;
 mod monitor_history;
@@ -960,6 +961,7 @@ fn participation_token(g: &game::Model, team_id: i32) -> AppResult<String> {
     Ok(format!("{team_id}:{signature}"))
 }
 
+mod access_policy;
 mod catalog;
 pub(crate) mod cheat;
 mod cheat_evidence;
@@ -979,6 +981,7 @@ mod traffic;
 mod vpn_access;
 mod writeup;
 
+pub(crate) use access_policy::{can_view_engine_standings, require_live_event_window};
 pub use catalog::*;
 pub use cheat::*;
 pub use cheat_evidence::*;

@@ -1,5 +1,21 @@
 //! Cheat detection: immutable flag-sharing evidence + collusion (RSI) reporting.
+use super::cheat_report_cache::{
+    cache_cheat_report, cached_cheat_report, CheatReportFill, CHEAT_REPORT_BUILD_SLOTS,
+    CHEAT_REPORT_FLIGHTS, MAX_CHEAT_REPORT_BYTES,
+};
 use super::*;
+use bytes::Bytes;
+
+fn cheat_report_response(body: Bytes) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CACHE_CONTROL, "private, no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
 
 #[derive(Debug, Default, sqlx::FromRow)]
 struct ReconciliationReportState {
@@ -231,6 +247,38 @@ pub(crate) async fn load_cheat_incident_rows(
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
+const MAX_CHEAT_INCIDENT_PAGE: i64 = 100;
+const MAX_COMPARE_SOLVES: usize = 2_048;
+const MAX_REPORT_INCIDENTS: usize = 10_000;
+const MAX_REPORT_SOLVES: usize = 50_000;
+const MAX_REPORT_SUSPICION_EVENTS: usize = 50_000;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheatIncidentPage {
+    #[serde(default)]
+    skip: i64,
+    #[serde(default = "default_cheat_incident_count")]
+    count: i64,
+}
+
+const fn default_cheat_incident_count() -> i64 {
+    MAX_CHEAT_INCIDENT_PAGE
+}
+
+impl CheatIncidentPage {
+    fn normalized(self) -> AppResult<(i64, i64)> {
+        if !(1..=MAX_CHEAT_INCIDENT_PAGE).contains(&self.count)
+            || !(0..=10_000).contains(&self.skip)
+        {
+            return Err(AppError::bad_request(
+                "Cheat incident pages require count 1-100 and skip at most 10000",
+            ));
+        }
+        Ok((self.count, self.skip))
+    }
+}
+
 /// `GET /api/game/{id}/cheatinfo` — requires Monitor.
 ///
 /// Flag ownership is captured transactionally at submit time in `CheatInfo`; this
@@ -239,9 +287,15 @@ pub async fn cheat_info(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path(id): Path<i32>,
+    Query(page): Query<CheatIncidentPage>,
 ) -> AppResult<RequestResponse<Vec<CheatInfoModel>>> {
     let _ = load_game(&st, id).await?;
-    let results = collect_cheat_incidents(&st, id).await?;
+    let (count, skip) = page.normalized()?;
+    let results = load_cheat_incident_rows(st.pg(), Some(id), Some(count), skip)
+        .await?
+        .into_iter()
+        .map(CheatIncidentRow::into_model)
+        .collect::<AppResult<Vec<_>>>()?;
     Ok(RequestResponse::ok(results))
 }
 
@@ -249,11 +303,15 @@ pub async fn cheat_info(
 /// list) and `cheatreport` (grouped into collusion groups). Detection strategy is
 /// documented on [`cheat_info`].
 async fn collect_cheat_incidents(st: &SharedState, id: i32) -> AppResult<Vec<CheatInfoModel>> {
-    load_cheat_incident_rows(st.pg(), Some(id), None, 0)
-        .await?
-        .into_iter()
-        .map(CheatIncidentRow::into_model)
-        .collect()
+    let rows =
+        load_cheat_incident_rows(st.pg(), Some(id), Some(MAX_REPORT_INCIDENTS as i64 + 1), 0)
+            .await?;
+    if rows.len() > MAX_REPORT_INCIDENTS {
+        return Err(AppError::payload_too_large(
+            "Cheat report has too many flag-sharing incidents; use the paginated incident log",
+        ));
+    }
+    rows.into_iter().map(CheatIncidentRow::into_model).collect()
 }
 
 /// Query for the collusion `compare` endpoint (`?participationA=&participationB=`).
@@ -285,14 +343,57 @@ pub async fn cheat_report(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path(id): Path<i32>,
-) -> AppResult<RequestResponse<CheatReport>> {
+) -> AppResult<Response> {
     let _ = load_game(&st, id).await?;
+    if let Some(body) = cached_cheat_report(id) {
+        return Ok(cheat_report_response(body));
+    }
+    let key = id.to_string();
+    let fill = CHEAT_REPORT_FLIGHTS
+        .run(&key, move || async move {
+            let Ok(_permit) = CHEAT_REPORT_BUILD_SLOTS.try_acquire() else {
+                return CheatReportFill::Busy;
+            };
+            match build_cheat_report(&st, id).await {
+                Ok(report) => match serde_json::to_vec(&report) {
+                    Ok(body) => {
+                        if body.len() > MAX_CHEAT_REPORT_BYTES {
+                            return CheatReportFill::Oversized;
+                        }
+                        let body = Bytes::from(body);
+                        cache_cheat_report(id, &body);
+                        CheatReportFill::Ready(body)
+                    }
+                    Err(error) => CheatReportFill::Failed(error.to_string()),
+                },
+                Err(AppError::PayloadTooLarge(_)) => CheatReportFill::Oversized,
+                Err(error) => CheatReportFill::Failed(error.to_string()),
+            }
+        })
+        .await;
+    match fill {
+        CheatReportFill::Ready(body) => Ok(cheat_report_response(body)),
+        CheatReportFill::Busy | CheatReportFill::TimedOut => Err(AppError::unavailable(
+            "Cheat report generation is busy; retry shortly",
+        )),
+        CheatReportFill::Oversized => Err(AppError::payload_too_large(
+            "Cheat report exceeds the safe response limit; use the paginated evidence views",
+        )),
+        CheatReportFill::Failed(error) => Err(AppError::internal(error)),
+    }
+}
 
+async fn build_cheat_report(st: &SharedState, id: i32) -> AppResult<CheatReport> {
     let incidents = collect_cheat_incidents(&st, id).await?;
 
     // Canonical one-row-per-participation/challenge solves for RSI. Replayed
     // accepted submissions never inflate similarity or common-solve detail.
-    let subs = canonical_solves(st.pg(), id, &[]).await?;
+    let subs = canonical_solves(st.pg(), id, &[], Some(MAX_REPORT_SOLVES as i64 + 1)).await?;
+    if subs.len() > MAX_REPORT_SOLVES {
+        return Err(AppError::payload_too_large(
+            "Cheat report has too many canonical solves; narrow the evidence review",
+        ));
+    }
     let titles: HashMap<i32, String> = subs
         .iter()
         .map(|solve| (solve.challenge_id, solve.challenge_title.clone()))
@@ -358,7 +459,7 @@ pub async fn cheat_report(
         super::cheat_identity::build_identity_analysis(st.pg(), id).await?;
     let reconciliation = load_reconciliation_report_state(st.pg(), id).await?;
 
-    Ok(RequestResponse::ok(CheatReport {
+    Ok(CheatReport {
         generated_at: Utc::now(),
         evidence_closed_at: reconciliation.evidence_closed_at,
         last_reconciled_at: reconciliation.last_reconciled_at,
@@ -372,7 +473,7 @@ pub async fn cheat_report(
         identity_overlaps,
         abnormal_solves,
         detector_capabilities: super::cheat_capabilities::detector_capabilities(),
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -468,12 +569,19 @@ async fn build_suspicion_sections(
              JOIN "Teams" team ON team.id = participation.team_id
             WHERE event.game_id = $1
               AND event.evidence_key NOT LIKE 'legacy-untrusted:%'
-            ORDER BY event.created_at DESC, event.id DESC"#,
+            ORDER BY event.created_at DESC, event.id DESC
+            LIMIT $2"#,
     )
     .bind(game_id)
+    .bind(MAX_REPORT_SUSPICION_EVENTS as i64 + 1)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
+    if events.len() > MAX_REPORT_SUSPICION_EVENTS {
+        return Err(AppError::payload_too_large(
+            "Cheat report has too many suspicion events; use the paginated evidence views",
+        ));
+    }
     if events.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -703,7 +811,18 @@ pub async fn cheat_report_compare(
         ));
     }
 
-    let solves = canonical_solves(st.pg(), id, &[q.participation_a, q.participation_b]).await?;
+    let solves = canonical_solves(
+        st.pg(),
+        id,
+        &[q.participation_a, q.participation_b],
+        Some(MAX_COMPARE_SOLVES as i64 + 1),
+    )
+    .await?;
+    if solves.len() > MAX_COMPARE_SOLVES {
+        return Err(AppError::bad_request(
+            "The selected pair has too many solves for an interactive comparison",
+        ));
+    }
     let titles: HashMap<i32, String> = solves
         .iter()
         .map(|solve| (solve.challenge_id, solve.challenge_title.clone()))
@@ -712,7 +831,10 @@ pub async fn cheat_report_compare(
         .into_iter()
         .partition(|solve| solve.participation_id == q.participation_a);
 
-    let (rsi, _common, details) = collusion_metrics(&sub_a, &sub_b, &titles);
+    let (rsi, _common, details) =
+        tokio::task::spawn_blocking(move || collusion_metrics(&sub_a, &sub_b, &titles))
+            .await
+            .map_err(|error| AppError::internal(format!("comparison task failed: {error}")))?;
     Ok(RequestResponse::ok(CollusionCompareResult { rsi, details }))
 }
 
@@ -722,6 +844,7 @@ async fn canonical_solves(
     pool: &sqlx::PgPool,
     game_id: i32,
     participation_ids: &[i32],
+    limit: Option<i64>,
 ) -> AppResult<Vec<CanonicalSolveRow>> {
     sqlx::query_as::<_, CanonicalSolveRow>(
         r#"SELECT first_solve.participation_id,
@@ -747,11 +870,13 @@ async fn canonical_solves(
               AND submission.submit_time_utc < game.end_time_utc
               AND (CARDINALITY($3::INTEGER[]) = 0
                    OR first_solve.participation_id = ANY($3))
-            ORDER BY submission.submit_time_utc, submission.id"#,
+            ORDER BY submission.submit_time_utc, submission.id
+            LIMIT $4"#,
     )
     .bind(game_id)
     .bind(AnswerResult::Accepted as i16)
     .bind(participation_ids)
+    .bind(limit)
     .fetch_all(pool)
     .await
     .map_err(|error| AppError::internal(error.to_string()))

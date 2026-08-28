@@ -10,8 +10,45 @@ const MAX_CAPTURE_ARCHIVE_FILES: usize = 256;
 const MAX_CAPTURE_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_INSPECT_CAPTURE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CAPTURE_FLOWS: usize = 20_000;
+const MAX_CAPTURE_CHALLENGES: u64 = 500;
+const MAX_CAPTURE_PAGE: usize = 100;
+const MAX_CAPTURE_SCAN_ENTRIES: usize = 4_096;
 static CAPTURE_ARCHIVE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 static CAPTURE_FLOW_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static CAPTURE_LISTING_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturePageQuery {
+    #[serde(default)]
+    skip: usize,
+    #[serde(default = "default_capture_page")]
+    count: usize,
+}
+
+const fn default_capture_page() -> usize {
+    MAX_CAPTURE_PAGE
+}
+
+impl CapturePageQuery {
+    fn normalized(self) -> AppResult<(usize, usize)> {
+        if self.count == 0 || self.count > MAX_CAPTURE_PAGE || self.skip > MAX_CAPTURE_SCAN_ENTRIES
+        {
+            return Err(AppError::bad_request(
+                "Capture pages require count 1-100 and skip at most 4096",
+            ));
+        }
+        Ok((self.skip, self.count))
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CaptureTeamRow {
+    participation_id: i32,
+    team_id: i32,
+    name: String,
+    avatar_hash: Option<String>,
+}
 
 /// `GET /api/game/games/{id}/captures`
 /// Root dir for per-(challenge, participation) pcaps:
@@ -41,21 +78,46 @@ fn safe_capture_name(name: &str) -> AppResult<&str> {
     Ok(name)
 }
 
-/// The `.pcap` files directly inside `dir` (sorted, newest first by mtime).
-fn list_pcaps(dir: &std::path::Path) -> Vec<std::fs::DirEntry> {
-    let mut v: Vec<_> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|x| x.to_str())
-                .is_some_and(|x| x.eq_ignore_ascii_case("pcap"))
-        })
-        .collect();
+fn is_regular_pcap(entry: &std::fs::DirEntry) -> bool {
+    entry.file_type().is_ok_and(|kind| kind.is_file())
+        && entry
+            .path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pcap"))
+}
+
+/// Read a strictly bounded directory page and sort only that bounded set.
+fn list_pcaps(dir: &std::path::Path) -> AppResult<Vec<std::fs::DirEntry>> {
+    let mut v = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if !is_regular_pcap(&entry) {
+            continue;
+        }
+        if v.len() >= MAX_CAPTURE_SCAN_ENTRIES {
+            return Err(AppError::unavailable(
+                "Capture inventory is too large; wait for retention cleanup",
+            ));
+        }
+        v.push(entry);
+    }
     v.sort_by_key(|e| std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok())));
-    v
+    Ok(v)
+}
+
+/// Count without materializing metadata or sorting the directory. The shared
+/// budget fences nested challenge/participation scans to a fixed amount of I/O.
+fn count_pcaps(dir: &std::path::Path, budget: &mut usize) -> AppResult<usize> {
+    let mut count = 0usize;
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        *budget = budget.checked_sub(1).ok_or_else(|| {
+            AppError::unavailable("Capture inventory is too large; retry after retention cleanup")
+        })?;
+        if is_regular_pcap(&entry) {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 /// `GET /api/game/games/{id}/captures` — each challenge + its total pcap count.
@@ -64,32 +126,41 @@ pub async fn game_captures(
     _user: MonitorUser,
     Path(id): Path<i32>,
 ) -> AppResult<RequestResponse<Vec<Json>>> {
+    let _permit = CAPTURE_LISTING_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Capture listing capacity is busy; retry shortly"))?;
     let challenges = game_challenge::Entity::find()
         .filter(game_challenge::Column::GameId.eq(id))
+        .limit(MAX_CAPTURE_CHALLENGES)
         .all(&st.db)
         .await?;
     let root = capture_root(&st);
-    let out = tokio::task::spawn_blocking(move || {
+    let out = tokio::task::spawn_blocking(move || -> AppResult<Vec<Json>> {
+        let mut budget = MAX_CAPTURE_SCAN_ENTRIES;
         challenges
             .into_iter()
             .map(|c| {
                 let cdir = root.join(c.id.to_string());
-                let count: usize = std::fs::read_dir(&cdir)
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .filter(|e| e.path().is_dir())
-                    .map(|e| list_pcaps(&e.path()).len())
-                    .sum();
-                serde_json::json!({
+                let mut count = 0usize;
+                for entry in std::fs::read_dir(&cdir).into_iter().flatten().flatten() {
+                    budget = budget.checked_sub(1).ok_or_else(|| {
+                        AppError::unavailable(
+                            "Capture inventory is too large; retry after retention cleanup",
+                        )
+                    })?;
+                    if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                        count = count.saturating_add(count_pcaps(&entry.path(), &mut budget)?);
+                    }
+                }
+                Ok(serde_json::json!({
                     "id": c.id, "title": c.title, "category": c.category,
                     "type": c.challenge_type, "isEnabled": c.is_enabled, "count": count,
-                })
+                }))
             })
             .collect()
     })
     .await
-    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))?;
+    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))??;
     Ok(RequestResponse::ok(out))
 }
 
@@ -98,36 +169,72 @@ pub async fn team_traffic(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path(cid): Path<i32>,
+    Query(page): Query<CapturePageQuery>,
 ) -> AppResult<RequestResponse<Vec<Json>>> {
+    let (skip, count) = page.normalized()?;
+    let _permit = CAPTURE_LISTING_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Capture listing capacity is busy; retry shortly"))?;
     let cdir = capture_root(&st).join(cid.to_string());
-    let captures = tokio::task::spawn_blocking(move || {
-        std::fs::read_dir(&cdir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| entry.path().is_dir())
-            .filter_map(|entry| {
-                let pid = entry.file_name().to_str()?.parse::<i32>().ok()?;
-                Some((pid, list_pcaps(&entry.path()).len()))
-            })
-            .collect::<Vec<_>>()
+    let captures = tokio::task::spawn_blocking(move || -> AppResult<Vec<(i32, usize)>> {
+        let mut budget = MAX_CAPTURE_SCAN_ENTRIES;
+        let mut captures = Vec::new();
+        for entry in std::fs::read_dir(&cdir).into_iter().flatten().flatten() {
+            budget = budget.checked_sub(1).ok_or_else(|| {
+                AppError::unavailable(
+                    "Capture inventory is too large; retry after retention cleanup",
+                )
+            })?;
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|value| value.parse::<i32>().ok())
+            else {
+                continue;
+            };
+            let file_count = count_pcaps(&entry.path(), &mut budget)?;
+            if file_count > 0 {
+                captures.push((pid, file_count));
+            }
+        }
+        captures.sort_unstable_by_key(|(pid, _)| *pid);
+        Ok(captures.into_iter().skip(skip).take(count).collect())
     })
     .await
-    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))?;
-    let mut out = Vec::new();
-    for (pid, count) in captures {
-        // Resolve the team behind the participation for display.
-        let (team_id, name, avatar) =
-            match participation::Entity::find_by_id(pid).one(&st.db).await? {
-                Some(p) => match team::Entity::find_by_id(p.team_id).one(&st.db).await? {
-                    Some(t) => (p.team_id, t.name.clone(), t.avatar_url()),
-                    None => (p.team_id, String::new(), None),
-                },
-                None => (0, String::new(), None),
-            };
+    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))??;
+    let participation_ids: Vec<i32> = captures.iter().map(|(pid, _)| *pid).collect();
+    let teams = sqlx::query_as::<_, CaptureTeamRow>(
+        r#"SELECT p.id AS participation_id,
+                  p.team_id,
+                  t.name,
+                  t.avatar_hash
+             FROM "Participations" p
+             JOIN "Teams" t ON t.id = p.team_id
+            WHERE p.id = ANY($1)"#,
+    )
+    .bind(&participation_ids)
+    .fetch_all(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let teams: std::collections::HashMap<_, _> = teams
+        .into_iter()
+        .map(|row| (row.participation_id, row))
+        .collect();
+    let mut out = Vec::with_capacity(captures.len());
+    for (pid, capture_count) in captures {
+        let Some(team) = teams.get(&pid) else {
+            continue;
+        };
+        let avatar = team
+            .avatar_hash
+            .as_ref()
+            .map(|hash| format!("/assets/{hash}/avatar"));
         out.push(serde_json::json!({
-            "id": pid, "teamId": team_id, "name": name,
-            "division": Json::Null, "avatar": avatar, "count": count,
+            "id": pid, "teamId": team.team_id, "name": team.name,
+            "division": Json::Null, "avatar": avatar, "count": capture_count,
         }));
     }
     Ok(RequestResponse::ok(out))
@@ -138,13 +245,20 @@ pub async fn traffic_files(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path((cid, pid)): Path<(i32, i32)>,
+    Query(page): Query<CapturePageQuery>,
 ) -> AppResult<RequestResponse<Vec<Json>>> {
+    let (skip, count) = page.normalized()?;
+    let _permit = CAPTURE_LISTING_SLOTS
+        .try_acquire()
+        .map_err(|_| AppError::unavailable("Capture listing capacity is busy; retry shortly"))?;
     let dir = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string());
-    let out = tokio::task::spawn_blocking(move || {
-        list_pcaps(&dir)
+    let out = tokio::task::spawn_blocking(move || -> AppResult<Vec<Json>> {
+        let rows = list_pcaps(&dir)?
             .into_iter()
+            .skip(skip)
+            .take(count)
             .map(|e| {
                 let meta = e.metadata().ok();
                 let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
@@ -159,10 +273,11 @@ pub async fn traffic_files(
                     "updateTime": update,
                 })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        Ok(rows)
     })
     .await
-    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))?;
+    .map_err(|error| AppError::internal(format!("capture listing task failed: {error}")))??;
     Ok(RequestResponse::ok(out))
 }
 
@@ -179,7 +294,7 @@ pub async fn get_all_traffic(
         .try_acquire()
         .map_err(|_| AppError::unavailable("Capture archive capacity is busy; retry shortly"))?;
     let buf = tokio::task::spawn_blocking(move || -> AppResult<Vec<u8>> {
-        let files = list_pcaps(&dir);
+        let files = list_pcaps(&dir)?;
         if files.is_empty() {
             return Err(AppError::not_found("No captures for this participation"));
         }
@@ -402,4 +517,53 @@ pub async fn traffic_flow_detail(
         bytes_in: flow.as_ref().map(|f| f.bytes as i64).unwrap_or(0),
         ..Default::default()
     }))
+}
+
+#[cfg(test)]
+mod inventory_tests {
+    use super::*;
+
+    #[test]
+    fn capture_pages_reject_unbounded_windows() {
+        assert_eq!(
+            CapturePageQuery {
+                skip: 4_096,
+                count: 100,
+            }
+            .normalized()
+            .unwrap(),
+            (4_096, 100)
+        );
+        assert!(CapturePageQuery { skip: 0, count: 0 }.normalized().is_err());
+        assert!(CapturePageQuery {
+            skip: 0,
+            count: 101
+        }
+        .normalized()
+        .is_err());
+        assert!(CapturePageQuery {
+            skip: 4_097,
+            count: 1
+        }
+        .normalized()
+        .is_err());
+    }
+
+    #[test]
+    fn filesystem_inventory_uses_one_shared_strict_scan_budget() {
+        let dir = std::env::temp_dir().join(format!("rsctf-capture-list-{}", Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        for name in ["one.pcap", "two.PCAP", "three.pcap"] {
+            std::fs::File::create(dir.join(name)).unwrap();
+        }
+        std::fs::File::create(dir.join("ignore.txt")).unwrap();
+
+        let mut enough = 4;
+        assert_eq!(count_pcaps(&dir, &mut enough).unwrap(), 3);
+        assert_eq!(list_pcaps(&dir).unwrap().len(), 3);
+        let mut exhausted = 2;
+        assert!(count_pcaps(&dir, &mut exhausted).is_err());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

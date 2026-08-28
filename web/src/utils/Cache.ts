@@ -1,77 +1,139 @@
-import LZString from 'lz-string'
-import { gzip, ungzip } from 'pako'
 import type { Cache } from 'swr'
 
-// -----------------------------------------
-// SWR Persistent Cache (Improved)
-// -----------------------------------------
-
-const CACHE_KEY = 'rsctf-cache'
-const IDB_DB_NAME = 'rsctf-cache'
-const IDB_STORE = 'swr'
-const IDB_KEY = 'cache-map'
+/**
+ * SWR is an in-process response cache, not durable application storage.
+ *
+ * Persisting its opaque state copied account, team, challenge, container and
+ * administrator responses into browser storage without a response-cache
+ * contract. Keep it memory-only so `private, no-store` responses can never
+ * survive a reload, crash or account switch.
+ */
+const LEGACY_CACHE_KEY = 'rsctf-cache'
+const LEGACY_IDB_DB_NAME = 'rsctf-cache'
+export const MAX_SWR_CACHE_ENTRIES = 512
+export const MAX_SWR_CACHE_BYTES = 2 * 1024 * 1024
+const MAX_ENTRY_BYTES = 128 * 1024
+const ENTRY_TTL_MS = 30 * 60 * 1000
 const MAX_RETIRED_IN_FLIGHT_KEYS = 512
-const MAX_RETIRED_HYDRATION_SCOPES = 512
 
 export const VIEWER_SCOPE_MARKER = 'rsctf-viewer-scope'
 
-type BinaryLike = Uint8Array | ArrayBuffer
-
-const cachedViewerScope = (value: unknown): string | null => {
-  const originalKey = (value as { _k?: unknown } | null | undefined)?._k
-  return Array.isArray(originalKey) &&
-    originalKey.length === 3 &&
-    originalKey[0] === VIEWER_SCOPE_MARKER &&
-    typeof originalKey[1] === 'string'
-    ? originalKey[1]
-    : null
+interface CacheMetadata {
+  bytes: number
+  expiresAt: number
 }
 
-class PersistentCache implements Cache<any> {
-  private map = new Map<any, any>()
-  private retiredInFlightKeys = new Set<string>()
-  private retiredHydrationScopes = new Set<string>()
-  private dropViewerHydrationEntries = false
-  private hydrationOpen = true
+type SwrCacheValue = Parameters<Cache<unknown>['set']>[1]
+
+/** Estimate an entry without serialising the complete response. */
+const boundedSize = (root: unknown, limit = MAX_ENTRY_BYTES): number => {
+  const seen = new Set<object>()
+  const pending: unknown[] = [root]
+  let bytes = 0
+
+  while (pending.length > 0 && bytes <= limit) {
+    const value = pending.pop()
+    switch (typeof value) {
+      case 'string':
+        bytes += value.length * 2
+        break
+      case 'number':
+      case 'bigint':
+        bytes += 8
+        break
+      case 'boolean':
+        bytes += 4
+        break
+      case 'symbol':
+      case 'function':
+        bytes += 16
+        break
+      case 'object': {
+        if (value === null || seen.has(value)) break
+        seen.add(value)
+        bytes += 32
+        if (ArrayBuffer.isView(value)) {
+          bytes += value.byteLength
+          break
+        }
+        if (value instanceof ArrayBuffer) {
+          bytes += value.byteLength
+          break
+        }
+        if (Array.isArray(value)) {
+          for (let index = value.length - 1; index >= 0 && bytes <= limit; index -= 1) pending.push(value[index])
+          break
+        }
+        for (const [key, child] of Object.entries(value)) {
+          bytes += key.length * 2
+          pending.push(child)
+          if (bytes > limit) break
+        }
+        break
+      }
+      default:
+        break
+    }
+  }
+
+  return bytes
+}
+
+class BoundedMemoryCache implements Cache<unknown> {
+  private readonly map = new Map<string, SwrCacheValue>()
+  private readonly metadata = new Map<string, CacheMetadata>()
+  private readonly retiredInFlightKeys = new Set<string>()
+  private totalBytes = 0
 
   get size() {
+    this.pruneExpired()
     return this.map.size
   }
 
-  // Basic Map interface required by SWR
-  get(key: any) {
+  get(key: string) {
+    const metadata = this.metadata.get(key)
+    if (metadata && metadata.expiresAt <= Date.now()) {
+      this.remove(key)
+      return undefined
+    }
     return this.map.get(key)
   }
-  has(key: any) {
-    return this.map.has(key)
+
+  has(key: string) {
+    return this.get(key) !== undefined
   }
-  set(key: any, value: any) {
-    const scope = cachedViewerScope(value)
-    if (scope && !this.dropViewerHydrationEntries) this.retiredHydrationScopes.delete(scope)
+
+  set(key: string, value: SwrCacheValue) {
     if (this.retiredInFlightKeys.delete(key) && !Object.prototype.hasOwnProperty.call(value ?? {}, '_k')) {
       return this
     }
+
+    const bytes = Math.min(MAX_ENTRY_BYTES + 1, boundedSize(key) + boundedSize(value))
+    this.remove(key)
+    if (bytes > MAX_ENTRY_BYTES) return this
+
     this.map.set(key, value)
-    schedulePersist()
+    this.metadata.set(key, { bytes, expiresAt: Date.now() + ENTRY_TTL_MS })
+    this.totalBytes += bytes
+    this.evictToBudget()
     return this
   }
-  delete(key: any) {
+
+  delete(key: string) {
     this.retiredInFlightKeys.delete(key)
-    const r = this.map.delete(key)
-    schedulePersist()
-    return r as any
+    return this.remove(key)
   }
+
   clear() {
     this.map.clear()
+    this.metadata.clear()
     this.retiredInFlightKeys.clear()
-    this.retiredHydrationScopes.clear()
-    this.dropViewerHydrationEntries = false
-    schedulePersist()
+    this.totalBytes = 0
   }
 
   retire(key: string) {
     const value = this.map.get(key) as { isValidating?: boolean } | undefined
-    const removed = this.map.delete(key)
+    const removed = this.remove(key)
     if (value?.isValidating) {
       if (this.retiredInFlightKeys.size >= MAX_RETIRED_IN_FLIGHT_KEYS) {
         const oldest = this.retiredInFlightKeys.values().next().value
@@ -79,261 +141,87 @@ class PersistentCache implements Cache<any> {
       }
       this.retiredInFlightKeys.add(key)
     }
-    schedulePersist()
     return removed
   }
-  retireScope(scope: string) {
-    if (!this.hydrationOpen || this.dropViewerHydrationEntries) return
-    if (this.retiredHydrationScopes.size >= MAX_RETIRED_HYDRATION_SCOPES) {
-      this.retiredHydrationScopes.clear()
-      this.dropViewerHydrationEntries = true
-    } else {
-      this.retiredHydrationScopes.add(scope)
-    }
-    // Rewrite the persistent snapshot even when the retired scope had not yet
-    // reached memory. Its stale entries may still be waiting in the IDB read.
-    schedulePersist()
-  }
-  finishHydration() {
-    this.hydrationOpen = false
-    this.retiredHydrationScopes.clear()
-    this.dropViewerHydrationEntries = false
-  }
-  // Iteration
+
   keys() {
+    this.pruneExpired()
     return this.map.keys()
   }
+
   values() {
+    this.pruneExpired()
     return this.map.values()
   }
+
   entries() {
+    this.pruneExpired()
     return this.map.entries()
   }
+
   [Symbol.iterator]() {
-    return this.map[Symbol.iterator]()
-  }
-  forEach(cb: (value: any, key: any, map: Map<any, any>) => void, thisArg?: any) {
-    return this.map.forEach(cb as any, thisArg)
+    return this.entries()
   }
 
-  // Bulk hydrate (from_iter style)
-  bulkAdd(entries: [any, any][]) {
-    if (!entries.length) return
-    let added = 0
-    let filtered = false
-    for (const [k, v] of entries) {
-      const scope = cachedViewerScope(v)
-      if (scope && (this.dropViewerHydrationEntries || this.retiredHydrationScopes.has(scope))) {
-        filtered = true
-        continue
-      }
-      if (this.retiredInFlightKeys.has(k)) continue
-      if (!this.map.has(k)) {
-        this.map.set(k, v)
-        added++
-      }
-    }
-    if (added || filtered) {
-      dirty = true
-      schedulePersist()
-    }
-    return added
+  private remove(key: string) {
+    const metadata = this.metadata.get(key)
+    if (metadata) this.totalBytes -= metadata.bytes
+    this.metadata.delete(key)
+    return this.map.delete(key)
   }
 
-  snapshotEntries() {
-    return Array.from(this.map.entries())
+  private pruneExpired(now = Date.now()) {
+    for (const [key, metadata] of this.metadata) {
+      if (metadata.expiresAt > now) continue
+      this.remove(key)
+    }
+  }
+
+  private evictToBudget() {
+    this.pruneExpired()
+    while (this.map.size > MAX_SWR_CACHE_ENTRIES || this.totalBytes > MAX_SWR_CACHE_BYTES) {
+      const oldest = this.map.keys().next().value
+      if (oldest === undefined) break
+      this.remove(oldest)
+    }
   }
 }
 
-/**
- * Delete through the persistent provider's retirement path when available.
- * Its bounded in-flight fence drops SWR's final metadata-only write after a
- * request was invalidated, while an explicit new hook owner (`_k`) can reuse
- * the same namespace safely.
- */
+const inMemoryCache = new BoundedMemoryCache()
+let legacyPurgeStarted = false
+
+const purgeLegacyPersistentCache = () => {
+  if (legacyPurgeStarted || typeof window === 'undefined') return
+  legacyPurgeStarted = true
+  try {
+    window.localStorage.removeItem(LEGACY_CACHE_KEY)
+  } catch {
+    // Storage can be disabled by browser policy. No new persistent write occurs.
+  }
+  try {
+    if (typeof window.indexedDB !== 'undefined') window.indexedDB.deleteDatabase(LEGACY_IDB_DB_NAME)
+  } catch {
+    // Best-effort migration cleanup only; the cache no longer reads IndexedDB.
+  }
+}
+
+/** Drop an exact SWR entry while fencing a late metadata-only in-flight write. */
 export const retirePersistentCacheEntry = (cache: Cache, key: string) => {
-  if (cache instanceof PersistentCache) return cache.retire(key)
+  if (cache instanceof BoundedMemoryCache) return cache.retire(key)
   cache.delete(key)
   return true
 }
 
-/** Keep an account namespace retired while its asynchronous IDB snapshot is loading. */
-export const retirePersistentCacheScope = (cache: Cache, scope: string) => {
-  if (cache instanceof PersistentCache) cache.retireScope(scope)
-}
+/** No hydration exists; retained only as a compatibility hook for scope retirement. */
+export const retirePersistentCacheScope = (_cache: Cache, _scope: string) => undefined
 
-const inMemoryCache = new PersistentCache()
-
-let idbSupported = typeof indexedDB !== 'undefined'
-let dbPromise: Promise<IDBDatabase> | null = null
-let hydrationStarted = false
-let hydrated = false
-let dirty = false
-let persistTimer: number | null = null
-
-const textEncoder = new TextEncoder()
-const textDecoder = new TextDecoder()
-
-const openDB = (): Promise<IDBDatabase> => {
-  if (!idbSupported) return Promise.reject(new Error('IndexedDB not supported'))
-  if (dbPromise) return dbPromise
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_DB_NAME, 1)
-    req.onupgradeneeded = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(IDB_STORE)) {
-        db.createObjectStore(IDB_STORE)
-      }
-    }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
-  })
-  return dbPromise
-}
-
-const encodeMap = (cache: PersistentCache): Uint8Array => {
-  const json = JSON.stringify(cache.snapshotEntries())
-  return gzip(textEncoder.encode(json))
-}
-
-const decodeMap = (bin: BinaryLike): [any, any][] => {
-  const u8 = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
-  const json = textDecoder.decode(ungzip(u8))
-  return JSON.parse(json)
-}
-
-const fallbackHydrateLocalStorage = () => {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY)
-    if (!raw) return
-    const decompressed = LZString.decompress(raw)
-    if (!decompressed) return
-    const entries: [any, any][] = JSON.parse(decompressed || '[]')
-    inMemoryCache.bulkAdd(entries)
-  } catch (e) {
-    console.warn('[cache] localStorage hydrate failed', e)
-  }
-}
-
-const fallbackPersistLocalStorage = () => {
-  try {
-    const serialized = JSON.stringify(inMemoryCache.snapshotEntries())
-    const compressed = LZString.compress(serialized)
-    localStorage.setItem(CACHE_KEY, compressed)
-  } catch (e) {
-    console.warn('[cache] fallback localStorage persist failed', e)
-  }
-}
-
-const persistToIDB = async () => {
-  if (!idbSupported || !dirty) return
-  dirty = false
-  try {
-    const db = await openDB()
-    const tx = db.transaction(IDB_STORE, 'readwrite')
-    const store = tx.objectStore(IDB_STORE)
-    const data = encodeMap(inMemoryCache)
-    store.put(data, IDB_KEY)
-    tx.onabort = () => console.warn('[cache] persist aborted', tx.error)
-  } catch (e) {
-    console.warn('[cache] persist failed, falling back to localStorage', e)
-    fallbackPersistLocalStorage()
-  }
-}
-
-const schedulePersist = () => {
-  dirty = true
-  if (persistTimer != null) return
-  persistTimer = window.setTimeout(() => {
-    persistTimer = null
-    void persistToIDB()
-  }, 3000)
-}
-
-const hydrateFromIDB = async () => {
-  if (!idbSupported || hydrated) return
-  hydrationStarted = true
-  try {
-    const db = await openDB()
-    const tx = db.transaction(IDB_STORE, 'readonly')
-    const store = tx.objectStore(IDB_STORE)
-    const req = store.get(IDB_KEY)
-    req.onsuccess = () => {
-      try {
-        const data = req.result as BinaryLike | undefined
-        if (data) {
-          const decoded = decodeMap(data)
-          const added = inMemoryCache.bulkAdd(decoded)
-          if (added) console.info('[cache] hydrated from IndexedDB, new entries:', added)
-        }
-      } catch (e) {
-        console.warn('[cache] decode failed, attempting legacy migration', e)
-        fallbackHydrateLocalStorage()
-      } finally {
-        hydrated = true
-        inMemoryCache.finishHydration()
-      }
-    }
-    req.onerror = () => {
-      console.warn('[cache] IndexedDB read failed, using legacy localStorage', req.error)
-      fallbackHydrateLocalStorage()
-      hydrated = true
-      inMemoryCache.finishHydration()
-    }
-  } catch (e) {
-    console.warn('[cache] openDB failed, falling back to localStorage', e)
-    idbSupported = false
-    fallbackHydrateLocalStorage()
-    hydrated = true
-    inMemoryCache.finishHydration()
-  }
-}
-
-const flushAndFallback = () => {
-  if (idbSupported) void persistToIDB()
-  else fallbackPersistLocalStorage()
-}
-
-const setupPersistenceSideEffects = () => {
-  if (typeof window === 'undefined') return
-  if (!hydrationStarted) void hydrateFromIDB()
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) flushAndFallback()
-  })
-  window.addEventListener(
-    'beforeunload',
-    () => {
-      flushAndFallback()
-    },
-    { capture: true }
-  )
-}
-
-export const localCacheProvider = (): Cache<any> => {
-  setupPersistenceSideEffects()
-  if (!hydrationStarted && !hydrated) {
-    fallbackHydrateLocalStorage()
-    hydrated = true
-    inMemoryCache.finishHydration()
-  }
+export const localCacheProvider = (): Cache<unknown> => {
+  purgeLegacyPersistentCache()
   return inMemoryCache
 }
 
 export const clearLocalCache = () => {
-  ;(async () => {
-    try {
-      if (idbSupported) {
-        const db = await openDB()
-        const tx = db.transaction(IDB_STORE, 'readwrite')
-        tx.objectStore(IDB_STORE).delete(IDB_KEY)
-      }
-    } catch (e) {
-      console.warn('[cache] clear idb failed', e)
-    }
-    try {
-      localStorage.removeItem(CACHE_KEY)
-    } catch {}
-    inMemoryCache.clear()
-    window.location.reload()
-  })()
+  inMemoryCache.clear()
+  purgeLegacyPersistentCache()
+  if (typeof window !== 'undefined') window.location.reload()
 }

@@ -10,8 +10,13 @@ const oauthButtons = readFileSync('src/components/OAuthButtons.tsx', 'utf8')
 const settings = readFileSync('src/pages/admin/Settings.tsx', 'utf8')
 const apiTypes = readFileSync('src/Api.ts', 'utf8')
 
-test('the report exposes freshness, failures, coverage, and an explicit refresh action', () => {
-  assert.match(reportPage, /refreshInterval: CHEAT_REPORT_REFRESH_INTERVAL_MS/)
+test('the visible report exposes freshness and stops cadence after sealing', () => {
+  assert.match(
+    reportPage,
+    /refreshInterval: \(latest\) => \(latest\?\.sealedAt == null \? CHEAT_REPORT_REFRESH_INTERVAL_MS : 0\)/
+  )
+  assert.match(reportPage, /activeTab === 'analysis'/)
+  assert.match(reportPage, /activeTab === 'submissions'/)
   assert.match(reportPage, /keepPreviousData: false/)
   assert.match(reportPage, /isCheatReportStale\(lastReconciledAt\)/)
   assert.match(reportPage, /Last evaluated: \{\{time\}\}/)
@@ -46,6 +51,9 @@ test('each suspicion event has a lazy source-backed review with explicit proof l
   assert.match(evidenceReview, /Limitations/)
   assert.match(evidenceReview, /Admin review checklist/)
   assert.match(evidenceReview, /Download evidence JSON/)
+  assert.match(evidenceReview, /refreshInterval: 0/)
+  assert.match(evidenceReview, /revalidateOnReconnect: false/)
+  assert.match(analysis, /useCheatReportCompare[\s\S]*refreshInterval: 0/)
   assert.doesNotMatch(evidenceReview, /rawIp|rawFingerprint|flagValue/)
 })
 

@@ -10,21 +10,20 @@ const workerFunction = function () {
     const prefix = parsePrefix(req.chall)
     const diff = req.diff
 
-    let nonce = Math.floor(Math.random() * 0xffffffff)
-    const originalNonce = nonce
+    let nonce = Math.floor(Math.random() * 0x1_0000_0000) >>> 0
+    let trials = 0
     const startTime = Date.now()
-    while (true) {
+    while (trials < 0x1_0000_0000) {
       const data = concatNonce(prefix, nonce)
       const hash = await crypto.subtle.digest('SHA-256', data)
+      trials += 1
       if (leadingZeros(new Uint8Array(hash)) >= diff) {
-        break
+        const time = Math.max(1, Date.now() - startTime)
+        return { nonce: getNonce(prefix, nonce), time, rate: trials / time }
       }
-      nonce++
+      nonce = (nonce + 1) >>> 0
     }
-    const time = Date.now() - startTime
-    const trials = nonce - originalNonce
-
-    return { nonce: getNonce(prefix, nonce), time, rate: trials / time }
+    return { nonce: null, time: Date.now() - startTime, rate: 0 }
   }
 
   const concatNonce = (prefix: Uint8Array, nonce: number): Uint8Array<ArrayBuffer> => {
