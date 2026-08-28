@@ -63,22 +63,22 @@ export const FlowDetail: FC<FlowDetailProps> = ({ challengeId, participationId, 
       setDetail(null)
       return
     }
-    let cancelled = false
+    const abort = new AbortController()
     setLoading(true)
     setDetail(null)
     api.game
-      .gameGetTrafficFlowDetail(challengeId, participationId, filename, connectionPort)
+      .gameGetTrafficFlowDetail(challengeId, participationId, filename, connectionPort, { signal: abort.signal })
       .then((res) => {
-        if (!cancelled) setDetail(res.data)
+        if (!abort.signal.aborted) setDetail(res.data)
       })
       .catch(() => {
-        if (!cancelled) setDetail(null)
+        if (!abort.signal.aborted) setDetail(null)
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!abort.signal.aborted) setLoading(false)
       })
     return () => {
-      cancelled = true
+      abort.abort()
     }
   }, [challengeId, participationId, filename, connectionPort])
 

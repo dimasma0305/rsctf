@@ -1,8 +1,12 @@
 //! User listing / search / CRUD / batch creation.
 
 use super::users_bulk_identity::{
-    provision_explicit_user, provision_import_user, ExplicitUserWrite, ImportCredentialWrite,
-    ImportProvision, ImportUserWrite,
+    provision_explicit_user, provision_import_user_durable, DurableImportResult, ExplicitUserWrite,
+    ImportCredentialWrite, ImportProvision, ImportUserWrite,
+};
+use super::users_import_results::{
+    decrypt_import_result, import_request_digest, persist_and_push_import_result, summarize_import,
+    validate_import_request,
 };
 use super::*;
 use sea_orm::sea_query::{Alias, Expr, Func};
@@ -130,7 +134,7 @@ pub struct UserCreateModel {
 // response shapes are consumed by `web/src/components/admin/UserImportModal.tsx`.
 
 /// One row of the import body (`{ email, realName, userNameOverride?, ... }`).
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRow {
     #[serde(default)]
@@ -148,9 +152,10 @@ pub struct ImportRow {
 }
 
 /// The import request (`{ rows, teamMode, singleTeamName?, emailConfirmed }`).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRequest {
+    pub operation_id: Uuid,
     #[serde(default)]
     pub rows: Vec<ImportRow>,
     /// `"fromrow"` (per-row team), `"single"` (one team for all), or `"none"`.
@@ -163,7 +168,7 @@ pub struct ImportRequest {
 }
 
 /// Per-row outcome (`CsvImportUserResult`).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportUserResult {
     pub email: String,
@@ -273,6 +278,154 @@ pub(super) fn import_row_step<T>(
     })
 }
 
+async fn begin_import_job(
+    st: &SharedState,
+    requested_by: Uuid,
+    request: &ImportRequest,
+    request_digest: &[u8],
+) -> AppResult<(bool, Vec<Option<ImportUserResult>>)> {
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let existing: Option<(Uuid, Vec<u8>, i32, i16, bool)> = sqlx::query_as(
+        r#"SELECT requested_by, request_digest, row_count, status,
+                  result_expires_at_utc > clock_timestamp()
+             FROM "AdminCredentialJobs"
+            WHERE operation_id = $1 FOR UPDATE"#,
+    )
+    .bind(request.operation_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let completed = if let Some((owner, digest, row_count, status, live)) = existing {
+        if owner != requested_by
+            || digest != request_digest
+            || row_count != i32::try_from(request.rows.len()).expect("validated row count")
+        {
+            return Err(AppError::conflict(
+                "Import operation ID is bound to different input",
+            ));
+        }
+        if !live {
+            return Err(AppError::not_found("Import credential result has expired"));
+        }
+        status == 1
+    } else {
+        sqlx::query(
+            r#"INSERT INTO "AdminCredentialJobs"
+                   (operation_id, requested_by, request_digest, row_count)
+               VALUES ($1, $2, $3, $4)"#,
+        )
+        .bind(request.operation_id)
+        .bind(requested_by)
+        .bind(request_digest)
+        .bind(i32::try_from(request.rows.len()).expect("validated row count"))
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        false
+    };
+
+    let mut target_emails = request
+        .rows
+        .iter()
+        .map(|row| row.email.trim().to_uppercase())
+        .filter(|email| email.contains('@') && (3..=256).contains(&email.len()))
+        .collect::<Vec<_>>();
+    target_emails.sort_unstable();
+    target_emails.dedup();
+    if !completed && !target_emails.is_empty() {
+        let claimed = sqlx::query_scalar::<_, String>(
+            r#"INSERT INTO "AdminCredentialTargetLeases"
+                   (normalized_email, operation_id, expires_at_utc)
+               SELECT email, $1, clock_timestamp() + INTERVAL '20 minutes'
+                 FROM UNNEST($2::text[]) AS email
+               ON CONFLICT (normalized_email) DO UPDATE
+                 SET operation_id = EXCLUDED.operation_id,
+                     expires_at_utc = EXCLUDED.expires_at_utc
+               WHERE "AdminCredentialTargetLeases".operation_id = EXCLUDED.operation_id
+                  OR "AdminCredentialTargetLeases".expires_at_utc <= clock_timestamp()
+            RETURNING normalized_email"#,
+        )
+        .bind(request.operation_id)
+        .bind(&target_emails)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        if claimed.len() != target_emails.len() {
+            return Err(AppError::conflict(
+                "Another credential operation is active for an imported email",
+            ));
+        }
+    }
+    let encrypted_rows: Vec<(i32, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        r#"SELECT row_index, result_ciphertext, result_nonce
+             FROM "AdminCredentialJobRows"
+            WHERE operation_id = $1 ORDER BY row_index"#,
+    )
+    .bind(request.operation_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    let mut rows = std::iter::repeat_with(|| None)
+        .take(request.rows.len())
+        .collect::<Vec<_>>();
+    for (row_index, ciphertext, nonce) in encrypted_rows {
+        let index = usize::try_from(row_index)
+            .map_err(|_| AppError::internal("invalid persisted import row index"))?;
+        let slot = rows
+            .get_mut(index)
+            .ok_or_else(|| AppError::internal("persisted import row is out of range"))?;
+        *slot = Some(decrypt_import_result(
+            &st.config.jwt_secret,
+            request.operation_id,
+            index,
+            &ciphertext,
+            &nonce,
+        )?);
+    }
+    if completed && rows.iter().any(Option::is_none) {
+        return Err(AppError::internal(
+            "completed import is missing credential result rows",
+        ));
+    }
+    Ok((completed, rows))
+}
+
+async fn complete_import_job(st: &SharedState, operation_id: Uuid) -> AppResult<()> {
+    let mut transaction = st
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(
+        r#"UPDATE "AdminCredentialJobs"
+              SET status = 1, completed_at_utc = clock_timestamp()
+            WHERE operation_id = $1 AND status = 0"#,
+    )
+    .bind(operation_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(r#"DELETE FROM "AdminCredentialTargetLeases" WHERE operation_id = $1"#)
+        .bind(operation_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
+}
+
 /// `POST /api/admin/users/import` — CSV bulk import (client-parsed → JSON rows).
 ///
 /// For each row: generate a username (override or derived from real name, made
@@ -294,6 +447,22 @@ pub async fn import_users(
     AdminUser(caller): AdminUser,
     Json(req): Json<ImportRequest>,
 ) -> AppResult<Response> {
+    validate_import_request(&req)?;
+    let request_digest = import_request_digest(&req)?;
+    let _credential_work = crate::services::credential_admission::try_acquire(
+        st.pg(),
+        crate::services::credential_admission::CredentialWorkClass::AdminBulk,
+        "admin-credential-bulk",
+    )
+    .await?;
+    let (completed, mut durable_rows) =
+        begin_import_job(&st, caller.id, &req, &request_digest).await?;
+    if completed {
+        let users = durable_rows.into_iter().flatten().collect::<Vec<_>>();
+        return Ok(super::users_credentials::private_no_store(Json(
+            summarize_import(users, req.rows.len()),
+        )));
+    }
     let now = Utc::now();
     let single_team = req
         .single_team_name
@@ -309,6 +478,16 @@ pub async fn import_users(
     let (mut created, mut updated, mut skipped) = (0usize, 0usize, 0usize);
 
     for (row_index, row) in req.rows.iter().enumerate() {
+        if let Some(result) = durable_rows[row_index].take() {
+            seen_emails.insert(row.email.trim().to_uppercase());
+            match result.status.as_str() {
+                "created" => created += 1,
+                "updated" => updated += 1,
+                _ => skipped += 1,
+            }
+            out.push(result);
+            continue;
+        }
         let row_number = row_index.saturating_add(1);
         let email = row.email.trim().to_lowercase();
         let real_name = row.real_name.trim().to_string();
@@ -339,37 +518,43 @@ pub async fn import_users(
         .and_then(|()| crate::controllers::team::validate_team_profile(team_name.as_deref(), None));
         if let Err(error) = field_validation {
             skipped += 1;
-            out.push(skipped_row(
+            let result = skipped_row(
                 &email,
                 &real_name,
                 &preview_name,
                 team_name,
                 &error.to_string(),
-            ));
+            );
+            persist_and_push_import_result(&st, req.operation_id, row_index, &mut out, result)
+                .await?;
             continue;
         }
 
         if !email.contains('@') || email.len() > crate::controllers::account::MAX_EMAIL_BYTES {
             skipped += 1;
-            out.push(skipped_row(
+            let result = skipped_row(
                 &email,
                 &real_name,
                 &preview_name,
                 team_name,
                 "invalid email address",
-            ));
+            );
+            persist_and_push_import_result(&st, req.operation_id, row_index, &mut out, result)
+                .await?;
             continue;
         }
         let norm_email = email.to_uppercase();
         if seen_emails.contains(&norm_email) {
             skipped += 1;
-            out.push(skipped_row(
+            let result = skipped_row(
                 &email,
                 &real_name,
                 &preview_name,
                 team_name,
                 "duplicate email in this import",
-            ));
+            );
+            persist_and_push_import_result(&st, req.operation_id, row_index, &mut out, result)
+                .await?;
             continue;
         }
         seen_emails.insert(norm_email.clone());
@@ -382,13 +567,9 @@ pub async fn import_users(
             Ok(password_hash) => password_hash,
             Err(reason) => {
                 skipped += 1;
-                out.push(skipped_row(
-                    &email,
-                    &real_name,
-                    &preview_name,
-                    team_name,
-                    &reason,
-                ));
+                let result = skipped_row(&email, &real_name, &preview_name, team_name, &reason);
+                persist_and_push_import_result(&st, req.operation_id, row_index, &mut out, result)
+                    .await?;
                 continue;
             }
         };
@@ -406,7 +587,7 @@ pub async fn import_users(
             .as_deref()
             .and_then(|name| team_by_name.get(name).copied());
         let provision = match import_row_step(
-            provision_import_user(
+            provision_import_user_durable(
                 st.pg(),
                 ImportUserWrite {
                     email: &email,
@@ -428,6 +609,15 @@ pub async fn import_users(
                 },
                 team_name.as_deref(),
                 cached_team_id,
+                DurableImportResult {
+                    state: &st,
+                    operation_id: req.operation_id,
+                    row_index,
+                    email: &email,
+                    real_name: &real_name,
+                    password: &password,
+                    team_name: team_name.as_deref(),
+                },
             )
             .await,
             row_number,
@@ -436,27 +626,20 @@ pub async fn import_users(
             Ok(provision) => provision,
             Err(reason) => {
                 skipped += 1;
-                out.push(skipped_row(
-                    &email,
-                    &real_name,
-                    &preview_name,
-                    team_name,
-                    &reason,
-                ));
+                let result = skipped_row(&email, &real_name, &preview_name, team_name, &reason);
+                persist_and_push_import_result(&st, req.operation_id, row_index, &mut out, result)
+                    .await?;
                 continue;
             }
         };
+        let (provision, durable_result) = provision;
         let provision = match provision {
             ImportProvision::Provisioned(provision) => provision,
             ImportProvision::Skipped(reason) => {
                 skipped += 1;
-                out.push(skipped_row(
-                    &email,
-                    &real_name,
-                    &preview_name,
-                    team_name,
-                    reason,
-                ));
+                let result = skipped_row(&email, &real_name, &preview_name, team_name, reason);
+                persist_and_push_import_result(&st, req.operation_id, row_index, &mut out, result)
+                    .await?;
                 continue;
             }
         };
@@ -468,20 +651,13 @@ pub async fn import_users(
         } else {
             updated += 1;
         }
-        out.push(ImportUserResult {
-            email,
-            real_name,
-            user_name: provision.user_name,
-            password,
-            team_name,
-            status: if provision.created {
-                "created".into()
-            } else {
-                "updated".into()
-            },
-            error: None,
-        });
+        let result = durable_result.ok_or_else(|| {
+            AppError::internal("provisioned import row is missing its durable credential result")
+        })?;
+        out.push(result);
     }
+
+    complete_import_job(&st, req.operation_id).await?;
 
     crate::services::audit::info(
         &st,
@@ -548,6 +724,17 @@ pub async fn add_users(
     AdminUser(caller): AdminUser,
     Json(models): Json<Vec<UserCreateModel>>,
 ) -> AppResult<MessageResponse> {
+    if models.is_empty() || models.len() > 100 {
+        return Err(AppError::payload_too_large(
+            "Batch user creation accepts between 1 and 100 users",
+        ));
+    }
+    let _credential_work = crate::services::credential_admission::try_acquire(
+        st.pg(),
+        crate::services::credential_admission::CredentialWorkClass::AdminBulk,
+        "admin-credential-bulk",
+    )
+    .await?;
     // ── Validate every row before inserting anything ──────────────────────
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_emails: std::collections::HashSet<String> = std::collections::HashSet::new();

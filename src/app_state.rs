@@ -58,6 +58,9 @@ pub struct AppState {
     /// Bounded post-commit handoff for submission and game-event live feeds.
     /// Cursor backfill remains authoritative if this best-effort queue is full.
     pub(crate) feed_publication: crate::services::feed_publication::PublicationQueue,
+    /// Non-blocking, bounded aggregation handoff for unauthenticated decoy
+    /// telemetry. Honeypot responses never await PostgreSQL.
+    pub(crate) honeypot_telemetry: crate::services::suspicion::HoneypotQueue,
 }
 
 /// One real-time message: which client hub method to invoke, which game it
@@ -169,6 +172,7 @@ impl AppState {
             events,
             user_activity: crate::middlewares::user_activity::ActivityQueue::new(),
             feed_publication: crate::services::feed_publication::PublicationQueue::new(),
+            honeypot_telemetry: crate::services::suspicion::HoneypotQueue::new(),
         })
     }
 

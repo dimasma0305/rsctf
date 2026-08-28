@@ -69,6 +69,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # infra
 redis = { version = "1.4", features = ["tokio-comp", "connection-manager", "aio"] }
 dashmap = "6"
+regex = "1"
 thiserror = "2"
 anyhow = "1"
 tracing = "0.1"

@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use bollard::container::ListContainersOptions;
@@ -20,15 +19,20 @@ use crate::utils::enums::{ChallengeBuildStatus, ChallengeType};
 use crate::utils::error::{AppError, AppResult};
 
 const CLEANUP_INTERVAL_SECONDS: i64 = 15 * 60;
+const CLEANUP_LEASE_SECONDS: i64 = 5 * 60;
+const CLEANUP_RETRY_SECONDS: i64 = 60;
+const CLEANUP_PASS_BUDGET: Duration = Duration::from_secs(120);
+const DOCKER_CALL_BUDGET: Duration = Duration::from_secs(15);
+const CLEANUP_BATCH_SIZE: i64 = 32;
 const DOCKER_API_VERSION: &str = "v1.45";
 const GIB: u64 = 1024 * 1024 * 1024;
-static NEXT_SCHEDULED_CLEANUP: AtomicI64 = AtomicI64::new(0);
 
 const OWNERSHIPS_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc,
        last_used_at_utc
   FROM "BuildImageOwnerships"
  WHERE installation_scope = $1
- ORDER BY COALESCE(last_used_at_utc, updated_at_utc), canonical_ref"#;
+ ORDER BY COALESCE(last_used_at_utc, updated_at_utc), canonical_ref
+ LIMIT $2"#;
 
 const OWNERSHIP_SQL: &str = r#"SELECT canonical_ref, image_id, updated_at_utc,
        last_used_at_utc
@@ -168,9 +172,9 @@ async fn storage_status_with(
     policy: &ContainerPolicy,
 ) -> AppResult<ImageStorageStatus> {
     let (filesystem_total_bytes, filesystem_available_bytes) = filesystem_space(Path::new("/"))?;
-    let usage = docker
-        .df()
+    let usage = tokio::time::timeout(DOCKER_CALL_BUDGET, docker.df())
         .await
+        .map_err(|_| AppError::unavailable("Docker disk usage timed out"))?
         .map_err(|error| AppError::unavailable(format!("Docker disk usage failed: {error}")))?;
     let caches = usage.build_cache.unwrap_or_default();
     let (build_cache_bytes, reclaimable_build_cache_bytes) = build_cache_space(
@@ -372,7 +376,7 @@ async fn prune_build_cache(retention_hours: i32, pressure: bool) -> AppResult<u6
         serde_json::to_string(&filters).map_err(|error| AppError::internal(error.to_string()))?;
     let client = reqwest::Client::builder()
         .unix_socket(socket)
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| AppError::internal(error.to_string()))?;
     let response = client
@@ -414,66 +418,58 @@ async fn evict_one(
     st: &SharedState,
     docker: &Docker,
     candidate: &ImageOwnership,
+    references: &[ChallengeReference],
+    live_image_ids: &HashSet<String>,
     cutoff: DateTime<Utc>,
     pressure: bool,
 ) -> AppResult<Option<(u64, String)>> {
-    let lock_key = crate::controllers::edit::image_build_lock_key(Some(&candidate.canonical_ref));
-    let mut lock = crate::utils::single_flight::PgAdvisoryLock::acquire_build(st.pg(), &lock_key)
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
     let scope = crate::services::container::docker_installation_scope();
-    let Some(current) = sqlx::query_as::<_, ImageOwnership>(OWNERSHIP_SQL)
-        .bind(&scope)
-        .bind(&candidate.canonical_ref)
-        .fetch_optional(lock.connection_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?
-    else {
-        lock.release().await?;
-        return Ok(None);
-    };
-    if current.image_id != candidate.image_id {
-        lock.release().await?;
-        return Ok(None);
-    }
-
-    let references = sqlx::query_as::<_, ChallengeReference>(CHALLENGE_REFERENCES_SQL)
-        .fetch_all(lock.connection_mut())
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let matching = references_for(&references, &current);
+    let matching = references_for(references, candidate);
     let orphan = matching.is_empty();
-    let expired = current.retention_anchor() <= cutoff;
+    let expired = candidate.retention_anchor() <= cutoff;
     if !(expired || (pressure && orphan))
         || (!orphan
             && !matching
                 .iter()
-                .all(|reference| reference_is_rebuildable(reference, &current)))
+                .all(|reference| reference_is_rebuildable(reference, candidate)))
+        || live_image_ids.contains(&candidate.image_id.to_ascii_lowercase())
     {
-        lock.release().await?;
         return Ok(None);
     }
 
-    let containers = docker
-        .list_containers(Some(ListContainersOptions::<String> {
-            all: true,
-            ..Default::default()
-        }))
+    // Revalidate the exact ownership under the same short build fence used by
+    // image publication, then release the PostgreSQL connection before Docker
+    // I/O. Removal uses the immutable image ID so a retagged/new build cannot be
+    // deleted while the daemon call is in flight.
+    let lock_key = crate::controllers::edit::image_build_lock_key(Some(&candidate.canonical_ref));
+    let mut lock = crate::utils::single_flight::PgAdvisoryLock::acquire_build(st.pg(), &lock_key)
         .await
-        .map_err(|error| {
-            AppError::unavailable(format!("Docker container inventory failed: {error}"))
-        })?;
-    if containers.iter().any(|container| {
-        container
-            .image_id
-            .as_deref()
-            .is_some_and(|image_id| image_id.eq_ignore_ascii_case(&current.image_id))
-    }) {
-        lock.release().await?;
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let current = sqlx::query_as::<_, ImageOwnership>(OWNERSHIP_SQL)
+        .bind(&scope)
+        .bind(&candidate.canonical_ref)
+        .fetch_optional(lock.connection_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let still_owned = current
+        .as_ref()
+        .is_some_and(|current| current.image_id == candidate.image_id);
+    lock.release().await?;
+    if !still_owned {
         return Ok(None);
     }
 
-    let inspected = match docker.inspect_image(&current.canonical_ref).await {
+    let inspected = match tokio::time::timeout(
+        DOCKER_CALL_BUDGET,
+        docker.inspect_image(&candidate.image_id),
+    )
+    .await
+    .map_err(|_| {
+        AppError::unavailable(format!(
+            "Docker image inspection timed out for {}",
+            candidate.canonical_ref
+        ))
+    })? {
         Ok(inspected) => inspected,
         Err(error) if docker_not_found(&error) => {
             sqlx::query(
@@ -481,35 +477,32 @@ async fn evict_one(
                     WHERE installation_scope = $1 AND canonical_ref = $2 AND image_id = $3"#,
             )
             .bind(&scope)
-            .bind(&current.canonical_ref)
-            .bind(&current.image_id)
-            .execute(lock.connection_mut())
+            .bind(&candidate.canonical_ref)
+            .bind(&candidate.image_id)
+            .execute(st.pg())
             .await
             .map_err(|db_error| AppError::internal(db_error.to_string()))?;
-            lock.release().await?;
             return Ok(None);
         }
         Err(error) => {
-            lock.release().await?;
             return Err(AppError::unavailable(format!(
                 "Docker image inspection failed for {}: {error}",
-                current.canonical_ref
+                candidate.canonical_ref
             )));
         }
     };
     let current_id = crate::services::challenge_images::inspected_local_image_id(&inspected)
         .ok_or_else(|| AppError::conflict("Docker returned an invalid image identity"))?;
-    if !current_id.eq_ignore_ascii_case(&current.image_id) {
-        lock.release().await?;
+    if !current_id.eq_ignore_ascii_case(&candidate.image_id) {
         return Err(AppError::conflict(format!(
             "image ownership changed for {}",
-            current.canonical_ref
+            candidate.canonical_ref
         )));
     }
     crate::services::challenge_images::validate_image_ownership_labels(
         &inspected,
         &scope,
-        &current.canonical_ref,
+        &candidate.canonical_ref,
         false,
     )
     .map_err(AppError::conflict)?;
@@ -517,27 +510,41 @@ async fn evict_one(
         .size
         .and_then(|size| u64::try_from(size).ok())
         .unwrap_or_default();
-    docker
-        .remove_image(
-            &current.canonical_ref,
+    tokio::time::timeout(
+        DOCKER_CALL_BUDGET,
+        docker.remove_image(
+            &candidate.image_id,
             Some(RemoveImageOptions {
                 force: false,
                 noprune: false,
             }),
             None,
+        ),
+    )
+    .await
+    .map_err(|_| {
+        AppError::unavailable(format!(
+            "Docker image removal timed out for {}",
+            candidate.canonical_ref
+        ))
+    })?
+    .map_err(|error| {
+        AppError::conflict(format!(
+            "Docker refused to evict {}: {error}",
+            candidate.canonical_ref
+        ))
+    })?;
+    if matches!(
+        tokio::time::timeout(
+            DOCKER_CALL_BUDGET,
+            docker.inspect_image(&candidate.image_id)
         )
-        .await
-        .map_err(|error| {
-            AppError::conflict(format!(
-                "Docker refused to evict {}: {error}",
-                current.canonical_ref
-            ))
-        })?;
-    if docker.inspect_image(&current.canonical_ref).await.is_ok() {
-        lock.release().await?;
+        .await,
+        Ok(Ok(_))
+    ) {
         return Err(AppError::conflict(format!(
             "Docker still resolves {} after eviction",
-            current.canonical_ref
+            candidate.canonical_ref
         )));
     }
     sqlx::query(
@@ -545,12 +552,11 @@ async fn evict_one(
             WHERE installation_scope = $1 AND canonical_ref = $2 AND image_id = $3"#,
     )
     .bind(&scope)
-    .bind(&current.canonical_ref)
-    .bind(&current.image_id)
-    .execute(lock.connection_mut())
+    .bind(&candidate.canonical_ref)
+    .bind(&candidate.image_id)
+    .execute(st.pg())
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
-    lock.release().await?;
     let titles = matching
         .iter()
         .map(|reference| format!("#{} {}", reference.id, reference.title))
@@ -562,7 +568,7 @@ async fn evict_one(
     };
     Ok(Some((
         size,
-        format!("evicted {} ({detail})", current.canonical_ref),
+        format!("evicted {} ({detail})", candidate.canonical_ref),
     )))
 }
 
@@ -589,19 +595,24 @@ pub async fn cleanup(st: &SharedState, policy: &ContainerPolicy) -> AppResult<Im
     if before.low_storage {
         let mut filters = HashMap::new();
         filters.insert("dangling".to_string(), vec!["true".to_string()]);
-        match docker
-            .prune_images(Some(PruneImagesOptions { filters }))
-            .await
+        match tokio::time::timeout(
+            DOCKER_CALL_BUDGET,
+            docker.prune_images(Some(PruneImagesOptions { filters })),
+        )
+        .await
         {
-            Ok(result) => {
+            Ok(Ok(result)) => {
                 report.dangling_bytes_reclaimed = result
                     .space_reclaimed
                     .and_then(|bytes| u64::try_from(bytes).ok())
                     .unwrap_or_default();
             }
-            Err(error) => report
+            Ok(Err(error)) => report
                 .messages
                 .push(format!("dangling-image cleanup skipped: {error}")),
+            Err(_) => report
+                .messages
+                .push("dangling-image cleanup timed out".to_string()),
         }
     }
 
@@ -609,15 +620,47 @@ pub async fn cleanup(st: &SharedState, policy: &ContainerPolicy) -> AppResult<Im
     let scope = crate::services::container::docker_installation_scope();
     let candidates = sqlx::query_as::<_, ImageOwnership>(OWNERSHIPS_SQL)
         .bind(&scope)
+        .bind(CLEANUP_BATCH_SIZE)
         .fetch_all(st.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    let references = sqlx::query_as::<_, ChallengeReference>(CHALLENGE_REFERENCES_SQL)
+        .fetch_all(st.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let containers = tokio::time::timeout(
+        DOCKER_CALL_BUDGET,
+        docker.list_containers(Some(ListContainersOptions::<String> {
+            all: true,
+            ..Default::default()
+        })),
+    )
+    .await
+    .map_err(|_| AppError::unavailable("Docker container inventory timed out"))?
+    .map_err(|error| {
+        AppError::unavailable(format!("Docker container inventory failed: {error}"))
+    })?;
+    let live_image_ids = containers
+        .into_iter()
+        .filter_map(|container| container.image_id)
+        .map(|image_id| image_id.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
     let mut seen = HashSet::new();
     for candidate in candidates {
         if !seen.insert(candidate.canonical_ref.clone()) {
             continue;
         }
-        match evict_one(st, &docker, &candidate, cutoff, before.low_storage).await {
+        match evict_one(
+            st,
+            &docker,
+            &candidate,
+            &references,
+            &live_image_ids,
+            cutoff,
+            before.low_storage,
+        )
+        .await
+        {
             Ok(Some((bytes, message))) => {
                 report.images_removed += 1;
                 report.image_bytes_evicted = report.image_bytes_evicted.saturating_add(bytes);
@@ -641,30 +684,95 @@ pub async fn cleanup(st: &SharedState, policy: &ContainerPolicy) -> AppResult<Im
     Ok(report)
 }
 
-fn claim_scheduled_cleanup(now: i64) -> bool {
-    let next = NEXT_SCHEDULED_CLEANUP.load(Ordering::Relaxed);
-    if now < next {
-        return false;
+async fn claim_scheduled_cleanup(
+    st: &SharedState,
+    scope: &str,
+    owner: uuid::Uuid,
+) -> AppResult<bool> {
+    let inserted = sqlx::query(
+        r#"INSERT INTO "ImageCleanupLeases" (
+               installation_scope, next_run_at_utc, updated_at_utc
+           ) VALUES (
+               $1, clock_timestamp() + make_interval(secs => $2), clock_timestamp()
+           ) ON CONFLICT (installation_scope) DO NOTHING"#,
+    )
+    .bind(scope)
+    .bind(CLEANUP_INTERVAL_SECONDS as f64)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if inserted == 1 {
+        return Ok(false);
     }
-    NEXT_SCHEDULED_CLEANUP
-        .compare_exchange(
-            next,
-            now.saturating_add(CLEANUP_INTERVAL_SECONDS),
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        )
-        .is_ok()
+    let claimed = sqlx::query_scalar::<_, bool>(
+        r#"WITH claimed AS (
+               UPDATE "ImageCleanupLeases"
+                  SET lease_owner = $2,
+                      lease_until_utc = clock_timestamp() + make_interval(secs => $3),
+                      updated_at_utc = clock_timestamp()
+                WHERE installation_scope = $1
+                  AND next_run_at_utc <= clock_timestamp()
+                  AND (lease_until_utc IS NULL OR lease_until_utc < clock_timestamp())
+            RETURNING 1
+           ) SELECT EXISTS (SELECT 1 FROM claimed)"#,
+    )
+    .bind(scope)
+    .bind(owner)
+    .bind(CLEANUP_LEASE_SECONDS as f64)
+    .fetch_one(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(claimed)
+}
+
+async fn finish_scheduled_cleanup(
+    st: &SharedState,
+    scope: &str,
+    owner: uuid::Uuid,
+    succeeded: bool,
+) -> AppResult<()> {
+    let delay = if succeeded {
+        CLEANUP_INTERVAL_SECONDS
+    } else {
+        CLEANUP_RETRY_SECONDS
+    };
+    sqlx::query(
+        r#"UPDATE "ImageCleanupLeases"
+              SET next_run_at_utc = clock_timestamp() + make_interval(secs => $3),
+                  lease_owner = NULL,
+                  lease_until_utc = NULL,
+                  updated_at_utc = clock_timestamp()
+            WHERE installation_scope = $1 AND lease_owner = $2"#,
+    )
+    .bind(scope)
+    .bind(owner)
+    .bind(delay as f64)
+    .execute(st.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(())
 }
 
 pub async fn scheduled_cleanup(st: &SharedState) -> AppResult<Option<ImageCleanupReport>> {
     let policy = ContainerPolicy::load(st.pg()).await?;
     if !policy.image_cleanup_enabled
         || st.containers.backend_kind() != crate::services::container::ContainerBackendKind::Docker
-        || !claim_scheduled_cleanup(Utc::now().timestamp())
     {
         return Ok(None);
     }
-    cleanup(st, &policy).await.map(Some)
+    let scope = crate::services::container::docker_installation_scope();
+    let owner = uuid::Uuid::new_v4();
+    if !claim_scheduled_cleanup(st, &scope, owner).await? {
+        return Ok(None);
+    }
+    let result = tokio::time::timeout(CLEANUP_PASS_BUDGET, cleanup(st, &policy)).await;
+    let succeeded = matches!(result, Ok(Ok(_)));
+    finish_scheduled_cleanup(st, &scope, owner, succeeded).await?;
+    match result {
+        Ok(result) => result.map(Some),
+        Err(_) => Err(AppError::unavailable("Docker image cleanup pass timed out")),
+    }
 }
 
 #[cfg(test)]

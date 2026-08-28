@@ -498,6 +498,7 @@ pub struct AttachmentCreateModel {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameCloneModel {
+    pub operation_id: Uuid,
     #[serde(default)]
     pub title: String,
     #[serde(default = "epoch", with = "crate::utils::datetime::millis")]
@@ -664,6 +665,7 @@ pub fn router() -> Router<SharedState> {
         )
         .route("/api/edit/games/{id}/HashSalt", get(get_hash_salt))
         .route("/api/edit/games/{id}/Clone", post(clone_game))
+        .route("/api/edit/games/{id}/clone", post(clone_game))
         .route(
             "/api/edit/games/{id}/variants",
             get(event_security::list_variants),

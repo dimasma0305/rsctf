@@ -40,7 +40,7 @@ import {
   mdiUpload,
 } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useCallback, useMemo, useState } from 'react'
+import { FC, useCallback, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { quoteSpreadsheetCsvCell } from '@Utils/Csv'
 
@@ -82,6 +82,8 @@ interface EmailSendResult {
 
 const NONE = '(none)'
 const PAGE_SIZE = 50
+const MAX_IMPORT_ROWS = 200
+const MAX_IMPORT_BYTES = 1024 * 1024
 
 interface EditableRow {
   id: string
@@ -237,12 +239,22 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
   const [importError, setImportError] = useState<string | null>(null)
   const [sendingEmail, setSendingEmail] = useState(false)
   const [emailSendResult, setEmailSendResult] = useState<EmailSendResult | null>(null)
+  const importInFlight = useRef(false)
+  const operationId = useRef(crypto.randomUUID())
 
   // Step 0 → parse headers only
   const process = useCallback((text: string) => {
+    if (new Blob([text]).size > MAX_IMPORT_BYTES) {
+      showNotification({ message: 'CSV must be 1 MB or smaller', color: 'red' })
+      return
+    }
     const { headers: hdrs, rowCount } = parseCSVInfo(text)
     if (hdrs.length < 2 || rowCount < 1) {
       showNotification({ message: 'CSV must have at least a header row and one data row', color: 'red' })
+      return
+    }
+    if (rowCount > MAX_IMPORT_ROWS) {
+      showNotification({ message: `CSV may contain at most ${MAX_IMPORT_ROWS} users`, color: 'red' })
       return
     }
     setHeaders(hdrs)
@@ -342,6 +354,8 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
 
   // Step 3 → run import
   const runImport = async () => {
+    if (importInFlight.current) return
+    importInFlight.current = true
     setLoading(true)
     setImportError(null)
     setStep(4)
@@ -354,6 +368,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          operationId: operationId.current,
           rows: rows.map((r) => ({
             email: r.email,
             realName: r.realName,
@@ -375,6 +390,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
 
       const result: CsvImportResult = await resp.json()
       setImportResult(result)
+      operationId.current = crypto.randomUUID()
 
       if (result.created > 0 || result.updated > 0) {
         onImportComplete?.()
@@ -388,6 +404,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
       setImportError(e?.message ?? 'Import failed')
       showNotification({ message: e?.message ?? 'Import failed', color: 'red' })
     } finally {
+      importInFlight.current = false
       setLoading(false)
     }
   }
@@ -406,6 +423,8 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
     setImportError(null)
     setSendingEmail(false)
     setEmailSendResult(null)
+    importInFlight.current = false
+    operationId.current = crypto.randomUUID()
   }
 
   const goFixFailedRows = () => {
@@ -498,8 +517,12 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
         </Group>
       }
       size="90%"
+      closeOnClickOutside={!loading}
+      closeOnEscape={!loading}
+      withCloseButton={!loading}
       styles={{ body: { paddingTop: 0 } }}
       onClose={() => {
+        if (importInFlight.current) return
         reset()
         props.onClose()
       }}
@@ -519,7 +542,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
             <Dropzone
               onDrop={(files) => onFile(files[0])}
               accept={{ 'text/csv': ['.csv'], 'text/plain': ['.txt', '.csv'] }}
-              maxSize={10 * 1024 * 1024}
+              maxSize={MAX_IMPORT_BYTES}
             >
               <Group justify="center" gap="xl" mih={120} style={{ pointerEvents: 'none' }}>
                 <Dropzone.Accept>
@@ -536,7 +559,7 @@ export const UserImportModal: FC<UserImportModalProps> = ({ onImportComplete, ..
                     Drag a CSV file here
                   </Text>
                   <Text size="sm" c="dimmed">
-                    Supports .csv and .txt — max 10 MB
+                    Supports .csv and .txt — max 1 MB / 200 users
                   </Text>
                 </Stack>
               </Group>

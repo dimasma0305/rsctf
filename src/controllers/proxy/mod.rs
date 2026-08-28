@@ -44,11 +44,10 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
 use sea_orm::EntityTrait;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
-use futures::{SinkExt, StreamExt};
+use futures::SinkExt;
 
 use crate::app_state::SharedState;
 use crate::middlewares::privilege_authentication::{CurrentUser, MaybeUser};
@@ -78,12 +77,10 @@ use capability::{
     issue_instance_capability, issue_noinstance_capability, proxy_instance_latency_probe,
     proxy_noinstance_latency_probe, proxy_user, ProxyCapabilityQuery,
 };
-use egress::{build_egress_scan, record_flag_egress, EgressScan, RollingFlagMatcher};
+use egress::{build_egress_scan, EgressScan};
 use target::{game_proxy_target_identity, proxy_target, resolve_noinstance_target, ProxyTarget};
-use transport::{close_cleanly, endpoint_unavailable_close, normal_close, transport_failure_close};
+use transport::{close_cleanly, endpoint_unavailable_close, proxy_pump};
 
-/// Buffer size for TCP→WebSocket reads, matching RSCTF's `BufferSize`.
-const BUFFER_SIZE: usize = 4096;
 /// Maximum client frame and reassembled message; raw TCP clients can segment writes.
 const MAX_CLIENT_MESSAGE_SIZE: usize = 64 * 1024;
 
@@ -143,6 +140,7 @@ async fn proxy_for_instance(
     // (best-effort forensics), never for access control.
     let remote_ip =
         crate::services::anti_cheat::client_ip(&headers, Some(peer.ip())).unwrap_or_default();
+    let admission_source = remote_ip.parse().unwrap_or_else(|_| peer.ip());
     let event_vpn_source = remote_ip.parse::<Ipv4Addr>().ok();
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
@@ -158,11 +156,18 @@ async fn proxy_for_instance(
                 Some(a) => {
                     let (admission, scan, lease, open_fence) = match &a.owner {
                         InstanceOwner::Game(game) => {
-                            let Some(admission) = st_log.proxy_admission.try_acquire(
-                                a.accessing_user_id,
-                                game.accessing_participation_id,
-                                a.container_id,
-                            ) else {
+                            let Some(admission) = st_log
+                                .proxy_admission
+                                .try_acquire_distributed(
+                                    st_log.pg(),
+                                    a.accessing_user_id,
+                                    game.accessing_participation_id,
+                                    game.game_id,
+                                    a.container_id,
+                                    admission_source,
+                                )
+                                .await
+                            else {
                                 run_or_close(st_log, socket, None, None, None, None, None).await;
                                 return;
                             };
@@ -234,11 +239,17 @@ async fn proxy_for_instance(
                             (admission, scan, lease, Some(open_fence))
                         }
                         InstanceOwner::Exercise(exercise) => {
-                            let Some(admission) = st_log.proxy_admission.try_acquire_exercise(
-                                a.accessing_user_id,
-                                exercise.exercise_instance_id,
-                                a.container_id,
-                            ) else {
+                            let Some(admission) = st_log
+                                .proxy_admission
+                                .try_acquire_exercise_distributed(
+                                    st_log.pg(),
+                                    a.accessing_user_id,
+                                    exercise.exercise_instance_id,
+                                    a.container_id,
+                                    admission_source,
+                                )
+                                .await
+                            else {
                                 run_or_close(st_log, socket, None, None, None, None, None).await;
                                 return;
                             };
@@ -277,17 +288,46 @@ async fn proxy_for_noinstance(
     State(st): State<SharedState>,
     user: MaybeUser,
     Query(capability): Query<ProxyCapabilityQuery>,
+    headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let target = if proxy_user(&st, user, capability, id, true).await.is_some() {
+    let source = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()))
+        .and_then(|source| source.parse().ok())
+        .unwrap_or_else(|| peer.ip());
+    let principal = proxy_user(&st, user, capability, id, true).await;
+    let admission = match principal.as_ref() {
+        Some(principal) => {
+            st.proxy_admission
+                .try_acquire_preview_distributed(st.pg(), principal.id, id, source)
+                .await
+        }
+        None => None,
+    };
+    if principal.is_some() && admission.is_none() {
+        return (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, "2")],
+            "proxy capacity exceeded",
+        )
+            .into_response();
+    }
+    let target = if principal.is_some() {
         resolve_noinstance_target(&st, id).await
     } else {
         None
     };
+    let lease = principal.map(|principal| InstanceLease {
+        pool: st.pg().clone(),
+        user_id: principal.id,
+        security_stamp: principal.security_stamp,
+        owner: LeaseOwner::Preview { container_id: id },
+    });
     ws.max_frame_size(MAX_CLIENT_MESSAGE_SIZE)
         .max_message_size(MAX_CLIENT_MESSAGE_SIZE)
-        .on_upgrade(move |socket| run_or_close(st, socket, target, None, None, None, None))
+        .on_upgrade(move |socket| run_or_close(st, socket, target, None, lease, admission, None))
+        .into_response()
 }
 
 /// Everything needed both to proxy a player container AND to log the access +
@@ -600,7 +640,7 @@ async fn run_or_close(
     target: Option<ProxyTarget>,
     scan: Option<EgressScan>,
     lease: Option<InstanceLease>,
-    _admission: Option<crate::services::proxy_admission::ProxyPermit>,
+    admission: Option<crate::services::proxy_admission::ProxyPermit>,
     open_fence: Option<GameProxyOpenFence>,
 ) {
     let Some(target) = target else {
@@ -633,7 +673,8 @@ async fn run_or_close(
                 }
             }
             let _ = stream.set_nodelay(true);
-            let session = proxy_session(socket, stream, scan, lease);
+            let traffic = admission.as_ref().map(|permit| permit.traffic());
+            let session = proxy_session(socket, stream, scan, lease, traffic);
             let _ = tokio::time::timeout(SESSION_TIMEOUT, session).await;
         }
         ProxyTarget::Worker(handle) => {
@@ -678,7 +719,8 @@ async fn run_or_close(
                     return;
                 }
             }
-            let session = proxy_session(socket, stream, scan, lease);
+            let traffic = admission.as_ref().map(|permit| permit.traffic());
+            let session = proxy_session(socket, stream, scan, lease, traffic);
             let _ = tokio::time::timeout(SESSION_TIMEOUT, session).await;
         }
     }
@@ -689,17 +731,18 @@ async fn proxy_session<S>(
     stream: S,
     scan: Option<EgressScan>,
     lease: Option<InstanceLease>,
+    traffic: Option<crate::services::proxy_admission::ProxyTrafficPermit>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     match lease {
         Some(lease) => {
             tokio::select! {
-                _ = pump(socket, stream, scan) => {}
+                _ = proxy_pump(socket, stream, scan, traffic) => {}
                 _ = wait_for_revocation(lease) => {}
             }
         }
-        None => pump(socket, stream, scan).await,
+        None => proxy_pump(socket, stream, scan, traffic).await,
     }
 }
 
@@ -781,6 +824,9 @@ enum LeaseOwner {
         exercise_id: i32,
         container_id: Uuid,
     },
+    Preview {
+        container_id: Uuid,
+    },
 }
 
 async fn wait_for_revocation(lease: InstanceLease) {
@@ -829,11 +875,54 @@ async fn wait_for_revocation(lease: InstanceLease) {
                 )
                 .await
             }
+            LeaseOwner::Preview { container_id } => {
+                preview_lease_is_valid(
+                    &lease.pool,
+                    lease.user_id,
+                    &lease.security_stamp,
+                    *container_id,
+                )
+                .await
+            }
         };
         if !lease_valid {
             return;
         }
     }
+}
+
+const PREVIEW_LEASE_SQL: &str = r#"SELECT EXISTS (
+    SELECT 1
+      FROM "AspNetUsers" account
+      JOIN "Containers" container ON container.id = $3
+     WHERE account.id = $1
+       AND account.security_stamp = $2
+       AND account.email_confirmed = TRUE
+       AND account.role IN ($4, $5)
+       AND container.is_proxy = TRUE
+       AND container.game_instance_id IS NULL
+       AND container.exercise_instance_id IS NULL
+       AND NOT EXISTS (
+           SELECT 1 FROM "ExerciseInstances" exercise
+            WHERE exercise.container_id = container.id
+       )
+)"#;
+
+async fn preview_lease_is_valid(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    expected_security_stamp: &str,
+    container_id: Uuid,
+) -> bool {
+    sqlx::query_scalar::<_, bool>(PREVIEW_LEASE_SQL)
+        .bind(user_id)
+        .bind(expected_security_stamp)
+        .bind(container_id)
+        .bind(Role::Admin as i16)
+        .bind(Role::Monitor as i16)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(false)
 }
 
 const EXERCISE_LEASE_SQL: &str = r#"SELECT EXISTS (
@@ -878,84 +967,4 @@ async fn exercise_lease_is_valid(
         .fetch_one(pool)
         .await
         .unwrap_or(false)
-}
-
-/// Pump bytes bidirectionally between the WebSocket and the TCP stream until
-/// either side closes. Returns when the first direction finishes; dropping the
-/// other future cancels it (which drops its half of the connection).
-async fn pump<S>(socket: WebSocket, stream: S, scan: Option<EgressScan>)
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    let (mut ws_tx, mut ws_rx) = socket.split();
-    let (mut tcp_rd, mut tcp_wr) = tokio::io::split(stream);
-
-    // WebSocket → TCP: forward Binary/Text payloads; stop on Close/error.
-    // Ping/Pong are handled by axum and must NOT be forwarded into the TCP
-    // stream (they are protocol control frames, not application bytes).
-    let ws_to_tcp = async {
-        while let Some(Ok(msg)) = ws_rx.next().await {
-            let write = match msg {
-                Message::Binary(data) => tcp_wr.write_all(&data[..]).await,
-                Message::Text(text) => tcp_wr.write_all(text.as_str().as_bytes()).await,
-                Message::Close(_) => break,
-                Message::Ping(_) | Message::Pong(_) => continue,
-            };
-            if write.is_err() {
-                break;
-            }
-        }
-        // Signal EOF to the container so a half-closing client is honoured.
-        let _ = tcp_wr.shutdown().await;
-    };
-
-    // TCP → WebSocket: forward reads as Binary frames; on EOF/error send a Close.
-    let tcp_to_ws = async {
-        let mut buf = vec![0u8; BUFFER_SIZE];
-        let mut egress_recorded = false;
-        let mut egress_matcher = scan
-            .as_ref()
-            .map(|scan| RollingFlagMatcher::new(&scan.flag));
-        loop {
-            match tcp_rd.read(&mut buf).await {
-                Ok(0) => {
-                    let _ = ws_tx.send(normal_close()).await;
-                    break;
-                }
-                Err(_) => {
-                    let _ = ws_tx.send(transport_failure_close()).await;
-                    break;
-                }
-                Ok(n) => {
-                    // Flag-egress scan (admin-feed only, never scored): if the
-                    // container streams its OWN team flag out to the client, record
-                    // one windowed FlagEgressEvent per session. Fire-and-forget so
-                    // it never stalls the tunnel.
-                    if !egress_recorded {
-                        if let Some(sc) = &scan {
-                            let matched = egress_matcher
-                                .as_mut()
-                                .is_some_and(|matcher| matcher.contains(&sc.flag, &buf[..n]));
-                            if matched {
-                                egress_recorded = true;
-                                let sc = sc.clone();
-                                tokio::spawn(async move { record_flag_egress(&sc).await });
-                            }
-                        }
-                    }
-                    // `Message::from(Vec<u8>)` yields a Binary frame without
-                    // pulling in the `bytes` crate as a direct dependency.
-                    if ws_tx.send(Message::from(buf[..n].to_vec())).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    };
-
-    // Finish as soon as either direction ends; the other is cancelled on drop.
-    tokio::select! {
-        _ = ws_to_tcp => {}
-        _ = tcp_to_ws => {}
-    }
 }

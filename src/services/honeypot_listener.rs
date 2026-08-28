@@ -12,7 +12,12 @@
 //! `0.0.0.0` (override with `RSCTF_HONEYPOT_LISTEN`). The deployment must publish
 //! these container ports for the listeners to be reachable.
 
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
+
+use dashmap::DashMap;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -22,6 +27,40 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::app_state::SharedState;
 
 type PortConfig = (String, u16, Option<String>);
+const MAX_ACTIVE_CONNECTIONS: usize = 128;
+const MAX_ACTIVE_PER_SOURCE: usize = 4;
+static CONNECTIONS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_CONNECTIONS)));
+static SOURCE_CONNECTIONS: std::sync::LazyLock<DashMap<IpAddr, Arc<AtomicUsize>>> =
+    std::sync::LazyLock::new(DashMap::new);
+
+struct SourcePermit {
+    source: IpAddr,
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for SourcePermit {
+    fn drop(&mut self) {
+        if self.counter.fetch_sub(1, Ordering::AcqRel) == 1 {
+            SOURCE_CONNECTIONS.remove_if(&self.source, |_, counter| {
+                Arc::ptr_eq(counter, &self.counter) && counter.load(Ordering::Acquire) == 0
+            });
+        }
+    }
+}
+
+fn try_acquire_source(source: IpAddr) -> Option<SourcePermit> {
+    let counter = SOURCE_CONNECTIONS
+        .entry(source)
+        .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
+        .clone();
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            (active < MAX_ACTIVE_PER_SOURCE).then_some(active + 1)
+        })
+        .ok()?;
+    Some(SourcePermit { source, counter })
+}
 
 /// Parse `RSCTF_HONEYPOT_PORTS` into `(name, port, banner)` triples.
 fn parse_ports(raw: &str) -> Vec<PortConfig> {
@@ -107,6 +146,19 @@ async fn run_listener(
             _ = wait_for_shutdown(&mut shutdown) => break,
             accepted = listener.accept() => match accepted {
                 Ok((socket, peer)) => {
+                    let global = match Arc::clone(&CONNECTIONS).try_acquire_owned() {
+                        Ok(permit) => permit,
+                        Err(_) => continue,
+                    };
+                    let Some(source) = try_acquire_source(peer.ip()) else {
+                        continue;
+                    };
+                    if !crate::services::suspicion::admit_honeypot_source(
+                        &peer.ip().to_string(),
+                        crate::services::suspicion::HoneypotRouteClass::Tcp,
+                    ) {
+                        continue;
+                    }
                     connections.spawn(handle_connection(
                         state.clone(),
                         name.clone(),
@@ -114,6 +166,8 @@ async fn run_listener(
                         banner.clone(),
                         socket,
                         peer,
+                        global,
+                        source,
                     ));
                 }
                 Err(error) => {
@@ -140,6 +194,8 @@ async fn handle_connection(
     banner: Option<String>,
     mut socket: tokio::net::TcpStream,
     peer: std::net::SocketAddr,
+    _global: tokio::sync::OwnedSemaphorePermit,
+    _source: SourcePermit,
 ) {
     let ip = peer.ip().to_string();
     if let Some(banner) = &banner {
@@ -153,7 +209,7 @@ async fn handle_connection(
     let _ = socket.shutdown().await;
 
     let bait = format!("{name}:{port}");
-    crate::services::suspicion::record_honeypot_tcp_hit(&state, &bait, Some(ip)).await;
+    let _ = crate::services::suspicion::enqueue_honeypot_hit(&state, None, &bait, Some(&ip), None);
 }
 
 async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
@@ -168,7 +224,7 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
 mod tests {
     use std::time::Duration;
 
-    use super::{parse_ports, wait_for_shutdown};
+    use super::{parse_ports, try_acquire_source, wait_for_shutdown, MAX_ACTIVE_PER_SOURCE};
 
     #[test]
     fn parses_named_ports_and_optional_banners() {
@@ -197,5 +253,16 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(100), wait_for_shutdown(&mut shutdown))
             .await
             .expect("shutdown waiter must return promptly");
+    }
+
+    #[test]
+    fn source_connection_limit_releases_promptly() {
+        let source = "192.0.2.201".parse().unwrap();
+        let permits = (0..MAX_ACTIVE_PER_SOURCE)
+            .map(|_| try_acquire_source(source).unwrap())
+            .collect::<Vec<_>>();
+        assert!(try_acquire_source(source).is_none());
+        drop(permits);
+        assert!(try_acquire_source(source).is_some());
     }
 }

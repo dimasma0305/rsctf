@@ -1,10 +1,10 @@
-import { useDebouncedCallback, useLocalStorage } from '@mantine/hooks'
+import { useLocalStorage } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
 import { Wsrx, WsrxError, WsrxErrorKind, WsrxFeature, WsrxInstance, WsrxOptions, WsrxState } from '@xdsec/wsrx'
 import { t } from 'i18next'
-import { createContext, useCallback, use, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, use, useEffect, useMemo, useRef, useState } from 'react'
 import { showErrorMsg } from '@Utils/Shared'
 import { useConfig } from '@Hooks/useConfig'
 import { ContainerPortMappingType } from '@Api'
@@ -104,24 +104,76 @@ export const WsrxProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   })
 
   const wsrx = useMemo(() => new Wsrx(getWsrxConfig(wsrxOptions)), [])
+  const connectGeneration = useRef(0)
+  const connectActive = useRef(false)
+  const pendingGeneration = useRef<number | null>(null)
+  const retryAttempt = useRef(0)
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const runConnect = useRef<(generation: number) => void>(() => undefined)
 
-  const doWsrxConnect = useDebouncedCallback(async () => {
-    try {
-      // connect() rejects asynchronously when the optional local daemon is
-      // unavailable. Await it so a normal "daemon not installed" state does
-      // not become an unhandled rejection on every route.
-      await wsrx.connect()
-      if (wsrx.getState() === WsrxState.Usable) await wsrx.sync()
-    } catch (err) {
-      if (err instanceof WsrxError && err.kind !== WsrxErrorKind.DaemonUnavailable) HandleWsrxError(err, t)
+  runConnect.current = (generation: number) => {
+    if (connectActive.current) {
+      pendingGeneration.current = generation
+      return
     }
-  }, 100)
+    connectActive.current = true
+    void (async () => {
+      try {
+        await wsrx.connect()
+        if (generation !== connectGeneration.current) return
+        if (wsrx.getState() === WsrxState.Usable) {
+          await wsrx.sync()
+          retryAttempt.current = 0
+        }
+      } catch (err) {
+        if (generation !== connectGeneration.current) return
+        if (err instanceof WsrxError && err.kind === WsrxErrorKind.DaemonUnavailable) {
+          const attempt = Math.min(retryAttempt.current++, 5)
+          const baseDelay = Math.min(8_000, 500 * 2 ** attempt)
+          const delay = baseDelay + Math.floor(Math.random() * Math.max(1, baseDelay / 4))
+          retryTimer.current = setTimeout(() => runConnect.current(generation), delay)
+        } else {
+          HandleWsrxError(err, t)
+        }
+      } finally {
+        connectActive.current = false
+        const pending = pendingGeneration.current
+        pendingGeneration.current = null
+        if (pending !== null && pending === connectGeneration.current) runConnect.current(pending)
+      }
+    })()
+  }
+
+  const doWsrxConnect = useCallback(() => {
+    connectGeneration.current += 1
+    retryAttempt.current = 0
+    if (retryTimer.current !== null) clearTimeout(retryTimer.current)
+    retryTimer.current = setTimeout(() => runConnect.current(connectGeneration.current), 100)
+  }, [])
+
+  useEffect(
+    () => () => {
+      connectGeneration.current += 1
+      if (retryTimer.current !== null) clearTimeout(retryTimer.current)
+    },
+    [],
+  )
 
   useEffect(() => {
-    if (!wsrxOptions || platformConfig.config.portMapping !== ContainerPortMappingType.PlatformProxy) return
+    if (!wsrxOptions || platformConfig.config.portMapping !== ContainerPortMappingType.PlatformProxy) {
+      connectGeneration.current += 1
+      pendingGeneration.current = null
+      if (retryTimer.current !== null) clearTimeout(retryTimer.current)
+      return
+    }
 
     wsrx.setOptions(getWsrxConfig(wsrxOptions))
     doWsrxConnect()
+    return () => {
+      connectGeneration.current += 1
+      pendingGeneration.current = null
+      if (retryTimer.current !== null) clearTimeout(retryTimer.current)
+    }
   }, [wsrx, wsrxOptions, doWsrxConnect, platformConfig.config.portMapping])
 
   useEffect(() => {

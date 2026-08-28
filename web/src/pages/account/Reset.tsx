@@ -1,9 +1,9 @@
-import { Button, PasswordInput } from '@mantine/core'
-import { getHotkeyHandler, useInputState } from '@mantine/hooks'
+import { Button, PasswordInput, Stack } from '@mantine/core'
+import { useInputState } from '@mantine/hooks'
 import { showNotification } from '@mantine/notifications'
 import { mdiCheck, mdiClose } from '@mdi/js'
 import { Icon } from '@mdi/react'
-import { FC, useState } from 'react'
+import { FC, type FormEvent, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router'
 import { AccountView } from '@Components/AccountView'
@@ -23,13 +23,17 @@ const Reset: FC = () => {
   const [pwd, setPwd] = useInputState('')
   const [retypedPwd, setRetypedPwd] = useInputState('')
   const [disabled, setDisabled] = useState(false)
+  const inFlight = useRef(false)
+  const operationId = useRef(crypto.randomUUID())
 
   const { t } = useTranslation()
   const { config } = useConfig()
 
   usePageTitle(t('account.title.reset'))
 
-  const onReset = async () => {
+  const onReset = async (event?: FormEvent) => {
+    event?.preventDefault()
+    if (inFlight.current) return
     if (pwd !== retypedPwd) {
       showNotification({
         color: 'red',
@@ -49,10 +53,12 @@ const Reset: FC = () => {
       return
     }
 
+    inFlight.current = true
     setDisabled(true)
 
     try {
       await api.account.accountPasswordReset({
+        operationId: operationId.current,
         rToken: token,
         email: email,
         password: await encryptApiData(t, pwd, config.apiPublicKey),
@@ -67,37 +73,42 @@ const Reset: FC = () => {
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
+      inFlight.current = false
       setDisabled(false)
     }
   }
-
-  const enterHandler = getHotkeyHandler([['Enter', onReset]])
 
   return (
     <AccountView
       title={t('account.title.reset')}
       description={t('account.content.reset.description', 'Choose a strong new password for your account.')}
     >
-      <StrengthPasswordInput
-        value={pwd}
-        onChange={(event) => setPwd(event.currentTarget.value)}
-        label={t('account.label.password')}
-        disabled={disabled}
-        onKeyDown={enterHandler}
-      />
-      <PasswordInput
-        required
-        value={retypedPwd}
-        onChange={(event) => setRetypedPwd(event.currentTarget.value)}
-        label={t('account.label.password_retype')}
-        w="100%"
-        disabled={disabled}
-        error={pwd !== retypedPwd}
-        onKeyDown={enterHandler}
-      />
-      <Button fullWidth onClick={onReset} disabled={disabled}>
-        {t('account.button.reset')}
-      </Button>
+      <Stack component="form" w="100%" onSubmit={onReset}>
+        <StrengthPasswordInput
+          value={pwd}
+          onChange={(event) => {
+            operationId.current = crypto.randomUUID()
+            setPwd(event.currentTarget.value)
+          }}
+          label={t('account.label.password')}
+          disabled={disabled}
+        />
+        <PasswordInput
+          required
+          value={retypedPwd}
+          onChange={(event) => {
+            operationId.current = crypto.randomUUID()
+            setRetypedPwd(event.currentTarget.value)
+          }}
+          label={t('account.label.password_retype')}
+          w="100%"
+          disabled={disabled}
+          error={pwd !== retypedPwd}
+        />
+        <Button fullWidth type="submit" loading={disabled} disabled={disabled}>
+          {t('account.button.reset')}
+        </Button>
+      </Stack>
     </AccountView>
   )
 }

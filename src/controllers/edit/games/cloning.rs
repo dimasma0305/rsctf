@@ -1,6 +1,140 @@
 //! Aggregate-safe game cloning and writeup cleanup.
 
 use super::*;
+use sha2::{Digest, Sha256};
+
+const MAX_CLONE_CHALLENGES: i64 = 500;
+const MAX_CLONE_FLAGS: i64 = 5_000;
+const MAX_CLONE_TITLE_BYTES: usize = 128;
+const MAX_CLONE_DURATION_DAYS: i64 = 366;
+
+const CLONE_CHALLENGES_SQL: &str = r#"
+WITH source AS MATERIALIZED (
+    SELECT challenge.*,
+           nextval(pg_get_serial_sequence('"GameChallenges"', 'id'))::integer AS clone_id
+      FROM "GameChallenges" challenge
+     WHERE challenge.game_id = $1
+     ORDER BY challenge.id
+), inserted AS (
+    INSERT INTO "GameChallenges" (
+        id, game_id, title, content, category, "Type", hints, is_enabled,
+        deadline_utc, submission_limit, accepted_count, submission_count,
+        container_image, memory_limit, storage_limit, cpu_count, expose_port,
+        workload_spec, file_name, flag_template, review_status, review_note,
+        submitted_by_user_id, submitted_at_utc, reviewed_at_utc,
+        original_archive_blob_path, build_context_subdir, build_status,
+        build_image_digest, last_build_log, source_yaml_path, attachment_id,
+        test_container_id, enable_traffic_capture, enable_shared_container,
+        disable_blood_bonus, original_score, min_score_rate, difficulty,
+        score_curve, shared_container_id, network_mode, variant_mode,
+        variant_generator_image, variant_generator_digest,
+        variant_generator_build_context_subdir, variant_generator_build_status,
+        variant_generator_last_build_log, solve_receipt_mode,
+        receipt_verifier_identity, ad_checker_image, ad_allow_egress,
+        ad_allow_self_reset, ad_ssh_requires_flag, ad_self_hosted,
+        ad_scoring_weight
+    )
+    SELECT source.clone_id, $2, source.title, source.content, source.category,
+           source."Type", source.hints, FALSE, NULL, source.submission_limit,
+           0, 0, source.container_image, source.memory_limit,
+           source.storage_limit, source.cpu_count, source.expose_port,
+           source.workload_spec, source.file_name, source.flag_template, $3,
+           NULL, NULL, NULL, NULL, NULL, NULL, $4, NULL, NULL, NULL, NULL,
+           NULL, source.enable_traffic_capture, FALSE,
+           source.disable_blood_bonus, source.original_score,
+           source.min_score_rate, source.difficulty, $5, NULL, $6, $7,
+           NULL, NULL, NULL, $4, NULL, source.solve_receipt_mode,
+           source.receipt_verifier_identity, NULL, FALSE, FALSE, FALSE,
+           FALSE, source.ad_scoring_weight
+      FROM source
+    RETURNING id
+), copied_flags AS (
+    INSERT INTO "FlagContexts" (
+        flag, is_occupied, attachment_id, challenge_id, exercise_id
+    )
+    SELECT flag.flag, FALSE, NULL, source.clone_id, NULL
+      FROM source
+      JOIN "FlagContexts" flag ON flag.challenge_id = source.id
+     WHERE EXISTS (SELECT 1 FROM inserted WHERE inserted.id = source.clone_id)
+    RETURNING id
+)
+SELECT (SELECT COUNT(*) FROM inserted)::bigint,
+       (SELECT COUNT(*) FROM copied_flags)::bigint
+"#;
+
+#[derive(sqlx::FromRow)]
+struct CloneOperationRow {
+    source_game_id: i32,
+    requested_by: Uuid,
+    request_digest: String,
+    destination_game_id: Option<i32>,
+    status: i16,
+}
+
+fn clone_request_digest(source_id: i32, model: &GameCloneModel, title: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(source_id.to_be_bytes());
+    digest.update(title.as_bytes());
+    digest.update(model.start_time_utc.timestamp_millis().to_be_bytes());
+    digest.update(model.end_time_utc.timestamp_millis().to_be_bytes());
+    digest.update([u8::from(model.include_challenges)]);
+    hex::encode(digest.finalize())
+}
+
+fn validate_clone_request(model: &GameCloneModel) -> AppResult<String> {
+    let title = model.title.trim();
+    if !(3..=MAX_CLONE_TITLE_BYTES).contains(&title.len()) {
+        return Err(AppError::bad_request(
+            "Clone title must be between 3 and 128 bytes",
+        ));
+    }
+    let duration = model.end_time_utc - model.start_time_utc;
+    if duration <= chrono::Duration::zero()
+        || duration > chrono::Duration::days(MAX_CLONE_DURATION_DAYS)
+    {
+        return Err(AppError::bad_request(
+            "Clone end time must follow start time by no more than 366 days",
+        ));
+    }
+    Ok(title.to_string())
+}
+
+async fn existing_clone_operation(
+    pool: &sqlx::PgPool,
+    operation_id: Uuid,
+) -> AppResult<Option<CloneOperationRow>> {
+    sqlx::query_as::<_, CloneOperationRow>(
+        r#"SELECT source_game_id, requested_by, request_digest,
+                  destination_game_id, status
+             FROM "GameCloneOperations"
+            WHERE operation_id = $1"#,
+    )
+    .bind(operation_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))
+}
+
+fn replay_clone_operation(
+    operation: CloneOperationRow,
+    source_id: i32,
+    requested_by: Uuid,
+    request_digest: &str,
+) -> AppResult<Option<i32>> {
+    if operation.source_game_id != source_id
+        || operation.requested_by != requested_by
+        || operation.request_digest != request_digest
+    {
+        return Err(AppError::conflict(
+            "Clone operation ID is already bound to different input",
+        ));
+    }
+    match (operation.status, operation.destination_game_id) {
+        (1, Some(destination)) => Ok(Some(destination)),
+        (0, _) => Err(AppError::conflict("Clone operation is already running")),
+        _ => Err(AppError::conflict("Clone operation did not complete")),
+    }
+}
 
 pub(super) fn apply_clone_challenge_defaults(clone: &mut game_challenge::ActiveModel) {
     clone.enable_shared_container = Set(false);
@@ -22,138 +156,192 @@ pub(super) fn apply_clone_challenge_defaults(clone: &mut game_challenge::ActiveM
 
 pub async fn clone_game(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
     Path(id): Path<i32>,
     Json(model): Json<GameCloneModel>,
 ) -> AppResult<RequestResponse<i32>> {
-    let source_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
-    let source = load_game(&st, id).await?;
-    let sources = if model.include_challenges {
-        game_challenge::Entity::find()
-            .filter(game_challenge::Column::GameId.eq(id))
-            .all(&st.db)
-            .await?
-    } else {
-        Vec::new()
-    };
-    let mut clone_configuration = GameInfoModel::from_game(&source).configuration();
-    clone_configuration.start_time_utc = model.start_time_utc;
-    clone_configuration.end_time_utc = model.end_time_utc;
-    clone_configuration.freeze_time_utc = None;
-    clone_configuration.validate()?;
+    let title = validate_clone_request(&model)?;
+    let request_digest = clone_request_digest(id, &model, &title);
+    if let Some(existing) = existing_clone_operation(st.pg(), model.operation_id).await? {
+        if let Some(destination) = replay_clone_operation(existing, id, admin.id, &request_digest)?
+        {
+            return Ok(RequestResponse::ok(destination));
+        }
+    }
+
+    let mut source_control = crate::services::ad_engine::acquire_ad_game_lock(&st.db, id).await?;
+    sqlx::query("SET LOCAL statement_timeout = '20s'")
+        .execute(&mut **source_control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let (source_revision, challenge_count, flag_count): (String, i64, i64) = sqlx::query_as(
+        r#"SELECT md5(
+                      row_to_json(source)::text || COALESCE((
+                          SELECT string_agg(row_to_json(challenge)::text, '' ORDER BY challenge.id)
+                            FROM "GameChallenges" challenge
+                           WHERE challenge.game_id = source.id
+                      ), '')
+                  ),
+                  (SELECT COUNT(*) FROM "GameChallenges" WHERE game_id = source.id),
+                  (SELECT COUNT(*)
+                     FROM "FlagContexts" flag
+                     JOIN "GameChallenges" challenge ON challenge.id = flag.challenge_id
+                    WHERE challenge.game_id = source.id)
+             FROM "Games" source
+            WHERE source.id = $1"#,
+    )
+    .bind(id)
+    .fetch_optional(&mut **source_control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))?;
+    if model.include_challenges
+        && (challenge_count > MAX_CLONE_CHALLENGES || flag_count > MAX_CLONE_FLAGS)
+    {
+        return Err(AppError::bad_request(
+            "Source exceeds the clone limit of 500 challenges or 5000 flags",
+        ));
+    }
+    let inserted = sqlx::query(
+        r#"INSERT INTO "GameCloneOperations" (
+               operation_id, source_game_id, requested_by, request_digest,
+               source_revision, status
+           ) VALUES ($1, $2, $3, $4, $5, 0)
+           ON CONFLICT (operation_id) DO NOTHING"#,
+    )
+    .bind(model.operation_id)
+    .bind(id)
+    .bind(admin.id)
+    .bind(&request_digest)
+    .bind(&source_revision)
+    .execute(&mut **source_control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if inserted == 0 {
+        let existing = sqlx::query_as::<_, CloneOperationRow>(
+            r#"SELECT source_game_id, requested_by, request_digest,
+                      destination_game_id, status
+                 FROM "GameCloneOperations" WHERE operation_id = $1"#,
+        )
+        .bind(model.operation_id)
+        .fetch_one(&mut **source_control.transaction_mut())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        let destination = replay_clone_operation(existing, id, admin.id, &request_digest)?
+            .ok_or_else(|| AppError::conflict("Clone operation is already running"))?;
+        source_control
+            .release()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return Ok(RequestResponse::ok(destination));
+    }
+
+    let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
+    let new_game_id: i32 = sqlx::query_scalar(
+        r#"INSERT INTO "Games" (
+               title, public_key, private_key, summary, content, practice_mode,
+               accept_without_review, allow_user_submissions, writeup_required,
+               writeup_note, team_member_count_limit, container_count_limit,
+               blood_bonus_value, start_time_utc, end_time_utc, writeup_deadline,
+               hidden, ad_allow_snapshot_download, ad_epoch_ticks,
+               koth_epoch_ticks, koth_cycle_ticks, koth_champion_cooldown_ticks,
+               koth_claim_confirmation_ticks, ad_warmup_seconds,
+               ad_snapshot_retention_days, ad_tick_seconds,
+               ad_flag_lifetime_ticks, ad_getflag_window_fraction,
+               ad_min_grace_period_seconds, ad_reset_cooldown_minutes,
+               ad_scoring_start_round, koth_scoring_start_round,
+               ad_scoring_paused, vpn_access_required,
+               vpn_behavior_telemetry_enabled, vpn_flag_scan_enabled,
+               vpn_provider_dns_telemetry_enabled, vpn_source_asn_telemetry_enabled,
+               vpn_device_sharing_telemetry_enabled
+           )
+           SELECT $2, $3, $4, source.summary, source.content,
+                  source.practice_mode, source.accept_without_review, FALSE,
+                  source.writeup_required, source.writeup_note,
+                  source.team_member_count_limit, source.container_count_limit,
+                  source.blood_bonus_value, $5, $6, $7, TRUE, TRUE,
+                  source.ad_epoch_ticks, source.koth_epoch_ticks,
+                  source.koth_cycle_ticks, source.koth_champion_cooldown_ticks,
+                  source.koth_claim_confirmation_ticks, source.ad_warmup_seconds,
+                  source.ad_snapshot_retention_days, source.ad_tick_seconds,
+                  CASE WHEN source.ad_flag_lifetime_ticks IS NULL THEN NULL
+                       ELSE LEAST(50, GREATEST(1, source.ad_flag_lifetime_ticks)) END,
+                  source.ad_getflag_window_fraction,
+                  source.ad_min_grace_period_seconds,
+                  source.ad_reset_cooldown_minutes, NULL, NULL, FALSE,
+                  source.vpn_access_required,
+                  source.vpn_behavior_telemetry_enabled,
+                  source.vpn_flag_scan_enabled,
+                  source.vpn_provider_dns_telemetry_enabled,
+                  source.vpn_source_asn_telemetry_enabled,
+                  source.vpn_device_sharing_telemetry_enabled
+             FROM "Games" source WHERE source.id = $1
+         RETURNING id"#,
+    )
+    .bind(id)
+    .bind(&title)
+    .bind(public_key)
+    .bind(private_key)
+    .bind(model.start_time_utc)
+    .bind(model.end_time_utc)
+    .bind(super::super::epoch())
+    .fetch_one(&mut **source_control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+
+    if model.include_challenges {
+        let copied: (i64, i64) = sqlx::query_as(CLONE_CHALLENGES_SQL)
+            .bind(id)
+            .bind(new_game_id)
+            .bind(ChallengeReviewStatus::Active as i16)
+            .bind(ChallengeBuildStatus::None as i16)
+            .bind(ScoreCurve::Standard as i16)
+            .bind(NetworkMode::Open as i16)
+            .bind(ChallengeVariantMode::Disabled as i16)
+            .fetch_one(&mut **source_control.transaction_mut())
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        if copied != (challenge_count, flag_count) {
+            return Err(AppError::internal("Clone row-count integrity check failed"));
+        }
+    }
+    sqlx::query(
+        r#"UPDATE "GameCloneOperations"
+              SET destination_game_id = $2, status = 1,
+                  completed_at_utc = clock_timestamp()
+            WHERE operation_id = $1 AND status = 0"#,
+    )
+    .bind(model.operation_id)
+    .bind(new_game_id)
+    .execute(&mut **source_control.transaction_mut())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     source_control
         .release()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(RequestResponse::ok(new_game_id))
+}
 
-    let (public_key, private_key) = crate::utils::crypto_utils::generate_game_keypair();
-    let transaction = st.db.begin().await?;
-    let new_game = game::ActiveModel {
-        title: Set(model.title.trim().to_string()),
-        public_key: Set(public_key),
-        private_key: Set(private_key),
-        summary: Set(source.summary.clone()),
-        content: Set(source.content.clone()),
-        practice_mode: Set(source.practice_mode),
-        accept_without_review: Set(source.accept_without_review),
-        allow_user_submissions: Set(false),
-        writeup_required: Set(source.writeup_required),
-        writeup_note: Set(source.writeup_note.clone()),
-        team_member_count_limit: Set(source.team_member_count_limit),
-        container_count_limit: Set(source.container_count_limit),
-        blood_bonus_value: Set(source.blood_bonus_value),
-        start_time_utc: Set(model.start_time_utc),
-        end_time_utc: Set(model.end_time_utc),
-        writeup_deadline: Set(super::super::epoch()),
-        hidden: Set(true),
-        ad_allow_snapshot_download: Set(true),
-        ad_epoch_ticks: Set(source.ad_epoch_ticks),
-        koth_epoch_ticks: Set(source.koth_epoch_ticks),
-        koth_cycle_ticks: Set(source.koth_cycle_ticks),
-        koth_champion_cooldown_ticks: Set(source.koth_champion_cooldown_ticks),
-        koth_claim_confirmation_ticks: Set(source.koth_claim_confirmation_ticks),
-        ad_warmup_seconds: Set(source.ad_warmup_seconds),
-        ad_snapshot_retention_days: Set(source.ad_snapshot_retention_days),
-        ad_tick_seconds: Set(source.ad_tick_seconds),
-        ad_flag_lifetime_ticks: Set(source
-            .ad_flag_lifetime_ticks
-            .map(|ticks| ticks.clamp(1, 50))),
-        ad_getflag_window_fraction: Set(source.ad_getflag_window_fraction),
-        ad_min_grace_period_seconds: Set(source.ad_min_grace_period_seconds),
-        ad_reset_cooldown_minutes: Set(source.ad_reset_cooldown_minutes),
-        ad_scoring_start_round: Set(None),
-        koth_scoring_start_round: Set(None),
-        ad_scoring_paused: Set(false),
-        vpn_access_required: Set(source.vpn_access_required),
-        vpn_behavior_telemetry_enabled: Set(source.vpn_behavior_telemetry_enabled),
-        vpn_flag_scan_enabled: Set(source.vpn_flag_scan_enabled),
-        vpn_provider_dns_telemetry_enabled: Set(source.vpn_provider_dns_telemetry_enabled),
-        vpn_source_asn_telemetry_enabled: Set(source.vpn_source_asn_telemetry_enabled),
-        vpn_device_sharing_telemetry_enabled: Set(source.vpn_device_sharing_telemetry_enabled),
-        ..Default::default()
-    };
-    let new_game = new_game.insert(&transaction).await?;
+#[cfg(test)]
+mod clone_contract_tests {
+    use super::*;
 
-    for src in sources {
-        let mut clone = game_challenge::ActiveModel {
-            game_id: Set(new_game.id),
-            title: Set(src.title.clone()),
-            content: Set(src.content.clone()),
-            category: Set(src.category),
-            challenge_type: Set(src.challenge_type),
-            hints: Set(src.hints.clone()),
-            flag_template: Set(src.flag_template.clone()),
-            file_name: Set(src.file_name.clone()),
-            container_image: Set(src.container_image.clone()),
-            network_mode: Set(src.network_mode),
-            memory_limit: Set(src.memory_limit),
-            storage_limit: Set(src.storage_limit),
-            cpu_count: Set(src.cpu_count),
-            expose_port: Set(src.expose_port),
-            workload_spec: Set(src.workload_spec.clone()),
-            enable_traffic_capture: Set(src.enable_traffic_capture),
-            disable_blood_bonus: Set(src.disable_blood_bonus),
-            original_score: Set(src.original_score),
-            min_score_rate: Set(src.min_score_rate),
-            difficulty: Set(src.difficulty),
-            ad_scoring_weight: Set(src.ad_scoring_weight),
-            submission_limit: Set(src.submission_limit),
-            is_enabled: Set(false),
-            accepted_count: Set(0),
-            submission_count: Set(0),
-            review_status: Set(ChallengeReviewStatus::Active),
-            build_status: Set(ChallengeBuildStatus::None),
-            variant_mode: Set(src.variant_mode),
-            variant_generator_image: Set(src.variant_generator_image.clone()),
-            variant_generator_digest: Set(src.variant_generator_digest.clone()),
-            variant_generator_build_context_subdir: Set(src
-                .variant_generator_build_context_subdir
-                .clone()),
-            variant_generator_build_status: Set(src.variant_generator_build_status),
-            variant_generator_last_build_log: Set(src.variant_generator_last_build_log.clone()),
-            solve_receipt_mode: Set(src.solve_receipt_mode),
-            receipt_verifier_identity: Set(src.receipt_verifier_identity.clone()),
-            ..Default::default()
-        };
-        apply_clone_challenge_defaults(&mut clone);
-        let clone = clone.insert(&transaction).await?;
-        let flags = flag_context::Entity::find()
-            .filter(flag_context::Column::ChallengeId.eq(src.id))
-            .all(&transaction)
-            .await?;
-        for flag in flags {
-            flag_context::ActiveModel {
-                flag: Set(flag.flag),
-                is_occupied: Set(false),
-                challenge_id: Set(Some(clone.id)),
-                ..Default::default()
-            }
-            .insert(&transaction)
-            .await?;
-        }
+    #[test]
+    fn clone_copy_is_set_based_and_maps_flags_through_preallocated_ids() {
+        assert!(CLONE_CHALLENGES_SQL.contains("WITH source AS MATERIALIZED"));
+        assert!(CLONE_CHALLENGES_SQL.contains("nextval(pg_get_serial_sequence"));
+        assert!(CLONE_CHALLENGES_SQL.contains("JOIN \"FlagContexts\""));
+        assert!(!CLONE_CHALLENGES_SQL.contains("SELECT *"));
     }
-    transaction.commit().await?;
-    Ok(RequestResponse::ok(new_game.id))
+
+    #[test]
+    fn uppercase_compatibility_and_canonical_lowercase_routes_are_registered() {
+        let router = include_str!("../mod.rs");
+        assert!(router.contains("/api/edit/games/{id}/Clone"));
+        assert!(router.contains("/api/edit/games/{id}/clone"));
+    }
 }
 
 pub async fn delete_writeups(

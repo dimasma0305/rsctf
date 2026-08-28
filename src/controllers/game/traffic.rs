@@ -1,6 +1,57 @@
 //! Traffic-capture serving: pcap listing/download/flows.
 use super::*;
+use base64::Engine as _;
 use std::io::Read;
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+pub enum TrafficFlowDirection {
+    ContainerToTeam,
+    TeamToContainer,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowSummary {
+    pub connection_port: i32,
+    pub first_seen_utc: i64,
+    pub last_seen_utc: i64,
+    pub peer_ip: String,
+    pub packets_in: i64,
+    pub packets_out: i64,
+    pub bytes_in: i64,
+    pub bytes_out: i64,
+    pub flag_hits: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowChunk {
+    pub direction: TrafficFlowDirection,
+    pub timestamp_utc: i64,
+    pub payload_base64: String,
+    pub flag_offsets: Vec<i64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowDetail {
+    #[serde(flatten)]
+    pub summary: TrafficFlowSummary,
+    pub chunks: Vec<TrafficFlowChunk>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficFlowFilter {
+    pub regex_pattern: Option<String>,
+    pub peer_ip_contains: Option<String>,
+    pub start_utc: Option<i64>,
+    pub end_utc: Option<i64>,
+    pub direction: Option<TrafficFlowDirection>,
+    pub flags_only: Option<bool>,
+    pub page: Option<u32>,
+    pub page_size: Option<u32>,
+}
 
 // ---------------------------------------------------------------------------
 // Traffic capture metadata and pcap serving for the singleton capture worker.
@@ -14,7 +65,6 @@ const MAX_CAPTURE_CHALLENGES: u64 = 500;
 const MAX_CAPTURE_PAGE: usize = 100;
 const MAX_CAPTURE_SCAN_ENTRIES: usize = 4_096;
 static CAPTURE_ARCHIVE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-static CAPTURE_FLOW_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 static CAPTURE_LISTING_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +99,10 @@ struct CaptureTeamRow {
     name: String,
     avatar_hash: Option<String>,
 }
+const MAX_FLOW_FILTER_BYTES: usize = 128;
+const MAX_PEER_FILTER_BYTES: usize = 64;
+const DEFAULT_FLOW_PAGE_SIZE: usize = 100;
+const MAX_FLOW_PAGE_SIZE: usize = 200;
 
 /// `GET /api/game/games/{id}/captures`
 /// Root dir for per-(challenge, participation) pcaps:
@@ -444,34 +498,100 @@ pub async fn traffic_flows(
     State(st): State<SharedState>,
     _user: MonitorUser,
     Path((cid, pid, filename)): Path<(i32, i32, String)>,
-) -> AppResult<RequestResponse<Vec<Json>>> {
+    Query(filter): Query<TrafficFlowFilter>,
+) -> AppResult<RequestResponse<Vec<TrafficFlowSummary>>> {
     let name = safe_capture_name(&filename)?;
     let path = capture_root(&st)
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
-    let _permit = CAPTURE_FLOW_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Capture inspection capacity is busy; retry shortly"))?;
-    let flows = tokio::task::spawn_blocking(move || {
-        crate::services::traffic::list_flows_bounded(
-            &path,
-            MAX_INSPECT_CAPTURE_BYTES,
-            MAX_CAPTURE_FLOWS,
-        )
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("capture inspection task failed: {error}")))??;
+    let regex = compile_flow_regex(filter.regex_pattern.as_deref())?;
+    let peer = bounded_peer_filter(filter.peer_ip_contains.as_deref())?;
+    if filter
+        .start_utc
+        .zip(filter.end_utc)
+        .is_some_and(|(start, end)| start > end)
+    {
+        return Err(AppError::bad_request("Flow time range is reversed"));
+    }
+    let page = filter.page.unwrap_or(1).max(1) as usize;
+    let page_size = filter
+        .page_size
+        .map_or(DEFAULT_FLOW_PAGE_SIZE, |size| size as usize)
+        .clamp(1, MAX_FLOW_PAGE_SIZE);
+    let skip = page.saturating_sub(1).saturating_mul(page_size);
+    let flows = crate::services::traffic::inspect_flows_cached(
+        path,
+        MAX_INSPECT_CAPTURE_BYTES,
+        MAX_CAPTURE_FLOWS,
+    )
+    .await?;
     let out = flows
-        .into_iter()
-        .map(|f| {
-            serde_json::json!({
-                "src": f.src, "dst": f.dst,
-                "packetCount": f.packet_count, "bytes": f.bytes,
-            })
+        .iter()
+        .filter(|flow| {
+            peer.as_ref()
+                .is_none_or(|peer| flow.peer_ip.to_string().to_ascii_lowercase().contains(peer))
+                && regex
+                    .as_ref()
+                    .is_none_or(|regex| flow.retained_payload_matches(regex))
+                && filter
+                    .start_utc
+                    .is_none_or(|start| flow.last_seen_millis >= start)
+                && filter
+                    .end_utc
+                    .is_none_or(|end| flow.first_seen_millis <= end)
+                && filter.direction.is_none_or(|direction| match direction {
+                    TrafficFlowDirection::ContainerToTeam => flow.packets_in > 0,
+                    TrafficFlowDirection::TeamToContainer => flow.packets_out > 0,
+                })
+                && (!filter.flags_only.unwrap_or(false) || flow.flag_hits > 0)
         })
+        .skip(skip)
+        .take(page_size)
+        .map(flow_summary)
         .collect();
     Ok(RequestResponse::ok(out))
+}
+
+fn compile_flow_regex(pattern: Option<&str>) -> AppResult<Option<regex::bytes::Regex>> {
+    let Some(pattern) = pattern.map(str::trim).filter(|pattern| !pattern.is_empty()) else {
+        return Ok(None);
+    };
+    if pattern.len() > MAX_FLOW_FILTER_BYTES {
+        return Err(AppError::bad_request("Payload regex is too long"));
+    }
+    regex::bytes::RegexBuilder::new(pattern)
+        .size_limit(1024 * 1024)
+        .dfa_size_limit(1024 * 1024)
+        .build()
+        .map(Some)
+        .map_err(|_| AppError::bad_request("Payload regex is invalid or too complex"))
+}
+
+fn bounded_peer_filter(peer: Option<&str>) -> AppResult<Option<String>> {
+    let peer = peer.map(str::trim).filter(|peer| !peer.is_empty());
+    if peer.is_some_and(|peer| peer.len() > MAX_PEER_FILTER_BYTES) {
+        return Err(AppError::bad_request("Peer IP filter is too long"));
+    }
+    Ok(peer.map(str::to_ascii_lowercase))
+}
+
+fn bounded_i64(value: u64) -> i64 {
+    value.try_into().unwrap_or(i64::MAX)
+}
+
+fn flow_summary(flow: &crate::services::traffic::InspectedFlow) -> TrafficFlowSummary {
+    TrafficFlowSummary {
+        connection_port: i32::from(flow.connection_port),
+        first_seen_utc: flow.first_seen_millis,
+        last_seen_utc: flow.last_seen_millis,
+        peer_ip: flow.peer_ip.to_string(),
+        packets_in: bounded_i64(flow.packets_in),
+        packets_out: bounded_i64(flow.packets_out),
+        bytes_in: bounded_i64(flow.bytes_in),
+        bytes_out: bounded_i64(flow.bytes_out),
+        flag_hits: bounded_i64(flow.flag_hits),
+    }
 }
 
 /// `GET /api/game/captures/{challengeId}/{partId}/{filename}/flow/{connectionPort}`
@@ -486,36 +606,42 @@ pub async fn traffic_flow_detail(
         .join(cid.to_string())
         .join(pid.to_string())
         .join(name);
-    let port = connection_port.to_string();
-    let _permit = CAPTURE_FLOW_SLOTS
-        .try_acquire()
-        .map_err(|_| AppError::unavailable("Capture inspection capacity is busy; retry shortly"))?;
-    let flows = tokio::task::spawn_blocking(move || {
-        crate::services::traffic::list_flows_bounded(
-            &path,
-            MAX_INSPECT_CAPTURE_BYTES,
-            MAX_CAPTURE_FLOWS,
-        )
-    })
-    .await
-    .map_err(|error| AppError::internal(format!("capture inspection task failed: {error}")))??;
+    if !(0..=i32::from(u16::MAX)).contains(&connection_port) {
+        return Err(AppError::bad_request("Invalid flow connection port"));
+    }
+    let flows = crate::services::traffic::inspect_flows_cached(
+        path,
+        MAX_INSPECT_CAPTURE_BYTES,
+        MAX_CAPTURE_FLOWS,
+    )
+    .await?;
     let flow = flows
-        .into_iter()
-        .find(|f| f.src.ends_with(&format!(":{port}")) || f.dst.ends_with(&format!(":{port}")));
+        .iter()
+        .find(|flow| i32::from(flow.connection_port) == connection_port)
+        .ok_or_else(|| AppError::not_found("Traffic flow not found"))?;
     Ok(RequestResponse::ok(TrafficFlowDetail {
-        connection_port,
-        peer_ip: flow
-            .as_ref()
-            .map(|f| {
-                f.dst
-                    .rsplit_once(':')
-                    .map(|(ip, _)| ip.to_string())
-                    .unwrap_or_else(|| f.dst.clone())
+        summary: flow_summary(flow),
+        chunks: flow
+            .chunks
+            .iter()
+            .map(|chunk| TrafficFlowChunk {
+                direction: match chunk.direction {
+                    crate::services::traffic::InspectedDirection::ContainerToTeam => {
+                        TrafficFlowDirection::ContainerToTeam
+                    }
+                    crate::services::traffic::InspectedDirection::TeamToContainer => {
+                        TrafficFlowDirection::TeamToContainer
+                    }
+                },
+                timestamp_utc: chunk.timestamp_millis,
+                payload_base64: base64::engine::general_purpose::STANDARD.encode(&chunk.payload),
+                flag_offsets: chunk
+                    .flag_offsets
+                    .iter()
+                    .map(|offset| (*offset).try_into().unwrap_or(i64::MAX))
+                    .collect(),
             })
-            .unwrap_or_default(),
-        packets_in: flow.as_ref().map(|f| f.packet_count as i64).unwrap_or(0),
-        bytes_in: flow.as_ref().map(|f| f.bytes as i64).unwrap_or(0),
-        ..Default::default()
+            .collect(),
     }))
 }
 

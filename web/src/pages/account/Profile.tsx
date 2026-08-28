@@ -61,6 +61,7 @@ const Profile: FC = () => {
   }, [avatarPreview])
 
   const [disabled, setDisabled] = useState(false)
+  const emailChangeInFlight = useRef(false)
 
   const [mailEditOpened, setMailEditOpened] = useState(false)
   const [pwdChangeOpened, setPwdChangeOpened] = useState(false)
@@ -152,8 +153,9 @@ const Profile: FC = () => {
   }
 
   const onChangeEmail = async () => {
-    if (!email) return
+    if (!email || emailChangeInFlight.current) return
 
+    emailChangeInFlight.current = true
     try {
       setDisabled(true)
       const res = await api.account.accountChangeEmail({ newMail: email, password: emailPassword })
@@ -179,6 +181,7 @@ const Profile: FC = () => {
     } catch (e) {
       showErrorMsg(e, t)
     } finally {
+      emailChangeInFlight.current = false
       setDisabled(false)
     }
   }
@@ -323,7 +326,16 @@ const Profile: FC = () => {
         title={t('account.button.change_password')}
       />
 
-      <Modal opened={mailEditOpened} onClose={() => setMailEditOpened(false)} title={t('account.button.update_email')}>
+      <Modal
+        opened={mailEditOpened}
+        onClose={() => {
+          if (!emailChangeInFlight.current) setMailEditOpened(false)
+        }}
+        title={t('account.button.update_email')}
+        closeOnClickOutside={!disabled}
+        closeOnEscape={!disabled}
+        withCloseButton={!disabled}
+      >
         <Stack>
           <Text>
             <Trans i18nKey="account.content.profile.update_email_note"></Trans>
@@ -335,6 +347,7 @@ const Profile: FC = () => {
             w="100%"
             placeholder={user?.email ?? 'player@example.com'}
             value={email}
+            disabled={disabled}
             onChange={(event) => setEmail(event.target.value)}
           />
           <PasswordInput
@@ -342,11 +355,13 @@ const Profile: FC = () => {
             label={t('account.label.password_current', 'Current password')}
             autoComplete="current-password"
             value={emailPassword}
+            disabled={disabled}
             onChange={(event) => setEmailPassword(event.currentTarget.value)}
           />
           <Group justify="right">
             <Button
               variant="default"
+              disabled={disabled}
               onClick={() => {
                 setEmail(user?.email ?? '')
                 setEmailPassword('')
@@ -355,7 +370,7 @@ const Profile: FC = () => {
             >
               {t('common.modal.cancel')}
             </Button>
-            <Button color="orange" onClick={onChangeEmail}>
+            <Button color="orange" onClick={onChangeEmail} loading={disabled} disabled={disabled}>
               {t('common.modal.confirm')}
             </Button>
           </Group>

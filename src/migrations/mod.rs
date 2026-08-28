@@ -144,6 +144,14 @@ mod m0133_ad_control_revisions;
 mod m0135_control_plane_jobs;
 mod m0143_challenge_import_jobs;
 mod m0144_worker_workload_quarantine;
+mod m0165_image_cleanup_lease;
+mod m0166_honeypot_buckets;
+mod m0167_game_clone_operations;
+mod m0168_incremental_suspicion_reconciliation;
+mod m0169_credential_work_admission;
+mod m0170_admin_credential_jobs;
+mod m0171_admin_password_reset_operations;
+mod m0172_distributed_proxy_admission;
 mod m0183_exercise_api_bounds;
 
 #[cfg(test)]
@@ -301,6 +309,14 @@ impl MigratorTrait for Migrator {
             Box::new(m0135_control_plane_jobs::Migration),
             Box::new(m0143_challenge_import_jobs::Migration),
             Box::new(m0144_worker_workload_quarantine::Migration),
+            Box::new(m0165_image_cleanup_lease::Migration),
+            Box::new(m0166_honeypot_buckets::Migration),
+            Box::new(m0167_game_clone_operations::Migration),
+            Box::new(m0168_incremental_suspicion_reconciliation::Migration),
+            Box::new(m0169_credential_work_admission::Migration),
+            Box::new(m0170_admin_credential_jobs::Migration),
+            Box::new(m0171_admin_password_reset_operations::Migration),
+            Box::new(m0172_distributed_proxy_admission::Migration),
             Box::new(m0183_exercise_api_bounds::Migration),
         ]
     }
@@ -447,7 +463,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(
-            &names[names.len() - 23..],
+            &names[names.len() - 31..],
             [
                 "m0103_recent_games_candidates",
                 "m0104_post_feed_order",
@@ -471,6 +487,14 @@ mod tests {
                 "m0135_control_plane_jobs",
                 "m0143_challenge_import_jobs",
                 "m0144_worker_workload_quarantine",
+                "m0165_image_cleanup_lease",
+                "m0166_honeypot_buckets",
+                "m0167_game_clone_operations",
+                "m0168_incremental_suspicion_reconciliation",
+                "m0169_credential_work_admission",
+                "m0170_admin_credential_jobs",
+                "m0171_admin_password_reset_operations",
+                "m0172_distributed_proxy_admission",
                 "m0183_exercise_api_bounds",
             ]
         );

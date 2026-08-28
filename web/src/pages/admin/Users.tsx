@@ -67,6 +67,8 @@ const Users: FC = () => {
   const clipboard = useClipboard()
   const { t } = useTranslation()
   const viewport = useRef<HTMLDivElement>(null)
+  const resetOperations = useRef(new Map<string, string>())
+  const resetInFlight = useRef(new Set<string>())
 
   useEffect(() => {
     viewport.current?.scrollTo({ top: 0, behavior: 'smooth' })
@@ -137,9 +139,14 @@ const Users: FC = () => {
   }
 
   const onResetPassword = async (user: UserInfoModel) => {
+    if (!user.id || resetInFlight.current.has(user.id)) return
+    resetInFlight.current.add(user.id)
+    const operationId = resetOperations.current.get(user.id) ?? crypto.randomUUID()
+    resetOperations.current.set(user.id, operationId)
     setDisabled(true)
     try {
-      const res = await api.admin.adminResetPassword(user.id!)
+      const res = await api.admin.adminResetPassword(user.id, operationId)
+      resetOperations.current.delete(user.id)
 
       modals.openModal({
         title: t('admin.content.users.reset.title', {
@@ -170,6 +177,7 @@ const Users: FC = () => {
     } catch (err: any) {
       showErrorMsg(err, t)
     } finally {
+      resetInFlight.current.delete(user.id)
       setDisabled(false)
     }
   }

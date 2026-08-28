@@ -42,7 +42,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Read};
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -125,6 +125,245 @@ pub struct Flow {
     pub packet_count: u64,
     /// Total TCP payload bytes observed in this direction.
     pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectedDirection {
+    TeamToContainer,
+    ContainerToTeam,
+}
+
+#[derive(Debug, Clone)]
+pub struct InspectedChunk {
+    pub direction: InspectedDirection,
+    pub timestamp_millis: i64,
+    pub payload: Vec<u8>,
+    pub flag_offsets: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InspectedFlow {
+    pub connection_port: u16,
+    pub first_seen_millis: i64,
+    pub last_seen_millis: i64,
+    pub peer_ip: IpAddr,
+    pub packets_in: u64,
+    pub packets_out: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub flag_hits: u64,
+    pub chunks: Vec<InspectedChunk>,
+}
+
+impl InspectedFlow {
+    fn new(connection_port: u16, peer_ip: IpAddr, timestamp_millis: i64) -> Self {
+        Self {
+            connection_port,
+            first_seen_millis: timestamp_millis,
+            last_seen_millis: timestamp_millis,
+            peer_ip,
+            packets_in: 0,
+            packets_out: 0,
+            bytes_in: 0,
+            bytes_out: 0,
+            flag_hits: 0,
+            chunks: Vec::new(),
+        }
+    }
+
+    pub fn retained_payload_matches(&self, regex: &regex::bytes::Regex) -> bool {
+        self.chunks
+            .iter()
+            .any(|chunk| regex.is_match(&chunk.payload))
+    }
+}
+
+const MAX_FLOW_CACHE_ENTRIES: usize = 8;
+const MAX_RETAINED_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+const MAX_RETAINED_PAYLOAD_PER_FLOW: usize = 256 * 1024;
+static FLOW_PARSE_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static FLOW_INDEX_CACHE: std::sync::LazyLock<
+    dashmap::DashMap<FileIdentity, Arc<tokio::sync::OnceCell<Arc<Vec<InspectedFlow>>>>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct FileIdentity {
+    path: PathBuf,
+    size: u64,
+    modified_nanos: u128,
+}
+
+async fn file_identity(path: &Path) -> AppResult<FileIdentity> {
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|_| AppError::not_found("Capture not found"))?;
+    let modified_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_nanos());
+    Ok(FileIdentity {
+        path: path.to_path_buf(),
+        size: metadata.len(),
+        modified_nanos,
+    })
+}
+
+/// Return one coalesced, bounded parse for the immutable file version observed
+/// at admission. Replacement/growth changes the key and retires the old index.
+pub async fn inspect_flows_cached(
+    path: PathBuf,
+    max_file_bytes: u64,
+    max_flows: usize,
+) -> AppResult<Arc<Vec<InspectedFlow>>> {
+    let identity = file_identity(&path).await?;
+    if identity.size > max_file_bytes {
+        return Err(AppError::bad_request(
+            "Capture is too large to inspect; download it instead",
+        ));
+    }
+    FLOW_INDEX_CACHE.retain(|key, _| key.path != identity.path || key == &identity);
+    let cell = FLOW_INDEX_CACHE
+        .entry(identity.clone())
+        .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+        .clone();
+    while FLOW_INDEX_CACHE.len() > MAX_FLOW_CACHE_ENTRIES {
+        let removable = FLOW_INDEX_CACHE
+            .iter()
+            .find(|entry| entry.key() != &identity)
+            .map(|entry| entry.key().clone());
+        let Some(removable) = removable else {
+            break;
+        };
+        FLOW_INDEX_CACHE.remove(&removable);
+    }
+    let indexed = cell
+        .get_or_try_init(|| async move {
+            let _permit = FLOW_PARSE_SLOTS.try_acquire().map_err(|_| {
+                AppError::unavailable("Capture inspection capacity is busy; retry shortly")
+            })?;
+            tokio::task::spawn_blocking(move || {
+                inspect_flows_bounded(&path, max_file_bytes, max_flows, MAX_RETAINED_PAYLOAD_BYTES)
+                    .map(Arc::new)
+            })
+            .await
+            .map_err(|error| {
+                AppError::internal(format!("capture inspection task failed: {error}"))
+            })?
+        })
+        .await?;
+    Ok(Arc::clone(indexed))
+}
+
+fn flag_offsets(payload: &[u8]) -> Vec<usize> {
+    const PREFIXES: [&[u8]; 3] = [b"flag{", b"tcp1p{", b"rsctf{"];
+    let lowercase = payload
+        .iter()
+        .map(u8::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    let mut offsets = Vec::new();
+    for prefix in PREFIXES {
+        for offset in 0..=lowercase.len().saturating_sub(prefix.len()) {
+            if lowercase.get(offset..offset + prefix.len()) == Some(prefix) {
+                offsets.push(offset);
+            }
+        }
+    }
+    offsets.sort_unstable();
+    offsets.dedup();
+    offsets
+}
+
+fn inspect_flows_bounded(
+    path: &Path,
+    max_file_bytes: u64,
+    max_flows: usize,
+    max_retained_payload: usize,
+) -> AppResult<Vec<InspectedFlow>> {
+    let metadata = std::fs::metadata(path).map_err(|_| AppError::not_found("Capture not found"))?;
+    if metadata.len() > max_file_bytes {
+        return Err(AppError::bad_request(
+            "Capture is too large to inspect; download it instead",
+        ));
+    }
+    let file = File::open(path).map_err(|_| AppError::not_found("Capture not found"))?;
+    let file = file.take(max_file_bytes.saturating_add(1));
+    let mut reader = PcapReader::new(file)
+        .map_err(|_| AppError::bad_request("Capture is not a valid pcap file"))?;
+    let mut flows = BTreeMap::<u16, InspectedFlow>::new();
+    let mut retained = 0usize;
+
+    while let Some(next) = reader.next_packet() {
+        let packet = match next {
+            Ok(packet) => packet,
+            Err(_) => break,
+        };
+        let Some(parsed) = parse_frame(&packet.data) else {
+            continue;
+        };
+        let (connection, peer, direction) = if parsed.source.port() >= parsed.dest.port() {
+            (
+                parsed.source.port(),
+                parsed.dest.ip(),
+                InspectedDirection::TeamToContainer,
+            )
+        } else {
+            (
+                parsed.dest.port(),
+                parsed.source.ip(),
+                InspectedDirection::ContainerToTeam,
+            )
+        };
+        if !flows.contains_key(&connection) && flows.len() >= max_flows {
+            return Err(AppError::bad_request(
+                "Capture contains too many distinct flows",
+            ));
+        }
+        let timestamp_millis = packet.timestamp.as_millis().try_into().unwrap_or(i64::MAX);
+        let flow = flows
+            .entry(connection)
+            .or_insert_with(|| InspectedFlow::new(connection, peer, timestamp_millis));
+        flow.first_seen_millis = flow.first_seen_millis.min(timestamp_millis);
+        flow.last_seen_millis = flow.last_seen_millis.max(timestamp_millis);
+        let payload_len = u64::try_from(parsed.payload.len()).unwrap_or(u64::MAX);
+        match direction {
+            InspectedDirection::TeamToContainer => {
+                flow.packets_out = flow.packets_out.saturating_add(1);
+                flow.bytes_out = flow.bytes_out.saturating_add(payload_len);
+            }
+            InspectedDirection::ContainerToTeam => {
+                flow.packets_in = flow.packets_in.saturating_add(1);
+                flow.bytes_in = flow.bytes_in.saturating_add(payload_len);
+            }
+        }
+        let offsets = flag_offsets(parsed.payload);
+        flow.flag_hits = flow
+            .flag_hits
+            .saturating_add(u64::try_from(offsets.len()).unwrap_or(u64::MAX));
+        let flow_retained = flow
+            .chunks
+            .iter()
+            .map(|chunk| chunk.payload.len())
+            .sum::<usize>();
+        if !parsed.payload.is_empty()
+            && retained.saturating_add(parsed.payload.len()) <= max_retained_payload
+            && flow_retained.saturating_add(parsed.payload.len()) <= MAX_RETAINED_PAYLOAD_PER_FLOW
+        {
+            retained += parsed.payload.len();
+            flow.chunks.push(InspectedChunk {
+                direction,
+                timestamp_millis,
+                payload: parsed.payload.to_vec(),
+                flag_offsets: offsets,
+            });
+        }
+    }
+    if reader.into_reader().limit() == 0 {
+        return Err(AppError::bad_request(
+            "Capture grew beyond the inspection size limit",
+        ));
+    }
+    Ok(flows.into_values().collect())
 }
 
 /// Records synthesised traffic frames into one `.pcap` file.
@@ -287,7 +526,7 @@ pub fn list_flows_bounded(
                 bytes: 0,
             });
         entry.packet_count += 1;
-        entry.bytes += parsed.payload_len as u64;
+        entry.bytes += parsed.payload.len() as u64;
     }
 
     if reader.into_reader().limit() == 0 {
@@ -530,10 +769,10 @@ fn pcap_err(context: &str, err: pcap::Error) -> AppError {
 }
 
 /// Result of parsing one raw Ethernet frame down to its TCP four-tuple.
-struct ParsedFrame {
+struct ParsedFrame<'a> {
     source: SocketAddr,
     dest: SocketAddr,
-    payload_len: usize,
+    payload: &'a [u8],
 }
 
 /// Parse an Ethernet / IPv4|IPv6 / TCP frame out of raw bytes.
@@ -542,7 +781,7 @@ struct ParsedFrame {
 /// `None` on anything it does not understand (non-IP ethertype, non-TCP
 /// protocol, IPv6 extension headers, truncation). Mirrors the guarded parse in
 /// RSCTF `PcapFlowExtractor.ReadFlows`.
-fn parse_frame(data: &[u8]) -> Option<ParsedFrame> {
+fn parse_frame(data: &[u8]) -> Option<ParsedFrame<'_>> {
     if data.len() < ETH_HDR_LEN {
         return None;
     }
@@ -557,7 +796,7 @@ fn parse_frame(data: &[u8]) -> Option<ParsedFrame> {
 }
 
 /// Parse an IPv4 packet (`l3` starts at the IP header) into its TCP tuple.
-fn parse_ipv4(l3: &[u8]) -> Option<ParsedFrame> {
+fn parse_ipv4(l3: &[u8]) -> Option<ParsedFrame<'_>> {
     if l3.len() < IPV4_HDR_LEN {
         return None;
     }
@@ -582,7 +821,7 @@ fn parse_ipv4(l3: &[u8]) -> Option<ParsedFrame> {
 /// Only a bare IPv6 header with `next_header == TCP` is handled; extension
 /// headers make the frame `None` (defensive — the synthesiser never emits
 /// them).
-fn parse_ipv6(l3: &[u8]) -> Option<ParsedFrame> {
+fn parse_ipv6(l3: &[u8]) -> Option<ParsedFrame<'_>> {
     if l3.len() < IPV6_HDR_LEN {
         return None;
     }
@@ -602,7 +841,7 @@ fn parse_ipv6(l3: &[u8]) -> Option<ParsedFrame> {
 }
 
 /// Parse a TCP segment (`l4` starts at the TCP header) into a [`ParsedFrame`].
-fn parse_tcp(l4: &[u8], src_ip: IpAddr, dst_ip: IpAddr) -> Option<ParsedFrame> {
+fn parse_tcp(l4: &[u8], src_ip: IpAddr, dst_ip: IpAddr) -> Option<ParsedFrame<'_>> {
     if l4.len() < TCP_HDR_LEN {
         return None;
     }
@@ -613,11 +852,10 @@ fn parse_tcp(l4: &[u8], src_ip: IpAddr, dst_ip: IpAddr) -> Option<ParsedFrame> {
     if data_offset < TCP_HDR_LEN || l4.len() < data_offset {
         return None;
     }
-    let payload_len = l4.len() - data_offset;
     Some(ParsedFrame {
         source: SocketAddr::new(src_ip, src_port),
         dest: SocketAddr::new(dst_ip, dst_port),
-        payload_len,
+        payload: &l4[data_offset..],
     })
 }
 
@@ -745,10 +983,7 @@ fn ones_complement_checksum(bytes: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-// ─── Per-container live-capture registry ────────────────────────────────────────
-//
-// Live-capture ownership and DB desired-state reconciliation are split out so
-// this format/parser module stays focused and below the repository file-size cap.
+// Per-container live-capture ownership and desired-state reconciliation.
 
 mod capture;
 
@@ -759,116 +994,5 @@ pub use capture::{
 };
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr};
-
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("rsctf-traffic-test-{name}.pcap"));
-        p
-    }
-
-    #[test]
-    fn round_trip_v4_flows() {
-        let path = scratch("v4");
-        let a = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 1234);
-        let b = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 80);
-        let packets = vec![
-            TrafficPacket {
-                source: a,
-                dest: b,
-                data: b"GET / HTTP/1.1\r\n".to_vec(),
-                timestamp: Duration::from_secs(1),
-            },
-            TrafficPacket {
-                source: a,
-                dest: b,
-                data: b"more".to_vec(),
-                timestamp: Duration::from_secs(2),
-            },
-            TrafficPacket {
-                source: b,
-                dest: a,
-                data: b"HTTP/1.1 200 OK".to_vec(),
-                timestamp: Duration::from_secs(3),
-            },
-        ];
-        write_capture(&path, &packets).unwrap();
-
-        let flows = list_flows(&path);
-        // Two ordered (src,dst) pairs: a->b and b->a.
-        assert_eq!(flows.len(), 2);
-
-        let ab = flows.iter().find(|f| f.src == a.to_string()).unwrap();
-        assert_eq!(ab.packet_count, 2);
-        assert_eq!(
-            ab.bytes,
-            (b"GET / HTTP/1.1\r\n".len() + b"more".len()) as u64
-        );
-
-        let ba = flows.iter().find(|f| f.src == b.to_string()).unwrap();
-        assert_eq!(ba.packet_count, 1);
-        assert_eq!(ba.bytes, b"HTTP/1.1 200 OK".len() as u64);
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn round_trip_v6_flow() {
-        let path = scratch("v6");
-        let a = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 4444);
-        let b = SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)), 9);
-        let packets = vec![TrafficPacket {
-            source: a,
-            dest: b,
-            data: b"payload".to_vec(),
-            timestamp: Duration::from_secs(5),
-        }];
-        write_capture(&path, &packets).unwrap();
-
-        let flows = list_flows(&path);
-        assert_eq!(flows.len(), 1);
-        assert_eq!(flows[0].bytes, b"payload".len() as u64);
-        assert_eq!(flows[0].packet_count, 1);
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn missing_file_yields_no_flows() {
-        assert!(list_flows("/nonexistent/path/does-not-exist.pcap").is_empty());
-    }
-
-    #[test]
-    fn bounded_flow_reader_enforces_file_and_cardinality_limits() {
-        let path = scratch("bounded");
-        let a = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1000);
-        let b = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 2000);
-        let c = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3000);
-        write_capture(
-            &path,
-            &[
-                TrafficPacket::new(a, b, vec![1]),
-                TrafficPacket::new(a, c, vec![2]),
-            ],
-        )
-        .unwrap();
-
-        assert!(list_flows_bounded(&path, u64::MAX, 1).is_err());
-        assert!(list_flows_bounded(&path, 1, usize::MAX).is_err());
-        assert_eq!(list_flows_bounded(&path, u64::MAX, 2).unwrap().len(), 2);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn parse_rejects_short_and_non_ip() {
-        assert!(parse_frame(&[]).is_none());
-        assert!(parse_frame(&[0u8; 10]).is_none());
-        // Valid-length Ethernet frame but ARP ethertype (0x0806) -> None.
-        let mut arp = vec![0u8; ETH_HDR_LEN + 4];
-        arp[12] = 0x08;
-        arp[13] = 0x06;
-        assert!(parse_frame(&arp).is_none());
-    }
-}
+#[path = "traffic/tests.rs"]
+mod tests;

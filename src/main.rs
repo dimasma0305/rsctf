@@ -645,6 +645,10 @@ fn start_background_services(
                 cron::start_maintenance(state.clone(), shutdown.clone()),
             ));
             required.push(RequiredTask::Unit(
+                "image cleanup scheduler",
+                cron::start_image_cleanup(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
                 "round scheduler",
                 cron::start_round_scheduler(
                     state.clone(),
@@ -664,6 +668,10 @@ fn start_background_services(
             required.push(RequiredTask::Unit(
                 "maintenance scheduler",
                 cron::start_maintenance(state.clone(), shutdown.clone()),
+            ));
+            required.push(RequiredTask::Unit(
+                "image cleanup scheduler",
+                cron::start_image_cleanup(state.clone(), shutdown.clone()),
             ));
             required.push(RequiredTask::Unit(
                 "managed round scheduler",
@@ -729,6 +737,12 @@ fn start_background_services(
             shutdown.clone(),
         ));
         optional.push(rsctf::middlewares::user_activity::start_writer(
+            state,
+            shutdown.clone(),
+        ));
+    }
+    if role.capabilities().api || role.capabilities().network {
+        optional.push(rsctf::services::suspicion::start_honeypot_writer(
             state,
             shutdown.clone(),
         ));

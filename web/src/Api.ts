@@ -294,6 +294,8 @@ export type RecoveryModel = ModelWithCaptcha & {
 
 /** Account password reset */
 export interface PasswordResetModel {
+  /** Stable across retries of this reset attempt. */
+  operationId: string;
   /**
    * Password
    * @minLength 1
@@ -1631,6 +1633,18 @@ export interface GameInfoModel {
   serverTime?: number;
   /** Required audit reason when any VPN/security switch changes. */
   vpnPolicyChangeReason?: string | null;
+}
+
+/** Idempotent request to clone a game and its challenge definitions. */
+export interface GameCloneModel {
+  /** Stable across retries of the same user action. */
+  operationId: string;
+  title: string;
+  /** @format int64 */
+  startTimeUtc: number;
+  /** @format int64 */
+  endTimeUtc: number;
+  includeChallenges: boolean;
 }
 
 /** List response */
@@ -3525,8 +3539,8 @@ export type TrafficFlowDirection = "ContainerToTeam" | "TeamToContainer"
 /** Compact summary of a single proxied TCP session in a pcap */
 export interface TrafficFlowSummary {
   connectionPort: number
-  firstSeenUtc: string
-  lastSeenUtc: string
+  firstSeenUtc: number
+  lastSeenUtc: number
   peerIp: string
   packetsIn: number
   packetsOut: number
@@ -3538,7 +3552,7 @@ export interface TrafficFlowSummary {
 /** One contiguous payload chunk in a flow */
 export interface TrafficFlowChunk {
   direction: TrafficFlowDirection
-  timestampUtc: string
+  timestampUtc: number
   /** Base64-encoded raw bytes */
   payloadBase64: string
   /** Byte offsets within the decoded payload where a known flag begins */
@@ -3554,10 +3568,12 @@ export interface TrafficFlowDetail extends TrafficFlowSummary {
 export interface FlowFilter {
   regexPattern?: string
   peerIpContains?: string
-  startUtc?: string
-  endUtc?: string
+  startUtc?: number
+  endUtc?: number
   direction?: TrafficFlowDirection
   flagsOnly?: boolean
+  page?: number
+  pageSize?: number
 }
 
 /** Result of a challenge import (tarball or github) */
@@ -5481,10 +5497,11 @@ export class Api<
      * @summary Reset user password
      * @request DELETE:/api/admin/users/{userid}/password
      */
-    adminResetPassword: (userid: string, params: RequestParams = {}) =>
+    adminResetPassword: (userid: string, operationId: string, params: RequestParams = {}) =>
       this.request<string, RequestResponse>({
         path: `/api/admin/users/${userid}/password`,
         method: "DELETE",
+        query: { operationId },
         format: "json",
         ...params,
       }),
@@ -6714,6 +6731,29 @@ export class Api<
     editAddGame: (data: GameInfoModel, params: RequestParams = {}) =>
       this.request<GameInfoModel, RequestResponse>({
         path: `/api/edit/games`,
+        method: "POST",
+        body: data,
+        type: ContentType.Json,
+        format: "json",
+        ...params,
+      }),
+
+    /**
+     * @description Cloning a game requires administrator privileges. Reusing
+     * the operation ID with identical input returns the original result.
+     *
+     * @tags Edit
+     * @name EditCloneGame
+     * @summary Clone Game
+     * @request POST:/api/edit/games/{id}/clone
+     */
+    editCloneGame: (
+      id: number,
+      data: GameCloneModel,
+      params: RequestParams = {},
+    ) =>
+      this.request<number, RequestResponse>({
+        path: `/api/edit/games/${id}/clone`,
         method: "POST",
         body: data,
         type: ContentType.Json,
@@ -11202,10 +11242,16 @@ export class Api<
       }),
 
     deriveFindings: (gameId: number, operationId: string, params: RequestParams = {}) =>
-      this.request<ControlJobModel, RequestResponse>({
+      this.request<{
+        operationId: string;
+        generation: number;
+        status: "Running" | "Completed" | "Failed";
+        inserted: number;
+      }, RequestResponse>({
         path: `/api/admin/games/${gameId}/anti-cheat/derive`,
         method: "POST",
-        headers: { "Idempotency-Key": operationId },
+        body: { operationId },
+        type: ContentType.Json,
         format: "json",
         ...params,
       }),

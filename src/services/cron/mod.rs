@@ -127,6 +127,45 @@ pub fn start_maintenance(
     })
 }
 
+/// Launch Docker image cleanup independently from event-closeout maintenance.
+/// PostgreSQL owns the cross-replica cadence and lease, so restarts neither
+/// trigger an immediate full pass nor forget when the next bounded batch is due.
+pub fn start_image_cleanup(
+    state: SharedState,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(StdDuration::from_secs(30));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                    continue;
+                }
+                _ = ticker.tick() => {}
+            }
+            match crate::services::image_storage::scheduled_cleanup(&state).await {
+                Ok(Some(report)) => tracing::info!(
+                    images = report.images_removed,
+                    image_bytes = report.image_bytes_evicted,
+                    cache_bytes = report.cache_bytes_reclaimed,
+                    dangling_bytes = report.dangling_bytes_reclaimed,
+                    free_before = report.available_bytes_before,
+                    free_after = report.available_bytes_after,
+                    pressure = report.pressure_mode,
+                    notes = report.messages.len(),
+                    "cron: completed independently leased Docker storage cleanup"
+                ),
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "cron: Docker storage cleanup failed"),
+            }
+        }
+    })
+}
+
 /// Launch the latency-sensitive round driver.
 ///
 /// Every eligible engine replica runs the poller. PostgreSQL game locks, unique
@@ -168,6 +207,7 @@ pub fn start(
     vec![
         start_network_reconcile(state.clone(), shutdown.clone()),
         start_maintenance(state.clone(), shutdown.clone()),
+        start_image_cleanup(state.clone(), shutdown.clone()),
         start_round_scheduler(state, RoundSchedulerScope::All, shutdown),
     ]
 }
@@ -237,35 +277,22 @@ async fn run_jobs(state: &SharedState) {
         Err(e) => tracing::warn!("cron: deferred blob purge failed: {e}"),
     }
 
+    match crate::services::suspicion::purge_honeypot_buckets(state.pg(), 1_000).await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: purged expired honeypot bucket(s)"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "cron: honeypot retention sweep failed"),
+    }
+
+    match crate::services::credential_admission::purge_expired(state.pg(), 500).await {
+        Ok(n) if n > 0 => tracing::info!(n, "cron: purged expired credential/proxy leases"),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "cron: credential retention sweep failed"),
+    }
+
     match crate::services::git_sync::collect_stale_checker_revisions(state).await {
         Ok(n) if n > 0 => tracing::info!(n, "cron: collected stale checker revision(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("cron: checker revision GC failed: {e}"),
-    }
-
-    match crate::services::image_storage::scheduled_cleanup(state).await {
-        Ok(Some(report)) if report.images_removed > 0 || report.cache_bytes_reclaimed > 0 => {
-            tracing::info!(
-                images = report.images_removed,
-                image_bytes = report.image_bytes_evicted,
-                cache_bytes = report.cache_bytes_reclaimed,
-                dangling_bytes = report.dangling_bytes_reclaimed,
-                free_before = report.available_bytes_before,
-                free_after = report.available_bytes_after,
-                pressure = report.pressure_mode,
-                "cron: completed bounded Docker storage cleanup"
-            );
-            for message in report.messages {
-                tracing::warn!(%message, "cron: Docker storage cleanup note");
-            }
-        }
-        Ok(Some(report)) => {
-            for message in report.messages {
-                tracing::warn!(%message, "cron: Docker storage cleanup note");
-            }
-        }
-        Ok(None) => {}
-        Err(error) => tracing::warn!(%error, "cron: Docker storage cleanup failed"),
     }
 
     match container_reaper::reap_expired_containers(state).await {

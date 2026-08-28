@@ -15,8 +15,6 @@ use axum::Router;
 use std::net::SocketAddr;
 
 use crate::app_state::SharedState;
-use crate::middlewares::privilege_authentication::MaybeUser;
-
 /// The bait paths (RSCTF `HoneypotBait`). Any request to one of these is a decoy
 /// hit — none correspond to a real rsctf resource.
 const BAITS: &[&str] = &[
@@ -65,30 +63,28 @@ pub fn router() -> Router<SharedState> {
 /// Every bait route funnels here: retain raw telemetry and return an innocuous 404.
 async fn bait(
     State(st): State<SharedState>,
-    MaybeUser(user): MaybeUser,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     uri: Uri,
     headers: HeaderMap,
 ) -> Response {
     let bait_path = uri.path().to_string();
     let remote_ip = crate::services::anti_cheat::client_ip(&headers, Some(peer.ip()));
-    // SameSite=Lax cookies accompany cross-site top-level GET navigations. Never
-    // let another site frame/link a bait URL and assign suspicion to the victim;
-    // requests without same-origin browser provenance remain anonymous signals.
-    let user = user.filter(|_| {
-        crate::middlewares::request_security::same_origin(
-            &headers,
-            st.config.public_url.as_deref(),
-            st.config.cookie_secure,
-        )
-    });
-    let user_agent = headers
-        .get(header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-
-    crate::services::suspicion::record_honeypot_hit(&st, user, &bait_path, remote_ip, user_agent)
-        .await;
+    let source = remote_ip.as_deref().unwrap_or_default();
+    if crate::services::suspicion::admit_honeypot_source(
+        source,
+        crate::services::suspicion::HoneypotRouteClass::Http,
+    ) {
+        let user_agent = headers
+            .get(header::USER_AGENT)
+            .and_then(|value| value.to_str().ok());
+        let _ = crate::services::suspicion::enqueue_honeypot_hit(
+            &st,
+            None,
+            &bait_path,
+            remote_ip.as_deref(),
+            user_agent,
+        );
+    }
 
     // Decoy response — a plausible "nothing here", never revealing the trap.
     (StatusCode::NOT_FOUND, "Not Found").into_response()

@@ -81,11 +81,13 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
 
   const [flows, setFlows] = useState<TrafficFlowSummary[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState(false)
 
   useEffect(() => {
     if (!opened) return
-    let cancelled = false
+    const abort = new AbortController()
     setLoading(true)
+    setLoadError(false)
 
     const filter: FlowFilter = {
       ...(debouncedRegex ? { regexPattern: debouncedRegex } : {}),
@@ -95,18 +97,18 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
     }
 
     api.game
-      .gameGetTrafficFlows(challengeId!, participationId!, filename!, filter)
+      .gameGetTrafficFlows(challengeId!, participationId!, filename!, filter, { signal: abort.signal })
       .then((res) => {
-        if (!cancelled) setFlows(res.data)
+        if (!abort.signal.aborted) setFlows(res.data)
       })
       .catch(() => {
-        if (!cancelled) setFlows([])
+        if (!abort.signal.aborted) setLoadError(true)
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!abort.signal.aborted) setLoading(false)
       })
     return () => {
-      cancelled = true
+      abort.abort()
     }
   }, [opened, challengeId, participationId, filename, debouncedRegex, debouncedPeerIp, direction, flagsOnly])
 
@@ -188,7 +190,14 @@ export const FlowInspector: FC<FlowInspectorProps> = ({ challengeId, participati
             }}
           >
             <ScrollArea h="100%" type="auto">
-              {loading ? (
+              {loadError && (
+                <Center py="xs">
+                  <Text c="red" size="sm" role="alert">
+                    {t('game.label.flow.load_error', 'Could not refresh flows. The last successful result is preserved.')}
+                  </Text>
+                </Center>
+              )}
+              {loading && flows.length === 0 ? (
                 <Center py="xl">
                   <Loader size="sm" />
                 </Center>

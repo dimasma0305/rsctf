@@ -161,6 +161,7 @@ pub struct AccountVerifyModel {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasswordResetModel {
+    pub operation_id: Uuid,
     #[serde(default)]
     pub password: String,
     #[serde(default)]

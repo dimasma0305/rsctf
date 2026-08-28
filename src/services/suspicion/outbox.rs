@@ -22,7 +22,8 @@ const OUTBOX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 const DEFAULT_RECONCILE_SECONDS: u64 = 30;
 const DEFAULT_FINALIZE_GRACE_SECONDS: u64 = 360;
 const MAX_RECONCILE_SECONDS: u64 = 3600;
-const GAME_RECONCILE_LOCK_NAMESPACE: i32 = -1_489_361_104;
+const GAME_RECONCILE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25);
+const GAME_RECONCILE_LEASE_SECONDS: i64 = 45;
 const RECONCILE_GAMES_SQL: &str = r#"
     WITH observed_clock AS MATERIALIZED (
       SELECT clock_timestamp() AS db_now
@@ -33,7 +34,7 @@ const RECONCILE_GAMES_SQL: &str = r#"
                AS barrier_backed_final
       FROM "Games" game
       CROSS JOIN observed_clock
-      LEFT JOIN "SuspicionReconciliationState" reconciliation
+      JOIN "SuspicionReconciliationState" reconciliation
         ON reconciliation.game_id = game.id
      WHERE game.deletion_pending = FALSE
        AND game.start_time_utc <= observed_clock.db_now
@@ -41,6 +42,7 @@ const RECONCILE_GAMES_SQL: &str = r#"
              (
                game.end_time_utc > observed_clock.db_now
                AND reconciliation.evidence_closed_at_utc IS NULL
+               AND reconciliation.dirty_generation > reconciliation.completed_generation
              )
              OR (
                   game.end_time_utc
@@ -49,7 +51,10 @@ const RECONCILE_GAMES_SQL: &str = r#"
                   AND reconciliation.sealed_at_utc IS NULL
                 )
            )
+       AND (reconciliation.lease_expires_at_utc IS NULL
+            OR reconciliation.lease_expires_at_utc <= observed_clock.db_now)
      ORDER BY game.id
+     LIMIT 32
 "#;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -450,47 +455,93 @@ pub async fn reconcile_evaluation_outbox(db: &DatabaseConnection, limit: i64) ->
     Ok(claimed)
 }
 
+#[derive(Debug)]
+struct GameReconciliationClaim {
+    token: Uuid,
+    generation: i64,
+}
+
+async fn claim_game_reconciliation(
+    pool: &sqlx::PgPool,
+    game_id: i32,
+    force: bool,
+) -> AppResult<Option<GameReconciliationClaim>> {
+    let token = Uuid::new_v4();
+    let generation = sqlx::query_scalar::<_, i64>(
+        r#"UPDATE "SuspicionReconciliationState"
+              SET lease_token = $2,
+                  lease_expires_at_utc = clock_timestamp()
+                    + ($3::bigint * INTERVAL '1 second')
+            WHERE game_id = $1
+              AND ($4 OR dirty_generation > completed_generation)
+              AND (lease_expires_at_utc IS NULL
+                   OR lease_expires_at_utc <= clock_timestamp())
+        RETURNING dirty_generation"#,
+    )
+    .bind(game_id)
+    .bind(token)
+    .bind(GAME_RECONCILE_LEASE_SECONDS)
+    .bind(force)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(generation.map(|generation| GameReconciliationClaim { token, generation }))
+}
+
 async fn record_game_reconciliation(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     game_id: i32,
+    claim: &GameReconciliationClaim,
     seal: bool,
+    inserted: usize,
     errors: &[String],
 ) -> AppResult<()> {
     let last_error = (!errors.is_empty()).then(|| errors.join("; "));
-    sqlx::query(
-        r#"INSERT INTO "SuspicionReconciliationState"
-               (game_id, evidence_closed_at_utc, last_reconciled_at_utc,
-                sealed_at_utc, attempts, last_error)
-           VALUES (
-             $1,
-             CASE WHEN $2 THEN clock_timestamp() ELSE NULL END,
-             CASE WHEN $3::text IS NULL THEN clock_timestamp() ELSE NULL END,
-             CASE WHEN $2 AND $3::text IS NULL THEN clock_timestamp() ELSE NULL END,
-             1,
-             $3
-           )
-           ON CONFLICT (game_id) DO UPDATE
-             SET evidence_closed_at_utc = COALESCE(
-                   "SuspicionReconciliationState".evidence_closed_at_utc,
-                   EXCLUDED.evidence_closed_at_utc
-                 ),
-                 last_reconciled_at_utc = CASE
-                   WHEN EXCLUDED.last_error IS NULL
-                   THEN EXCLUDED.last_reconciled_at_utc
-                   ELSE "SuspicionReconciliationState".last_reconciled_at_utc
-                 END,
-                 sealed_at_utc = CASE
-                   WHEN EXCLUDED.last_error IS NULL
-                   THEN COALESCE("SuspicionReconciliationState".sealed_at_utc,
-                                 EXCLUDED.sealed_at_utc)
-                   ELSE "SuspicionReconciliationState".sealed_at_utc
-                 END,
-                 attempts = "SuspicionReconciliationState".attempts + 1,
-                 last_error = EXCLUDED.last_error"#,
+    let updated = sqlx::query(
+        r#"UPDATE "SuspicionReconciliationState"
+              SET evidence_closed_at_utc = CASE
+                    WHEN $4 THEN COALESCE(evidence_closed_at_utc, clock_timestamp())
+                    ELSE evidence_closed_at_utc END,
+                  last_reconciled_at_utc = CASE WHEN $5::text IS NULL
+                    THEN clock_timestamp() ELSE last_reconciled_at_utc END,
+                  sealed_at_utc = CASE WHEN $4 AND $5::text IS NULL
+                    THEN COALESCE(sealed_at_utc, clock_timestamp())
+                    ELSE sealed_at_utc END,
+                  completed_generation = CASE WHEN $5::text IS NULL
+                    THEN GREATEST(completed_generation, $3)
+                    ELSE completed_generation END,
+                  attempts = attempts + 1,
+                  last_error = $5,
+                  lease_token = NULL,
+                  lease_expires_at_utc = NULL
+            WHERE game_id = $1 AND lease_token = $2"#,
     )
     .bind(game_id)
+    .bind(claim.token)
+    .bind(claim.generation)
     .bind(seal)
     .bind(last_error.as_deref())
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if updated != 1 {
+        return Err(AppError::conflict(
+            "Anti-cheat reconciliation lease expired",
+        ));
+    }
+    sqlx::query(
+        r#"UPDATE "SuspicionReconciliationOperations"
+              SET status = 1,
+                  inserted_count = $4,
+                  completed_at_utc = clock_timestamp()
+            WHERE game_id = $1 AND generation <= $2 AND status = 0
+              AND $3::text IS NULL"#,
+    )
+    .bind(game_id)
+    .bind(claim.generation)
+    .bind(last_error.as_deref())
+    .bind(i32::try_from(inserted).unwrap_or(i32::MAX))
     .execute(&mut **transaction)
     .await
     .map_err(|error| AppError::internal(error.to_string()))?;
@@ -562,24 +613,16 @@ async fn incomplete_competitive_jobs(pool: &sqlx::PgPool, game_id: i32) -> AppRe
     .map_err(|error| AppError::internal(error.to_string()))
 }
 
-async fn defer_final_for_incomplete_jobs(
-    pool: &sqlx::PgPool,
-    reconciliation: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    game_id: i32,
-) -> AppResult<bool> {
+async fn defer_final_for_incomplete_jobs(pool: &sqlx::PgPool, game_id: i32) -> AppResult<bool> {
     let incomplete = incomplete_competitive_jobs(pool, game_id).await?;
     if incomplete == 0 {
         return Ok(false);
     }
-    let errors = vec![format!(
-        "{incomplete} in-window suspicion evaluation job(s) remain incomplete"
-    )];
     tracing::warn!(
         game = game_id,
         incomplete_jobs = incomplete,
         "final suspicion snapshot deferred until durable jobs finish"
     );
-    record_game_reconciliation(reconciliation, game_id, true, &errors).await?;
     Ok(true)
 }
 
@@ -592,22 +635,21 @@ pub(crate) async fn seal_reconciled_game_for_test(
     if !close_competitive_evidence_window(pool, game_id, finalize_grace_seconds).await? {
         return Ok(false);
     }
-    let mut reconciliation = pool
-        .begin()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    if defer_final_for_incomplete_jobs(pool, &mut reconciliation, game_id).await? {
-        reconciliation
-            .commit()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
+    if defer_final_for_incomplete_jobs(pool, game_id).await? {
         return Ok(false);
     }
-    record_game_reconciliation(&mut reconciliation, game_id, true, &[]).await?;
-    reconciliation
-        .commit()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
+    sqlx::query(
+        r#"UPDATE "SuspicionReconciliationState"
+              SET evidence_closed_at_utc = COALESCE(evidence_closed_at_utc, clock_timestamp()),
+                  sealed_at_utc = COALESCE(sealed_at_utc, clock_timestamp()),
+                  last_reconciled_at_utc = clock_timestamp(), last_error = NULL,
+                  completed_generation = dirty_generation, attempts = attempts + 1
+            WHERE game_id = $1"#,
+    )
+    .bind(game_id)
+    .execute(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(true)
 }
 
@@ -616,49 +658,26 @@ async fn reconcile_one_game(
     game_id: i32,
     seal: bool,
     finalize_grace_seconds: u64,
-) -> AppResult<bool> {
+) -> AppResult<Option<usize>> {
+    let Some(claim) = claim_game_reconciliation(state.pg(), game_id, seal).await? else {
+        return Ok(None);
+    };
     if seal
         && !close_competitive_evidence_window(state.pg(), game_id, finalize_grace_seconds).await?
     {
-        return Ok(false);
-    }
-    let context_result = async {
-        let job = crate::services::control_jobs::request_security_derivation(
-            state,
-            game_id,
-            uuid::Uuid::new_v4(),
+        // PostgreSQL's wall clock moved backward after game selection. Do not
+        // scan or seal; a later pass will make a fresh database-time decision.
+        sqlx::query(
+            r#"UPDATE "SuspicionReconciliationState"
+                  SET lease_token = NULL, lease_expires_at_utc = NULL
+                WHERE game_id = $1 AND lease_token = $2"#,
         )
-        .await?;
-        let job = crate::services::control_jobs::wait_for_terminal(
-            state.pg(),
-            job.id,
-            std::time::Duration::from_secs(90),
-        )
-        .await?;
-        crate::services::control_jobs::result_count(&job, "inserted")
-    }
-    .await;
-
-    let mut fence = state
-        .pg()
-        .begin()
-        .await
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1, $2)")
-        .bind(GAME_RECONCILE_LOCK_NAMESPACE)
         .bind(game_id)
-        .fetch_one(&mut *fence)
+        .bind(claim.token)
+        .execute(state.pg())
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    if !acquired {
-        return Ok(false);
-    }
-    if seal && defer_final_for_incomplete_jobs(state.pg(), &mut fence, game_id).await? {
-        fence
-            .commit()
-            .await
-            .map_err(|error| AppError::internal(error.to_string()))?;
-        return Ok(true);
+        return Ok(None);
     }
 
     let snapshot = if seal {
@@ -666,43 +685,66 @@ async fn reconcile_one_game(
     } else {
         super::detectors::ReconciliationSnapshot::Live
     };
-    let mut errors = Vec::new();
-    if let Err(error) = context_result {
-        errors.push(format!("event-security context: {error}"));
-    }
-    if let Err(error) =
-        super::cheat_checks::run_abnormal_solve_checks_for_snapshot(state, game_id, snapshot).await
-    {
-        errors.push(format!("abnormal solve: {error}"));
-    }
-    if let Err(error) =
-        super::cheat_stat::run_statistical_checks_for_snapshot(state, game_id, snapshot).await
-    {
-        errors.push(format!("statistical: {error}"));
-    }
-    if let Err(error) =
-        super::correlation::run_correlation_checks_for_snapshot(&state.db, game_id, snapshot).await
-    {
-        errors.push(format!("correlation: {error}"));
-    }
-    if let Err(error) =
-        super::container_access::run_container_access_checks_for_snapshot(state, game_id, snapshot)
-            .await
-    {
-        errors.push(format!("container access: {error}"));
-    }
-    if let Err(error) = super::run_honeypot_chain_checks(state, game_id).await {
-        errors.push(format!("honeypot chain: {error}"));
-    }
+    let detector_work = async {
+        let mut errors = Vec::new();
+        let mut inserted = 0;
+        if seal && defer_final_for_incomplete_jobs(state.pg(), game_id).await? {
+            errors.push("in-window suspicion evaluation jobs remain incomplete".to_string());
+            return Ok::<_, AppError>((errors, inserted));
+        }
+        if let Err(error) =
+            super::cheat_checks::run_abnormal_solve_checks_for_snapshot(state, game_id, snapshot)
+                .await
+        {
+            errors.push(format!("abnormal solve: {error}"));
+        }
+        if let Err(error) =
+            super::cheat_stat::run_statistical_checks_for_snapshot(state, game_id, snapshot).await
+        {
+            errors.push(format!("statistical: {error}"));
+        }
+        if let Err(error) =
+            super::correlation::run_correlation_checks_for_snapshot(&state.db, game_id, snapshot)
+                .await
+        {
+            errors.push(format!("correlation: {error}"));
+        }
+        if let Err(error) = super::container_access::run_container_access_checks_for_snapshot(
+            state, game_id, snapshot,
+        )
+        .await
+        {
+            errors.push(format!("container access: {error}"));
+        }
+        if let Err(error) = super::run_honeypot_chain_checks(state, game_id).await {
+            errors.push(format!("honeypot chain: {error}"));
+        }
+        match crate::services::event_security::derive_context_findings(state, game_id).await {
+            Ok(count) => inserted = count,
+            Err(error) => errors.push(format!("event-security context: {error}")),
+        }
+        Ok((errors, inserted))
+    };
+    let (errors, inserted) =
+        match tokio::time::timeout(GAME_RECONCILE_DEADLINE, detector_work).await {
+            Ok(result) => result?,
+            Err(_) => (vec!["detector deadline exceeded".to_string()], 0),
+        };
+
     for error in &errors {
         tracing::warn!(game = game_id, %error, "suspicion game reconciliation detector failed");
     }
-    record_game_reconciliation(&mut fence, game_id, seal, &errors).await?;
-    fence
+    let mut completion = state
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    record_game_reconciliation(&mut completion, game_id, &claim, seal, inserted, &errors).await?;
+    completion
         .commit()
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(true)
+    Ok(Some(inserted))
 }
 
 /// Coalesced game-level sweeps. Ended games pause during the finalization grace;
@@ -719,14 +761,145 @@ pub async fn reconcile_games(state: &SharedState) -> AppResult<usize> {
     let mut reconciled = 0;
     for (game_id, seal) in games {
         match reconcile_one_game(state, game_id, seal, finalize_grace_seconds).await {
-            Ok(true) => reconciled += 1,
-            Ok(false) => {}
+            Ok(Some(_)) => reconciled += 1,
+            Ok(None) => {}
             Err(error) => {
                 tracing::warn!(game = game_id, %error, "suspicion game reconciliation failed");
             }
         }
     }
     Ok(reconciled)
+}
+
+#[derive(Debug, Clone)]
+pub struct ManualReconciliationOperation {
+    pub operation_id: Uuid,
+    pub generation: i64,
+    pub status: i16,
+    pub inserted: Option<i32>,
+}
+
+async fn load_manual_operation(
+    pool: &sqlx::PgPool,
+    operation_id: Uuid,
+    game_id: i32,
+    requested_by: Uuid,
+) -> AppResult<Option<ManualReconciliationOperation>> {
+    let row: Option<(i32, Uuid, i64, i16, Option<i32>)> = sqlx::query_as(
+        r#"SELECT game_id, requested_by, generation, status, inserted_count
+             FROM "SuspicionReconciliationOperations"
+            WHERE operation_id = $1"#,
+    )
+    .bind(operation_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let Some((bound_game, bound_user, generation, status, inserted)) = row else {
+        return Ok(None);
+    };
+    if bound_game != game_id || bound_user != requested_by {
+        return Err(AppError::conflict(
+            "Reconciliation operation ID is bound to another request",
+        ));
+    }
+    Ok(Some(ManualReconciliationOperation {
+        operation_id,
+        generation,
+        status,
+        inserted,
+    }))
+}
+
+/// Coalesce manual and scheduled anti-cheat work behind the same durable game
+/// generation. An exact operation replay never starts another detector sweep.
+pub async fn request_manual_reconciliation(
+    state: &SharedState,
+    game_id: i32,
+    requested_by: Uuid,
+    operation_id: Uuid,
+) -> AppResult<ManualReconciliationOperation> {
+    if let Some(existing) =
+        load_manual_operation(state.pg(), operation_id, game_id, requested_by).await?
+    {
+        if existing.status != 0 {
+            return Ok(existing);
+        }
+        let seal: bool = sqlx::query_scalar(
+            r#"SELECT end_time_utc
+                        + ($2::bigint * INTERVAL '1 second') <= clock_timestamp()
+                 FROM "Games" WHERE id = $1"#,
+        )
+        .bind(game_id)
+        .bind(i64::try_from(finalization_grace_seconds()).expect("validated grace fits i64"))
+        .fetch_one(state.pg())
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+        let _ = reconcile_one_game(state, game_id, seal, finalization_grace_seconds()).await?;
+        return load_manual_operation(state.pg(), operation_id, game_id, requested_by)
+            .await?
+            .ok_or_else(|| AppError::internal("Reconciliation operation disappeared"));
+    }
+    let mut transaction = state
+        .pg()
+        .begin()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let generation = sqlx::query_scalar::<_, i64>(
+        r#"UPDATE "SuspicionReconciliationState" reconciliation
+              SET dirty_generation = dirty_generation + 1
+             FROM "Games" game
+            WHERE reconciliation.game_id = $1
+              AND game.id = reconciliation.game_id
+              AND game.deletion_pending = FALSE
+        RETURNING reconciliation.dirty_generation"#,
+    )
+    .bind(game_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .ok_or_else(|| AppError::not_found("Game not found"))?;
+    let inserted = sqlx::query(
+        r#"INSERT INTO "SuspicionReconciliationOperations"
+               (operation_id, game_id, requested_by, generation)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (operation_id) DO NOTHING"#,
+    )
+    .bind(operation_id)
+    .bind(game_id)
+    .bind(requested_by)
+    .bind(generation)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?
+    .rows_affected();
+    if inserted == 0 {
+        transaction
+            .rollback()
+            .await
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        return load_manual_operation(state.pg(), operation_id, game_id, requested_by)
+            .await?
+            .ok_or_else(|| AppError::conflict("Reconciliation operation raced"));
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::internal(error.to_string()))?;
+
+    let seal: bool = sqlx::query_scalar(
+        r#"SELECT end_time_utc
+                    + ($2::bigint * INTERVAL '1 second') <= clock_timestamp()
+             FROM "Games" WHERE id = $1"#,
+    )
+    .bind(game_id)
+    .bind(i64::try_from(finalization_grace_seconds()).expect("validated grace fits i64"))
+    .fetch_one(state.pg())
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let _ = reconcile_one_game(state, game_id, seal, finalization_grace_seconds()).await?;
+    load_manual_operation(state.pg(), operation_id, game_id, requested_by)
+        .await?
+        .ok_or_else(|| AppError::internal("Reconciliation operation disappeared"))
 }
 
 /// Start the durable evaluator. Wire this as a required worker only for

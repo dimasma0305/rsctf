@@ -73,8 +73,9 @@ const GameInfoEdit: FC = () => {
   const [generatingVariants, setGeneratingVariants] = useState(false)
   const [eventSecurityAction, setEventSecurityAction] = useState<string | null>(null)
   const variantJobRef = useRef<Promise<void> | null>(null)
-  const derivationJobRef = useRef<Promise<void> | null>(null)
   const controlJobAbortRef = useRef(new AbortController())
+  const deriveInFlight = useRef(false)
+  const deriveOperationId = useRef(crypto.randomUUID())
   const [vpnOverrides, setVpnOverrides] = useState<EventVpnOverrideModel[]>([])
   const [overrideReason, setOverrideReason] = useState('')
   const [overrideMinutes, setOverrideMinutes] = useState<number | string>(15)
@@ -369,40 +370,25 @@ const GameInfoEdit: FC = () => {
   }
 
   const onDeriveFindings = async () => {
-    if (!game?.id) return
-    if (derivationJobRef.current) return derivationJobRef.current
-    const gameId = game.id
-    const operationId = createOperationId()
-    const task = (async () => {
-      setEventSecurityAction('derive')
-      try {
-        let job
-        try {
-          job = (await api.eventSecurity.deriveFindings(gameId, operationId)).data
-        } catch (startError) {
-          try {
-            job = (await api.eventSecurity.getControlJobByOperation(operationId)).data
-          } catch {
-            throw startError
-          }
-        }
-        const completed = await waitForControlJob(job, controlJobAbortRef.current.signal)
-        showNotification({
-          color: 'teal',
-          message: t('admin.event_security.findings_derived', '{{count}} new context findings derived', {
-            count: controlJobResultCount(completed, 'inserted'),
-          }),
-          icon: <Icon path={mdiCheck} size={1} />,
-        })
-      } catch (error) {
-        if (!(error instanceof DOMException && error.name === 'AbortError')) showErrorMsg(error, t)
-      } finally {
-        setEventSecurityAction(null)
-        derivationJobRef.current = null
-      }
-    })()
-    derivationJobRef.current = task
-    return task
+    if (!game?.id || deriveInFlight.current) return
+    deriveInFlight.current = true
+    setEventSecurityAction('derive')
+    try {
+      const response = await api.eventSecurity.deriveFindings(game.id, deriveOperationId.current)
+      if (response.data.status === 'Completed') deriveOperationId.current = crypto.randomUUID()
+      showNotification({
+        color: 'teal',
+        message: t('admin.event_security.findings_derived', '{{count}} new context findings derived', {
+          count: response.data.inserted,
+        }),
+        icon: <Icon path={mdiCheck} size={1} />,
+      })
+    } catch (error) {
+      showErrorMsg(error, t)
+    } finally {
+      deriveInFlight.current = false
+      setEventSecurityAction(null)
+    }
   }
 
   const onCreateVpnOverride = async () => {

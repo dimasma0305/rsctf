@@ -220,31 +220,45 @@ pub async fn delete_anti_cheat_block(
 
 // ─── Bounded event-network telemetry and evidence fusion ──────────────────
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivedFindingResult {
+    pub operation_id: Uuid,
+    pub generation: i64,
+    pub status: String,
+    pub inserted: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeriveFindingRequest {
+    pub operation_id: Uuid,
+}
+
 pub async fn derive_event_security_findings(
     State(st): State<SharedState>,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
     Path(game_id): Path<i32>,
-    headers: HeaderMap,
-) -> AppResult<(
-    StatusCode,
-    RequestResponse<crate::services::control_jobs::ControlJobModel>,
-)> {
-    let operation = crate::controllers::edit::control_jobs::operation_id(&headers)?;
-    let input = serde_json::json!({ "gameId": game_id });
-    let fingerprint = crate::controllers::edit::control_jobs::fingerprint(&input)?;
-    let job = crate::services::control_jobs::enqueue(
-        st.pg(),
-        crate::services::control_jobs::ControlJobKind::SecurityDerivation,
-        &format!("game:{game_id}"),
+    Json(request): Json<DeriveFindingRequest>,
+) -> AppResult<RequestResponse<DerivedFindingResult>> {
+    let operation = crate::services::suspicion::request_manual_reconciliation(
+        &st,
         game_id,
-        None,
-        operation,
-        &fingerprint,
-        input,
+        admin.id,
+        request.operation_id,
     )
     .await?;
-    crate::services::control_jobs::kick(st);
-    Ok((StatusCode::ACCEPTED, RequestResponse::ok(job)))
+    let status = match operation.status {
+        0 => "Running",
+        1 => "Completed",
+        _ => "Failed",
+    };
+    Ok(RequestResponse::ok(DerivedFindingResult {
+        operation_id: operation.operation_id,
+        generation: operation.generation,
+        status: status.to_string(),
+        inserted: operation.inserted.unwrap_or(0) as usize,
+    }))
 }
 
 pub async fn fused_event_security_breakdown(
