@@ -141,6 +141,69 @@ pub(super) async fn list_managed(
     names.into_iter().collect()
 }
 
+/// Page one Kubernetes resource kind at a time so a partially-created
+/// workload (policy/service without a pod) remains discoverable without
+/// materializing all three inventories. Cursor prefixes are internal and the
+/// Kubernetes continue token is otherwise preserved verbatim.
+pub(super) async fn list_managed_page(
+    pods: Api<Pod>,
+    services: Api<Service>,
+    policies: Api<NetworkPolicy>,
+    scope: &str,
+    cursor: Option<&str>,
+    limit: usize,
+) -> crate::services::container::ManagedContainerPage {
+    let (kind, token) = cursor
+        .and_then(|cursor| cursor.split_once(':'))
+        .unwrap_or(("p", ""));
+    let selector = format!("{MANAGED_LABEL}={MANAGED_VALUE},{SCOPE_LABEL}={scope}");
+    let mut params = ListParams::default()
+        .labels(&selector)
+        .limit(u32::try_from(limit.clamp(1, 512)).unwrap_or(512));
+    if !token.is_empty() {
+        params = params.continue_token(token);
+    }
+    match kind {
+        "s" => page_kind("services", services, &params, scope, "s", "n:").await,
+        "n" => page_kind("network policies", policies, &params, scope, "n", "").await,
+        _ => page_kind("pods", pods, &params, scope, "p", "s:").await,
+    }
+}
+
+async fn page_kind<K>(
+    kind: &str,
+    api: Api<K>,
+    params: &ListParams,
+    scope: &str,
+    cursor_prefix: &str,
+    next_kind: &str,
+) -> crate::services::container::ManagedContainerPage
+where
+    K: Clone + Debug + DeserializeOwned + Resource,
+{
+    let resources = match api.list(params).await {
+        Ok(resources) => resources,
+        Err(error) => {
+            tracing::warn!(%error, resource_kind = kind, "failed to page managed Kubernetes resources");
+            return Default::default();
+        }
+    };
+    let next_cursor = resources
+        .metadata
+        .continue_
+        .as_ref()
+        .cloned()
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("{cursor_prefix}:{token}"))
+        .or_else(|| (!next_kind.is_empty()).then(|| next_kind.to_string()));
+    let mut names = BTreeSet::new();
+    collect_names(kind, Ok(resources), scope, &mut names);
+    crate::services::container::ManagedContainerPage {
+        ids: names.into_iter().collect(),
+        next_cursor,
+    }
+}
+
 fn collect_names<K>(
     kind: &str,
     resources: Result<kube::api::ObjectList<K>, kube::Error>,

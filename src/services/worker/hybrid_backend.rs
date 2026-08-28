@@ -129,6 +129,14 @@ impl ContainerManager for HybridWorkerContainerManager {
         self.local.list_managed().await
     }
 
+    async fn list_managed_page(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> crate::services::container::ManagedContainerPage {
+        self.local.list_managed_page(cursor, limit).await
+    }
+
     async fn ensure_network(&self, name: &str, subnet: &str) -> AppResult<()> {
         self.local.ensure_network(name, subnet).await
     }

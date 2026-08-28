@@ -65,6 +65,14 @@ pub enum ContainerLiveness {
     Unknown,
 }
 
+/// One backend-owned inventory page. `next_cursor` is opaque to the reaper and
+/// must be supplied to the same backend on the next pass.
+#[derive(Debug, Default)]
+pub struct ManagedContainerPage {
+    pub ids: Vec<String>,
+    pub next_cursor: Option<String>,
+}
+
 /// Typed attribution for a container exec failure. Callers that affect event
 /// scoring must distinguish a target controlled by the participant from an
 /// unavailable platform backend; the ordinary [`ContainerManager::exec`]
@@ -156,6 +164,19 @@ pub trait ContainerManager: Send + Sync {
 
     async fn list_managed(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Fetch a bounded inventory page without first materializing every
+    /// managed runtime. Backends used in production override this method with
+    /// server-side pagination; the fallback only preserves compatibility for
+    /// test and out-of-tree implementations.
+    async fn list_managed_page(&self, _cursor: Option<&str>, limit: usize) -> ManagedContainerPage {
+        let mut ids = self.list_managed().await;
+        ids.truncate(limit);
+        ManagedContainerPage {
+            ids,
+            next_cursor: None,
+        }
     }
 
     async fn ensure_network(&self, _name: &str, _subnet: &str) -> AppResult<()> {

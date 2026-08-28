@@ -70,7 +70,7 @@ use self::docker::{
 pub use backend::{
     should_use_platform_proxy, ContainerBackendKind, ContainerExecAdmission, ContainerExecError,
     ContainerFile, ContainerLiveness, ContainerManager, ContainerStatus, FileChange,
-    NoopContainerManager,
+    ManagedContainerPage, NoopContainerManager,
 };
 pub use docker::{from_env, from_env_required};
 use logging::bounded_log_config;
@@ -546,6 +546,41 @@ impl ContainerManager for DockerContainerManager {
             Err(e) => {
                 tracing::warn!(error = %e, "list_managed: docker list_containers failed");
                 Vec::new()
+            }
+        }
+    }
+
+    async fn list_managed_page(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> crate::services::container::ManagedContainerPage {
+        let Ok(docker) = self.client() else {
+            return Default::default();
+        };
+        let mut filters = managed_container_filters(&self.scope);
+        if let Some(cursor) = cursor.filter(|cursor| !cursor.is_empty()) {
+            filters.insert("before".to_string(), vec![cursor.to_string()]);
+        }
+        let limit = limit.clamp(1, 512);
+        let opts = ListContainersOptions {
+            all: true,
+            limit: Some(isize::try_from(limit).unwrap_or(512)),
+            filters,
+            ..Default::default()
+        };
+        match docker.list_containers(Some(opts)).await {
+            Ok(list) => {
+                let ids = list
+                    .into_iter()
+                    .filter_map(|container| container.id)
+                    .collect::<Vec<_>>();
+                let next_cursor = (ids.len() == limit).then(|| ids.last().cloned()).flatten();
+                crate::services::container::ManagedContainerPage { ids, next_cursor }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "bounded managed-container inventory failed");
+                Default::default()
             }
         }
     }

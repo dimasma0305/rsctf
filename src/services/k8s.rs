@@ -706,6 +706,22 @@ impl ContainerManager for KubernetesContainerManager {
         .await
     }
 
+    async fn list_managed_page(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> crate::services::container::ManagedContainerPage {
+        orphans::list_managed_page(
+            self.pods(),
+            self.services(),
+            self.network_policies(),
+            &self.scope,
+            cursor,
+            limit,
+        )
+        .await
+    }
+
     async fn query(&self, id: &str) -> AppResult<ContainerStatus> {
         let pod = self.pods().get(id).await.map_err(|e| {
             if is_not_found(&e) {

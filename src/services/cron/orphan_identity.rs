@@ -77,10 +77,49 @@ fn normalized_docker_prefix(value: &str) -> Option<String> {
     Some(value[..DOCKER_SHORT_ID_LEN].to_ascii_lowercase())
 }
 
-pub(super) async fn load_runtime_ownership(pool: &sqlx::PgPool) -> AppResult<RuntimeOwnership> {
-    let ids = sqlx::query_scalar::<_, String>(KNOWN_RUNTIME_IDS_SQL)
+pub(super) async fn load_runtime_ownership(
+    pool: &sqlx::PgPool,
+    candidates: &[String],
+) -> AppResult<RuntimeOwnership> {
+    let exact = candidates
+        .iter()
+        .take(512)
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    let docker_prefixes = exact
+        .iter()
+        .filter_map(|id| normalized_docker_prefix(id))
+        .collect::<Vec<_>>();
+    if exact.is_empty() {
+        return Ok(RuntimeOwnership::default());
+    }
+    let sql = format!(
+        r#"SELECT runtime_id FROM ({KNOWN_RUNTIME_IDS_SQL}) known
+            WHERE runtime_id = ANY($1)
+               OR (LENGTH(BTRIM(runtime_id)) BETWEEN 12 AND 64
+                   AND BTRIM(runtime_id) ~ '^[0-9A-Fa-f]+$'
+                   AND LOWER(LEFT(BTRIM(runtime_id), 12)) = ANY($2))"#,
+    );
+    let ids = sqlx::query_scalar::<_, String>(&sql)
+        .bind(&exact)
+        .bind(&docker_prefixes)
         .fetch_all(pool)
         .await
         .map_err(|error| AppError::internal(error.to_string()))?;
     Ok(RuntimeOwnership::from_ids(ids))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_docker_prefix;
+
+    #[test]
+    fn candidate_prefixes_are_only_derived_from_docker_identities() {
+        assert_eq!(
+            normalized_docker_prefix("ABCDEF1234567890").as_deref(),
+            Some("abcdef123456")
+        );
+        assert!(normalized_docker_prefix("rsctf-runtime-1").is_none());
+    }
 }

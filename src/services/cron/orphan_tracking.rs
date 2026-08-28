@@ -15,6 +15,19 @@ pub(super) static ORPHAN_FIRST_SEEN: std::sync::LazyLock<
 static ORPHAN_SCAN_CURSOR: std::sync::LazyLock<std::sync::Mutex<Option<String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
+pub(super) fn inventory_cursor() -> Option<String> {
+    ORPHAN_SCAN_CURSOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+pub(super) fn advance_inventory_cursor(next: Option<String>) {
+    *ORPHAN_SCAN_CURSOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct OrphanSweepPolicy {
     pub scan_batch: usize,
@@ -36,6 +49,7 @@ impl Default for OrphanSweepPolicy {
     }
 }
 
+#[cfg(test)]
 pub(super) fn managed_scan_batch(mut managed: Vec<String>, limit: usize) -> (Vec<String>, usize) {
     managed.retain(|id| !id.trim().is_empty());
     for id in &mut managed {
@@ -64,7 +78,5 @@ pub(super) fn managed_scan_batch(mut managed: Vec<String>, limit: usize) -> (Vec
 
 #[cfg(test)]
 pub(super) fn reset_scan_cursor() {
-    *ORPHAN_SCAN_CURSOR
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    advance_inventory_cursor(None);
 }

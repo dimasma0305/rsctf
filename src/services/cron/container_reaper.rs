@@ -1,5 +1,6 @@
 //! Bounded container-row and runtime-orphan maintenance.
 
+#[cfg(test)]
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -13,13 +14,14 @@ use crate::utils::error::{AppError, AppResult};
 
 use super::orphan_identity::load_runtime_ownership;
 use super::orphan_tracking::{
-    managed_scan_batch, OrphanSweepPolicy, ORPHAN_DESTROY_CONCURRENCY, ORPHAN_FIRST_SEEN,
+    advance_inventory_cursor, inventory_cursor, OrphanSweepPolicy, ORPHAN_DESTROY_CONCURRENCY,
+    ORPHAN_FIRST_SEEN,
 };
 
 #[cfg(test)]
 use super::orphan_identity::{RuntimeOwnership, DOCKER_SHORT_ID_LEN};
 #[cfg(test)]
-use super::orphan_tracking::reset_scan_cursor;
+use super::orphan_tracking::{managed_scan_batch, reset_scan_cursor};
 
 const EXPIRED_REAP_BATCH: usize = 64;
 const EXPIRED_REAP_CONCURRENCY: usize = 4;
@@ -30,6 +32,7 @@ const CLAIM_RELEASE_BUDGET: Duration = Duration::from_secs(2);
 const BACKLOG_SAMPLE_CAP: usize = 1_024;
 
 const MAX_TRACKED_ORPHANS: usize = 8_192;
+const ORPHAN_TRACKING_RETENTION: Duration = Duration::from_secs(60 * 60);
 
 const CLAIM_EXPIRED_SQL: &str = r#"
 WITH candidate AS (
@@ -338,8 +341,16 @@ async fn sweep_orphan_containers_with(
 ) -> AppResult<MaintenanceReport> {
     let started = Instant::now();
     let deadline = tokio::time::Instant::now() + policy.budget;
-    let managed = match tokio::time::timeout_at(deadline, state.containers.list_managed()).await {
-        Ok(managed) => managed,
+    let cursor = inventory_cursor();
+    let page = match tokio::time::timeout_at(
+        deadline,
+        state
+            .containers
+            .list_managed_page(cursor.as_deref(), policy.scan_batch),
+    )
+    .await
+    {
+        Ok(page) => page,
         Err(_) => {
             return Ok(MaintenanceReport {
                 deadline_reached: true,
@@ -348,13 +359,10 @@ async fn sweep_orphan_containers_with(
             });
         }
     };
-    let all_managed = managed
-        .iter()
-        .map(|id| id.trim())
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .collect::<HashSet<_>>();
-    let (scanned, managed_count) = managed_scan_batch(managed, policy.scan_batch);
+    let has_more = page.next_cursor.is_some();
+    let scanned = page.ids;
+    advance_inventory_cursor(page.next_cursor);
+    let managed_count = scanned.len() + usize::from(has_more);
     if scanned.is_empty() {
         ORPHAN_FIRST_SEEN
             .lock()
@@ -366,7 +374,8 @@ async fn sweep_orphan_containers_with(
         });
     }
     let ownership =
-        match tokio::time::timeout_at(deadline, load_runtime_ownership(state.pg())).await {
+        match tokio::time::timeout_at(deadline, load_runtime_ownership(state.pg(), &scanned)).await
+        {
             Ok(result) => result?,
             Err(_) => {
                 return Ok(MaintenanceReport {
@@ -387,7 +396,11 @@ async fn sweep_orphan_containers_with(
         let mut first_seen = ORPHAN_FIRST_SEEN
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        first_seen.retain(|id, _| all_managed.contains(id));
+        // A disappeared runtime is no longer present in a bounded inventory
+        // page, so age stale observations out without needing a full inventory
+        // HashSet. This also prevents failed/vanished IDs from permanently
+        // consuming the fixed tracking capacity.
+        first_seen.retain(|_, seen| now.duration_since(*seen) <= ORPHAN_TRACKING_RETENTION);
         for id in &scanned {
             if ownership.contains(id) {
                 first_seen.remove(id);
@@ -411,7 +424,9 @@ async fn sweep_orphan_containers_with(
     // fail-safe for a transaction that was in flight during both snapshots.
     if !ready.is_empty() {
         let refreshed =
-            match tokio::time::timeout_at(deadline, load_runtime_ownership(state.pg())).await {
+            match tokio::time::timeout_at(deadline, load_runtime_ownership(state.pg(), &ready))
+                .await
+            {
                 Ok(result) => result?,
                 Err(_) => {
                     return Ok(MaintenanceReport {
