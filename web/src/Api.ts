@@ -11056,6 +11056,10 @@ export class Api<
       data: {
         /** @format binary */
         file?: File | null;
+        /** Stable identity for retrying this avatar publication. */
+        operationId?: string | null;
+        /** @format int64 */
+        profileRevision?: number;
       },
       params: RequestParams = {},
     ) =>

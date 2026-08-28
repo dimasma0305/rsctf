@@ -123,6 +123,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   const [disabled, setDisabled] = useState(false)
   const mutationOwner = useRef<AbortController | null>(null)
   const profileOperation = useRef<{ digest: string; id: string } | null>(null)
+  const avatarOperation = useRef<{ digest: string; id: string } | null>(null)
   const clipboard = useClipboard()
   const locked = teamInfo?.locked ?? false
   const captain = teamInfo?.members?.filter((x) => x.captain)[0]
@@ -147,6 +148,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   useEffect(() => {
     setTeamInfo(team)
     profileOperation.current = null
+    avatarOperation.current = null
     mutationOwner.current?.abort()
     mutationOwner.current = null
     setDisabled(false)
@@ -323,6 +325,13 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
 
   const onChangeAvatar = async () => {
     if (!avatarFile || !teamInfo?.id || mutationOwner.current) return
+    const profileRevision = teamInfo.profileRevision ?? 0
+    const digest = `${avatarFile.name}:${avatarFile.size}:${avatarFile.lastModified}:${profileRevision}`
+    if (avatarOperation.current?.digest !== digest) {
+      avatarOperation.current = { digest, id: crypto.randomUUID() }
+    }
+    const operationId = avatarOperation.current?.id
+    if (!operationId) return
     const owner = new AbortController()
     mutationOwner.current = owner
     setDisabled(true)
@@ -340,6 +349,8 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         teamInfo.id,
         {
           file: avatarFile,
+          operationId,
+          profileRevision,
         },
         {
           signal: owner.signal,
@@ -354,7 +365,13 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         loading: false,
       })
       setAvatarFile(null)
-      const newTeamInfo = { ...teamInfo, avatar: data.data }
+      avatarOperation.current = null
+      const avatarChanged = data.data !== teamInfo.avatar
+      const newTeamInfo = {
+        ...teamInfo,
+        avatar: data.data,
+        profileRevision: profileRevision + (avatarChanged ? 1 : 0),
+      }
       setTeamInfo(newTeamInfo)
       mutateTeams(
         teams?.map((x) => (x.id === teamInfo.id ? newTeamInfo : x)),
@@ -436,6 +453,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
   return (
     <Modal
       {...modalProps}
+      withCloseButton={!disabled && (modalProps.withCloseButton ?? true)}
       onClose={() => {
         if (disabled) return
         setDropzoneOpened(false)
@@ -476,10 +494,10 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
                 radius="xl"
                 size={70}
                 src={teamInfo?.avatar}
-                role={isCaptain && !locked ? 'button' : undefined}
-                tabIndex={isCaptain && !locked ? 0 : undefined}
-                aria-label={isCaptain && !locked ? avatarModalTitle : undefined}
-                style={isCaptain && !locked ? { cursor: 'pointer' } : undefined}
+                role={isCaptain && !locked && !disabled ? 'button' : undefined}
+                tabIndex={isCaptain && !locked && !disabled ? 0 : undefined}
+                aria-label={isCaptain && !locked && !disabled ? avatarModalTitle : undefined}
+                style={isCaptain && !locked && !disabled ? { cursor: 'pointer' } : undefined}
                 onClick={() => isCaptain && !locked && !disabled && setDropzoneOpened(true)}
                 onKeyDown={(event) => {
                   if (isCaptain && !locked && !disabled && (event.key === 'Enter' || event.key === ' ')) {
@@ -616,7 +634,7 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
               crew.map((user) => (
                 <TeamMemberInfo
                   key={user.id}
-                  isCaptain={isCaptain && !locked}
+                  isCaptain={isCaptain && !locked && !disabled}
                   user={user}
                   onTransferCaptain={(user: TeamUserInfoModel) => {
                     modals.openConfirmModal({
@@ -702,7 +720,10 @@ export const TeamEditModal: FC<TeamEditModalProps> = (props) => {
         <Dropzone
           aria-label={avatarModalTitle}
           aria-describedby="team-avatar-upload-instructions"
-          onDrop={(files) => setAvatarFile(files[0])}
+          onDrop={(files) => {
+            avatarOperation.current = null
+            setAvatarFile(files[0])
+          }}
           onReject={() => {
             showNotification({
               color: 'red',
